@@ -1,11 +1,20 @@
-"""
-Unit tests for torchref.experimental.alignment.sh: spherical harmonic primitives.
+"""Leaf mathematics for the rotation function: shell binning and the Legendre reference.
 
-Conventions verified:
-- Y_{l,m} are fully orthonormal physics SH with Condon-Shortley phase.
-- Matches scipy.special.sph_harm.
-- For a centrosymmetric (Friedel-symmetric) input, sh_expand_ball produces
-  exactly-zero odd-l coefficients when enforce_friedel=True.
+Two independent things, both pinned because something downstream trusts them.
+
+**Shell binning.** Two consumers deriving their own equal-count edges from the
+same ``|s|`` is how boundary reflections end up in different shells depending on
+which stage asked. The edges are computed once and the index passed down; these
+tests pin the round trip that makes that safe.
+
+**``_bar_legendre_recurrence``.** Production never calls it -- the Bessel-SH
+expansion runs the same recurrence inside its kernels. It exists as the
+*independent* implementation that
+``tests/unit/frf_separate/test_bessel_sh_grouping.py`` builds a slow reference
+expansion on, to check the fused one against something other than itself. That
+only works if the reference is itself trustworthy, which is what the scipy
+comparison here is for: it used to reach this recurrence through ``evaluate_ylm``,
+and that wrapper is gone.
 """
 import math
 
@@ -13,165 +22,118 @@ import numpy as np
 import pytest
 import torch
 
-scipy_special = pytest.importorskip("scipy.special")
-
 from torchref.experimental.alignment.sh import (
     _bar_legendre_recurrence,
-    evaluate_ylm,
-    sh_expand_ball,
-    equal_count_shell_edges,
     assign_shells,
+    equal_count_shell_edges,
 )
 
 
-def _scipy_ylm(l, m, theta, phi):
-    """Reference: scipy spherical harmonics with C-S phase, physics convention.
+# ---------------------------------------------------------------------------
+# The Legendre reference the FRF expansion is checked against
+# ---------------------------------------------------------------------------
 
-    scipy >= 1.15 replaced ``sph_harm(m, l, phi, theta)`` with
-    ``sph_harm_y(n, m, theta, phi)``; prefer the new API and fall back to the
-    old one for older scipy installs.
+
+@pytest.mark.unit
+@pytest.mark.parametrize("L", [4, 9])
+def test_bar_legendre_matches_scipy(L):
+    """bar_P_l^m(x) = sqrt[(2l+1)/(4pi) (l-m)!/(l+m)!] |P_l^m(x)|, against scipy.
+
+    scipy's ``lpmv`` carries the Condon-Shortley phase and this recurrence does
+    not, so the comparison is on magnitude -- which is the convention the
+    docstring states and the kernels implement.
     """
-    if hasattr(scipy_special, "sph_harm_y"):
-        return scipy_special.sph_harm_y(l, m, theta, phi)
-    return scipy_special.sph_harm(m, l, phi, theta)
+    scipy_special = pytest.importorskip("scipy.special")
 
+    theta = torch.tensor([0.3, 1.1, 2.0, 2.9], dtype=torch.float64)
+    cos_t, sin_t = torch.cos(theta), torch.sin(theta)
+    bar_P = _bar_legendre_recurrence(cos_t, sin_t, L)          # (M, L, L)
 
-@pytest.mark.parametrize("L", [4, 8, 16])
-def test_ylm_matches_scipy(L):
-    """Our Y_lm should match scipy.special.sph_harm at random points."""
-    torch.manual_seed(0)
-    n = 20
-    theta = torch.rand(n, dtype=torch.float64) * math.pi
-    phi = (torch.rand(n, dtype=torch.float64) - 0.5) * 2 * math.pi
-
-    Y = evaluate_ylm(theta, phi, L)  # (n, L, 2L-1)
-
+    x = cos_t.numpy()
     for l in range(L):
-        for m in range(-l, l + 1):
-            ref = _scipy_ylm(l, m, theta.numpy(), phi.numpy())
-            got = Y[:, l, L - 1 + m].numpy()
-            np.testing.assert_allclose(got, ref, atol=1e-12, rtol=1e-10,
-                                       err_msg=f"mismatch at l={l}, m={m}")
+        for m in range(l + 1):
+            norm = math.sqrt(
+                (2 * l + 1) / (4 * math.pi)
+                * math.factorial(l - m) / math.factorial(l + m)
+            )
+            expected = norm * np.abs(scipy_special.lpmv(m, l, x))
+            np.testing.assert_allclose(
+                bar_P[:, l, m].abs().numpy(), expected, atol=1e-11, rtol=1e-11,
+                err_msg=f"l={l}, m={m}",
+            )
 
 
-def test_ylm_orthonormality_on_grid():
-    """Y_lm should be ~orthonormal when integrated on a fine spherical grid."""
-    L = 6
-    # Gauss-Legendre in cos(theta), uniform in phi
-    n_theta = 2 * L + 4
-    n_phi = 4 * L + 4
-    # GL nodes in [-1, 1]
-    x_gl, w_gl = np.polynomial.legendre.leggauss(n_theta)
-    theta_np = np.arccos(x_gl)
-    phi_np = np.linspace(0, 2 * math.pi, n_phi, endpoint=False)
-    weights = (np.repeat(w_gl, n_phi)) * (2 * math.pi / n_phi)  # (n_theta*n_phi,)
-    theta = torch.tensor(np.repeat(theta_np, n_phi), dtype=torch.float64)
-    phi = torch.tensor(np.tile(phi_np, n_theta), dtype=torch.float64)
-
-    Y = evaluate_ylm(theta, phi, L)  # (n_pts, L, 2L-1)
-    Yflat = Y.reshape(-1, L * (2 * L - 1))
-    w = torch.tensor(weights, dtype=torch.float64)
-
-    # G[a,b] = sum_pts w * Y*_a * Y_b
-    G = torch.einsum("p,pa,pb->ab", w.to(Yflat.dtype), Yflat.conj(), Yflat)
-    G_np = G.numpy()
-
-    # Only diagonals for valid (l,m) entries (m | <= l) should be 1; off-diagonal ~0.
-    expected = np.zeros_like(G_np, dtype=np.complex128)
-    for l in range(L):
-        for m in range(-l, l + 1):
-            idx = l * (2 * L - 1) + (L - 1 + m)
-            expected[idx, idx] = 1.0
-    # Zero out the entries we don't care about (l < |m|, where Y is zero anyway)
-    valid_mask = np.zeros(L * (2 * L - 1), dtype=bool)
-    for l in range(L):
-        for m in range(-l, l + 1):
-            valid_mask[l * (2 * L - 1) + (L - 1 + m)] = True
-
-    G_valid = G_np[np.ix_(valid_mask, valid_mask)]
-    exp_valid = expected[np.ix_(valid_mask, valid_mask)]
-    np.testing.assert_allclose(G_valid, exp_valid, atol=1e-9, rtol=1e-9)
-
-
+@pytest.mark.unit
 def test_bar_legendre_pole_values():
-    """At the north pole (cos θ = 1), bar_P_l^m = 0 for m > 0 and bar_P_l^0 ≠ 0."""
+    """At the north pole (cos theta = 1): zero for m > 0, sqrt((2l+1)/4pi) at m = 0.
+
+    The pole is where the recurrence is most fragile -- sin(theta) = 0 kills the
+    sectoral seed, and everything above it comes from the vertical step.
+    """
     L = 5
     theta = torch.tensor([0.0], dtype=torch.float64)
-    bar_P = _bar_legendre_recurrence(torch.cos(theta), torch.sin(theta), L)  # (1, L, L)
-    # m > 0 must be zero (sin θ = 0 kills sectorals; vertical recurrence then ~ 0)
+    bar_P = _bar_legendre_recurrence(torch.cos(theta), torch.sin(theta), L)
     for l in range(L):
         for m in range(1, l + 1):
-            assert abs(bar_P[0, l, m].item()) < 1e-14, f"l={l}, m={m}: {bar_P[0,l,m].item()}"
-    # m = 0: bar_P_l^0(1) = sqrt((2l+1)/(4π))   (Legendre polynomial at 1 is 1)
-    for l in range(L):
-        expected = math.sqrt((2 * l + 1) / (4 * math.pi))
-        np.testing.assert_allclose(bar_P[0, l, 0].item(), expected, atol=1e-12)
+            assert abs(bar_P[0, l, m].item()) < 1e-14, f"l={l}, m={m}"
+        np.testing.assert_allclose(
+            bar_P[0, l, 0].item(), math.sqrt((2 * l + 1) / (4 * math.pi)),
+            atol=1e-12,
+        )
 
 
-def test_friedel_enforces_even_l():
-    """sh_expand_ball with enforce_friedel=True must give exactly-zero odd-l coefficients."""
-    torch.manual_seed(1)
-    L = 8
-    P = 4
-    n_pts = 1000
-    s_vectors = torch.randn(n_pts, 3, dtype=torch.float64) * 0.5
-    # |s| roughly in [0, 1]; make sure non-zero
-    s_vectors = s_vectors / (1 + s_vectors.norm(dim=-1, keepdim=True) * 0.1)
-    s_mags = s_vectors.norm(dim=-1)
-    edges, _ = equal_count_shell_edges(s_mags, P)
-    shell_idx = assign_shells(s_mags, edges)
-    values = torch.rand(n_pts, dtype=torch.float64)
-
-    f_plm = sh_expand_ball(s_vectors, values, shell_idx, P, L, enforce_friedel=True)
-
-    # Odd-l rows must be exactly zero (after explicit zero of FP drift).
-    for l in range(1, L, 2):
-        assert f_plm[:, l, :].abs().max().item() == 0.0, f"l={l} not zero"
+# ---------------------------------------------------------------------------
+# Shell binning
+# ---------------------------------------------------------------------------
 
 
-def test_friedel_without_enforce_has_odd_l_for_nonsymmetric_input():
-    """Without Friedel enforcement, a non-centrosymmetric scatter produces nonzero odd-l."""
-    torch.manual_seed(2)
-    L = 6
-    P = 1
-    # Place all mass at the north pole — extremely non-centrosymmetric
-    s_vectors = torch.tensor([[0.0, 0.0, 1.0]] * 5, dtype=torch.float64)
-    values = torch.ones(5, dtype=torch.float64)
-    shell_idx = torch.zeros(5, dtype=torch.int64)
-
-    f_no_friedel = sh_expand_ball(s_vectors, values, shell_idx, P, L,
-                                  enforce_friedel=False)
-    # odd-l (l=1) entries should be non-trivial
-    odd_norm = f_no_friedel[:, 1, :].abs().max().item()
-    assert odd_norm > 1e-3, "expected nonzero odd-l without Friedel enforcement"
-
-
+@pytest.mark.unit
 def test_shell_assignment_round_trip():
-    """assign_shells gives indices that round-trip through equal_count_shell_edges."""
-    torch.manual_seed(3)
-    s_mags = torch.rand(2000, dtype=torch.float64) * 2.0
-    P = 16
-    edges, centers = equal_count_shell_edges(s_mags, P)
-    idx = assign_shells(s_mags, edges)
-    # all should be in [0, P-1]
-    assert idx.min().item() >= 0
-    assert idx.max().item() == P - 1
-    # roughly equal counts (within 2x because of tie-breaking at edges)
-    counts = torch.bincount(idx, minlength=P)
-    assert counts.min().item() >= s_mags.numel() / (4 * P)
+    """The bins really are equal-count, and every reflection lands in one.
+
+    ``equal_count_shell_edges`` returns ``(edges, centers)`` -- the second value
+    is the shell mid-points, not the occupancies -- so equal-count is asserted
+    on the assignment rather than read off the return.
+    """
+    torch.manual_seed(0)
+    s = torch.rand(1000, dtype=torch.float64) * 0.4 + 0.05
+    n_shells = 12
+    edges, centers = equal_count_shell_edges(s, n_shells)
+    idx = assign_shells(s, edges)
+
+    assert edges.shape == (n_shells + 1,)
+    assert centers.shape == (n_shells,)
+    assert int(idx.min()) >= 0 and int(idx.max()) < n_shells
+    counts = torch.bincount(idx, minlength=n_shells)
+    assert int(counts.sum()) == s.numel(), "a reflection fell outside every shell"
+    # 1000 into 12 cannot divide evenly; equal-count means within one of ideal.
+    assert int(counts.max()) - int(counts.min()) <= 1, counts
+    # Centres must sit inside their own shell.
+    assert bool(((centers > edges[:-1]) & (centers < edges[1:])).all())
 
 
-def test_sh_expand_zero_when_l_too_large_for_no_points():
-    """Empty shell should give all-zero coefficients."""
-    L = 4
-    P = 3
-    n_pts = 100
-    torch.manual_seed(4)
-    s_vectors = torch.randn(n_pts, 3, dtype=torch.float64)
-    values = torch.ones(n_pts, dtype=torch.float64)
-    # Force shell_idx == 1 for all points (shell 0 and 2 empty)
-    shell_idx = torch.ones(n_pts, dtype=torch.int64)
-    f = sh_expand_ball(s_vectors, values, shell_idx, P, L, enforce_friedel=False)
-    assert f[0].abs().max() == 0
-    assert f[2].abs().max() == 0
-    assert f[1].abs().max() > 0
+@pytest.mark.unit
+def test_shells_are_monotone_in_resolution():
+    """A shell is a resolution range, so the bins must not interleave."""
+    torch.manual_seed(1)
+    s = torch.rand(500, dtype=torch.float64) * 0.3 + 0.02
+    edges, _ = equal_count_shell_edges(s, 8)
+    idx = assign_shells(s, edges)
+    hi = torch.stack([s[idx == b].max() for b in range(8) if (idx == b).any()])
+    assert bool((hi[1:] >= hi[:-1]).all())
+
+
+@pytest.mark.unit
+def test_assignment_is_stable_under_a_subset():
+    """Slicing rows must not move a reflection's shell; rebuilding edges would.
+
+    This is the property the "assign once, pass it down" rule rests on: given
+    the SAME edges, a subset of the reflections lands in the same bins it did in
+    the full set.
+    """
+    torch.manual_seed(2)
+    s = torch.rand(600, dtype=torch.float64) * 0.3 + 0.02
+    edges, _ = equal_count_shell_edges(s, 10)
+    full = assign_shells(s, edges)
+    sub = torch.arange(0, 600, 3)
+    torch.testing.assert_close(assign_shells(s[sub], edges), full[sub])

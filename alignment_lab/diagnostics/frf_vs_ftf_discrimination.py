@@ -25,8 +25,8 @@ justifies widening the funnel.
 
 The placement path is the production one -- ``_make_rotated`` then the same
 ``precompute_G`` / ``amplitude_translation_search`` / ``local_translation_refine``
-calls ``_placement_for_candidate`` makes -- with ``do_joint_refine`` off, since
-the rigid-body polish is a later stage and would confound the TF's own ranking.
+calls ``_placement_for_candidate`` makes, against the pipeline's own
+``TranslationObs`` so the normalisation and weighting are the production ones.
 """
 
 from __future__ import annotations
@@ -94,8 +94,8 @@ def main() -> int:
     ap.add_argument("--out-csv", default=None)
     args = ap.parse_args()
 
-    from torchref.experimental.alignment.align import (
-        _DirectModelEvaluator, _prepare_frf_inputs,
+    from torchref.experimental.alignment.rotation_search import (
+        prepare_frf_inputs,
     )
     from torchref.experimental.alignment.frf.rotation_utils import (
         rotation_matrix_from_edmonds_euler,
@@ -104,8 +104,8 @@ def main() -> int:
         MolecularReplacementPipeline,
     )
     from torchref.experimental.alignment.translation import (
-        amplitude_translation_search, local_translation_refine,
-        precompute_G_for_rotation,
+        DirectModelEvaluator, amplitude_translation_search,
+        local_translation_refine, precompute_G_for_rotation,
     )
 
     writer = None
@@ -124,13 +124,11 @@ def main() -> int:
 
         pipe = MolecularReplacementPipeline(
             data, model, verbose=0,
-            rescore_engine="none", subpeak_refine=False,
             n_rotation_peaks=args.n_rotation_peaks,
             n_rotation_candidates=args.n_cand,
-            do_joint_refine=False, dense_rotation_refine=False,
             use_llg_tf=False,
         )
-        frf = _prepare_frf_inputs(
+        frf = prepare_frf_inputs(
             model, data, d_min=pipe.d_min, d_max=pipe.d_max,
             n_shells=pipe.n_shells, verbose=0,
         )
@@ -155,12 +153,12 @@ def main() -> int:
             rot.spacegroup = data.spacegroup.hm
             p1 = rot.copy()
             p1.spacegroup = "P 1"
-            ev = _DirectModelEvaluator(p1)
+            ev = DirectModelEvaluator(p1)
             G, h_R = precompute_G_for_rotation(
-                ev, eye3, pipe._hkl_keep, data.spacegroup, data.cell)
+                ev, eye3, pipe._obs.hkl, data.spacegroup, data.cell)
             _, _, tp = amplitude_translation_search(
-                F_obs=pipe._F_obs_amp, interpolator=ev, R_rotation=eye3,
-                hkl=pipe._hkl_keep, spacegroup=data.spacegroup,
+                obs=pipe._obs, interpolator=ev, R_rotation=eye3,
+                spacegroup=data.spacegroup,
                 real_cell=data.cell, grid_steps=pipe.translation_grid_steps,
                 n_peaks=pipe.n_translation_peaks, cluster_radius=0.05,
                 precomputed_G=G, precomputed_h_R=h_R)
@@ -179,9 +177,8 @@ def main() -> int:
             r_best = float("inf")
             for cand in llg_peaks[: pipe.n_translation_candidates]:
                 _, r_a = local_translation_refine(
-                    F_obs=pipe._F_obs_amp, interpolator=ev, R_rotation=eye3,
-                    hkl=pipe._hkl_keep, spacegroup=data.spacegroup,
-                    real_cell=data.cell,
+                    obs=pipe._obs, interpolator=ev, R_rotation=eye3,
+                    spacegroup=data.spacegroup, real_cell=data.cell,
                     t_init=torch.as_tensor(cand.translation,
                                            dtype=torch.float64),
                     radius=0.06, grid_steps=13, n_refinement_passes=1,

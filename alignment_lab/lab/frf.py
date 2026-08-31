@@ -15,18 +15,6 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 
 
-def e_convention_name(conv) -> str:
-    """Display name for a convention class, a ``partial`` of one, or ``None``."""
-    if conv is None:
-        return "default"
-    inner = getattr(conv, "func", conv)
-    name = getattr(inner, "__name__", str(inner))
-    kw = getattr(conv, "keywords", None)
-    if kw:
-        name += "(" + ",".join(f"{k}={v}" for k, v in sorted(kw.items())) + ")"
-    return name
-
-
 @dataclass
 class FRFConfig:
     """Engine settings for one FRF evaluation.
@@ -45,12 +33,6 @@ class FRFConfig:
     #: Expected r.m.s. coordinate error, in Angstrom. ``None`` uses the Oeffner
     #: estimate from the model's length, which is what the pipeline does.
     model_error_A: Optional[float] = None
-    #: E-value convention, as the CLASS the engine instantiates once per side.
-    #: ``None`` leaves the production default in place; a class (or a
-    #: ``functools.partial`` of one) sweeps it. Unlike the deleted ``extra``
-    #: knobs this is a real production parameter, so the lab passes it through
-    #: rather than patching a constant.
-    e_convention: Optional[type] = None
     #: Weighting, the other half of the split. ``None`` leaves the production
     #: default. These are separate arms on purpose: the design changes three
     #: things at once -- the observed-side weight, the calculated-side weight
@@ -68,8 +50,6 @@ class FRFConfig:
         """Config fields for a result row (``extra`` flattened out)."""
         d = asdict(self)
         d.pop("extra")
-        # `asdict` cannot render a class or a partial; name it instead.
-        d["e_convention"] = e_convention_name(self.e_convention)
         d.update(self.extra)
         return d
 
@@ -205,7 +185,6 @@ def run_frf(
 
     import importlib
 
-    from torchref.experimental.alignment import align as _align
     from torchref.experimental.alignment.frf import api as _api
 
     # `from ...alignment import rotation_search` gives the FUNCTION, which the
@@ -228,7 +207,7 @@ def run_frf(
     # sweeps them by rebinding those constants for the duration of one call, so
     # the production API stays switch-free while the measurements that chose the
     # values remain reproducible.
-    frf_inputs = _align._prepare_frf_inputs(
+    frf_inputs = _rs.prepare_frf_inputs(
         model, data,
         d_min=cfg.d_min, d_max=cfg.d_max, n_shells=cfg.n_shells, verbose=verbose,
     )
@@ -242,10 +221,7 @@ def run_frf(
             f"torchref.experimental.alignment.rotation_search instead."
         )
 
-    # Omitted rather than passed as None, so an unset convention takes the
-    # production default from the signature instead of overriding it with one.
-    conv_kw = {} if cfg.e_convention is None else {
-        "e_convention": cfg.e_convention}
+    conv_kw = {}
     # Engine knobs are omitted when unset so the production default applies,
     # rather than being passed as None and overriding it with nothing.
     for _name in ("obs_weight", "shell_variance_weights", "snr_cap",

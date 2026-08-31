@@ -34,6 +34,8 @@ control flow that wires them together.
 
 from __future__ import annotations
 
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
@@ -43,16 +45,11 @@ import torch
 from torchref.config import get_default_device
 from torchref.utils.device_mixin import DeviceMixin
 
-from .align import (
-    _DirectModelEvaluator,
-    _StageTimer,
-    _external_rwork,
-    _prepare_frf_inputs,
-)
 from .frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from .frf.types import RotationPeak
-from .rotation_search import search_peaks
+from .rotation_search import prepare_frf_inputs, search_peaks
 from .translation import (
+    DirectModelEvaluator,
     TranslationObs,
     TranslationPeak,
     amplitude_translation_search,
@@ -143,6 +140,101 @@ def cluster_rotation_peaks(
             clustered.append(peak)
             used_rotations.append(R)
     return clustered
+
+
+# ---------------------------------------------------------------------------
+# Stage timing and the user-facing R-work
+# ---------------------------------------------------------------------------
+
+
+class _StageTimer:
+    """Lightweight wall-clock accumulator. Gated by ``verbose >= 2``.
+
+    Two interleavable usages:
+      * ``with t.stage(name):`` block — records the block's wall time.
+      * ``t.start(name)`` / ``t.stop(name)`` — checkpoint pair, no indent.
+
+    The summary table prints stages aggregated by name; per-rotation loop
+    stages (translation search etc.) get aggregated counts.
+    """
+
+    def __init__(self, enabled: bool):
+        self.enabled = enabled
+        self.records: list[tuple[str, float]] = []
+        self._open: dict[str, float] = {}
+
+    @contextmanager
+    def stage(self, name: str):
+        if not self.enabled:
+            yield
+            return
+        t0 = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.records.append((name, time.perf_counter() - t0))
+
+    def start(self, name: str) -> None:
+        if self.enabled:
+            self._open[name] = time.perf_counter()
+
+    def stop(self, name: str) -> None:
+        if not self.enabled:
+            return
+        t0 = self._open.pop(name, None)
+        if t0 is not None:
+            self.records.append((name, time.perf_counter() - t0))
+
+    def summary(self) -> str:
+        if not self.records:
+            return ""
+        # Aggregate repeated stage names (the per-rotation loop visits the
+        # translation stages once per candidate rotation).
+        agg: dict[str, list[float]] = {}
+        for name, dt in self.records:
+            agg.setdefault(name, []).append(dt)
+        total = sum(sum(v) for v in agg.values())
+        lines = [
+            f"{'stage':<32s}  {'count':>5s}  {'wall_s':>10s}  {'%':>6s}",
+            "-" * 60,
+        ]
+        for name, vs in agg.items():
+            wall = sum(vs)
+            lines.append(
+                f"{name:<32s}  {len(vs):>5d}  {wall:>10.3f}  "
+                f"{100 * wall / total:>5.1f}%"
+            )
+        lines.append("-" * 60)
+        lines.append(f"{'TOTAL':<32s}  {'':>5s}  {total:>10.3f}  100.0%")
+        return "\n".join(lines)
+
+
+def _external_rwork(model: "ModelFT", data: "ReflectionData") -> float:
+    """Full-resolution scaled R-work via the standard Scaler.
+
+    The TF + local refine work in analytical-scale R-factor (which ranks
+    candidates correctly but isn't the user-facing R-work). We compute the
+    proper Scaler-fit R-work once per finalist.
+    """
+    from ...base.metrics.rfactor import rfactor_work_free
+    from ...scaling import Scaler
+
+    # No device override: the Scaler takes the configured default, which is
+    # the one place a device is decided. Reading it off whichever tensor is
+    # nearest is what puts a run on two devices at once.
+    s = Scaler(model=model, data=data, nbins=20, verbose=0)
+    # Detach the model forward — the scaler only needs gradients through its
+    # own parameters; leaving `fc` attached to the model's autograd graph
+    # keeps SfFFT density-build intermediates alive after this function
+    # returns.
+    with torch.no_grad():
+        fc = model(data.hkl).detach()
+    s.initialize(fc)
+    s.refine_lbfgs(fcalc=fc)
+    with torch.no_grad():
+        # rfactor_work_free takes already-scaled amplitudes, not complex F_calc.
+        rw, _ = rfactor_work_free(data, torch.abs(s.forward(fc)))
+    return rw.item() if hasattr(rw, "item") else float(rw)
 
 
 @dataclass
@@ -300,7 +392,7 @@ class MolecularReplacementPipeline(DeviceMixin):
 
         timer = self._timer
         timer.start("0_data_prep")
-        frf = _prepare_frf_inputs(
+        frf = prepare_frf_inputs(
             self.model, self.data,
             d_min=self.d_min, d_max=self.d_max, n_shells=self.n_shells,
             verbose=self.verbose,
@@ -537,7 +629,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             rotated_k.spacegroup = data.spacegroup.hm
         rotated_p1 = rotated_k.copy()
         rotated_p1.spacegroup = "P 1"
-        evaluator = _DirectModelEvaluator(rotated_p1)
+        evaluator = DirectModelEvaluator(rotated_p1)
 
         timer.start("5_precompute_G")
         G_pre, h_R_pre = precompute_G_for_rotation(
@@ -650,3 +742,59 @@ class MolecularReplacementPipeline(DeviceMixin):
             )
             for i in order
         ]
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+
+def align_model_to_data(
+    model: "ModelFT",
+    data: "ReflectionData",
+    *,
+    d_min: float = 4.0,
+    d_max: float = 15.0,
+    n_shells: int = 20,
+    n_rotation_peaks: int = 500,
+    verbose: int = 0,
+    do_translation: bool = True,
+    n_translation_peaks: int = 20,
+    n_translation_candidates: int = 3,
+    translation_grid_steps: int = 16,
+    n_rotation_candidates: int = 15,
+    use_llg_tf: bool = False,
+    tf_d_min: Optional[float] = None,
+    tf_d_max: Optional[float] = None,
+    model_error_A: Optional[float] = None,
+) -> "ModelFT":
+    """Place ``model`` in ``data``'s crystal: rotation search, then translation.
+
+    Returns a new rotated+translated ``ModelFT`` carrying
+    ``last_alignment_rotation``, ``last_alignment_translation`` and
+    ``last_alignment_rfactor`` provenance attributes. It is a *placement*, not a
+    refined structure -- refine it downstream.
+
+    `MolecularReplacementPipeline` is the implementation of record; this
+    function returns its single best solution.
+    """
+    if not model.ctx.initialized:
+        raise RuntimeError(
+            "Cannot fit an uninitialized ModelFT. Load PDB data first."
+        )
+
+    pipeline = MolecularReplacementPipeline(
+        data, model,
+        verbose=verbose,
+        d_min=d_min, d_max=d_max, n_shells=n_shells,
+        n_rotation_peaks=n_rotation_peaks,
+        model_error_A=model_error_A,
+        n_rotation_candidates=n_rotation_candidates,
+        n_translation_peaks=n_translation_peaks,
+        n_translation_candidates=n_translation_candidates,
+        translation_grid_steps=translation_grid_steps,
+        use_llg_tf=use_llg_tf,
+        tf_d_min=tf_d_min, tf_d_max=tf_d_max,
+    )
+    solutions = pipeline.run(do_translation=do_translation)
+    return solutions[0].model

@@ -45,10 +45,9 @@ def main() -> int:
     ap.add_argument("--n-peaks", type=int, default=20)
     args = ap.parse_args()
 
-    from torchref.experimental.alignment.align import _DirectModelEvaluator
     from torchref.experimental.alignment.translation import (
-        amplitude_translation_search, local_translation_refine,
-        precompute_G_for_rotation,
+        DirectModelEvaluator, TranslationObs, amplitude_translation_search,
+        local_translation_refine, precompute_G_for_rotation,
     )
 
     seed = seed_for(args.pdb, args.trial)
@@ -65,25 +64,29 @@ def main() -> int:
                ).norm(dim=-1).clamp(min=1e-9)
     mask = mask & (d >= args.d_min) & (d <= args.d_max)
     hkl = data.hkl[mask]
-    F_obs = data.F[mask].abs().to(torch.float64)
+    sig_F = getattr(data, "F_sigma", None)
+    obs = TranslationObs.build(
+        data.F[mask], hkl, data.spacegroup, data.cell,
+        sig_F=None if sig_F is None else sig_F[mask],
+    )
     S = int(data.spacegroup.matrices.shape[0])
     N = int(hkl.shape[0])
     n_at = int(rot.xyz().shape[0])
     print(f"# {args.pdb} sg={data.spacegroup.hm} S={S} N={N} atoms={n_at} "
           f"grid={args.grid_steps} seed={seed}", flush=True)
 
-    ev = _DirectModelEvaluator(rot)
+    ev = DirectModelEvaluator(rot)
     eye3 = torch.eye(3, dtype=torch.float64)
 
     t_G, (G, h_R) = _time(lambda: precompute_G_for_rotation(
         ev, eye3, hkl, data.spacegroup, data.cell))
     t_tf, (_, _, peaks) = _time(lambda: amplitude_translation_search(
-        F_obs=F_obs, interpolator=ev, R_rotation=eye3, hkl=hkl,
+        obs=obs, interpolator=ev, R_rotation=eye3,
         spacegroup=data.spacegroup, real_cell=data.cell,
         grid_steps=args.grid_steps, n_peaks=args.n_peaks,
         precomputed_G=G, precomputed_h_R=h_R))
     t_ref, _ = _time(lambda: local_translation_refine(
-        F_obs=F_obs, interpolator=ev, R_rotation=eye3, hkl=hkl,
+        obs=obs, interpolator=ev, R_rotation=eye3,
         spacegroup=data.spacegroup, real_cell=data.cell,
         t_init=torch.as_tensor(peaks[0].translation, dtype=torch.float64),
         radius=0.06, grid_steps=13, n_refinement_passes=1,

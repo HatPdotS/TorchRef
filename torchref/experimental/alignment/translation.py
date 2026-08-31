@@ -24,6 +24,7 @@ module and its caller.
 import numpy as np
 import torch
 
+from torchref.config import get_default_device
 from torchref.scaling import WilsonNormaliser
 from torchref.scaling.weighting import (inverse_variance_weight,
                                         normalise_weight, snr_from_amplitude)
@@ -31,7 +32,10 @@ from torchref.scaling.weighting import (inverse_variance_weight,
 from .distributions import rice_log_likelihood, woolfson_log_likelihood
 from .sh import assign_shells, equal_count_shell_edges
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ...model.model_ft import ModelFT
 
 
 #: Chebyshev order of the Wilson fit. Matches the rotation function's
@@ -119,7 +123,7 @@ class TranslationObs:
             half of the variance budget through the Luzzati falloff. The same
             number the rotation function weights with.
         """
-        dev = device if device is not None else F_obs.device
+        dev = get_default_device() if device is None else device
         real = torch.float64
         F = F_obs.detach().to(dev)
         F = (F.abs() if F.is_complex() else F).to(real)
@@ -161,6 +165,33 @@ class TranslationObs:
             E_obs=fit.E.to(real), weight=weight,
             shell_idx=shell_idx, n_shells=int(n_shells), fit=fit,
         )
+
+
+class DirectModelEvaluator:
+    """Returns ``F_p1(hkl)`` of a P1-spacegroup model at integer HKL.
+
+    The translation search asks its evaluator for ``F`` at a list of rotated
+    Miller indices. The rotation is already baked into the model's coordinates
+    by the time this is built, so ``R`` is ignored and every call is a direct
+    structure-factor evaluation rather than an interpolation.
+
+    Answers on the **configured default device**, whatever device the model
+    happens to sit on. Reading the device off the model instead is how the
+    translation stage ends up split across two devices when a caller builds a
+    CPU model on a host with an accelerator: the model answers on the CPU while
+    everything derived from config answers on the GPU.
+    """
+
+    def __init__(self, m: "ModelFT") -> None:
+        self._m = m
+        self.device = get_default_device()
+
+    def evaluate(self, R, hkl, real_cell, return_amplitude=False):
+        hkl_int = hkl.round().to(torch.int64).to(self._m.xyz().device)
+        with torch.no_grad():
+            f = self._m(hkl_int)
+        f = f.to(self.device)
+        return f.abs() if return_amplitude else f
 
 
 @dataclass
@@ -302,7 +333,7 @@ def amplitude_translation_search(
     peaks : list of TranslationPeak
         Top-`n_peaks` peaks sorted by descending correlation.
     """
-    device = getattr(interpolator, "device", obs.hkl.device)
+    device = get_default_device()
     real_dtype = torch.float64
     complex_dtype = torch.complex128
 
@@ -584,7 +615,7 @@ def precompute_G_for_rotation(
     real_dtype = torch.float64
     complex_dtype = torch.complex128
     if device is None:
-        device = getattr(interpolator, "device", hkl.device)
+        device = get_default_device()
 
     hkl_t = hkl.detach().to(device).to(real_dtype)
     sym_R = spacegroup.matrices.detach().to(device).to(real_dtype)
@@ -651,7 +682,7 @@ def local_translation_refine(
     ignored -- the FFT evaluates the whole fine grid at once, so there is
     nothing for a second zoom pass to buy.
     """
-    device = getattr(interpolator, "device", obs.hkl.device)
+    device = get_default_device()
     real_dtype = torch.float64
     complex_dtype = torch.complex128
 

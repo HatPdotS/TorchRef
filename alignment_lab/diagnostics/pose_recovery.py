@@ -92,7 +92,7 @@ def main() -> int:
     ap.add_argument("--out-csv", default=None)
     args = ap.parse_args()
 
-    from torchref.experimental.alignment.align import align_model_to_data
+    from torchref.experimental.alignment import align_model_to_data
 
     seed = seed_for(args.pdb, args.trial)
     model, data = load_case(args.pdb)

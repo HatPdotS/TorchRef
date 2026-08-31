@@ -1,30 +1,33 @@
-"""
-Pure-PyTorch spherical harmonic expansion for the alignment module.
+"""Leaf mathematics the rotation function needs: Legendre seeds, shells, anisotropy.
 
-Conventions (locked, asserted by tests/unit/alignment/test_sh.py):
+Three unrelated things share this module because they share one consumer.
 
-    Y_{l,m}(θ, φ) = (-1)^m · √[(2l+1)/(4π) · (l-m)!/(l+m)!] · P_l^m(cos θ) · e^{imφ}    (m ≥ 0)
-    Y_{l,-m}(θ, φ) = (-1)^m · conj(Y_{l,m}(θ, φ))                                       (m > 0)
+* **Legendre recurrence coefficients** and their seed, for the fully-normalised
+  associated Legendre ``bar_P_l^m(cos theta)``, which the Bessel-SH expansion in
+  :mod:`~torchref.experimental.alignment.frf.data_mr` and its compiled kernels
+  build on. Normalised so ``(2l)!`` is never formed explicitly.
+* **Equal-count resolution shells** (:func:`equal_count_shell_edges`,
+  :func:`assign_shells`). Assigned once and passed down: two consumers deriving
+  their own edges from the same ``|s|`` disagree about the reflections sitting on
+  a boundary.
+* **Overall anisotropy** -- fit in intensity space, projected onto the point
+  group, applied to amplitudes with the half exponent. The projection is
+  load-bearing: an unconstrained six-component fit can return a tensor the
+  lattice forbids.
 
-i.e. fully orthonormal physics convention with Condon-Shortley phase included.
-Matches scipy.special.sph_harm and the convention used in Edmonds, Sakurai, etc.
-
-Numerical core is a stable forward recurrence on the fully-normalized associated
-Legendre `bar_P_l^m(cosθ) = √[(2l+1)/(4π) · (l-m)!/(l+m)!] · P_l^m(cosθ)` so we
-never form (2l)! explicitly.
+This module used to also carry a full spherical-harmonic expansion
+(``evaluate_ylm``, ``sh_expand_ball``). Nothing called it -- the FRF's own
+expansion superseded it -- so it went. ``_bar_legendre_recurrence`` survived it:
+production does not call that either, but the FRF expansion's only *independent*
+test reference is built on it.
 """
 
 from __future__ import annotations
 
 import math
-import os
-import time
 from typing import Optional, Tuple
 
 import torch
-
-_PROFILE = bool(os.environ.get("FRF_PROFILE"))
-_YLM_PROF = {"recurrence": 0.0, "assembly": 0.0}
 
 
 def legendre_recurrence_coefficients(L: int, dtype, device):
@@ -75,9 +78,17 @@ def _bar_legendre_recurrence(
     L: int,
     keep_l: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """
-    Compute fully-normalized associated Legendre `bar_P_l^m(cos θ)` for
-    all l in [0, L), m in [0, l].
+    """Fully-normalised associated Legendre ``bar_P_l^m(cos theta)``, all l < L, m <= l.
+
+    **Kept for its test, deliberately.** Production does not call this: the
+    Bessel-SH expansion runs the same recurrence inside its compiled kernels,
+    from :func:`legendre_recurrence_coefficients` and :data:`LEGENDRE_SEED`.
+    That is exactly why this stays -- it is a second, independent, pure-torch
+    implementation, and ``tests/unit/frf_separate/test_bessel_sh_grouping.py``
+    builds a slow reference expansion on it to check the fused one. The other
+    tests there compare ``bessel_sh_expand`` against *itself* at a different
+    grouping, so a dropped term cancels; one did, and only this reference caught
+    it. Deleting it would leave the expansion checked only against itself.
 
     Definition:
         bar_P_l^m(x) = √[(2l+1)/(4π) · (l-m)!/(l+m)!] · P_l^m(x)
@@ -150,148 +161,6 @@ def _bar_legendre_recurrence(
     return out
 
 
-def evaluate_ylm(
-    theta: torch.Tensor,
-    phi: torch.Tensor,
-    L: int,
-    l_indices: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    """
-    Evaluate Y_{l,m}(θ, φ) for all (l, m) with l ∈ [0, L), m ∈ [-(L-1), L-1].
-
-    Parameters
-    ----------
-    theta : torch.Tensor
-        Polar angle, shape (...,), values in [0, π].
-    phi : torch.Tensor
-        Azimuthal angle, shape (...,), values in [0, 2π).
-    L : int
-        Maximum SH degree (exclusive: l_max = L - 1).
-    l_indices : torch.Tensor, optional
-        If given (1-D long tensor of l values), assemble and return Y only for
-        those degrees, shape ``(..., len(l_indices), 2L-1)`` with row ``i``
-        holding ``Y_{l_indices[i], m}``. The Legendre recurrence still runs over
-        the full degree range (it is a recurrence), but the costly complex Y
-        assembly is restricted to the requested rows. Used by the FRF expansion,
-        which only needs even degrees (the odd-l and l=0 rows are zeroed by
-        Patterson centrosymmetry) — halving the dominant assembly cost.
-
-    Returns
-    -------
-    Y : torch.Tensor, complex
-        Shape (..., L, 2L-1) (or (..., len(l_indices), 2L-1) if l_indices given).
-        ``Y[..., l, L-1+m] = Y_{l,m}(θ, φ)`` for |m| ≤ l, zero otherwise. dtype is
-        complex128 if input is float64, else complex64.
-    """
-    assert theta.shape == phi.shape, "theta and phi must have the same shape"
-
-    real_dtype = theta.dtype
-    if real_dtype == torch.float64:
-        complex_dtype = torch.complex128
-    elif real_dtype == torch.float32:
-        complex_dtype = torch.complex64
-    else:
-        raise TypeError(f"Unsupported real dtype: {real_dtype}")
-
-    device = theta.device
-    cos_theta = torch.cos(theta)
-    sin_theta = torch.sin(theta).clamp(min=0.0)  # numerical floor at the poles
-
-    if _PROFILE:
-        t0 = time.perf_counter()
-    bar_P = _bar_legendre_recurrence(cos_theta, sin_theta, L)  # (..., L, L)
-    if l_indices is not None:
-        bar_P = bar_P[..., l_indices, :]               # (..., n_sel, L) — even rows only
-    n_rows = bar_P.shape[-2]
-    if _PROFILE:
-        _YLM_PROF["recurrence"] += time.perf_counter() - t0
-        t0 = time.perf_counter()
-
-    # Y_{l,m}(θ,φ) = (-1)^m · bar_P_l^m(cosθ) · e^{i m φ}   for m ≥ 0
-    # Y_{l,-m}    = (-1)^m · conj(Y_{l,m})                  for m > 0
-    Y = torch.zeros((*theta.shape, n_rows, 2 * L - 1), dtype=complex_dtype, device=device)
-
-    # Precompute e^{i m φ} for m = 0..L-1 and the Condon-Shortley signs (-1)^m.
-    m_vals = torch.arange(L, dtype=real_dtype, device=device)
-    m_phi = phi.unsqueeze(-1) * m_vals  # (..., L)
-    expo = torch.complex(torch.cos(m_phi), torch.sin(m_phi))  # (..., L), e^{i m φ}
-    signs = ((-1.0) ** m_vals).to(complex_dtype)  # (L,)
-
-    # Fill m ≥ 0 columns (L-1 .. 2L-2): Y_{l,m} = (-1)^m bar_P_l^m e^{imφ},
-    # vectorised over (l, m). phase = (-1)^m e^{imφ} broadcasts over l.
-    phase_pos = (signs * expo).unsqueeze(-2)            # (..., 1, L)
-    Y_pos = bar_P.to(complex_dtype) * phase_pos         # (..., n_rows, L)
-    Y[..., :, L - 1:] = Y_pos
-
-    # Fill m < 0 columns by hermitian symmetry: Y_{l,-m} = (-1)^m conj(Y_{l,m}).
-    # For m = 1..L-1 these land in columns L-2 .. 0, i.e. the reversed prefix.
-    neg = signs[1:] * torch.conj(Y_pos[..., :, 1:])     # (..., L, L-1), m = 1..L-1
-    Y[..., :, : L - 1] = torch.flip(neg, dims=(-1,))
-
-    if _PROFILE:
-        _YLM_PROF["assembly"] += time.perf_counter() - t0
-    return Y
-
-
-def angular_density_weights(
-    s_vectors: torch.Tensor,
-    k_neighbors: int = 12,
-) -> torch.Tensor:
-    """
-    Per-sample weights that compensate for non-uniform angular sampling on the
-    unit sphere. Returns w_i ∝ (1 / local_density)^... so the weighted sum
-    `Σ_i w_i · v_i · Y*_lm(ŝ_i)` is an unbiased Monte-Carlo estimate of the
-    SH integral on the sphere.
-
-    Heuristic: w_i ~ (k-th NN great-circle distance)². Normalised so that
-    Σ w_i = N.
-
-    Pure-torch O(N · k) memory; suitable up to N ~ 30k. For larger N use a
-    chunked KNN, but typical resolution-cut datasets fit easily.
-
-    Parameters
-    ----------
-    s_vectors : torch.Tensor, shape (N, 3)
-    k_neighbors : int, default 12
-        Number of nearest angular neighbours to estimate local density.
-
-    Returns
-    -------
-    w : torch.Tensor, shape (N,)
-    """
-    device = s_vectors.device
-    dtype = s_vectors.dtype
-    N = s_vectors.shape[0]
-    norm = s_vectors.norm(dim=-1).clamp(min=1e-30)
-    s_hat = s_vectors / norm.unsqueeze(-1)              # (N, 3)
-    # cos(angle) between every pair via dot product
-    # Memory: (N, N). For N ~ 30k, ~3 GB at fp32 — chunk if too big.
-    if N <= 8000:
-        dots = (s_hat @ s_hat.transpose(0, 1)).clamp(-1.0, 1.0)
-        ang = torch.acos(dots)                          # (N, N)
-        # k-th NN distance (excluding self at column-diagonal). topk smallest.
-        # Set diagonal large so it doesn't show up as nearest.
-        ang.fill_diagonal_(float("inf"))
-        kth_dist, _ = torch.topk(ang, k_neighbors, dim=-1, largest=False)  # (N, k)
-        d_local = kth_dist[:, -1]                       # k-th NN distance
-    else:
-        # Chunked: still O(N²) compute but bounded memory.
-        chunk = 1024
-        d_local = torch.empty(N, dtype=dtype, device=device)
-        for i0 in range(0, N, chunk):
-            i1 = min(i0 + chunk, N)
-            dots = (s_hat[i0:i1] @ s_hat.transpose(0, 1)).clamp(-1.0, 1.0)
-            ang = torch.acos(dots)
-            for j, gi in enumerate(range(i0, i1)):
-                ang[j, gi] = float("inf")
-            kth_dist, _ = torch.topk(ang, k_neighbors, dim=-1, largest=False)
-            d_local[i0:i1] = kth_dist[:, -1]
-
-    w = d_local ** 2                                    # ~ local Voronoi area
-    w = w * (N / w.sum().clamp(min=1e-30))              # normalise to Σw = N
-    return w
-
-
 def get_axis_order(sym_mats: torch.Tensor, axis: int) -> int:
     """
     Order of the highest-multiplicity proper rotation about a principal axis.
@@ -343,115 +212,6 @@ def get_high_order_axis(sym_mats: torch.Tensor) -> Tuple[int, int]:
     else:
         axis = 2
     return axis, orders[axis]
-
-
-def sh_expand_ball(
-    s_vectors: torch.Tensor,
-    values: torch.Tensor,
-    shell_idx: torch.Tensor,
-    P: int,
-    L: int,
-    enforce_friedel: bool = True,
-    chunk_size: int = 2048,
-    angular_weights: Optional[torch.Tensor] = None,
-    zsymm: int = 1,
-    skip_odd_l: bool = False,
-) -> torch.Tensor:
-    """
-    Analytical spherical-harmonic expansion of a scattered-point real field
-    on a set of radial shells.
-
-        f_{p,l,m} = Σ_{i ∈ shell p} values_i · conj(Y_{l,m}(θ_i, φ_i))
-
-    When `enforce_friedel=True` the input is augmented with the antipodal copy
-    `(-s_i, values_i)`. Y_{l,m}(-ŝ) = (-1)^l Y_{l,m}(ŝ), so the sum then has
-        f_{p,l,m} = (1 + (-1)^l) · Σ_i v_i · Y*_{l,m}(ŝ_i)
-    i.e. odd-l rows are exactly zero by construction (and even-l rows get a
-    factor of 2 which we keep — this absorbs into the cross-correlation
-    normalisation when the same convention is applied to both operands).
-
-    Parameters
-    ----------
-    s_vectors : torch.Tensor
-        Reciprocal-lattice vectors, shape (N, 3). Direction only is used;
-        magnitudes do not enter (shell assignment is done by the caller).
-    values : torch.Tensor
-        Real-valued samples (e.g. |E(h)|), shape (N,).
-    shell_idx : torch.Tensor (int64)
-        Shell index in [0, P) for each reflection, shape (N,).
-    P : int
-        Number of radial shells.
-    L : int
-        SH bandlimit (l in [0, L)).
-    enforce_friedel : bool, default True
-        Augment input with (-s, value) pairs and zero odd-l coefficients.
-    chunk_size : int
-        Points per chunk for memory control during Y_lm evaluation.
-
-    Returns
-    -------
-    f_plm : torch.Tensor, complex
-        Shape (P, L, 2L-1). `f_plm[p, l, L-1+m] = f_{p,l,m}`.
-    """
-    assert s_vectors.dim() == 2 and s_vectors.shape[-1] == 3
-    assert values.dim() == 1 and values.shape[0] == s_vectors.shape[0]
-    assert shell_idx.dim() == 1 and shell_idx.shape[0] == s_vectors.shape[0]
-
-    real_dtype = s_vectors.dtype
-    if real_dtype == torch.float64:
-        complex_dtype = torch.complex128
-    elif real_dtype == torch.float32:
-        complex_dtype = torch.complex64
-    else:
-        raise TypeError(f"Unsupported dtype {real_dtype}")
-    device = s_vectors.device
-
-    if enforce_friedel:
-        s_vectors = torch.cat([s_vectors, -s_vectors], dim=0)
-        values = torch.cat([values, values], dim=0)
-        shell_idx = torch.cat([shell_idx, shell_idx], dim=0)
-        if angular_weights is not None:
-            angular_weights = torch.cat([angular_weights, angular_weights], dim=0)
-
-    if angular_weights is not None:
-        values = values * angular_weights.to(values.dtype)
-
-    # Direction (θ, φ).  At |s|=0 the direction is undefined; the caller should
-    # have excluded F(000), but we guard anyway.
-    norm = s_vectors.norm(dim=-1).clamp(min=1e-30)
-    s_hat = s_vectors / norm.unsqueeze(-1)
-    cos_theta = s_hat[..., 2].clamp(min=-1.0, max=1.0)
-    theta = torch.acos(cos_theta)
-    phi = torch.atan2(s_hat[..., 1], s_hat[..., 0])
-
-    f_plm = torch.zeros((P, L, 2 * L - 1), dtype=complex_dtype, device=device)
-
-    N = s_vectors.shape[0]
-    for start in range(0, N, chunk_size):
-        stop = min(start + chunk_size, N)
-        Y = evaluate_ylm(theta[start:stop], phi[start:stop], L)  # (n, L, 2L-1)
-        # contribution to f_{p,l,m} is value_i * conj(Y_{l,m}(s_i))
-        contrib = values[start:stop].to(complex_dtype).view(-1, 1, 1) * torch.conj(Y)
-        # scatter-add into shells
-        f_plm.index_add_(0, shell_idx[start:stop], contrib)
-
-    if enforce_friedel or skip_odd_l:
-        # Zero odd-l rows explicitly (they should already be ~0; this kills FP drift
-        # and is the only required step when skip_odd_l is set without Friedel).
-        l_vals = torch.arange(L, device=device)
-        odd_mask = (l_vals % 2 == 1)
-        f_plm[:, odd_mask, :] = 0.0
-
-    # F1: m-symmetry filter (Phaser DataMR.cc:1019 / 1117). The Patterson is
-    # invariant under the spacegroup rotation operators, so SH coefficients
-    # whose m-index violates the highest-order rotation axis are pure noise.
-    # Zero them out post-expansion. With `zsymm=1` (no filter) this is a no-op.
-    if zsymm > 1:
-        m_vals = torch.arange(-(L - 1), L, device=device)            # (2L-1,)
-        m_invalid = (m_vals.abs() % zsymm) != 0
-        f_plm[:, :, m_invalid] = 0.0
-
-    return f_plm
 
 
 def equal_count_shell_edges(

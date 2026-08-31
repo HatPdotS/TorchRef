@@ -27,10 +27,7 @@ from .aniso import (
     fit_aniso_log_space,
     tensor_report,
 )
-from .frf import (FRFConfig, FRFResult, e_convention_name,
-                  merge_peak_lists, patched,
-                  run_frf)
-from .rescore import ENGINES, RescoreResult, paired_ranks, run_rescore
+from .frf import FRFConfig, FRFResult, merge_peak_lists, patched, run_frf
 from .profile import (FRF_STAGES, PeakMemory, calibration_seconds,
                       host_info, stage_timers)
 from .results import ResultWriter, append_row, provenance
@@ -51,15 +48,10 @@ __all__ = [
     "fit_aniso_log_space",
     "tensor_report",
     "FRFConfig",
-    "e_convention_name",
     "FRFResult",
     "merge_peak_lists",
     "patched",
     "run_frf",
-    "ENGINES",
-    "RescoreResult",
-    "paired_ranks",
-    "run_rescore",
     "FRF_STAGES",
     "PeakMemory",
     "calibration_seconds",

@@ -21,5 +21,6 @@ export TORCHREF_NUM_THREADS=8 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
 # relative to the root. Naming the config explicitly satisfies both.
 "$PY" -m pytest -c tests/pytest.ini tests/unit --run-slow -q 2>&1 | tail -16
 echo "PYTEST_RC=${PIPESTATUS[0]}"
-echo "== seam identity =="
-"$PY" -u alignment_lab/analysis/seam_identity.py 2>/dev/null | grep -E "SEAM|conv|case|^ *[0-9A-Z]"
+echo "== end-to-end placement, one cell =="
+"$PY" -u alignment_lab/diagnostics/pose_recovery.py --pdb 1DAW --trial 0 \
+  --arms analytic_r 2>/dev/null | grep '^ROW '

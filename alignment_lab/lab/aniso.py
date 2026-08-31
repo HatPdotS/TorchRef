@@ -113,9 +113,9 @@ def aniso_arm(arm: str, data, *, d_min: float, d_max: float, captured: dict):
     ``captured`` receives the tensor actually fitted under the key ``raw``, so a
     caller can report the artefact size alongside the rank it costs.
 
-    Patches ``align.fit_overall_anisotropy``, which is the symbol
-    ``_prepare_frf_inputs`` calls and whose result is handed to the rotation
-    search as ``U_aniso``.
+    Patches ``sh.fit_overall_anisotropy`` where ``rotation_search`` binds it --
+    that is the symbol ``fit_anisotropy`` calls, and its result is what reaches
+    the engine as ``U_aniso``.
 
     Parameters
     ----------
@@ -125,13 +125,16 @@ def aniso_arm(arm: str, data, *, d_min: float, d_max: float, captured: dict):
         Used to recompute the centric mask over the same resolution window the
         fit sees. A length mismatch raises rather than misaligning silently.
     d_min, d_max : float
-        The window ``_prepare_frf_inputs`` was called with.
+        The window ``prepare_frf_inputs`` was called with.
     captured : dict
         Filled in by the wrapper.
     """
     if arm not in ARMS:
         raise ValueError(f"unknown aniso arm {arm!r}; expected one of {ARMS}")
-    from torchref.experimental.alignment import align as _align
+    import importlib
+
+    _align = importlib.import_module(
+        "torchref.experimental.alignment.rotation_search")
 
     original = _align.fit_overall_anisotropy
     rec = data.cell.reciprocal_basis_matrix.to(torch.float64)
