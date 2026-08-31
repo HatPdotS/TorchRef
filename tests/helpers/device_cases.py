@@ -485,7 +485,6 @@ UNCOVERED: Dict[str, str] = {
     "RiceDifferenceTarget": "needs two datasets",
     "TaylorCorrectedDifferenceTarget": "needs two datasets",
     "RigidTransform": "alignment helper; needs a coordinate set",
-    "RigidBodyRefinement": "experimental; needs model + data",
 }
 
 # Everything under torchref/experimental is out of scope for the conformance

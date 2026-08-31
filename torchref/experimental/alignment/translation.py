@@ -11,6 +11,7 @@ optimal translation to position a model after rotation has been determined.
 import numpy as np
 import torch
 
+from .distributions import rice_log_likelihood, woolfson_log_likelihood
 from .e_values import WilsonShellE
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -33,90 +34,6 @@ class TranslationPeak:
     translation: np.ndarray
     score: float
     sigma: float
-
-
-def fft_translation_search(
-    F_obs: np.ndarray,
-    F_calc: np.ndarray,
-    hkl: np.ndarray,
-    grid_shape: Optional[Tuple[int, int, int]] = None,
-    n_peaks: int = 10,
-    cluster_radius: float = 0.05,
-) -> Tuple[np.ndarray, np.ndarray, List[TranslationPeak]]:
-    """
-    FFT-based translation search (vectorized).
-
-    The translation function is:
-        TF(t) = Re{ IFFT{ conj(F_obs) * F_calc } }
-
-    This finds translation t such that F_calc shifted by t best matches F_obs.
-
-    Parameters
-    ----------
-    F_obs : np.ndarray
-        Observed structure factor amplitudes (or complex), shape (N,).
-    F_calc : np.ndarray
-        Calculated structure factors (complex), shape (N,).
-    hkl : np.ndarray
-        Miller indices, shape (N, 3).
-    grid_shape : tuple, optional
-        (Nx, Ny, Nz) grid size for FFT. If None, auto-computed from HKL range.
-    n_peaks : int
-        Number of peaks to return.
-    cluster_radius : float
-        Minimum fractional distance between peaks for clustering.
-
-    Returns
-    -------
-    correlation_map : np.ndarray
-        Full translation function, shape grid_shape.
-    best_translation : np.ndarray
-        Best translation in fractional coordinates, shape (3,).
-    peaks : list
-        Top peaks as TranslationPeak objects.
-
-    Examples
-    --------
-    ::
-
-        import numpy as np
-        from torchref.experimental.alignment.translation import fft_translation_search
-
-        # Known translation test
-        hkl = np.array([[1,0,0], [0,1,0], [1,1,0], [0,0,1]])
-        F_obs = np.array([1.0, 1.0, 1.0, 1.0])
-        F_calc = np.exp(2j * np.pi * hkl @ [0.25, 0.0, 0.0])
-        _, best, peaks = fft_translation_search(F_obs, F_calc, hkl)
-        print(f'Recovered: {best}')  # Should be ~[0.25, 0, 0]
-    """
-    # Auto grid shape from HKL range
-    if grid_shape is None:
-        hkl_abs = np.abs(hkl).astype(int)
-        grid_shape = tuple(2 * (hkl_abs[:, i].max() + 1) for i in range(3))
-
-    Nx, Ny, Nz = grid_shape
-    product_grid = np.zeros((Nx, Ny, Nz), dtype=np.complex128)
-
-    # Standard translation function: TF(t) = Re{ IFFT{ conj(F_obs) * F_calc } }
-    # This finds t such that F_calc(t) = F_calc * exp(2*pi*i*hkl.t) matches F_obs
-    product = np.conj(F_obs) * F_calc
-
-    # Place at HKL positions using vectorized add.at for accumulation
-    hkl_int = hkl.astype(int)
-    h_idx = hkl_int[:, 0] % Nx
-    k_idx = hkl_int[:, 1] % Ny
-    l_idx = hkl_int[:, 2] % Nz
-
-    np.add.at(product_grid, (h_idx, k_idx, l_idx), product)
-
-    # IFFT gives correlation at all translations
-    correlation_map = np.fft.ifftn(product_grid).real
-
-    # Find peaks
-    peaks = find_translation_peaks(correlation_map, n_peaks, cluster_radius)
-    best = peaks[0].translation if peaks else np.zeros(3)
-
-    return correlation_map, best, peaks
 
 
 def find_translation_peaks(
@@ -179,71 +96,6 @@ def find_translation_peaks(
     return peaks
 
 
-def fft_translation_search_torch(
-    F_obs: torch.Tensor,
-    F_calc: torch.Tensor,
-    hkl: torch.Tensor,
-    **kwargs,
-) -> Tuple[np.ndarray, np.ndarray, List[TranslationPeak]]:
-    """
-    Torch wrapper for fft_translation_search.
-
-    Parameters
-    ----------
-    F_obs : torch.Tensor
-        Observed structure factor amplitudes (or complex).
-    F_calc : torch.Tensor
-        Calculated structure factors (complex).
-    hkl : torch.Tensor
-        Miller indices.
-    **kwargs
-        Additional arguments passed to fft_translation_search.
-
-    Returns
-    -------
-    correlation_map : np.ndarray
-        Full translation function.
-    best_translation : np.ndarray
-        Best translation in fractional coordinates.
-    peaks : list
-        Top peaks as TranslationPeak objects.
-    """
-    return fft_translation_search(
-        F_obs.detach().cpu().numpy(),
-        F_calc.detach().cpu().numpy(),
-        hkl.detach().cpu().numpy(),
-        **kwargs,
-    )
-
-
-def apply_translation_to_fcalc(
-    F_calc: np.ndarray,
-    hkl: np.ndarray,
-    translation_frac: np.ndarray,
-) -> np.ndarray:
-    """
-    Apply translation phase shift to calculated structure factors.
-
-    F(hkl, t) = F(hkl) * exp(2*pi*i * hkl.t)
-
-    Parameters
-    ----------
-    F_calc : np.ndarray
-        Calculated structure factors (complex), shape (N,).
-    hkl : np.ndarray
-        Miller indices, shape (N, 3).
-    translation_frac : np.ndarray
-        Translation in fractional coordinates, shape (3,).
-
-    Returns
-    -------
-    F_calc_shifted : np.ndarray
-        Phase-shifted structure factors, shape (N,).
-    """
-    phase_shift = 2 * np.pi * (hkl @ translation_frac)
-    return F_calc * np.exp(1j * phase_shift)
-
-
 def amplitude_translation_search(
     F_obs: torch.Tensor,
     interpolator,
@@ -280,8 +132,9 @@ def amplitude_translation_search(
     ----------
     F_obs : torch.Tensor, shape (N,)
         Observed amplitudes (complex inputs are coerced to |·|).
-    interpolator : LattmanLoveInterpolator
-        Provides `evaluate(R, hkl, real_cell, return_amplitude=False)`.
+    interpolator : object
+        Anything providing ``evaluate(R, hkl, real_cell, return_amplitude=False)``
+        -- in the pipeline, ``align._DirectModelEvaluator``.
     R_rotation : torch.Tensor, shape (3, 3)
         Rotation that has been applied to the model coordinates.
     hkl : torch.Tensor, shape (N, 3)
@@ -427,6 +280,58 @@ def amplitude_translation_search(
     return corr_map_np, best, peaks
 
 
+def fit_sigma_a_per_shell(
+    E_obs: torch.Tensor,
+    E_calc: torch.Tensor,
+    centric: torch.Tensor,
+    shell_idx: torch.Tensor,
+    n_shells: int,
+    n_grid: int = 81,
+    interp_var: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Per-shell sigma_A = D, fitted by a grid scan of the shell likelihood.
+
+    Scans ``D`` in ``[0, 0.99]`` and returns the per-shell maximum. At
+    ``n_grid=81`` the resolution is ~0.012, which is finer than the difference
+    between adjacent shells on any real falloff.
+
+    This is the *fitted* half of a pair. :func:`torchref.scaling.weighting.empirical_sigma_a`
+    is the other: it measures model reliability from the ratio of two Wilson
+    curves and works **before** the molecule is placed, which is what the
+    rotation function needs. Once a translation exists the residual is
+    per-reflection rather than per-shell-average, so a direct fit against the
+    placed model is available and strictly better informed. The two answer the
+    same question at two different points in the search.
+
+    Returns
+    -------
+    sigma_a : torch.Tensor, shape (n_shells,)
+    """
+    device = E_obs.device
+    dtype = E_obs.dtype
+    N = E_obs.numel()
+    D_grid = torch.linspace(0.0, 0.99, n_grid, device=device, dtype=dtype)  # (G,)
+    F_mean = D_grid.view(-1, 1) * E_calc.view(1, -1)                        # (G, N)
+    var_d = (1.0 - D_grid * D_grid).clamp(min=1e-4)                         # (G,)
+    if interp_var is None:
+        var_full = var_d.view(-1, 1).expand(n_grid, N)
+    else:
+        var_full = (var_d.view(-1, 1) + interp_var.view(1, -1)).clamp(min=1e-4)
+    E_obs_full = E_obs.view(1, -1).expand(n_grid, N)
+
+    ll_acent = rice_log_likelihood(E_obs_full, F_mean, var_full)
+    ll_cent = woolfson_log_likelihood(E_obs_full, F_mean, var_full)
+    cent_full = centric.view(1, -1)
+    ll = torch.where(cent_full, ll_cent, ll_acent)                          # (G, N)
+
+    # Sum per shell, take argmax over the D-grid.
+    shell_idx_gn = shell_idx.view(1, -1).expand(n_grid, N)
+    ll_per_shell = torch.zeros((n_grid, n_shells), dtype=dtype, device=device)
+    ll_per_shell.scatter_add_(1, shell_idx_gn, ll)                          # (G, n_shells)
+    best_idx = ll_per_shell.argmax(dim=0)                                   # (n_shells,)
+    return D_grid[best_idx]
+
+
 def llg_translation_rescore(
     F_obs: torch.Tensor,
     hkl: torch.Tensor,
@@ -477,8 +382,6 @@ def llg_translation_rescore(
     -------
     llg : (K,) torch.Tensor — log-likelihood gain per candidate.
     """
-    from .distributions import rice_log_likelihood, woolfson_log_likelihood
-
     device = G.device
     real_dtype = torch.float64
     complex_dtype = G.dtype
@@ -750,328 +653,3 @@ def local_translation_refine(
     return best_t.cpu(), best_R
 
 
-def local_rotation_translation_refine(
-    F_obs: torch.Tensor,
-    interpolator,
-    R_initial: torch.Tensor,
-    t_initial: torch.Tensor,
-    hkl: torch.Tensor,
-    spacegroup,
-    real_cell,
-    centric: torch.Tensor,
-    n_shells: int = 15,
-    rotation_grid_steps: int = 5,
-    rotation_radius_rad: float = 0.04,
-    translation_grid_steps: int = 9,
-    translation_radius_frac: float = 0.02,
-    batch_size: int = 1024,
-    verbose: int = 0,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
-    """
-    Joint (R, t) fine-grid refinement scored by the Sim MLRF log-likelihood
-    gain (LLG) — fully scale-invariant.
-
-    Scale invariance: F_obs is shell-normalised to E-values (Wilson
-    statistics per resolution shell) and F_calc(R, t) is shell-normalised
-    per-candidate. The LLG is then a per-shell σA fit + sum of Rice
-    (acentric) / Woolfson (centric) log-likelihoods — none of which depend
-    on the absolute magnitude of either F_obs or F_calc.
-
-    Procedure:
-    1. Build a `rotation_grid_steps³` cubic grid of small rotation
-       perturbations in (Δα, Δβ, Δγ) around `R_initial`, parametrised as
-       axis-angle rotations of magnitude up to `rotation_radius_rad`.
-    2. For each R candidate:
-       - Pre-compute the per-symmetry F_asu via `interpolator.evaluate(R, …)`
-         (the expensive step — one model.forward per sym op per R).
-       - Run an analytical inner translation grid of
-         `translation_grid_steps³` candidates around `t_initial`. Within
-         this inner loop, only phase factors change (cheap).
-       - Pick the inner-best t (by an analytical R-factor proxy — fast).
-    3. For each (R, best-inner-t) pair, evaluate the **full** Sim MLRF LLG
-       (per-shell σA fit). Pick the global best by LLG.
-
-    Returns
-    -------
-    R_best : torch.Tensor (3, 3)
-        Refined rotation = R_initial @ R_perturb_best (column-vector form).
-    t_best : torch.Tensor (3,)
-        Refined fractional translation.
-    llg_best : float
-        Sim MLRF LLG at the returned (R_best, t_best).
-    """
-    from .ml_rotation import llg_for_rotation_batch
-    device = getattr(interpolator, "device", hkl.device)
-    real_dtype = torch.float64
-    complex_dtype = torch.complex128
-    two_pi_i = 2j * torch.pi
-
-    F_obs_t = F_obs.detach().to(device)
-    if F_obs_t.is_complex():
-        F_obs_t = F_obs_t.abs()
-    F_obs_t = F_obs_t.to(real_dtype)
-    F_obs_sum = F_obs_t.sum().clamp(min=1e-30)
-
-    hkl_t = hkl.detach().to(device).to(real_dtype)
-    R_init = R_initial.detach().to(device).to(real_dtype)
-    t_init = t_initial.detach().to(device).to(real_dtype)
-    centric_t = centric.detach().to(device).to(torch.bool)
-
-    # Per-shell normalisation of F_obs → E_obs (Wilson, shell-equal-count).
-    rec_basis = real_cell.reciprocal_basis_matrix.to(device).to(real_dtype)
-    s_mag = (hkl_t @ rec_basis).norm(dim=-1)
-    order = torch.argsort(s_mag)
-    shell_idx = torch.zeros_like(s_mag, dtype=torch.int64)
-    chunk = max(1, s_mag.numel() // max(n_shells, 1))
-    for k in range(n_shells):
-        a = k * chunk
-        b = (k + 1) * chunk if k < n_shells - 1 else s_mag.numel()
-        shell_idx[order[a:b]] = k
-    E_obs = WilsonShellE(
-        F_obs_t, s_mag, shell_idx=shell_idx, n_shells=n_shells,
-    ).E
-
-    # Rotation perturbation grid.
-    # We parametrise (Δα, Δβ, Δγ) ∈ [-r, r]³ via the small-angle rotation
-    # R_perturb ≈ I + ω_x · Lx + ω_y · Ly + ω_z · Lz, exponentiated via
-    # the matrix exponential of the skew-symmetric generator. For small ω
-    # (≤ ~3°) Rodrigues is well-conditioned.
-    def _so3_exp(omega):
-        # omega: (3,) axis-angle
-        th = omega.norm()
-        if th.item() < 1e-12:
-            return torch.eye(3, dtype=real_dtype, device=device)
-        axis = omega / th
-        K = torch.tensor(
-            [[0.0, -axis[2].item(), axis[1].item()],
-             [axis[2].item(), 0.0, -axis[0].item()],
-             [-axis[1].item(), axis[0].item(), 0.0]],
-            dtype=real_dtype, device=device,
-        )
-        return (torch.eye(3, dtype=real_dtype, device=device)
-                + torch.sin(th) * K + (1 - torch.cos(th)) * (K @ K))
-
-    coords_r = torch.linspace(-rotation_radius_rad, rotation_radius_rad,
-                                rotation_grid_steps, dtype=real_dtype, device=device)
-    omega_grid = torch.stack(torch.meshgrid(coords_r, coords_r, coords_r,
-                                              indexing="ij"), dim=-1).reshape(-1, 3)
-
-    # Inner translation grid: (Δtx, Δty, Δtz) ∈ [-rt, rt]³ around t_initial.
-    coords_t = torch.linspace(-translation_radius_frac, translation_radius_frac,
-                                translation_grid_steps, dtype=real_dtype, device=device)
-    t_offsets = torch.stack(torch.meshgrid(coords_t, coords_t, coords_t,
-                                             indexing="ij"), dim=-1).reshape(-1, 3)
-    t_candidates = t_init.unsqueeze(0) + t_offsets        # (T, 3)
-
-    # For each rotation candidate, pre-compute G_i and run inner t scan.
-    best_llg = -float("inf")
-    best_R = R_init.clone()
-    best_t = t_init.clone()
-
-    for r_idx, omega in enumerate(omega_grid):
-        R_perturb = _so3_exp(omega)
-        R_cand = R_init @ R_perturb
-        # Build G_i for this rotation candidate (the only expensive step).
-        G, h_R = precompute_G_for_rotation(
-            interpolator, R_cand, hkl, spacegroup, real_cell, device=device,
-        )
-
-        # Inner translation scan: scored by analytical R-factor for speed.
-        scores = torch.empty(t_candidates.shape[0], dtype=real_dtype, device=device)
-        for start in range(0, t_candidates.shape[0], batch_size):
-            stop = min(start + batch_size, t_candidates.shape[0])
-            t_batch = t_candidates[start:stop]
-            dot = torch.einsum("ind,bd->ibn", h_R, t_batch)
-            phase = torch.exp(two_pi_i * dot.to(complex_dtype))
-            F_calc = torch.einsum("in,ibn->bn", G, phase)
-            F_c_abs = F_calc.abs().to(real_dtype)
-            num = (F_obs_t.unsqueeze(0) * F_c_abs).sum(dim=-1)
-            den = (F_c_abs ** 2).sum(dim=-1).clamp(min=1e-30)
-            k = num / den
-            R_b = ((F_obs_t.unsqueeze(0) - k.unsqueeze(-1) * F_c_abs).abs()
-                    .sum(dim=-1)) / F_obs_sum
-            scores[start:stop] = R_b
-        best_inner = int(scores.argmin().item())
-        t_best_inner = t_candidates[best_inner]
-
-        # Score (R_cand, t_best_inner) by full Sim MLRF LLG (scale-invariant
-        # per-shell σA fit on E-values).
-        dot = (h_R * t_best_inner.unsqueeze(0).unsqueeze(0)).sum(dim=-1)  # (S, N)
-        phase = torch.exp(two_pi_i * dot.to(complex_dtype))
-        F_calc = (G * phase).sum(dim=0)                                     # (N,)
-        F_calc_abs = F_calc.abs().to(real_dtype).unsqueeze(0)               # (1, N)
-        llg = llg_for_rotation_batch(
-            F_obs=F_obs_t, shell_idx=shell_idx, n_shells=n_shells,
-            E_obs=E_obs, centric=centric_t, F_calc=F_calc_abs,
-        )[0].item()
-
-        if verbose > 1:
-            print(f"  R-refine {r_idx}/{omega_grid.shape[0]}: "
-                  f"|ω|={omega.norm().item():.4f} rad, R={scores[best_inner]:.4f}, "
-                  f"LLG={llg:.2f}", flush=True)
-
-        if llg > best_llg:
-            best_llg = llg
-            best_R = R_cand.clone()
-            best_t = t_best_inner.clone()
-    return best_R.cpu(), best_t.cpu(), float(best_llg)
-
-
-def patterson_translation_function(
-    F_obs: torch.Tensor,
-    interpolator,
-    R_rotation: torch.Tensor,
-    hkl: torch.Tensor,
-    spacegroup,
-    real_cell,
-    grid_shape: Optional[Tuple[int, int, int]] = None,
-    n_peaks: int = 20,
-    cluster_radius: float = 0.05,
-) -> Tuple[np.ndarray, np.ndarray, List[TranslationPeak]]:
-    """
-    Crowther-Blow Patterson translation function for molecular replacement.
-
-    Computes T(t) = Σ_h |F_obs(h)|² · |F_calc(h, t)|² on a fractional grid by
-    expanding |F_calc(h, t)|² over symmetry-operator pairs and inverse-FFTing
-    the result. The peaks of T(t) are the translations that best place the
-    rotated model against the observed amplitudes — unlike the bare
-    `fft_translation_search`, this is the standard MR translation function and
-    works on amplitude-only F_obs.
-
-    For each symmetry operator (R_i, t_i) with `x_new = R_i x_old + t_i`,
-    a per-symmetry asymmetric-unit structure factor is computed as
-        F_asu_i(h) = interpolator.evaluate(R_rotation, h R_i, real_cell,
-                                           return_amplitude=False)
-                   * exp(2πi h · t_i)
-    (the "h R_i" notation follows from F(h, R x + t) = exp(2πi h·t)·F(R^T h, x);
-    in tensor form: `hkl @ R_i`). For each ordered pair (i, j) with i ≠ j, the
-    contribution
-        |F_obs(h)|² · conj(F_asu_i(h)) · F_asu_j(h)
-    is scattered into a 3-D reciprocal grid at h' = h @ (R_j − R_i), then the
-    inverse FFT gives the translation function. Diagonal pairs (i = j) are
-    t-independent.
-
-    Parameters
-    ----------
-    F_obs : torch.Tensor, shape (N,)
-        Observed amplitudes. Complex inputs are coerced to |·|.
-    interpolator : LattmanLoveInterpolator
-        Provides `evaluate(R, hkl, real_cell, return_amplitude=False)` returning
-        complex F_calc of the P1 ASU at arbitrary HKL.
-    R_rotation : torch.Tensor, shape (3, 3)
-        Rotation that has already been applied to the model coordinates, in
-        the convention `xyz_new = R · xyz_old`. Passed through to the
-        interpolator so it evaluates F of the rotated model.
-    hkl : torch.Tensor, shape (N, 3)
-        Integer Miller indices of the observed reflections.
-    spacegroup : SpaceGroup
-        Provides `matrices` (n_ops, 3, 3, integer in fractional basis) and
-        `translations` (n_ops, 3, fractional).
-    real_cell : Cell
-        Real crystal cell, passed to interpolator.evaluate.
-    grid_shape : tuple of int, optional
-        Translation-function grid (Nx, Ny, Nz). Default: 4·max(|hkl|) per axis,
-        which covers `h @ (R_j − R_i)^T` for any standard spacegroup.
-    n_peaks : int, default 20
-        Number of translation peaks returned.
-    cluster_radius : float, default 0.05
-        Minimum fractional separation between returned peaks.
-
-    Returns
-    -------
-    correlation_map : np.ndarray, shape (Nx, Ny, Nz)
-        Real-valued translation function T(t).
-    best_translation : np.ndarray, shape (3,)
-        Fractional coordinates of the top peak.
-    peaks : list of TranslationPeak
-        Top-`n_peaks` peaks sorted by descending T value.
-    """
-    device = getattr(interpolator, "device", hkl.device)
-    real_dtype = torch.float64
-    complex_dtype = torch.complex128
-
-    F_obs_t = F_obs.detach().to(device)
-    if F_obs_t.is_complex():
-        F_obs_t = F_obs_t.abs()
-    F_obs_t = F_obs_t.to(real_dtype)
-    F_obs2 = F_obs_t * F_obs_t                          # (N,)
-
-    hkl_t = hkl.detach().to(device).to(real_dtype)       # (N, 3)
-
-    sym_R = spacegroup.matrices.detach().to(device).to(real_dtype)       # (S, 3, 3)
-    sym_t = spacegroup.translations.detach().to(device).to(real_dtype)   # (S, 3)
-    S = sym_R.shape[0]
-
-    R_rot = R_rotation.detach().to(device).to(real_dtype)
-
-    # Per-symmetry F_asu_i(h) = F_model_rot(h R_i) · exp(2πi h · t_i)
-    F_asu = torch.zeros((S, hkl_t.shape[0]), dtype=complex_dtype, device=device)
-    two_pi_i = 2j * torch.pi
-    for i in range(S):
-        hkl_i = hkl_t @ sym_R[i]
-        F_i = interpolator.evaluate(R_rot, hkl_i, real_cell, return_amplitude=False)
-        F_i = F_i.to(complex_dtype)
-        phase = torch.exp(two_pi_i * (hkl_t @ sym_t[i])).to(complex_dtype)
-        F_asu[i] = F_i * phase
-
-    # Translation grid extent: bound by max |h @ (R_j − R_i)^T|. For
-    # crystallographic R_op (entries in {-1, 0, 1}, occasionally 2 for trigonal
-    # subgroups), |R_j − R_i| has entries up to 2 → 2·max|h| per axis is the
-    # natural extent. Use 4·max(|hkl|) for an oversampled, periodic grid.
-    if grid_shape is None:
-        max_h = hkl_t.abs().max(dim=0).values
-        grid_shape = tuple(int(4 * (m.item() + 1)) for m in max_h)
-    Nx, Ny, Nz = grid_shape
-
-    W = torch.zeros((Nx, Ny, Nz), dtype=complex_dtype, device=device)
-    W_flat = W.view(-1)
-    # Cross-pair accumulation (skip i == j: t-independent, only shifts DC).
-    for i in range(S):
-        Fi_conj = torch.conj(F_asu[i])
-        for j in range(S):
-            if j == i:
-                continue
-            diff_R = sym_R[j] - sym_R[i]
-            h_diff = (hkl_t @ diff_R).round().to(torch.int64)
-            ix = h_diff[:, 0] % Nx
-            iy = h_diff[:, 1] % Ny
-            iz = h_diff[:, 2] % Nz
-            flat_idx = ix * (Ny * Nz) + iy * Nz + iz
-            weight = F_obs2 * Fi_conj * F_asu[j]
-            W_flat.index_add_(0, flat_idx, weight)
-
-    TF_complex = torch.fft.ifftn(W, dim=(0, 1, 2))
-    TF = TF_complex.real
-
-    TF_np = TF.detach().cpu().numpy().astype(np.float32)
-    peaks = find_translation_peaks(TF_np, n_peaks=n_peaks, cluster_radius=cluster_radius)
-    best = peaks[0].translation if peaks else np.zeros(3)
-    return TF_np, best, peaks
-
-
-def apply_translation_to_fcalc_torch(
-    F_calc: torch.Tensor,
-    hkl: torch.Tensor,
-    translation_frac: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Apply translation phase shift to calculated structure factors (PyTorch).
-
-    F(hkl, t) = F(hkl) * exp(2*pi*i * hkl.t)
-
-    Parameters
-    ----------
-    F_calc : torch.Tensor
-        Calculated structure factors (complex).
-    hkl : torch.Tensor
-        Miller indices.
-    translation_frac : torch.Tensor
-        Translation in fractional coordinates.
-
-    Returns
-    -------
-    F_calc_shifted : torch.Tensor
-        Phase-shifted structure factors.
-    """
-    phase_shift = 2 * torch.pi * (hkl.to(translation_frac.dtype) @ translation_frac)
-    return F_calc * torch.exp(1j * phase_shift)

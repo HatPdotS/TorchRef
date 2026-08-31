@@ -1,35 +1,39 @@
-"""
-Molecular replacement pipeline: the single canonical MR orchestrator.
+"""Molecular replacement: the FRF hands a shortlist to the FTF.
 
-Implements the classic Phaser-style molecular-replacement tree:
+Two stages, and the division of labour between them is the design:
 
-1. **Fast Rotation Function (FRF)** — Phaser-faithful Bessel-radial × SH
-   expansion (dense P1-box calc + auto_lmax), then ML rescoring
-   (``m_letf1_rescore`` / ``sim_mlrf_rescore``) to rank candidate orientations.
-2. **Fast Translation Function (FTF)** — for *each* of the top-N rotation
-   candidates, an amplitude-correlation translation search (optionally
-   re-ranked by a Rice/Woolfson LLG) followed by an analytical-R local refine.
-3. **Post-refinement** — optional dense rotation re-sampling on the ML-LLG
-   surface, then an LBFGS rigid-body polish on (R, t) (with optional B-factor
-   co-refinement and Gaussian restraints).
+1. **Fast Rotation Function** — Phaser-faithful Bessel-radial × SH expansion
+   against a dense P1-box calc. It is a *shortlist generator*. It does not have
+   to rank well, and measurably does not: over 30 seeded cells it puts truth at
+   rank 0 in 6 of them. What it does reliably is put truth somewhere in the top
+   twenty.
+2. **Fast Translation Function** — for *each* of the top-N orientations, a
+   Crowther-Blow amplitude-correlation search over the fractional cell,
+   optionally re-ranked by a Rice/Woolfson LLG, then an analytical-R local
+   refine. On the same 30 cells it puts truth at rank 0 in 27. Rotation ghosts
+   are morphologically identical to truth in a rotation function by
+   construction; they are not identical once the crystal is involved.
 
-Each rotation candidate is carried through translation + refinement
-independently; the candidates are ranked by their refined R-factor and the
-best is returned (a Phaser-style multi-candidate tree, with early-stopping once
-a candidate beats ``rfactor_converged``). The user-facing solvent-aware R-work
-is computed once, on the winner.
+There is deliberately nothing between them. An ML re-ranking of the FRF peaks
+used to sit there and was removed: it reorders a shortlist that already contains
+truth, and end-to-end pose recovery was 18/30 with it against 24/30 without
+(McNemar p = 0.031, 6-0 discordant).
 
-``align_model_to_data`` delegates to
-this class — it is the implementation of record. The heavy crystallographic
-stage helpers live in :mod:`torchref.experimental.alignment.align`,
-:mod:`~torchref.experimental.alignment.translation` and
-:mod:`~torchref.experimental.alignment.ml_rotation`; this module owns the
+Each orientation is placed independently and the candidates are ranked by the
+translation search's analytical R, with early stopping once one beats
+``rfactor_converged``. The user-facing solvent-aware R-work is computed once, on
+the winner. The pipeline returns a *placement* -- refining it is the caller's
+job, and downstream refinement does it better than a bolted-on polish did.
+
+``align_model_to_data`` delegates here; this class is the implementation of
+record. The crystallographic stages live in
+:mod:`torchref.experimental.alignment.align` and
+:mod:`~torchref.experimental.alignment.translation`; this module owns the
 control flow that wires them together.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
@@ -45,25 +49,14 @@ from .align import (
     _external_rwork,
     _prepare_frf_inputs,
 )
-from .e_values import SmoothSigmaE
-from .frf.rotation_utils import (
-    axis_angle_to_matrix,
-    edmonds_euler_from_rotation_matrix,
-    rotation_matrix_from_edmonds_euler,
-)
+from .frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from .frf.types import RotationPeak
 from .rotation_search import search_peaks
-from .lattman_love import LattmanLoveInterpolator, estimate_interp_var
-from .ml_rotation import (
-    fit_sigma_a_per_shell,
-    m_letf1_rescore,
-    sim_mlrf_rescore,
-)
-from .rigid_body import RigidBodyRefinement
 from .sh import assign_shells, equal_count_shell_edges
 from .translation import (
     TranslationPeak,
     amplitude_translation_search,
+    fit_sigma_a_per_shell,
     llg_translation_rescore,
     local_translation_refine,
     precompute_G_for_rotation,
@@ -224,36 +217,14 @@ class MolecularReplacementPipeline(DeviceMixin):
         d_min: float = 4.0,
         d_max: float = 15.0,
         n_shells: int = 20,
-        ll_max_res_A: float = 3.0,
-        ll_padding_factor: float = 2.0,
         n_rotation_peaks: int = 500,
-        n_ml_refine: int = 20,
         model_error_A: Optional[float] = None,
-        # --- rescore ---
-        rescore_engine: str = "m_letf1",
-        rescore_e_convention: type = SmoothSigmaE,
-        auto_variance_weights: bool = True,
-        use_interp_var: bool = False,
-        subpeak_refine: bool = False,
-        subpeak_refine_k: int = -1,
-        subpeak_refine_step_deg: float = 1.5,
-        subpeak_refine_iters: int = 1,
-        subpeak_refine_max_move_deg: Optional[float] = 1.5,
         # --- candidate tree ---
         n_rotation_candidates: int = 15,
         n_translation_peaks: int = 20,
         n_translation_candidates: int = 3,
         translation_grid_steps: int = 16,
         use_llg_tf: bool = False,
-        # --- post-refine ---
-        do_joint_refine: bool = True,
-        dense_rotation_refine: bool = True,
-        joint_refine_max_res_A: float = 4.0,
-        joint_refine_expected_rot_error: float = 0.1,
-        refine_b: bool = False,
-        sigma_rot_deg: float = 0.0,
-        sigma_trans_ang: float = 0.0,
-        sigma_b: float = 0.0,
         # --- early stop ---
         min_tries: int = 3,
         max_tries: Optional[int] = None,
@@ -267,10 +238,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.d_min = d_min
         self.d_max = d_max
         self.n_shells = n_shells
-        self.ll_max_res_A = ll_max_res_A
-        self.ll_padding_factor = ll_padding_factor
         self.n_rotation_peaks = n_rotation_peaks
-        self.n_ml_refine = n_ml_refine
         # Expected r.m.s. coordinate error of the search model, in Angstrom:
         # it sets the sigma_A fall-off in the rotation function. When the caller
         # does not know it, estimate it from the model's length the way Phaser
@@ -282,30 +250,11 @@ class MolecularReplacementPipeline(DeviceMixin):
             model_error_A = oeffner_vrms(n_residues, 1.0)
         self.model_error_A = float(model_error_A)
 
-        self.rescore_engine = rescore_engine
-        self.rescore_e_convention = rescore_e_convention
-        self.auto_variance_weights = auto_variance_weights
-        self.use_interp_var = use_interp_var
-        self.subpeak_refine = subpeak_refine
-        self.subpeak_refine_k = subpeak_refine_k
-        self.subpeak_refine_step_deg = subpeak_refine_step_deg
-        self.subpeak_refine_iters = subpeak_refine_iters
-        self.subpeak_refine_max_move_deg = subpeak_refine_max_move_deg
-
         self.n_rotation_candidates = n_rotation_candidates
         self.n_translation_peaks = n_translation_peaks
         self.n_translation_candidates = n_translation_candidates
         self.translation_grid_steps = translation_grid_steps
         self.use_llg_tf = use_llg_tf
-
-        self.do_joint_refine = do_joint_refine
-        self.dense_rotation_refine = dense_rotation_refine
-        self.joint_refine_max_res_A = joint_refine_max_res_A
-        self.joint_refine_expected_rot_error = joint_refine_expected_rot_error
-        self.refine_b = refine_b
-        self.sigma_rot_deg = sigma_rot_deg
-        self.sigma_trans_ang = sigma_trans_ang
-        self.sigma_b = sigma_b
 
         self.min_tries = min_tries
         self.max_tries = max_tries
@@ -348,23 +297,22 @@ class MolecularReplacementPipeline(DeviceMixin):
         frf = _prepare_frf_inputs(
             self.model, self.data,
             d_min=self.d_min, d_max=self.d_max, n_shells=self.n_shells,
-            ll_padding_factor=self.ll_padding_factor,
-            ll_max_res_A=self.ll_max_res_A, verbose=self.verbose,
+            verbose=self.verbose,
         )
         timer.stop("0_data_prep")
         self._frf = frf
 
-        # --- Stage 1+2: FRF rotation search + ML rescore ---
-        rescored = self._rotation_candidates(frf)
-        if not rescored:
+        # --- Stage 1: FRF rotation search ---
+        candidates = self._rotation_candidates(frf)
+        if not candidates:
             raise RuntimeError("Rotation search produced no peaks.")
 
         if not do_translation:
-            rotated, R_rec = self._make_rotated(rescored[0])
-            top = rescored[0]
+            rotated, R_rec = self._make_rotated(candidates[0])
+            top = candidates[0]
             if self.verbose > 0:
                 print(
-                    f"mr: top peak LLG = {top.score:.2f} "
+                    f"mr: top peak RF = {top.score:.2f} "
                     f"(σ_Z = {top.sigma:.2f}); applying R⁻¹ to coords.",
                     flush=True,
                 )
@@ -381,9 +329,9 @@ class MolecularReplacementPipeline(DeviceMixin):
                 )
             ]
 
-        # --- Stage 3+: per-candidate translation + post-refine tree ---
+        # --- Stage 2: per-candidate translation search ---
         self._prepare_translation_arrays()
-        n_rot = min(self.n_rotation_candidates, len(rescored))
+        n_rot = min(self.n_rotation_candidates, len(candidates))
         max_tries = self.max_tries if self.max_tries is not None else n_rot
         if self.verbose > 0 and n_rot > 1:
             print(
@@ -396,7 +344,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         solutions: List[MRSolution] = []
         best_r = float("inf")
         for k in range(n_rot):
-            peak_k = rescored[k]
+            peak_k = candidates[k]
             rotated_k, R_rec_k = self._make_rotated(peak_k)
             if self.verbose > 0:
                 print(
@@ -411,35 +359,13 @@ class MolecularReplacementPipeline(DeviceMixin):
                 continue
             r_analytic, t_refined = placement
 
-            refined = rotated_k.copy().translate(
+            placed = rotated_k.copy().translate(
                 t_refined.to(self.model.dtype_float), fractional=True,
             )
             r_rank = r_analytic
-            if self.do_joint_refine:
-                if self.dense_rotation_refine:
-                    refined = self._dense_rotation_refine(refined)
-                polished, rb_result = self._rigid_body_polish(refined)
-                if rb_result.final_r_factor <= rb_result.initial_r_factor:
-                    refined = polished
-                    r_rank = rb_result.final_r_factor
-                    if self.verbose > 0:
-                        print(
-                            f"  joint polish {rb_result.initial_r_factor:.4f} → "
-                            f"{rb_result.final_r_factor:.4f} (no-solvent R)",
-                            flush=True,
-                        )
-                else:
-                    r_rank = rb_result.initial_r_factor
-                    if self.verbose > 0:
-                        print(
-                            f"  joint polish kept original "
-                            f"({rb_result.initial_r_factor:.4f} ≤ "
-                            f"{rb_result.final_r_factor:.4f} no-solvent R)",
-                            flush=True,
-                        )
 
-            refined.last_alignment_rotation = R_rec_k
-            refined.last_alignment_translation = t_refined
+            placed.last_alignment_rotation = R_rec_k
+            placed.last_alignment_translation = t_refined
             solutions.append(
                 MRSolution(
                     rotation=R_rec_k.detach().cpu().numpy(),
@@ -447,7 +373,7 @@ class MolecularReplacementPipeline(DeviceMixin):
                     rotation_score=float(peak_k.score),
                     translation_score=float(r_analytic),
                     r_factor=float(r_rank),
-                    model=refined,
+                    model=placed,
                 )
             )
             best_r = min(best_r, r_rank)
@@ -487,12 +413,10 @@ class MolecularReplacementPipeline(DeviceMixin):
         return solutions
 
     # ------------------------------------------------------------------
-    # Stage 1+2: rotation search + ML rescore
+    # Stage 1: rotation search
     # ------------------------------------------------------------------
     def _rotation_candidates(self, frf) -> list:
-        """FRF rotation search followed by ML rescoring of the top peaks."""
-        data = self.data
-        device = self.device
+        """FRF rotation search; the peaks it returns, ranked by its own score."""
         timer = self._timer
 
         timer.start("3_rotation_search")
@@ -503,114 +427,19 @@ class MolecularReplacementPipeline(DeviceMixin):
                 flush=True,
             )
         peaks, _lmax, _d_min = search_peaks(
-            self.model, data, self.model_error_A,
+            self.model, self.data, self.model_error_A,
             U_aniso=frf.U_aniso, n_peaks=self.n_rotation_peaks,
             verbose=self.verbose,
         )
         timer.stop("3_rotation_search")
 
-        if self.rescore_engine not in ("m_letf1", "sim", "none"):
-            raise ValueError(
-                f"rescore_engine={self.rescore_engine!r}; "
-                "expected 'm_letf1' (default), 'sim' or 'none'."
-            )
-
-        F_obs = frf.F_obs
-        sig_F = frf.sig_F
-        hkl = frf.hkl
-        s_mag = frf.s_mag
-        centric = frf.centric
-        ll = frf.ll
-        rescore_n_shells = max(self.n_shells // 2, 8)
-
-        # No ML rescore: rank candidates by the raw FRF score and let the
-        # multi-candidate tree (FTF + refine + R-ranking) do the discrimination.
-        # Sub-peak refinement is still available here: it sharpens each
-        # orientation in place and does not reorder, so it is independent of
-        # which engine (if any) ranks the candidates.
-        if self.rescore_engine == "none":
-            if self.verbose > 0:
-                print("mr: ML rescore DISABLED — using raw FRF peak "
-                      "ranking (RFZ).", flush=True)
-            ranked = sorted(peaks, key=lambda p: p.score, reverse=True)
-            if self.subpeak_refine:
-                ranked = self._subpeak_refine(ranked, F_obs, hkl, s_mag,
-                                              centric, ll, rescore_n_shells)
-            return ranked
-
-        interp_var_main: Optional[torch.Tensor] = None
-        if self.use_interp_var:
-            rescore_edges, _ = equal_count_shell_edges(s_mag, rescore_n_shells)
-            rescore_shell_idx = assign_shells(s_mag, rescore_edges)
-            interp_var_main = estimate_interp_var(
-                ll, hkl, data.cell, rescore_shell_idx, rescore_n_shells,
-            ).to(F_obs.dtype)
-
-        timer.start("4_ml_rescore")
-        if self.verbose > 0:
-            print(
-                f"mr: ML rescoring top "
-                f"{min(len(peaks), self.n_ml_refine)} peaks…",
-                flush=True,
-            )
-        if self.rescore_engine == "m_letf1":
-            rescored = m_letf1_rescore(
-                peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
-                data.spacegroup,
-                n_shells=rescore_n_shells,
-                n_refine=min(len(peaks), self.n_ml_refine),
-                batch_size=50, verbose=self.verbose,
-                sig_F_obs=sig_F,
-                e_convention=self.rescore_e_convention,
-            )
-            if self.subpeak_refine:
-                rescored = self._subpeak_refine(rescored, F_obs, hkl, s_mag,
-                                                centric, ll, rescore_n_shells,
-                                                sig_F=sig_F)
-        else:  # legacy Sim/Rice approximation
-            rescored = sim_mlrf_rescore(
-                peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
-                n_shells=rescore_n_shells,
-                n_refine=min(len(peaks), self.n_ml_refine),
-                batch_size=50, verbose=self.verbose,
-                auto_variance_weights=self.auto_variance_weights,
-                interp_var=interp_var_main,
-            )
-        timer.stop("4_ml_rescore")
-        return rescored
-
-    def _subpeak_refine(self, rescored, F_obs, hkl, s_mag, centric, ll,
-                        rescore_n_shells, *, sig_F=None):
-        """Quadratic tangent-space Newton sharpening of the top orientations."""
-        from .ml_rotation import _build_llg_context, quadratic_llg_refine
-
-        data = self.data
-        device = self.device
-        self._timer.start("4b_subpeak_refine")
-        ctx = _build_llg_context(
-            F_obs, hkl, s_mag, centric, ll, data.cell,
-            data.spacegroup,
-            n_shells=rescore_n_shells, batch_size=50,
-            sig_F_obs=sig_F,
-            e_convention=self.rescore_e_convention,
-        )
-        k = self.subpeak_refine_k if self.subpeak_refine_k > 0 else self.n_rotation_candidates
-        k = min(k, len(rescored))
-        rescored = quadratic_llg_refine(
-            rescored, ctx, k_refine=k,
-            step_deg=self.subpeak_refine_step_deg,
-            iterations=self.subpeak_refine_iters,
-            max_move_deg=self.subpeak_refine_max_move_deg,
-            verbose=self.verbose,
-        )
-        self._timer.stop("4b_subpeak_refine")
-        if self.verbose > 0:
-            print(
-                f"mr: sub-peak refined top {k} orientations "
-                f"on the ML-LLG surface (step={self.subpeak_refine_step_deg}°).",
-                flush=True,
-            )
-        return rescored
+        # Rank by the FRF's own score and hand the shortlist to the
+        # translation search. There is no rescore here by design: an ML
+        # re-ranking of these peaks was measured to lower end-to-end pose
+        # recovery from 24/30 to 18/30 (McNemar p = 0.031), because it reorders
+        # a shortlist that already contains truth and sometimes pushes truth
+        # out of it. The translation function does the discrimination.
+        return sorted(peaks, key=lambda p: p.score, reverse=True)
 
     def _make_rotated(self, peak: "RotationPeak"):
         """Rotate the search model onto a candidate orientation.
@@ -630,7 +459,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         return rot, R_rec
 
     # ------------------------------------------------------------------
-    # Stage 3: per-candidate translation search + local refine
+    # Stage 2: per-candidate translation search + local refine
     # ------------------------------------------------------------------
     def _prepare_translation_arrays(self) -> None:
         """Resolution/validity-masked obs amplitudes + Miller indices."""
@@ -655,7 +484,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         rotation candidate, or ``None`` if no translation peaks were found.
         """
         data = self.data
-        device = self.device
         timer = self._timer
         eye3 = self._eye3
 
@@ -695,13 +523,6 @@ class MolecularReplacementPipeline(DeviceMixin):
             tt = tuple(round(float(x), 3) for x in t_peaks[0].translation.tolist())
             print(f"  top translation t={tt} score={t_peaks[0].score:.4f}",
                   flush=True)
-
-        # do_joint_refine=False: take the top translation peak directly (no
-        # local refine), rank by its correlation score (negated so lower=better
-        # like an R-factor).
-        if not self.do_joint_refine:
-            t_top = torch.as_tensor(t_peaks[0].translation, dtype=torch.float64)
-            return -float(t_peaks[0].score), t_top
 
         best = None
         for k_t, tp in enumerate(t_peaks[:self.n_translation_candidates]):
@@ -797,146 +618,3 @@ class MolecularReplacementPipeline(DeviceMixin):
             )
             for i in order
         ]
-
-    # ------------------------------------------------------------------
-    # Stage 4+5: dense rotation re-sampling + rigid-body polish
-    # ------------------------------------------------------------------
-    def _dense_rotation_refine(self, refined):
-        """Two-pass dense rotation re-sampling on the ML-LLG surface.
-
-        Zooms the orientation onto the (sharper) ML-LLG basin at the found
-        translation before the LBFGS polish. Returns the re-rotated model.
-        """
-        data = self.data
-        device = self.device
-        timer = self._timer
-
-        timer.start("8_dense_R_ll_build")
-        refined_p1 = refined.copy()
-        refined_p1.spacegroup = "P 1"
-        ll_refine = LattmanLoveInterpolator(
-            refined_p1, padding_factor=self.ll_padding_factor,
-            max_res_A=self.ll_max_res_A, verbose=0,
-        )
-        timer.stop("8_dense_R_ll_build")
-
-        tmask = self._tmask
-        hkl_keep = self._hkl_keep
-        F_obs_amp = self._F_obs_amp
-        centric_keep = (
-            data.centric[tmask].to(torch.bool).to(device) if hasattr(data, "centric")
-            else torch.zeros(hkl_keep.shape[0], dtype=torch.bool, device=device)
-        )
-        rec_basis_keep = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)
-        s_mag_keep = (hkl_keep.to(torch.float64) @ rec_basis_keep).norm(dim=-1)
-        rescore_n_shells = max(self.n_shells // 2, 8)
-
-        n_per_axis_pass = [9, 5]
-        zoom_factor = 4.0
-        radii = [
-            float(self.joint_refine_expected_rot_error),
-            float(self.joint_refine_expected_rot_error) / zoom_factor,
-        ]
-        R_accumulated = torch.eye(3, dtype=torch.float64)
-
-        interp_var_dense: Optional[torch.Tensor] = None
-        if self.use_interp_var:
-            dense_edges, _ = equal_count_shell_edges(s_mag_keep, rescore_n_shells)
-            dense_shell_idx = assign_shells(s_mag_keep, dense_edges)
-            interp_var_dense = estimate_interp_var(
-                ll_refine, hkl_keep, data.cell, dense_shell_idx, rescore_n_shells,
-            ).to(F_obs_amp.dtype)
-
-        for pass_idx, max_perturb_rad in enumerate(radii):
-            n_per_axis = n_per_axis_pass[pass_idx]
-            coords_r = torch.linspace(
-                -max_perturb_rad, max_perturb_rad, n_per_axis, dtype=torch.float64,
-            )
-            wx, wy, wz = torch.meshgrid(coords_r, coords_r, coords_r, indexing="ij")
-            omegas = torch.stack([wx.flatten(), wy.flatten(), wz.flatten()], dim=-1)
-            R_perturbs = axis_angle_to_matrix(omegas)
-            R_cand_full = R_perturbs @ R_accumulated
-            cand_peaks = []
-            for R_c in R_cand_full:
-                a, b, g = edmonds_euler_from_rotation_matrix(R_c)
-                cand_peaks.append(RotationPeak(alpha=a, beta=b, gamma=g,
-                                               score=0.0, sigma=0.0))
-            if self.verbose > 0:
-                print(
-                    f"  dense R pass {pass_idx + 1} "
-                    f"({n_per_axis}³={omegas.shape[0]} perturbations, "
-                    f"±{math.degrees(max_perturb_rad):.2f}°)…",
-                    flush=True,
-                )
-            rescore_batch = max(4, min(100, 1_000_000 // max(hkl_keep.shape[0], 1)))
-            timer.start("9_dense_R_rescore")
-            if self.rescore_engine == "m_letf1":
-                rescored_refine = m_letf1_rescore(
-                    cand_peaks, F_obs_amp, hkl_keep, s_mag_keep, centric_keep,
-                    ll_refine, data.cell,
-                    data.spacegroup,
-                    n_shells=rescore_n_shells,
-                    n_refine=len(cand_peaks), batch_size=rescore_batch, verbose=0,
-                )
-            else:
-                rescored_refine = sim_mlrf_rescore(
-                    cand_peaks, F_obs_amp, hkl_keep, s_mag_keep, centric_keep,
-                    ll_refine, data.cell,
-                    n_shells=rescore_n_shells,
-                    n_refine=len(cand_peaks), batch_size=rescore_batch,
-                    verbose=0, n_D_grid=11, interp_var=interp_var_dense,
-                )
-            timer.stop("9_dense_R_rescore")
-            top = rescored_refine[0]
-            best_idx = next(
-                i for i, p in enumerate(cand_peaks)
-                if p.alpha == top.alpha and p.beta == top.beta
-                and p.gamma == top.gamma
-            )
-            R_accumulated = R_cand_full[best_idx]
-            if self.verbose > 0:
-                print(
-                    f"    pass {pass_idx + 1} best LLG={top.score:.2f}, "
-                    f"|ω|={omegas[best_idx].norm().item() * 180 / math.pi:.3f}°",
-                    flush=True,
-                )
-
-        return refined.copy().rotate(
-            R_accumulated.T.to(self.model.dtype_float).contiguous(),
-        )
-
-    def _rigid_body_polish(self, refined):
-        """LBFGS rigid-body polish on (R, t) — returns ``(polished, result)``.
-
-        The model is pre-rotated/translated; the refinement optimises a small
-        delta with ``initial_translation=0``. ``result`` carries the no-solvent
-        initial/final R-work used by the caller's accept/reject gate.
-        """
-        timer = self._timer
-        timer.start("11_lbfgs_polish")
-        rb = RigidBodyRefinement(
-            refined, self.data,
-            initial_translation=torch.zeros(
-                3, dtype=torch.float32, device=refined.device,
-            ),
-            expected_rotational_error=self.joint_refine_expected_rot_error,
-            max_res=self.joint_refine_max_res_A,
-            device=refined.device,
-            verbose=max(0, self.verbose - 1),
-            refine_b=self.refine_b,
-            sigma_rot_deg=self.sigma_rot_deg,
-            sigma_trans_ang=self.sigma_trans_ang,
-            sigma_b=self.sigma_b,
-        )
-        rb_result = rb.refine()
-        with torch.no_grad():
-            R_polish = rb.get_rotation_matrix().detach()
-            t_polish = rb.translation_frac.detach()
-        # .copy() first: the caller keeps `refined` when the polish does not
-        # improve R, so `polished` must not be the same object.
-        polished = refined.copy().rotate(R_polish.to(self.model.dtype_float))
-        polished = polished.translate(
-            t_polish.to(self.model.dtype_float), fractional=True,
-        )
-        timer.stop("11_lbfgs_polish")
-        return polished, rb_result

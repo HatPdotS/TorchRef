@@ -132,8 +132,7 @@ def main() -> int:
         )
         frf = _prepare_frf_inputs(
             model, data, d_min=pipe.d_min, d_max=pipe.d_max,
-            n_shells=pipe.n_shells, ll_padding_factor=pipe.ll_padding_factor,
-            ll_max_res_A=pipe.ll_max_res_A, verbose=0,
+            n_shells=pipe.n_shells, verbose=0,
         )
         pipe._frf = frf
         peaks = pipe._rotation_candidates(frf)[: args.n_cand]

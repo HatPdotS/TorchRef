@@ -1,20 +1,16 @@
 """
-Alignment module for TorchRef.
-
-Pure-PyTorch Patterson-based molecular replacement:
+Molecular replacement for TorchRef: a rotation search feeding a translation
+search, and one Wilson normalisation shared between them.
 
 1. Fast Rotation Function (``rotation_search``, over
    ``frf.FastRotationFunction``) — Phaser-faithful Bessel-radial × SH
-   expansion, stable Wigner-d, dense P1-box calc — then ML rescoring
-   (``ml_rotation.m_letf1_rescore``) to rank candidate orientations.
+   expansion, stable Wigner-d, dense P1-box calc. A shortlist generator.
 2. Fast Translation Function (``translation.amplitude_translation_search`` +
-   ``local_translation_refine``) — run per rotation candidate.
-3. Rigid Body Refinement (``rigid_body.RigidBodyRefinement``) — LBFGS on
-   rotation and translation (and optional B-factors) with an ML target.
-4. Canonical Pipeline (``pipeline.MolecularReplacementPipeline``) — the
-   multi-candidate FRF → FTF → post-refine tree with early-stopping; the
-   implementation that ``align.align_model_to_data`` /
-   ``align.align_model_to_data`` delegates to.
+   ``local_translation_refine``) — run per rotation candidate, and where the
+   discrimination actually happens.
+3. Pipeline (``pipeline.MolecularReplacementPipeline``) — the multi-candidate
+   FRF → FTF tree with early stopping, which ``align.align_model_to_data``
+   delegates to. It returns a placement; refine it downstream.
 
 Example — full MR pipeline
 --------------------------
@@ -51,8 +47,6 @@ from .frf import (
     rotation_angular_distance_deg,
     rotation_matrix_from_edmonds_euler,
 )
-from .lattman_love import LattmanLoveInterpolator
-from .ml_rotation import m_letf1_rescore, sim_mlrf_rescore
 from .sh import (
     evaluate_ylm,
     sh_expand_ball,
@@ -73,18 +67,14 @@ from .rotation_search import RotationSolutions, rotation_search
 # Translation search
 # =============================================================================
 from .translation import (
-    fft_translation_search,
-    fft_translation_search_torch,
     TranslationPeak,
+    amplitude_translation_search,
     find_translation_peaks,
-    apply_translation_to_fcalc,
-    apply_translation_to_fcalc_torch,
+    fit_sigma_a_per_shell,
+    llg_translation_rescore,
+    local_translation_refine,
+    precompute_G_for_rotation,
 )
-
-# =============================================================================
-# Rigid body refinement
-# =============================================================================
-from .rigid_body import RigidBodyRefinement, RigidBodyResult
 
 # =============================================================================
 # ML distributions
@@ -93,9 +83,6 @@ from .distributions import (
     stable_log_bessel_i0,
     rice_log_likelihood,
     woolfson_log_likelihood,
-    combined_log_likelihood,
-    acentric_pdf,
-    centric_pdf,
 )
 
 __all__ = [
@@ -108,9 +95,6 @@ __all__ = [
     "edmonds_euler_from_rotation_matrix",
     "rotation_angular_distance_deg",
     # Rescore + interpolation
-    "LattmanLoveInterpolator",
-    "m_letf1_rescore",
-    "sim_mlrf_rescore",
     # Low-level math primitives
     "evaluate_ylm",
     "sh_expand_ball",
@@ -126,23 +110,19 @@ __all__ = [
     "rotation_search",
     "RotationSolutions",
     # Translation
-    "fft_translation_search",
-    "fft_translation_search_torch",
     "TranslationPeak",
+    "amplitude_translation_search",
     "find_translation_peaks",
-    "apply_translation_to_fcalc",
-    "apply_translation_to_fcalc_torch",
+    "fit_sigma_a_per_shell",
+    "llg_translation_rescore",
+    "local_translation_refine",
+    "precompute_G_for_rotation",
     # Rigid body refinement
-    "RigidBodyRefinement",
-    "RigidBodyResult",
     # Transforms
     # Clash scoring
     # Distributions
     "stable_log_bessel_i0",
     "rice_log_likelihood",
     "woolfson_log_likelihood",
-    "combined_log_likelihood",
-    "acentric_pdf",
-    "centric_pdf",
     # Utilities
 ]

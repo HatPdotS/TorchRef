@@ -23,8 +23,6 @@ from typing import Optional, TYPE_CHECKING
 
 import torch
 
-from .lattman_love import LattmanLoveInterpolator
-from .e_values import SmoothSigmaE
 from .sh import (
     apply_overall_anisotropy,
     assign_shells,
@@ -142,8 +140,10 @@ def _external_rwork(model: "ModelFT", data: "ReflectionData") -> float:
 class _DirectModelEvaluator:
     """Returns ``F_p1(hkl)`` of a P1-spacegroup model at integer HKL.
 
-    Wraps a `ModelFT` to expose the same `.evaluate(R, hkl, cell, ...)` API
-    as `LattmanLoveInterpolator`, for use by the translation search.
+    The translation search asks its evaluator for ``F`` at a list of rotated
+    Miller indices. The rotation is already baked into the model's coordinates
+    by the time this is built, so ``R`` is ignored and every call is a direct
+    structure-factor evaluation rather than an interpolation.
     """
 
     def __init__(self, m: "ModelFT") -> None:
@@ -167,17 +167,16 @@ class _DirectModelEvaluator:
 class FRFInputs:
     """Prepared reflection arrays shared by the rotation-search stages.
 
-    The resolution-masked, anisotropy-corrected reflection arrays, plus the
-    overall anisotropy tensor and the Lattman-Love interpolator. The rotation
-    search reads `U_aniso` and `device`; the ML rescore, translation search and
-    rigid-body polish read the rest.
+    The resolution-masked, anisotropy-corrected reflection arrays plus the
+    overall anisotropy tensor. The rotation search reads ``U_aniso`` and
+    ``device``; the rest is there for anything scoring against the same
+    observations on the same footing.
 
     ``sig_F`` carries the same anisotropy correction as ``F_obs``, which is a
     multiplicative factor, so ``F/sigma`` is unchanged by it. It is here because
-    the rotation function computes the French-Wilson posterior from the sigmas
-    and then threw them away, leaving the ML rescore -- a likelihood, where
-    measurement error is not a detail -- with no access to them at all.
-    ``None`` when the data carry no sigmas.
+    the rotation function computes its measurement weight from the sigmas, and
+    the earlier code threw them away immediately afterwards. ``None`` when the
+    data carry no sigmas.
     """
     F_obs: torch.Tensor              # (N,) anisotropy-corrected amplitudes
     sig_F: Optional[torch.Tensor]    # (N,) their sigmas, same correction
@@ -185,7 +184,6 @@ class FRFInputs:
     s_vec: torch.Tensor              # (N, 3) reciprocal-space Cartesian
     s_mag: torch.Tensor              # (N,) Å⁻¹
     centric: torch.Tensor            # (N,) bool
-    ll: "LattmanLoveInterpolator"
     U_aniso: torch.Tensor            # (3, 3) Popov-Bourenkov U
     device: torch.device
 
@@ -197,15 +195,13 @@ def _prepare_frf_inputs(
     d_min: float,
     d_max: float,
     n_shells: int,
-    ll_padding_factor: float = 2.0,
-    ll_max_res_A: float = 3.0,
     verbose: int = 0,
 ) -> FRFInputs:
     """Prepare the reflection arrays the rotation-search stages share.
 
-    Masks the observations to ``[d_min, d_max]``, fits and applies the overall
-    anisotropy correction, and builds the Lattman-Love interpolator for the
-    model. ``F_obs`` on the returned dataclass is anisotropy-corrected.
+    Masks the observations to ``[d_min, d_max]`` and fits and applies the
+    overall anisotropy correction, so ``F_obs`` on the returned dataclass is
+    anisotropy-corrected.
     """
     device = model.xyz().device
 
@@ -254,11 +250,6 @@ def _prepare_frf_inputs(
     sig_F_aniso = (None if sig_F is None
                    else apply_overall_anisotropy(sig_F, s_vec, U_aniso))
 
-    ll = LattmanLoveInterpolator(
-        model, padding_factor=ll_padding_factor, max_res_A=ll_max_res_A,
-        verbose=verbose,
-    )
-
     return FRFInputs(
         F_obs=F_obs_aniso,
         sig_F=sig_F_aniso,
@@ -266,7 +257,6 @@ def _prepare_frf_inputs(
         s_vec=s_vec,
         s_mag=s_mag,
         centric=centric,
-        ll=ll,
         U_aniso=U_aniso,
         device=device,
     )
@@ -285,39 +275,21 @@ def align_model_to_data(
     d_max: float = 15.0,
     n_shells: int = 20,
     n_rotation_peaks: int = 500,
-    n_ml_refine: int = 20,  # rescore only the top-20 FRF peaks (refinement use case)
-    ll_max_res_A: float = 3.0,
-    ll_padding_factor: float = 2.0,
     verbose: int = 0,
-    auto_variance_weights: bool = True,
     do_translation: bool = True,
     n_translation_peaks: int = 20,
     n_translation_candidates: int = 3,
     translation_grid_steps: int = 16,
     n_rotation_candidates: int = 15,
-    do_joint_refine: bool = True,
-    joint_refine_max_res_A: float = 4.0,
-    joint_refine_expected_rot_error: float = 0.1,
-    use_interp_var: bool = False,
     use_llg_tf: bool = False,
-    refine_b: bool = False,
-    sigma_rot_deg: float = 0.0,
-    sigma_trans_ang: float = 0.0,
-    sigma_b: float = 0.0,
     model_error_A: Optional[float] = None,
-    rescore_engine: str = "m_letf1",
-    rescore_e_convention: type = SmoothSigmaE,
-    subpeak_refine: bool = False,
-    subpeak_refine_k: int = -1,
-    subpeak_refine_step_deg: float = 1.5,
-    subpeak_refine_iters: int = 1,
-    subpeak_refine_max_move_deg: Optional[float] = 1.5,
 ) -> "ModelFT":
-    """Run full MR alignment of ``model`` against ``data``.
+    """Place ``model`` in ``data``'s crystal: rotation search, then translation.
 
-    Returns a new rotated+translated+refined ``ModelFT`` carrying
+    Returns a new rotated+translated ``ModelFT`` carrying
     ``last_alignment_rotation``, ``last_alignment_translation`` and
-    ``last_alignment_rfactor`` provenance attributes.
+    ``last_alignment_rfactor`` provenance attributes. It is a *placement*, not a
+    refined structure -- refine it downstream.
 
     `MolecularReplacementPipeline` is the implementation of record; this
     function returns its single best solution.
@@ -337,28 +309,13 @@ def align_model_to_data(
         device=model.xyz().device,
         verbose=verbose,
         d_min=d_min, d_max=d_max, n_shells=n_shells,
-        ll_max_res_A=ll_max_res_A, ll_padding_factor=ll_padding_factor,
-        n_rotation_peaks=n_rotation_peaks, n_ml_refine=n_ml_refine,
+        n_rotation_peaks=n_rotation_peaks,
         model_error_A=model_error_A,
-        rescore_engine=rescore_engine,
-        rescore_e_convention=rescore_e_convention,
-        auto_variance_weights=auto_variance_weights,
-        use_interp_var=use_interp_var,
-        subpeak_refine=subpeak_refine, subpeak_refine_k=subpeak_refine_k,
-        subpeak_refine_step_deg=subpeak_refine_step_deg,
-        subpeak_refine_iters=subpeak_refine_iters,
-        subpeak_refine_max_move_deg=subpeak_refine_max_move_deg,
         n_rotation_candidates=n_rotation_candidates,
         n_translation_peaks=n_translation_peaks,
         n_translation_candidates=n_translation_candidates,
         translation_grid_steps=translation_grid_steps,
         use_llg_tf=use_llg_tf,
-        do_joint_refine=do_joint_refine,
-        joint_refine_max_res_A=joint_refine_max_res_A,
-        joint_refine_expected_rot_error=joint_refine_expected_rot_error,
-        refine_b=refine_b,
-        sigma_rot_deg=sigma_rot_deg, sigma_trans_ang=sigma_trans_ang,
-        sigma_b=sigma_b,
     )
     solutions = pipeline.run(do_translation=do_translation)
     return solutions[0].model

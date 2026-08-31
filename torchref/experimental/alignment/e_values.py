@@ -4,8 +4,8 @@
 change**: correlating ``E_obs`` against ``E_calc`` *is* correlating ``F`` against
 ``F`` with weight ``1/Sigma(s)``. The alignment package currently answers that
 question nine different times -- twice in ``frf.preprocessing``, once inside
-``french_wilson_preprocess``, three times in ``ml_rotation`` and three more in
-``translation`` -- and the answers disagree. The rotation function's observed
+``french_wilson_preprocess`` and three more in ``translation`` -- and the
+answers disagree. The rotation function's observed
 side is a French-Wilson posterior weighted by ``DFAC**2``; the rescore's is plain
 per-shell Wilson with epsilon divided out. So the rescore ranks candidates
 against a differently-normalised observation set than the one that produced them.

@@ -52,8 +52,7 @@ def _stage(name: str):
 
 def _patch_for_timing():
     """Wrap key fit_to_data stages so we get an inline breakdown."""
-    from torchref.experimental.alignment import ml_rotation, translation
-    from torchref.experimental.alignment import lattman_love, rigid_body
+    from torchref.experimental.alignment import rotation_search, translation
     from torchref import scaling
 
     originals = {}
@@ -68,12 +67,11 @@ def _patch_for_timing():
 
         setattr(module, attr, wrapper)
 
-    wrap(ml_rotation, "m_letf1_rescore", "m_letf1_rescore")
+    wrap(rotation_search, "search_peaks", "rotation_search")
     wrap(translation, "amplitude_translation_search", "amplitude_translation_search")
     wrap(translation, "local_translation_refine", "local_translation_refine")
     wrap(translation, "precompute_G_for_rotation", "precompute_G_for_rotation")
-    wrap(lattman_love, "LattmanLoveInterpolator", "LL_interp_build")
-    wrap(rigid_body, "RigidBodyRefinement", "RigidBodyRefinement_init")
+    wrap(translation, "llg_translation_rescore", "llg_translation_rescore")
     return originals
 
 

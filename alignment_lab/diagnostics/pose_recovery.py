@@ -1,21 +1,22 @@
-"""End-to-end pose recovery: does dropping the ML rescore cost anything?
+"""End-to-end pose recovery for the FRF -> FTF pipeline.
 
-The rank-level evidence says the rescore only reorders (it leaves every peak's
-orientation untouched), that final solutions are selected by R-factor rather
-than by the rescore's own score, and that its reordering does not improve
-whether truth reaches the translation stage. If all that holds, removing it
-should be free -- but rank is not the deliverable, pose is, so this measures the
-full pipeline.
+Rank is not the deliverable, pose is. This places a randomly reoriented copy of
+the deposited model and asks whether the pipeline gets it back, which is the
+only measurement that settles a change to either stage.
 
-Arms (``--arms``):
+The reference number to beat is **24/30** (10 structures x 3 trials): what the
+pipeline scored once the ML rescore was taken out of the middle, against 18/30
+with it. 2DQ6 and 3GR5 fail in every arm ever measured and cap recovery there.
 
-``m_letf1``
-    current default.
-``none``
-    skip the rescore; raw FRF order straight into the translation search.
-``none+subpeak``
-    the same, plus quadratic sub-peak refinement -- sharpen each orientation
-    in place without reordering.
+Arms (``--arms``) sweep how translation candidates are ranked:
+
+``analytic_r``
+    the default -- rank each rotation candidate by the analytical-scale R at its
+    best translation.
+``llg_tf``
+    re-rank the translation peaks by the Rice/Woolfson LLG first. At rank level
+    the LLG puts truth at rank 0 in 27/30 against analytic R's 22/30; this is
+    the arm that says whether that carries through to pose.
 
 Success mirrors the integration test: final coordinates within ``--success-deg``
 of canonical, modulo the crystal symmetry.
@@ -23,7 +24,7 @@ of canonical, modulo the crystal symmetry.
 Usage::
 
     python alignment_lab/diagnostics/pose_recovery.py --pdb 1DAW --trial 0 \
-        --arms m_letf1,none,none+subpeak --out-csv alignment_lab/runs/pose.csv
+        --arms analytic_r,llg_tf --out-csv alignment_lab/runs/pose.csv
 """
 
 from __future__ import annotations
@@ -45,11 +46,8 @@ from lab import (BENCH_PDBS, ResultWriter, load_case, random_rotation,  # noqa: 
                  seed_for)
 
 ARMS = {
-    "m_letf1": dict(rescore_engine="m_letf1", subpeak_refine=False),
-    "sim": dict(rescore_engine="sim", subpeak_refine=False),
-    "none": dict(rescore_engine="none", subpeak_refine=False),
-    "none+subpeak": dict(rescore_engine="none", subpeak_refine=True),
-    "m_letf1+subpeak": dict(rescore_engine="m_letf1", subpeak_refine=True),
+    "analytic_r": dict(use_llg_tf=False),
+    "llg_tf": dict(use_llg_tf=True),
 }
 
 
@@ -86,7 +84,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pdb", default="1DAW", choices=list(BENCH_PDBS))
     ap.add_argument("--trial", type=int, default=0)
-    ap.add_argument("--arms", default="m_letf1,none,none+subpeak")
+    ap.add_argument("--arms", default="analytic_r,llg_tf")
     ap.add_argument("--n-rotation-candidates", type=int, default=15)
     ap.add_argument("--n-rotation-peaks", type=int, default=200)
     ap.add_argument("--success-deg", type=float, default=8.0)
@@ -109,7 +107,7 @@ def main() -> int:
     writer = None
     if args.out_csv:
         writer = ResultWriter(args.out_csv, "pose_recovery",
-                              extra_fields=("arm", "rescore_engine", "subpeak_refine",
+                              extra_fields=("arm", "use_llg_tf",
                                             "residual_deg", "success",
                                             "n_rotation_candidates",
                                             "pipeline_seconds"))
@@ -127,8 +125,8 @@ def main() -> int:
         try:
             aligned = align_model_to_data(
                 search, data, d_min=4.0, d_max=15.0, n_shells=20,
-                n_rotation_peaks=args.n_rotation_peaks, n_ml_refine=200,
-                do_translation=True, do_joint_refine=True,
+                n_rotation_peaks=args.n_rotation_peaks,
+                do_translation=True,
                 n_rotation_candidates=args.n_rotation_candidates,
                 verbose=args.verbose, **flags,
             )
@@ -152,8 +150,7 @@ def main() -> int:
                          orbit_side="kabsch", orbit_frame="cart",
                          lmax_cap=_LMAX_CAP, d_min=4.0, d_max=15.0,
                          device="cpu", arm=arm,
-                         rescore_engine=flags["rescore_engine"],
-                         subpeak_refine=int(flags["subpeak_refine"]),
+                         use_llg_tf=int(flags["use_llg_tf"]),
                          residual_deg=(round(resid, 4) if resid == resid else ""),
                          success=int(bool(ok)),
                          n_rotation_candidates=args.n_rotation_candidates,
