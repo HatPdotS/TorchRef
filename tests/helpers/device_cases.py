@@ -384,6 +384,23 @@ TARGET_CASES: List[TargetDeviceCase] = [
         ).ADPLocalityTarget(b["model"]),
         "ADPLocalityTarget",
     ),
+    # Both are inert outside field mode but still device-bearing, so they construct
+    # on a plain model and must track its device like any other target.
+    TargetDeviceCase(
+        "NodeLoadTarget",
+        lambda b, d: __import__(
+            "torchref.refinement.targets.adp.node_load", fromlist=["NodeLoadTarget"]
+        ).NodeLoadTarget(b["model"]),
+        "NodeLoadTarget",
+    ),
+    TargetDeviceCase(
+        "NodeSmoothnessTarget",
+        lambda b, d: __import__(
+            "torchref.refinement.targets.adp.node_smoothness",
+            fromlist=["NodeSmoothnessTarget"],
+        ).NodeSmoothnessTarget(b["model"]),
+        "NodeSmoothnessTarget",
+    ),
     # Owns no tensors at all -- the case that exercises the request-driven
     # tracker path rather than the owned-tensor path.
     TargetDeviceCase(
@@ -409,9 +426,6 @@ UNCOVERED: Dict[str, str] = {
     "BaseWeighting": "abstract base; covered via ManualWeighting",
     "Refinement": "abstract base; covered via LBFGSRefinement in integration",
     "PassThroughTensor": "documented non-functional stub (parameter_wrappers.py)",
-    "NodePayload": "stateless strategy, holds no tensors; abstract base",
-    "IsotropicPayload": "stateless strategy, holds no tensors",
-    "AnisotropicPayload": "stateless strategy, holds only a float epsilon",
     "ADPTarget": "abstract base; needs a model with ADPs",
     "CombinedTargets": "composite container; needs its component targets",
     "CombinedModelTargets": "composite container; needs a loaded model",
