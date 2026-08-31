@@ -4,6 +4,13 @@ Changelog
 
 Unreleased
 ----------
+- Molecular replacement is now a rotation search feeding a translation search and nothing else; the pipeline returns a placement and stops. End-to-end pose recovery over 10 structures x 3 seeds went 18/30 to 30/30, at about a sixth of the wall clock
+- Removed the ML rescore from between the two searches. It reordered a shortlist that already contained the answer, and cost 6 of 30 placements
+- Removed the post-placement dense rotation re-sampling and rigid-body polish. They refined a correct placement away from truth on 2DQ6, 3GR5 and 4BX9; refining a placement is downstream refinement's job
+- The translation search weights reflections by inverse variance, which it previously did not do at all, and both searches normalise through one shared Wilson fit built once per run instead of five private ones. This is what recovered 6G9X
+- The translation search's resolution window is a parameter (``tf_d_min``/``tf_d_max``) rather than a docstring; it defaults to the existing behaviour of no cut
+- The alignment package takes its device from the configured default throughout, instead of reading it off whichever model or tensor was nearest
+- Removed the alignment package's unreachable modules: quaternion transforms, a second Wigner implementation, clash scoring, vector sampling, the Lattman-Love interpolator, the E-value convention layer and its French-Wilson posterior, and the unused half of the spherical-harmonic expansion
 - Fixed the reciprocal-space symmetry convention in the alignment package (``h.S``, not ``S.h``)
 - Fixed ``hkl_symops_to_cartesian`` returning non-rotations in trigonal and hexagonal settings, which corrupted the anisotropy projection
 - Fixed the overall-anisotropy fit, which regressed log intensities with no constant term and so absorbed the ``-gamma`` offset into the tensor
