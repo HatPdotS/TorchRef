@@ -80,6 +80,45 @@ _LMAX_CAP = _importlib.import_module(
     "torchref.experimental.alignment.rotation_search").LMAX_CAP
 
 
+
+def _report_candidates(solutions, R_true, symops, success_deg) -> None:
+    """Annotate the pipeline's own candidates with how far each is from truth.
+
+    The pipeline reports every candidate's scores at ``verbose >= 2`` but cannot
+    say which was right -- it has no ground truth, and a version of it that did
+    would be measuring itself. This joins the two: the ranked solutions it
+    returned, against the orientation the benchmark rotated the model by.
+
+    That join is the whole point of driving the pipeline directly rather than
+    rebuilding its placement loop in the harness. A reimplementation drifts, and
+    then the two disagree about which candidate the pipeline picked -- which is
+    exactly what happened here: a harness reported truth top-ranked by analytic
+    R in 0 of 10 seeds while the pipeline solved 6 of them, because it fed the
+    R-factor a different set of translation peaks.
+
+    ``SOLN`` lines are ordered as the pipeline ranked them, so line 0 is what it
+    returned. ``dtruth`` is the angle from that candidate's orientation to the
+    true one modulo crystal symmetry; ``pick`` marks the winner and ``true``
+    marks every candidate that was in fact correct.
+    """
+    from torchref.experimental.alignment.frf.rotation_utils import (
+        rotation_angular_distance_deg,
+    )
+
+    R_t = R_true.to(torch.float64).cpu()
+    print("  SOLN rank  rot_score   tf_R    dtruth  flags")
+    for i, sol in enumerate(solutions):
+        R = torch.as_tensor(sol.rotation, dtype=torch.float64)
+        # `rotation` maps the search-model frame onto the crystal frame; the
+        # benchmark's R_true is the rotation applied to the coordinates, so the
+        # recovered orientation is compared as its transpose.
+        d = min(float(rotation_angular_distance_deg(R.T @ R_t, symops[k]))
+                for k in range(symops.shape[0]))
+        flags = ("pick " if i == 0 else "     ") + ("true" if d <= success_deg else "")
+        print(f"  SOLN {i:4d} {sol.rotation_score:10.3f} "
+              f"{sol.translation_score:7.4f} {d:8.2f}  {flags}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pdb", default="1DAW", choices=list(BENCH_PDBS))
@@ -92,7 +131,7 @@ def main() -> int:
     ap.add_argument("--out-csv", default=None)
     args = ap.parse_args()
 
-    from torchref.experimental.alignment import align_model_to_data
+    from torchref.experimental.alignment import MolecularReplacementPipeline
 
     seed = seed_for(args.pdb, args.trial)
     model, data = load_case(args.pdb)
@@ -123,15 +162,21 @@ def main() -> int:
                                       center=canonical_xyz.mean(0))
         t0 = time.time()
         try:
-            aligned = align_model_to_data(
-                search, data, d_min=4.0, d_max=15.0, n_shells=20,
+            # The pipeline rather than `align_model_to_data`, which returns only
+            # the winner. Every candidate's score is the diagnosis when a
+            # placement goes wrong, and the pipeline already computed them.
+            pipe = MolecularReplacementPipeline(
+                data, search, d_min=4.0, d_max=15.0, n_shells=20,
                 n_rotation_peaks=args.n_rotation_peaks,
-                do_translation=True,
                 n_rotation_candidates=args.n_rotation_candidates,
                 verbose=args.verbose, **flags,
             )
+            solutions = pipe.run(do_translation=True)
+            aligned = solutions[0].model
             resid = residual_rotation_deg(aligned.xyz(), canonical_xyz, symops)
             err = ""
+            if args.verbose >= 2:
+                _report_candidates(solutions, R_true, symops, args.success_deg)
         except Exception as exc:  # a crashed arm must not read as a success
             resid, err = float("nan"), f"{type(exc).__name__}: {exc}"
         secs = time.time() - t0

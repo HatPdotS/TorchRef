@@ -292,7 +292,23 @@ class MolecularReplacementPipeline(DeviceMixin):
     device : torch.device, optional
         Compute device (defaults to the model's device).
     verbose : int
-        0 silent, 1 summary, ≥2 adds a per-stage wall-clock table.
+        How much the run says about itself. Each level is a superset of the one
+        below, and the boundaries are chosen so that a level is useful on its
+        own rather than being "a bit more of the same":
+
+        0
+            Silent.
+        1
+            What happened: the search settings, one line per stage, and the
+            winner. Enough to see that a run did the expected work.
+        2
+            **Why it chose what it chose.** One ``CAND`` line per rotation
+            candidate carrying every score the selection could have used, plus
+            the per-stage wall-clock table. This is the level that makes the
+            pipeline diagnosable without a second implementation of its own
+            scoring -- see :meth:`_log_candidate`.
+        3
+            Per-translation-peak detail inside each candidate.
 
     Examples
     --------
@@ -365,6 +381,44 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._tmask = None
         self._eye3 = torch.eye(3, dtype=torch.float64)
 
+    #: Levels are documented on the class. They are a contract, not a dial:
+    #: level 2 is specifically "one machine-readable line per candidate", and
+    #: anything added at that level should preserve that.
+    def _log(self, level: int, msg: str) -> None:
+        """Emit ``msg`` if the run is at least this verbose.
+
+        One emitter rather than ``if self.verbose > 0: print(...)`` at every
+        site. The scattered form is how levels drift -- the same stage ends up
+        reporting at 1 in one place and 2 in another, and nothing enforces that
+        a level means the same thing twice.
+        """
+        if self.verbose >= level:
+            print(msg, flush=True)
+
+    def _log_candidate(self, k: int, peak, r_analytic, t_frac,
+                       tf_score=None) -> None:
+        """One line per rotation candidate, with every score behind the choice.
+
+        Machine-readable on purpose. Diagnosing a wrong placement means asking
+        which candidate won and on what, and the only alternative to emitting it
+        here is a harness that re-implements the placement loop -- which drifts
+        from the pipeline and then disagrees with it about which candidate the
+        pipeline picked. A caller that knows the true orientation (a benchmark)
+        can join these lines against it; the pipeline cannot, and does not try.
+
+        Fields are ``key=value`` so a reader does not depend on column order:
+        ``k`` candidate index in rotation-function order, ``rf``/``rfz`` its
+        score and z, ``tf`` the translation correlation at the chosen peak,
+        ``r`` the analytical-scale R that ranks it, ``t`` the fractional
+        translation.
+        """
+        tf = "nan" if tf_score is None else f"{float(tf_score):.5f}"
+        t = ",".join(f"{float(x):.4f}" for x in t_frac)
+        self._log(2, f"CAND k={k} rf={float(peak.score):.4f} "
+                     f"rfz={float(peak.sigma):.3f} tf={tf} "
+                     f"r={float(r_analytic):.5f} t={t}")
+
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -407,14 +461,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         if not do_translation:
             rotated, R_rec = self._make_rotated(candidates[0])
             top = candidates[0]
-            if self.verbose > 0:
-                print(
-                    f"mr: top peak RF = {top.score:.2f} "
-                    f"(σ_Z = {top.sigma:.2f}); applying R⁻¹ to coords.",
-                    flush=True,
-                )
-            if self.verbose >= 2:
-                print("\n" + timer.summary(), flush=True)
+            self._log(1, f"mr: top peak RF = {top.score:.2f} "
+                         f"(σ_Z = {top.sigma:.2f}); applying R⁻¹ to coords.")
+            self._log(2, "\n" + timer.summary())
             return [
                 MRSolution(
                     rotation=R_rec.detach().cpu().numpy(),
@@ -429,25 +478,23 @@ class MolecularReplacementPipeline(DeviceMixin):
         # --- Stage 2: per-candidate translation search ---
         self._prepare_translation_arrays()
         n_rot = min(self.n_rotation_candidates, len(candidates))
-        if self.verbose > 0 and n_rot > 1:
-            print(f"mr: placing all {n_rot} rotation candidates…", flush=True)
+        if n_rot > 1:
+            self._log(1, f"mr: placing all {n_rot} rotation candidates…")
 
         solutions: List[MRSolution] = []
         for k in range(n_rot):
             peak_k = candidates[k]
             rotated_k, R_rec_k = self._make_rotated(peak_k)
-            if self.verbose > 0:
-                print(
-                    f"\nfit_to_data: rot{k} "
-                    f"(LLG={peak_k.score:.2f}, σ_Z={peak_k.sigma:.2f})",
-                    flush=True,
-                )
+            self._log(3, f"\nfit_to_data: rot{k} "
+                         f"(RF={peak_k.score:.2f}, σ_Z={peak_k.sigma:.2f})")
             placement = self._placement_for_candidate(rotated_k)
             if placement is None:
-                if self.verbose > 0:
-                    print("  no translation peaks; skipping", flush=True)
+                self._log(2, f"CAND k={k} rf={float(peak_k.score):.4f} "
+                             f"rfz={float(peak_k.sigma):.3f} tf=nan r=nan "
+                             f"t=none  # no translation peaks")
                 continue
-            r_analytic, t_refined = placement
+            r_analytic, t_refined, tf_score = placement
+            self._log_candidate(k, peak_k, r_analytic, t_refined, tf_score)
 
             placed = rotated_k.copy().translate(
                 t_refined.to(self.model.dtype_float), fractional=True,
@@ -479,14 +526,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer.stop("12_final_scaler")
         winner.model.last_alignment_rfactor = rwork_final
         winner.r_factor = rwork_final
-        if self.verbose > 0:
-            print(
-                f"mr: winner analytical-TF R={winner.translation_score:.4f}, "
-                f"final Scaler-fit R-work={rwork_final:.4f}",
-                flush=True,
-            )
-        if self.verbose >= 2:
-            print("\n" + timer.summary(), flush=True)
+        self._log(1, f"mr: winner analytical-TF R={winner.translation_score:.4f}, "
+                     f"final Scaler-fit R-work={rwork_final:.4f}")
+        self._log(2, "\n" + timer.summary())
         return solutions
 
     # ------------------------------------------------------------------
@@ -497,12 +539,8 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer = self._timer
 
         timer.start("3_rotation_search")
-        if self.verbose > 0:
-            print(
-                f"mr: rotation search (n_peaks={self.n_rotation_peaks}, "
-                f"model error {self.model_error_A:.2f} A)…",
-                flush=True,
-            )
+        self._log(1, f"mr: rotation search (n_peaks={self.n_rotation_peaks}, "
+                     f"model error {self.model_error_A:.2f} A)…")
         peaks, _lmax, _d_min = search_peaks(
             self.model, self.data, self.model_error_A,
             U_aniso=frf.U_aniso, n_peaks=self.n_rotation_peaks,
@@ -581,21 +619,26 @@ class MolecularReplacementPipeline(DeviceMixin):
             n_shells=max(self.n_shells // 2, 8),
             device=device,
         )
-        if self.verbose > 0:
+        if self.verbose >= 1:
             d_hi = 1.0 / float(self._obs.s_mag.max())
             d_lo = 1.0 / float(self._obs.s_mag.min().clamp(min=1e-9))
-            print(
-                f"mr: translation set {self._obs.F_obs.numel()} reflections, "
-                f"{d_lo:.1f}-{d_hi:.2f} A"
-                + ("" if sig_F_full is not None else " (no sigmas: unit weight)"),
-                flush=True,
-            )
+            self._log(1, f"mr: translation set {self._obs.F_obs.numel()} "
+                         f"reflections, {d_lo:.1f}-{d_hi:.2f} A"
+                         + ("" if sig_F_full is not None
+                            else " (no sigmas: unit weight)"))
 
     def _placement_for_candidate(self, rotated_k) -> Optional[tuple]:
         """Translation search + analytical-R local refine for one rotation.
 
-        Returns ``(r_analytic, t_refined)`` for the best translation of this
-        rotation candidate, or ``None`` if no translation peaks were found.
+        Returns ``(r_analytic, t_refined, tf_score)`` for the best translation
+        of this rotation candidate, or ``None`` if no translation peaks were
+        found.
+
+        ``tf_score`` is the translation function's own score at its top peak.
+        It does not select anything -- ``r_analytic`` does -- but it is carried
+        out so ``verbose >= 2`` can report both. Which of the two a wrong
+        placement disagreed on is the first thing anyone diagnosing one asks,
+        and it is not recoverable afterwards from the winner alone.
         """
         data = self.data
         timer = self._timer
@@ -632,10 +675,10 @@ class MolecularReplacementPipeline(DeviceMixin):
         if self.use_llg_tf:
             t_peaks = self._llg_tf_rescore(t_peaks, G_pre, h_R_pre)
 
-        if self.verbose > 0:
+        tf_top = float(t_peaks[0].score)
+        if self.verbose >= 3:
             tt = tuple(round(float(x), 3) for x in t_peaks[0].translation.tolist())
-            print(f"  top translation t={tt} score={t_peaks[0].score:.4f}",
-                  flush=True)
+            self._log(3, f"  top translation t={tt} score={tf_top:.4f}")
 
         best = None
         for k_t, tp in enumerate(t_peaks[:self.n_translation_candidates]):
@@ -649,15 +692,11 @@ class MolecularReplacementPipeline(DeviceMixin):
                 precomputed_G=G_pre, precomputed_h_R=h_R_pre,
             )
             timer.stop("7_local_TF_refine")
-            if self.verbose > 0:
-                print(
-                    f"    trans{k_t}: R(analytic)={r_analytic:.4f}, "
-                    f"t={[round(float(x), 3) for x in t_refined.tolist()]}",
-                    flush=True,
-                )
+            self._log(3, f"    trans{k_t}: R(analytic)={r_analytic:.4f}, "
+                         f"t={[round(float(x), 3) for x in t_refined.tolist()]}")
             if best is None or r_analytic < best[0]:
                 best = (r_analytic, t_refined)
-        return best
+        return None if best is None else (best[0], best[1], tf_top)
 
     def _llg_tf_rescore(self, t_peaks, G_pre, h_R_pre):
         """Re-rank translation peaks by a shared-σA Rice/Woolfson LLG.
