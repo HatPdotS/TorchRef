@@ -19,11 +19,18 @@ used to sit there and was removed: it reorders a shortlist that already contains
 truth, and end-to-end pose recovery was 18/30 with it against 24/30 without
 (McNemar p = 0.031, 6-0 discordant).
 
-Each orientation is placed independently and the candidates are ranked by the
-translation search's analytical R, with early stopping once one beats
-``rfactor_converged``. The user-facing solvent-aware R-work is computed once, on
-the winner. The pipeline returns a *placement* -- refining it is the caller's
-job, and downstream refinement does it better than a bolted-on polish did.
+Every candidate is placed and then the best is taken, with no early stopping.
+Stopping early made the pipeline's answer depend on the order the rotation
+function happened to produce -- it walked the list until one placement beat an
+R-factor threshold and returned that, so it could accept the third candidate
+without ever scoring the tenth. On a structure where several orientations place
+plausibly that is not a choice between them, and it made the selection rule
+impossible to reason about or to measure against a ranking harness.
+
+The candidates are ranked by the translation search's analytical R. The
+user-facing solvent-aware R-work is computed once, on the winner. The pipeline
+returns a *placement* -- refining it is the caller's job, and downstream
+refinement does it better than a bolted-on polish did.
 
 ``align_model_to_data`` delegates here; this class is the implementation of
 record. The crystallographic stages live in
@@ -255,9 +262,8 @@ class MRSolution:
     translation_score : float
         Analytical-R of the best translation for this candidate (lower better).
     r_factor : float
-        Ranking key. During the candidate loop this is the rigid-body's own
-        (no-solvent) R-work; for the returned winner it is replaced by the
-        solvent-aware Scaler R-work.
+        Ranking key: the translation search's analytical-scale R. For the
+        returned winner it is replaced by the solvent-aware Scaler R-work.
     model : ModelFT
         The rotated (+translated +refined) model for this candidate.
     """
@@ -313,7 +319,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         n_rotation_peaks: int = 500,
         model_error_A: Optional[float] = None,
         # --- candidate tree ---
-        n_rotation_candidates: int = 15,
+        n_rotation_candidates: int = 25,
         n_translation_peaks: int = 20,
         n_translation_candidates: int = 3,
         translation_grid_steps: int = 16,
@@ -323,10 +329,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         # this stage has always done -- see `_prepare_translation_arrays`.
         tf_d_min: Optional[float] = None,
         tf_d_max: Optional[float] = None,
-        # --- early stop ---
-        min_tries: int = 3,
-        max_tries: Optional[int] = None,
-        rfactor_converged: float = 0.45,
     ):
         self.data = data
         self.model = model
@@ -355,10 +357,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.use_llg_tf = use_llg_tf
         self.tf_d_min = tf_d_min
         self.tf_d_max = tf_d_max
-
-        self.min_tries = min_tries
-        self.max_tries = max_tries
-        self.rfactor_converged = rfactor_converged
 
         self._timer = _StageTimer(enabled=verbose >= 2)
         # Filled in by run().
@@ -431,17 +429,10 @@ class MolecularReplacementPipeline(DeviceMixin):
         # --- Stage 2: per-candidate translation search ---
         self._prepare_translation_arrays()
         n_rot = min(self.n_rotation_candidates, len(candidates))
-        max_tries = self.max_tries if self.max_tries is not None else n_rot
         if self.verbose > 0 and n_rot > 1:
-            print(
-                f"mr: trying up to {n_rot} rotation candidates "
-                f"(early-stop after ≥{self.min_tries} once R < "
-                f"{self.rfactor_converged}).",
-                flush=True,
-            )
+            print(f"mr: placing all {n_rot} rotation candidates…", flush=True)
 
         solutions: List[MRSolution] = []
-        best_r = float("inf")
         for k in range(n_rot):
             peak_k = candidates[k]
             rotated_k, R_rec_k = self._make_rotated(peak_k)
@@ -475,19 +466,6 @@ class MolecularReplacementPipeline(DeviceMixin):
                     model=placed,
                 )
             )
-            best_r = min(best_r, r_rank)
-
-            n_done = k + 1
-            if n_done >= self.min_tries and best_r < self.rfactor_converged:
-                if self.verbose > 0:
-                    print(
-                        f"mr: converged (R {best_r:.4f} < "
-                        f"{self.rfactor_converged}) after {n_done} candidates.",
-                        flush=True,
-                    )
-                break
-            if n_done >= max_tries:
-                break
 
         if not solutions:
             raise RuntimeError("Translation + joint refine produced no candidates.")
@@ -757,7 +735,7 @@ def align_model_to_data(
     n_translation_peaks: int = 20,
     n_translation_candidates: int = 3,
     translation_grid_steps: int = 16,
-    n_rotation_candidates: int = 15,
+    n_rotation_candidates: int = 25,
     use_llg_tf: bool = False,
     tf_d_min: Optional[float] = None,
     tf_d_max: Optional[float] = None,

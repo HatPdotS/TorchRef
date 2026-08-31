@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- The molecular-replacement pipeline places all ``n_rotation_candidates`` (now 25, was 15) and returns the best, instead of stopping once a placement beat an R-factor threshold. The old rule made the answer depend on the order the rotation function happened to produce and could accept the third candidate without scoring the tenth. Measured neutral -- identical placements on 10 structures x 3 seeds and on a 10-seed sweep of the marginal cases -- at about 1.6x the wall clock
 - The Wilson normaliser converges in 8-12 IRLS iterations instead of 26-102. Its stopping rule was ``|dL|`` per reflection against 1e-10, which asks eleven significant digits of a normalisation curve; it is now relative to the improvement so far, which is scale-invariant for the same reason the absolute form was chosen
 - ``<E^2> = 1`` is solved in closed form for the intercept, so the identity no longer degrades as the convergence tolerance is loosened
 - The Wilson fit runs in the configured float dtype rather than hardcoded double, and builds its normal-equations matrix once -- it is constant for a Gamma with a log link. Identical placements on all 30 benchmark cells, at 1.8x the speed; the unit suite went from 968s to 485s

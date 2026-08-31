@@ -85,7 +85,7 @@ def main() -> int:
     ap.add_argument("--pdb", default="1DAW", choices=list(BENCH_PDBS))
     ap.add_argument("--trial", type=int, default=0)
     ap.add_argument("--arms", default="analytic_r,llg_tf")
-    ap.add_argument("--n-rotation-candidates", type=int, default=15)
+    ap.add_argument("--n-rotation-candidates", type=int, default=25)
     ap.add_argument("--n-rotation-peaks", type=int, default=200)
     ap.add_argument("--success-deg", type=float, default=8.0)
     ap.add_argument("--verbose", type=int, default=0)

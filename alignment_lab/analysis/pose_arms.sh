@@ -4,8 +4,14 @@
 #
 # 10 structures x 3 trials x 2 arms. The arms are the open ranking question:
 # analytic R (the default) against the translation LLG, which wins 27/30 to
-# 22/30 at rank level. The number to hold is 24/30 successes, what the pipeline
-# scored once the ML rescore was removed from between the two stages.
+# 22/30 at rank level.
+#
+# 25 candidates and no early stopping, matching the pipeline. Under the old rule
+# it walked the list until a placement beat R < 0.45 and returned that, so the
+# answer depended on FRF order and could not be compared against a harness that
+# ranks the whole list -- 2DQ6 solved 6/10 end to end while truth was top-ranked
+# by analytic R in 0/10, which is only possible if the two measure different
+# things.
 #SBATCH --job-name=posearm
 #SBATCH --output=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/slurm/%x_%A_%a.out
 #SBATCH --error=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/slurm/%x_%A_%a.err
@@ -25,5 +31,5 @@ export PYTHONPATH="$REPO" TORCHREF_NUM_THREADS=4 OMP_NUM_THREADS=4 MKL_NUM_THREA
 export PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=""
 for T in 0 1 2; do
   "$PY" -u alignment_lab/diagnostics/pose_recovery.py --pdb "$PDB" --trial "$T" \
-    --arms analytic_r,llg_tf --n-rotation-candidates 15 2>/dev/null | grep '^ROW '
+    --arms analytic_r,llg_tf --n-rotation-candidates 25 2>/dev/null | grep '^ROW '
 done
