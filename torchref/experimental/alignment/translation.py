@@ -1,20 +1,166 @@
-"""
-Fast FFT-based translation search for molecular replacement.
+"""Fast translation search: where in the cell does an oriented model sit?
 
-Translation t shifts phase: F(hkl, t) = F(hkl) * exp(2*pi*i * hkl.t)
-Correlation: C(t) = IFFT{ conj(F_obs) * F_calc }
+A translation shifts phase, ``F(h, t) = F(h) exp(2 pi i h.t)``, so scoring every
+``t`` on a grid is a Fourier transform rather than a scan. The Crowther-Blow
+form used here accumulates the pair coefficients
+``sum_h w(h) G_i*(h) G_j(h)`` onto a reciprocal grid at
+``(h R_j - h R_i) mod G`` and takes one inverse FFT, which replaces ``G^3`` grid
+evaluations with a single transform.
 
-This module provides efficient FFT-based translation search that finds the
-optimal translation to position a model after rotation has been determined.
+This is where the discrimination happens. The rotation function upstream is a
+shortlist generator -- over 30 seeded cells it puts truth at rank 0 six times;
+the correlation here does it 24 times and the likelihood 27. Rotation ghosts are
+morphologically identical to truth in a Patterson by construction, and stop
+being identical as soon as the crystal lattice is involved.
+
+The observed side is prepared **once** per run, by
+:class:`TranslationObs`, and reused for every orientation and every candidate
+translation. That is not only an optimisation: normalisation and weighting are
+properties of the observations, which do not change when the model moves, and
+three separate answers to "what is the mean intensity here" used to live in this
+module and its caller.
 """
 
 import numpy as np
 import torch
 
+from torchref.scaling import WilsonNormaliser
+from torchref.scaling.weighting import (inverse_variance_weight,
+                                        normalise_weight, snr_from_amplitude)
+
 from .distributions import rice_log_likelihood, woolfson_log_likelihood
-from .e_values import WilsonShellE
+from .sh import assign_shells, equal_count_shell_edges
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+
+
+#: Chebyshev order of the Wilson fit. Matches the rotation function's
+#: ``frf.api.WILSON_N_COEFF``: the two stages score the same observations and a
+#: different order on each would be two normalisations again.
+WILSON_N_COEFF = 6
+
+
+@dataclass
+class TranslationObs:
+    """The observed side of a translation search, normalised and weighted once.
+
+    Everything here is a property of the observations alone, so none of it
+    changes when the model rotates or moves. Building it per orientation -- which
+    is what the module used to do -- refits a Gamma GLM for every candidate to
+    get the same answer back, and worse, it made "what is ``E_obs``" a question
+    with three different answers depending on which function you asked.
+
+    Attributes
+    ----------
+    F_obs, hkl, s_mag, centric, eps
+        The masked observations and their crystallographic bookkeeping.
+    E_obs : torch.Tensor
+        ``F / sqrt(eps Sigma(s))``, with ``Sigma`` the shared Wilson fit, so
+        ``<E^2> = 1`` as an identity of that fit rather than as a separate
+        normalisation step.
+    weight : torch.Tensor
+        Mean-1 inverse-variance weight, from measurement error and model error
+        in one denominator. **This is the half that does not cancel.** A
+        per-resolution *scaling* is gauge in a correlation -- twelve conventions
+        moved the rotation function's truth rank by nothing -- but a weight that
+        varies within a shell is not, and until now the translation search had
+        none at all: every reflection counted the same.
+    shell_idx, n_shells
+        Equal-count binning in ``|s|``, shared by the sigma_A fit and the
+        likelihood so the two cannot disagree about which reflection is where.
+    fit : WilsonNormaliser
+        Kept, not discarded. Anything comparing an observed curve against a
+        calculated one needs the curve itself, not the per-reflection values it
+        produced.
+    """
+
+    F_obs: torch.Tensor
+    hkl: torch.Tensor
+    s_mag: torch.Tensor
+    centric: torch.Tensor
+    eps: torch.Tensor
+    E_obs: torch.Tensor
+    weight: torch.Tensor
+    shell_idx: torch.Tensor
+    n_shells: int
+    fit: "WilsonNormaliser"
+
+    @classmethod
+    def build(
+        cls,
+        F_obs: torch.Tensor,
+        hkl: torch.Tensor,
+        spacegroup,
+        real_cell,
+        *,
+        sig_F: Optional[torch.Tensor] = None,
+        delta_vrms_A: float = 1.0,
+        n_shells: int = 20,
+        n_coeff: int = WILSON_N_COEFF,
+        device=None,
+    ) -> "TranslationObs":
+        """Normalise and weight one set of observations.
+
+        Parameters
+        ----------
+        F_obs : torch.Tensor
+            ``(N,)`` observed amplitudes; complex input is coerced to ``|.|``.
+        hkl : torch.Tensor
+            ``(N, 3)`` integer Miller indices, matching ``F_obs`` row for row.
+        spacegroup, real_cell
+            Supply multiplicity, centricity and the reciprocal basis.
+        sig_F : torch.Tensor, optional
+            ``(N,)`` measurement errors. Without them the weight is uniform,
+            which is the honest fallback: the varying part of the weight *is*
+            the measurement term, and inventing one would be worse than not
+            having it.
+        delta_vrms_A : float
+            R.m.s. coordinate error of the search model, which sets the model
+            half of the variance budget through the Luzzati falloff. The same
+            number the rotation function weights with.
+        """
+        dev = device if device is not None else F_obs.device
+        real = torch.float64
+        F = F_obs.detach().to(dev)
+        F = (F.abs() if F.is_complex() else F).to(real)
+        hkl_i = hkl.detach().to(dev)
+
+        rec_basis = real_cell.reciprocal_basis_matrix.to(dev).to(real)
+        s_mag = (hkl_i.to(real) @ rec_basis).norm(dim=-1)
+
+        hkl_l = hkl_i.round().to(torch.int64)
+        # friedel=False: Wilson's <I> = eps*Sigma counts the operations mapping
+        # h to itself, which add coherently and set the mean. The Friedel-folded
+        # branch changes the distribution instead, and that is centricity --
+        # which enters separately, as the Gamma shape.
+        eps = spacegroup.epsilon(hkl_l, friedel=False).to(real).clamp(min=1.0)
+        centric = spacegroup.is_centric(hkl_l).to(torch.bool)
+
+        fit = WilsonNormaliser(
+            F * F, s_mag, eps=eps, centric=centric, n_coeff=n_coeff,
+        )
+
+        if sig_F is None:
+            weight = torch.ones_like(F)
+        else:
+            sig = sig_F.detach().to(dev).to(real).abs()
+            # eterm_sigma_a is the rotation function's own model-error term;
+            # importing it rather than restating the exponent is the point.
+            from .frf.preprocessing import eterm_sigma_a
+            weight = normalise_weight(inverse_variance_weight(
+                snr_from_amplitude(F, sig),
+                eterm_sigma_a(s_mag, float(delta_vrms_A)).to(real),
+                eps=eps,
+            ))
+
+        edges, _ = equal_count_shell_edges(s_mag, n_shells)
+        shell_idx = assign_shells(s_mag, edges).clamp(min=0)
+
+        return cls(
+            F_obs=F, hkl=hkl_i, s_mag=s_mag, centric=centric, eps=eps,
+            E_obs=fit.E.to(real), weight=weight,
+            shell_idx=shell_idx, n_shells=int(n_shells), fit=fit,
+        )
 
 
 @dataclass
@@ -97,18 +243,15 @@ def find_translation_peaks(
 
 
 def amplitude_translation_search(
-    F_obs: torch.Tensor,
+    obs: TranslationObs,
     interpolator,
     R_rotation: torch.Tensor,
-    hkl: torch.Tensor,
     spacegroup,
     real_cell,
     grid_steps: int = 16,
     n_peaks: int = 20,
     cluster_radius: float = 0.05,
     batch_size: int = 256,
-    use_e_values: bool = True,
-    n_shells: int = 20,
     precomputed_G: Optional[torch.Tensor] = None,
     precomputed_h_R: Optional[torch.Tensor] = None,
 ) -> Tuple[np.ndarray, np.ndarray, List[TranslationPeak]]:
@@ -130,15 +273,13 @@ def amplitude_translation_search(
 
     Parameters
     ----------
-    F_obs : torch.Tensor, shape (N,)
-        Observed amplitudes (complex inputs are coerced to |·|).
+    obs : TranslationObs
+        The observations, normalised and weighted once for the whole run.
     interpolator : object
         Anything providing ``evaluate(R, hkl, real_cell, return_amplitude=False)``
         -- in the pipeline, ``align._DirectModelEvaluator``.
     R_rotation : torch.Tensor, shape (3, 3)
         Rotation that has been applied to the model coordinates.
-    hkl : torch.Tensor, shape (N, 3)
-        Integer Miller indices of the observed reflections.
     spacegroup : SpaceGroup
         Provides `matrices` and `translations`.
     real_cell : Cell
@@ -151,15 +292,6 @@ def amplitude_translation_search(
         Minimum fractional separation between returned peaks.
     batch_size : int, default 256
         Number of candidate translations evaluated per inner batch.
-    use_e_values : bool, default True
-        Normalize `|F_obs|` and `|F_calc(h, t)|` per resolution shell to unit
-        Wilson variance (E-values) before correlating. This removes the
-        resolution-dependent envelope mismatch between real F_obs (with bulk
-        solvent + thermal falloff) and a model that doesn't model these — a
-        per-shell mean subtraction in the Pearson correlation alone doesn't
-        cover it because the falloff is multiplicative, not additive.
-    n_shells : int, default 20
-        Number of equal-count radial shells used by `use_e_values`.
 
     Returns
     -------
@@ -170,44 +302,22 @@ def amplitude_translation_search(
     peaks : list of TranslationPeak
         Top-`n_peaks` peaks sorted by descending correlation.
     """
-    device = getattr(interpolator, "device", hkl.device)
+    device = getattr(interpolator, "device", obs.hkl.device)
     real_dtype = torch.float64
     complex_dtype = torch.complex128
 
-    F_obs_t = F_obs.detach().to(device)
-    if F_obs_t.is_complex():
-        F_obs_t = F_obs_t.abs()
-    F_obs_t = F_obs_t.to(real_dtype)
+    hkl = obs.hkl
+    E_obs = obs.E_obs.to(device).to(real_dtype)
+    w = obs.weight.to(device).to(real_dtype)
 
-    hkl_t = hkl.detach().to(device).to(real_dtype)        # (N, 3)
-
-    # Precompute per-shell normalisation if requested. We bin reflections by
-    # |s| into n_shells equal-count shells and normalise F → F / sqrt(<F²>_shell)
-    # (Wilson E-value). The same shell norm is applied to F_calc(t) inside the
-    # batch loop. This makes the Pearson correlation a Patterson-style
-    # correlation of "E²−1" — robust to bulk-solvent / B-factor mismatch.
-    if use_e_values:
-        rec_basis_real = real_cell.reciprocal_basis_matrix.to(device).to(real_dtype)
-        s_mag = (hkl_t @ rec_basis_real).norm(dim=-1)
-        order = torch.argsort(s_mag)
-        shell_idx = torch.zeros_like(s_mag, dtype=torch.int64)
-        chunk = s_mag.numel() // max(n_shells, 1)
-        for k in range(n_shells):
-            a = k * chunk
-            b = (k + 1) * chunk if k < n_shells - 1 else s_mag.numel()
-            shell_idx[order[a:b]] = k
-        # The caller's own shell assignment is handed to the convention rather
-        # than letting it derive one: this binning is rank-based and the shared
-        # `assign_shells` is value-based, and the sigma_a fit downstream is tied
-        # to whichever one was used here.
-        E_obs = WilsonShellE(
-            F_obs_t, s_mag, shell_idx=shell_idx, n_shells=n_shells,
-        ).E
-        F_obs2 = E_obs * E_obs
-    else:
-        shell_idx = None
-        F_obs2 = F_obs_t * F_obs_t
-    F_obs2_centered = F_obs2 - F_obs2.mean()
+    # Correlating E^2 rather than F^2 is what makes this robust to the
+    # resolution envelope: the model has no bulk solvent and the wrong overall
+    # B, and that mismatch is multiplicative, so subtracting a mean does not
+    # remove it but dividing by Sigma(s) does.
+    F_obs2 = E_obs * E_obs
+    # Centred at the WEIGHTED mean, which is what the weighted correlation
+    # below is a numerator for. With uniform weight this is the plain mean.
+    F_obs2_centered = F_obs2 - (w * F_obs2).sum() / w.sum().clamp(min=1e-30)
 
     # Pre-compute G_i(h) = exp(2πi h·t_i) · F_p1(h R_i)  (or reuse caller's)
     two_pi_i = 2j * torch.pi
@@ -230,8 +340,8 @@ def amplitude_translation_search(
     # reciprocal grid at integer indices (h·R_j − h·R_i) mod G.
     #
     # We accumulate two such reciprocal grids in one sym-op pass:
-    #   W_num : weight per h = F_obs²_centered(h)  → num(t)
-    #   W_den : weight per h = 1                   → Σ_h |F_calc(h,t)|²
+    #   W_num : weight per h = w(h)·E_obs²_centered(h) → num(t)
+    #   W_den : weight per h = w(h)                    → Σ_h w|F_calc(h,t)|²
     # Score(t) = num(t) / Σ_h|F_calc(h,t)|²  — a per-t scale-normalised
     # Pearson proxy (Phaser's TF uses the full Pearson denominator; ours
     # uses the same scaling that the previous separable-phase code applied
@@ -243,8 +353,11 @@ def amplitude_translation_search(
     # and orders of magnitude less than the original explicit grid loop.
     S_eff, N_eff = G.shape
     h_R_int = h_R.round().to(torch.int64)                        # (S, N, 3)
-    F_obs2_c_complex = F_obs2_centered.to(complex_dtype)         # (N,)
-    ones_complex = torch.ones(N_eff, dtype=complex_dtype, device=device)
+    # Both grids carry the same per-reflection weight, so the ratio below is a
+    # weighted correlation rather than an unweighted one with a weighted
+    # numerator. Uniform w reproduces the previous scores exactly.
+    F_obs2_c_complex = (w * F_obs2_centered).to(complex_dtype)   # (N,)
+    w_complex = w.to(complex_dtype)                              # (N,)
 
     W_num_flat = torch.zeros(
         grid_steps ** 3, dtype=complex_dtype, device=device,
@@ -257,7 +370,7 @@ def amplitude_translation_search(
         Gi_conj = G[i].conj()                                    # (N,)
         pair = Gi_conj.view(1, -1) * G                           # (S, N)
         coeff_num = F_obs2_c_complex.view(1, -1) * pair          # (S, N)
-        coeff_den = ones_complex.view(1, -1) * pair              # (S, N)
+        coeff_den = w_complex.view(1, -1) * pair                 # (S, N)
         dh = (h_R_int - h_R_int[i:i + 1]) % grid_steps           # (S, N, 3)
         flat = (dh[..., 0] * G_stride_xy
                 + dh[..., 1] * grid_steps + dh[..., 2])          # (S, N)
@@ -333,50 +446,53 @@ def fit_sigma_a_per_shell(
 
 
 def llg_translation_rescore(
-    F_obs: torch.Tensor,
-    hkl: torch.Tensor,
-    centric: torch.Tensor,
-    s_mag: torch.Tensor,
-    shell_idx: torch.Tensor,
-    n_shells: int,
+    obs: TranslationObs,
     G: torch.Tensor,
     h_R: torch.Tensor,
     t_candidates: torch.Tensor,
     sigma_a: torch.Tensor,
     interp_var: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """
-    Per-translation Rice / Woolfson log-likelihood, using the symmetry-summed
-    interpolator contributions ``G`` (Phaser EM_search analogue) and a fixed
-    per-shell σA.
+    """Per-translation Rice / Woolfson log-likelihood over candidate positions.
 
-    For each candidate t:
-        F_calc(h, t) = Σ_i G_i(h) · exp(2πi (h R_i) · t)
-        E_calc(h, t) = |F_calc(h, t)| / sqrt(<F²>_per_shell)
-        LLG(t) = Σ_shell [LL_Rice(E_obs, D·E_calc, var) − LL_Wilson(E_obs)]
-        where var = (1 − D²) + interp_var.
+    For each candidate t::
 
-    Phase B alignment likelihood-TF. Replaces the |F|² Pearson correlation
-    in `amplitude_translation_search` as the scoring rule when the caller
-    re-ranks the FFT-cheap pre-filter peaks.
+        F_calc(h, t) = sum_i G_i(h) exp(2 pi i (h R_i).t)
+        E_calc(h, t) = |F_calc(h, t)| / sqrt(<F^2>_shell)
+        LLG(t)       = sum_h [LL(E_obs, D E_calc, var) - LL_Wilson(E_obs)]
+
+    with ``var = (1 - D^2) + interp_var``. The Rice branch is used for acentric
+    reflections and Woolfson for centric.
+
+    The scoring rule the amplitude correlation is a pre-filter for. At rank
+    level it is the strongest discriminator measured -- truth at rank 0 in 27 of
+    30 seeded cells against the correlation's 24 and the rotation function's 6 --
+    but re-ranking translation peaks by it does **not** improve end-to-end pose
+    recovery (28/30 against 27/30 the other way, one discordant cell), which is
+    why ``use_llg_tf`` defaults off.
+
+    ``E_calc`` is normalised per shell **per candidate**, and that is not a
+    fourth answer to what the observations' normalisation is: it is a per-``t``
+    scale, and forcing it to unit shell variance for every candidate is what
+    makes the K likelihoods comparable. What discriminates is the pattern across
+    reflections, not the scale.
 
     Parameters
     ----------
-    F_obs : (N,) real
-    hkl   : (N, 3) — unused here but kept for symmetry with the rest of the
-            module (and future extension to per-h variance models).
-    centric : (N,) bool
-    s_mag : (N,) — |s| the shells were built from. Not used to derive a binning
-        here (``shell_idx`` is given) but passed rather than fabricated, so a
-        convention that fits a curve in ``|s|`` gets the real abscissa.
-    shell_idx : (N,) int64 — same binning as used to fit sigma_a / interp_var.
-    n_shells : int
-    G : (S, N) complex — per-sym F_p1 contributions × per-sym translation phase
-                          (output of `precompute_G_for_rotation`).
-    h_R : (S, N, 3) — per-sym rotated reciprocal indices.
-    t_candidates : (K, 3) fractional translations to score.
-    sigma_a : (n_shells,) — fixed per-shell σA (shared across candidates).
-    interp_var : (N,) optional — per-reflection variance inflation.
+    obs : TranslationObs
+        Supplies ``E_obs``, centricity and the shell binning -- the same binning
+        ``sigma_a`` was fitted on, which is why it is not re-derived here.
+    G : (S, N) complex
+        Per-sym ``F_p1`` contributions x per-sym translation phase, from
+        :func:`precompute_G_for_rotation`.
+    h_R : (S, N, 3)
+        Per-sym rotated reciprocal indices.
+    t_candidates : (K, 3)
+        Fractional translations to score.
+    sigma_a : (n_shells,)
+        Fixed per-shell sigma_A, shared across candidates.
+    interp_var : (N,), optional
+        Per-reflection variance inflation.
 
     Returns
     -------
@@ -385,6 +501,10 @@ def llg_translation_rescore(
     device = G.device
     real_dtype = torch.float64
     complex_dtype = G.dtype
+
+    shell_idx = obs.shell_idx
+    n_shells = obs.n_shells
+    centric = obs.centric
 
     K = t_candidates.shape[0]
     S, N = G.shape
@@ -408,11 +528,7 @@ def llg_translation_rescore(
     norm_per_refl = mean_per_shell.sqrt().gather(1, shell_idx_k)  # (K, N)
     E_calc = F_calc / norm_per_refl                                 # (K, N)
 
-    F_obs_t = F_obs.to(device).to(real_dtype)
-    E_obs = WilsonShellE(
-        F_obs_t, s_mag.to(device).to(real_dtype),
-        shell_idx=shell_idx_l, n_shells=n_shells,
-    ).E
+    E_obs = obs.E_obs.to(device).to(real_dtype)
 
     sigma_a_d = sigma_a.to(device).to(real_dtype)                  # (n_shells,)
     D_per_refl = sigma_a_d.index_select(0, shell_idx_l)            # (N,)
@@ -497,10 +613,9 @@ def precompute_G_for_rotation(
 
 
 def local_translation_refine(
-    F_obs: torch.Tensor,
+    obs: TranslationObs,
     interpolator,
     R_rotation: torch.Tensor,
-    hkl: torch.Tensor,
     spacegroup,
     real_cell,
     t_init: torch.Tensor,
@@ -514,33 +629,37 @@ def local_translation_refine(
     """
     Fine-grid Patterson translation refinement around ``t_init``.
 
-    For each candidate ``t`` in a `grid_steps`³ cubic grid of half-width
-    ``radius`` centered on ``t_init`` (fractional), computes |F_calc(h, t)|²
-    via the symmetry expansion and the analytical-scale R-factor
-        R(t) = Σ ||F_obs| − k·|F_calc(t)|| / Σ |F_obs|
-        k(t) = Σ |F_obs|·|F_calc(t)| / Σ |F_calc(t)|²
-    against `F_obs`. Returns the (t, R) at the minimum.
+    Locates the peak on a fine grid of half-width ``radius`` around ``t_init``
+    by the same weighted ``E^2`` correlation the coarse search maximises, then
+    reports the analytical-scale R-factor there::
 
-    Use `n_refinement_passes > 1` to do a multi-pass zoom: each pass shrinks
-    the radius by `grid_steps/2` and re-centers on the previous best. For
-    `radius=0.06, grid_steps=13, n_refinement_passes=2`, the final fractional
-    resolution is ~0.005 (≈0.3 Å for a 60 Å cell).
+        R(t) = sum ||F_obs| - k|F_calc(t)|| / sum |F_obs|
+        k(t) = sum |F_obs||F_calc(t)| / sum |F_calc(t)|^2
 
-    The analytical-scale R-factor uses a single global scale; it is not the
-    same number a full crystallographic Scaler would return, but its
-    *minimum location* is robust because both numerator and denominator share
-    the same per-shell envelope. Use a full Scaler to compute the final
-    R-work after this routine selects (R, t).
+    The two halves answer different questions and use different quantities on
+    purpose. The *search* runs on normalised, weighted ``E^2``, because that is
+    what the coarse stage optimised and refining against a different objective
+    would walk away from the peak it was handed. The *reported number* is an
+    R-factor on raw amplitudes, because that is what ranks candidates and what a
+    crystallographer reads.
+
+    That R uses one global scale, so it is not the number a full Scaler returns.
+    It is used as a ranking key, and for that its minimum's *location* is what
+    matters. The winner gets a solvent-aware Scaler refit.
+
+    Returns ``(t, R)`` at the minimum. ``n_refinement_passes`` is accepted and
+    ignored -- the FFT evaluates the whole fine grid at once, so there is
+    nothing for a second zoom pass to buy.
     """
-    device = getattr(interpolator, "device", hkl.device)
+    device = getattr(interpolator, "device", obs.hkl.device)
     real_dtype = torch.float64
     complex_dtype = torch.complex128
 
-    F_obs_t = F_obs.detach().to(device)
-    if F_obs_t.is_complex():
-        F_obs_t = F_obs_t.abs()
-    F_obs_t = F_obs_t.to(real_dtype)
+    hkl = obs.hkl
+    F_obs_t = obs.F_obs.to(device).to(real_dtype)
     F_obs_sum = F_obs_t.sum().clamp(min=1e-30)
+    E_obs = obs.E_obs.to(device).to(real_dtype)
+    w = obs.weight.to(device).to(real_dtype)
 
     two_pi_i = 2j * torch.pi
     if precomputed_G is not None and precomputed_h_R is not None:
@@ -582,10 +701,13 @@ def local_translation_refine(
     G_fft = min(G_fft, 128)
     half_window = max(1, int(round(float(radius) * G_fft)))
 
-    F_obs2 = (F_obs_t * F_obs_t).to(real_dtype)
-    F_obs2_centered = F_obs2 - F_obs2.mean()
-    F_obs2_c_complex = F_obs2_centered.to(complex_dtype)
-    ones_complex = torch.ones(N, dtype=complex_dtype, device=device)
+    # The same weighted E^2 correlation as the coarse search. It used to be a
+    # raw |F|^2 correlation here, which made the fine grid optimise a different
+    # objective from the one that chose the peak it is centred on.
+    F_obs2 = E_obs * E_obs
+    F_obs2_centered = F_obs2 - (w * F_obs2).sum() / w.sum().clamp(min=1e-30)
+    F_obs2_c_complex = (w * F_obs2_centered).to(complex_dtype)
+    w_complex = w.to(complex_dtype)
 
     W_num_flat = torch.zeros(G_fft ** 3, dtype=complex_dtype, device=device)
     W_den_flat = torch.zeros(G_fft ** 3, dtype=complex_dtype, device=device)
@@ -594,7 +716,7 @@ def local_translation_refine(
         Gi_conj = G_shifted[i].conj()
         pair = Gi_conj.view(1, -1) * G_shifted                           # (S, N)
         coeff_num = F_obs2_c_complex.view(1, -1) * pair
-        coeff_den = ones_complex.view(1, -1) * pair
+        coeff_den = w_complex.view(1, -1) * pair
         dh = (h_R_int - h_R_int[i:i + 1]) % G_fft                        # (S, N, 3)
         flat = (dh[..., 0] * G_stride_xy
                 + dh[..., 1] * G_fft + dh[..., 2])                       # (S, N)

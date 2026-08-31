@@ -282,6 +282,8 @@ def align_model_to_data(
     translation_grid_steps: int = 16,
     n_rotation_candidates: int = 15,
     use_llg_tf: bool = False,
+    tf_d_min: Optional[float] = None,
+    tf_d_max: Optional[float] = None,
     model_error_A: Optional[float] = None,
 ) -> "ModelFT":
     """Place ``model`` in ``data``'s crystal: rotation search, then translation.
@@ -316,6 +318,7 @@ def align_model_to_data(
         n_translation_candidates=n_translation_candidates,
         translation_grid_steps=translation_grid_steps,
         use_llg_tf=use_llg_tf,
+        tf_d_min=tf_d_min, tf_d_max=tf_d_max,
     )
     solutions = pipeline.run(do_translation=do_translation)
     return solutions[0].model

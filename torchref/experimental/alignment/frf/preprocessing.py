@@ -1,14 +1,14 @@
 """Observed-side preprocessing chain.
 
-Mirrors the chain in Phaser ``DataMR::dataMR_FRF`` (DataMR.cc:863-1133)
-and the auxiliary helpers in ``lib/math_FrenchWilson.cc`` and
-``lib/math_RiceLLG.cc``. The heavier ports live in sibling modules
-(:mod:`~torchref.experimental.alignment.frf.french_wilson` in particular);
-this module imports them and carries the Phaser source citations.
+Mirrors the chain in Phaser ``DataMR::dataMR_FRF`` (DataMR.cc:863-1133) and the
+auxiliary helpers in ``lib/math_RiceLLG.cc``, and carries the Phaser source
+citations for each piece.
 
-If a specific preprocessing piece turns out to be wrong (per Tier 2
-synthetic tests), the fix lives here — replace the import with a fresh
-implementation cited line-by-line to the corresponding Phaser source.
+Normalisation is deliberately **not** here. Turning amplitudes into E values is
+:class:`~torchref.scaling.WilsonNormaliser`'s job, shared with the translation
+search and with everything else in the repo that asks what the mean intensity at
+a resolution is. What lives here is the LERF1 intensity built from those E
+values, the multiplicity handling, and the symmetry detection.
 """
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from typing import Optional
 
 import torch
 
-from .french_wilson import french_wilson_preprocess      # math_FrenchWilson.cc + Dfactor.cc
 from ..sh import (
     get_high_order_axis,                              # phaser's highOrderAxis()
     compute_patterson_shell_variance,
@@ -40,7 +39,6 @@ def eterm_sigma_a(s_mag: torch.Tensor, delta_vrms_A: float) -> torch.Tensor:
 
 __all__ = [
     "eterm_sigma_a",
-    "french_wilson_preprocess",
     "get_high_order_axis",
     "build_lerf1_intensity",
     "apply_shell_variance_weights",

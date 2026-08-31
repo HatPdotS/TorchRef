@@ -52,8 +52,8 @@ from .align import (
 from .frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from .frf.types import RotationPeak
 from .rotation_search import search_peaks
-from .sh import assign_shells, equal_count_shell_edges
 from .translation import (
+    TranslationObs,
     TranslationPeak,
     amplitude_translation_search,
     fit_sigma_a_per_shell,
@@ -225,6 +225,11 @@ class MolecularReplacementPipeline(DeviceMixin):
         n_translation_candidates: int = 3,
         translation_grid_steps: int = 16,
         use_llg_tf: bool = False,
+        # Resolution window for the TRANSLATION set only, independent of the
+        # rotation search's [d_max, d_min]. None means no cut, which is what
+        # this stage has always done -- see `_prepare_translation_arrays`.
+        tf_d_min: Optional[float] = None,
+        tf_d_max: Optional[float] = None,
         # --- early stop ---
         min_tries: int = 3,
         max_tries: Optional[int] = None,
@@ -255,6 +260,8 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.n_translation_candidates = n_translation_candidates
         self.translation_grid_steps = translation_grid_steps
         self.use_llg_tf = use_llg_tf
+        self.tf_d_min = tf_d_min
+        self.tf_d_max = tf_d_max
 
         self.min_tries = min_tries
         self.max_tries = max_tries
@@ -263,8 +270,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._timer = _StageTimer(enabled=verbose >= 2)
         # Filled in by run().
         self._frf = None
-        self._F_obs_amp = None
-        self._hkl_keep = None
+        self._obs = None
         self._tmask = None
         self._eye3 = torch.eye(3, dtype=torch.float64)
 
@@ -462,7 +468,19 @@ class MolecularReplacementPipeline(DeviceMixin):
     # Stage 2: per-candidate translation search + local refine
     # ------------------------------------------------------------------
     def _prepare_translation_arrays(self) -> None:
-        """Resolution/validity-masked obs amplitudes + Miller indices."""
+        """Mask the observations for the translation search and normalise them once.
+
+        The window is ``[tf_d_max, tf_d_min]`` on top of the dataset's own
+        validity mask. Both default to ``None``, meaning **no resolution cut** --
+        which is what this stage has always done, though it used to claim
+        otherwise. So the translation search sees the data's full resolution
+        while the rotation search runs at ``[d_max, d_min]`` = [15, 4] A. That
+        asymmetry is deliberate on one side and unexamined on the other: the
+        rotation function is bandwidth-limited and cannot use high-resolution
+        terms, and nobody has measured what the translation function wants. The
+        parameter exists so that choosing is possible; the default does not
+        choose.
+        """
         data = self.data
         device = self.device
         hkl_full = data.hkl
@@ -473,9 +491,34 @@ class MolecularReplacementPipeline(DeviceMixin):
             tmask = torch.ones(
                 F_obs_full.shape[0], dtype=torch.bool, device=F_obs_full.device,
             )
+        if self.tf_d_min is not None or self.tf_d_max is not None:
+            rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)
+            s_all = (hkl_full.to(torch.float64) @ rec_basis.to(hkl_full.device)
+                     ).norm(dim=-1)
+            if self.tf_d_min is not None:
+                tmask = tmask & (s_all <= 1.0 / float(self.tf_d_min))
+            if self.tf_d_max is not None:
+                tmask = tmask & (s_all >= 1.0 / float(self.tf_d_max))
         self._tmask = tmask
-        self._F_obs_amp = F_obs_full[tmask].abs().to(torch.float64).to(device)
-        self._hkl_keep = hkl_full[tmask].to(device)
+
+        sig_F_full = getattr(data, "F_sigma", None)
+        self._obs = TranslationObs.build(
+            F_obs_full[tmask], hkl_full[tmask],
+            data.spacegroup, data.cell,
+            sig_F=None if sig_F_full is None else sig_F_full[tmask],
+            delta_vrms_A=self.model_error_A,
+            n_shells=max(self.n_shells // 2, 8),
+            device=device,
+        )
+        if self.verbose > 0:
+            d_hi = 1.0 / float(self._obs.s_mag.max())
+            d_lo = 1.0 / float(self._obs.s_mag.min().clamp(min=1e-9))
+            print(
+                f"mr: translation set {self._obs.F_obs.numel()} reflections, "
+                f"{d_lo:.1f}-{d_hi:.2f} A"
+                + ("" if sig_F_full is not None else " (no sigmas: unit weight)"),
+                flush=True,
+            )
 
     def _placement_for_candidate(self, rotated_k) -> Optional[tuple]:
         """Translation search + analytical-R local refine for one rotation.
@@ -498,14 +541,13 @@ class MolecularReplacementPipeline(DeviceMixin):
 
         timer.start("5_precompute_G")
         G_pre, h_R_pre = precompute_G_for_rotation(
-            evaluator, eye3, self._hkl_keep, data.spacegroup, data.cell,
+            evaluator, eye3, self._obs.hkl, data.spacegroup, data.cell,
         )
         timer.stop("5_precompute_G")
 
         timer.start("6_amplitude_TF")
         _, _, t_peaks = amplitude_translation_search(
-            F_obs=self._F_obs_amp, interpolator=evaluator,
-            R_rotation=eye3, hkl=self._hkl_keep,
+            obs=self._obs, interpolator=evaluator, R_rotation=eye3,
             spacegroup=data.spacegroup, real_cell=data.cell,
             grid_steps=self.translation_grid_steps,
             n_peaks=self.n_translation_peaks,
@@ -529,8 +571,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             t_init = torch.as_tensor(tp.translation, dtype=torch.float64)
             timer.start("7_local_TF_refine")
             t_refined, r_analytic = local_translation_refine(
-                F_obs=self._F_obs_amp, interpolator=evaluator,
-                R_rotation=eye3, hkl=self._hkl_keep,
+                obs=self._obs, interpolator=evaluator, R_rotation=eye3,
                 spacegroup=data.spacegroup, real_cell=data.cell,
                 t_init=t_init, radius=0.06, grid_steps=13,
                 n_refinement_passes=1,
@@ -550,34 +591,24 @@ class MolecularReplacementPipeline(DeviceMixin):
     def _llg_tf_rescore(self, t_peaks, G_pre, h_R_pre):
         """Re-rank translation peaks by a shared-σA Rice/Woolfson LLG.
 
-        Mirrors Phaser's FTF — the cheap amplitude correlation is a fast
-        pre-filter but ranks poorly for partial models; the LLG ranks
-        consistently with the rotation rescore.
+        Mirrors Phaser's FTF: the amplitude correlation is a cheap pre-filter,
+        and this is the likelihood that ranks its peaks. It reuses the run's
+        single Wilson normalisation and its shell binning, so ``E_obs`` here is
+        the same ``E_obs`` the correlation maximised.
+
+        Off by default. It is the strongest discriminator at rank level, and
+        end-to-end it changes nothing: 27/30 against 28/30 with one discordant
+        cell in 30, which the correlation wins.
         """
-        data = self.data
         device = self.device
-        F_obs_amp = self._F_obs_amp
-        hkl_keep = self._hkl_keep
-        tmask = self._tmask
+        obs = self._obs
         self._timer.start("6b_llg_tf_rescore")
 
-        rec_basis_keep = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)
-        s_mag_keep_tf = (hkl_keep.to(torch.float64) @ rec_basis_keep).norm(dim=-1)
-        tf_n_shells = max(self.n_shells // 2, 8)
-        tf_edges, _ = equal_count_shell_edges(s_mag_keep_tf, tf_n_shells)
-        tf_shell_idx = assign_shells(s_mag_keep_tf, tf_edges)
-        centric_keep_tf = (
-            data.centric[tmask].to(torch.bool).to(device)
-            if hasattr(data, "centric")
-            else torch.zeros_like(F_obs_amp, dtype=torch.bool)
-        )
-
-        cnt_tf = torch.bincount(tf_shell_idx, minlength=tf_n_shells).to(torch.float64)
-        sum_F2 = torch.zeros(tf_n_shells, dtype=torch.float64, device=device)
-        sum_F2.scatter_add_(0, tf_shell_idx, F_obs_amp * F_obs_amp)
-        mean_F2 = (sum_F2 / cnt_tf.clamp(min=1.0)).clamp(min=1e-30)
-        E_obs_tf = F_obs_amp / mean_F2.sqrt().index_select(0, tf_shell_idx)
-
+        # sigma_A is fitted against the top translation only, and reused for
+        # every candidate. It is a per-shell model-reliability curve, not a
+        # per-candidate score: refitting it per t would let each candidate
+        # choose the D that flatters it, which is scoring a model against a
+        # likelihood tuned to that model.
         t_top_t = torch.as_tensor(
             t_peaks[0].translation, dtype=torch.float64, device=device,
         )
@@ -587,13 +618,16 @@ class MolecularReplacementPipeline(DeviceMixin):
             ).to(G_pre.dtype),
         )
         Fc_top = (G_pre * phase_top).sum(dim=0).abs().to(torch.float64)
-        sum_Fc2 = torch.zeros(tf_n_shells, dtype=torch.float64, device=device)
-        sum_Fc2.scatter_add_(0, tf_shell_idx, Fc_top * Fc_top)
+        cnt_tf = torch.bincount(
+            obs.shell_idx, minlength=obs.n_shells,
+        ).to(torch.float64)
+        sum_Fc2 = torch.zeros(obs.n_shells, dtype=torch.float64, device=device)
+        sum_Fc2.scatter_add_(0, obs.shell_idx, Fc_top * Fc_top)
         mean_Fc2 = (sum_Fc2 / cnt_tf.clamp(min=1.0)).clamp(min=1e-30)
-        E_calc_top = Fc_top / mean_Fc2.sqrt().index_select(0, tf_shell_idx)
+        E_calc_top = Fc_top / mean_Fc2.sqrt().index_select(0, obs.shell_idx)
         sigma_a_tf = fit_sigma_a_per_shell(
-            E_obs_tf, E_calc_top, centric_keep_tf,
-            tf_shell_idx, tf_n_shells, n_grid=81,
+            obs.E_obs, E_calc_top, obs.centric,
+            obs.shell_idx, obs.n_shells, n_grid=81,
         )
 
         t_cands = torch.as_tensor(
@@ -601,9 +635,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             dtype=torch.float64, device=device,
         )
         llg_tf = llg_translation_rescore(
-            F_obs=F_obs_amp, hkl=hkl_keep, centric=centric_keep_tf,
-            s_mag=s_mag_keep_tf, shell_idx=tf_shell_idx, n_shells=tf_n_shells,
-            G=G_pre, h_R=h_R_pre, t_candidates=t_cands,
+            obs=obs, G=G_pre, h_R=h_R_pre, t_candidates=t_cands,
             sigma_a=sigma_a_tf, interp_var=None,
         )
         self._timer.stop("6b_llg_tf_rescore")

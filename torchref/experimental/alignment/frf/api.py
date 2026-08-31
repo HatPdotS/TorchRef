@@ -26,8 +26,7 @@ from torchref.scaling.weighting import (
     information_weight, inverse_variance_weight, normalise_weight,
     snr_from_amplitude,
 )
-from ..e_values import (SmoothSigmaE, convention_for_calc,
-                        convention_uses_sigma_f)
+from torchref.scaling import WilsonNormaliser
 from .data_mr import bessel_sh_expand, cross_correlate_xi
 from .peak_finder import find_rotation_peaks
 from .preprocessing import (
@@ -40,6 +39,12 @@ from .sitelist_ang import evaluate_rotation_function
 from .types import AdaptiveRotationFunction, RotationPeak
 
 __all__ = ["FastRotationFunction", "phaser_lmax_resolution"]
+
+#: Chebyshev order of the Wilson fit, both sides. Provisional -- inherited from
+#: :mod:`torchref.scaling.wilson`, and never screened against a metric sensitive
+#: to it. Screen it on the fit's own residual trend, not on truth rank: the
+#: rotation function is a correlation, where any per-resolution scaling cancels.
+WILSON_N_COEFF = 6
 
 
 def phaser_lmax_resolution(
@@ -144,7 +149,7 @@ class FastRotationFunction:
         grid_sampling_deg: float = 2.0,
         asu_idx: Optional[torch.Tensor] = None,
         s_mag_asu: Optional[torch.Tensor] = None,
-        e_convention: type = SmoothSigmaE,
+        wilson_n_coeff: int = WILSON_N_COEFF,
         obs_weight: str = "inverse_variance",
         snr_cap: float = DEFAULT_SNR_CAP,
         trust_cap: float = DEFAULT_TRUST_CAP,
@@ -177,12 +182,11 @@ class FastRotationFunction:
         # mechanism for a job that already has one.
         self.shell_variance_weights = bool(shell_variance_weights)
 
-        # The class, not an instance: a fitted Sigma(s) cannot exist before the
-        # reflections do, so the convention is constructed here -- twice, once
-        # per side. That the same class has to normalise both is the point;
-        # it puts obs and calc on a common footing under test rather than under
-        # assumption. Pass `functools.partial(Cls, ...)` to configure one.
-        self.e_convention = e_convention
+        # Chebyshev order of the Wilson fit. Both sides are normalised by the
+        # same class at the same order over the same abscissa -- that is what
+        # puts them on a common footing, and it is the reason Sigma_obs/Sigma_calc
+        # is a meaningful ratio rather than two unrelated curves.
+        self.wilson_n_coeff = int(wilson_n_coeff)
 
         # 1. Resolution window.
         #
@@ -249,16 +253,7 @@ class FastRotationFunction:
         shell_edges, _ = equal_count_shell_edges(smag_src, n_wilson_shells)
         obs_shell_idx = assign_shells(smag_src, shell_edges)
 
-        # 3b. Wilson normalisation. With sigmas, through the French-Wilson
-        #    posterior, which handles the axial reflections; without them, plain
-        #    per-shell Wilson.
-        # A convention that reads sigmas cannot run without them. Falling back
-        # to its own calc companion is the same choice the hardcoded branch made
-        # -- French-Wilson with sigmas, plain Wilson without -- just asked of the
-        # convention instead of assumed about it.
-        obs_cls = e_convention
-        if sig_F_obs is None and convention_uses_sigma_f(obs_cls):
-            obs_cls = convention_for_calc(obs_cls)
+        # 3b. Wilson normalisation, so that <E^2> = 1 on the observations.
         # One resolution window for both sides, taken from the bandwidth
         # coupling rather than from whichever reflections each side happens to
         # contain. Two fits on their own extremes span the same polynomial
@@ -268,10 +263,13 @@ class FastRotationFunction:
         # that reads Sigma_obs/Sigma_calc needs them on one abscissa.
         self._s_lo = 1.0 / float(d_max) if d_max else float(smag_src.min())
         self._s_hi = 1.0 / float(d_min)
-        conv_obs = obs_cls(
-            F_obs, smag_src, centric_obs, sig_F=sig_F_obs,
-            shell_idx=obs_shell_idx, n_shells=n_wilson_shells,
-            **self._range_kw(obs_cls),
+        # No epsilon here: the observations reach this point symmetry-unrolled,
+        # which puts each reflection into the sum once per operation that maps
+        # to it, so multiplicity is already carried by the geometry. Centricity
+        # is separate and does enter -- it is the Gamma shape.
+        conv_obs = WilsonNormaliser(
+            F_obs * F_obs, smag_src, centric=centric_obs,
+            n_coeff=self.wilson_n_coeff, s_lo=self._s_lo, s_hi=self._s_hi,
         )
         self._conv_obs = conv_obs
 
@@ -328,23 +326,6 @@ class FastRotationFunction:
         )
 
 
-    def _range_kw(self, cls) -> dict:
-        """``s_lo``/``s_hi`` for conventions that fit a curve, empty otherwise.
-
-        Only the smooth normaliser has an abscissa to pin; the per-shell
-        conventions bin whatever they are given and would reject the argument.
-        """
-        import inspect
-
-        target = getattr(cls, "func", cls)
-        try:
-            params = inspect.signature(target.__init__).parameters
-        except (TypeError, ValueError):                # pragma: no cover
-            return {}
-        if "s_lo" not in params:
-            return {}
-        return {"s_lo": self._s_lo, "s_hi": self._s_hi}
-
     def score_model(
         self,
         s_calc: torch.Tensor,
@@ -368,15 +349,17 @@ class FastRotationFunction:
         # measured to drop 0 of 339040 reflections on 3K7M and 0 of 271630 on
         # 1DAW. So take `s_calc` as given and only derive |s| from it.
         smag_calc = s_calc.norm(dim=-1)
-        calc_cls = convention_for_calc(self.e_convention)
-        self._conv_calc = calc_cls(
-            F_calc, smag_calc, n_shells=self.n_wilson_shells,
-            **self._range_kw(calc_cls),
+        # The same normaliser, at the same order, on the same abscissa. The calc
+        # side is a single molecular transform sampled in a P1 box, so there is
+        # no multiplicity and nothing is centric.
+        self._conv_calc = WilsonNormaliser(
+            F_calc * F_calc, smag_calc,
+            n_coeff=self.wilson_n_coeff, s_lo=self._s_lo, s_hi=self._s_hi,
         )
         E_calc = self._conv_calc.E
         if sigma_a_source == "empirical":
             # Measured, not assumed. Both curves were fitted on one abscissa
-            # (see `_range_kw`), which is what makes evaluating them at the same
+            # (see `self._s_lo`/`_s_hi`), which is what makes evaluating them at the same
             # |s| meaningful. Subsumes the Babinet term: the low-resolution
             # solvent deficit is simply what the ratio measures, per structure,
             # instead of two universal constants.

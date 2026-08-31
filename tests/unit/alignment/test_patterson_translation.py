@@ -1,12 +1,15 @@
-"""
-Unit tests for `amplitude_translation_search`.
+"""Unit tests for the fast translation function.
 
-The function does a coarse-grid Pearson correlation between |F_obs|² and
-|F_calc(h, t)|² over fractional translations. With the search model placed at
-canonical positions and `F_obs` derived from a translated copy of the same
-model, the top correlation peak (or one of the top-3) must land at `-t_true`
-modulo an allowed origin shift of the spacegroup — i.e. the translation that
-would bring the search model into agreement with the observed data.
+``amplitude_translation_search`` correlates normalised, weighted ``E_obs^2``
+against ``|F_calc(h, t)|^2`` over a fractional grid. With the search model at
+canonical positions and ``F_obs`` derived from a translated copy of the same
+model, the top peak (or one of the top three) must land at ``-t_true`` modulo an
+allowed origin shift of the space group -- the translation that would bring the
+search model into agreement with the observed data.
+
+``TranslationObs`` carries the observed side. It is built once here, as the
+pipeline builds it once per run, because normalisation and weighting are
+properties of the observations and do not change when the model moves.
 """
 from pathlib import Path
 
@@ -14,7 +17,10 @@ import numpy as np
 import pytest
 import torch
 
-from torchref.experimental.alignment.translation import amplitude_translation_search
+from torchref.experimental.alignment.translation import (
+    TranslationObs,
+    amplitude_translation_search,
+)
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
 
@@ -61,10 +67,13 @@ def test_amplitude_tf_zero_translation(setup):
     model_p1.spacegroup = "P 1"
     evaluator = _ModelEvaluator(model_p1)
 
+    obs = TranslationObs.build(
+        F_obs, data.hkl[mask], data.spacegroup, data.cell,
+    )
     R_id = torch.eye(3, dtype=torch.float64)
     _, _, peaks = amplitude_translation_search(
-        F_obs=F_obs, interpolator=evaluator, R_rotation=R_id,
-        hkl=data.hkl[mask], spacegroup=data.spacegroup, real_cell=data.cell,
+        obs=obs, interpolator=evaluator, R_rotation=R_id,
+        spacegroup=data.spacegroup, real_cell=data.cell,
         grid_steps=12, n_peaks=10, cluster_radius=0.05,
     )
     assert len(peaks) > 0
@@ -98,10 +107,13 @@ def test_amplitude_tf_recovers_known_translation(setup):
     )
     evaluator = _ModelEvaluator(model_p1)
 
+    obs = TranslationObs.build(
+        F_obs, data.hkl[mask], data.spacegroup, data.cell,
+    )
     R_id = torch.eye(3, dtype=torch.float64)
     _, _, peaks = amplitude_translation_search(
-        F_obs=F_obs, interpolator=evaluator, R_rotation=R_id,
-        hkl=data.hkl[mask], spacegroup=data.spacegroup, real_cell=data.cell,
+        obs=obs, interpolator=evaluator, R_rotation=R_id,
+        spacegroup=data.spacegroup, real_cell=data.cell,
         grid_steps=12, n_peaks=10, cluster_radius=0.05,
     )
     assert len(peaks) > 0
