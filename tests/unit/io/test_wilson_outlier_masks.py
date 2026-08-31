@@ -126,10 +126,10 @@ def test_planted_zingers_are_rejected():
 
 
 @pytest.mark.unit
-def test_absent_measurements_are_sanity_not_outliers():
+def test_absent_measurements_are_sanity_not_outliers(mtz_dir):
     """A row with no measurement is not an improbable observation, and counting
     it as one is what made the old report meaningless."""
-    data = ReflectionData(verbose=0).load_mtz("tests/files/mtz/6G9X.mtz")
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "6G9X.mtz"))
 
     absent = ~data.masks["sanity_F"]
     assert int(absent.sum()) > 20000, "6G9X carries a large absent population"
@@ -140,8 +140,8 @@ def test_absent_measurements_are_sanity_not_outliers():
 
 
 @pytest.mark.unit
-def test_intensity_path_keeps_french_wilsons_guard_under_its_own_key():
-    data = ReflectionData(verbose=0).load_mtz("tests/files/mtz/4BX9.mtz")
+def test_intensity_path_keeps_french_wilsons_guard_under_its_own_key(mtz_dir):
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "4BX9.mtz"))
 
     assert data.I is not None, "4BX9 should load via the intensity path"
     assert ReflectionData.FRENCH_WILSON_MASK_KEY in data.masks
@@ -164,11 +164,11 @@ def test_intensity_path_keeps_french_wilsons_guard_under_its_own_key():
     "name",
     ["1DAW", "2DQ6", "3A5V", "3E98", "3GR5", "3K7M", "3VRJ", "4BX9", "5BOV", "6G9X"],
 )
-def test_deposited_structures_lose_almost_nothing(name, pdb_dir):
+def test_deposited_structures_lose_almost_nothing(name, mtz_dir):
     """Deposited data has already been through processing and merging; a
     criterion that rejects percent-level populations of it is mis-calibrated,
     not perceptive."""
-    data = ReflectionData(verbose=0).load_mtz(f"tests/files/mtz/{name}.mtz")
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / f"{name}.mtz"))
 
     measured = int(data.masks["sanity_F"].sum())
     rejected = int((~data.masks[ReflectionData.WILSON_MASK_KEY]).sum())
@@ -177,7 +177,7 @@ def test_deposited_structures_lose_almost_nothing(name, pdb_dir):
 
 
 @pytest.mark.unit
-def test_flagged_reflections_show_no_directional_bias():
+def test_flagged_reflections_show_no_directional_bias(mtz_dir):
     """The regression that catches a lost anisotropy correction.
 
     1DAW diffracts about four times more strongly along ``h*`` than ``l*``. A
@@ -185,7 +185,7 @@ def test_flagged_reflections_show_no_directional_bias():
     the strong one, so the flagged set piles up along ``h*`` -- 52 of 56 with
     mean ``|h|`` nearly twice the dataset's, before the correction existed.
     """
-    data = ReflectionData(verbose=0).load_mtz("tests/files/mtz/1DAW.mtz")
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
 
     _, flagged = _plant_zingers(data, n=400, seed=13)
     assert len(flagged) > 100, "the planted population must be found first"

@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
-from torchref.base.fourier import get_real_grid, ifft
+from torchref.base.fourier import ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
 from torchref.config import dtypes, get_default_device
 from torchref.symmetry import Cell, SpaceGroup
@@ -49,9 +49,12 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     cell, spacegroup : Cell, SpaceGroup
         The unit cell and the space group as an nn.Module carrying its symmetry
         matrices and translations; ``symmetry`` is an alias for ``spacegroup``.
-    gridsize, real_space_grid, voxel_size : torch.Tensor or None
-        Grid dimensions ``(nx, ny, nz)``, coordinate grid ``(nx, ny, nz, 3)`` and
-        voxel dimensions -- all ``None`` until :meth:`setup_grid` runs.
+    gridsize, voxel_size : torch.Tensor or None
+        Grid dimensions ``(nx, ny, nz)`` and the voxel edge vector sum -- both
+        ``None`` until :meth:`setup_grid` runs. No coordinate grid is stored: the
+        splats derive a voxel's Cartesian position from its index, so materialising
+        one would cost ``12 * nx * ny * nz`` bytes that nothing reads. Call
+        :func:`torchref.base.fourier.get_real_grid` if you genuinely need one.
     """
 
     def __init__(
@@ -114,7 +117,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
         # Buffers (registered during setup_grid)
         self.register_buffer("gridsize", None)
-        self.register_buffer("real_space_grid", None)
         self.register_buffer("voxel_size", None)
 
         # Late symmetry compatibility flag (set during setup_grid)
@@ -201,6 +203,13 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     # Grid Setup Methods
     # =========================================================================
 
+    @property
+    def grid_shape(self) -> Optional[Tuple[int, int, int]]:
+        """Map dimensions ``(nx, ny, nz)``, or ``None`` before :meth:`setup_grid`."""
+        if self.gridsize is None:
+            return None
+        return tuple(int(n) for n in self.gridsize)
+
     def compute_optimal_gridsize(self, max_res: Optional[float] = None) -> tuple:
         """
         Compute optimal grid dimensions using the stored cell and spacegroup.
@@ -245,37 +254,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             )
         return gridsize_optimized
 
-    @staticmethod
-    def compute_real_space_grid(
-        fractional_matrix: torch.Tensor,
-        gridsize: torch.Tensor,
-        device: torch.device = None,
-    ) -> torch.Tensor:
-        """
-        Generate the real-space coordinate grid.
-
-        Parameters
-        ----------
-        fractional_matrix : torch.Tensor
-            Fractionalization matrix mapping Cartesian to fractional
-            coordinates, with shape (3, 3).
-        gridsize : torch.Tensor
-            Grid dimensions (nx, ny, nz).
-        device : torch.device, optional
-            Target device. Defaults to the configured default device.
-
-        Returns
-        -------
-        torch.Tensor
-            Real-space grid with shape (nx, ny, nz, 3).
-        """
-        # Forward ``device`` as-is, including ``None``: ``get_real_grid`` infers
-        # from ``fractional_matrix`` when no device is given, and resolving the
-        # global default here would preempt that.
-        return get_real_grid(
-            fractional_matrix=fractional_matrix, gridsize=gridsize, device=device
-        )
-
     def setup_grid(
         self,
         gridsize: Optional[Tuple[int, int, int]] = None,
@@ -318,20 +296,21 @@ class SfFFT(DeviceMovementMixin, nn.Module):
                 optimal_gridsize, dtype=dtypes.int, device=self.device
             )
 
-        # Compute real space grid
-        self.real_space_grid = self.compute_real_space_grid(
-            self._cell.fractional_matrix, self.gridsize, self.device
+        # The step between diagonally adjacent grid points, i.e. the sum of the three
+        # cell edge vectors each divided by its own sampling count. Equal to the true
+        # per-axis voxel edge lengths only for an orthogonal cell; kept because that is
+        # what the previous grid-differencing definition produced.
+        self.voxel_size = (
+            self._cell.fractional_matrix.to(self.device)
+            @ (1.0 / self.gridsize.to(self._cell.fractional_matrix.dtype))
         )
-
-        # Compute voxel size
-        self.voxel_size = self.real_space_grid[2, 2, 2] - self.real_space_grid[1, 1, 1]
 
         # Every symmetry-equivalent HKL lands on an integer grid point exactly when
         # the grid admits direct indexing, which the space group answers without
         # building an operator.
         if self._spacegroup is not None:
             self._late_symmetry_compatible = self._spacegroup.can_index_directly(
-                self.real_space_grid.shape[:-1]
+                self.grid_shape
             )
 
             if self.use_late_symmetry and self._late_symmetry_compatible:
@@ -353,7 +332,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             self._spacegroup.reset_cache()
 
         if self.verbose > 2:
-            print(f"Grid shape: {self.real_space_grid.shape[:-1]}")
+            print(f"Grid shape: {self.grid_shape}")
             print(f"Voxel size: {self.voxel_size}")
 
     # =========================================================================
@@ -399,13 +378,14 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         torch.Tensor
             Electron density map with shape (nx, ny, nz).
         """
-        if self.real_space_grid is None:
+        if self.gridsize is None:
             self.setup_grid()
 
         from torchref.base.electron_density.main import build_electron_density
 
         density_map = build_electron_density(
-            real_space_grid=self.real_space_grid,
+            grid_shape=self.grid_shape,
+            device=self.device,
             xyz_iso=xyz_iso,
             adp_iso=adp_iso,
             occ_iso=occ_iso,
@@ -413,7 +393,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             B_iso=B_iso,
             inv_frac_matrix=self.inv_fractional_matrix,
             frac_matrix=self.fractional_matrix,
-            voxel_size=self.voxel_size,
             xyz_aniso=xyz_aniso,
             u_aniso=u_aniso,
             occ_aniso=occ_aniso,

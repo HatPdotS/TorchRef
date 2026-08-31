@@ -156,7 +156,9 @@ def test_entries_survive_a_device_apply(restraints):
     block = restraints.topology.atoms.bonds.indices
     after = restraints.restraints["bond"]["all"]["indices"]
     assert after.data_ptr() == block.data_ptr(), "entries no longer alias the block"
-    assert torch.equal(after, before)
+    # ``before`` was cloned prior to the move, so it sits on device.current; the move
+    # target here is CPU, which is only a no-op when those already agree.
+    assert torch.equal(after, before.cpu())
     assert {
         t: restraints.restraints[t]["all"]["indices"].shape[0] for t in KEYED_TYPES
     } == n_before

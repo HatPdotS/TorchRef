@@ -384,8 +384,8 @@ TARGET_CASES: List[TargetDeviceCase] = [
         ).ADPLocalityTarget(b["model"]),
         "ADPLocalityTarget",
     ),
-    # Both are inert outside field mode but still device-bearing, so they construct
-    # on a plain model and must track its device like any other target.
+    # Registered unconditionally and inert off field mode, so the plain bundle
+    # model is enough to exercise their device handling.
     TargetDeviceCase(
         "NodeLoadTarget",
         lambda b, d: __import__(

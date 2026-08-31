@@ -220,7 +220,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         self.model = ModuleReference(model)  # Store reference to model
         self.model.get_vdw_radii()  # Ensure VdW radii are available
         assert self.model, "Model is not initialized"
-        if model.real_space_grid == None:
+        if model.gridsize is None:
             model.setup_grid()
 
         # Phenix-style parameters
@@ -353,14 +353,13 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
 
         xyz = self.model.xyz()  # (N_atoms, 3)
         vdw_radii = self.model.get_vdw_radii()  # (N_atoms,)
-        self.real_space_grid = self.model.real_space_grid
         inv_frac = self.model.inv_fractional_matrix
         frac = self.model.fractional_matrix
 
         with torch.no_grad():
             spacegroup = self.model.fft.spacegroup
             n_ops = spacegroup.n_ops
-            grid_shape = self.real_space_grid.shape[:-1]
+            grid_shape = self.model.grid_shape
             device = self.model.device
             n_atoms = xyz.shape[0]
 

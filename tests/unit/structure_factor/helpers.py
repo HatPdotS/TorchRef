@@ -465,11 +465,11 @@ def sf_fft_for(
 #    falls back to the portable splat (``main.py`` catches and falls through), so a
 #    dispatch-driven test can pass while measuring a different kernel than the one it
 #    names. Calling the kernel directly settles that by construction.
-# 2. **No global-config coupling.** ``SfFFT`` builds its grid through ``get_real_grid``,
-#    which reads the *global* ``dtypes.float`` and takes no dtype argument -- so an MPS
-#    ``SfFFT`` under this package's float64 pin would try to allocate float64 on MPS and
-#    fail. ``ifft`` and ``extract_structure_factor_from_grid`` read no global config at
-#    all, so :func:`density_to_F` needs no config switching.
+# 2. **No global-config coupling.** ``build_electron_density`` allocates its map at the
+#    *global* ``dtypes.float`` when no ``dtype`` is passed, so a dispatch-driven MPS test
+#    under this package's float64 pin would try to allocate float64 on MPS and fail.
+#    ``ifft`` and ``extract_structure_factor_from_grid`` read no global config at all, so
+#    :func:`density_to_F` needs no config switching.
 #
 # The dispatch ladder is a separate concern, tested in ``test_dispatch.py``.
 
