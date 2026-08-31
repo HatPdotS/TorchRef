@@ -1043,6 +1043,66 @@ def u6_to_raw6(U: torch.Tensor, epsilon: float) -> torch.Tensor:
     return torch.where(finite.unsqueeze(-1), raw, torch.full_like(raw, float("nan")))
 
 
+# ----------------------------------------------------------------------------------
+# The same transform at arbitrary size, for a covariance that is not a 3x3 U tensor.
+# A node of the disorder field carries the covariance of its displacement modes, which
+# is q x q for q modes; the pair above is the q = 3 case with the indexing unrolled.
+# Kept as the general form rather than replacing the unrolled pair, which is a forward
+# hot path.
+# ----------------------------------------------------------------------------------
+
+
+def chol_param_count(q: int) -> int:
+    """Free parameters in a ``q x q`` lower-triangular factor."""
+    return q * (q + 1) // 2
+
+
+def raw_to_cholesky(raw: torch.Tensor, q: int, epsilon: float) -> torch.Tensor:
+    """Free parameters to a lower-triangular ``(..., q, q)`` factor.
+
+    Layout is ``[log diagonal (q) | strict lower triangle (q(q-1)/2), row major]``, and
+    the diagonal is ``exp(x) + epsilon``, so ``L L^T`` is positive-definite for any
+    input and ``epsilon`` bounds its smallest eigenvalue from below. At ``q = 3`` this
+    is the same layout and the same convention as :func:`raw6_to_u6`.
+
+    No factorisation happens here, which is what makes it safe in a forward pass.
+    """
+    rows, cols = torch.tril_indices(q, q, offset=-1, device=raw.device)
+    L = raw.new_zeros(*raw.shape[:-1], q, q)
+    diag = torch.exp(raw[..., :q]) + epsilon
+    idx = torch.arange(q, device=raw.device)
+    L[..., idx, idx] = diag
+    if rows.numel():
+        L[..., rows, cols] = raw[..., q:]
+    return L
+
+
+def psd_to_raw(M: torch.Tensor, epsilon: float) -> torch.Tensor:
+    """Symmetric ``(..., q, q)`` matrix to Cholesky free parameters, projecting onto PSD.
+
+    The inverse of :func:`raw_to_cholesky`, with the same eigenvalue clamp and the same
+    CPU-forced ``eigh`` as :func:`u6_to_raw6`: a least-squares or seeded covariance need
+    not be positive-definite, and cuSolver's batched kernels fail on the degenerate
+    batches a near-isotropic model produces. Runs at construction, never in a forward
+    pass.
+    """
+    q = M.shape[-1]
+    src_device = M.device
+    M = 0.5 * (M + M.transpose(-1, -2))
+    M = M.cpu()
+    w, V = torch.linalg.eigh(M)
+    w = w.clamp(min=epsilon * epsilon)
+    M = (V * w.unsqueeze(-2)) @ V.transpose(-1, -2)
+    L = torch.linalg.cholesky(M)
+    idx = torch.arange(q)
+    rows, cols = torch.tril_indices(q, q, offset=-1)
+    raw_diag = torch.log((L[..., idx, idx] - epsilon).clamp(min=1e-12))
+    parts = [raw_diag]
+    if rows.numel():
+        parts.append(L[..., rows, cols])
+    return torch.cat(parts, dim=-1).to(src_device)
+
+
 class CholeskyMixedTensor(MixedTensor):
     """A MixedTensor for anisotropic ADPs (U tensors) kept positive-definite.
 
