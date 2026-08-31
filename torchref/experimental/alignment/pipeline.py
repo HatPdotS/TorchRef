@@ -174,8 +174,6 @@ class MRSolution:
         solvent-aware Scaler R-work.
     model : ModelFT
         The rotated (+translated +refined) model for this candidate.
-    clash_score : float, optional
-        Steric clash score, only populated when ``clash_filter`` is enabled.
     """
 
     rotation: np.ndarray
@@ -184,7 +182,6 @@ class MRSolution:
     translation_score: float
     r_factor: float
     model: "ModelFT"
-    clash_score: Optional[float] = None
 
 
 class MolecularReplacementPipeline(DeviceMixin):

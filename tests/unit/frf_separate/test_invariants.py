@@ -17,8 +17,10 @@ from torchref.experimental.alignment.frf.sitelist_ang import (
     build_dense_map_per_beta,
     evaluate_rotation_function,
 )
-from torchref.experimental.alignment.frf.wigner_d import wigner_contraction_per_beta
-from torchref.experimental.alignment.wigner import small_d_packed
+from torchref.experimental.alignment.frf.wigner_d import (
+    _wigner_d_blocks,
+    wigner_contraction_per_beta,
+)
 
 
 def _make_xi(L: int, seed: int = 42) -> torch.Tensor:
@@ -126,12 +128,13 @@ def test_wigner_contraction_symmetry():
     """At β = π/2 the small-d satisfies d^l_{m,n}(π/2) = (-1)^{l+m} d^l_{m,-n}(π/2)."""
     L = 8
     betas = torch.tensor([math.pi / 2], dtype=torch.float64)
-    d = small_d_packed(L, betas)[0]   # (L, 2L-1, 2L-1)
+    blocks = _wigner_d_blocks(L, betas, torch.device("cpu"), torch.float64)
     for l in range(2, L, 2):
+        d = blocks[l - 1][0]                          # (2l+1, 2l+1)
         for m in range(-l, l + 1):
             for n in range(-l, l + 1):
-                lhs = d[l, L - 1 + m, L - 1 + n].item()
-                rhs = ((-1) ** (l + m)) * d[l, L - 1 + m, L - 1 - n].item()
+                lhs = d[l + m, l + n].item()
+                rhs = ((-1) ** (l + m)) * d[l + m, l - n].item()
                 assert abs(lhs - rhs) < 1e-10, (
                     f"l={l} m={m} n={n}: {lhs} vs {rhs}"
                 )
@@ -142,12 +145,13 @@ def test_beta_reflection_identity():
     L = 6
     beta = 0.37
     betas = torch.tensor([beta, math.pi - beta], dtype=torch.float64)
-    d = small_d_packed(L, betas)
+    blocks = _wigner_d_blocks(L, betas, torch.device("cpu"), torch.float64)
     for l in range(2, L, 2):
+        d = blocks[l - 1]                             # (2, 2l+1, 2l+1)
         for m in range(-l, l + 1):
             for n in range(-l, l + 1):
-                lhs = d[1, l, L - 1 + m, L - 1 + n].item()                   # d(π-β)
-                rhs = ((-1) ** (l + m)) * d[0, l, L - 1 + m, L - 1 - n].item()  # (-1)^(l+m) d(β)|n→-n
+                lhs = d[1, l + m, l + n].item()                    # d(π-β)
+                rhs = ((-1) ** (l + m)) * d[0, l + m, l - n].item()  # (-1)^(l+m) d(β)|n→-n
                 assert abs(lhs - rhs) < 1e-10
 
 

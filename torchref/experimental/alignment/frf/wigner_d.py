@@ -4,8 +4,8 @@ Phaser source: ``phaser/lib/wigner.h`` (the C++ template
 ``djmn_recursive_table`` used in ``FastRot.cc:41`` per-l, per-β).
 
 Phaser uses the Sakurai recurrence convention; the equivalent Edmonds
-(4.1.23) convention is used throughout this package and is pinned against
-Phaser's output by ``tests/unit/alignment/test_wigner.py``.
+(4.1.23) convention is used throughout this package. Its small-d identities are
+guarded by ``tests/unit/frf_separate/test_invariants.py``.
 ``wigner_contraction_per_beta`` builds the small-d blocks it needs from the
 ``J_y`` eigendecomposition, which stays bounded to any ``l``. The blocks depend
 only on the bandwidth and the β grid, so they are memoised for reuse across
