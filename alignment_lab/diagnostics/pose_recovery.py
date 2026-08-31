@@ -138,6 +138,10 @@ def main() -> int:
             resid, err = float("nan"), f"{type(exc).__name__}: {exc}"
         secs = time.time() - t0
         ok = (resid == resid) and resid <= args.success_deg
+        print(f"ROW {arm} {args.pdb} trial={args.trial} "
+              f"n_cand={args.n_rotation_candidates} "
+              f"resid={resid:.3f} ok={int(bool(ok))} seconds={secs:.1f}",
+              flush=True)
         print(f"  {arm:16s} {resid:10.2f} {('yes' if ok else 'NO'):>4s} {secs:9.1f}"
               + (f"   {err}" if err else ""))
         if writer:
