@@ -1252,6 +1252,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         n_nodes: int = None,
         k_neighbors: int = 12,
         refine_node_positions: bool = True,
+        mode_set: str = None,
     ):
         """Set the atomic displacement parameter (ADP) parametrization.
 
@@ -1267,7 +1268,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Parameters
         ----------
-        mode : {"isotropic", "anisotropic", "field", "field_aniso"}, optional
+        mode : {"isotropic", "anisotropic", "field", "field_aniso", "preserve"}, optional
             ``"isotropic"`` (default) converts every atom, previously anisotropic
             ones to ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"``
             converts those matching ``aniso_selection``, expanding isotropic atoms
@@ -1275,6 +1276,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             with a :class:`~torchref.model.disorder_field.DisorderFieldTensor`, whose
             node values are least-squares fitted to the B it replaces, so the atom
             count stops setting the ADP parameter count.
+            ``"preserve"`` is a no-op, leaving the ADPs exactly as the file supplied
+            them: use it when the starting model's own ADPs are what is being measured.
         aniso_selection : str, optional
             Phenix-style selection for ``mode="anisotropic"``, default
             ``"not resname HOH and not element H"``; ignored otherwise.
@@ -1286,6 +1289,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Give each node a refinable offset from its anchor centroid, at three extra
             parameters per node. On by default: it is what lets the load-balancing
             restraint move a node toward atoms instead of only widening its kernel.
+        mode_set : str, optional
+            For ``mode="field_aniso"``, a key of
+            :data:`~torchref.model.disorder_field.MODE_SETS` --- ``"rigid"`` is TLS,
+            ``"affine"`` adds shear and extension. The node then stores the covariance
+            of its displacement modes, so the U it gives an atom depends on where that
+            atom sits inside the node's region rather than being constant across it.
+            Default ``None`` keeps the constant-U payload.
 
         Notes
         -----
@@ -1297,6 +1307,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         wrapper on the way out.
         """
         if not self.ctx.initialized or self.pdb is None:
+            return
+        if mode == "preserve":
+            # Leave the ADPs exactly as loaded. Constructing a Refinement otherwise
+            # reparametrises them before anything else runs, which silently discards a
+            # deposited model's anisotropy -- use this when the starting model's own
+            # ADPs are the thing being measured.
             return
         if mode in ("field", "field_aniso"):
             aniso = mode == "field_aniso"
@@ -1332,6 +1348,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 k_neighbors=k_neighbors,
                 refine_node_positions=refine_node_positions,
                 anisotropic=aniso,
+                mode_set=mode_set,
             )
             return
         if mode == "isotropic":
@@ -1348,7 +1365,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         else:
             raise ValueError(
                 f"Unknown ADP mode: {mode!r}. Use 'isotropic', 'anisotropic', "
-                "'field' or 'field_aniso'."
+                "'field', 'field_aniso' or 'preserve'."
             )
         self._apply_adp_partition(aniso_mask)
 
@@ -1377,6 +1394,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         k_neighbors: int = 12,
         refine_node_positions: bool = False,
         anisotropic: bool = False,
+        mode_set: str = None,
     ):
         """Replace a per-atom ADP wrapper with a node field fitted to it.
 
@@ -1384,13 +1402,24 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ``adp`` and leaves the model isotropic, an anisotropic one takes over ``u`` and
         the model refines every selected atom anisotropically. Both expect the partition
         to have run first, which :meth:`set_adp_mode` arranges.
+
+        ``mode_set`` selects a displacement-mode payload in place of the constant-U one,
+        which is the difference between a node holding a single ADP and a node holding a
+        motion whose ADP varies across its region.
         """
         from torchref.model.disorder_field import (
             AnisotropicPayload,
             DisorderFieldTensor,
             IsotropicPayload,
+            ModeCovariancePayload,
             density_anchor_rows,
         )
+
+        if mode_set is not None and not anisotropic:
+            raise ValueError(
+                "mode_set describes an anisotropic displacement field and has no "
+                "isotropic form; use mode='field_aniso'."
+            )
 
         with torch.no_grad():
             xyz = self.xyz().detach()
@@ -1410,12 +1439,19 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # wearing a node's clothes.
         anchor_rows = density_anchor_rows(xyz, min(n_nodes, len(self.pdb)))
 
+        if mode_set is not None:
+            payload = ModeCovariancePayload(mode_set)
+        elif anisotropic:
+            payload = AnisotropicPayload()
+        else:
+            payload = IsotropicPayload()
+
         field = DisorderFieldTensor(
             initial_values=target.to(self.dtype_float),
             xyz_fn=self.xyz,
             n_nodes=n_nodes,
             refine_positions=refine_node_positions,
-            payload=AnisotropicPayload() if anisotropic else IsotropicPayload(),
+            payload=payload,
             anchor_rows=anchor_rows,
             k_neighbors=k_neighbors,
             name="aniso_U" if anisotropic else "adp",
@@ -1431,7 +1467,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.adp.update_refinable_mask(self.adp_mask)
 
         if self.ctx.verbose > 0:
-            kind = "aniso U" if anisotropic else "iso B"
+            kind = mode_set if mode_set else ("aniso U" if anisotropic else "iso B")
             was = len(self.pdb) * (6 if anisotropic else 1)
             print(
                 f"ADP field ({kind}): {field.n_nodes} nodes, k={k_neighbors}, "

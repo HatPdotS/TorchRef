@@ -11,10 +11,10 @@ meet in this class, and callers must not mix them --- masks handed to
 :meth:`~DisorderFieldTensor.update_refinable_mask` are in ATOM space, while
 ``refinable_mask`` and :meth:`get_refinable_count` are in NODE space.
 
-A node's position is *derived*, not refined: it is the centroid of the atoms within
-``anchor_radius`` bonds of its anchor atom. That keeps a node inside the molecule,
-confined to one connected fragment, and moving with the model, and it leaves the
-optimiser no free coordinate to wander with.
+A node's position is anchored, not free: it is the centroid of the atoms in its anchor
+cluster, plus an optional refinable offset. Anchoring keeps a node inside the molecule
+and moving with the model, so the offset says only where it sits *relative* to the atoms
+it serves and cannot wander off into solvent.
 """
 
 import math
@@ -24,7 +24,15 @@ import torch
 from torch import nn
 
 from torchref.config import get_float_dtype, normalize_device
-from torchref.model.parameter_wrappers import MixedTensor, raw6_to_u6, u6_to_raw6
+from torchref.model.parameter_wrappers import (
+    MixedTensor,
+    chol_param_count,
+    psd_to_raw,
+    raw6_to_u6,
+    raw_to_cholesky,
+    u6_to_matrix,
+    u6_to_raw6,
+)
 from torchref.utils.utils import ModuleReference
 
 __all__ = [
@@ -32,6 +40,8 @@ __all__ = [
     "NodePayload",
     "IsotropicPayload",
     "AnisotropicPayload",
+    "ModeCovariancePayload",
+    "MODE_SETS",
     "farthest_point_anchors",
     "density_anchor_rows",
     "build_neighbor_list",
@@ -204,8 +214,14 @@ class NodePayload:
         """
         raise NotImplementedError
 
-    def fit(self, target, w_dense, epsilon):
-        """``(K, width)`` least-squares payload reproducing ``target``."""
+    def fit(self, target, w_dense, epsilon, xyz, node_pos, neighbor_list):
+        """``(K, width)`` payload whose field reproduces ``target`` as closely as it can.
+
+        Takes the same geometric context as :meth:`contributions` and for the same
+        reason: an r-dependent payload cannot build its modes without it. ``w_dense`` is
+        the ``(n_atoms, K)`` weight matrix at the seeded kernel widths, which is what
+        makes the payload-only problem linear.
+        """
         raise NotImplementedError
 
     def log_magnitude(self, payload):
@@ -229,7 +245,7 @@ class IsotropicPayload(NodePayload):
     def contributions(self, payload, xyz, node_pos, neighbor_list):
         return torch.exp(payload[:, 0])[neighbor_list].unsqueeze(-1)
 
-    def fit(self, target, w_dense, epsilon):
+    def fit(self, target, w_dense, epsilon, xyz, node_pos, neighbor_list):
         b = _ridged_solve(w_dense, target.unsqueeze(-1)).squeeze(-1)
         return torch.log(b.clamp(min=epsilon)).unsqueeze(-1)
 
@@ -262,7 +278,7 @@ class AnisotropicPayload(NodePayload):
     def contributions(self, payload, xyz, node_pos, neighbor_list):
         return raw6_to_u6(payload, self.epsilon)[neighbor_list]
 
-    def fit(self, target, w_dense, epsilon):
+    def fit(self, target, w_dense, epsilon, xyz, node_pos, neighbor_list):
         """Fit six U components at once, then re-encode as Cholesky parameters.
 
         The per-atom U is linear in each component independently, so this is the same
@@ -279,6 +295,233 @@ class AnisotropicPayload(NodePayload):
     def log_magnitude(self, payload):
         u6 = raw6_to_u6(payload, self.epsilon)
         b_eq = (8.0 * math.pi**2 / 3.0) * (u6[:, 0] + u6[:, 1] + u6[:, 2])
+        return torch.log(b_eq.clamp(min=1e-6))
+
+
+# ----------------------------------------------------------------------------------
+# Displacement-mode generators. A gradient mode is a constant 3x3 matrix G acting on the
+# displacement r from the node, giving the displacement field psi(r) = G r. Rotation,
+# dilation and deviatoric strain together span every linear displacement field, and
+# splitting them that way is what lets a mode set stop partway.
+# ----------------------------------------------------------------------------------
+
+_SQ2 = math.sqrt(2.0)
+_SQ3 = math.sqrt(3.0)
+_SQ6 = math.sqrt(6.0)
+
+# Rotations are NOT normalised: psi_i(r) = e_i x r exactly, so that the rigid mode set
+# reproduces the textbook TLS formula with no stray factor. The others are Frobenius
+# normalised, which is a conditioning choice and nothing more.
+_GENERATORS = {
+    "rotation": [
+        [[0.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],   # e1 x r
+        [[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],   # e2 x r
+        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],   # e3 x r
+    ],
+    "dilation": [
+        [[1 / _SQ3, 0.0, 0.0], [0.0, 1 / _SQ3, 0.0], [0.0, 0.0, 1 / _SQ3]],
+    ],
+    "deviatoric": [
+        [[1 / _SQ2, 0.0, 0.0], [0.0, -1 / _SQ2, 0.0], [0.0, 0.0, 0.0]],
+        [[1 / _SQ6, 0.0, 0.0], [0.0, 1 / _SQ6, 0.0], [0.0, 0.0, -2 / _SQ6]],
+        [[0.0, 1 / _SQ2, 0.0], [1 / _SQ2, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        [[0.0, 0.0, 1 / _SQ2], [0.0, 0.0, 0.0], [1 / _SQ2, 0.0, 0.0]],
+        [[0.0, 0.0, 0.0], [0.0, 0.0, 1 / _SQ2], [0.0, 1 / _SQ2, 0.0]],
+    ],
+}
+
+#: Named mode sets, in order of expressiveness. Three translations are always present;
+#: each entry lists the gradient modes added on top.
+MODE_SETS = {
+    "constant": (),
+    "rigid": ("rotation",),
+    "rigid_dilation": ("rotation", "dilation"),
+    "affine": ("rotation", "dilation", "deviatoric"),
+}
+
+
+class ModeCovariancePayload(NodePayload):
+    """A node carries the covariance of its displacement modes; TLS is one mode set.
+
+    Instead of storing an ADP and averaging it, store the *displacement field* the node
+    represents and take its covariance. With ``q`` modes ``Psi(r) = [psi_1(r) ... psi_q(r)]``
+    the node's disorder is ``u(r) = Psi(r) c`` for a random coefficient vector ``c``, and
+    the ADP an atom at displacement ``r`` receives is::
+
+        U(r) = Psi(r) Sigma Psi(r)^T,   Sigma = <c c^T>,   Sigma = L L^T
+
+    Three properties follow, and they are the whole reason for the form:
+
+    * **Positive-semidefinite at every r, unconditionally**, because
+      ``U = (Psi L)(Psi L)^T``. An arbitrary polynomial in ``r`` carries no such
+      guarantee and goes indefinite somewhere --- and "somewhere" is the edge of the
+      node's region, exactly where the softmax weights have not yet decayed.
+    * **Spatial variation becomes intra-node and smooth by construction.** A constant-U
+      node can only express variation by having neighbours, so detail costs nodes, and
+      every added node is another kernel that can collapse onto a single atom. Here one
+      node's U already varies across its whole region, and it cannot spike.
+    * ``U(r)`` is **linear in Sigma**, so fitting stays a linear problem.
+
+    Mode sets, from :data:`MODE_SETS`, with ``q(q+1)/2`` parameters per node:
+
+    ==================  ===  =======  =========================================
+    set                 q    params   model
+    ==================  ===  =======  =========================================
+    ``constant``        3    6        one U per node; same model as
+                                      :class:`AnisotropicPayload`
+    ``rigid``           6    21       **exactly TLS** (20 determinable; ``tr S``
+                                      is the one flat direction)
+    ``rigid_dilation``  7    28       TLS plus uniform breathing
+    ``affine``          12   78       full linear displacement field: TLS plus
+                                      shear and extension
+    ==================  ===  =======  =========================================
+
+    With the rigid set this reproduces ``U(r) = T + A S + S^T A^T + A L A^T`` identically,
+    ``A`` being the matrix whose columns are ``e_i x r``: the classical TLS expression is
+    what ``Psi Sigma Psi^T`` expands to when the modes are three translations and three
+    rotations. Releasing the antisymmetry of the gradient -- the ``dilation`` and
+    ``deviatoric`` rungs -- gives domains that breathe and shear as well as rotate.
+
+    Displacements are divided by the node layout's own length scale (median
+    nearest-neighbour node distance, detached) before the modes are built. That is pure
+    conditioning: without it the gradient modes carry a factor of the domain size against
+    the translations, and the curvature ratio between them runs to several hundred. It
+    is detached and derived from the layout for the reason
+    :class:`~torchref.refinement.targets.adp.NodeSmoothnessTarget` uses the same
+    quantity: the length scale is a property of where the nodes are, not something the
+    optimiser should tune.
+
+    Memory scales as ``n_atoms * k * q^2`` for the gathered node factors, so this payload
+    is meant for the small-``K`` regime it was designed for (a handful to a few dozen
+    expressive nodes, with ``k_neighbors`` set to ``K``). At ``q = 12`` and
+    ``k = 8`` that is ~90 MB for 20k atoms; a large ``K`` *and* a large ``k`` together
+    is what to avoid.
+
+    Parameters
+    ----------
+    mode_set : str, optional
+        Key of :data:`MODE_SETS`. Default ``"rigid"``, i.e. TLS.
+    epsilon : float, optional
+        Floor on the Cholesky diagonal of ``Sigma``, which bounds its smallest
+        eigenvalue. Also the value the non-translation modes start at, so a freshly
+        fitted field begins as the equivalent constant-U field.
+    """
+
+    out_width = 6
+
+    def __init__(self, mode_set: str = "rigid", epsilon: float = 1e-3):
+        if mode_set not in MODE_SETS:
+            raise ValueError(
+                f"Unknown mode set {mode_set!r}. Available: {sorted(MODE_SETS)}."
+            )
+        self.mode_set = mode_set
+        self.epsilon = float(epsilon)
+        self._gradient_names = MODE_SETS[mode_set]
+        self.q = 3 + sum(len(_GENERATORS[n]) for n in self._gradient_names)
+        self.width = chol_param_count(self.q)
+        self._generator_cache = {}
+
+    def __repr__(self):
+        return (
+            f"ModeCovariancePayload({self.mode_set!r}, q={self.q}, "
+            f"params={self.width})"
+        )
+
+    # ------------------------------------------------------------------
+    # Modes.
+    # ------------------------------------------------------------------
+
+    def _generators(self, dtype, device):
+        """``(q - 3, 3, 3)`` gradient generators, cached per dtype and device."""
+        key = (dtype, str(device))
+        G = self._generator_cache.get(key)
+        if G is None:
+            rows = [m for n in self._gradient_names for m in _GENERATORS[n]]
+            G = torch.tensor(rows, dtype=dtype, device=device).reshape(-1, 3, 3)
+            self._generator_cache[key] = G
+        return G
+
+    @staticmethod
+    def _length_scale(node_pos):
+        """Median nearest-neighbour node distance, as a plain float.
+
+        Deliberately outside the graph. A median's derivative is supported on whichever
+        single node pair sits at the median, which is an artifact of the layout rather
+        than a direction worth following, and leaving it connected would also let the
+        optimiser rescale its own modes by spreading the nodes apart. Node position
+        keeps its real gradient through the displacement ``r``.
+        """
+        with torch.no_grad():
+            if node_pos.shape[0] < 2:
+                return 1.0
+            d = torch.cdist(node_pos, node_pos)
+            d.fill_diagonal_(float("inf"))
+            return max(float(d.min(dim=1).values.median()), 1e-3)
+
+    def modes(self, r):
+        """``(..., 3, q)`` displacement modes at (already scaled) displacement ``r``."""
+        eye = torch.eye(3, dtype=r.dtype, device=r.device).expand(
+            *r.shape[:-1], 3, 3
+        )
+        if not self._gradient_names:
+            return eye
+        G = self._generators(r.dtype, r.device)
+        grad = torch.einsum("sij,...j->...is", G, r)
+        return torch.cat([eye, grad], dim=-1)
+
+    def sigma(self, payload):
+        """``(K, q, q)`` mode covariance of each node, positive-definite."""
+        L = raw_to_cholesky(payload, self.q, self.epsilon)
+        return L @ L.transpose(-1, -2)
+
+    # ------------------------------------------------------------------
+    # NodePayload interface.
+    # ------------------------------------------------------------------
+
+    def contributions(self, payload, xyz, node_pos, neighbor_list):
+        r = (xyz.unsqueeze(1) - node_pos[neighbor_list]) / self._length_scale(node_pos)
+        Psi = self.modes(r)                                     # (N, k, 3, q)
+        L = raw_to_cholesky(payload, self.q, self.epsilon)      # (K, q, q)
+        A = Psi @ L[neighbor_list]                              # (N, k, 3, q)
+        U = A @ A.transpose(-1, -2)                             # (N, k, 3, 3)
+        return torch.stack(
+            [U[..., 0, 0], U[..., 1, 1], U[..., 2, 2],
+             U[..., 0, 1], U[..., 0, 2], U[..., 1, 2]],
+            dim=-1,
+        )
+
+    def fit(self, target, w_dense, epsilon, xyz, node_pos, neighbor_list):
+        """Seed the translation block from the constant-U solve, floor the rest.
+
+        The full joint solve is available in principle -- ``U(r)`` is linear in
+        ``Sigma``, so it is one least-squares problem in ``K * q(q+1)/2`` unknowns -- but
+        it is not what is wanted here. Seeding only the translations makes the field
+        start as the equivalent constant-U field, which is a state whose R-factor is
+        already known, so entering this parametrisation cannot make the model worse and
+        refinement can only move away from a sane point. It also sidesteps the joint
+        solve's normal equations, which stop being cheap well before ``K`` does.
+        """
+        if target.ndim == 1:  # a B target: lift to the equivalent isotropic U
+            u_iso = target / (8.0 * math.pi**2)
+            zero = torch.zeros_like(u_iso)
+            target = torch.stack([u_iso, u_iso, u_iso, zero, zero, zero], dim=1)
+        u6 = _ridged_solve(w_dense, target)                      # (K, 6)
+        sigma = u6.new_zeros(u6.shape[0], self.q, self.q)
+        sigma[:, :3, :3] = u6_to_matrix(u6)
+        # psd_to_raw clamps every eigenvalue to epsilon^2, so the gradient modes come
+        # out at the floor rather than at zero -- non-degenerate, and negligible against
+        # a real U.
+        return psd_to_raw(sigma, self.epsilon)
+
+    def log_magnitude(self, payload):
+        """Log ``B_eq`` of ``U(0)``: the translation block, which is the node's own ADP.
+
+        Evaluated at the node rather than averaged over its region, so the number means
+        the same thing for every mode set and a magnitude restraint can price nodes
+        without knowing which one is in use.
+        """
+        T = self.sigma(payload)[:, :3, :3]
+        b_eq = (8.0 * math.pi**2 / 3.0) * (T[:, 0, 0] + T[:, 1, 1] + T[:, 2, 2])
         return torch.log(b_eq.clamp(min=1e-6))
 
 
@@ -531,7 +774,9 @@ class DisorderFieldTensor(MixedTensor):
         w_dense = torch.zeros(xyz.shape[0], n_k, dtype=xyz.dtype, device=xyz.device)
         w_dense.scatter_(1, neighbor_list, w_sparse)
 
-        payload = self._payload.fit(target, w_dense, self.epsilon)
+        payload = self._payload.fit(
+            target, w_dense, self.epsilon, xyz, node_pos, neighbor_list
+        )
 
         columns = [payload, log_sigma.unsqueeze(-1)]
         if self._refine_positions:
