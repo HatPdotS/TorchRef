@@ -4,6 +4,9 @@ Changelog
 
 Unreleased
 ----------
+- The Wilson normaliser converges in 8-12 IRLS iterations instead of 26-102. Its stopping rule was ``|dL|`` per reflection against 1e-10, which asks eleven significant digits of a normalisation curve; it is now relative to the improvement so far, which is scale-invariant for the same reason the absolute form was chosen
+- ``<E^2> = 1`` is solved in closed form for the intercept, so the identity no longer degrades as the convergence tolerance is loosened
+- The Wilson fit runs in the configured float dtype rather than hardcoded double, and builds its normal-equations matrix once -- it is constant for a Gamma with a log link. Identical placements on all 30 benchmark cells, at 1.8x the speed; the unit suite went from 968s to 485s
 - Molecular replacement is now a rotation search feeding a translation search and nothing else; the pipeline returns a placement and stops. End-to-end pose recovery over 10 structures x 3 seeds went 18/30 to 30/30, at about a sixth of the wall clock
 - Removed the ML rescore from between the two searches. It reordered a shortlist that already contained the answer, and cost 6 of 30 placements
 - Removed the post-placement dense rotation re-sampling and rigid-body polish. They refined a correct placement away from truth on 2DQ6, 3GR5 and 4BX9; refining a placement is downstream refinement's job
