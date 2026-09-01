@@ -13,10 +13,18 @@ Arms (``--arms``) sweep how translation candidates are ranked:
 ``analytic_r``
     the default -- rank each rotation candidate by the analytical-scale R at its
     best translation.
+``corr``
+    rank by the translation function's own correlation. Measured 31/40 against
+    ``analytic_r``'s 36/40 over four structures x ten seeds: worse, despite a
+    rank-level harness predicting the reverse on a truth label that disagreed
+    with coordinate superposition.
+``llg``
+    rank by the translation likelihood. The same rank-level harness rated it
+    between the other two, so it is here for the same reason: only the
+    end-to-end comparison is trustworthy.
 ``llg_tf``
-    re-rank the translation peaks by the Rice/Woolfson LLG first. At rank level
-    the LLG puts truth at rank 0 in 27/30 against analytic R's 22/30; this is
-    the arm that says whether that carries through to pose.
+    a different question -- re-rank each candidate's TRANSLATIONS by the
+    likelihood, still selecting the candidate by R.
 
 Success mirrors the integration test: final coordinates within ``--success-deg``
 of canonical, modulo the crystal symmetry.
@@ -46,8 +54,13 @@ from lab import (BENCH_PDBS, ResultWriter, load_case, random_rotation,  # noqa: 
                  seed_for)
 
 ARMS = {
-    "analytic_r": dict(use_llg_tf=False),
-    "llg_tf": dict(use_llg_tf=True),
+    # How the winner is chosen among placed candidates.
+    "analytic_r": dict(use_llg_tf=False, rank_by="r"),
+    "corr":       dict(use_llg_tf=False, rank_by="corr"),
+    "llg":        dict(use_llg_tf=False, rank_by="llg"),
+    # Re-ranks each candidate's TRANSLATIONS by the likelihood, then still
+    # selects the candidate by R -- a different question from the three above.
+    "llg_tf":     dict(use_llg_tf=True, rank_by="r"),
 }
 
 

@@ -616,6 +616,27 @@ def llg_translation_rescore(
     return ll.sum(dim=1) - ll_wil_total                            # (K,)
 
 
+def llg_at(
+    obs: TranslationObs,
+    G: torch.Tensor,
+    h_R: torch.Tensor,
+    t: torch.Tensor,
+    sigma_a: torch.Tensor,
+) -> float:
+    """The translation likelihood at one translation, as a candidate score.
+
+    :func:`llg_translation_rescore` over a single ``t``. Split out because
+    scoring a *candidate* and re-ranking a candidate's *translations* are
+    different questions that happen to share a functional, and only the first
+    needs to be comparable across orientations.
+    """
+    return float(llg_translation_rescore(
+        obs=obs, G=G, h_R=h_R,
+        t_candidates=t.detach().reshape(1, 3).to(G.device).to(torch.float64),
+        sigma_a=sigma_a,
+    )[0])
+
+
 def correlation_at(
     obs: TranslationObs, G: torch.Tensor, h_R: torch.Tensor, t: torch.Tensor,
 ) -> float:
