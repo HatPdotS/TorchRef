@@ -71,7 +71,7 @@ from .translation import (
     TranslationPeak,
     amplitude_translation_search,
     find_translation_peaks,
-    fit_sigma_a_per_shell,
+    fit_model_error,
     llg_translation_rescore,
     local_translation_refine,
     precompute_G_for_rotation,
@@ -114,5 +114,5 @@ __all__ = [
     "llg_translation_rescore",
     "precompute_G_for_rotation",
     "find_translation_peaks",
-    "fit_sigma_a_per_shell",
+    "fit_model_error",
 ]

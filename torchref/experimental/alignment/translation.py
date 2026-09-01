@@ -458,60 +458,54 @@ def normalise_calc(F_calc: torch.Tensor, obs: TranslationObs) -> torch.Tensor:
     return out[0] if single else out
 
 
-def fit_sigma_a_per_shell(
-    E_obs: torch.Tensor,
-    E_calc: torch.Tensor,
-    centric: torch.Tensor,
-    shell_idx: torch.Tensor,
-    n_shells: int,
-    n_grid: int = 81,
-    interp_var: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    """Per-shell sigma_A = D, fitted by a grid scan of the shell likelihood.
+def fit_model_error(obs: TranslationObs, E_calc: torch.Tensor, *, shrink: bool = True):
+    """Per-reflection ``(alpha, beta)`` for a placed model, from the shared estimator.
 
-    Scans ``D`` in ``[0, 0.99]`` and returns the per-shell maximum. At
-    ``n_grid=81`` the resolution is ~0.012, which is finer than the difference
-    between adjacent shells on any real falloff.
+    Returns the two quantities the likelihood actually wants: ``alpha``, the
+    multiplier on the calculated amplitude, and ``beta``, the conditional
+    variance. They are what
+    :class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAEstimator`
+    produces, and using them rather than ``(D, 1 - D^2)`` drops the assumption
+    that ``<E_calc^2>`` is exactly 1 -- ``alpha = sigma_A sqrt(Sigma_N/Sigma_P)``
+    carries the mismatch that assumption hides.
 
-    This is the *fitted* half of a pair. :func:`torchref.scaling.weighting.empirical_sigma_a`
-    is the other: it measures model reliability from the ratio of two Wilson
-    curves and works **before** the molecule is placed, which is what the
-    rotation function needs. Once a translation exists the residual is
-    per-reflection rather than per-shell-average, so a direct fit against the
-    placed model is available and strictly better informed. The two answer the
-    same question at two different points in the search.
+    **This replaces a local 81-point scan over every reflection.** The shared
+    estimator runs three nested-zoom stages of seventeen candidates instead, on a
+    cancellation-folded Rice that survives float32, and it shrinks each shell
+    toward the fitted curve rather than taking a per-shell argmax at face value.
 
-    Returns
-    -------
-    sigma_a : torch.Tensor, shape (n_shells,)
+    It is reached through ``SigmaAEstimator``, not the ``estimate_beta`` free
+    function underneath it, and the reason is not the cache. The wrapper
+    interpolates **four** shell curves -- ``sigma_A``, ``log Sigma_N``,
+    ``log Sigma_P``, ``S2`` -- and derives ``alpha``/``beta`` per reflection from
+    them, so the second-moment identity holds at every reflection. Its docstring
+    warns that interpolating ``beta`` directly "can yield a value consistent with
+    no ``sigma_A <= 1`` at all", which is exactly what a hand-rolled
+    interpolation here would have done.
+
+    ``epsilon`` is passed as ones because ``obs.E_obs`` is already
+    epsilon-reduced by :class:`~torchref.scaling.WilsonNormaliser`; applying it
+    again would count multiplicity twice. ``free_mask`` is all-ones: there is no
+    cross-validation set to protect at placement time, and the estimate is not
+    being used to decide when to stop refining.
     """
-    device = E_obs.device
-    dtype = E_obs.dtype
-    N = E_obs.numel()
-    D_grid = torch.linspace(0.0, 0.99, n_grid, device=device, dtype=dtype)  # (G,)
-    F_mean = D_grid.view(-1, 1) * E_calc.view(1, -1)                        # (G, N)
-    # Sigma is the COMPLEX variance. `rice_per_refl` derives the centric
-    # amplitude variance from it internally, which is the whole reason to use it
-    # -- the previous code passed one amplitude variance to a Rice and a
-    # Woolfson written in different conventions, leaving acentrics at twice the
-    # variance they should have had.
-    Sigma = (1.0 - D_grid * D_grid).clamp(min=1e-4)                          # (G,)
-    if interp_var is None:
-        Sigma_full = Sigma.view(-1, 1).expand(n_grid, N)
-    else:
-        Sigma_full = (Sigma.view(-1, 1) + interp_var.view(1, -1)).clamp(min=1e-4)
-    E_obs_full = E_obs.view(1, -1).expand(n_grid, N)
+    # Local import: `torchref.refinement.__init__` eagerly pulls the refinement
+    # drivers and every target, which is a heavy load for one estimator. The
+    # same pattern, for the same reason, is documented at
+    # `scaling/scaler_base.py` -- "Do not 'tidy' them up".
+    from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator
 
-    # Negated: `rice_per_refl` is an NLL and everything here maximises.
-    ll = -rice_per_refl(E_obs_full, F_mean, Sigma_full,
-                        centric.view(1, -1).expand(n_grid, N))              # (G, N)
-
-    # Sum per shell, take argmax over the D-grid.
-    shell_idx_gn = shell_idx.view(1, -1).expand(n_grid, N)
-    ll_per_shell = torch.zeros((n_grid, n_shells), dtype=dtype, device=device)
-    ll_per_shell.scatter_add_(1, shell_idx_gn, ll)                          # (G, n_shells)
-    best_idx = ll_per_shell.argmax(dim=0)                                   # (n_shells,)
-    return D_grid[best_idx]
+    ones = torch.ones_like(obs.E_obs)
+    est = SigmaAEstimator().get(
+        F_obs=obs.E_obs,
+        F_calc_scaled=E_calc.to(obs.E_obs.dtype),
+        centric=obs.centric,
+        epsilon=ones,
+        d_star_sq=(obs.s_mag * obs.s_mag).to(obs.E_obs.dtype),
+        free_mask=torch.ones_like(obs.E_obs, dtype=torch.bool),
+        shrink=shrink,
+    )
+    return est.alpha, est.beta
 
 
 def llg_translation_rescore(
@@ -519,8 +513,8 @@ def llg_translation_rescore(
     G: torch.Tensor,
     h_R: torch.Tensor,
     t_candidates: torch.Tensor,
-    sigma_a: torch.Tensor,
-    interp_var: Optional[torch.Tensor] = None,
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
 ) -> torch.Tensor:
     """Per-translation Rice / Woolfson log-likelihood over candidate positions.
 
@@ -554,8 +548,7 @@ def llg_translation_rescore(
     Parameters
     ----------
     obs : TranslationObs
-        Supplies ``E_obs``, centricity and the shell binning -- the same binning
-        ``sigma_a`` was fitted on, which is why it is not re-derived here.
+        Supplies ``E_obs`` and centricity.
     G : (S, N) complex
         Per-sym ``F_p1`` contributions x per-sym translation phase, from
         :func:`precompute_G_for_rotation`.
@@ -563,10 +556,10 @@ def llg_translation_rescore(
         Per-sym rotated reciprocal indices.
     t_candidates : (K, 3)
         Fractional translations to score.
-    sigma_a : (n_shells,)
-        Fixed per-shell sigma_A, shared across candidates.
-    interp_var : (N,), optional
-        Per-reflection variance inflation.
+    alpha, beta : (N,)
+        Model reliability and conditional variance per reflection, from
+        :func:`fit_model_error`. Fixed across candidates on purpose: refitting
+        per candidate would score each against a likelihood tuned to itself.
 
     Returns
     -------
@@ -576,7 +569,6 @@ def llg_translation_rescore(
     real_dtype = torch.float64
     complex_dtype = G.dtype
 
-    shell_idx = obs.shell_idx
     centric = obs.centric
 
     K = t_candidates.shape[0]
@@ -590,22 +582,19 @@ def llg_translation_rescore(
     Fc_complex = (G.view(1, S, N) * phase).sum(dim=1)             # (K, N)
     F_calc = Fc_complex.abs().to(real_dtype)                       # (K, N)
 
-    shell_idx_l = shell_idx.to(device).long()
     E_calc = normalise_calc(F_calc, obs)                            # (K, N)
-
     E_obs = obs.E_obs.to(device).to(real_dtype)
 
-    sigma_a_d = sigma_a.to(device).to(real_dtype)                  # (n_shells,)
-    D_per_refl = sigma_a_d.index_select(0, shell_idx_l)            # (N,)
-    # Complex variance, matching `rice_per_refl`'s convention.
-    var_d = (1.0 - D_per_refl * D_per_refl).clamp(min=1e-4)        # (N,)
-    if interp_var is not None:
-        var_per_refl = (var_d + interp_var.to(device).to(real_dtype)).clamp(min=1e-4)
-    else:
-        var_per_refl = var_d
+    # alpha and beta arrive PER REFLECTION, interpolated from the shell fit by
+    # the shared estimator. No `index_select` on a shell index: the estimator
+    # bins on its own abscissa, and taking its per-reflection output is what
+    # keeps the second-moment identity holding at every reflection rather than
+    # only per shell.
+    a_r = alpha.to(device).to(real_dtype)                          # (N,)
+    Sigma_r = beta.to(device).to(real_dtype).clamp(min=1e-4)       # (N,)
 
-    F_mean = D_per_refl.view(1, N) * E_calc                        # (K, N)
-    Sigma_full = var_per_refl.view(1, N).expand(K, N)
+    F_mean = a_r.view(1, N) * E_calc                               # (K, N)
+    Sigma_full = Sigma_r.view(1, N).expand(K, N)
     E_obs_full = E_obs.view(1, N).expand(K, N)
     cent = centric.to(device).to(torch.bool)
     cent_full = cent.view(1, N).expand(K, N)
@@ -629,7 +618,8 @@ def llg_at(
     G: torch.Tensor,
     h_R: torch.Tensor,
     t: torch.Tensor,
-    sigma_a: torch.Tensor,
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
 ) -> float:
     """The translation likelihood at one translation, as a candidate score.
 
@@ -641,7 +631,7 @@ def llg_at(
     return float(llg_translation_rescore(
         obs=obs, G=G, h_R=h_R,
         t_candidates=t.detach().reshape(1, 3).to(G.device).to(torch.float64),
-        sigma_a=sigma_a,
+        alpha=alpha, beta=beta,
     )[0])
 
 

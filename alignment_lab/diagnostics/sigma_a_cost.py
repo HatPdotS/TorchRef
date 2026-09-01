@@ -1,21 +1,20 @@
 """Where does the likelihood ranking's 2.5x actually go?
 
-`fit_sigma_a_per_shell` scans 81 values of D against every reflection, in
-float64, evaluating BOTH the Rice and the Woolfson branch everywhere and then
-discarding half of each with a `where`. On 2DQ6 that is 81 x 228197 = 18.5M
-elements per tensor and four of them materialised, per candidate, times 25
-candidates.
+The model-error fit used to be a local 81-point scan over every reflection, in
+float64, evaluating both likelihood branches everywhere and discarding half --
+295 ms per candidate on 2DQ6, three times the translation refine beside it. It
+now goes through the shared `SigmaAEstimator`.
 
-This times the pieces so the fix is aimed rather than guessed: the sigma_A fit,
-the Wilson normalisation of the calculated side, the likelihood evaluation
-itself, and the translation refine they sit alongside.
+This times the pieces so the effect is measured rather than assumed: the
+model-error fit, the Wilson normalisation of the calculated side, the likelihood
+evaluation itself, and the translation refine they sit alongside.
 """
 import sys, time
 from pathlib import Path
 import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 torch.set_grad_enabled(False)
-from lab import BENCH_PDBS, load_case, random_rotation, seed_for  # noqa: E402
+from lab import load_case, random_rotation, seed_for  # noqa: E402
 
 
 def _t(fn, n=3):
@@ -29,7 +28,7 @@ def _t(fn, n=3):
 def main():
     from torchref.experimental.alignment.translation import (
         DirectModelEvaluator, TranslationObs, amplitude_translation_search,
-        correlation_at, fit_sigma_a_per_shell, llg_at, local_translation_refine,
+        correlation_at, fit_model_error, llg_at, local_translation_refine,
         normalise_calc, precompute_G_for_rotation)
 
     for pdb in sys.argv[1:] or ["1DAW", "2DQ6"]:
@@ -63,17 +62,14 @@ def main():
             "ind,d->in", h_R.to(torch.float64), t0.to(G.device)).to(G.dtype))
         Fc = (G * ph).sum(dim=0).abs().to(torch.float64)
         t_norm, E_calc = _t(lambda: normalise_calc(Fc, obs))
-        t_sa, sa = _t(lambda: fit_sigma_a_per_shell(
-            obs.E_obs, E_calc, obs.centric, obs.shell_idx, obs.n_shells,
-            n_grid=81))
-        t_llg, _ = _t(lambda: llg_at(obs, G, h_R, t0, sa))
+        t_sa, (alpha, beta) = _t(lambda: fit_model_error(obs, E_calc))
+        t_llg, _ = _t(lambda: llg_at(obs, G, h_R, t0, alpha, beta))
         t_corr, _ = _t(lambda: correlation_at(obs, G, h_R, t0))
         N = obs.hkl.numel() // 3
         print(f"ROW pdb={pdb} N={N} shells={obs.n_shells} "
               f"refine={1000*t_ref:.1f}ms norm_calc={1000*t_norm:.1f}ms "
-              f"sigma_a={1000*t_sa:.1f}ms llg={1000*t_llg:.1f}ms "
-              f"corr={1000*t_corr:.1f}ms "
-              f"grid_elems={81*N/1e6:.1f}M", flush=True)
+              f"model_err={1000*t_sa:.1f}ms llg={1000*t_llg:.1f}ms "
+              f"corr={1000*t_corr:.1f}ms", flush=True)
 
 
 main()

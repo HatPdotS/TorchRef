@@ -64,7 +64,7 @@ from .translation import (
     amplitude_translation_search,
     correlation_at,
     llg_at,
-    fit_sigma_a_per_shell,
+    fit_model_error,
     llg_translation_rescore,
     local_translation_refine,
     normalise_calc,
@@ -734,15 +734,13 @@ class MolecularReplacementPipeline(DeviceMixin):
             return None
         llg = float("nan")
         if self.rank_by == "llg":
-            # sigma_A at the chosen translation, per candidate. Fitting it once
-            # and sharing it across candidates was measured to give identical
-            # rankings, so the cheaper-to-reason-about form is used.
+            # Model error at the chosen translation, per candidate. Fitting it
+            # once and sharing it across candidates was measured to give
+            # identical rankings, so the cheaper-to-reason-about form is used.
             E_calc = normalise_calc(
                 self._fcalc_at(G_pre, h_R_pre, best[1]), self._obs)
-            sa = fit_sigma_a_per_shell(
-                self._obs.E_obs, E_calc, self._obs.centric,
-                self._obs.shell_idx, self._obs.n_shells, n_grid=81)
-            llg = llg_at(self._obs, G_pre, h_R_pre, best[1], sa)
+            alpha, beta = fit_model_error(self._obs, E_calc)
+            llg = llg_at(self._obs, G_pre, h_R_pre, best[1], alpha, beta)
         return (best[0], best[1], best[2], llg)
 
     def _fcalc_at(self, G, h_R, t):
@@ -769,10 +767,10 @@ class MolecularReplacementPipeline(DeviceMixin):
         obs = self._obs
         self._timer.start("6b_llg_tf_rescore")
 
-        # sigma_A is fitted against the top translation only, and reused for
-        # every candidate. It is a per-shell model-reliability curve, not a
+        # The model error is fitted against the top translation only and reused
+        # for every candidate. It is a model-reliability curve, not a
         # per-candidate score: refitting it per t would let each candidate
-        # choose the D that flatters it, which is scoring a model against a
+        # choose the alpha that flatters it, which is scoring a model against a
         # likelihood tuned to that model.
         t_top_t = torch.as_tensor(
             t_peaks[0].translation, dtype=torch.float64, device=device,
@@ -784,10 +782,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         )
         Fc_top = (G_pre * phase_top).sum(dim=0).abs().to(torch.float64)
         E_calc_top = normalise_calc(Fc_top, obs)
-        sigma_a_tf = fit_sigma_a_per_shell(
-            obs.E_obs, E_calc_top, obs.centric,
-            obs.shell_idx, obs.n_shells, n_grid=81,
-        )
+        alpha_tf, beta_tf = fit_model_error(obs, E_calc_top)
 
         t_cands = torch.as_tensor(
             np.stack([p.translation for p in t_peaks]),
@@ -795,7 +790,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         )
         llg_tf = llg_translation_rescore(
             obs=obs, G=G_pre, h_R=h_R_pre, t_candidates=t_cands,
-            sigma_a=sigma_a_tf, interp_var=None,
+            alpha=alpha_tf, beta=beta_tf,
         )
         self._timer.stop("6b_llg_tf_rescore")
 
