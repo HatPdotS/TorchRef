@@ -113,7 +113,7 @@ def add_to_phenix_mask(
     )  # (N_atoms, N_voxels)
 
     # Flatten for scatter operations
-    voxel_indices_flat = voxel_indices.reshape(-1, 3).to(torch.long)
+    voxel_indices_flat = voxel_indices.reshape(-1, 3).to(torch.long)  # dtype-ok: voxel indices for grid indexing; requires long
 
     # Create protein core mask using scatter_add
     int_dtype = dtypes.int

@@ -201,31 +201,31 @@ class ClashScoreCalculator(DeviceMixin, nn.Module):
         """
         # Compute fractionalization matrix using Cell. Pin to CPU because the
         # rest of this method does CPU-only float64 symmetry math.
-        cell_obj = Cell(cell, dtype=torch.float64, device="cpu")
+        cell_obj = Cell(cell, dtype=torch.float64, device="cpu")  # dtype-ok: CPU-pinned high-precision symmetry math (see comment above)
         B = cell_obj.fractional_matrix
 
-        centroid_frac = centroid_frac.to(device="cpu", dtype=torch.float64)
+        centroid_frac = centroid_frac.to(device="cpu", dtype=torch.float64)  # dtype-ok: CPU-pinned high-precision symmetry math
 
         # Threshold distance for filtering
         # Two molecules can clash if centroid distance < 2*radius + clash_radius
         threshold = 2 * molecule_radius + clash_radius
 
         # Identity matrix for comparison with rotation matrices
-        I = torch.eye(3, dtype=torch.float64)
+        I = torch.eye(3, dtype=torch.float64)  # dtype-ok: CPU-pinned high-precision symmetry math
 
         valid_transforms = []
         n_ops = self.symmetry.n_ops
 
         for op_idx in range(n_ops):
-            R = self.symmetry.matrices[op_idx].cpu().to(torch.float64)
-            t = self.symmetry.translations[op_idx].cpu().to(torch.float64)
+            R = self.symmetry.matrices[op_idx].cpu().to(torch.float64)  # dtype-ok: CPU-pinned high-precision symmetry math
+            t = self.symmetry.translations[op_idx].cpu().to(torch.float64)  # dtype-ok: CPU-pinned high-precision symmetry math
 
             for offset in self._cell_offsets:
                 # Skip identity operation in central cell (self-interaction)
                 if op_idx == 0 and offset == (0, 0, 0):
                     continue
 
-                offset_tensor = torch.tensor(offset, dtype=torch.float64)
+                offset_tensor = torch.tensor(offset, dtype=torch.float64)  # dtype-ok: CPU-pinned high-precision symmetry math
 
                 # Displacement between ASU centroid and this symmetry mate's centroid
                 # Symmetry mate position: R @ x + t + offset

@@ -763,6 +763,8 @@ class EnsembleModel(ModelFT):
 
         with torch.no_grad():
             flat = self.xyz().detach()                       # (N*n_atoms, 3)
+            # dtype-ok: SVD seeding in float64 for numerical stability. Caveat: no
+            # .cpu() first, so this errors on MPS.
             X = flat.reshape(N, n_atoms * 3).to(torch.float64)
             mu = X.mean(dim=0)                               # (D,)
             Xc = X - mu.unsqueeze(0)

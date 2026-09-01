@@ -136,7 +136,7 @@ class EnsembleAmberTarget(AmberTarget):
             self.register_buffer(
                 "_member_atom_idx",
                 torch.as_tensor(
-                    atom_idx_np, dtype=torch.long, device=self._model.device
+                    atom_idx_np, dtype=torch.long, device=self._model.device  # dtype-ok: atom index tensor for indexing; PyTorch requires int64
                 ),
             )
         else:

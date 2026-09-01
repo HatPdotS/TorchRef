@@ -68,9 +68,10 @@ def sample_angles(sampling_pitch_rad, max_angles_rad):
 
     angles = []
     max_alpha, max_beta, max_gamma = max_angles_rad
-    alpha = torch.arange(0, max_alpha + 1e-6, sampling_pitch_rad, dtype=torch.float32)
-    beta = torch.arange(0, max_beta + 1e-6, sampling_pitch_rad, dtype=torch.float32)
-    gamma = torch.arange(0, max_gamma + 1e-6, sampling_pitch_rad, dtype=torch.float32)
+    _dtype = get_float_dtype()
+    alpha = torch.arange(0, max_alpha + 1e-6, sampling_pitch_rad, dtype=_dtype)
+    beta = torch.arange(0, max_beta + 1e-6, sampling_pitch_rad, dtype=_dtype)
+    gamma = torch.arange(0, max_gamma + 1e-6, sampling_pitch_rad, dtype=_dtype)
     alpha, beta, gamma = torch.meshgrid(alpha, beta, gamma, indexing="ij")
 
     return torch.stack([alpha.flatten(), beta.flatten(), gamma.flatten()], dim=-1)

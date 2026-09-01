@@ -51,7 +51,7 @@ def _equiv_hkls_to_flat_indices(
     hi = torch.remainder(all_hkl[:, 0], Nx)
     ki = torch.remainder(all_hkl[:, 1], Ny)
     li = torch.remainder(all_hkl[:, 2], Nz)
-    return (hi * (Ny * Nz) + ki * Nz + li).to(torch.int64)
+    return (hi * (Ny * Nz) + ki * Nz + li).to(torch.int64)  # dtype-ok: flat HKL grid index; int64 avoids overflow, used for indexing
 
 
 class ReciprocalSymmetryExtractor(DeviceMixin):

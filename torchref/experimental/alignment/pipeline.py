@@ -564,6 +564,8 @@ class MolecularReplacementPipeline:
             mask = self.data.get_valid_mask()
             F_obs_masked = F_obs[mask]
 
+            # dtype-ok: deliberate float64 for E-value statistics (Wilson stats
+            # need the precision). Caveat: no .cpu() first, so this errors on MPS.
             F2 = (F_obs_masked ** 2).to(torch.float64)
             s = self._get_s_vectors()[mask]
 
@@ -591,6 +593,7 @@ class MolecularReplacementPipeline:
                 F_calc = self.model(hkl).abs()
 
             F_calc_masked = F_calc[mask]
+            # dtype-ok: deliberate float64 for E-value statistics (see _get_e_values_obs)
             F2 = (F_calc_masked ** 2).to(torch.float64)
             s = self._get_s_vectors()[mask]
 
@@ -606,6 +609,7 @@ class MolecularReplacementPipeline:
         if self._s_vectors is None:
             from torchref.base import reciprocal_basis_matrix
             rec_basis = reciprocal_basis_matrix(self.model.cell)
+            # dtype-ok: deliberate float64 for reciprocal-vector precision in E-value stats
             self._s_vectors = self.data.hkl.to(torch.float64) @ rec_basis.to(torch.float64)
         return self._s_vectors
 

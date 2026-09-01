@@ -64,7 +64,7 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             dtype = dtype if dtype is not None else get_float_dtype()
             self.register_buffer("original_xyz", torch.empty(0, 3, device=device, dtype=dtype))
             self.register_buffer(
-                "chain_indices", torch.empty(0, dtype=torch.long, device=device)
+                "chain_indices", torch.empty(0, dtype=torch.long, device=device)  # dtype-ok: empty chain_indices buffer; indexing requires long
             )
             self.register_buffer("chain_centers", torch.empty(0, 3, device=device, dtype=dtype))
             self.register_buffer(

@@ -373,7 +373,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             # grids, where the SF code's 1024 would OOM (denser intermediates).
             ATOM_CHUNK = 256
 
-            grid_dims = torch.tensor(grid_shape, dtype=torch.long, device=device)
+            grid_dims = torch.tensor(grid_shape, dtype=torch.long, device=device)  # dtype-ok: grid dims for voxel index arithmetic; PyTorch requires int64
             grid_shape_float = grid_dims.float()
             inv_grid = 1.0 / grid_shape_float
             G = frac.T @ frac  # metric tensor: r²_cart = diff_frac · G · diff_frac
@@ -450,12 +450,12 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             protein_voxels = (
                 torch.cat(protein_chunks, dim=0)
                 if protein_chunks
-                else torch.empty((0, 3), dtype=torch.long, device=device)
+                else torch.empty((0, 3), dtype=torch.long, device=device)  # dtype-ok: empty (0,3) voxel index tensor; PyTorch requires int64 for indexing
             )
             boundary_voxels = (
                 torch.cat(boundary_chunks, dim=0)
                 if boundary_chunks
-                else torch.empty((0, 3), dtype=torch.long, device=device)
+                else torch.empty((0, 3), dtype=torch.long, device=device)  # dtype-ok: empty (0,3) voxel index tensor; PyTorch requires int64 for indexing
             )
             del protein_chunks, boundary_chunks
 

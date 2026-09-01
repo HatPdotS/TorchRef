@@ -80,7 +80,7 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
         inv_frac_matrix=inv_frac,
     )
 
-    mask = torch.zeros(grid_shape, dtype=torch.int32, device=device)
+    mask = torch.zeros(grid_shape, dtype=torch.int32, device=device)  # dtype-ok: integer solvent-mask accumulator (mask>0); categorical count, not model-precision data
     mask = add_to_solvent_mask(
         surrounding_coords,
         voxel_indices,
@@ -229,7 +229,7 @@ def setup_ded_context(
     from torchref import DatasetCollection
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
 
-    from torchref.config import normalize_device
+    from torchref.config import get_float_dtype, normalize_device
 
     device = normalize_device(device)
 
@@ -304,7 +304,7 @@ def setup_ded_context(
     )
     if dmin is None:
         dmin = float(d_spacings.min())
-    d_spacing = torch.tensor(d_spacings, dtype=torch.float32, device=device)
+    d_spacing = torch.tensor(d_spacings, dtype=get_float_dtype(), device=device)
 
     # P1 expansion and grid
     sg = SpaceGroup(sg_name, device=device)
