@@ -426,7 +426,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             return
 
         # 4. freeze xyz of those atoms (same path as freeze_selection)
-        model.xyz_mask[torch.tensor(freeze_idx, dtype=torch.long)] = False
+        model.xyz_mask[torch.tensor(freeze_idx, dtype=torch.long)] = False  # dtype-ok: freeze index used to index xyz_mask; PyTorch requires int64
         model.apply_mask_to_parameter("xyz")
         if self.verbose > 0:
             shown = frozen_res[:20] + (["..."] if len(frozen_res) > 20 else [])

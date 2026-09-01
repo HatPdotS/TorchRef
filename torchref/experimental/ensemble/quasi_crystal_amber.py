@@ -599,10 +599,10 @@ class QuasiCrystalAmberTarget(AmberTarget):
 
         # Index pairs (long) for the scatter from model atoms into OMM slots.
         self._src_model_idx_torch = torch.from_numpy(self._src_model_idx_np).to(
-            device=device, dtype=torch.long
+            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
         )
         self._dst_omm_idx_torch = torch.from_numpy(self._dst_omm_idx_np).to(
-            device=device, dtype=torch.long
+            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
         )
 
         # Index of ensemble-model atoms (in the FULL EnsembleModel layout)
@@ -610,7 +610,7 @@ class QuasiCrystalAmberTarget(AmberTarget):
         # subset ``xyz_per_member`` before applying the layout transform.
         self._keep_atom_idx_torch = torch.from_numpy(
             self._keep_atom_idx_np
-        ).to(device=device, dtype=torch.long)
+        ).to(device=device, dtype=torch.long)  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
 
         # Boolean mask: True where the OMM slot has NO model atom mapped to
         # it (so we keep the init position there).
@@ -621,20 +621,20 @@ class QuasiCrystalAmberTarget(AmberTarget):
         # H-attachment indices tiled per member: template indices live in
         # [0, n_omm); full-tensor indices live in [0, N · n_omm).
         member_offset = (
-            torch.arange(N, device=device, dtype=torch.long).unsqueeze(1)
+            torch.arange(N, device=device, dtype=torch.long).unsqueeze(1)  # dtype-ok: arange index for broadcasting/indexing; PyTorch requires int64
             * n_omm
         )  # (N, 1)
         h_idx_t = torch.from_numpy(self._h_idx_template).to(
-            device=device, dtype=torch.long
+            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
         )
         h_parent_t = torch.from_numpy(self._h_parent_idx_template).to(
-            device=device, dtype=torch.long
+            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
         )
         h_n1_t = torch.from_numpy(self._h_n1_idx_template).to(
-            device=device, dtype=torch.long
+            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
         )
         h_n2_t = torch.from_numpy(self._h_n2_idx_template).to(
-            device=device, dtype=torch.long
+            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
         )
 
         self._h_idx_tiled = (member_offset + h_idx_t.unsqueeze(0)).reshape(-1)

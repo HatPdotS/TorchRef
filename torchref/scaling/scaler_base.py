@@ -266,7 +266,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 initial_log_scale.detach().cpu().numpy(),
             )
         with torch.no_grad():
-            target = initial_log_scale.detach().to(self.device)[self.bins.to(torch.int64)]
+            target = initial_log_scale.detach().to(self.device)[self.bins.to(torch.int64)]  # dtype-ok: bin indices for advanced indexing; PyTorch requires int64
             design = self._iso_design.to(target.dtype)
             coeff = torch.linalg.lstsq(design, target.unsqueeze(1)).solution.squeeze(1)
         self.c_iso = nn.Parameter(coeff.detach().to(self.device))
@@ -396,7 +396,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         mean_calc_intensity = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         counts = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         counts_vals = torch.ones_like(F_calc, device=self.device, dtype=fobs.dtype)
-        bins_sel = self.bins.to(torch.int64)[sel]
+        bins_sel = self.bins.to(torch.int64)[sel]  # dtype-ok: bin indices for advanced indexing; PyTorch requires int64
         mean_obs_intensity = torch.scatter_add(
             mean_obs_intensity, 0, bins_sel, intensities[sel]
         )

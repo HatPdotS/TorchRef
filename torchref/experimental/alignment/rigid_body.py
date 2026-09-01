@@ -30,7 +30,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device
+from torchref.config import get_default_device, get_float_dtype
 from torchref.scaling import ScalerBase
 from torchref.model import SfFFT
 from torchref.symmetry import spacegroup
@@ -137,9 +137,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         model,  # ModelFT
         data,  # ReflectionData
         expected_rotational_error: float = 0.1,
-        initial_rotation: torch.Tensor = torch.tensor(
-            [0.0, 0.0, 0.0], dtype=torch.float32
-        ),
+        initial_rotation: Optional[torch.Tensor] = None,
         initial_translation: Optional[torch.Tensor] = None,
         device: torch.device = None,
         rfactor_converged_threshold: float = 0.45,
@@ -185,17 +183,25 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             self.A_aniso = None
             self.B_aniso = None
 
-        # Store initial rotation
+        # Store initial rotation. Resolve the default here, not in the signature:
+        # a tensor default is built once at import, on the config dtype at import
+        # time, and shared across instances -- both are latent bugs.
+        if initial_rotation is None:
+            initial_rotation = torch.zeros(3, dtype=get_float_dtype(), device=device)
         self.register_buffer(
             "initial_rotation", initial_rotation.to(device=device).clone()
         )
 
-        self.rotation_parameters = nn.Parameter(torch.zeros(3, device=device))
+        self.rotation_parameters = nn.Parameter(
+            torch.zeros(3, dtype=get_float_dtype(), device=device)
+        )
         self.expected_rotational_error = expected_rotational_error
 
         # Refinable translation (fractional coordinates)
         if initial_translation is None:
-            initial_translation = torch.zeros(3, device=device)
+            initial_translation = torch.zeros(
+                3, dtype=get_float_dtype(), device=device
+            )
         else:
             initial_translation = initial_translation.to(device=device).clone()
         self.translation_frac = nn.Parameter(initial_translation)

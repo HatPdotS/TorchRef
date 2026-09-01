@@ -315,7 +315,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             for elem in self.pdb["element"]
         ]
         self.register_buffer(
-            "_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device)
+            "_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device)  # dtype-ok: atomic-number Z categorical codes buffer; fixed int32 lookup keys
         )
         return self._Z
 
@@ -823,7 +823,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         altloc_groups = []
         refinable_mask = torch.zeros(n_atoms, dtype=torch.bool)
 
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)
+        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)  # dtype-ok: arange atom indices (sharing groups); index requires long
         collapsed_idx = 0
 
         # First pass: altlocs. ALL atoms of one conformation must share a collapsed
@@ -892,7 +892,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Compact to contiguous indices 0..n_collapsed-1.
         unique_indices = torch.unique(sharing_groups_tensor, sorted=True)
-        index_map = torch.zeros(n_atoms, dtype=torch.long)
+        index_map = torch.zeros(n_atoms, dtype=torch.long)  # dtype-ok: index_map atom-index remap; indexing requires long
         for new_idx, old_idx in enumerate(unique_indices):
             mask = sharing_groups_tensor == old_idx
             sharing_groups_tensor[mask] = new_idx
@@ -1904,7 +1904,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 for altloc in unique_altlocs:
                     altloc_atoms = group[group["altloc"] == altloc]
                     indices = torch.tensor(
-                        altloc_atoms["index"].tolist(), dtype=torch.long
+                        altloc_atoms["index"].tolist(), dtype=torch.long  # dtype-ok: altloc atom indices; indexing requires long
                     )
                     conformation_tensors.append(indices)
 

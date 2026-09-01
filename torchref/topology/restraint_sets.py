@@ -41,7 +41,7 @@ def to_tensor(values, prop: str, device=None) -> torch.Tensor:
     if isinstance(values, torch.Tensor):
         return values.to(device=device) if device is not None else values
     if prop in _INTEGER_PROPERTIES:
-        dtype = torch.int64
+        dtype = torch.int64  # dtype-ok: dtype var for index tensors; int64 index required
     elif prop in _BOOL_PROPERTIES:
         dtype = torch.bool
     else:

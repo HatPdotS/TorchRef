@@ -1470,14 +1470,14 @@ class AmberTarget(ModelTarget):
             or getattr(self, "_h_tensors_dtype", None) != dtype
         ):
             self._h_parent_idx_t = torch.as_tensor(
-                self._h_parent_idx, dtype=torch.long, device=device,
+                self._h_parent_idx, dtype=torch.long, device=device,  # dtype-ok: H-parent atom index for indexing; PyTorch requires int64
             )
             # For invalid frames clamp neighbor indices to 0 so the gather is
             # safe; the value is masked out by `where` below.
             n1 = np.where(self._h_n1_idx >= 0, self._h_n1_idx, 0)
             n2 = np.where(self._h_n2_idx >= 0, self._h_n2_idx, 0)
-            self._h_n1_idx_t = torch.as_tensor(n1, dtype=torch.long, device=device)
-            self._h_n2_idx_t = torch.as_tensor(n2, dtype=torch.long, device=device)
+            self._h_n1_idx_t = torch.as_tensor(n1, dtype=torch.long, device=device)  # dtype-ok: neighbor atom index for indexing; PyTorch requires int64
+            self._h_n2_idx_t = torch.as_tensor(n2, dtype=torch.long, device=device)  # dtype-ok: neighbor atom index for indexing; PyTorch requires int64
             self._h_local_pos_t = torch.as_tensor(
                 self._h_local_pos, dtype=dtype, device=device,
             )
@@ -1530,10 +1530,10 @@ class AmberTarget(ModelTarget):
                 valid_np, dtype=torch.bool, device=device,
             )
             self._model_valid_model_idx_t = torch.as_tensor(
-                np.where(valid_np)[0], dtype=torch.long, device=device,
+                np.where(valid_np)[0], dtype=torch.long, device=device,  # dtype-ok: valid-atom index (np.where) for indexing; PyTorch requires int64
             )
             self._model_valid_omm_idx_t = torch.as_tensor(
-                self._model_to_omm[valid_np], dtype=torch.long, device=device,
+                self._model_to_omm[valid_np], dtype=torch.long, device=device,  # dtype-ok: model->OMM mapping index for indexing; PyTorch requires int64
             )
             # Construction-time snapshot for unmatched heavy slots + initial Hs
             self._pos_buf_t = torch.as_tensor(
@@ -1558,7 +1558,7 @@ class AmberTarget(ModelTarget):
             h_xyz = self._place_hydrogens(full)
             if not hasattr(self, "_h_idx_t_for_omm"):
                 self._h_idx_t_for_omm = torch.as_tensor(
-                    self._h_idx, dtype=torch.long, device=device,
+                    self._h_idx, dtype=torch.long, device=device,  # dtype-ok: H-atom index for indexing; PyTorch requires int64
                 )
             elif self._h_idx_t_for_omm.device != device:
                 self._h_idx_t_for_omm = self._h_idx_t_for_omm.to(device)

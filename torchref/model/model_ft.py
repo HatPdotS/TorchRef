@@ -116,7 +116,9 @@ class ModelFT(CachedForwardMixin, Model):
         # so it round-trips through state_dict and follows .to(device). f' is always
         # applied when wavelength is set; f'' only when this is True (unmerged data).
         self.register_buffer(
-            "anomalous_bijvoet", torch.tensor(bool(apply_bijvoet)), persistent=True
+            "anomalous_bijvoet",
+            torch.tensor(bool(apply_bijvoet), device=self.device),
+            persistent=True,
         )
         self._anomalous_cache = None  # Will hold (mask, f_prime, f_double_prime)
         self._anomalous_elements_hash = (
