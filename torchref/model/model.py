@@ -1267,14 +1267,17 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Parameters
         ----------
-        mode : {"isotropic", "anisotropic", "field", "field_aniso"}, optional
+        mode : {"isotropic", "anisotropic", "field", "field_aniso", "preserve"}, optional
             ``"isotropic"`` (default) converts every atom, previously anisotropic
             ones to ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"``
             converts those matching ``aniso_selection``, expanding isotropic atoms
             to ``U = (B / 8 pi^2) I``. ``"field"`` replaces the per-atom isotropic B
             with a :class:`~torchref.model.disorder_field.DisorderFieldTensor`, whose
             node values are least-squares fitted to the B it replaces, so the atom
-            count stops setting the ADP parameter count.
+            count stops setting the ADP parameter count. ``"field_aniso"`` is the same
+            representation carrying a full U per node, which takes over ``u`` rather
+            than ``adp``. ``"preserve"`` is a no-op: the ADPs stay exactly as the file
+            supplied them, anisotropic where the file was anisotropic.
         aniso_selection : str, optional
             Phenix-style selection for ``mode="anisotropic"``, default
             ``"not resname HOH and not element H"``; ignored otherwise.
@@ -1297,6 +1300,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         wrapper on the way out.
         """
         if not self.ctx.initialized or self.pdb is None:
+            return
+        if mode == "preserve":
+            # Leave the ADPs exactly as loaded. Constructing a Refinement otherwise
+            # reparametrises them before anything else runs, which silently discards a
+            # deposited model's anisotropy -- use this when the starting model's own
+            # ADPs are the thing being measured.
             return
         if mode in ("field", "field_aniso"):
             aniso = mode == "field_aniso"
@@ -1348,7 +1357,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         else:
             raise ValueError(
                 f"Unknown ADP mode: {mode!r}. Use 'isotropic', 'anisotropic', "
-                "'field' or 'field_aniso'."
+                "'field', 'field_aniso' or 'preserve'."
             )
         self._apply_adp_partition(aniso_mask)
 
