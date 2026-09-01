@@ -59,6 +59,13 @@ class NodeLoadTarget(ADPTarget):
         Verbosity level. Default is 0.
     """
 
+    #: Hierarchical key this target registers under. Required, not cosmetic:
+    #: LossState.register_targets takes the key from ``.name``, so without it the
+    #: target inherits ``Target.name`` ("model_target"), registers under that,
+    #: collides with every other unnamed target, and no ``adp/...`` weight can
+    #: reach it -- the term is then built, callable, and never in the loss.
+    name: str = "adp/node_load"
+
     def __init__(
         self,
         model: "Model" = None,

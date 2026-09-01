@@ -4,6 +4,7 @@ Base class for crystallographic refinement.
 
 from typing import Any, Dict, Optional
 
+import math
 import torch
 from torch.nn import Module as nnModule
 
@@ -65,6 +66,15 @@ DEFAULT_GROUP_WEIGHTS = {
     "adp/node_smoothness": 0.0,
 }
 
+#: Weight overrides a node-field ADP representation needs, applied by
+#: :meth:`BaseRefinement.set_adp_representation`.
+#:
+#: Work reflections per ADP parameter that :meth:`set_adp_representation` targets when
+#: sizing a field. PDB-REDO holds ~7 across its whole resolution range and switches model
+#: form to stay there; measured on 179 of their entries, 7 is also where a node field
+#: peaks, and both directions from it are worse.
+DEFAULT_REFLECTIONS_PER_ADP_PARAMETER = 7.0
+
 
 class Refinement(DeviceMixin, DebugMixin, nnModule):
     """
@@ -119,6 +129,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         french_wilson: bool = True,
         anomalous: Optional[bool] = None,
         adp_mode: str = "isotropic",
+        adp_mode_set: str = None,
+        n_nodes: int = None,
+        reflections_per_adp_parameter: float = DEFAULT_REFLECTIONS_PER_ADP_PARAMETER,
         xray_mode: str = "ml",
         sigma_a_max: float = SIGMA_A_MAX,
         shrink: bool = SHRINK_ENABLED,
@@ -167,6 +180,19 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             ADP parametrization: ``"isotropic"`` (default) refines a per-atom
             B-factor, ``"anisotropic"`` a 6-component U tensor for the atoms
             selected by ``aniso_selection`` (see :meth:`Model.set_adp_mode`).
+            ``"field"`` / ``"field_aniso"`` replace it with a node field, sized and
+            reweighted by :meth:`set_adp_representation`; ``"preserve"`` leaves the
+            file's own ADPs untouched.
+        adp_mode_set : str, optional
+            Displacement-mode set for ``adp_mode="field_aniso"`` --- ``"rigid"`` is TLS,
+            ``"rigid_dilation"`` adds uniform breathing. See
+            :data:`~torchref.model.disorder_field.MODE_SETS`.
+        n_nodes : int, optional
+            Explicit node count for a field mode. Default None sizes it from the data
+            through ``reflections_per_adp_parameter``.
+        reflections_per_adp_parameter : float, optional
+            Work reflections per ADP parameter a field is sized to hold. Default 7,
+            which is where a node field peaks and what PDB-REDO holds.
         xray_mode : str, optional
             X-ray target taxonomy row; see :meth:`set_xray_target_mode`.
         sigma_a_max, shrink : optional
@@ -207,6 +233,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # model right after load, before scaling/restraints/targets.
         self.adp_mode = adp_mode
         self.aniso_selection = aniso_selection
+        # Node-field settings. adp_mode_set names the displacement-mode set; n_nodes
+        # None means "size it from the data", which is what set_adp_representation does.
+        self.adp_mode_set = adp_mode_set
+        self.n_nodes = n_nodes
+        self.reflections_per_adp_parameter = reflections_per_adp_parameter
         # Everything the x-ray targets are built from must be set BEFORE
         # _init_targets() further down this __init__ (it also calls get_scales()).
         # They are read back through _xray_target_kwargs(), which is the single
@@ -303,9 +334,17 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 )
 
             self._sync_model_cell_to_data()
-            # Set ADP parametrization (iso/aniso) before scaling/restraints/targets
-            # so all structure-factor evaluation sees the chosen representation.
-            self.model.set_adp_mode(self.adp_mode, self.aniso_selection)
+            # Set the ADP parametrization before scaling/restraints/targets so all
+            # structure-factor evaluation sees the chosen representation. Routed through
+            # set_adp_representation rather than straight to the model: a field mode has
+            # to be sized from the reflection count and reweighted, and the model can do
+            # neither. Targets do not exist yet, so it will not try to rebuild them.
+            self.set_adp_representation(
+                self.adp_mode,
+                mode_set=self.adp_mode_set,
+                n_nodes=self.n_nodes,
+                reflections_per_parameter=self.reflections_per_adp_parameter,
+            )
             self.setup_scaler()
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
@@ -424,6 +463,207 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             mode=mode, use_work_set=False, **kw
         )
         self.xray_mode = mode
+
+    # ------------------------------------------------------------------
+    # ADP representation.
+    # ------------------------------------------------------------------
+
+    FIELD_MODES = ("field", "field_aniso")
+
+    def _field_parameters_per_node(self, mode, mode_set, refine_node_positions):
+        """Storage columns one node costs: payload + log sigma + optional offset.
+
+        Read off the payload rather than tabulated, so a new payload cannot silently
+        desynchronise the budget arithmetic from what the field actually allocates.
+        """
+        from torchref.model.disorder_field import (
+            AnisotropicPayload,
+            IsotropicPayload,
+            ModeCovariancePayload,
+        )
+
+        if mode_set is not None:
+            payload = ModeCovariancePayload(mode_set)
+        elif mode == "field_aniso":
+            payload = AnisotropicPayload()
+        else:
+            payload = IsotropicPayload()
+        return payload.width + 1 + (3 if refine_node_positions else 0)
+
+    def nodes_for_reflection_budget(
+        self,
+        mode: str = "field_aniso",
+        mode_set: str = None,
+        reflections_per_parameter: float = DEFAULT_REFLECTIONS_PER_ADP_PARAMETER,
+        refine_node_positions: bool = True,
+    ) -> int:
+        """Node count giving ``reflections_per_parameter`` work reflections per ADP parameter.
+
+        The reason this lives on the refinement and not on :class:`Model`: the model has
+        no idea how much data there is, and node count is set by the data rather than by
+        the structure. Measured on 179 PDB-REDO entries, node count correlates with
+        reflection count far more strongly than with atom count, and the model's own
+        default (one node per 25 atoms) is unrelated to either.
+
+        The work set is the denominator because it is what the refinement fits, and it is
+        what PDB-REDO's ``NREFCNT`` counts, so the ratio is comparable to theirs.
+
+        Returns
+        -------
+        int
+            At least 2 --- a single node has no spatial structure to express.
+        """
+        per_node = self._field_parameters_per_node(
+            mode, mode_set, refine_node_positions
+        )
+        n_work = int(self.data.work.n)
+        budget = n_work / float(reflections_per_parameter)
+        return max(2, int(round(budget / per_node)))
+
+    def flatten_adp_field(self) -> bool:
+        """Discard the field's spatial structure, keeping its level. Returns whether it ran.
+
+        A node field fits its structure once, at the moment it is installed, and then only
+        refines from there. Early in a refinement that structure is derived against
+        coordinates that are still wrong, and nothing later re-derives it -- the same shape
+        of mistake as fitting bulk solvent to the starting model and never revisiting it,
+        which cost 11.5% error by cycle 4. Calling this between macro cycles throws away
+        the accumulated structure so the data rebuilds it against the coordinates as they
+        now are.
+
+        The level is preserved: only the spatial variation is reset. Deliberately a hard
+        reset rather than a pull toward flat, because a soft version is another weight to
+        tune and the point is to test whether re-deriving helps at all.
+
+        No-op when the model is not in field mode, so a driver can call it unconditionally.
+        """
+        field = self.model.adp_field
+        if field is None:
+            return False
+        with torch.no_grad():
+            per_atom = field().detach()
+            if per_atom.ndim == 2:
+                # A U6 field. Flatten through the equivalent isotropic B, NOT by taking a
+                # median over all six components: setting the off-diagonals to the same
+                # value as the diagonals gives a matrix with eigenvalues (3L, 0, 0), which
+                # is singular, and the Cholesky encode of it is NaN. refit lifts a 1-D B
+                # target to U_iso * I, which is the flat U that is actually meant.
+                b = (8.0 * math.pi**2 / 3.0) * per_atom[:, :3].sum(dim=1)
+            else:
+                b = per_atom
+            finite = torch.isfinite(b)
+            if not bool(finite.any()):
+                return False
+            level = b[finite].median()
+            target = torch.where(finite, level.expand_as(b), b)
+        # refit replaces refinable_params, so any cached leaf set or optimizer state
+        # referring to the old tensor is stale.
+        field.refit(target)
+        self.reset_loss_state()
+        if self.verbose > 0:
+            print(f"Flattened the ADP field to a level of {float(level):.2f}")
+        return True
+
+    def set_adp_representation(
+        self,
+        mode: str,
+        mode_set: str = None,
+        n_nodes: int = None,
+        reflections_per_parameter: float = DEFAULT_REFLECTIONS_PER_ADP_PARAMETER,
+        k_neighbors: int = 12,
+        refine_node_positions: bool = True,
+        aniso_selection: str = None,
+    ):
+        """Switch the ADP parametrization, sizing and reweighting it for this data set.
+
+        :meth:`Model.set_adp_mode` changes the representation but cannot size it: node
+        count follows from the reflection count, and the model has no idea how much data
+        there is. It also cannot swap the ADP restraint set, which is a property of the
+        representation rather than a weight to tune.
+
+        The loss is **not** rebalanced for a field. The point of the representation is that
+        smoothness comes from the parametrisation, so a field should need *less*
+        regularisation than a per-atom model, not a reweighted version of the same
+        priors. :data:`DEFAULT_GROUP_WEIGHTS` already carries everything a field needs,
+        and an earlier attempt to raise the ``adp`` group for field mode had two side
+        effects worth remembering: ``adp/scaler_U`` and ``adp/scaler_log_scale`` sit under
+        that group, so it multiplied the scaler regularisation by the same factor, and it
+        made the field's configuration differ from every per-atom baseline in a way that
+        had nothing to do with ADPs.
+
+        Safe to call after construction: the targets and scales are rebuilt afterwards,
+        which is what the model's own "run once at setup" caveat is about.
+
+        Parameters
+        ----------
+        mode : str
+            Any mode :meth:`Model.set_adp_mode` accepts. ``"field"`` and
+            ``"field_aniso"`` are sized and reweighted; the per-atom modes just pass
+            through, with any field weight overrides removed again.
+        mode_set : str, optional
+            Displacement-mode set for ``mode="field_aniso"``; see
+            :data:`~torchref.model.disorder_field.MODE_SETS`.
+        n_nodes : int, optional
+            Explicit node count, bypassing the reflection budget entirely.
+        reflections_per_parameter : float, optional
+            Target work reflections per ADP parameter when ``n_nodes`` is not given.
+
+        Returns
+        -------
+        dict
+            What was applied: mode, mode set, node count, parameter count and the
+            reflections-per-parameter actually achieved. Worth logging --- the achieved
+            ratio differs from the requested one by the integer rounding of node count.
+        """
+        is_field = mode in self.FIELD_MODES
+        if mode_set is not None and mode != "field_aniso":
+            raise ValueError(
+                f"mode_set={mode_set!r} describes an anisotropic displacement field; "
+                'use mode="field_aniso".'
+            )
+
+        if is_field and n_nodes is None:
+            n_nodes = self.nodes_for_reflection_budget(
+                mode, mode_set, reflections_per_parameter, refine_node_positions
+            )
+
+        self.model.set_adp_mode(
+            mode,
+            aniso_selection if aniso_selection is not None else self.aniso_selection,
+            n_nodes=n_nodes,
+            k_neighbors=min(k_neighbors, n_nodes) if is_field else k_neighbors,
+            refine_node_positions=refine_node_positions,
+            mode_set=mode_set,
+        )
+        self.adp_mode = mode
+        self.adp_mode_set = mode_set
+
+        # Targets hold per-atom index tensors keyed off the old parametrization, the
+        # scales were fitted against the old F_calc, and which ADP restraints even apply
+        # is a property of the representation -- so the component set changes, not just
+        # the weights. reset_loss_state is what makes the next access register the new
+        # set; it also drops the Logger, which holds a reference to the old state and
+        # would otherwise keep recording into it.
+        if getattr(self, "adp_target", None) is not None:
+            self._init_targets()
+            self.reset_loss_state()
+
+        n_par = sum(p.numel() for p in self.model.parameters_of_types(("adp", "u")))
+        applied = dict(
+            mode=mode, mode_set=mode_set, n_nodes=n_nodes, n_adp_parameters=int(n_par),
+            reflections_per_parameter=(
+                float(self.data.work.n) / n_par if n_par else float("inf")
+            ),
+        )
+        if self.verbose > 0:
+            label = mode if mode_set is None else f"{mode}/{mode_set}"
+            print(
+                f"ADP representation: {label}"
+                + (f", {n_nodes} nodes" if is_field else "")
+                + f", {n_par} parameters, "
+                f"{applied['reflections_per_parameter']:.1f} work reflections each"
+            )
+        return applied
 
     def _init_targets(self, xray_mode: str = None):
         """Build the x-ray, geometry and ADP targets and initialise the scales.
