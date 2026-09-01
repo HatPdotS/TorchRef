@@ -49,11 +49,13 @@ def _so3_greedy_nms(
     # preallocated kept-buffer (no repeated torch.stack), and a cosine threshold
     # (no per-iteration arccos). Result is identical to the original distance test.
     order = torch.argsort(values, descending=True).cpu().tolist()
-    # `rotation_matrix_euler_zyz` is the same fused single-pass form, term for
-    # term, so it rounds identically. That matters here and not only for tidiness:
-    # the NMS threshold test below flips for pairs sitting exactly on it, and the
-    # three-matrix-product form in `rotation_utils` rounds differently in the last
-    # bit. Every measurement on this engine was made with the fused form.
+    # `rotation_matrix_euler_zyz` is the shared implementation, and it is now the
+    # only one -- the alignment package's own batch copy was deleted after being
+    # measured bit-identical to it over 180k elements in both float32 and
+    # float64. (The three-matrix product it used reduces to the same two-term
+    # sums, because the rotation factors carry exact zeros and ones.) Rounding
+    # matters here beyond tidiness: the NMS threshold below flips for pairs
+    # sitting exactly on it.
     R_all = (
         rotation_matrix_euler_zyz(torch.stack([alphas, betas, gammas], dim=-1))
         .to(torch.float64).cpu()

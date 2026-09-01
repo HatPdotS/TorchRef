@@ -93,16 +93,14 @@ def _orbit_of_identity(data):
 
 def _truth_and_margin(arf, orbit):
     """``(rank, sigma, angle, best_ghost_sigma, margin)`` for one map."""
-    from torchref.experimental.alignment.frf.rotation_utils import (
-        rotation_matrix_from_edmonds_euler_batch,
-    )
+    from torchref.base.alignment.rotation import rotation_matrix_euler_zyz
 
     v = arf.values.to(torch.float64).cpu()
-    R = rotation_matrix_from_edmonds_euler_batch(
+    R = rotation_matrix_euler_zyz(torch.stack([
         arf.alphas.to(torch.float64).cpu(),
         arf.betas.to(torch.float64).cpu(),
         arf.gammas.to(torch.float64).cpu(),
-    )
+    ], dim=-1))
     sig = (v - v.mean()) / v.std().clamp(min=1e-30)
 
     best = None

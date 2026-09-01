@@ -43,82 +43,10 @@ __all__ = [
     "build_lerf1_intensity",
     "apply_shell_variance_weights",
     "detect_zsymm",
-    "epsilon_aware_unroll",
-    "compute_v_budget",
     "bulk_solvent_factor",
     "oeffner_vrms",
     "fit_relative_wilson_b",
 ]
-
-
-def epsilon_aware_unroll(
-    hkl_int: torch.Tensor,
-    sym_mats: torch.Tensor,
-):
-    """Unroll each ASU reflection to the **unique** P1 positions in its orbit.
-
-    For each ``h`` in the input list, generate the orbit ``{S_k · h}`` over the
-    ``n_ops`` symop matrices and emit one entry per *distinct* position. Axial /
-    special-position reflections (whose stabilizer has order ε(h) > 1) therefore
-    appear ``n_ops / ε(h)`` times, **not** ``n_ops`` times.
-
-    Mirrors Phaser's ``if (!duplicate(isym, rhkl))`` skip in
-    ``DataMR.cc:954-986``. A naive ``einsum + reshape`` unroll over-counts axial
-    reflections by ε(h), polluting the obs SH coefficients with spurious
-    non-invariant content — the noise channel that hurts high-symmetry cases.
-
-    Parameters
-    ----------
-    hkl_int : (N, 3) integer tensor
-        ASU Miller indices.
-    sym_mats : (n_ops, 3, 3) tensor
-        Spacegroup rotation operators in the reciprocal (hkl) basis. Cast to
-        ``long`` internally; values must be integer.
-
-    Returns
-    -------
-    unrolled_hkl : (M, 3) long tensor — flat list of unique orbit positions
-        across all ASU reflections.
-    asu_idx : (M,) long tensor — index into ``hkl_int`` that each unrolled entry
-        came from. Callers use it to broadcast intensities / centric / sigF:
-        ``F_unrolled = F_obs[asu_idx]``.
-    """
-    hkl_int = hkl_int.to(torch.long)
-    sym_mats = sym_mats.round().to(torch.long)
-    N, n_ops = hkl_int.shape[0], sym_mats.shape[0]
-    # Orbits: (N, n_ops, 3) — h.S_k, the row-vector (reciprocal-space)
-    # convention, matching the unroll sites in `align.py`. Note this is the
-    # TRANSPOSE contraction: `kji`, not `kij`. They coincide only for
-    # orthogonal symmetry matrices, so `kij` silently works everywhere except
-    # trigonal/hexagonal.
-    # Integer einsum dispatches to baddbmm, which CUDA does not implement for
-    # Long; compute in float64 (exact for symop 0/±1 × small Miller indices)
-    # and round back so the GPU path works.
-    orbits = (
-        torch.einsum(
-            "kji,nj->nki", sym_mats.to(torch.float64), hkl_int.to(torch.float64),
-        )
-        .round()
-        .to(torch.long)
-    )
-    # Pack (h, k, l) into a single int64 key for per-row dedup.
-    base = 2 * int(orbits.abs().max().item()) + 1
-    key = (orbits[:, :, 0] * base + orbits[:, :, 1]) * base + orbits[:, :, 2]
-    # Stable sort along dim=1 → duplicates land contiguously, lowest op-index
-    # first (matches Phaser's "first occurrence wins" rule).
-    sorted_keys, sort_idx = key.sort(dim=1, stable=True)
-    first_in_sorted = torch.cat(
-        [
-            torch.ones(N, 1, dtype=torch.bool, device=key.device),
-            sorted_keys[:, 1:] != sorted_keys[:, :-1],
-        ],
-        dim=1,
-    )
-    keep_mask = torch.empty_like(first_in_sorted)
-    keep_mask.scatter_(1, sort_idx, first_in_sorted)
-    asu_idx, op_idx = keep_mask.nonzero(as_tuple=True)
-    unrolled_hkl = orbits[asu_idx, op_idx]
-    return unrolled_hkl, asu_idx
 
 
 def build_lerf1_intensity(
@@ -216,67 +144,6 @@ def detect_zsymm(sym_mats: Optional[torch.Tensor]) -> int:
     if axis != 2:  # high-order axis not along z → don't apply a wrong filter
         return 1
     return int(zsymm)
-
-
-def compute_v_budget(
-    eps_factor: torch.Tensor,
-    sigma_a: torch.Tensor,
-    n_mol: int = 1,
-    totvar_known: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    """Phaser's per-reflection variance budget ``V(h)`` for the m_LETF1 LL.
-
-    Source: ``DataMR.cc:949`` (build) + ``DataMR.cc:1411`` (use in ``m_LETF1``)::
-
-        V = PTNCS.EPSFAC[r] − totvar_known[r] − totvar_search[r]
-
-    where ``EPSFAC[r] = ε(h)`` (or the tNCS-corrected variance bin in the
-    NCS-present case; we use plain ε for the standalone search), ``totvar_known``
-    is the variance contribution from any fixed model (zero for a pure cross
-    rotation function), and ``totvar_search = σ_A²(s) · n_mol`` is the variance
-    explained by the moving model at the expected scattering content.
-
-    For the cross-rotation case (no fixed model, ``totvar_known = 0``):
-
-        V(h) = ε(h) − σ_A²(s)·n_mol
-
-    Working in E-space (obs already Wilson-normalised), so no Σ_N factor.
-
-    Parameters
-    ----------
-    eps_factor : (N,) tensor
-        Per-reflection ε(h), the multiplicity (1 for general positions,
-        n>1 for reflections on n-fold symmetry axes). From
-        :meth:`torchref.symmetry.symmetry.Symmetry.epsilon`.
-    sigma_a : (N,) tensor
-        Per-reflection σ_A(s) (interpolated from the per-shell fit).
-    n_mol : int
-        Number of molecules in the unit cell summed over by the NSYMP-loop in
-        the calc-side expected intensity. Equals ``NSYMP`` for the standalone
-        cross-rotation search.
-    totvar_known : (N,) tensor, optional
-        Variance contribution from a fixed/known model. Default ``None`` →
-        treated as zero (standalone cross-rotation function).
-
-    Returns
-    -------
-    V : (N,) tensor
-        Per-reflection variance budget. Clamped to ``> 0`` to keep the LL finite;
-        a non-positive ``V`` would imply σ_A² overshoots ε, which Phaser also
-        guards against via ``PHASER_ASSERT(C > 0)`` at DataMR.cc:1413.
-    """
-    sa = sigma_a.to(eps_factor.dtype)
-    moving = (sa * sa) * float(n_mol)
-    V = eps_factor - moving
-    if totvar_known is not None:
-        V = V - totvar_known.to(eps_factor.dtype)
-    return V.clamp(min=1e-6)
-
-
-# =============================================================================
-# Phaser model-prep — three pieces Phaser applies before the FRF that we don't.
-# See `Ensemble::setPDB` (EnsemblePDB.cc:40-100). Adding these as opt-in.
-# =============================================================================
 
 
 def bulk_solvent_factor(

@@ -46,7 +46,7 @@ from __future__ import annotations
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -74,84 +74,6 @@ from .translation import (
 if TYPE_CHECKING:
     from torchref.io.datasets import ReflectionData
     from torchref.model import ModelFT
-
-
-def rotation_matrix_from_euler_zyz(alpha, beta, gamma) -> np.ndarray:
-    """Build R = R_z(α) R_y(β) R_z(γ) (Edmonds active ZYZ) as a NumPy 3×3 matrix.
-
-    Compatibility wrapper around `rotation_matrix_from_edmonds_euler`.
-    """
-    R = rotation_matrix_from_edmonds_euler(float(alpha), float(beta), float(gamma))
-    return R.detach().cpu().numpy()
-
-
-def rotation_angular_distance(R1: np.ndarray, R2: np.ndarray) -> float:
-    """Angular distance between two rotation matrices in degrees.
-
-    The angular distance is the angle of the rotation ``R2 @ R1.T``.
-    """
-    R_diff = R2 @ R1.T
-    trace = np.clip(np.trace(R_diff), -1.0, 3.0)
-    return np.degrees(np.arccos((trace - 1.0) / 2.0))
-
-
-def euler_angular_distance(
-    euler1: Tuple[float, float, float],
-    euler2: Tuple[float, float, float],
-) -> float:
-    """Angular distance between two ZYZ Euler angle sets (degrees)."""
-    R1 = rotation_matrix_from_euler_zyz(*euler1)
-    R2 = rotation_matrix_from_euler_zyz(*euler2)
-    return rotation_angular_distance(R1, R2)
-
-
-def cluster_rotation_peaks(
-    peaks: list,
-    threshold_deg: float = 6.0,
-    symmetry_matrices: Optional[np.ndarray] = None,
-) -> list:
-    """Cluster rotation peaks by angular distance.
-
-    Peaks within ``threshold_deg`` of each other are considered the same
-    solution; only the highest-scoring peak from each cluster is kept. Not on
-    the default pipeline path (the ML rescore already ranks Patterson-
-    equivalents adjacently); retained for callers that want explicit
-    de-duplication.
-
-    Parameters
-    ----------
-    peaks : list
-        Rotation peaks as tuples ``(alpha, beta, gamma, score, sigma)``.
-    threshold_deg : float
-        Angular distance threshold for clustering (degrees).
-    symmetry_matrices : np.ndarray, optional
-        Point-group symmetry matrices (N, 3, 3) to check symmetry equivalents.
-    """
-    if not peaks:
-        return []
-
-    sorted_peaks = sorted(peaks, key=lambda p: p[4], reverse=True)
-    clustered = []
-    used_rotations = []
-    for peak in sorted_peaks:
-        alpha, beta, gamma, score, sigma = peak
-        R = rotation_matrix_from_euler_zyz(alpha, beta, gamma)
-        is_new = True
-        for R_used in used_rotations:
-            if rotation_angular_distance(R, R_used) < threshold_deg:
-                is_new = False
-                break
-            if symmetry_matrices is not None:
-                for sym_op in symmetry_matrices:
-                    if rotation_angular_distance(sym_op @ R, R_used) < threshold_deg:
-                        is_new = False
-                        break
-                if not is_new:
-                    break
-        if is_new:
-            clustered.append(peak)
-            used_rotations.append(R)
-    return clustered
 
 
 # ---------------------------------------------------------------------------

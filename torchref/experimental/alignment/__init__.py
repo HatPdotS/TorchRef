@@ -80,9 +80,6 @@ from .pipeline import (
     MolecularReplacementPipeline,
     MRSolution,
     align_model_to_data,
-    cluster_rotation_peaks,
-    euler_angular_distance,
-    rotation_angular_distance,
 )
 
 __all__ = [
@@ -102,9 +99,6 @@ __all__ = [
     "rotation_matrix_from_edmonds_euler",
     "edmonds_euler_from_rotation_matrix",
     "rotation_angular_distance_deg",
-    "cluster_rotation_peaks",
-    "rotation_angular_distance",
-    "euler_angular_distance",
     # Translation search
     "TranslationObs",
     "TranslationPeak",

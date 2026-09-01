@@ -14,7 +14,7 @@ Phaser does:
    on the full ``(2L-1) × (2L-1)`` grid (asymmetric-unit storage only —
    the Friedel mate is added by cctbx via ``conjugate_flag=true``).
 3. The 2D inverse FFT runs at a **fixed shape**
-   ``amax = adjust_gridding(2·max(bmax, lmax), max_prime=5)`` for every β.
+   ``amax = find_fft_friendly_size(2·max(bmax, lmax))`` for every β.
    The result is a dense ``M_β(α, γ)`` map indexed in ``[0, 1)`` along
    each axis.
 4. The **adaptive sample list** is built once by ``allocate_memory``
@@ -41,35 +41,15 @@ from typing import List, Tuple
 import torch
 
 from ....config import canonical_device
+from ....symmetry.symmetry import find_fft_friendly_size
 from .types import AdaptiveRotationFunction
 from .wigner_d import wigner_contraction_per_beta
 
 __all__ = [
-    "adjust_gridding",
     "build_dense_map_per_beta",
     "build_adaptive_sample_list",
     "evaluate_rotation_function",
 ]
-
-
-def adjust_gridding(target: int, max_prime: int = 5) -> int:
-    """Smallest integer ≥ target whose largest prime factor is ≤ max_prime.
-
-    Phaser source: ``scitbx::fftpack::adjust_gridding`` (FastRot.cc:66-69).
-    For ``max_prime=5`` this is the standard 5-smooth (Hamming) numbers.
-    """
-    if target <= 1:
-        return 1
-    primes = [p for p in [2, 3, 5, 7, 11, 13] if p <= max_prime]
-    n = int(target)
-    while True:
-        m = n
-        for p in primes:
-            while m % p == 0:
-                m //= p
-        if m == 1:
-            return n
-        n += 1
 
 
 def build_dense_map_per_beta(
@@ -314,7 +294,7 @@ def evaluate_rotation_function(
         Phaser's ``grid_sampling`` keyword. β grid is uniform at this
         spacing; (α, γ) sample density per β follows pmax/qmax.
     fft_size : int, optional
-        Dense FFT shape. Default: ``adjust_gridding(2·max(bmax, 2L-1), 5)``.
+        Dense FFT shape. Default: ``find_fft_friendly_size(2·max(bmax, 2L-1))``.
     """
     if xi_lmn.ndim != 3:
         raise ValueError(f"xi_lmn must be 3-D (L, 2L-1, 2L-1), got {tuple(xi_lmn.shape)}")
@@ -328,7 +308,7 @@ def evaluate_rotation_function(
 
     bmax = int(math.ceil(180.0 / grid_sampling_deg))
     if fft_size < 0:
-        fft_size = adjust_gridding(2 * max(bmax, 2 * L - 1), max_prime=5)
+        fft_size = find_fft_friendly_size(2 * max(bmax, 2 * L - 1))
 
     # 1. Build adaptive sample list (purely geometric — independent of xi).
     alphas, betas_flat, gammas, beta_starts, beta_grid = build_adaptive_sample_list(

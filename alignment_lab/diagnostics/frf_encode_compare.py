@@ -31,8 +31,9 @@ projection:
 * ``obs_ours_unroll`` / ``obs_dedup_unroll`` -- Phaser's ASU-level intensities
   (``PHASER_TERMS_DUMP``, keyed by Miller index) put through *our* two symmetry
   unrolls: the production one, which emits all ``n_ops`` orbit positions, and
-  ``epsilon_aware_unroll``, which emits only the distinct ones as Phaser does
-  (``!duplicate(isym,rhkl)``, DataMR.cc:954). Same intensities, same encoder,
+  ``SpaceGroup.expand_hkl(include_friedel=False)``, which emits only the
+  distinct ones as Phaser does (``!duplicate(isym,rhkl)``, DataMR.cc:954).
+  Same intensities, same encoder,
   same target -- so the difference between these two arms is the multiplicity
   handling and nothing else.
 
@@ -311,10 +312,6 @@ def unroll_arms(pdb: str, terms_csv: Path):
     The counts are exact integers, so the multiplicity question is answered by
     arithmetic before any encoding happens.
     """
-    from torchref.experimental.alignment.frf.preprocessing import (
-        epsilon_aware_unroll,
-    )
-
     d = np.loadtxt(terms_csv, delimiter=",", skiprows=1)
     if d.ndim == 1:
         d = d[None, :]
@@ -332,7 +329,8 @@ def unroll_arms(pdb: str, terms_csv: Path):
     i_all = inten.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
 
     # Phaser-faithful: distinct orbit positions only (DataMR.cc:954).
-    hkl_ded, asu_idx = epsilon_aware_unroll(hkl.to(torch.long), sg)
+    hkl_ded, asu_idx, _ = data.spacegroup.expand_hkl(
+        hkl.to(torch.long), include_friedel=False)
     s_ded = hkl_ded.to(torch.float64) @ rec
     i_ded = inten[asu_idx]
 

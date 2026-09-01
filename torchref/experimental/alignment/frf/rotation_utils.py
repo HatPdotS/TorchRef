@@ -28,37 +28,6 @@ def rotation_matrix_from_edmonds_euler(
     return Rz_a @ Ry_b @ Rz_c
 
 
-def rotation_matrix_from_edmonds_euler_batch(
-    alpha: torch.Tensor, beta: torch.Tensor, gamma: torch.Tensor,
-) -> torch.Tensor:
-    """Vectorised Edmonds ZYZ Euler → ``R``.
-
-    ``alpha``, ``beta``, ``gamma``: identically-shaped real tensors. Returns
-    ``(..., 3, 3)`` in the same dtype/device as the inputs.
-    """
-    ca, sa = torch.cos(alpha), torch.sin(alpha)
-    cb, sb = torch.cos(beta), torch.sin(beta)
-    cg, sg = torch.cos(gamma), torch.sin(gamma)
-    zero = torch.zeros_like(alpha)
-    one = torch.ones_like(alpha)
-    Rz_a = torch.stack([
-        torch.stack([ca, -sa, zero], dim=-1),
-        torch.stack([sa,  ca, zero], dim=-1),
-        torch.stack([zero, zero, one], dim=-1),
-    ], dim=-2)
-    Ry_b = torch.stack([
-        torch.stack([cb,  zero, sb], dim=-1),
-        torch.stack([zero, one, zero], dim=-1),
-        torch.stack([-sb, zero, cb], dim=-1),
-    ], dim=-2)
-    Rz_c = torch.stack([
-        torch.stack([cg, -sg, zero], dim=-1),
-        torch.stack([sg,  cg, zero], dim=-1),
-        torch.stack([zero, zero, one], dim=-1),
-    ], dim=-2)
-    return Rz_a @ Ry_b @ Rz_c
-
-
 def edmonds_euler_from_rotation_matrix(R: torch.Tensor) -> Tuple[float, float, float]:
     """Recover ``(α, β, γ)`` such that ``R = R_z(α) R_y(β) R_z(γ)``.
 

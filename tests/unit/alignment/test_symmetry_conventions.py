@@ -22,9 +22,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from torchref.experimental.alignment.frf.preprocessing import (
-    epsilon_aware_unroll,
-)
 from torchref.experimental.alignment.sh import (
     hkl_symops_to_cartesian,
     symmetrize_anisotropy,
@@ -209,21 +206,26 @@ def test_epsilon_uses_the_row_vector_convention(hm, non_orthogonal):
 
 
 @pytest.mark.parametrize("hm, non_orthogonal", SPACEGROUPS)
-def test_epsilon_aware_unroll_stays_within_the_true_orbit(hm, non_orthogonal):
+def test_symmetry_unroll_stays_within_the_true_orbit(hm, non_orthogonal):
     """Every emitted position must be a genuine symmetry mate of its input.
 
     This exercises a real call site rather than the contraction in isolation.
     Under the wrong convention the emitted positions leave the true orbit for a
     non-orthogonal setting, which is what let two inequivalent reflections land
     on one Miller index carrying different ``|F|``.
+
+    Against ``SpaceGroup.expand_hkl``, the shared helper. The alignment package
+    had its own ``epsilon_aware_unroll`` doing the same orbit dedup -- measured
+    to emit ``n_ops/epsilon(h)`` distinct mates, exactly as this does -- and it
+    was deleted once nothing in production called it. Guarding the shared one is
+    worth more than guarding the copy was.
     """
     del non_orthogonal
     sg = SpaceGroup(hm)
-    S = sg.matrices.detach().cpu().to(torch.float64)
     g = torch.Generator().manual_seed(19)
     hkl = torch.randint(-9, 10, (150, 3), generator=g)
 
-    unrolled, asu_idx = epsilon_aware_unroll(hkl, S)
+    unrolled, asu_idx, _ = sg.expand_hkl(hkl, include_friedel=False)
     unrolled = unrolled.detach().cpu().to(torch.long)
     asu_idx = asu_idx.detach().cpu().to(torch.long)
 

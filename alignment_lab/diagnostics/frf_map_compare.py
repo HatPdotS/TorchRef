@@ -198,23 +198,19 @@ def compare(ours, phaser_angles, phaser_values, frame, data, *, topn: int = 20) 
     ours is much worse, the ghost problem is ours; if they agree, the ghosts are
     inherent to the target function and no reimplementation will remove them.
     """
-    from torchref.experimental.alignment.frf.rotation_utils import (
-        rotation_matrix_from_edmonds_euler_batch,
-    )
+    from torchref.base.alignment.rotation import rotation_matrix_euler_zyz
 
     a = ours.arf
     ov = a.values.to(torch.float64).cpu()
-    R_ours = rotation_matrix_from_edmonds_euler_batch(
+    R_ours = rotation_matrix_euler_zyz(torch.stack([
         a.alphas.to(torch.float64).cpu(),
         a.betas.to(torch.float64).cpu(),
         a.gammas.to(torch.float64).cpu(),
-    )
+    ], dim=-1))
 
     pv = phaser_values.to(torch.float64).cpu()
     ang = phaser_angles.to(torch.float64).cpu()
-    R_grid = rotation_matrix_from_edmonds_euler_batch(
-        torch.deg2rad(ang[:, 0]), torch.deg2rad(ang[:, 1]), torch.deg2rad(ang[:, 2]),
-    )
+    R_grid = rotation_matrix_euler_zyz(torch.deg2rad(ang[:, :3]))
     PR, AX = frame["PR"], frame["axisrot"]
     # principal frame -> PDB frame (runMR_FRF.cc:542)
     R_ph = torch.einsum("ij,njk,kl->nil", AX, R_grid, PR)

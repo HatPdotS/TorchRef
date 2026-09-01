@@ -12,11 +12,11 @@ import pytest
 import torch
 
 from torchref.experimental.alignment.frf.sitelist_ang import (
-    adjust_gridding,
     build_adaptive_sample_list,
     build_dense_map_per_beta,
     evaluate_rotation_function,
 )
+from torchref.symmetry.symmetry import find_fft_friendly_size
 from torchref.experimental.alignment.frf.wigner_d import (
     _wigner_d_blocks,
     wigner_contraction_per_beta,
@@ -51,11 +51,17 @@ def _make_xi(L: int, seed: int = 42) -> torch.Tensor:
     return xi
 
 
-def test_adjust_gridding_basic():
-    assert adjust_gridding(180) == 180         # 180 = 4·45 = 4·9·5 (5-smooth)
-    assert adjust_gridding(7) == 8             # rounds up to next 5-smooth
-    assert adjust_gridding(243) == 243         # 3^5
-    assert adjust_gridding(1) == 1
+def test_fft_size_is_five_smooth():
+    """The dense-map grid must factor into 2, 3 and 5 only.
+
+    Uses the shared ``find_fft_friendly_size``; the alignment package's own
+    ``adjust_gridding`` was deleted after being measured identical to it for
+    every n from 1 to 4000 at the only setting the FRF ever called it with.
+    """
+    assert find_fft_friendly_size(180) == 180   # 180 = 4·45 = 4·9·5
+    assert find_fft_friendly_size(7) == 8       # rounds up to the next 5-smooth
+    assert find_fft_friendly_size(243) == 243   # 3^5
+    assert find_fft_friendly_size(1) == 1
 
 
 def test_sample_count_matches_so3_measure():
@@ -113,7 +119,7 @@ def test_real_output_from_hermitian_xi():
     xi = _make_xi(L)
     Δ = 10.0
     bmax = int(math.ceil(180.0 / Δ))
-    N = adjust_gridding(2 * max(bmax, 2 * L - 1), max_prime=5)
+    N = find_fft_friendly_size(2 * max(bmax, 2 * L - 1))
     _, _, _, _, beta_grid = build_adaptive_sample_list(Δ)
     M = build_dense_map_per_beta(xi, beta_grid, N)
     # Imaginary part divided by typical magnitude should be < 1e-10.

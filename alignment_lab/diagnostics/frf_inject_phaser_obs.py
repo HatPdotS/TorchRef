@@ -12,7 +12,7 @@ per-reflection intensity is now verified exact against Phaser:
   -- Phaser's ``clmn`` through our evaluator gives r = 0.998 with an identical
   argmax;
 * the reciprocal frame (positions agree to 1e-8) and the unroll (our
-  ``epsilon_aware_unroll`` reproduces Phaser's point count exactly).
+  the orbit dedup reproduces Phaser's point count exactly).
 
 What is NOT verified is the intensity attached to each position: ours correlates
 with Phaser's at 0.988 (1AK5), 0.877 (2DQ6) and 0.711 (3GR5) -- and that ordering

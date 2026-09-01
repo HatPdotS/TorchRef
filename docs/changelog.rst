@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- The alignment package uses the shared FFT-size and Euler-matrix helpers instead of its own copies, and drops four unused rotation utilities and two duplicated symmetry helpers. Bit-identical placements on the benchmark panel
 - The translation likelihood's model error comes from the shared ``SigmaAEstimator`` instead of a local 81-point scan over every reflection. It returns ``alpha`` and ``beta`` per reflection rather than a per-shell ``sigma_A``, so the likelihood no longer assumes ``<E_calc^2>`` is exactly one. Outcome-neutral over 70 seeded cells, zero flips; not measurably faster
 - Fixed the translation likelihood's variance convention, which scored acentric reflections at twice the variance intended -- 90-95% of reflections. The alignment package carried its own Rice and Woolfson parameterised by the *amplitude* variance and handed both branches the same number, where the acentric branch needs half what the centric one does. It now uses ``base.targets.xray_likelihoods.rice_per_refl``, which takes the complex variance and derives the centric case from it
 - Removed ``experimental/alignment/distributions.py``. Its ``stable_log_bessel_i0`` also carried a wrong asymptotic coefficient, giving -2.9e-5 at x = 50 against -5.4e-7 for the correct term; the shared implementation uses ``log(i0e(z)) + z``, which is exact

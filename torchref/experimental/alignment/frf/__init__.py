@@ -15,7 +15,6 @@ from .rotation_utils import (
     edmonds_euler_from_rotation_matrix,
     rotation_angular_distance_deg,
     rotation_matrix_from_edmonds_euler,
-    rotation_matrix_from_edmonds_euler_batch,
 )
 from .types import (
     AdaptiveRotationFunction,
@@ -31,7 +30,6 @@ __all__ = [
     "model_sf_abs",
     # Rotation geometry helpers
     "rotation_matrix_from_edmonds_euler",
-    "rotation_matrix_from_edmonds_euler_batch",
     "edmonds_euler_from_rotation_matrix",
     "rotation_angular_distance_deg",
     # Types

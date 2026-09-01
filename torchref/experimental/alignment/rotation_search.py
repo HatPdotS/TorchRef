@@ -441,9 +441,9 @@ def search_peaks(
         #
         # Not the same as the earlier finding that knocking it out was
         # rank-neutral; that was a measurement about whether it mattered, this is
-        # that it is arithmetically cancelled. `fit_relative_wilson_b` stays for
-        # the rescore, where the calc normalisation is taken from the unmodified
-        # reference amplitudes and the Debye-Waller term therefore survives.
+        # that it is arithmetically cancelled. `fit_relative_wilson_b` survives in
+        # `frf/preprocessing` with no production caller at all -- it was kept for
+        # the ML rescore, and that was deleted.
 
         engine = FastRotationFunction(
             s_obs, F_obs, centric, sg_mats,
@@ -471,15 +471,13 @@ def search_peaks(
 def _solutions(peaks: List["RotationPeak"], lmax: int, d_min: float,
                model_error_A: float) -> RotationSolutions:
     """Package a peak list as the public return type."""
-    from .frf.rotation_utils import rotation_matrix_from_edmonds_euler_batch
+    from torchref.base.alignment.rotation import rotation_matrix_euler_zyz
 
     euler = torch.tensor(
         [[p.alpha, p.beta, p.gamma] for p in peaks], dtype=torch.float64,
     ).reshape(-1, 3)
     rotations = (
-        rotation_matrix_from_edmonds_euler_batch(
-            euler[:, 0], euler[:, 1], euler[:, 2],
-        )
+        rotation_matrix_euler_zyz(euler)
         if euler.numel()
         else torch.zeros((0, 3, 3), dtype=torch.float64)
     )
