@@ -616,6 +616,38 @@ def llg_translation_rescore(
     return ll.sum(dim=1) - ll_wil_total                            # (K,)
 
 
+def correlation_at(
+    obs: TranslationObs, G: torch.Tensor, h_R: torch.Tensor, t: torch.Tensor,
+) -> float:
+    """The translation search's own score at one translation.
+
+    Same functional :func:`amplitude_translation_search` maximises --
+    ``sum_h w (E_obs^2 - <E_obs^2>_w) |F_calc(h, t)|^2 / sum_h w |F_calc(h, t)|^2``
+    -- evaluated at a single ``t`` rather than over a grid, which needs no FFT.
+
+    The grid search returns its peaks' scores, but a peak is then refined and the
+    refined position is what gets used. Scoring the *used* translation is what
+    makes the number comparable with other candidates' used translations. It is
+    also what stops the ranking key and the returned placement coming from
+    different points, which is how a selection rule quietly stops meaning what
+    its name says.
+    """
+    device = G.device
+    E = obs.E_obs.to(device).to(torch.float64)
+    w = obs.weight.to(device).to(torch.float64)
+    E2 = E * E
+    E2c = E2 - (w * E2).sum() / w.sum().clamp(min=1e-30)
+
+    tt = t.detach().to(device).to(torch.float64).reshape(3)
+    phase = torch.exp(2j * torch.pi * torch.einsum(
+        "ind,d->in", h_R.to(torch.float64), tt).to(G.dtype))
+    Fc2 = (G * phase).sum(dim=0).abs().to(torch.float64) ** 2
+
+    num = (w * E2c * Fc2).sum()
+    den = (w * Fc2).sum().clamp(min=1e-30)
+    return float(num / den)
+
+
 def precompute_G_for_rotation(
     interpolator,
     R_rotation: torch.Tensor,

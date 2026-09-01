@@ -96,8 +96,10 @@ def _report_candidates(solutions, R_true, symops, success_deg) -> None:
     R in 0 of 10 seeds while the pipeline solved 6 of them, because it fed the
     R-factor a different set of translation peaks.
 
-    ``SOLN`` lines are ordered as the pipeline ranked them, so line 0 is what it
-    returned. ``dtruth`` is the angle from that candidate's orientation to the
+    ``SOLN`` lines are ordered as the pipeline ranked them -- by ``tf_corr``,
+    descending -- so line 0 is what it returned. ``R`` is carried alongside
+    because it used to be the ranking key and comparing the two orderings is the
+    point. ``dtruth`` is the angle from that candidate's orientation to the
     true one modulo crystal symmetry; ``pick`` marks the winner and ``true``
     marks every candidate that was in fact correct.
     """
@@ -106,7 +108,7 @@ def _report_candidates(solutions, R_true, symops, success_deg) -> None:
     )
 
     R_t = R_true.to(torch.float64).cpu()
-    print("  SOLN rank  rot_score   tf_R    dtruth  flags")
+    print("  SOLN rank  rot_score     tf_corr   R      dtruth  flags")
     for i, sol in enumerate(solutions):
         R = torch.as_tensor(sol.rotation, dtype=torch.float64)
         # `rotation` maps the search-model frame onto the crystal frame; the
@@ -116,7 +118,8 @@ def _report_candidates(solutions, R_true, symops, success_deg) -> None:
                 for k in range(symops.shape[0]))
         flags = ("pick " if i == 0 else "     ") + ("true" if d <= success_deg else "")
         print(f"  SOLN {i:4d} {sol.rotation_score:10.3f} "
-              f"{sol.translation_score:7.4f} {d:8.2f}  {flags}")
+              f"{sol.translation_score:10.5f} {sol.r_factor:7.4f} "
+              f"{d:8.2f}  {flags}")
 
 
 def main() -> int:

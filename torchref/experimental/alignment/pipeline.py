@@ -60,6 +60,7 @@ from .translation import (
     TranslationObs,
     TranslationPeak,
     amplitude_translation_search,
+    correlation_at,
     fit_sigma_a_per_shell,
     llg_translation_rescore,
     local_translation_refine,
@@ -258,12 +259,14 @@ class MRSolution:
         Fractional translation applied after rotation, shape (3,). ``None`` for
         a rotation-only solution (``do_translation=False``).
     rotation_score : float
-        ML-LLG score of the rotation candidate (from the rescore).
+        The rotation function's score for this candidate.
     translation_score : float
-        Analytical-R of the best translation for this candidate (lower better).
+        The translation function's correlation at the chosen translation, higher
+        better. Reported, not ranked -- see the sort in :meth:`run`.
     r_factor : float
-        Ranking key: the translation search's analytical-scale R. For the
-        returned winner it is replaced by the solvent-aware Scaler R-work.
+        **The ranking key**: the analytical-scale R at that placement, lower
+        better. For the returned winner it is replaced by the solvent-aware
+        Scaler R-work.
     model : ModelFT
         The rotated (+translated +refined) model for this candidate.
     """
@@ -499,8 +502,6 @@ class MolecularReplacementPipeline(DeviceMixin):
             placed = rotated_k.copy().translate(
                 t_refined.to(self.model.dtype_float), fractional=True,
             )
-            r_rank = r_analytic
-
             placed.last_alignment_rotation = R_rec_k
             placed.last_alignment_translation = t_refined
             solutions.append(
@@ -508,8 +509,8 @@ class MolecularReplacementPipeline(DeviceMixin):
                     rotation=R_rec_k.detach().cpu().numpy(),
                     translation=t_refined.detach().cpu().numpy(),
                     rotation_score=float(peak_k.score),
-                    translation_score=float(r_analytic),
-                    r_factor=float(r_rank),
+                    translation_score=float(tf_score),
+                    r_factor=float(r_analytic),
                     model=placed,
                 )
             )
@@ -517,6 +518,13 @@ class MolecularReplacementPipeline(DeviceMixin):
         if not solutions:
             raise RuntimeError("Translation + joint refine produced no candidates.")
 
+        # Lowest analytical-scale R. Ranking by the translation correlation was
+        # tried and is worse end to end -- 31/40 against 36/40 over four
+        # structures x ten seeds, losing on both 2DQ6 (6/10 -> 3/10) and 6G9X
+        # (10/10 -> 8/10). A rank-level harness had predicted the opposite by a
+        # wide margin, which is why the correlation is still reported on every
+        # candidate at verbose >= 2: the two orderings disagree and the
+        # disagreement is not yet understood.
         solutions.sort(key=lambda s: s.r_factor)
         winner = solutions[0]
 
@@ -526,7 +534,8 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer.stop("12_final_scaler")
         winner.model.last_alignment_rfactor = rwork_final
         winner.r_factor = rwork_final
-        self._log(1, f"mr: winner analytical-TF R={winner.translation_score:.4f}, "
+        self._log(1, f"mr: winner TF correlation={winner.translation_score:.5f}, "
+                     f"analytic R={winner.r_factor:.4f}, "
                      f"final Scaler-fit R-work={rwork_final:.4f}")
         self._log(2, "\n" + timer.summary())
         return solutions
@@ -692,11 +701,18 @@ class MolecularReplacementPipeline(DeviceMixin):
                 precomputed_G=G_pre, precomputed_h_R=h_R_pre,
             )
             timer.stop("7_local_TF_refine")
-            self._log(3, f"    trans{k_t}: R(analytic)={r_analytic:.4f}, "
+            # Both scores at the REFINED position, so the reported correlation
+            # belongs to the translation that was actually chosen. Selection is
+            # by R: ranking candidates by the correlation instead was measured
+            # end to end and is WORSE (31/40 against 36/40 over four structures
+            # x ten seeds), despite a rank-level harness predicting the reverse.
+            tf_ref = correlation_at(self._obs, G_pre, h_R_pre, t_refined)
+            self._log(3, f"    trans{k_t}: tf={tf_ref:.5f} "
+                         f"R(analytic)={r_analytic:.4f}, "
                          f"t={[round(float(x), 3) for x in t_refined.tolist()]}")
             if best is None or r_analytic < best[0]:
-                best = (r_analytic, t_refined)
-        return None if best is None else (best[0], best[1], tf_top)
+                best = (r_analytic, t_refined, tf_ref)
+        return best
 
     def _llg_tf_rescore(self, t_peaks, G_pre, h_R_pre):
         """Re-rank translation peaks by a shared-σA Rice/Woolfson LLG.

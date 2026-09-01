@@ -25,6 +25,32 @@ This recomputes the LLG with sigma_A held FIXED across candidates, three ways:
                is rotation-invariant by construction -- total scattering per
                shell does not depend on orientation -- and is the estimate that
                exists for precisely this reason.
+``luzzati``    ASSUMED, not fitted: exp(-(2 pi^2/3) s^2 dVRMS^2) from the search
+               model's expected coordinate error, which is the same Eterm the
+               rotation function already weights with. It never looks at the
+               data, so it has zero free parameters of any kind -- which is the
+               property that makes the plain correlation robust, applied to a
+               likelihood instead.
+
+Also reported is ``r``, the analytical-scale R the pipeline actually selects on,
+because the point of the exercise is replacing it: on 2DQ6 all 25 candidates
+fall within 0.023 R of each other and the wrong winner leads a correct candidate
+by 0.0001.
+
+Two forms of the correlation are compared, because the one the search maximises
+is not a correlation coefficient:
+
+``corr``     what ``amplitude_translation_search`` returns,
+             ``sum w (E_obs^2 - mean) |Fc|^2 / sum w |Fc|^2``. The denominator
+             normalises the weighted MEAN, not the spread, so this is a weighted
+             mean of centred observed intensity. Fine for finding the peak in t
+             at fixed orientation; its scale across ORIENTATIONS depends on how
+             concentrated that candidate's |Fc|^2 happens to be.
+``pearson``  the actual coefficient, ``cov / sqrt(var var)``, weighted the same
+             way. Per-candidate normalisation, so unlike a global rescale it can
+             and does reorder. Computed directly at each candidate's chosen
+             translation -- the FFT gives the numerator and one denominator but
+             not ``sum w |Fc|^4``, and one evaluation per candidate is cheap.
 """
 from __future__ import annotations
 
@@ -32,7 +58,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -56,7 +81,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pdb", default="2DQ6", choices=list(BENCH_PDBS))
     ap.add_argument("--trials", type=int, default=10)
-    ap.add_argument("--n-cand", type=int, default=15)
+    ap.add_argument("--n-cand", type=int, default=25)
     ap.add_argument("--thr-deg", type=float, default=8.0)
     args = ap.parse_args()
 
@@ -69,8 +94,10 @@ def main() -> int:
     from torchref.experimental.alignment.rotation_search import prepare_frf_inputs
     from torchref.experimental.alignment.translation import (
         DirectModelEvaluator, amplitude_translation_search, fit_sigma_a_per_shell,
-        llg_translation_rescore, normalise_calc, precompute_G_for_rotation,
+        llg_translation_rescore, local_translation_refine, normalise_calc,
+        precompute_G_for_rotation,
     )
+    from torchref.experimental.alignment.frf.preprocessing import eterm_sigma_a
     from torchref.scaling import WilsonNormaliser
     from torchref.scaling.weighting import empirical_sigma_a
 
@@ -118,9 +145,27 @@ def main() -> int:
             ph = torch.exp(2j * torch.pi * torch.einsum(
                 "ind,d->in", h_R.to(torch.float64), t_top).to(G.dtype))
             Fc_top = (G * ph).sum(dim=0).abs().to(torch.float64)
+            _, r_a = local_translation_refine(
+                obs=obs, interpolator=ev, R_rotation=eye3,
+                spacegroup=data.spacegroup, real_cell=data.cell,
+                t_init=t_top.cpu(), radius=0.06, grid_steps=13,
+                n_refinement_passes=1,
+                precomputed_G=G, precomputed_h_R=h_R)
+            # Weighted Pearson r between observed and calculated intensity at
+            # this candidate's chosen translation.
+            w = obs.weight.to(torch.float64)
+            x = (obs.E_obs.to(torch.float64)) ** 2
+            y = (Fc_top / Fc_top.mean().clamp(min=1e-30)) ** 2
+            wsum = w.sum().clamp(min=1e-30)
+            xm, ym = (w * x).sum() / wsum, (w * y).sum() / wsum
+            dx, dy = x - xm, y - ym
+            cov = (w * dx * dy).sum() / wsum
+            vx = (w * dx * dx).sum() / wsum
+            vy = (w * dy * dy).sum() / wsum
+            pear = float(cov / (vx * vy).clamp(min=1e-30).sqrt())
             cand.append(dict(ang=float(ang), corr=float(tp[0].score), G=G,
-                             h_R=h_R, t=t_top, Fc=Fc_top,
-                             E_calc=normalise_calc(Fc_top, obs)))
+                             h_R=h_R, t=t_top, Fc=Fc_top, r=float(r_a),
+                             pearson=pear, E_calc=normalise_calc(Fc_top, obs)))
 
         is_truth = [c["ang"] <= args.thr_deg for c in cand]
         if not any(is_truth):
@@ -148,16 +193,29 @@ def main() -> int:
                 obs=obs, G=c["G"], h_R=c["h_R"],
                 t_candidates=c["t"].view(1, 3), sigma_a=sigma_a)[0])
 
+        # Assumed sigma_A: the Luzzati falloff at the shell centres, from the
+        # model error the pipeline already estimates. No data, no fit.
+        s_shell = torch.zeros(obs.n_shells, dtype=torch.float64)
+        cnt_s = torch.bincount(obs.shell_idx, minlength=obs.n_shells).to(torch.float64)
+        s_shell.scatter_add_(0, obs.shell_idx, obs.s_mag.to(torch.float64))
+        s_shell = s_shell / cnt_s.clamp(min=1.0)
+        sa_luz = eterm_sigma_a(s_shell, float(pipe.model_error_A)).clamp(1e-3, 1 - 1e-6)
+
         variants = {
             "per_cand": [llg_of(c, sa_per_cand(c)) for c in cand],
             "shared":   [llg_of(c, sa_shared) for c in cand],
             "empirical": [llg_of(c, sa_emp) for c in cand],
+            "luzzati":  [llg_of(c, sa_luz) for c in cand],
         }
         r_corr = _rank_of_truth([c["corr"] for c in cand], is_truth)
+        r_pear = _rank_of_truth([c["pearson"] for c in cand], is_truth)
+        r_R = _rank_of_truth([c["r"] for c in cand], is_truth, higher_is_better=False)
         parts = " ".join(
             f"rank_{k}={_rank_of_truth(v, is_truth)}" for k, v in variants.items())
         print(f"ROW pdb={args.pdb} trial={trial} n_truth={sum(is_truth)} "
-              f"rank_corr={r_corr} {parts}", flush=True)
+              f"n_cand={len(cand)} vrms={float(pipe.model_error_A):.2f} "
+              f"rank_r={r_R} rank_corr={r_corr} rank_pearson={r_pear} {parts}",
+              flush=True)
     return 0
 
 
