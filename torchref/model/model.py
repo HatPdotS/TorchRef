@@ -19,7 +19,12 @@ import torch
 import torch.nn as nn
 
 from torchref.base import math_torch
-from torchref.config import canonical_device, get_float_dtype, normalize_device
+from torchref.config import (
+    canonical_device,
+    get_default_device,
+    get_float_dtype,
+    normalize_device,
+)
 from torchref.io import cif, pdb
 from torchref.model.context import ModelContext
 from torchref.model.parameter_wrappers import (
@@ -2142,7 +2147,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if self.ctx.verbose > 0:
             print(f"Saved model state to {path}")
 
-    def load_state(self, path: str, strict: bool = True):
+    def load_state(self, path: str, strict: bool = True, device=None):
         """
         Load the complete state of the model from a file.
 
@@ -2153,10 +2158,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         strict : bool, optional
             Accepted for signature compatibility; the restore goes through
             :meth:`create_from_state_dict`, which is never strict.
+        device : torch.device, optional
+            Device to restore onto. Defaults to this model's current device, so an
+            in-place reload keeps its placement; pass one to restore elsewhere.
         """
-        state_dict = torch.load(path, map_location=self.device, weights_only=False)
+        target_device = self.device if device is None else device
+        state_dict = torch.load(path, map_location=target_device, weights_only=False)
         loaded = type(self).create_from_state_dict(
-            state_dict, device=self.device, verbose=self.ctx.verbose
+            state_dict, device=target_device, verbose=self.ctx.verbose
         )
         # Adopt the fully-built model's state wholesale.
         self.__dict__.update(loaded.__dict__)
@@ -2343,9 +2352,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             State dictionary from torch.save(model.state_dict(), ...).
         device : torch.device, optional
             Move the restored model here once it is built. The restore itself always
-            runs on CPU, and ``None`` leaves it there rather than resolving to
-            ``device.current`` -- loading a file is not a reason to claim an
-            accelerator. Move it yourself, or pass one here.
+            runs on CPU; ``None`` then moves it to the configured default device
+            (``get_default_device()``), so a round-trip lands beside a same-config
+            model rather than stranding itself on CPU. Pass a device to override.
         verbose : int, optional
             Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional
@@ -2362,11 +2371,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, matching
         :meth:`load`, so the positive-definite parametrization round-trips.
         """
-        # Build on CPU throughout, then move once at the end if the caller named a
-        # device. One device for the whole model is the invariant that matters: the
-        # wrappers are built from the atom table and land on CPU whatever is asked for,
-        # so resolving an accelerator up front splits the model rather than placing it.
-        target_device = canonical_device(device) if device is not None else None
+        # Build on CPU throughout, then move once at the end -- to the caller's device
+        # if they named one, otherwise to the configured default device, so a restore
+        # lands beside a same-config model instead of stranding itself on CPU. One
+        # device for the whole model is the invariant that matters: the wrappers are
+        # built from the atom table and land on CPU whatever is asked for, so resolving
+        # an accelerator up front splits the model rather than placing it.
+        target_device = (
+            canonical_device(device) if device is not None else get_default_device()
+        )
         device = torch.device("cpu")
         if dtype_float is None:
             dtype_float = get_float_dtype()
@@ -2407,8 +2420,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         }
         instance.load_state_dict(state_dict, strict=False)
 
-        if target_device is not None:
-            instance.to(target_device)
+        # Always placed: target_device is the caller's device or the configured default,
+        # never None. Without this the restore used to stay on CPU and split a
+        # round-trip's restored model from its (default-device) source.
+        instance.to(target_device)
 
         if verbose > 0:
             n_atoms = len(instance.pdb) if instance.pdb is not None else 0
