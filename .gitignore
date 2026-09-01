@@ -18,6 +18,8 @@ _temp.mtz
 __pycache__/
 *.pyc
 *.pyo
+# macOS finder metadata
+.DS_Store
 # Large binary files
 *.ccp4
 *.png
@@ -85,3 +87,9 @@ graphify-out/
 *.sqsh
 anisotropic/
 torchref_refine_optimization/runs/
+
+# scaler_investigation lab outputs: the scripts are tracked, the outputs are not.
+scaler_investigation/cache/
+scaler_investigation/metrics/
+scaler_investigation/figures/
+scaler_investigation/slurm/
