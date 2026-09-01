@@ -24,12 +24,12 @@ module and its caller.
 import numpy as np
 import torch
 
+from torchref.base.targets.xray_likelihoods import rice_per_refl
 from torchref.config import get_default_device
 from torchref.scaling import WilsonNormaliser
 from torchref.scaling.weighting import (inverse_variance_weight,
                                         normalise_weight, snr_from_amplitude)
 
-from .distributions import rice_log_likelihood, woolfson_log_likelihood
 from .sh import assign_shells, equal_count_shell_edges
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, TYPE_CHECKING
@@ -490,17 +490,21 @@ def fit_sigma_a_per_shell(
     N = E_obs.numel()
     D_grid = torch.linspace(0.0, 0.99, n_grid, device=device, dtype=dtype)  # (G,)
     F_mean = D_grid.view(-1, 1) * E_calc.view(1, -1)                        # (G, N)
-    var_d = (1.0 - D_grid * D_grid).clamp(min=1e-4)                         # (G,)
+    # Sigma is the COMPLEX variance. `rice_per_refl` derives the centric
+    # amplitude variance from it internally, which is the whole reason to use it
+    # -- the previous code passed one amplitude variance to a Rice and a
+    # Woolfson written in different conventions, leaving acentrics at twice the
+    # variance they should have had.
+    Sigma = (1.0 - D_grid * D_grid).clamp(min=1e-4)                          # (G,)
     if interp_var is None:
-        var_full = var_d.view(-1, 1).expand(n_grid, N)
+        Sigma_full = Sigma.view(-1, 1).expand(n_grid, N)
     else:
-        var_full = (var_d.view(-1, 1) + interp_var.view(1, -1)).clamp(min=1e-4)
+        Sigma_full = (Sigma.view(-1, 1) + interp_var.view(1, -1)).clamp(min=1e-4)
     E_obs_full = E_obs.view(1, -1).expand(n_grid, N)
 
-    ll_acent = rice_log_likelihood(E_obs_full, F_mean, var_full)
-    ll_cent = woolfson_log_likelihood(E_obs_full, F_mean, var_full)
-    cent_full = centric.view(1, -1)
-    ll = torch.where(cent_full, ll_cent, ll_acent)                          # (G, N)
+    # Negated: `rice_per_refl` is an NLL and everything here maximises.
+    ll = -rice_per_refl(E_obs_full, F_mean, Sigma_full,
+                        centric.view(1, -1).expand(n_grid, N))              # (G, N)
 
     # Sum per shell, take argmax over the D-grid.
     shell_idx_gn = shell_idx.view(1, -1).expand(n_grid, N)
@@ -524,10 +528,14 @@ def llg_translation_rescore(
 
         F_calc(h, t) = sum_i G_i(h) exp(2 pi i (h R_i).t)
         E_calc(h, t) = |F_calc(h, t)| / sqrt(Sigma_calc(s; t))
-        LLG(t)       = sum_h [LL(E_obs, D E_calc, var) - LL_Wilson(E_obs)]
+        LLG(t)       = sum_h [LL(E_obs, D E_calc, Sigma) - LL_Wilson(E_obs)]
 
-    with ``var = (1 - D^2) + interp_var``. The Rice branch is used for acentric
-    reflections and Woolfson for centric.
+    with ``Sigma = (1 - D^2)`` the **complex** variance. The acentric/centric
+    split is handled inside
+    :func:`~torchref.base.targets.xray_likelihoods.rice_per_refl`, which derives
+    the centric amplitude variance from the same ``Sigma`` -- the two are not
+    the same number, and passing one amplitude variance to both branches is how
+    this used to score acentrics at twice the variance they should have.
 
     The scoring rule the amplitude correlation is a pre-filter for. At rank
     level it is the strongest discriminator measured -- truth at rank 0 in 27 of
@@ -589,6 +597,7 @@ def llg_translation_rescore(
 
     sigma_a_d = sigma_a.to(device).to(real_dtype)                  # (n_shells,)
     D_per_refl = sigma_a_d.index_select(0, shell_idx_l)            # (N,)
+    # Complex variance, matching `rice_per_refl`'s convention.
     var_d = (1.0 - D_per_refl * D_per_refl).clamp(min=1e-4)        # (N,)
     if interp_var is not None:
         var_per_refl = (var_d + interp_var.to(device).to(real_dtype)).clamp(min=1e-4)
@@ -596,21 +605,20 @@ def llg_translation_rescore(
         var_per_refl = var_d
 
     F_mean = D_per_refl.view(1, N) * E_calc                        # (K, N)
-    var_full = var_per_refl.view(1, N).expand(K, N)
+    Sigma_full = var_per_refl.view(1, N).expand(K, N)
     E_obs_full = E_obs.view(1, N).expand(K, N)
-    cent_full = centric.to(device).to(torch.bool).view(1, N)
+    cent = centric.to(device).to(torch.bool)
+    cent_full = cent.view(1, N).expand(K, N)
 
-    ll_acent = rice_log_likelihood(E_obs_full, F_mean, var_full)
-    ll_cent = woolfson_log_likelihood(E_obs_full, F_mean, var_full)
-    ll = torch.where(cent_full, ll_cent, ll_acent)                 # (K, N)
+    ll = -rice_per_refl(E_obs_full, F_mean, Sigma_full, cent_full)  # (K, N)
 
-    # Wilson reference (data only): F_mean = 0, var = 1.
-    var0 = torch.ones_like(E_obs)
-    F_mean0 = torch.zeros_like(E_obs)
-    ll_wil_acent = rice_log_likelihood(E_obs, F_mean0, var0)
-    ll_wil_cent = woolfson_log_likelihood(E_obs, F_mean0, var0)
-    ll_wil_per_refl = torch.where(centric.to(device).to(torch.bool),
-                                   ll_wil_cent, ll_wil_acent)
+    # Wilson reference (data only): no model, so F_mean = 0 and Sigma = 1 --
+    # which is <E^2> = 1, the identity WilsonNormaliser fits to. Under the
+    # amplitude-variance convention this line used to carry, unit Sigma meant
+    # <E^2> = 2 for acentrics and the reference was inconsistent with the data
+    # it referenced.
+    ll_wil_per_refl = -rice_per_refl(
+        E_obs, torch.zeros_like(E_obs), torch.ones_like(E_obs), cent)
     ll_wil_total = ll_wil_per_refl.sum()
 
     return ll.sum(dim=1) - ll_wil_total                            # (K,)

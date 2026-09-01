@@ -155,7 +155,7 @@ def cluster_rotation_peaks(
 
 
 # ---------------------------------------------------------------------------
-# Stage timing and the user-facing R-work
+# Stage timing
 # ---------------------------------------------------------------------------
 
 
@@ -221,34 +221,6 @@ class _StageTimer:
         return "\n".join(lines)
 
 
-def _external_rwork(model: "ModelFT", data: "ReflectionData") -> float:
-    """Full-resolution scaled R-work via the standard Scaler.
-
-    The TF + local refine work in analytical-scale R-factor (which ranks
-    candidates correctly but isn't the user-facing R-work). We compute the
-    proper Scaler-fit R-work once per finalist.
-    """
-    from ...base.metrics.rfactor import rfactor_work_free
-    from ...scaling import Scaler
-
-    # No device override: the Scaler takes the configured default, which is
-    # the one place a device is decided. Reading it off whichever tensor is
-    # nearest is what puts a run on two devices at once.
-    s = Scaler(model=model, data=data, nbins=20, verbose=0)
-    # Detach the model forward — the scaler only needs gradients through its
-    # own parameters; leaving `fc` attached to the model's autograd graph
-    # keeps SfFFT density-build intermediates alive after this function
-    # returns.
-    with torch.no_grad():
-        fc = model(data.hkl).detach()
-    s.initialize(fc)
-    s.refine_lbfgs(fcalc=fc)
-    with torch.no_grad():
-        # rfactor_work_free takes already-scaled amplitudes, not complex F_calc.
-        rw, _ = rfactor_work_free(data, torch.abs(s.forward(fc)))
-    return rw.item() if hasattr(rw, "item") else float(rw)
-
-
 @dataclass
 class MRSolution:
     """A molecular-replacement placement.
@@ -268,8 +240,8 @@ class MRSolution:
         better. Reported, not ranked -- see the sort in :meth:`run`.
     r_factor : float
         The analytical-scale R at that placement, lower better. Reported, not
-        ranked; for the returned winner it is replaced by the solvent-aware
-        Scaler R-work, which is the number a caller reads.
+        ranked. A single global scale, so it is not the number a full Scaler
+        would return -- build one on the returned model if that is wanted.
     llg_score : float
         **The ranking key**: the translation likelihood at that placement,
         higher better. ``nan`` when ``rank_by`` is not ``"llg"``, since it costs
@@ -570,17 +542,19 @@ class MolecularReplacementPipeline(DeviceMixin):
             solutions.sort(key=lambda s: -s.llg_score)
         winner = solutions[0]
 
-        # Single solvent-aware Scaler refit on the winner for the user-facing R.
-        timer.start("12_final_scaler")
-        rwork_final = _external_rwork(winner.model, self.data)
-        timer.stop("12_final_scaler")
-        winner.model.last_alignment_rfactor = rwork_final
-        winner.r_factor = rwork_final
+        # No solvent-aware Scaler refit. It used to run here on the winner to
+        # report an R-work, and cost about a third of the whole alignment -- 8.6
+        # of 28 seconds on 2DQ6 -- to fit sixteen scaling parameters that change
+        # nothing about which placement is returned. The pipeline's contract is
+        # a placement; downstream refinement fits its own scaler properly, and
+        # doing a worse version of that here to print a number is not worth a
+        # third of the runtime. A caller that wants an R-work can build a
+        # `Scaler` on the returned model.
+        winner.model.last_alignment_rfactor = winner.r_factor
         self._log(1, f"mr: winner ({self.rank_by}) "
                      f"LLG={winner.llg_score:.1f} "
                      f"TF corr={winner.translation_score:.5f} "
-                     f"analytic R={winner.r_factor:.4f}, "
-                     f"final Scaler-fit R-work={rwork_final:.4f}")
+                     f"analytic R={winner.r_factor:.4f}")
         self._log(2, "\n" + timer.summary())
         return solutions
 
