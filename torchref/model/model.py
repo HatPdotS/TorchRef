@@ -1253,6 +1253,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         k_neighbors: int = 12,
         refine_node_positions: bool = True,
         mode_set: str = None,
+        init: str = "fit",
     ):
         """Set the atomic displacement parameter (ADP) parametrization.
 
@@ -1289,6 +1290,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Give each node a refinable offset from its anchor centroid, at three extra
             parameters per node. On by default: it is what lets the load-balancing
             restraint move a node toward atoms instead of only widening its kernel.
+        init : {"fit", "flat"}, optional
+            What a field mode fits its nodes to: ``"fit"`` (default) the model's current
+            per-atom ADPs, ``"flat"`` a single level with their spatial structure
+            discarded. See :meth:`_install_disorder_field`.
         mode_set : str, optional
             For ``mode="field_aniso"``, a key of
             :data:`~torchref.model.disorder_field.MODE_SETS` --- ``"rigid"`` is TLS,
@@ -1349,6 +1354,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 refine_node_positions=refine_node_positions,
                 anisotropic=aniso,
                 mode_set=mode_set,
+                init=init,
             )
             return
         if mode == "isotropic":
@@ -1395,6 +1401,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         refine_node_positions: bool = False,
         anisotropic: bool = False,
         mode_set: str = None,
+        init: str = "fit",
     ):
         """Replace a per-atom ADP wrapper with a node field fitted to it.
 
@@ -1406,6 +1413,21 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ``mode_set`` selects a displacement-mode payload in place of the constant-U one,
         which is the difference between a node holding a single ADP and a node holding a
         motion whose ADP varies across its region.
+
+        ``init`` chooses what the field is fitted to:
+
+        ``"fit"``
+            The per-atom ADPs the model currently holds. Right when those mean something
+            --- a deposited or already-refined model --- because the field then starts
+            from a state whose R-factor is known.
+        ``"flat"``
+            A single value, the median of those ADPs. Right when they do not mean
+            anything. An AlphaFold model's B values come from a pLDDT conversion, and
+            fitting a smooth basis to them spends the field's parameters reproducing
+            structure it cannot hold and that is not worth holding: measured on 2A25, the
+            fitted field starts 0.025 R-free WORSE than a flat one, before any
+            refinement. The level is kept because it is close to right and the scaler
+            owns it anyway; only the spatial structure is discarded.
         """
         from torchref.model.disorder_field import (
             AnisotropicPayload,
@@ -1430,6 +1452,27 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 if anisotropic
                 else self.adp().detach().clone()
             )
+            if init == "flat":
+                # Flatten through the equivalent isotropic B, and hand the payload a 1-D
+                # target: its ``fit`` lifts that to U_iso * I. Taking a median over all
+                # six U components instead would set the off-diagonals equal to the
+                # diagonals, giving eigenvalues (3L, 0, 0) -- singular, and NaN once the
+                # Cholesky encode takes log(diag - epsilon).
+                b = (
+                    (8.0 * math.pi**2 / 3.0) * target[:, :3].sum(dim=1)
+                    if target.ndim == 2
+                    else target
+                )
+                finite = torch.isfinite(b)
+                if not bool(finite.any()):
+                    raise ValueError("cannot flatten an all-NaN ADP target")
+                level = b[finite].median()
+                target = torch.where(finite, level.expand_as(b), b)
+            elif init != "fit":
+                raise ValueError(
+                    f"init={init!r}; expected 'fit' (use the model's own ADPs) or "
+                    "'flat' (discard their spatial structure, keep the level)."
+                )
             B = target
         if n_nodes is None:
             n_nodes = max(4, int(round(len(self.pdb) / 25.0)))
@@ -2173,9 +2216,17 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             AnisotropicPayload,
             DisorderFieldTensor,
             IsotropicPayload,
+            payload_from_code,
         )
 
-        payload = AnisotropicPayload() if aniso else IsotropicPayload()
+        # The saved code names the payload exactly. Fall back to inferring it from the
+        # slot for state dicts written before the code existed, where the only payloads
+        # were the two the slot already implies.
+        saved_code = state_dict.get(f"{prefix}.payload_code")
+        if saved_code is not None:
+            payload = payload_from_code(int(saved_code))
+        else:
+            payload = AnisotropicPayload() if aniso else IsotropicPayload()
         saved_values = state_dict[f"{prefix}.fixed_values"]
         # Rebuild with the SAVED anchor rows: cluster anchoring makes these length
         # n_atoms where single-atom anchoring makes them length K, so reconstructing
