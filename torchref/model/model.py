@@ -1276,9 +1276,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             to ``U = (B / 8 pi^2) I``. ``"field"`` replaces the per-atom isotropic B
             with a :class:`~torchref.model.disorder_field.DisorderFieldTensor`, whose
             node values are least-squares fitted to the B it replaces, so the atom
-            count stops setting the ADP parameter count.
-            ``"preserve"`` is a no-op, leaving the ADPs exactly as the file supplied
-            them: use it when the starting model's own ADPs are what is being measured.
+            count stops setting the ADP parameter count. ``"field_aniso"`` is the same
+            representation carrying a full U per node, which takes over ``u`` rather
+            than ``adp``. ``"preserve"`` is a no-op: the ADPs stay exactly as the file
+            supplied them, anisotropic where the file was anisotropic.
         aniso_selection : str, optional
             Phenix-style selection for ``mode="anisotropic"``, default
             ``"not resname HOH and not element H"``; ignored otherwise.
