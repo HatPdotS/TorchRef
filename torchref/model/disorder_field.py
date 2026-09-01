@@ -42,6 +42,9 @@ __all__ = [
     "AnisotropicPayload",
     "ModeCovariancePayload",
     "MODE_SETS",
+    "PAYLOAD_CODES",
+    "payload_code",
+    "payload_from_code",
     "farthest_point_anchors",
     "density_anchor_rows",
     "build_neighbor_list",
@@ -546,6 +549,55 @@ def _ridged_solve(w_dense, target):
     return torch.linalg.solve(gram + ridge * eye, w_dense.T @ target)
 
 
+#: Stable integer code per payload, so a saved field can rebuild the one it had.
+#: ``state_dict`` holds tensors only, and the payload is a plain object that never
+#: reaches it, so without this a restore has to guess -- and guessing wrong is not a
+#: clean failure: a mode payload restored as a constant-U one has the wrong storage
+#: width and only shows up as a shape mismatch, or worse, silently different ADPs.
+#:
+#: **Append, never renumber.** A saved state dict holds the number.
+PAYLOAD_CODES = {
+    "isotropic": 0,
+    "anisotropic": 1,
+    "modes:constant": 2,
+    "modes:rigid": 3,
+    "modes:rigid_dilation": 4,
+    "modes:affine": 5,
+}
+
+
+def payload_code(payload: "NodePayload") -> int:
+    """Code identifying ``payload`` well enough to rebuild it."""
+    if isinstance(payload, ModeCovariancePayload):
+        key = f"modes:{payload.mode_set}"
+    elif isinstance(payload, AnisotropicPayload):
+        key = "anisotropic"
+    else:
+        key = "isotropic"
+    if key not in PAYLOAD_CODES:
+        raise ValueError(
+            f"Payload {key!r} has no code in PAYLOAD_CODES, so a field carrying it "
+            "cannot be saved and restored. Add one (appending, never renumbering)."
+        )
+    return PAYLOAD_CODES[key]
+
+
+def payload_from_code(code: int, epsilon: float = 1e-3) -> "NodePayload":
+    """Rebuild the payload a saved ``code`` names."""
+    names = {v: k for k, v in PAYLOAD_CODES.items()}
+    key = names.get(int(code))
+    if key is None:
+        raise ValueError(
+            f"Unknown payload code {code!r}. It was written by a newer TorchRef than "
+            f"this one, which knows {sorted(PAYLOAD_CODES)}."
+        )
+    if key == "isotropic":
+        return IsotropicPayload()
+    if key == "anisotropic":
+        return AnisotropicPayload(epsilon=epsilon)
+    return ModeCovariancePayload(key.split(":", 1)[1], epsilon=epsilon)
+
+
 class DisorderFieldTensor(MixedTensor):
     """Per-atom ADPs from a small set of nodes, each atom a weighted mean of its k nearest.
 
@@ -633,6 +685,10 @@ class DisorderFieldTensor(MixedTensor):
             self.register_buffer("neighbor_list", None)
             self.register_buffer("anchor_atom", None)
             self.register_buffer("anchor_node", None)
+            self.register_buffer(
+                "payload_code",
+                torch.tensor(payload_code(self._payload), dtype=torch.int64),
+            )
             return
 
         if xyz_fn is None:
@@ -696,6 +752,12 @@ class DisorderFieldTensor(MixedTensor):
         self.register_buffer("anchor_atom", anchor_atom)
         self.register_buffer("anchor_node", anchor_node)
         self.register_buffer("neighbor_list", neighbor_list)
+        # Which payload this field carries, so a restore rebuilds it rather than
+        # inferring it from the storage width.
+        self.register_buffer(
+            "payload_code",
+            torch.tensor(payload_code(self._payload), dtype=torch.int64, device=device),
+        )
 
     # ------------------------------------------------------------------
     # Construction helpers.
