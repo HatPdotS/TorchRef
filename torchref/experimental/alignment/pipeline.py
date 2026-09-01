@@ -27,10 +27,12 @@ without ever scoring the tenth. On a structure where several orientations place
 plausibly that is not a choice between them, and it made the selection rule
 impossible to reason about or to measure against a ranking harness.
 
-The candidates are ranked by the translation search's analytical R. The
-user-facing solvent-aware R-work is computed once, on the winner. The pipeline
-returns a *placement* -- refining it is the caller's job, and downstream
-refinement does it better than a bolted-on polish did.
+The candidates are ranked by the translation search's likelihood -- see
+``rank_by``, and the sort in :meth:`MolecularReplacementPipeline.run` for what
+the three available scores measured against each other. The user-facing
+solvent-aware R-work is computed once, on the winner. The pipeline returns a
+*placement* -- refining it is the caller's job, and downstream refinement does
+it better than a bolted-on polish did.
 
 ``align_model_to_data`` delegates here; this class is the implementation of
 record. The crystallographic stages live in
@@ -265,12 +267,13 @@ class MRSolution:
         The translation function's correlation at the chosen translation, higher
         better. Reported, not ranked -- see the sort in :meth:`run`.
     r_factor : float
-        The analytical-scale R at that placement, lower better. The default
-        ranking key; for the returned winner it is replaced by the
-        solvent-aware Scaler R-work.
+        The analytical-scale R at that placement, lower better. Reported, not
+        ranked; for the returned winner it is replaced by the solvent-aware
+        Scaler R-work, which is the number a caller reads.
     llg_score : float
-        The translation likelihood at that placement, higher better. ``nan``
-        unless ``rank_by="llg"``, since it costs a likelihood evaluation.
+        **The ranking key**: the translation likelihood at that placement,
+        higher better. ``nan`` when ``rank_by`` is not ``"llg"``, since it costs
+        a sigma_A fit and a likelihood evaluation per candidate.
     model : ModelFT
         The rotated (+translated +refined) model for this candidate.
     """
@@ -348,12 +351,13 @@ class MolecularReplacementPipeline(DeviceMixin):
         n_translation_candidates: int = 3,
         translation_grid_steps: int = 16,
         use_llg_tf: bool = False,
-        # Which score picks the winner among placed candidates. "r" is the
-        # analytical-scale R-factor; "corr" the translation function's own
-        # correlation; "llg" its Rice/Woolfson likelihood. Not a tuning knob --
-        # it exists because the three disagree and a rank-level proxy got the
-        # ordering wrong, so the comparison has to be made end to end.
-        rank_by: str = "r",
+        # Which score picks the winner among placed candidates. "llg" is the
+        # translation function's Rice/Woolfson likelihood; "r" the
+        # analytical-scale R-factor; "corr" the translation correlation. Not a
+        # tuning knob -- it exists because the three disagree and a rank-level
+        # proxy got the ordering wrong, so the comparison has to be made end to
+        # end. See the sort in `run` for what that measured.
+        rank_by: str = "llg",
         # Resolution window for the TRANSLATION set only, independent of the
         # rotation search's [d_max, d_min]. None means no cut, which is what
         # this stage has always done -- see `_prepare_translation_arrays`.
@@ -414,7 +418,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             print(msg, flush=True)
 
     def _log_candidate(self, k: int, peak, r_analytic, t_frac,
-                       tf_score=None) -> None:
+                       tf_score=None, llg_score=None) -> None:
         """One line per rotation candidate, with every score behind the choice.
 
         Machine-readable on purpose. Diagnosing a wrong placement means asking
@@ -426,14 +430,17 @@ class MolecularReplacementPipeline(DeviceMixin):
 
         Fields are ``key=value`` so a reader does not depend on column order:
         ``k`` candidate index in rotation-function order, ``rf``/``rfz`` its
-        score and z, ``tf`` the translation correlation at the chosen peak,
-        ``r`` the analytical-scale R that ranks it, ``t`` the fractional
-        translation.
+        score and z, ``tf`` the translation correlation, ``llg`` the translation
+        likelihood, ``r`` the analytical-scale R, ``t`` the fractional
+        translation. All three placement scores are reported whichever one
+        ranks, because which of them a wrong placement disagreed on is the
+        question, and they do disagree.
         """
         tf = "nan" if tf_score is None else f"{float(tf_score):.5f}"
+        llg = "nan" if llg_score is None else f"{float(llg_score):.1f}"
         t = ",".join(f"{float(x):.4f}" for x in t_frac)
         self._log(2, f"CAND k={k} rf={float(peak.score):.4f} "
-                     f"rfz={float(peak.sigma):.3f} tf={tf} "
+                     f"rfz={float(peak.sigma):.3f} tf={tf} llg={llg} "
                      f"r={float(r_analytic):.5f} t={t}")
 
 
@@ -441,7 +448,9 @@ class MolecularReplacementPipeline(DeviceMixin):
     # Public entry point
     # ------------------------------------------------------------------
     def run(self, do_translation: bool = True) -> List[MRSolution]:
-        """Run the MR pipeline and return solutions ranked by R-factor.
+        """Run the MR pipeline and return solutions, best first.
+
+        Ranked by ``rank_by`` -- the translation likelihood by default.
 
         Parameters
         ----------
@@ -512,7 +521,8 @@ class MolecularReplacementPipeline(DeviceMixin):
                              f"t=none  # no translation peaks")
                 continue
             r_analytic, t_refined, tf_score, llg_score = placement
-            self._log_candidate(k, peak_k, r_analytic, t_refined, tf_score)
+            self._log_candidate(k, peak_k, r_analytic, t_refined, tf_score,
+                                llg_score)
 
             placed = rotated_k.copy().translate(
                 t_refined.to(self.model.dtype_float), fractional=True,
@@ -534,12 +544,24 @@ class MolecularReplacementPipeline(DeviceMixin):
         if not solutions:
             raise RuntimeError("Translation + joint refine produced no candidates.")
 
-        # Default is lowest analytical-scale R. Ranking by the correlation was
-        # measured end to end and is worse -- 31/40 against 36/40 over four
-        # structures x ten seeds -- despite a rank-level harness predicting the
-        # opposite by a wide margin, on a truth label that turned out to
-        # disagree with coordinate superposition. Hence `rank_by`: the scores
-        # disagree, and only the end-to-end comparison settles it.
+        # Highest translation likelihood. Over four structures x ten seeds,
+        # success within 8 deg of canonical modulo crystal symmetry:
+        #
+        #     llg   37/40   median residual 1.57 deg
+        #     r     36/40                   1.79
+        #     corr  32/40                   2.77
+        #
+        # The likelihood is chosen on the residuals rather than the success
+        # count -- one cell in 40 is not a result, but on the cells all three
+        # solve it places better 6 times against 2, and on 6G9X every residual
+        # falls under 2.3 deg where R spreads to 5.65. It is also the right
+        # object for the question: an R-factor on a partial model at the
+        # resolution this runs at has little to distinguish with.
+        #
+        # The correlation is here as a cautionary default-not-taken. A rank-level
+        # harness rated it best by a wide margin, 33/40 against R's 23/40, and
+        # end to end it is the worst of the three -- the harness's truth label
+        # disagreed with coordinate superposition.
         if self.rank_by == "r":
             solutions.sort(key=lambda s: s.r_factor)
         elif self.rank_by == "corr":
@@ -554,7 +576,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer.stop("12_final_scaler")
         winner.model.last_alignment_rfactor = rwork_final
         winner.r_factor = rwork_final
-        self._log(1, f"mr: winner TF correlation={winner.translation_score:.5f}, "
+        self._log(1, f"mr: winner ({self.rank_by}) "
+                     f"LLG={winner.llg_score:.1f} "
+                     f"TF corr={winner.translation_score:.5f} "
                      f"analytic R={winner.r_factor:.4f}, "
                      f"final Scaler-fit R-work={rwork_final:.4f}")
         self._log(2, "\n" + timer.summary())
@@ -833,7 +857,7 @@ def align_model_to_data(
     translation_grid_steps: int = 16,
     n_rotation_candidates: int = 25,
     use_llg_tf: bool = False,
-    rank_by: str = "r",
+    rank_by: str = "llg",
     tf_d_min: Optional[float] = None,
     tf_d_max: Optional[float] = None,
     model_error_A: Optional[float] = None,

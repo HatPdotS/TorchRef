@@ -31,5 +31,5 @@ export PYTHONPATH="$REPO" TORCHREF_NUM_THREADS=4 OMP_NUM_THREADS=4 MKL_NUM_THREA
 export PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=""
 for T in 0 1 2; do
   "$PY" -u alignment_lab/diagnostics/pose_recovery.py --pdb "$PDB" --trial "$T" \
-    --arms analytic_r,llg_tf --n-rotation-candidates 25 2>/dev/null | grep '^ROW '
+    --arms llg,analytic_r --n-rotation-candidates 25 2>/dev/null | grep '^ROW '
 done

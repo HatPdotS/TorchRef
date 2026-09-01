@@ -10,18 +10,17 @@ with it. 2DQ6 and 3GR5 fail in every arm ever measured and cap recovery there.
 
 Arms (``--arms``) sweep how translation candidates are ranked:
 
+``llg``
+    the default -- rank each rotation candidate by the translation likelihood at
+    its best translation. 37/40 over four structures x ten seeds.
 ``analytic_r``
-    the default -- rank each rotation candidate by the analytical-scale R at its
-    best translation.
+    rank by the analytical-scale R instead. 36/40, and places less well on the
+    cells both solve.
 ``corr``
     rank by the translation function's own correlation. Measured 31/40 against
     ``analytic_r``'s 36/40 over four structures x ten seeds: worse, despite a
     rank-level harness predicting the reverse on a truth label that disagreed
     with coordinate superposition.
-``llg``
-    rank by the translation likelihood. The same rank-level harness rated it
-    between the other two, so it is here for the same reason: only the
-    end-to-end comparison is trustworthy.
 ``llg_tf``
     a different question -- re-rank each candidate's TRANSLATIONS by the
     likelihood, still selecting the candidate by R.
@@ -139,7 +138,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pdb", default="1DAW", choices=list(BENCH_PDBS))
     ap.add_argument("--trial", type=int, default=0)
-    ap.add_argument("--arms", default="analytic_r,llg_tf")
+    ap.add_argument("--arms", default="llg,analytic_r")
     ap.add_argument("--n-rotation-candidates", type=int, default=25)
     ap.add_argument("--n-rotation-peaks", type=int, default=200)
     ap.add_argument("--success-deg", type=float, default=8.0)
