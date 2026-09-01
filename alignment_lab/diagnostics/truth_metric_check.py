@@ -16,8 +16,10 @@ rotation is an involution.
 
 That matters beyond bookkeeping: the rank harness said ranking by the
 translation correlation would beat the analytic R by 33/40 to 23/40, and end to
-end it lost 31/40 to 36/40. A truth label that is wrong makes every rank in that
-harness meaningless, so this checks it directly rather than by inference.
+end it lost 31/40 to 36/40 -- as measured then; the correlation arm scores 32/40
+on the current code, so the direction is unchanged. A truth label that is wrong
+makes every rank in that harness meaningless, so this checks it directly rather
+than by inference.
 """
 import sys
 from pathlib import Path

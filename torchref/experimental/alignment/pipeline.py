@@ -441,16 +441,28 @@ class MolecularReplacementPipeline(DeviceMixin):
         # Highest translation likelihood. Over four structures x ten seeds,
         # success within 8 deg of canonical modulo crystal symmetry:
         #
-        #     llg   37/40   median residual 1.57 deg
-        #     r     36/40                   1.79
-        #     corr  32/40                   2.77
+        #     llg   36/40   median residual 1.43 deg
+        #     r     36/40                   1.62
+        #     corr  32/40                   1.98
         #
-        # The likelihood is chosen on the residuals rather than the success
-        # count -- one cell in 40 is not a result, but on the cells all three
-        # solve it places better 6 times against 2, and on 6G9X every residual
-        # falls under 2.3 deg where R spreads to 5.65. It is also the right
-        # object for the question: an R-factor on a partial model at the
-        # resolution this runs at has little to distinguish with.
+        # The likelihood and R tie on the success count -- 36 each, and paired
+        # over the 40 cells each wins exactly one. Nothing separates them there,
+        # and an earlier 37-against-36 reading of this table did not survive
+        # remeasurement after the variance convention was corrected.
+        #
+        # What separates them is where they differ at all, which is less often
+        # than the medians suggest: on 1DAW and 3K7M the two pick the SAME
+        # candidate and the residuals are identical. The whole difference is
+        # 6G9X, where the likelihood holds every residual under 2.3 deg and R
+        # spreads to 5.65 (medians 1.05 against 2.24). 2DQ6 goes the other way
+        # by a smaller margin (max 6.48 against 3.86). Across the 31 cells all
+        # three arms solve, the likelihood places closer 5 times against 1.
+        #
+        # So the default rests on one structure, not on a sweep-wide margin. It
+        # is kept because it is also the right object for the question -- an
+        # R-factor on a partial model at the resolution this runs at has little
+        # to distinguish with -- and because the arm is selectable if that
+        # reasoning ever stops holding.
         #
         # The correlation is here as a cautionary default-not-taken. A rank-level
         # harness rated it best by a wide margin, 33/40 against R's 23/40, and
@@ -644,7 +656,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             # Both scores at the REFINED position, so the reported correlation
             # belongs to the translation that was actually chosen. Selection is
             # by R: ranking candidates by the correlation instead was measured
-            # end to end and is WORSE (31/40 against 36/40 over four structures
+            # end to end and is WORSE (32/40 against 36/40 over four structures
             # x ten seeds), despite a rank-level harness predicting the reverse.
             tf_ref = correlation_at(self._obs, G_pre, h_R_pre, t_refined)
             self._log(3, f"    trans{k_t}: tf={tf_ref:.5f} "

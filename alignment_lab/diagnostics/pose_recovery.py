@@ -12,15 +12,17 @@ Arms (``--arms``) sweep how translation candidates are ranked:
 
 ``llg``
     the default -- rank each rotation candidate by the translation likelihood at
-    its best translation. 37/40 over four structures x ten seeds.
+    its best translation. 36/40 over four structures x ten seeds, median
+    residual 1.43 deg.
 ``analytic_r``
-    rank by the analytical-scale R instead. 36/40, and places less well on the
-    cells both solve.
+    rank by the analytical-scale R instead. Also 36/40, median 1.62 deg. The two
+    tie on the count and each wins one cell paired; they pick the same candidate
+    outright on 1DAW and 3K7M. The likelihood's margin is 6G9X alone.
 ``corr``
-    rank by the translation function's own correlation. Measured 31/40 against
-    ``analytic_r``'s 36/40 over four structures x ten seeds: worse, despite a
-    rank-level harness predicting the reverse on a truth label that disagreed
-    with coordinate superposition.
+    rank by the translation function's own correlation. Measured 32/40 against
+    the other two arms' 36/40: worse, and worse paired against ``llg`` 5 to 1,
+    despite a rank-level harness predicting the reverse on a truth label that
+    disagreed with coordinate superposition.
 ``llg_tf``
     a different question -- re-rank each candidate's TRANSLATIONS by the
     likelihood, still selecting the candidate by R.
