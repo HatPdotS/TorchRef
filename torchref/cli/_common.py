@@ -144,12 +144,43 @@ def add_adp_mode_arg(parser: argparse.ArgumentParser) -> None:
         "--adp-mode",
         type=str,
         default="isotropic",
-        choices=["isotropic", "anisotropic"],
+        choices=["isotropic", "anisotropic", "field", "field_aniso", "preserve"],
         help="ADP parametrization: 'isotropic' (default) refines a per-atom "
         "B-factor; 'anisotropic' refines a 6-component U tensor for the atoms "
         "given by --anisotropic-selection. The model is converted between "
         "representations and the output PDB/mmCIF follows the convention "
-        "(ANISOU only for anisotropic atoms).",
+        "(ANISOU only for anisotropic atoms). 'field' and 'field_aniso' replace "
+        "the per-atom parameters with a node field, whose size is set from the "
+        "data rather than the atom count (--reflections-per-adp-parameter). "
+        "'preserve' leaves the input file's own ADPs untouched.",
+    )
+    parser.add_argument(
+        "--adp-mode-set",
+        type=str,
+        default=None,
+        choices=["constant", "rigid", "rigid_dilation", "affine"],
+        help="Displacement-mode set for --adp-mode field_aniso. Each node carries "
+        "the covariance of these modes, so its ADP varies across the region it "
+        "serves: 'constant' is one U per node, 'rigid' is TLS, 'rigid_dilation' "
+        "adds uniform breathing, 'affine' adds shear and extension.",
+    )
+    parser.add_argument(
+        "--reflections-per-adp-parameter",
+        type=float,
+        default=7.0,
+        metavar="R",
+        help="Work reflections per ADP parameter a node field is sized to hold "
+        "(--adp-mode field/field_aniso). Default 7. Node count follows from the "
+        "data rather than the atom count, and both directions from 7 measured "
+        "worse. Ignored by the per-atom modes.",
+    )
+    parser.add_argument(
+        "--adp-nodes",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Explicit node count for a field ADP mode, bypassing "
+        "--reflections-per-adp-parameter.",
     )
     parser.add_argument(
         "--anisotropic-selection",

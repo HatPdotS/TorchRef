@@ -122,7 +122,7 @@ class RigidBondTarget(ADPTarget):
                 chunks.append(idx_)
         if chunks:
             return torch.cat(chunks, dim=0).contiguous()
-        return torch.empty(0, 2, dtype=torch.long, device=self.model.xyz().device)
+        return torch.empty(0, 2, dtype=torch.long, device=self.model.xyz().device)  # dtype-ok: empty (0,2) atom-pair index tensor; PyTorch requires int64
 
     def _compute_aniso_rigid_bond(self) -> torch.Tensor:
         """Rigid-bond NLL from ``Δz = l^T U_1 l - l^T U_2 l`` along each bond.

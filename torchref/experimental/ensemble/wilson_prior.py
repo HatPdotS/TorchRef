@@ -172,7 +172,7 @@ class WilsonPriorTarget(DataTarget):
         order = torch.argsort(res)
         n = res.numel()
         nbins = min(self.nbins, max(1, n // 50))
-        bin_assign = torch.empty(n, dtype=torch.long, device=res.device)
+        bin_assign = torch.empty(n, dtype=torch.long, device=res.device)  # dtype-ok: bin-assignment tensor used as scatter_add index; PyTorch requires int64
         edges = torch.linspace(0, n, nbins + 1, device=res.device).round().long()
         for b in range(nbins):
             start = int(edges[b].item())

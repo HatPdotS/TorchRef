@@ -356,7 +356,7 @@ class Symmetry(DeviceMixin):
             operations on integer indices and only mops up float error.
         """
         equivalents = self.reciprocal.apply_rotations(hkl)
-        return torch.round(equivalents).to(torch.int64)
+        return torch.round(equivalents).to(torch.int64)  # dtype-ok: rounded Miller equivalents; int64 for exact integer compare/index
 
     # =========================================================================
     # Reflection predicates
@@ -381,7 +381,7 @@ class Symmetry(DeviceMixin):
         with torch.no_grad():
             flat = hkl.reshape(-1, 3)
             equivalents = self.expand_reciprocal(flat)  # (n_ops, N, 3)
-            target = -flat.to(device=equivalents.device, dtype=torch.int64)
+            target = -flat.to(device=equivalents.device, dtype=torch.int64)  # dtype-ok: compare target for int64 equivalents; dtype must match
             centric = (equivalents == target).all(dim=-1).any(dim=0)
         return centric.reshape(original_shape).to(hkl.device)
 
@@ -405,7 +405,7 @@ class Symmetry(DeviceMixin):
         with torch.no_grad():
             flat = hkl.reshape(-1, 3)
             equivalents = self.expand_reciprocal(flat)  # (n_ops, N, 3)
-            target = flat.to(device=equivalents.device, dtype=torch.int64)
+            target = flat.to(device=equivalents.device, dtype=torch.int64)  # dtype-ok: compare target for int64 equivalents; dtype must match
             maps_to_self = (equivalents == target).all(dim=-1)  # (n_ops, N)
 
             h_dot_t = torch.matmul(
@@ -465,7 +465,7 @@ class Symmetry(DeviceMixin):
         float_dtype = get_float_dtype()
         with torch.no_grad():
             equivalents = self.expand_reciprocal(hkl)  # (n_ops, N, 3)
-            target = hkl.to(device=equivalents.device, dtype=torch.int64)
+            target = hkl.to(device=equivalents.device, dtype=torch.int64)  # dtype-ok: compare target for int64 equivalents; dtype must match
             fixes = (equivalents == target).all(dim=-1)
             if friedel:
                 fixes = fixes | (equivalents == -target).all(dim=-1)
@@ -494,7 +494,7 @@ class Symmetry(DeviceMixin):
         # ``Fraction(float)`` would need a tolerance where this is exact.
         numerators = torch.round(
             self.translations.detach().cpu().double() * _TRANSLATION_DENOMINATOR
-        ).to(torch.int64)
+        ).to(torch.int64)  # dtype-ok: integer translation numerators for exact Fraction recovery
 
         for op_numerators in numerators.tolist():
             for axis, numerator in enumerate(op_numerators):

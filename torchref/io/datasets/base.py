@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 import gemmi
 import torch
 
-from torchref.config import get_default_device, normalize_device
+from torchref.config import get_default_device, get_float_dtype, normalize_device
 from torchref.symmetry import Cell
 from torchref.utils.device_mixin import DeviceMovementMixin
 
@@ -186,7 +186,12 @@ class CrystalDataset(DeviceMovementMixin):
         # Spacegroup stays a string here; subclasses that want an object rewrap.
         if "cell" in state and state["cell"] is not None:
             if isinstance(state["cell"], torch.Tensor):
-                state["cell"] = Cell(state["cell"], dtype=torch.float32, device=device)
+                # Conform the reloaded cell to the config float dtype rather than
+                # pinning float32: a dataset saved and reloaded under a float64
+                # config otherwise carries a float32 cell into reciprocal-basis math.
+                state["cell"] = Cell(
+                    state["cell"], dtype=get_float_dtype(), device=device
+                )
 
         obj = cls(**state)
 

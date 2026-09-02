@@ -207,7 +207,10 @@ def test_state_dict_round_trip_in_field_mode(pdb_path):
         key: (value.clone() if torch.is_tensor(value) else value)
         for key, value in model.state_dict().items()
     }
-    restored = Model.create_from_state_dict(sd, verbose=0)
+    # Restored onto the model's own device: a restore builds on CPU and moves only
+    # when asked, and comparing a CPU-evaluated field against a device-evaluated one
+    # would be measuring backend arithmetic, not the round trip.
+    restored = Model.create_from_state_dict(sd, device=model.device, verbose=0)
 
     assert restored.adp_is_field
     assert restored.adp.n_nodes == 24

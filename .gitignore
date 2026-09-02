@@ -18,6 +18,8 @@ _temp.mtz
 __pycache__/
 *.pyc
 *.pyo
+# macOS finder metadata
+.DS_Store
 # Large binary files
 *.ccp4
 *.png
@@ -94,3 +96,9 @@ alignment_lab/**/__pycache__/
 
 # Third-party Phaser source copy (from PHENIX 1.20-4459) for FRF map instrumentation
 phaser_src/
+
+# scaler_investigation lab outputs: the scripts are tracked, the outputs are not.
+scaler_investigation/cache/
+scaler_investigation/metrics/
+scaler_investigation/figures/
+scaler_investigation/slurm/

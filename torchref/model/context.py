@@ -115,6 +115,20 @@ class ModelContext(DeviceMixin):
             initialized=self.initialized,
         )
 
+    @property
+    def crystal_key(self):
+        """Value identity of the crystal, or None while cell or space group is unset.
+
+        Returns
+        -------
+        tuple or None
+            ``(cell.key, spacegroup.key)``; hashable, so anything derived from the
+            crystal alone can be cached against it.
+        """
+        if self.cell is None or self.spacegroup is None:
+            return None
+        return (self.cell.key, self.spacegroup.key)
+
     def __repr__(self) -> str:
         n_atoms = 0 if self.pdb is None else len(self.pdb)
         sg = None if self.spacegroup is None else self.spacegroup.name

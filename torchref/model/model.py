@@ -19,7 +19,12 @@ import torch
 import torch.nn as nn
 
 from torchref.base import math_torch
-from torchref.config import get_float_dtype, normalize_device
+from torchref.config import (
+    canonical_device,
+    get_default_device,
+    get_float_dtype,
+    normalize_device,
+)
 from torchref.io import cif, pdb
 from torchref.model.context import ModelContext
 from torchref.model.parameter_wrappers import (
@@ -306,14 +311,25 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     @spacegroup.setter
     def spacegroup(self, value):
-        """Set the space group from a SpaceGroup, gemmi object, name or number."""
-        if value is not None:
+        """Set the space group from a SpaceGroup, gemmi object, name or number.
+
+        The model owns its space group: an incoming ``SpaceGroup`` is copied rather
+        than shared, because ``.to()`` moves in place and would otherwise relocate
+        the caller's object. The copy lands on the model's device and float dtype.
+        """
+        if value is None:
+            self.ctx.spacegroup = None
+        elif isinstance(value, SpaceGroup):
+            self.ctx.spacegroup = value.copy().to(
+                device=self.device, dtype=self.dtype_float
+            )
+        else:
             # ``device=self.device``: SpaceGroup falls back to the global
             # default otherwise, so setting a spacegroup on a CPU-pinned Model
             # would silently plant accelerator-resident matrices on it.
-            self.ctx.spacegroup = SpaceGroup(value, device=self.device)
-        else:
-            self.ctx.spacegroup = None
+            self.ctx.spacegroup = SpaceGroup(
+                value, dtype=self.dtype_float, device=self.device
+            )
 
     # =========================================================================
     # Crystallographic matrix properties (delegated to Cell)
@@ -365,7 +381,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             for elem in self.pdb["element"]
         ]
         self.register_buffer(
-            "_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device)
+            "_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device)  # dtype-ok: atomic-number Z categorical codes buffer; fixed int32 lookup keys
         )
         return self._Z
 
@@ -872,7 +888,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         altloc_groups = []
         refinable_mask = torch.zeros(n_atoms, dtype=torch.bool)
 
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)
+        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)  # dtype-ok: arange atom indices (sharing groups); index requires long
         collapsed_idx = 0
 
         # First pass: altlocs. ALL atoms of one conformation must share a collapsed
@@ -941,7 +957,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Compact to contiguous indices 0..n_collapsed-1.
         unique_indices = torch.unique(sharing_groups_tensor, sorted=True)
-        index_map = torch.zeros(n_atoms, dtype=torch.long)
+        index_map = torch.zeros(n_atoms, dtype=torch.long)  # dtype-ok: index_map atom-index remap; indexing requires long
         for new_idx, old_idx in enumerate(unique_indices):
             mask = sharing_groups_tensor == old_idx
             sharing_groups_tensor[mask] = new_idx
@@ -1302,6 +1318,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         n_nodes: int = None,
         k_neighbors: int = 12,
         refine_node_positions: bool = True,
+        mode_set: str = None,
+        init: str = "fit",
     ):
         """Set the atomic displacement parameter (ADP) parametrization.
 
@@ -1317,14 +1335,17 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Parameters
         ----------
-        mode : {"isotropic", "anisotropic", "field", "field_aniso"}, optional
+        mode : {"isotropic", "anisotropic", "field", "field_aniso", "preserve"}, optional
             ``"isotropic"`` (default) converts every atom, previously anisotropic
             ones to ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"``
             converts those matching ``aniso_selection``, expanding isotropic atoms
             to ``U = (B / 8 pi^2) I``. ``"field"`` replaces the per-atom isotropic B
             with a :class:`~torchref.model.disorder_field.DisorderFieldTensor`, whose
             node values are least-squares fitted to the B it replaces, so the atom
-            count stops setting the ADP parameter count.
+            count stops setting the ADP parameter count. ``"field_aniso"`` is the same
+            representation carrying a full U per node, which takes over ``u`` rather
+            than ``adp``. ``"preserve"`` is a no-op: the ADPs stay exactly as the file
+            supplied them, anisotropic where the file was anisotropic.
         aniso_selection : str, optional
             Phenix-style selection for ``mode="anisotropic"``, default
             ``"not resname HOH and not element H"``; ignored otherwise.
@@ -1336,6 +1357,17 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Give each node a refinable offset from its anchor centroid, at three extra
             parameters per node. On by default: it is what lets the load-balancing
             restraint move a node toward atoms instead of only widening its kernel.
+        init : {"fit", "flat"}, optional
+            What a field mode fits its nodes to: ``"fit"`` (default) the model's current
+            per-atom ADPs, ``"flat"`` a single level with their spatial structure
+            discarded. See :meth:`_install_disorder_field`.
+        mode_set : str, optional
+            For ``mode="field_aniso"``, a key of
+            :data:`~torchref.model.disorder_field.MODE_SETS` --- ``"rigid"`` is TLS,
+            ``"affine"`` adds shear and extension. The node then stores the covariance
+            of its displacement modes, so the U it gives an atom depends on where that
+            atom sits inside the node's region rather than being constant across it.
+            Default ``None`` keeps the constant-U payload.
 
         Notes
         -----
@@ -1347,6 +1379,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         wrapper on the way out.
         """
         if not self.ctx.initialized or self.pdb is None:
+            return
+        if mode == "preserve":
+            # Leave the ADPs exactly as loaded. Constructing a Refinement otherwise
+            # reparametrises them before anything else runs, which silently discards a
+            # deposited model's anisotropy -- use this when the starting model's own
+            # ADPs are the thing being measured.
             return
         if mode in ("field", "field_aniso"):
             aniso = mode == "field_aniso"
@@ -1382,6 +1420,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 k_neighbors=k_neighbors,
                 refine_node_positions=refine_node_positions,
                 anisotropic=aniso,
+                mode_set=mode_set,
+                init=init,
             )
             return
         if mode == "isotropic":
@@ -1398,7 +1438,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         else:
             raise ValueError(
                 f"Unknown ADP mode: {mode!r}. Use 'isotropic', 'anisotropic', "
-                "'field' or 'field_aniso'."
+                "'field', 'field_aniso' or 'preserve'."
             )
         self._apply_adp_partition(aniso_mask)
 
@@ -1427,6 +1467,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         k_neighbors: int = 12,
         refine_node_positions: bool = False,
         anisotropic: bool = False,
+        mode_set: str = None,
+        init: str = "fit",
     ):
         """Replace a per-atom ADP wrapper with a node field fitted to it.
 
@@ -1434,13 +1476,39 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ``adp`` and leaves the model isotropic, an anisotropic one takes over ``u`` and
         the model refines every selected atom anisotropically. Both expect the partition
         to have run first, which :meth:`set_adp_mode` arranges.
+
+        ``mode_set`` selects a displacement-mode payload in place of the constant-U one,
+        which is the difference between a node holding a single ADP and a node holding a
+        motion whose ADP varies across its region.
+
+        ``init`` chooses what the field is fitted to:
+
+        ``"fit"``
+            The per-atom ADPs the model currently holds. Right when those mean something
+            --- a deposited or already-refined model --- because the field then starts
+            from a state whose R-factor is known.
+        ``"flat"``
+            A single value, the median of those ADPs. Right when they do not mean
+            anything. An AlphaFold model's B values come from a pLDDT conversion, and
+            fitting a smooth basis to them spends the field's parameters reproducing
+            structure it cannot hold and that is not worth holding: measured on 2A25, the
+            fitted field starts 0.025 R-free WORSE than a flat one, before any
+            refinement. The level is kept because it is close to right and the scaler
+            owns it anyway; only the spatial structure is discarded.
         """
         from torchref.model.disorder_field import (
             AnisotropicPayload,
             DisorderFieldTensor,
             IsotropicPayload,
+            ModeCovariancePayload,
             density_anchor_rows,
         )
+
+        if mode_set is not None and not anisotropic:
+            raise ValueError(
+                "mode_set describes an anisotropic displacement field and has no "
+                "isotropic form; use mode='field_aniso'."
+            )
 
         with torch.no_grad():
             xyz = self.xyz().detach()
@@ -1451,6 +1519,27 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 if anisotropic
                 else self.adp().detach().clone()
             )
+            if init == "flat":
+                # Flatten through the equivalent isotropic B, and hand the payload a 1-D
+                # target: its ``fit`` lifts that to U_iso * I. Taking a median over all
+                # six U components instead would set the off-diagonals equal to the
+                # diagonals, giving eigenvalues (3L, 0, 0) -- singular, and NaN once the
+                # Cholesky encode takes log(diag - epsilon).
+                b = (
+                    (8.0 * math.pi**2 / 3.0) * target[:, :3].sum(dim=1)
+                    if target.ndim == 2
+                    else target
+                )
+                finite = torch.isfinite(b)
+                if not bool(finite.any()):
+                    raise ValueError("cannot flatten an all-NaN ADP target")
+                level = b[finite].median()
+                target = torch.where(finite, level.expand_as(b), b)
+            elif init != "fit":
+                raise ValueError(
+                    f"init={init!r}; expected 'fit' (use the model's own ADPs) or "
+                    "'flat' (discard their spatial structure, keep the level)."
+                )
             B = target
         if n_nodes is None:
             n_nodes = max(4, int(round(len(self.pdb) / 25.0)))
@@ -1460,12 +1549,19 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # wearing a node's clothes.
         anchor_rows = density_anchor_rows(xyz, min(n_nodes, len(self.pdb)))
 
+        if mode_set is not None:
+            payload = ModeCovariancePayload(mode_set)
+        elif anisotropic:
+            payload = AnisotropicPayload()
+        else:
+            payload = IsotropicPayload()
+
         field = DisorderFieldTensor(
             initial_values=target.to(self.dtype_float),
             xyz_fn=self.xyz,
             n_nodes=n_nodes,
             refine_positions=refine_node_positions,
-            payload=AnisotropicPayload() if anisotropic else IsotropicPayload(),
+            payload=payload,
             anchor_rows=anchor_rows,
             k_neighbors=k_neighbors,
             name="aniso_U" if anisotropic else "adp",
@@ -1481,7 +1577,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.adp.update_refinable_mask(self.adp_mask)
 
         if self.ctx.verbose > 0:
-            kind = "aniso U" if anisotropic else "iso B"
+            kind = mode_set if mode_set else ("aniso U" if anisotropic else "iso B")
             was = len(self.pdb) * (6 if anisotropic else 1)
             print(
                 f"ADP field ({kind}): {field.n_nodes} nodes, k={k_neighbors}, "
@@ -1873,7 +1969,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 for altloc in unique_altlocs:
                     altloc_atoms = group[group["altloc"] == altloc]
                     indices = torch.tensor(
-                        altloc_atoms["index"].tolist(), dtype=torch.long
+                        altloc_atoms["index"].tolist(), dtype=torch.long  # dtype-ok: altloc atom indices; indexing requires long
                     )
                     conformation_tensors.append(indices)
 
@@ -1933,16 +2029,18 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 continue
             if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
                 continue
+            if pname == "gridsize":
+                # The constructor argument is the explicit override, not the
+                # derived grid a ``gridsize`` attribute would return.
+                if hasattr(self, "explicit_gridsize"):
+                    ctor_kw[pname] = self.explicit_gridsize
+                continue
             if hasattr(self, pname):
                 ctor_kw[pname] = getattr(self, pname)
-        if "gridsize" in sig.parameters and hasattr(self, "_explicit_gridsize"):
-            ctor_kw["gridsize"] = self._explicit_gridsize
 
         new_model = self.__class__(**ctor_kw)
         sg_str = self.spacegroup.xhm if self.spacegroup else "P 1"
         new_model.load(lambda: (df, self.pdb.attrs.get("cell"), sg_str))
-        if hasattr(new_model, "setup_grid"):
-            new_model.setup_grid()
         # Propagate CIF restraint paths so restraints are rebuilt correctly
         if self.ctx.cif_path is not None:
             new_model._cif_path = self.ctx.cif_path
@@ -2111,7 +2209,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if self.ctx.verbose > 0:
             print(f"Saved model state to {path}")
 
-    def load_state(self, path: str, strict: bool = True):
+    def load_state(self, path: str, strict: bool = True, device=None):
         """
         Load the complete state of the model from a file.
 
@@ -2122,10 +2220,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         strict : bool, optional
             Accepted for signature compatibility; the restore goes through
             :meth:`create_from_state_dict`, which is never strict.
+        device : torch.device, optional
+            Device to restore onto. Defaults to this model's current device, so an
+            in-place reload keeps its placement; pass one to restore elsewhere.
         """
-        state_dict = torch.load(path, map_location=self.device, weights_only=False)
+        target_device = self.device if device is None else device
+        state_dict = torch.load(path, map_location=target_device, weights_only=False)
         loaded = type(self).create_from_state_dict(
-            state_dict, device=self.device, verbose=self.ctx.verbose
+            state_dict, device=target_device, verbose=self.ctx.verbose
         )
         # Adopt the fully-built model's state wholesale.
         self.__dict__.update(loaded.__dict__)
@@ -2186,9 +2288,17 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             AnisotropicPayload,
             DisorderFieldTensor,
             IsotropicPayload,
+            payload_from_code,
         )
 
-        payload = AnisotropicPayload() if aniso else IsotropicPayload()
+        # The saved code names the payload exactly. Fall back to inferring it from the
+        # slot for state dicts written before the code existed, where the only payloads
+        # were the two the slot already implies.
+        saved_code = state_dict.get(f"{prefix}.payload_code")
+        if saved_code is not None:
+            payload = payload_from_code(int(saved_code))
+        else:
+            payload = AnisotropicPayload() if aniso else IsotropicPayload()
         saved_values = state_dict[f"{prefix}.fixed_values"]
         # Rebuild with the SAVED anchor rows: cluster anchoring makes these length
         # n_atoms where single-atom anchoring makes them length K, so reconstructing
@@ -2300,7 +2410,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         state_dict : dict
             State dictionary from torch.save(model.state_dict(), ...).
         device : torch.device, optional
-            Device to place tensors on. Defaults to the configured device.current.
+            Move the restored model here once it is built. The restore itself always
+            runs on CPU; ``None`` then moves it to the configured default device
+            (``get_default_device()``), so a round-trip lands beside a same-config
+            model rather than stranding itself on CPU. Pass a device to override.
         verbose : int, optional
             Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional
@@ -2317,9 +2430,16 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, matching
         :meth:`load`, so the positive-definite parametrization round-trips.
         """
-        # Resolve dtype/device at call time so the fallbacks below use the
-        # current config, not the import-time default.
-        device = normalize_device(device)
+        # Build on CPU throughout, then move once at the end -- to the caller's device
+        # if they named one, otherwise to the configured default device, so a restore
+        # lands beside a same-config model instead of stranding itself on CPU. One
+        # device for the whole model is the invariant that matters: the wrappers are
+        # built from the atom table and land on CPU whatever is asked for, so resolving
+        # an accelerator up front splits the model rather than placing it.
+        target_device = (
+            canonical_device(device) if device is not None else get_default_device()
+        )
+        device = torch.device("cpu")
         if dtype_float is None:
             dtype_float = get_float_dtype()
         pdb = state_dict.pop("pdb", None)
@@ -2327,7 +2447,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         spacegroup = state_dict.pop("spacegroup", None)
         initialized = state_dict.pop("initialized", False)
         saved_dtype = state_dict.pop("dtype_float", dtype_float)
-        saved_device = state_dict.pop("device", device)
+        state_dict.pop("device", None)  # popped so it never reaches load_state_dict
         strip_H = state_dict.pop("strip_H", True)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
 
@@ -2358,6 +2478,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             if not (torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] == 0)
         }
         instance.load_state_dict(state_dict, strict=False)
+
+        # Always placed: target_device is the caller's device or the configured default,
+        # never None. Without this the restore used to stay on CPU and split a
+        # round-trip's restored model from its (default-device) source.
+        instance.to(target_device)
 
         if verbose > 0:
             n_atoms = len(instance.pdb) if instance.pdb is not None else 0

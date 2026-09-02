@@ -301,7 +301,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             n = 0 if self.hkl is None else len(self.hkl)
             device = self.device
             if n == 0:
-                empty = torch.empty(0, dtype=torch.long, device=device)
+                empty = torch.empty(0, dtype=torch.long, device=device)  # dtype-ok: empty index tensor; PyTorch requires int64 for indexing
                 self._subset_cache = {
                     "work": empty,
                     "free": empty,
@@ -432,7 +432,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         n_src = len(self.hkl) if self.hkl is not None else 0
         new_hkl = new_hkl.to(dtype=dtypes.int, device=self.device)
         n_out = len(new_hkl)
-        index_map = index_map.to(device=self.device, dtype=torch.long)
+        index_map = index_map.to(device=self.device, dtype=torch.long)  # dtype-ok: index map used for indexing/gather; PyTorch requires int64
         present = index_map >= 0
         src_idx = index_map[present]
 
@@ -709,8 +709,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Uses ``index_add_`` on float rather than ``scatter_reduce_(amax)``: the
         latter raises "not supported for torch.int64" on the MPS backend.
         """
+        # dtype-ok: float32 count accumulator for the int64-scatter MPS workaround
+        # above; the result is reduced to bool (> 0), so precision is irrelevant.
         counts = torch.zeros(n_groups, dtype=torch.float32, device=mask.device)
-        counts.index_add_(0, group_id, mask.to(torch.float32))
+        counts.index_add_(0, group_id, mask.to(torch.float32))  # dtype-ok: float32 counter for the MPS workaround above; reduced to bool
         return counts > 0
 
     @staticmethod
@@ -1326,13 +1328,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         mean_resolutions = torch.scatter_add(
             mean_resolutions,
             0,
-            self.bin_indices[mask].to(torch.int64),
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
             self.resolution[mask],
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
             torch.ones_like(self.resolution[mask], dtype=dtypes.int),
         )
         mean_resolutions = mean_resolutions / count_per_bin.clamp(min=1).float()
@@ -1361,12 +1363,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_F = torch.scatter_add(
-            mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]
+            mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
             torch.ones_like(self.F[mask], dtype=dtypes.int),
         )
         mean_F = mean_F / count_per_bin.clamp(min=1).float()
@@ -1395,12 +1397,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_sigma = torch.scatter_add(
-            mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]
+            mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
             torch.ones_like(self.F_sigma[mask], dtype=dtypes.int),
         )
         mean_sigma = mean_sigma / count_per_bin.clamp(min=1).float()
@@ -2642,8 +2644,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # The (+) member is the unconjugated row, (-) is the Friedel-flagged row.
         arange = torch.arange(N)
-        plus_idx = torch.full((M,), -1, dtype=torch.long)
-        minus_idx = torch.full((M,), -1, dtype=torch.long)
+        plus_idx = torch.full((M,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
+        minus_idx = torch.full((M,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
         # A Bijvoet mate only counts as present if it is a real, positive
         # observation. Stacked anomalous input (rs.stack_anomalous) carries a
         # row for every *absent* mate with a NaN intensity, which French-Wilson

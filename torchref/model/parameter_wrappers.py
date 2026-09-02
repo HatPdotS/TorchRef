@@ -1043,6 +1043,66 @@ def u6_to_raw6(U: torch.Tensor, epsilon: float) -> torch.Tensor:
     return torch.where(finite.unsqueeze(-1), raw, torch.full_like(raw, float("nan")))
 
 
+# ----------------------------------------------------------------------------------
+# The same transform at arbitrary size, for a covariance that is not a 3x3 U tensor.
+# A node of the disorder field carries the covariance of its displacement modes, which
+# is q x q for q modes; the pair above is the q = 3 case with the indexing unrolled.
+# Kept as the general form rather than replacing the unrolled pair, which is a forward
+# hot path.
+# ----------------------------------------------------------------------------------
+
+
+def chol_param_count(q: int) -> int:
+    """Free parameters in a ``q x q`` lower-triangular factor."""
+    return q * (q + 1) // 2
+
+
+def raw_to_cholesky(raw: torch.Tensor, q: int, epsilon: float) -> torch.Tensor:
+    """Free parameters to a lower-triangular ``(..., q, q)`` factor.
+
+    Layout is ``[log diagonal (q) | strict lower triangle (q(q-1)/2), row major]``, and
+    the diagonal is ``exp(x) + epsilon``, so ``L L^T`` is positive-definite for any
+    input and ``epsilon`` bounds its smallest eigenvalue from below. At ``q = 3`` this
+    is the same layout and the same convention as :func:`raw6_to_u6`.
+
+    No factorisation happens here, which is what makes it safe in a forward pass.
+    """
+    rows, cols = torch.tril_indices(q, q, offset=-1, device=raw.device)
+    L = raw.new_zeros(*raw.shape[:-1], q, q)
+    diag = torch.exp(raw[..., :q]) + epsilon
+    idx = torch.arange(q, device=raw.device)
+    L[..., idx, idx] = diag
+    if rows.numel():
+        L[..., rows, cols] = raw[..., q:]
+    return L
+
+
+def psd_to_raw(M: torch.Tensor, epsilon: float) -> torch.Tensor:
+    """Symmetric ``(..., q, q)`` matrix to Cholesky free parameters, projecting onto PSD.
+
+    The inverse of :func:`raw_to_cholesky`, with the same eigenvalue clamp and the same
+    CPU-forced ``eigh`` as :func:`u6_to_raw6`: a least-squares or seeded covariance need
+    not be positive-definite, and cuSolver's batched kernels fail on the degenerate
+    batches a near-isotropic model produces. Runs at construction, never in a forward
+    pass.
+    """
+    q = M.shape[-1]
+    src_device = M.device
+    M = 0.5 * (M + M.transpose(-1, -2))
+    M = M.cpu()
+    w, V = torch.linalg.eigh(M)
+    w = w.clamp(min=epsilon * epsilon)
+    M = (V * w.unsqueeze(-2)) @ V.transpose(-1, -2)
+    L = torch.linalg.cholesky(M)
+    idx = torch.arange(q)
+    rows, cols = torch.tril_indices(q, q, offset=-1)
+    raw_diag = torch.log((L[..., idx, idx] - epsilon).clamp(min=1e-12))
+    parts = [raw_diag]
+    if rows.numel():
+        parts.append(L[..., rows, cols])
+    return torch.cat(parts, dim=-1).to(src_device)
+
+
 class CholeskyMixedTensor(MixedTensor):
     """A MixedTensor for anisotropic ADPs (U tensors) kept positive-definite.
 
@@ -1402,11 +1462,11 @@ class OccupancyTensor(MixedTensor):
         # Use sharing_groups directly as the expansion mask
         if sharing_groups is None:
             # No sharing - each atom maps to its own index
-            expansion_mask = torch.arange(n_atoms, dtype=torch.long, device=device)
+            expansion_mask = torch.arange(n_atoms, dtype=torch.long, device=device)  # dtype-ok: arange expansion_mask atom indices; index requires long
             self._collapsed_shape = n_atoms
         else:
             # Use the provided index tensor
-            expansion_mask = sharing_groups.to(device=device, dtype=torch.long)
+            expansion_mask = sharing_groups.to(device=device, dtype=torch.long)  # dtype-ok: expansion_mask atom/group indices for scatter; requires long
             self._collapsed_shape = expansion_mask.max().item() + 1
 
         self.register_buffer("expansion_mask", expansion_mask)
@@ -1428,10 +1488,10 @@ class OccupancyTensor(MixedTensor):
                 for conf_atoms in conf_groups:
                     if isinstance(conf_atoms, (list, tuple)):
                         conf_atoms = torch.tensor(
-                            conf_atoms, dtype=torch.long, device=device
+                            conf_atoms, dtype=torch.long, device=device  # dtype-ok: conf_atoms atom indices; indexing requires long
                         )
                     else:
-                        conf_atoms = conf_atoms.to(device=device, dtype=torch.long)
+                        conf_atoms = conf_atoms.to(device=device, dtype=torch.long)  # dtype-ok: conf_atoms atom indices cast; indexing requires long
 
                     # Get collapsed index for first atom
                     collapsed_idx = expansion_mask[conf_atoms[0]].item()
@@ -1459,7 +1519,7 @@ class OccupancyTensor(MixedTensor):
         # Store as dictionary with keys like 'linked_occ_2', 'linked_occ_3', etc.
         for n_conf, groups in linked_occupancies.items():
             # Shape: (N_groups, n_conf)
-            tensor = torch.tensor(groups, dtype=torch.long, device=device)
+            tensor = torch.tensor(groups, dtype=torch.long, device=device)  # dtype-ok: linked-occupancy group index buffer; indexing requires long
             self.register_buffer(f"linked_occ_{n_conf}", tensor)
 
         # Store which sizes we have
@@ -1467,7 +1527,7 @@ class OccupancyTensor(MixedTensor):
 
         # Create count buffer for vectorized collapse operations
         # counts[i] = number of atoms that map to collapsed index i
-        counts = torch.zeros(self._collapsed_shape, dtype=torch.long, device=device)
+        counts = torch.zeros(self._collapsed_shape, dtype=torch.long, device=device)  # dtype-ok: count accumulator; scatter_add source is long ones, dtype must match
         counts.scatter_add_(0, expansion_mask, torch.ones_like(expansion_mask))
         self.register_buffer("collapse_counts", counts)
 
@@ -1945,7 +2005,7 @@ class OccupancyTensor(MixedTensor):
         grouped = pdb_dataframe.groupby(["resname", "resseq", "chainid", "altloc"])
 
         n_atoms = len(initial_values)
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)
+        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)  # dtype-ok: arange atom indices (sharing groups); index requires long
         # Singletons keep their arange ids (0..n_atoms-1); start multi-atom
         # group ids past that range so a group id can never collide with a
         # singleton's leftover arange id (the torch.unique compaction below

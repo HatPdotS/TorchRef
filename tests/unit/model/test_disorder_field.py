@@ -388,7 +388,10 @@ def test_state_dict_excludes_the_accessor_and_round_trips(coords, target_b):
 @pytest.mark.unit
 def test_empty_shell_needs_no_accessor(coords):
     """The ``load_state_dict`` entry point constructs without coordinates."""
-    shell = DisorderFieldTensor(dtype=torch.float64)
+    # Pinned to CPU: every other case here inherits CPU from the tensors it is
+    # handed, but the empty shell resolves ``device=None`` to ``device.current``,
+    # and float64 does not exist on MPS.
+    shell = DisorderFieldTensor(dtype=torch.float64, device="cpu")
     assert shell.neighbor_list is None
     assert shell.shape == (0,)
 

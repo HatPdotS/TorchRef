@@ -68,8 +68,8 @@ def dense_calc_via_box(
         # Cubic P1 box sized to ``pad`` diameters; no symmetry keeps the grid small.
         extent = (coords - coords.mean(0)).norm(dim=-1).max().item()
         a = float(pad * 2.0 * extent)
-        # Order matters: set max_res first, then the sg/cell setters rebuild the
-        # FFT (via _maybe_initialize_fft) reading the new max_res.
+        # The grid is derived lazily from (cell, space group, max_res) on first
+        # use, so the order of these assignments no longer matters.
         m.max_res = float(d_min)
         m.spacegroup = "P 1"
         m.cell = Cell([a, a, a, 90.0, 90.0, 90.0], device=dev)

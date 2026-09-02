@@ -1,218 +1,307 @@
 """SfFFT -- structure factors via FFT.
 
-An nn.Module owning the real-space grid setup, the electron-density build from
-atomic parameters, and the FFT to structure factors. Usable standalone or as
-``ModelFT``'s submodule. ``FFT`` is a deprecated alias for :class:`SfFFT`.
+An nn.Module that reads the crystal off a :class:`~torchref.model.context.ModelContext`,
+sizes its real-space grid lazily from that crystal and the resolution, builds the
+electron density from atomic parameters, and transforms it to structure factors.
+Usable standalone or as ``ModelFT``'s submodule.
 """
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
 from torchref.base.fourier import ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
-from torchref.config import dtypes, get_default_device
+from torchref.config import dtypes
 from torchref.symmetry import Cell, SpaceGroup
-from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMovementMixin
-from torchref.utils.device_resolution import resolve_device
+from torchref.utils.device_resolution import require_cell_dtype, resolve_device
+
+if TYPE_CHECKING:
+    from torchref.model.context import ModelContext
 
 
 class SfFFT(DeviceMovementMixin, nn.Module):
     """
     Structure Factor calculator using FFT (Fast Fourier Transform).
 
-    Built from a Cell and optionally a SpaceGroup, which drive the grid. Call
-    :meth:`setup_grid` before :meth:`build_density_map`; the higher-level
-    :meth:`compute_structure_factors` does both.
+    The engine does not own a cell or a space group: it holds the
+    :class:`~torchref.model.context.ModelContext` it was given and reads
+    ``ctx.cell`` and ``ctx.spacegroup`` whenever it needs them. The grid is derived
+    from that crystal, ``max_res`` and ``explicit_gridsize`` on first use and kept
+    until any of them changes (:attr:`grid_key`), so assigning a new cell or
+    resolution to the context needs no further call.
 
     Parameters
     ----------
-    cell : Cell
-        Unit cell object containing cell parameters.
-    spacegroup : SpaceGroupLike, optional
-        Space group specification (string, int, or gemmi.SpaceGroup).
-        If None, defaults to P1.
+    ctx : ModelContext
+        The crystallographic context to read the cell and space group from. May be
+        incomplete at construction; the grid is sized once both are set.
     max_res : float, optional
-        Maximum resolution for grid spacing in Angstroms. Default is 1.5.
+        Maximum resolution for grid spacing in Angstroms. Default is 1.0.
+    explicit_gridsize : tuple of int, optional
+        Fixed grid dimensions ``(nx, ny, nz)``; overrides the resolution-derived size.
     dtype_float : torch.dtype, optional
         Data type for floating point tensors. Default is dtypes.float.
     device : torch.device, optional
-        Computation device. Defaults to the configured default device
-        (``get_default_device()``).
+        Computation device. Defaults to the cell's device when the context has one,
+        else the configured default device.
     verbose : int, optional
         Verbosity level for logging. Default is 0.
+    use_late_symmetry : bool, optional
+        Apply symmetry in reciprocal space after the FFT when the grid permits
+        exact indexing (default); otherwise symmetrise the density map first.
 
     Attributes
     ----------
     cell, spacegroup : Cell, SpaceGroup
-        The unit cell and the space group as an nn.Module carrying its symmetry
-        matrices and translations; ``symmetry`` is an alias for ``spacegroup``.
+        Read through from the context.
     gridsize, voxel_size : torch.Tensor or None
-        Grid dimensions ``(nx, ny, nz)`` and the voxel edge vector sum -- both
-        ``None`` until :meth:`setup_grid` runs. No coordinate grid is stored: the
-        splats derive a voxel's Cartesian position from its index, so materialising
-        one would cost ``12 * nx * ny * nz`` bytes that nothing reads. Call
-        :func:`torchref.base.fourier.get_real_grid` if you genuinely need one.
+        Grid dimensions ``(nx, ny, nz)`` and the voxel edge vector sum, resolved on
+        access; ``None`` while the context has no cell or space group. No coordinate
+        grid is stored: the splats derive a voxel's Cartesian position from its
+        index, so materialising one would cost ``12 * nx * ny * nz`` bytes that
+        nothing reads. Call :func:`torchref.base.fourier.get_real_grid` if you
+        genuinely need one.
     """
 
     def __init__(
         self,
-        cell: Optional[Cell] = None,
-        spacegroup: SpaceGroupLike = None,
-        max_res: float = 1.5,
+        ctx: "ModelContext",
+        *,
+        max_res: Optional[float] = 1.0,
+        explicit_gridsize: Optional[Tuple[int, int, int]] = None,
         dtype_float: torch.dtype = None,
         device: Optional[torch.device] = None,
         verbose: int = 0,
         use_late_symmetry: bool = True,
     ):
-        """
-        Initialize the SfFFT module with cell and spacegroup.
-
-        Parameters
-        ----------
-        cell : Cell, optional
-            Unit cell object. If None, must be set later via set_cell().
-        spacegroup : SpaceGroupLike, optional
-            Space group specification. If None, defaults to P1.
-        max_res : float, optional
-            Maximum resolution for grid spacing in Angstroms. Default is 1.5.
-        dtype_float : torch.dtype, optional
-            Data type for floating point tensors. Default is dtypes.float.
-        device : torch.device, optional
-            Computation device. Default is None (uses cell's device). If Cell is also None, defaults to CPU.
-        verbose : int, optional
-            Verbosity level for logging. Default is 0.
-        use_late_symmetry : bool, optional
-            If True (default), apply symmetry in reciprocal space after FFT
-            ("late symmetry") for faster structure factor calculation.
-            If False, apply symmetry to density map before FFT ("early symmetry").
-        """
         super().__init__()
+        self.ctx = ctx
         self.max_res = max_res
-        if dtype_float is None:
-            dtype_float = dtypes.float
-        self.dtype_float = dtype_float
+        self.explicit_gridsize = explicit_gridsize
+        self.dtype_float = dtypes.float if dtype_float is None else dtype_float
 
-        # One device for the module and everything it builds. ``resolve_device``
-        # also moves ``cell`` when an explicit ``device`` disagrees with it, so
-        # the cell and the SpaceGroup below cannot end up split.
-        self.device = resolve_device(cell, device=device)
+        # One device for the module and everything it builds. An explicit
+        # ``device`` moves the crystal as a whole, so cell, space group and the
+        # grid buffers cannot end up split; without one the cell's device wins,
+        # and an empty context falls back to the configured default.
+        if device is not None:
+            ctx.to(device)
+        self.device = resolve_device(ctx.cell, device=device)
 
         self.verbose = verbose
         self.use_late_symmetry = use_late_symmetry
 
-        # Store cell and spacegroup
-        self._cell = cell
-        self._spacegroup = None
-
-        if spacegroup is not None or cell is not None:
-            # ``self.device``, not the raw ``device`` argument: the latter is
-            # ``None`` on the derive-from-cell path, which would silently put
-            # the symmetry matrices on the global default instead.
-            self._spacegroup = SpaceGroup(
-                spacegroup, dtype=dtype_float, device=self.device
-            )
-
-        # Buffers (registered during setup_grid)
-        self.register_buffer("gridsize", None)
-        self.register_buffer("voxel_size", None)
-
-        # Late symmetry compatibility flag (set during setup_grid)
+        # Derived from the crystal on first use. Non-persistent: rebuilt from the
+        # context on restore rather than read back from a checkpoint.
+        self.register_buffer("_gridsize", None, persistent=False)
+        self.register_buffer("_voxel_size", None, persistent=False)
         self._late_symmetry_compatible: Optional[bool] = None
+        self._grid_key = None
 
     # =========================================================================
-    # Cell and SpaceGroup properties
+    # Crystal, read through from the context
     # =========================================================================
 
     @property
     def cell(self) -> Optional[Cell]:
-        """Unit cell object."""
-        return self._cell
-
-    @cell.setter
-    def cell(self, value: Cell):
-        """Set unit cell."""
-        self._cell = value
+        """The context's unit cell."""
+        return self.ctx.cell
 
     @property
     def spacegroup(self) -> Optional[SpaceGroup]:
-        """Space group object (SpaceGroup nn.Module)."""
-        return self._spacegroup
-
-    @spacegroup.setter
-    def spacegroup(self, value: SpaceGroupLike):
-        """Set space group."""
-        if value is not None:
-            self._spacegroup = SpaceGroup(
-                value, dtype=self.dtype_float, device=self.device
-            )
-        else:
-            self._spacegroup = None
-
-    @property
-    def symmetry(self) -> Optional[SpaceGroup]:
-        """Symmetry operations handler (alias for spacegroup)."""
-        return self._spacegroup
+        """The context's space group."""
+        return self.ctx.spacegroup
 
     @property
     def fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Get fractionalization matrix from cell, on this module's device/dtype."""
-        if self._cell is not None:
-            # Move device first, then cast: a combined ``.to(device=cpu,
-            # dtype=float64)`` from an MPS-resident cell raises because MPS
-            # rejects the transient float64 view (MPS has no float64).
-            return self._cell.fractional_matrix.to(device=self.device).to(
-                dtype=self.dtype_float
-            )
-        return None
+        """Fractionalization matrix from the cell, on this module's device/dtype."""
+        cell = self.ctx.cell
+        if cell is None:
+            return None
+        # Move device first, then cast: a combined ``.to(device=cpu,
+        # dtype=float64)`` from an MPS-resident cell raises because MPS
+        # rejects the transient float64 view (MPS has no float64).
+        return cell.fractional_matrix.to(device=self.device).to(dtype=self.dtype_float)
 
     @property
     def inv_fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Get orthogonalization matrix from cell, on this module's device/dtype."""
-        if self._cell is not None:
-            # Move device first, then cast (see ``fractional_matrix``).
-            return self._cell.inv_fractional_matrix.to(device=self.device).to(
-                dtype=self.dtype_float
-            )
-        return None
-
-    def set_cell_and_spacegroup(self, cell: Cell, spacegroup: SpaceGroupLike = None):
-        """
-        Set cell and spacegroup for this SfFFT instance.
-
-        Parameters
-        ----------
-        cell : Cell
-            Unit cell object.
-        spacegroup : SpaceGroupLike, optional
-            Space group specification.
-
-        Notes
-        -----
-        Receiver wins: this module may already own grid buffers, so an incoming
-        cell on another device is moved to match rather than dragging the
-        module after it.
-        """
-        self.device = resolve_device(self, cell)
-        self._cell = cell
-        self.spacegroup = spacegroup
+        """Orthogonalization matrix from the cell, on this module's device/dtype."""
+        cell = self.ctx.cell
+        if cell is None:
+            return None
+        # Move device first, then cast (see ``fractional_matrix``).
+        return cell.inv_fractional_matrix.to(device=self.device).to(
+            dtype=self.dtype_float
+        )
 
     # =========================================================================
-    # Grid Setup Methods
+    # Grid
     # =========================================================================
 
     @property
-    def grid_shape(self) -> Optional[Tuple[int, int, int]]:
-        """Map dimensions ``(nx, ny, nz)``, or ``None`` before :meth:`setup_grid`."""
-        if self.gridsize is None:
+    def explicit_gridsize(self) -> Optional[Tuple[int, int, int]]:
+        """Fixed grid dimensions, or None to size the grid from ``max_res``."""
+        return self._explicit_gridsize
+
+    @explicit_gridsize.setter
+    def explicit_gridsize(self, value) -> None:
+        self._explicit_gridsize = (
+            None if value is None else tuple(int(x) for x in value)
+        )
+
+    @property
+    def grid_key(self):
+        """Everything the grid is derived from, as a hashable tuple.
+
+        ``(cell.key, spacegroup.key, max_res, explicit_gridsize)``, or ``None``
+        while the context has no cell or space group. Callers that cache anything
+        grid-shaped can compare against it.
+        """
+        crystal = self.ctx.crystal_key
+        if crystal is None:
             return None
-        return tuple(int(n) for n in self.gridsize)
+        return (
+            *crystal,
+            None if self.max_res is None else float(self.max_res),
+            self.explicit_gridsize,
+        )
+
+    def ensure_grid(self) -> bool:
+        """Bring the grid in line with :attr:`grid_key`.
+
+        Returns
+        -------
+        bool
+            True when the grid was (re)built, False when it was already current or
+            the context has no crystal yet.
+
+        Raises
+        ------
+        RuntimeError
+            If neither ``max_res`` nor ``explicit_gridsize`` is set, or the cell or
+            space group disagree with this module's dtype or device.
+        """
+        key = self.grid_key
+        if key == self._grid_key:
+            return False
+        if key is None:
+            # The crystal went away; drop the grid derived from the old one.
+            self._gridsize = None
+            self._voxel_size = None
+            self._late_symmetry_compatible = None
+            self._grid_key = None
+            return False
+
+        cell, spacegroup = self.ctx.cell, self.ctx.spacegroup
+        require_cell_dtype(cell, self.dtype_float, type(self).__name__)
+        if spacegroup.matrices.dtype != self.dtype_float:
+            raise RuntimeError(
+                f"{type(self).__name__} was built for {self.dtype_float} but its "
+                f"space group holds {spacegroup.matrices.dtype}. Rebuild the space "
+                "group at the module's dtype."
+            )
+        if spacegroup.matrices.device != cell.data.device:
+            raise RuntimeError(
+                f"{type(self).__name__}: cell on {cell.data.device} but space group "
+                f"on {spacegroup.matrices.device}. Move the context as a whole."
+            )
+
+        if self.explicit_gridsize is not None:
+            gridsize = self.explicit_gridsize
+        elif self.max_res is not None:
+            gridsize = self.compute_optimal_gridsize(self.max_res)
+        else:
+            raise RuntimeError(
+                f"{type(self).__name__} cannot size its grid: set max_res or "
+                "explicit_gridsize."
+            )
+        shape = tuple(int(n) for n in gridsize)
+
+        if self.verbose > 1:
+            print(f"Setting up grids with max_res={self.max_res} Å")
+
+        previous = self._gridsize
+        self._gridsize = torch.tensor(shape, dtype=dtypes.int, device=self.device)
+
+        # The step between diagonally adjacent grid points, i.e. the sum of the three
+        # cell edge vectors each divided by its own sampling count. Equal to the true
+        # per-axis voxel edge lengths only for an orthogonal cell; kept because that is
+        # what the previous grid-differencing definition produced.
+        self._voxel_size = self.fractional_matrix @ (
+            1.0 / self._gridsize.to(self.dtype_float)
+        )
+
+        # Every symmetry-equivalent HKL lands on an integer grid point exactly when
+        # the grid admits direct indexing, which the space group answers without
+        # building an operator.
+        self._late_symmetry_compatible = spacegroup.can_index_directly(shape)
+        if self.verbose > 0 and self.use_late_symmetry:
+            if self._late_symmetry_compatible:
+                print("SfFFT: Using late symmetry (reciprocal space)")
+            else:
+                print(
+                    "SfFFT: Late symmetry disabled - grid not compatible "
+                    "(falling back to early symmetry)"
+                )
+
+        # The space group memoises its map operator and reciprocal extractor per
+        # grid shape. They are keyed on the shape, so a same-shape rebuild keeps
+        # them; a different shape drops them so the old operator's sampling grids
+        # do not stay resident.
+        if previous is not None and tuple(int(n) for n in previous.tolist()) != shape:
+            spacegroup.reset_cache()
+
+        if self.verbose > 2:
+            print(f"Grid shape: {shape}")
+            print(f"Voxel size: {self._voxel_size}")
+
+        # Last, so a failure above leaves the old key in place and the next call
+        # tries again.
+        self._grid_key = key
+        return True
+
+    def _require_grid(self) -> None:
+        """Resolve the grid, refusing to proceed without a crystal."""
+        self.ensure_grid()
+        if self._gridsize is None:
+            raise RuntimeError(
+                f"{type(self).__name__} has no crystal to size its grid: the context "
+                f"{self.ctx!r} has no cell or space group. Load a structure, or pass a "
+                "context whose cell and spacegroup are set."
+            )
+
+    @property
+    def gridsize(self) -> Optional[torch.Tensor]:
+        """Grid dimensions ``(nx, ny, nz)``, or None without a crystal."""
+        self.ensure_grid()
+        return self._gridsize
+
+    @property
+    def voxel_size(self) -> Optional[torch.Tensor]:
+        """Voxel edge vector sum, or None without a crystal."""
+        self.ensure_grid()
+        return self._voxel_size
+
+    @property
+    def grid_shape(self) -> Optional[Tuple[int, int, int]]:
+        """Map dimensions ``(nx, ny, nz)`` as Python ints, or None without a crystal."""
+        gridsize = self.gridsize
+        if gridsize is None:
+            return None
+        return tuple(int(n) for n in gridsize)
+
+    @property
+    def late_symmetry_compatible(self) -> Optional[bool]:
+        """Whether the current grid admits reciprocal-space symmetrisation."""
+        self.ensure_grid()
+        return self._late_symmetry_compatible
 
     def compute_optimal_gridsize(self, max_res: Optional[float] = None) -> tuple:
         """
-        Compute optimal grid dimensions using the stored cell and spacegroup.
+        Compute optimal grid dimensions from the context's cell and space group.
 
         Uses Cell.compute_grid_size() for base calculation and
         Symmetry.suggest_grid_size() for symmetry optimization.
@@ -230,21 +319,25 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         Raises
         ------
         RuntimeError
-            If cell has not been set.
+            If the context has no cell or space group.
         """
-        if self._cell is None:
-            raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
+        cell, spacegroup = self.ctx.cell, self.ctx.spacegroup
+        if cell is None or spacegroup is None:
+            raise RuntimeError(
+                f"{type(self).__name__}: the context {self.ctx!r} has no cell or "
+                "space group to size a grid from."
+            )
 
         resolution = max_res if max_res is not None else self.max_res
 
         # Use Cell's method for base grid size calculation
-        gridsize_initial = self._cell.compute_grid_size(resolution)
+        gridsize_initial = cell.compute_grid_size(resolution)
 
         if self.verbose > 1:
             print(f"Initial grid size from cell: {gridsize_initial}")
 
         # Optimize for symmetry and FFT-friendliness
-        gridsize_optimized = self._spacegroup.suggest_grid_size(
+        gridsize_optimized = spacegroup.suggest_grid_size(
             gridsize_initial, make_fft_friendly=True
         )
         if self.verbose > 1 and gridsize_optimized != gridsize_initial:
@@ -252,88 +345,30 @@ class SfFFT(DeviceMovementMixin, nn.Module):
                 f"Optimized grid size from {gridsize_initial} to {gridsize_optimized} "
                 f"(symmetry + FFT friendly)"
             )
-        return gridsize_optimized
+        return tuple(int(n) for n in gridsize_optimized)
 
     def setup_grid(
         self,
-        gridsize: Optional[Tuple[int, int, int]] = None,
+        *,
         max_res: Optional[float] = None,
-    ):
+        gridsize: Optional[Tuple[int, int, int]] = None,
+    ) -> None:
         """
-        Setup the real-space grid for electron density calculation.
-
-        This method initializes and stores the grid state for subsequent
-        density map calculations. Uses the stored cell and spacegroup.
+        Override the grid's inputs explicitly and resolve it now.
 
         Parameters
         ----------
-        gridsize : tuple of int, optional
-            Explicit grid size (nx, ny, nz). If None, computed automatically
-            using Cell.compute_grid_size() and Symmetry.suggest_grid_size().
         max_res : float, optional
-            Maximum resolution in Angstroms. If None, uses self.max_res.
-
-        Raises
-        ------
-        RuntimeError
-            If cell has not been set.
+            New maximum resolution in Angstroms. None leaves the current value.
+        gridsize : tuple of int, optional
+            Fixed grid size (nx, ny, nz), kept until cleared through
+            :attr:`explicit_gridsize`. None leaves the current value.
         """
-        if self._cell is None:
-            raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
-
         if max_res is not None:
-            self.max_res = max_res
-
-        if self.verbose > 1:
-            print(f"Setting up grids with max_res={self.max_res} Å")
-
-        # Compute or use provided grid size
+            self.max_res = float(max_res)
         if gridsize is not None:
-            self.gridsize = torch.tensor(gridsize, dtype=dtypes.int, device=self.device)
-        else:
-            optimal_gridsize = self.compute_optimal_gridsize(self.max_res)
-            self.gridsize = torch.tensor(
-                optimal_gridsize, dtype=dtypes.int, device=self.device
-            )
-
-        # The step between diagonally adjacent grid points, i.e. the sum of the three
-        # cell edge vectors each divided by its own sampling count. Equal to the true
-        # per-axis voxel edge lengths only for an orthogonal cell; kept because that is
-        # what the previous grid-differencing definition produced.
-        self.voxel_size = (
-            self._cell.fractional_matrix.to(self.device)
-            @ (1.0 / self.gridsize.to(self._cell.fractional_matrix.dtype))
-        )
-
-        # Every symmetry-equivalent HKL lands on an integer grid point exactly when
-        # the grid admits direct indexing, which the space group answers without
-        # building an operator.
-        if self._spacegroup is not None:
-            self._late_symmetry_compatible = self._spacegroup.can_index_directly(
-                self.grid_shape
-            )
-
-            if self.use_late_symmetry and self._late_symmetry_compatible:
-                if self.verbose > 0:
-                    print(
-                        "SfFFT: Using late symmetry (reciprocal space)"
-                    )
-            elif self.use_late_symmetry and not self._late_symmetry_compatible:
-                if self.verbose > 0:
-                    print(
-                        "SfFFT: Late symmetry disabled - grid not compatible "
-                        "(falling back to early symmetry)"
-                    )
-        else:
-            self._late_symmetry_compatible = False
-
-        # The grid shape changed, so the space group's cached operators are stale.
-        if self._spacegroup is not None:
-            self._spacegroup.reset_cache()
-
-        if self.verbose > 2:
-            print(f"Grid shape: {self.grid_shape}")
-            print(f"Voxel size: {self.voxel_size}")
+            self.explicit_gridsize = gridsize
+        self.ensure_grid()
 
     # =========================================================================
     # Density Map Building Methods
@@ -356,8 +391,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         """
         Build electron density map from atomic parameters.
 
-        Calls :meth:`setup_grid` itself if no grid has been set up yet.
-
         Parameters
         ----------
         xyz_iso, adp_iso, occ_iso : torch.Tensor
@@ -378,8 +411,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         torch.Tensor
             Electron density map with shape (nx, ny, nz).
         """
-        if self.gridsize is None:
-            self.setup_grid()
+        self._require_grid()
 
         from torchref.base.electron_density.main import build_electron_density
 
@@ -401,9 +433,8 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             dtype=self.dtype_float,
         )
 
-        # Apply symmetry if requested
-        if apply_symmetry and self._spacegroup is not None:
-            density_map = self._spacegroup.symmetrize_map(density_map)
+        if apply_symmetry:
+            density_map = self.ctx.spacegroup.symmetrize_map(density_map)
 
         return density_map
 
@@ -428,25 +459,23 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
         apply_symmetry : bool, optional
-            If True (default) and late symmetry is enabled/compatible, apply
-            symmetry in reciprocal space. If False, the density map is assumed
-            to already have symmetry applied (early symmetry path).
+            If True (default), apply symmetry in reciprocal space. If False, the
+            density map is assumed to already have symmetry applied (early
+            symmetry path).
 
         Returns
         -------
         torch.Tensor
             Complex structure factors with shape (n_reflections,).
         """
-        reciprocal_space_grid = ifft(density_map, self.cell.volume)
+        self._require_grid()
+        reciprocal_space_grid = ifft(density_map, self.ctx.cell.volume)
 
-        # Use late symmetry if enabled, compatible, and requested
         if apply_symmetry:
-            # Lazily build / reuse cached extractor (precomputed flat indices)
-            grid_shape = tuple(int(x) for x in self.gridsize)
-            extractor = self._spacegroup.reciprocal_extractor(hkl, grid_shape)
+            # Memoised on the space group per (hkl, grid shape).
+            extractor = self.ctx.spacegroup.reciprocal_extractor(hkl, self.grid_shape)
             return extractor.extract_from_grid(reciprocal_space_grid)
-        else:
-            return extract_structure_factor_from_grid(reciprocal_space_grid, hkl)
+        return extract_structure_factor_from_grid(reciprocal_space_grid, hkl)
 
     def compute_structure_factors(
         self,
@@ -496,8 +525,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             Electron density map with shape (nx, ny, nz).
             Note: When using late symmetry, this is the P1 map (without symmetry).
         """
-        # Late symmetry: build a P1 map, symmetrize in reciprocal space.
-        # Early symmetry: symmetrize the density map before the FFT.
+        # Resolve the grid first: the late-symmetry flag belongs to the grid the
+        # density is about to be built on.
+        self._require_grid()
         use_late = (
             apply_symmetry and self.use_late_symmetry and self._late_symmetry_compatible
         )
@@ -521,55 +551,3 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             apply_symmetry=use_late,  # Late symmetry
         )
         return sf, density_map
-
-    # =========================================================================
-    # Device Movement
-    # =========================================================================
-
-    def reset_cache(self) -> None:
-        """Drop the space group's cached operators; recomputed on next use."""
-        if self._spacegroup is not None:
-            self._spacegroup.reset_cache()
-
-    def copy(self) -> "SfFFT":
-        """Create a deep copy of this SfFFT module.
-
-        Returns
-        -------
-        SfFFT
-            A new SfFFT instance with cloned cell, spacegroup, and buffers.
-        """
-        # Clone the cell
-        new_cell = self._cell.clone() if self._cell is not None else None
-
-        # Copy the spacegroup
-        new_spacegroup = (
-            self._spacegroup.copy() if self._spacegroup is not None else None
-        )
-
-        # Create new SfFFT with copied components
-        new_fft = SfFFT(
-            cell=new_cell,
-            spacegroup=new_spacegroup,
-            max_res=self.max_res,
-            dtype_float=self.dtype_float,
-            device=self.device,
-            verbose=self.verbose,
-            use_late_symmetry=self.use_late_symmetry,
-        )
-
-        return new_fft
-
-
-# Backward compatibility alias — deprecated, use SfFFT directly
-def FFT(*args, **kwargs):
-    """Deprecated: use SfFFT instead."""
-    import warnings
-
-    warnings.warn(
-        "FFT is deprecated, use SfFFT instead. "
-        "FFT will be removed in a future release.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return SfFFT(*args, **kwargs)

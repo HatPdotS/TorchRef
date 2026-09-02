@@ -13,6 +13,13 @@ not work: 6JZA is bimodal at this cycle count -- its trajectories land in one of
 basins about 0.0074 apart -- and two runs that happen to pick the same basin report a
 spread 140 times too small.
 
+R-work and R-free are held to different bounds. R-work is reproducible to a few parts in
+ten thousand, so it keeps the measured tolerance and is what catches a change that
+actually moves the refinement. R-free is computed on the small free set and has a rare
+second basin of its own, a few thousandths wide, that a handful of runs will usually
+miss; it therefore carries :data:`RFREE_TOLERANCE_FLOOR`, wide enough to sit outside
+that basin and still far inside the descent the trajectory shows.
+
 Regenerate deliberately, after a change meant to move these numbers::
 
     ./.dev/bin/python tests/functional/test_af_trajectory.py
@@ -40,9 +47,15 @@ SPREAD_RUNS = 5
 #: Multiple of the measured spread a deviation may reach before it counts as a change.
 SPREAD_MULTIPLE = 3.0
 
-#: Tolerance floor, so a structure whose runs agree very closely is not held to an
-#: unreasonably tight bound.
+#: Tolerance floor for R-work, so a structure whose runs agree very closely is not held
+#: to an unreasonably tight bound.
 TOLERANCE_FLOOR = 0.002
+
+#: Tolerance floor for R-free, which moves in discrete basins rather than jitter. Set
+#: above the widest basin separation seen on this set and kept well inside every
+#: structure's own R-work descent, so a change large enough to matter still fails.
+#: ``test_tolerances_are_tight_enough_to_detect_something`` enforces the second half.
+RFREE_TOLERANCE_FLOOR = 0.01
 
 REFERENCE = Path(__file__).with_name("af_trajectory_reference.json")
 
@@ -79,6 +92,19 @@ def _max_deviation(a, b):
     return max(max(abs(x[0] - y[0]), abs(x[1] - y[1])) for x, y in zip(a, b))
 
 
+def _deviations(a, b):
+    """Largest absolute difference between two trajectories, ``(R-work, R-free)``."""
+    return (
+        max(abs(x[0] - y[0]) for x, y in zip(a, b)),
+        max(abs(x[1] - y[1]) for x, y in zip(a, b)),
+    )
+
+
+def _rfree_tolerance(entry):
+    """The R-free bound: this structure's measured tolerance, floored."""
+    return max(float(entry["tolerance"]), RFREE_TOLERANCE_FLOOR)
+
+
 @pytest.fixture(scope="module")
 def reference():
     """The committed reference trajectories and their tolerances."""
@@ -105,18 +131,24 @@ def test_af_trajectory_matches_reference(code, reference, test_files_dir):
 
     entry = reference["structures"][code]
     expected = [tuple(point) for point in entry["trajectory"]]
-    tolerance = float(entry["tolerance"])
+    rwork_tolerance = float(entry["tolerance"])
+    rfree_tolerance = _rfree_tolerance(entry)
 
     observed = trajectory(pdb_path, mtz_path)
     assert len(observed) == len(
         expected
     ), f"{code}: trajectory has {len(observed)} stages, reference has {len(expected)}"
 
-    deviation = _max_deviation(observed, expected)
-    assert deviation <= tolerance, (
-        f"{code}: deviates from the reference by {deviation:.6f}, above its measured "
-        f"tolerance of {tolerance:.6f}.\nobserved={observed}\nreference={expected}"
-    )
+    dev_work, dev_free = _deviations(observed, expected)
+    for label, deviation, tolerance in (
+        ("R-work", dev_work, rwork_tolerance),
+        ("R-free", dev_free, rfree_tolerance),
+    ):
+        assert deviation <= tolerance, (
+            f"{code}: {label} deviates from the reference by {deviation:.6f}, above its "
+            f"tolerance of {tolerance:.6f}.\nobserved={observed}\n"
+            f"reference={expected}"
+        )
 
 
 @pytest.mark.integration
@@ -147,8 +179,11 @@ def test_tolerances_are_tight_enough_to_detect_something(reference):
         entry = reference["structures"][code]
         series = entry["trajectory"]
         descent = series[0][0] - series[-1][0]
-        assert entry["tolerance"] < descent / 4.0, (
-            f"{code}: tolerance {entry['tolerance']:.4f} is not small against its "
+        # Checks the widest bound actually applied, not the stored one: flooring R-free
+        # would otherwise widen the real bound without this guard seeing it.
+        widest = max(float(entry["tolerance"]), _rfree_tolerance(entry))
+        assert widest < descent / 4.0, (
+            f"{code}: tolerance {widest:.4f} is not small against its "
             f"own R-work descent of {descent:.4f}"
         )
 

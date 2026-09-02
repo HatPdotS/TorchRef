@@ -400,7 +400,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         n_atoms = xyz.shape[0]
 
         if n_atoms == 0:
-            return torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
+            return torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)  # dtype-ok: empty atom-pair index tensor; int64 index required
 
         # Work on CPU to avoid per-iteration GPU kernel launch overhead
         coords = xyz.detach().cpu()
@@ -425,12 +425,12 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             sorted_flat, return_counts=True
         )
         n_unique = len(unique_cells)
-        starts = torch.zeros(n_unique + 1, dtype=torch.long)
+        starts = torch.zeros(n_unique + 1, dtype=torch.long)  # dtype-ok: grid-cell CSR start offsets; int64 index required
         starts[1:] = counts.cumsum(0)
 
         # Lookup: flat_cell -> index in unique_cells (-1 if empty)
         n_grid = gx * gyz
-        cell_lookup = torch.full((n_grid,), -1, dtype=torch.long)
+        cell_lookup = torch.full((n_grid,), -1, dtype=torch.long)  # dtype-ok: cell lookup table (-1 sentinel); int64 index required
         cell_lookup[unique_cells] = torch.arange(n_unique)
 
         # 14 unique neighbour offsets: self (0,0,0) + 13 forward neighbours.
@@ -516,9 +516,9 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
         if pair_chunks:
             all_pairs = np.concatenate(pair_chunks, axis=0)
-            return torch.from_numpy(all_pairs).to(dtype=torch.long, device=device)
+            return torch.from_numpy(all_pairs).to(dtype=torch.long, device=device)  # dtype-ok: atom-pair index array from numpy; int64 index required
         else:
-            return torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
+            return torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)  # dtype-ok: empty atom-pair index tensor; int64 index required
 
     def _expand_with_symmetry_mates(self, xyz, cutoff):
         """Append symmetry-mate positions to ASU ``xyz`` for neighbour search.
@@ -651,7 +651,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         ``torch.searchsorted`` lookup.
         """
         if h_topo is None or h_topo.n_hydrogens == 0:
-            return torch.tensor([], dtype=torch.long, device=device)
+            return torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty index tensor; int64 index required
 
         n_heavy = len(self.pdb)
         n_h = h_topo.n_hydrogens
@@ -676,13 +676,13 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                     exclusions.add((min(h_combined, nb), max(h_combined, nb)))
 
         if not exclusions:
-            return torch.tensor([], dtype=torch.long, device=device)
+            return torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty index tensor; int64 index required
 
         arr = np.array(list(exclusions), dtype=np.int64)
         max_idx = max(n_heavy + n_h, int(arr.max()) + 1)
         hashes = arr[:, 0] * max_idx + arr[:, 1]
         hashes.sort()
-        return torch.tensor(hashes, dtype=torch.long, device=device)
+        return torch.tensor(hashes, dtype=torch.long, device=device)  # dtype-ok: grid-cell hash values used as keys/index; int64 required
 
     def _build_vdw_restraints(
         self, cutoff=6.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True
@@ -748,9 +748,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         else:
             cell_cpu = None
         if self._spacegroup is not None:
-            from torchref.symmetry.spacegroup import SpaceGroup
-            sg_cpu = SpaceGroup(self._spacegroup, device=cpu,
-                                dtype=self._spacegroup.dtype)
+            sg_cpu = self._spacegroup.copy().to(cpu)
         else:
             sg_cpu = None
 
@@ -887,17 +885,17 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                     if dist_sq < cutoff_sq:
                         pairs_list.append([i, j])
             nearby_pairs = (
-                torch.tensor(pairs_list, dtype=torch.long, device=device)
+                torch.tensor(pairs_list, dtype=torch.long, device=device)  # dtype-ok: atom-pair index tensor; int64 index required
                 if pairs_list
-                else torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
+                else torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)  # dtype-ok: empty atom-pair index tensor; int64 index required
             )
 
         empty_result = {
-            "indices": torch.tensor([], dtype=torch.long, device=device).reshape(0, 2),
+            "indices": torch.tensor([], dtype=torch.long, device=device).reshape(0, 2),  # dtype-ok: empty atom-pair index tensor; int64 index required
             "min_distances": torch.tensor([], dtype=get_float_dtype(), device=device),
             "sigmas": torch.tensor([], dtype=get_float_dtype(), device=device),
-            "symop_indices": torch.tensor([], dtype=torch.long, device=device),
-            "cell_offsets": torch.tensor([], dtype=torch.long, device=device).reshape(0, 3),
+            "symop_indices": torch.tensor([], dtype=torch.long, device=device),  # dtype-ok: empty symop index tensor; int64 index required
+            "cell_offsets": torch.tensor([], dtype=torch.long, device=device).reshape(0, 3),  # dtype-ok: empty cell-offset index tensor; int64 index required
         }
 
         if len(nearby_pairs) == 0:
@@ -1029,7 +1027,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         # Store results
         final_pairs = np.stack([final_i1, final_i2], axis=1)
         self._vdw = {
-            "indices": torch.tensor(final_pairs, dtype=torch.long, device=device),
+            "indices": torch.tensor(final_pairs, dtype=torch.long, device=device),  # dtype-ok: final atom-pair index tensor; int64 index required
             "min_distances": torch.tensor(
                 min_distances, dtype=get_float_dtype(), device=device
             ),
@@ -1037,10 +1035,10 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                 (len(final_pairs),), sigma, dtype=get_float_dtype(), device=device
             ),
             "symop_indices": torch.tensor(
-                final_symop, dtype=torch.long, device=device
+                final_symop, dtype=torch.long, device=device  # dtype-ok: symop index tensor; int64 index required
             ),
             "cell_offsets": torch.tensor(
-                final_offsets, dtype=torch.long, device=device
+                final_offsets, dtype=torch.long, device=device  # dtype-ok: cell-offset index tensor; int64 index required
             ),
         }
 

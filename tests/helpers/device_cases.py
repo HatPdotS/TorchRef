@@ -151,6 +151,24 @@ def _cell(device):
     return Cell(_CELL, device=device)
 
 
+
+def _ctx(d):
+    """A ModelContext whose cell and space group both live on ``d``."""
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
+    return ModelContext(cell=_cell(d), spacegroup=SpaceGroup(_SG, device=d))
+
+
+def _sffft_with_grid(d):
+    """An SfFFT whose grid buffers exist, so the tensor walk reaches them."""
+    from torchref.model.sf_fft import SfFFT
+
+    sf = SfFFT(_ctx(d), max_res=2.0)
+    sf.ensure_grid()
+    return sf
+
+
 CASES: List[DeviceCase] = [
     DeviceCase("EdgeBlock", _edge_block, "EdgeBlock"),
     DeviceCase("AtomGraph", _atom_graph, "AtomGraph"),
@@ -169,22 +187,28 @@ CASES: List[DeviceCase] = [
         "SfFFT_from_cell",
         lambda d: __import__(
             "torchref.model.sf_fft", fromlist=["SfFFT"]
-        ).SfFFT(cell=_cell(d), spacegroup=_SG, max_res=2.0),
+        ).SfFFT(_ctx(d), max_res=2.0),
         "SfFFT",
     ),
-    # D4: explicit device disagreeing with the supplied cell.
+    # D4: explicit device disagreeing with the supplied context.
     DeviceCase(
         "SfFFT_explicit_device",
         lambda d: __import__(
             "torchref.model.sf_fft", fromlist=["SfFFT"]
-        ).SfFFT(cell=_cell("cpu"), spacegroup=_SG, max_res=2.0, device=d),
+        ).SfFFT(_ctx("cpu"), max_res=2.0, device=d),
+        "SfFFT",
+    ),
+    # The grid buffers are derived on first use; this case has them resolved.
+    DeviceCase(
+        "SfFFT_with_grid",
+        _sffft_with_grid,
         "SfFFT",
     ),
     DeviceCase(
         "SfDS_from_cell",
         lambda d: __import__(
             "torchref.model.sf_ds", fromlist=["SfDS"]
-        ).SfDS(cell=_cell(d), spacegroup=_SG),
+        ).SfDS(_ctx(d)),
         "SfDS",
     ),
     # D1: tensor-free shells, whose tracker is the only thing to check.
