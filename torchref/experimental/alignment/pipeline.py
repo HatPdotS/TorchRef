@@ -166,6 +166,9 @@ class MRSolution:
     llg_score : float
         **The ranking key**: the translation likelihood at that placement,
         higher better.
+    candidate_index : int
+        Position of this orientation in the rotation function's own ordering,
+        so the depth of shortlist a solution came from can be read off.
     model : ModelFT or None
         The rotated and translated model. Built for the winner only -- copying
         and moving a 20k-atom model 25 times was a quarter of the run on the
@@ -181,6 +184,7 @@ class MRSolution:
     r_factor: float
     model: Optional["ModelFT"] = None
     llg_score: float = float("nan")
+    candidate_index: int = -1
 
 
 class MolecularReplacementPipeline(DeviceMixin):
@@ -432,6 +436,7 @@ class MolecularReplacementPipeline(DeviceMixin):
                     translation_score=float(tf_score),
                     r_factor=float(r_analytic),
                     llg_score=float(llg_score),
+                    candidate_index=k,
                 )
             )
 

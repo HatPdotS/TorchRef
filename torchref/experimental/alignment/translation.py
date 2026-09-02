@@ -413,14 +413,18 @@ def fast_translation_function(
     coeff = obs.coeff.to(device).to(cplx)
     h_R_int = cand.h_R.round().to(torch.int64)
 
+    # The pair (j, i) is the conjugate of (i, j) at -dh, so the map is twice
+    # the real part of the upper triangle's transform plus the diagonal, which
+    # carries no t and is a constant. Half the scatter, which is the cost here.
     W = torch.zeros(nx * ny * nz, dtype=cplx, device=device)
-    for i in range(S):
-        pair = G[i].conj().view(1, -1) * G                         # (S, N)
-        dh = h_R_int - h_R_int[i:i + 1]                             # (S, N, 3)
+    for i in range(S - 1):
+        pair = G[i].conj().view(1, -1) * G[i + 1:]                  # (S-i-1, N)
+        dh = h_R_int[i + 1:] - h_R_int[i:i + 1]                     # (S-i-1, N, 3)
         flat = ((dh[..., 0] % nx) * ny + (dh[..., 1] % ny)) * nz + (dh[..., 2] % nz)
         W.index_add_(0, flat.reshape(-1), (coeff.view(1, -1) * pair).reshape(-1))
-    score = (torch.fft.ifftn(W.view(nx, ny, nz), dim=(0, 1, 2)).real
-             * float(nx * ny * nz)).to(real)
+    diag = (obs.coeff.to(device).to(real) * (G.abs() ** 2).sum(dim=0).to(real)).sum()
+    score = (2.0 * torch.fft.ifftn(W.view(nx, ny, nz), dim=(0, 1, 2)).real
+             * float(nx * ny * nz)).to(real) + diag
 
     radii = tuple(float(cluster_radius_A) / float(L)
                   for L in (real_cell.a, real_cell.b, real_cell.c))

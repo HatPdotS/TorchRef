@@ -121,7 +121,7 @@ def _report_candidates(solutions, R_true, symops, success_deg) -> None:
     )
 
     R_t = R_true.to(torch.float64).cpu()
-    print("  SOLN rank  rot_score       tf      R      dtruth  flags")
+    print("  SOLN rank   k  rot_score       tf      R      dtruth  flags")
     for i, sol in enumerate(solutions):
         R = torch.as_tensor(sol.rotation, dtype=torch.float64)
         # `rotation` maps the search-model frame onto the crystal frame; the
@@ -130,7 +130,7 @@ def _report_candidates(solutions, R_true, symops, success_deg) -> None:
         d = min(float(rotation_angular_distance_deg(R.T @ R_t, symops[k]))
                 for k in range(symops.shape[0]))
         flags = ("pick " if i == 0 else "     ") + ("true" if d <= success_deg else "")
-        print(f"  SOLN {i:4d} {sol.rotation_score:10.3f} "
+        print(f"  SOLN {i:4d} {sol.candidate_index:3d} {sol.rotation_score:10.3f} "
               f"{sol.translation_score:10.5f} {sol.r_factor:7.4f} "
               f"{d:8.2f}  {flags}")
 
