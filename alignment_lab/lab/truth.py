@@ -196,3 +196,90 @@ def orbit_rank(
         if ang <= thr_deg and rank < 0:
             rank = i
     return rank, best
+
+
+def cartesian_symops(spacegroup, cell) -> torch.Tensor:
+    """The point-group rotations as **Cartesian** matrices, ``B S_k B^-1``.
+
+    ``spacegroup.matrices`` act on fractional column vectors, ``x' = S x + t``.
+    A Kabsch rotation between two sets of Cartesian coordinates lives in the
+    Cartesian frame, and comparing it against ``S_k`` directly is only correct
+    when ``B S_k B^-1 == S_k`` -- diagonal ``S`` in an orthogonal cell, or a
+    cubic cell. In P3(1)21 two of the six mates of a *correct* solution read as
+    30.00 and 21.09 degrees under that comparison, and in P6(5)22 four of
+    twelve read as 21.09; those were the "bimodal" 2DQ6 failures.
+
+    Returns ``(n_ops, 3, 3)`` float64 on the host.
+    """
+    B = cell.fractional_matrix.detach().cpu().to(torch.float64)      # c = B x
+    S = spacegroup.matrices.detach().cpu().to(torch.float64)
+    return B @ S @ torch.linalg.inv(B)
+
+
+def allowed_origin_shifts(spacegroup, n: int = 12) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Fractional translations ``u`` that leave the space group invariant.
+
+    ``u`` is allowed when ``(S_k - I) u`` is a lattice vector for every op --
+    two placements differing by such a ``u`` give identical ``|F|`` and are the
+    same solution. Returns ``(discrete, polar)``: the discrete shifts on a
+    ``1/n`` grid (``n=12`` covers 1/2, 1/3, 1/4 and 1/6), and an orthonormal
+    basis of the continuous (polar) directions, ``(3, p)``.
+    """
+    S = spacegroup.matrices.detach().cpu().to(torch.float64)
+    eye = torch.eye(3, dtype=torch.float64)
+    D = torch.cat([Sk - eye for Sk in S], dim=0)                     # (3 n_ops, 3)
+    # Polar directions: null space of D.
+    _, sv, Vh = torch.linalg.svd(D)
+    null = (sv < 1e-8).sum().item() if sv.numel() else 3
+    polar = Vh[3 - null:].T if null else torch.zeros(3, 0, dtype=torch.float64)
+    g = torch.arange(n, dtype=torch.float64) / n
+    U = torch.cartesian_prod(g, g, g)                                # (n^3, 3)
+    resid = torch.einsum("oij,uj->uoi", S - eye, U)                  # (n^3, n_ops, 3)
+    ok = ((resid - resid.round()).abs() < 1e-6).all(dim=-1).all(dim=-1)
+    return U[ok], polar
+
+
+def pose_error(
+    aligned_xyz: torch.Tensor,
+    canonical_xyz: torch.Tensor,
+    cell,
+    spacegroup,
+) -> Tuple[float, float]:
+    """``(rotation_deg, translation_A)`` of a placement against the deposited pose.
+
+    Rotation: Kabsch superposition of the placed atoms onto the canonical ones,
+    compared against every **Cartesian** point-group mate (see
+    :func:`cartesian_symops`). Translation: the centroid offset from the closest
+    symmetry image of the canonical model, modulo lattice vectors, the group's
+    allowed origin shifts and its polar directions, in Angstrom. Both are zero
+    for a placement that is the deposited structure or any symmetry-equivalent
+    copy of it.
+    """
+    P = canonical_xyz.detach().cpu().to(torch.float64)
+    Q = aligned_xyz.detach().cpu().to(torch.float64)
+    Pc, Qc = P - P.mean(0), Q - Q.mean(0)
+    U, _, Vt = torch.linalg.svd(Qc.T @ Pc)
+    d = torch.sign(torch.det(U @ Vt))
+    R = U @ torch.diag(torch.tensor([1.0, 1.0, d], dtype=torch.float64)) @ Vt
+
+    B = cell.fractional_matrix.detach().cpu().to(torch.float64)
+    Binv = torch.linalg.inv(B)
+    S = spacegroup.matrices.detach().cpu().to(torch.float64)
+    T = spacegroup.translations.detach().cpu().to(torch.float64)
+    R_cart = B @ S @ Binv
+
+    tr = torch.einsum("kij,ij->k", R_cart, R)
+    ang = ((tr - 1.0) * 0.5).clamp(-1.0, 1.0).arccos() * (180.0 / math.pi)
+    k_best = int(ang.argmin())
+    rot_deg = float(ang[k_best])
+
+    # Translation, against the mate whose rotation matched.
+    shifts, polar = allowed_origin_shifts(spacegroup)
+    cen_a = Binv @ Q.mean(0)                                          # fractional
+    cen_c = S[k_best] @ (Binv @ P.mean(0)) + T[k_best]
+    delta = (cen_a - cen_c).unsqueeze(0) - shifts                     # (n_u, 3)
+    delta = delta - delta.round()
+    if polar.shape[1]:
+        delta = delta - (delta @ polar) @ polar.T
+    trans_A = float((delta @ B.T).norm(dim=-1).min())
+    return rot_deg, trans_A

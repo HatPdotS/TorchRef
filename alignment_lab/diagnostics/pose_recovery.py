@@ -27,8 +27,11 @@ Arms (``--arms``) sweep how translation candidates are ranked:
     a different question -- re-rank each candidate's TRANSLATIONS by the
     likelihood, still selecting the candidate by R.
 
-Success mirrors the integration test: final coordinates within ``--success-deg``
-of canonical, modulo the crystal symmetry.
+Success is a pose: final coordinates within ``--success-deg`` of canonical in
+orientation AND within ``--success-A`` of it in position, modulo the crystal
+symmetry (Cartesian point-group mates, lattice translations, allowed origin
+shifts and polar directions). The gate used to be rotation-only, and it passed
+placements 40-55 A from the true position on 2DQ6, 4BX9 and 6G9X.
 
 Usage::
 
@@ -51,8 +54,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # rigid-body polish are LBFGS -- they need autograd, and disabling it
 # raises "element 0 of tensors does not require grad".
 
-from lab import (BENCH_PDBS, ResultWriter, load_case, random_rotation,  # noqa: E402
-                 seed_for)
+from lab import (BENCH_PDBS, ResultWriter, cartesian_symops, load_case,  # noqa: E402
+                 pose_error, random_rotation, seed_for)
 
 ARMS = {
     # How the winner is chosen among placed candidates.
@@ -65,11 +68,17 @@ ARMS = {
 }
 
 
-def residual_rotation_deg(aligned_xyz, canonical_xyz, symops) -> float:
+def residual_rotation_deg(aligned_xyz, canonical_xyz, symops_cart) -> float:
     """Smallest angle between the aligned-to-canonical rotation and any symop.
 
     Kabsch superposition, then compared against every symmetry operator --
     a solution differing from canonical by a crystal symmetry is correct.
+
+    ``symops_cart`` must be the **Cartesian** rotations, ``B S_k B^-1``
+    (:func:`lab.cartesian_symops`). This used to take ``spacegroup.matrices``
+    directly, which act on fractional coordinates: for trigonal and hexagonal
+    cells two of the six (four of the twelve) mates of a correct solution then
+    read as 30.00 and 21.09 degrees, and 2DQ6's "bimodal 6/10" was those mates.
     """
     from torchref.experimental.alignment.frf.rotation_utils import (
         rotation_angular_distance_deg,
@@ -81,8 +90,8 @@ def residual_rotation_deg(aligned_xyz, canonical_xyz, symops) -> float:
     U, _, Vt = torch.linalg.svd(Qc.T @ Pc)
     d = torch.sign(torch.det(U @ Vt))
     R = U @ torch.diag(torch.tensor([1.0, 1.0, d], dtype=torch.float64)) @ Vt
-    return min(float(rotation_angular_distance_deg(R, symops[k]))
-               for k in range(symops.shape[0]))
+    return min(float(rotation_angular_distance_deg(R, symops_cart[k]))
+               for k in range(symops_cart.shape[0]))
 
 
 #: The rotation search's own bandwidth constant. Recorded in every row because
@@ -144,8 +153,16 @@ def main() -> int:
     ap.add_argument("--n-rotation-candidates", type=int, default=25)
     ap.add_argument("--n-rotation-peaks", type=int, default=200)
     ap.add_argument("--success-deg", type=float, default=8.0)
+    # A placement is a POSE: rotation and translation. The translation gate is
+    # generous -- downstream rigid-body refinement absorbs a few Angstrom -- but
+    # it separates a found position from one 40 A away, which the rotation-only
+    # gate this harness used to apply could not. Three large structures passed
+    # that gate on every seed while sitting 40-55 A from the true position.
+    ap.add_argument("--success-A", type=float, default=4.0)
     ap.add_argument("--verbose", type=int, default=0)
     ap.add_argument("--out-csv", default=None)
+    ap.add_argument("--tf-d-min", type=float, default=None)
+    ap.add_argument("--tf-d-max", type=float, default=None)
     args = ap.parse_args()
 
     from torchref.experimental.alignment import MolecularReplacementPipeline
@@ -153,7 +170,8 @@ def main() -> int:
     seed = seed_for(args.pdb, args.trial)
     model, data = load_case(args.pdb)
     canonical_xyz = model.xyz().clone()
-    symops = data.spacegroup.matrices.to(torch.float64).cpu()
+    # Cartesian mates, not the fractional matrices -- see residual_rotation_deg.
+    symops = cartesian_symops(data.spacegroup, data.cell)
     R_true = random_rotation(seed)
 
     print(f"=== {args.pdb} t{args.trial} seed={seed} {data.spacegroup} "
@@ -186,21 +204,27 @@ def main() -> int:
                 data, search, d_min=4.0, d_max=15.0, n_shells=20,
                 n_rotation_peaks=args.n_rotation_peaks,
                 n_rotation_candidates=args.n_rotation_candidates,
-                verbose=args.verbose, **flags,
+                verbose=args.verbose, tf_d_min=args.tf_d_min,
+                tf_d_max=args.tf_d_max, **flags,
             )
             solutions = pipe.run(do_translation=True)
             aligned = solutions[0].model
             resid = residual_rotation_deg(aligned.xyz(), canonical_xyz, symops)
+            _, trans_A = pose_error(aligned.xyz(), canonical_xyz, data.cell,
+                                    data.spacegroup)
             err = ""
             if args.verbose >= 2:
                 _report_candidates(solutions, R_true, symops, args.success_deg)
         except Exception as exc:  # a crashed arm must not read as a success
-            resid, err = float("nan"), f"{type(exc).__name__}: {exc}"
+            resid, trans_A = float("nan"), float("nan")
+            err = f"{type(exc).__name__}: {exc}"
         secs = time.time() - t0
-        ok = (resid == resid) and resid <= args.success_deg
+        ok = ((resid == resid) and resid <= args.success_deg
+              and (trans_A == trans_A) and trans_A <= args.success_A)
         print(f"ROW {arm} {args.pdb} trial={args.trial} "
               f"n_cand={args.n_rotation_candidates} "
-              f"resid={resid:.3f} ok={int(bool(ok))} seconds={secs:.1f}",
+              f"resid={resid:.3f} trans_A={trans_A:.2f} ok={int(bool(ok))} "
+              f"seconds={secs:.1f}",
               flush=True)
         print(f"  {arm:16s} {resid:10.2f} {('yes' if ok else 'NO'):>4s} {secs:9.1f}"
               + (f"   {err}" if err else ""))

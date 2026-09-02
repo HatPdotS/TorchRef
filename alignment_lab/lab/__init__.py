@@ -16,7 +16,10 @@ from .benchmark import (
     rotated_case,
 )
 from .truth import (
+    allowed_origin_shifts,
+    cartesian_symops,
     orbit_rank,
+    pose_error,
     random_rotation,
     seed_for,
     symmetry_orbit,
@@ -39,7 +42,10 @@ __all__ = [
     "case_paths",
     "load_case",
     "rotated_case",
+    "allowed_origin_shifts",
+    "cartesian_symops",
     "orbit_rank",
+    "pose_error",
     "random_rotation",
     "seed_for",
     "symmetry_orbit",
