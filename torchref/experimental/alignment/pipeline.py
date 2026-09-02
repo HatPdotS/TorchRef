@@ -24,6 +24,8 @@ before September 2026, gated on the rotation alone; see ``rank_by`` for what
 the pose-gated panel measures.
 
 Every candidate is placed and then the best is taken, with no early stopping.
+Ten candidates by default: the rotation function's first distinct peak was
+the true orientation in every pose-gated cell measured, so ten is a margin.
 Stopping early made the pipeline's answer depend on the order the rotation
 function happened to produce -- it walked the list until one placement beat an
 R-factor threshold and returned that, so it could accept the third candidate
@@ -246,7 +248,14 @@ class MolecularReplacementPipeline(DeviceMixin):
         n_rotation_peaks: int = 500,
         model_error_A: Optional[float] = None,
         # --- candidate tree ---
-        n_rotation_candidates: int = 25,
+        # Distinct orientations carried into the translation search. A safety
+        # margin, not a requirement: with symmetry mates suppressed the
+        # rotation function's FIRST peak is the true orientation in 50 of 50
+        # pose-gated cells (10 structures x 5 seeds), and the panel is 30/30 at
+        # 10 as at 25. Measured on the deposited models as search models; raise
+        # it for poorer models, since every candidate costs a structure-factor
+        # evaluation and a translation FFT.
+        n_rotation_candidates: int = 10,
         # Peaks of the fast translation function re-scored by the likelihood
         # for each orientation. The fast map only has to get the true peak
         # into this many; the likelihood picks.
@@ -702,7 +711,7 @@ def align_model_to_data(
     verbose: int = 0,
     do_translation: bool = True,
     n_translation_candidates: int = 3,
-    n_rotation_candidates: int = 25,
+    n_rotation_candidates: int = 10,
     rank_by: str = "llg",
     tf_d_min: Optional[float] = None,
     tf_d_max: Optional[float] = None,
