@@ -59,8 +59,8 @@ def _search(canonical, data, mask, t_true):
     obs = TranslationObs.build(F_obs, data.hkl[mask], data.spacegroup, data.cell)
     cand = prepare_candidate(model_p1, obs, data.spacegroup, data.cell)
     _, peaks = fast_translation_function(
-        obs, cand, data.cell, grid_spacing_A=4.0 / 3.0, n_peaks=3,
-        cluster_radius_A=4.0,
+        obs, cand, data.spacegroup, data.cell, grid_spacing_A=4.0 / 3.0,
+        n_peaks=3, cluster_radius_A=4.0,
     )
     assert len(peaks) > 0
     llg = llg_at_translations(

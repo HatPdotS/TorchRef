@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Tuple
 
 import torch
 
@@ -506,6 +506,59 @@ class Symmetry(DeviceMixin):
                 mods[axis] = math.lcm(mods[axis], denominator)
 
         return {"nx_mod": mods[0], "ny_mod": mods[1], "nz_mod": mods[2]}
+
+    def origin_shifts(self, n: int = 12) -> Tuple[torch.Tensor, torch.Tensor]:
+        """The origin freedom of this group: allowed shifts and polar directions.
+
+        A fractional shift ``u`` of the whole structure is an allowed origin
+        shift when it maps the group onto itself, i.e. ``(S_k - I) u`` is a
+        lattice vector for every operation ``(S_k, t_k)`` -- lattice including
+        the centring translations. Two placements differing by such a ``u``
+        give identical ``|F|`` and are the same molecular-replacement solution.
+        Along a polar direction every shift is allowed.
+
+        Returns
+        -------
+        (discrete, polar) : Tuple[torch.Tensor, torch.Tensor]
+            ``discrete`` is ``(m, 3)`` float64 on the host: the allowed shifts on
+            a ``1/n`` grid, ``(0, 0, 0)`` first (``n = 12`` covers 1/2, 1/3, 1/4
+            and 1/6, every denominator a space group produces). ``polar`` is
+            ``(3, p)`` float64 on the host, an orthonormal basis of the
+            continuous directions -- ``p = 1`` for P2(1)'s ``b``, 3 for P1, 0 for
+            P2(1)2(1)2. The discrete list has those components removed, so a
+            shift is listed once however it sits along a polar axis.
+        """
+        S = self.matrices.detach().cpu().to(torch.float64)  # dtype-ok: 3x3 group algebra in double on the host
+        T = self.translations.detach().cpu().to(torch.float64)  # dtype-ok: 3x3 group algebra in double on the host
+        eye = torch.eye(3, dtype=torch.float64)  # dtype-ok: 3x3 group algebra in double on the host
+        D = S - eye                                                   # (n_ops, 3, 3)
+        # Polar directions: the joint null space of every (S_k - I).
+        _, sv, Vh = torch.linalg.svd(D.reshape(-1, 3))
+        null = int((sv < 1e-8).sum())
+        polar = Vh[3 - null:].T.contiguous() if null else torch.zeros(3, 0, dtype=torch.float64)  # dtype-ok: host
+        # Lattice vectors modulo Z^3: the pure translations of the group.
+        pure = (D.abs().reshape(D.shape[0], -1).sum(dim=-1) < 1e-8)
+        centring = T[pure] - T[pure].floor()                          # (c, 3), includes 0
+        g = torch.arange(n, dtype=torch.float64) / n  # dtype-ok: host
+        U = torch.cartesian_prod(g, g, g)                             # (n^3, 3)
+        moved = torch.einsum("oij,uj->uoi", D, U)                     # (n^3, n_ops, 3)
+        # (S_k - I) u must equal some centring vector modulo Z^3, for every k.
+        resid = moved.unsqueeze(2) - centring.view(1, 1, -1, 3)       # (n^3, n_ops, c, 3)
+        integral = ((resid - resid.round()).abs() < 1e-6).all(dim=-1).any(dim=-1)
+        ok = integral.all(dim=-1)
+        discrete = U[ok]
+        if polar.shape[1]:
+            # Along a polar axis every shift is allowed, so the discrete list
+            # would otherwise carry n copies of each shift differing only in
+            # that coordinate. Project it out and keep one representative:
+            # C2 then has 4 shifts, not 48, and every test against the list is
+            # that much cheaper.
+            discrete = discrete - (discrete @ polar) @ polar.T
+            discrete = torch.unique((discrete * n).round().to(torch.int64), dim=0).to(torch.float64) / n  # dtype-ok: exact 1/n grid on the host
+            discrete = discrete - discrete.floor()
+        # (0, 0, 0) first, so a caller that wants "no shift" can take row 0.
+        order = torch.argsort((discrete != 0).any(dim=-1).to(torch.int64), stable=True)  # dtype-ok: sort key
+        return discrete[order], polar
 
     def check_grid_compatibility(self, grid_shape: tuple) -> dict:
         """Check a grid against this group's divisibility and against the FFT.
