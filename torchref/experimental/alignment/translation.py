@@ -60,6 +60,14 @@ WILSON_N_COEFF = 6
 #: default window the grid never reaches it.
 MAX_GRID_PER_AXIS = 256
 
+#: How far down the translation map the peak finder will look for distinct
+#: maxima. Past this many grid values a map has no peaks left worth the
+#: likelihood's time -- the half-model site that needed digging was within the
+#: first few thousand -- and on a polar group, where every maximum along the
+#: polar axis is one site, an uncapped search for 32 distinct sites walked the
+#: whole map (1DAW: 4.3 s against 0.8).
+MAX_PEAK_POOL = 8192
+
 
 @dataclass
 class TranslationObs:
@@ -297,55 +305,77 @@ def _find_peaks(
     score: torch.Tensor,
     n_peaks: int,
     radii_frac: Tuple[float, float, float],
+    shifts: np.ndarray,
+    polar: np.ndarray,
 ) -> List[TranslationPeak]:
-    """Greedy non-maximum suppression on the periodic map, then sub-grid refinement."""
+    """Greedy non-maximum suppression on the periodic map, then sub-grid refinement.
+
+    Two maxima are one peak when they coincide modulo the lattice, an allowed
+    origin shift, or any displacement along a polar axis -- those are the same
+    molecular-replacement solution, and returning them as the "top three" left
+    the likelihood nothing to choose between. In P2(1) that was every peak the
+    search returned: the same site shifted along ``b`` and by ``(0, 0, 1/2)``.
+
+    The pool of candidate maxima grows until ``n_peaks`` distinct ones are found
+    or ``MAX_PEAK_POOL`` values have been examined, so fewer than ``n_peaks``
+    may come back. A fixed pool of a few dozen values is not enough on a weak
+    map, where they all belong to one broad maximum: a search asked for three
+    peaks returned one, 7 A from a true site that out-scored it.
+    """
     nx, ny, nz = score.shape
     flat = score.reshape(-1)
     mean = float(flat.mean())
     std = float(flat.std().clamp(min=1e-30))
-    n_take = min(flat.numel(), max(50, 20 * n_peaks))
-    vals, idx = torch.topk(flat, n_take)
-    vals = vals.cpu().numpy()
-    idx = idx.cpu().numpy()
     grid = np.array([nx, ny, nz], dtype=np.float64)
     radii = np.asarray(radii_frac, dtype=np.float64)
     score_np = score.cpu().numpy()
+    n_total = flat.numel()
+
+    def same_site(pos: np.ndarray, t: np.ndarray) -> np.ndarray:
+        """Which of ``pos`` (P, 3) coincide with ``t`` modulo the origin freedom."""
+        d = (pos - t)[:, None, :] - shifts[None, :, :]                 # (P, m, 3)
+        d = d - np.round(d)
+        if polar.shape[1]:
+            d = d - (d @ polar) @ polar.T
+        return np.any(np.all(np.abs(d) < radii, axis=2), axis=1)
 
     kept: List[TranslationPeak] = []
-    kept_t: List[np.ndarray] = []
-    for v, i in zip(vals, idx):
-        ijk = np.array(np.unravel_index(int(i), (nx, ny, nz)), dtype=np.int64)
-        t_grid = ijk / grid
-        is_new = True
-        for prev in kept_t:
-            d = np.abs(t_grid - prev)
-            d = np.minimum(d, 1.0 - d)
-            if np.all(d < radii):
-                is_new = False
+    limit = min(n_total, MAX_PEAK_POOL)
+    pool = min(limit, max(64, 20 * n_peaks))
+    while True:
+        idx = torch.topk(flat, pool).indices.cpu().numpy()
+        vals = flat[torch.as_tensor(idx, device=flat.device)].cpu().numpy()
+        ijk_all = np.stack(np.unravel_index(idx, (nx, ny, nz)), axis=1).astype(np.int64)
+        pos_all = ijk_all / grid
+        alive = np.ones(pool, dtype=bool)
+        kept = []
+        while len(kept) < n_peaks:
+            live = np.flatnonzero(alive)
+            if live.size == 0:
                 break
-        if not is_new:
-            continue
-        # Parabolic refinement along each axis from the periodic neighbours.
-        offs = np.zeros(3)
-        for d, n in enumerate((nx, ny, nz)):
-            lo = ijk.copy(); lo[d] = (ijk[d] - 1) % n
-            hi = ijk.copy(); hi[d] = (ijk[d] + 1) % n
-            offs[d] = _parabolic_offset(
-                float(score_np[tuple(lo)]), float(v), float(score_np[tuple(hi)]),
-            )
-        kept.append(TranslationPeak(
-            translation=(ijk + offs) / grid, score=float(v),
-            sigma=(float(v) - mean) / std,
-        ))
-        kept_t.append(t_grid)
-        if len(kept) >= n_peaks:
-            break
-    return kept
+            i = int(live[0])
+            ijk, v = ijk_all[i], float(vals[i])
+            alive &= ~same_site(pos_all, pos_all[i])
+            # Parabolic refinement along each axis from the periodic neighbours.
+            offs = np.zeros(3)
+            for dim, n in enumerate((nx, ny, nz)):
+                lo = ijk.copy(); lo[dim] = (ijk[dim] - 1) % n
+                hi = ijk.copy(); hi[dim] = (ijk[dim] + 1) % n
+                offs[dim] = _parabolic_offset(
+                    float(score_np[tuple(lo)]), v, float(score_np[tuple(hi)]),
+                )
+            kept.append(TranslationPeak(
+                translation=(ijk + offs) / grid, score=v, sigma=(v - mean) / std,
+            ))
+        if len(kept) >= n_peaks or pool >= limit:
+            return kept
+        pool = min(limit, pool * 8)
 
 
 def fast_translation_function(
     obs: TranslationObs,
     cand: CandidateTransform,
+    spacegroup,
     real_cell,
     *,
     grid_spacing_A: float,
@@ -369,7 +399,9 @@ def fast_translation_function(
         translation set's resolution samples the peak densely enough for the
         parabolic refinement to land within a fraction of a grid step.
     n_peaks : int
-        How many distinct peaks to return, best first.
+        How many distinct peaks to return, best first. Distinct modulo the
+        group's origin freedom: an allowed origin shift or a displacement along
+        a polar axis does not make a new peak.
     cluster_radius_A : float
         Peaks closer than this (per axis, periodic) are one peak.
 
@@ -404,7 +436,8 @@ def fast_translation_function(
 
     radii = tuple(float(cluster_radius_A) / float(L)
                   for L in (real_cell.a, real_cell.b, real_cell.c))
-    peaks = _find_peaks(score, n_peaks, radii)
+    shifts, polar = spacegroup.origin_shifts()
+    peaks = _find_peaks(score, n_peaks, radii, shifts.numpy(), polar.numpy())
     return score, peaks
 
 
@@ -415,20 +448,41 @@ def translation_score_at(obs: TranslationObs, cand: CandidateTransform,
     return float((obs.coeff.to(E2.device).to(E2.dtype) * E2).sum())
 
 
+#: Multipliers on the Luzzati ``sigma_A`` the likelihood may choose from, per
+#: translation. The prior assumes a complete model; a search model that is half
+#: the asymmetric unit accounts for roughly half the scattering, and against
+#: the full prior every placement scores as a gross mismatch. Letting each
+#: placement take the scale that explains it best is what Phaser's per-solution
+#: sigma_A refinement does; here it is a profile over a grid, one (K, N) Rice
+#: evaluation per point.
+SIGMA_A_SCALES = tuple(float(c) for c in np.linspace(0.1, 1.0, 19))
+
+
 def llg_at_translations(
     obs: TranslationObs,
     cand: CandidateTransform,
     t_candidates: torch.Tensor,
+    *,
+    scales: Tuple[float, ...] = SIGMA_A_SCALES,
 ) -> torch.Tensor:
     """Rice/Woolfson log-likelihood gain at each of ``K`` translations.
 
-    ``LLG(t) = sum_h [LL(E_obs; sigma_A E_calc(h, t), 1 - sigma_A^2)
+    ``LLG(t) = max_c sum_h [LL(E_obs; c sigma_A E_calc(h, t), 1 - c^2 sigma_A^2)
     - LL(E_obs; 0, 1)]`` with the complex-variance convention of
     :func:`~torchref.base.targets.xray_likelihoods.rice_per_refl`, which
     derives the centric case from the same ``Sigma``. ``sigma_A`` is the
-    Luzzati prior carried by ``obs`` -- the same for every candidate, so the
-    values are comparable across orientations as well as across translations,
-    and no candidate is scored against a likelihood tuned to itself.
+    Luzzati prior carried by ``obs``; ``c`` is the placement's own scale on it,
+    chosen from ``scales``.
+
+    The maximum over ``c`` is what makes the values comparable across
+    placements of a model that does not account for all the scattering. With
+    the scale fixed at one, a 48% model's true site scored -15900 and a site
+    14 A away -17900: both gross mismatches, ordered by noise. With the scale
+    free the true site takes ``c`` near its completeness and scores positive,
+    while a wrong site takes the smallest ``c`` and scores near zero -- the
+    Wilson reference, which is exactly what a placement that explains nothing
+    should score. For a complete model the maximum sits at ``c = 1`` and
+    nothing changes.
 
     Returns ``(K,)``.
     """
@@ -436,15 +490,19 @@ def llg_at_translations(
     K, N = E_calc.shape
     dev, real = E_calc.device, E_calc.dtype
     E_obs = obs.E_obs.to(dev).to(real).view(1, N).expand(K, N)
-    D = obs.sigma_a.to(dev).to(real).view(1, N)
-    Sigma = (1.0 - D * D).clamp(min=1e-3).expand(K, N)
+    D0 = obs.sigma_a.to(dev).to(real).view(1, N)
     cent = obs.centric.to(dev).view(1, N).expand(K, N)
-    ll = -rice_per_refl(E_obs, D * E_calc, Sigma, cent)              # (K, N)
     ll_wil = -rice_per_refl(
         E_obs[0], torch.zeros(N, dtype=real, device=dev),
         torch.ones(N, dtype=real, device=dev), cent[0],
     ).sum()
-    return ll.sum(dim=1) - ll_wil
+    best = torch.full((K,), -float("inf"), dtype=real, device=dev)
+    for c in scales:
+        D = D0 * float(c)
+        Sigma = (1.0 - D * D).clamp(min=1e-3).expand(K, N)
+        ll = -rice_per_refl(E_obs, D * E_calc, Sigma, cent).sum(dim=1) - ll_wil
+        best = torch.maximum(best, ll)
+    return best
 
 
 def analytic_r_at(obs: TranslationObs, cand: CandidateTransform,

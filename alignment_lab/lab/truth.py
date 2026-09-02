@@ -278,7 +278,7 @@ def pose_error(
     rot_deg = float(ang[k_best])
 
     # Translation, against the mate whose rotation matched.
-    shifts, polar = allowed_origin_shifts(spacegroup)
+    shifts, polar = spacegroup.origin_shifts()
     cen_a = Binv @ Q.mean(0)                                          # fractional
     cen_c = S[k_best] @ (Binv @ P.mean(0)) + T[k_best]
     delta = (cen_a - cen_c).unsqueeze(0) - shifts                     # (n_u, 3)

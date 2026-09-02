@@ -255,10 +255,16 @@ class MolecularReplacementPipeline(DeviceMixin):
         # it for poorer models, since every candidate costs a structure-factor
         # evaluation and a translation FFT.
         n_rotation_candidates: int = 10,
-        # Peaks of the fast translation function re-scored by the likelihood
-        # for each orientation. The fast map only has to get the true peak
-        # into this many; the likelihood picks.
-        n_translation_candidates: int = 3,
+        # Distinct peaks of the fast translation function re-scored by the
+        # likelihood for each orientation. The fast map only has to get the
+        # true peak into this many; the likelihood picks, and scoring K peaks
+        # is one (K, N) evaluation, so the margin is cheap. For a complete
+        # model the true site is the fast map's first peak; for a half-model
+        # chain three degrees off in orientation (3E98 B) the map is noise at
+        # z ~ 2-3 and the true site was its eighth peak in one seed and deeper
+        # in another, while the likelihood separated it from every wrong site
+        # by a factor of two.
+        n_translation_candidates: int = 32,
         # Which score picks the winner among placed candidates. "llg" is the
         # translation likelihood; "r" the analytical-scale R-factor; "corr" the
         # fast translation function's own score. Not a tuning knob -- it exists
@@ -667,7 +673,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         d_min_set = 1.0 / float(obs.s_mag.max())
         timer.start("6_translation_function")
         _, t_peaks = fast_translation_function(
-            obs, cand, data.cell,
+            obs, cand, data.spacegroup, data.cell,
             grid_spacing_A=d_min_set / 3.0,
             n_peaks=self.n_translation_candidates,
             cluster_radius_A=d_min_set,
@@ -707,7 +713,7 @@ def align_model_to_data(
     n_rotation_peaks: int = 500,
     verbose: int = 0,
     do_translation: bool = True,
-    n_translation_candidates: int = 3,
+    n_translation_candidates: int = 32,
     n_rotation_candidates: int = 10,
     rank_by: str = "llg",
     tf_d_min: Optional[float] = None,
