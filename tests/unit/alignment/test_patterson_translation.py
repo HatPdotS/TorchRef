@@ -20,7 +20,6 @@ import pytest
 import torch
 
 from torchref.experimental.alignment.translation import (
-    DirectModelEvaluator,
     TranslationObs,
     fast_translation_function,
     llg_at_translations,
@@ -58,8 +57,7 @@ def _search(canonical, data, mask, t_true):
             torch.tensor(t_true, dtype=canonical.dtype_float), fractional=True,
         )
     obs = TranslationObs.build(F_obs, data.hkl[mask], data.spacegroup, data.cell)
-    cand = prepare_candidate(DirectModelEvaluator(model_p1), obs,
-                             data.spacegroup, data.cell)
+    cand = prepare_candidate(model_p1, obs, data.spacegroup, data.cell)
     _, peaks = fast_translation_function(
         obs, cand, data.cell, grid_spacing_A=4.0 / 3.0, n_peaks=3,
         cluster_radius_A=4.0,
@@ -127,8 +125,7 @@ def test_e_calc_is_normalised(setup):
     model_p1.max_res = 4.0 / 1.5
     model_p1.spacegroup = "P 1"
     obs = TranslationObs.build(F_obs, data.hkl[mask], data.spacegroup, data.cell)
-    cand = prepare_candidate(DirectModelEvaluator(model_p1), obs,
-                             data.spacegroup, data.cell)
+    cand = prepare_candidate(model_p1, obs, data.spacegroup, data.cell)
     # The normalisation already carries eps: E is per unit of eps*Sigma_calc.
     E2 = cand.e_calc(torch.zeros(3, dtype=torch.float64)) ** 2
     mean_e2 = float(E2.mean())

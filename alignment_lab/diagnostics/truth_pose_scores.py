@@ -26,14 +26,14 @@ from lab import (BENCH_PDBS, allowed_origin_shifts, load_case, pose_error,  # no
 def scores_at(pipe, model_placed):
     """(tf score, R, llg) of an already-placed model through the pipeline's path."""
     from torchref.experimental.alignment.translation import (
-        DirectModelEvaluator, analytic_r_at, llg_at_translations,
-        prepare_candidate, translation_score_at)
+        analytic_r_at, llg_at_translations, prepare_candidate,
+        translation_score_at)
     data, obs = pipe.data, pipe._obs
     m = model_placed.copy()
     if pipe.tf_d_min > 0.0:
         m.max_res = pipe.tf_d_min / 1.5
     m.spacegroup = "P 1"
-    cand = prepare_candidate(DirectModelEvaluator(m), obs, data.spacegroup, data.cell)
+    cand = prepare_candidate(m, obs, data.spacegroup, data.cell)
     t0 = torch.zeros(3, dtype=torch.float64)
     tf = translation_score_at(obs, cand, t0)
     r = analytic_r_at(obs, cand, t0)

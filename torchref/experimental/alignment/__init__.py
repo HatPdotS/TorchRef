@@ -67,7 +67,6 @@ from .rotation_search import (
 )
 from .translation import (
     CandidateTransform,
-    DirectModelEvaluator,
     TranslationObs,
     TranslationPeak,
     analytic_r_at,
@@ -101,7 +100,6 @@ __all__ = [
     # Translation search
     "TranslationObs",
     "TranslationPeak",
-    "DirectModelEvaluator",
     "fast_translation_function",
     "CandidateTransform",
     "analytic_r_at",

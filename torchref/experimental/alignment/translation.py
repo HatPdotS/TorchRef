@@ -176,33 +176,6 @@ class TranslationObs:
         )
 
 
-class DirectModelEvaluator:
-    """Returns ``F_p1(hkl)`` of a P1-spacegroup model at integer HKL.
-
-    The translation search asks its evaluator for ``F`` at a list of rotated
-    Miller indices. The rotation is already baked into the model's coordinates
-    by the time this is built, so ``R`` is ignored and every call is a direct
-    structure-factor evaluation rather than an interpolation.
-
-    Answers on the **configured default device**, whatever device the model
-    happens to sit on. Reading the device off the model instead is how the
-    translation stage ends up split across two devices when a caller builds a
-    CPU model on a host with an accelerator: the model answers on the CPU while
-    everything derived from config answers on the GPU.
-    """
-
-    def __init__(self, m: "ModelFT") -> None:
-        self._m = m
-        self.device = get_default_device()
-
-    def evaluate(self, R, hkl, real_cell, return_amplitude=False):
-        hkl_int = hkl.round().to(torch.int64).to(self._m.xyz().device)
-        with torch.no_grad():
-            f = self._m(hkl_int)
-        f = f.to(self.device)
-        return f.abs() if return_amplitude else f
-
-
 @dataclass
 class CandidateTransform:
     """One oriented model's transform at the symmetry-rotated indices.
@@ -235,15 +208,19 @@ class CandidateTransform:
 
 
 def prepare_candidate(
-    evaluator,
+    model_p1: "ModelFT",
     obs: TranslationObs,
     spacegroup,
     real_cell,
 ) -> CandidateTransform:
     """Evaluate one orientation's transform and normalise it.
 
-    The only per-candidate model evaluation: ``F_p1`` at all ``S x N`` rotated
-    indices in one call. The normalising curve ``Sigma_P(s)`` is the same
+    ``model_p1`` is an ordinary :class:`~torchref.model.ModelFT` in P1 with the
+    crystal's cell, already in the candidate orientation; its grid is whatever
+    its ``max_res`` implies. The only per-candidate model evaluation: ``F_p1``
+    at all ``S x N`` rotated indices in one call. The result is moved to the
+    configured default device, whatever device the model sits on, so the
+    translation stage never straddles two devices. The normalising curve ``Sigma_P(s)`` is the same
     Wilson fit the observed side uses, on the same abscissa, fitted to the
     transform's mean intensity over the ``S`` copies -- which is what the crystal
     sum averages to over a shell, since the cross terms between symmetry copies
@@ -264,10 +241,9 @@ def prepare_candidate(
     # h_R[i, n, d] = sum_e hkl[n, e] sym_R[i, e, d]: the h.S convention.
     h_R = torch.einsum("ne,ied->ind", hkl, sym_R)
     phase = torch.exp((2j * math.pi) * torch.einsum("ne,ie->in", hkl, sym_t).to(cplx))
-    eye3 = torch.eye(3, dtype=real, device=device)
-    F_all = evaluator.evaluate(
-        eye3, h_R.reshape(-1, 3), real_cell, return_amplitude=False,
-    ).reshape(S, N).to(cplx)
+    hkl_SN = h_R.reshape(-1, 3).round().to(torch.int64).to(model_p1.xyz().device)
+    with torch.no_grad():
+        F_all = model_p1(hkl_SN).to(device).reshape(S, N).to(cplx)
     G_raw = F_all * phase
 
     I_P = (G_raw.abs() ** 2).mean(dim=0).to(real)

@@ -64,7 +64,6 @@ from .frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from .frf.types import RotationPeak
 from .rotation_search import prepare_frf_inputs, search_peaks
 from .translation import (
-    DirectModelEvaluator,
     TranslationObs,
     analytic_r_at,
     fast_translation_function,
@@ -313,7 +312,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._p1 = None
         self._p1_xyz0 = None
         self._p1_center = None
-        self._evaluator = None
 
     #: Levels are documented on the class. They are a contract, not a dial:
     #: level 2 is specifically "one machine-readable line per candidate", and
@@ -646,7 +644,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._p1 = p1
         self._p1_xyz0 = p1.xyz().detach().clone()
         self._p1_center = self._p1_xyz0.mean(dim=0)
-        self._evaluator = DirectModelEvaluator(p1)
 
     def _placement_for_candidate(self) -> Optional[tuple]:
         """Translation search for the orientation currently in the P1 template.
@@ -661,7 +658,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         obs = self._obs
 
         timer.start("5_candidate_transform")
-        cand = prepare_candidate(self._evaluator, obs, data.spacegroup, data.cell)
+        cand = prepare_candidate(self._p1, obs, data.spacegroup, data.cell)
         timer.stop("5_candidate_transform")
 
         # One FFT on a grid a third of the set's resolution apart: dense enough
