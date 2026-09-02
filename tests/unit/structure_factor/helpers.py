@@ -442,17 +442,18 @@ def sf_fft_for(
     Pass ``fineness=1.0`` for a deliberately under-sampled grid; see
     :data:`GRID_FINENESS` for why that is the sampling-limited regime.
     """
+    from torchref.model.context import ModelContext
     from torchref.model.sf_fft import SfFFT
+    from torchref.symmetry import Cell, SpaceGroup
 
-    sf = SfFFT(
-        cell=scene.cell,
-        spacegroup=spacegroup,
-        max_res=scene.d_min / fineness,
-        dtype_float=dtype,
-        device=torch.device("cpu"),
+    cpu = torch.device("cpu")
+    # A private context: the engine reads the crystal live, so it must not share
+    # the module-scoped scene's cell with other tests.
+    ctx = ModelContext(
+        cell=Cell(scene.cell.data, dtype=dtype, device=cpu),
+        spacegroup=SpaceGroup(spacegroup, dtype=dtype, device=cpu),
     )
-    sf.setup_grid()
-    return sf
+    return SfFFT(ctx, max_res=scene.d_min / fineness, dtype_float=dtype, device=cpu)
 
 
 # ---------------------------------------------------------------------------

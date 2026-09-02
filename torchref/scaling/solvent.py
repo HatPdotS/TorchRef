@@ -220,8 +220,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         self.model = ModuleReference(model)  # Store reference to model
         self.model.get_vdw_radii()  # Ensure VdW radii are available
         assert self.model, "Model is not initialized"
-        if model.gridsize is None:
-            model.setup_grid()
 
         # Phenix-style parameters
         self.solvent_radius = radius  # For dilation (accessible surface)

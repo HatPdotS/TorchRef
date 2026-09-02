@@ -5,7 +5,7 @@ it sums atomic contributions (isotropic and anisotropic) directly and applies
 crystallographic symmetry in reciprocal space.
 """
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -18,11 +18,13 @@ from torchref.base.reciprocal import (
     get_scattering_vectors,
     reciprocal_basis_matrix,
 )
-from torchref.config import dtypes, get_complex_dtype, get_default_device
+from torchref.config import dtypes, get_complex_dtype
 from torchref.symmetry import Cell, SpaceGroup
-from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.device_resolution import require_cell_dtype, resolve_device
+
+if TYPE_CHECKING:
+    from torchref.model.context import ModelContext
 
 
 class SfDS(DeviceMovementMixin, nn.Module):
@@ -37,36 +39,38 @@ class SfDS(DeviceMovementMixin, nn.Module):
 
     Parameters
     ----------
-    cell : Cell, optional
-        Unit cell object containing cell parameters.
-    spacegroup : SpaceGroupLike, optional
-        Space group specification (string, int, or gemmi.SpaceGroup).
-        If None, defaults to P1.
+    ctx : ModelContext
+        The crystallographic context to read the cell and space group from.
     dtype_float : torch.dtype, optional
         Data type for floating point tensors. Default is dtypes.float.
     device : torch.device, optional
-        Computation device. Defaults to the configured default device
-        (``get_default_device()``).
+        Computation device. Defaults to the cell's device when the context has one,
+        else the configured default device.
     verbose : int, optional
         Verbosity level for logging. Default is 0.
     max_memory_gb : float, optional
         Maximum memory to use for intermediate tensors in GB. Default is 2.0.
         Set to None to disable batching.
+    force_portable : bool, optional
+        Pin the portable reference path instead of the fastest usable backend,
+        per instance. ``None`` (default) defers to the process-wide setting,
+        so ``with use_portable():`` steers an unconfigured instance.
 
     Attributes
     ----------
     cell, spacegroup : Cell, SpaceGroup
-        The unit cell and the space group as an nn.Module carrying its symmetry
-        matrices and translations; setting ``cell`` drops the cached
-        reciprocal basis.
+        Read through from the context. The reciprocal basis is memoised against
+        the cell's value key, so replacing the context's cell needs no further call.
 
     Examples
     --------
     Standalone usage::
 
-        from torchref.symmetry import Cell
-        cell = Cell([50, 60, 70, 90, 90, 90])
-        sf_ds = SfDS(cell, spacegroup='P212121')
+        from torchref.model.context import ModelContext
+        from torchref.symmetry import Cell, SpaceGroup
+        ctx = ModelContext(cell=Cell([50, 60, 70, 90, 90, 90]),
+                           spacegroup=SpaceGroup('P212121'))
+        sf_ds = SfDS(ctx)
         sf, _ = sf_ds.compute_structure_factors(
             hkl, xyz_iso, adp_iso, occ_iso, A_iso, B_iso
         )
@@ -74,142 +78,81 @@ class SfDS(DeviceMovementMixin, nn.Module):
 
     def __init__(
         self,
-        cell: Optional[Cell] = None,
-        spacegroup: SpaceGroupLike = None,
+        ctx: "ModelContext",
+        *,
         dtype_float: torch.dtype = None,
         device: torch.device = None,
         verbose: int = 0,
         max_memory_gb: float = 2.0,
         force_portable: Optional[bool] = None,
     ):
-        """
-        Initialize the SfDS module with cell and spacegroup.
-
-        Parameters
-        ----------
-        cell : Cell, optional
-            Unit cell object. If None, must be set later.
-        spacegroup : SpaceGroupLike, optional
-            Space group specification. If None, defaults to P1.
-        dtype_float : torch.dtype, optional
-            Data type for floating point tensors. Default is dtypes.float.
-        device : torch.device, optional
-            Computation device. Defaults to the configured device.current.
-        verbose : int, optional
-            Verbosity level for logging. Default is 0.
-        max_memory_gb : float, optional
-            Maximum memory for intermediate tensors in GB. Default is 2.0.
-        force_portable : bool, optional
-            Pin the portable reference path instead of the fastest usable backend,
-            per instance. ``None`` (default) defers to the process-wide setting,
-            so ``with use_portable():`` steers an unconfigured instance.
-        """
         super().__init__()
-        if dtype_float is None:
-            dtype_float = dtypes.float
-        self.dtype_float = dtype_float
-        # Derive from ``cell`` when no device is given, instead of jumping to
+        self.ctx = ctx
+        self.dtype_float = dtypes.float if dtype_float is None else dtype_float
+        # Derive from the cell when no device is given, instead of jumping to
         # the global default and leaving a caller-supplied cell behind on
-        # another device. An explicit ``device`` still wins and moves the cell.
-        self.device = resolve_device(cell, device=device)
+        # another device. An explicit ``device`` wins and moves the crystal as
+        # a whole.
+        if device is not None:
+            ctx.to(device)
+        self.device = resolve_device(ctx.cell, device=device)
         self.verbose = verbose
         self.max_memory_gb = max_memory_gb
         self.force_portable = force_portable
 
-        # Store cell and spacegroup
-        self._cell = cell
-        self._spacegroup = None
-
-        if spacegroup is not None or cell is not None:
-            self._spacegroup = SpaceGroup(
-                spacegroup, dtype=dtype_float, device=self.device
-            )
-
-        # Cache reciprocal basis matrix
+        # Reciprocal basis, memoised against the cell it was computed from.
         self._recB: Optional[torch.Tensor] = None
+        self._recB_key = None
 
     # =========================================================================
-    # Cell and SpaceGroup properties
+    # Crystal, read through from the context
     # =========================================================================
 
     @property
     def cell(self) -> Optional[Cell]:
-        """Unit cell object."""
-        return self._cell
-
-    @cell.setter
-    def cell(self, value: Cell):
-        """Set unit cell and invalidate cached reciprocal basis matrix."""
-        self._cell = value
-        self._recB = None  # Invalidate cache
+        """The context's unit cell."""
+        return self.ctx.cell
 
     @property
     def spacegroup(self) -> Optional[SpaceGroup]:
-        """Space group object (SpaceGroup nn.Module)."""
-        return self._spacegroup
-
-    @spacegroup.setter
-    def spacegroup(self, value: SpaceGroupLike):
-        """Set space group."""
-        if value is not None:
-            self._spacegroup = SpaceGroup(
-                value, dtype=self.dtype_float, device=self.device
-            )
-        else:
-            self._spacegroup = None
+        """The context's space group."""
+        return self.ctx.spacegroup
 
     @property
     def fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Get fractionalization matrix from cell."""
-        if self._cell is not None:
-            return self._cell.fractional_matrix
-        return None
+        """Fractionalization matrix from the cell."""
+        cell = self.ctx.cell
+        return None if cell is None else cell.fractional_matrix
 
     @property
     def inv_fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Get orthogonalization matrix from cell."""
-        if self._cell is not None:
-            return self._cell.inv_fractional_matrix
-        return None
-
-    def set_cell_and_spacegroup(self, cell: Cell, spacegroup: SpaceGroupLike = None):
-        """
-        Set cell and spacegroup for this SfDS instance.
-
-        Parameters
-        ----------
-        cell : Cell
-            Unit cell object.
-        spacegroup : SpaceGroupLike, optional
-            Space group specification.
-
-        Notes
-        -----
-        Receiver wins: an incoming cell on another device is moved to match
-        this module rather than the other way round.
-        """
-        self.device = resolve_device(self, cell)
-        self._cell = cell
-        self._recB = None  # Invalidate cache
-        self.spacegroup = spacegroup
+        """Orthogonalization matrix from the cell."""
+        cell = self.ctx.cell
+        return None if cell is None else cell.inv_fractional_matrix
 
     # =========================================================================
     # Internal helper methods
     # =========================================================================
 
+    def _require_cell(self) -> Cell:
+        """The context's cell, refusing a missing one or a dtype mismatch."""
+        cell = self.ctx.cell
+        if cell is None:
+            raise RuntimeError(
+                f"{type(self).__name__}: the context {self.ctx!r} has no cell. Load a "
+                "structure, or pass a context whose cell is set."
+            )
+        # Refused, not reconciled: a dtype cast is lossy, so the cell is the
+        # caller's to fix. See ``require_cell_dtype``.
+        require_cell_dtype(cell, self.dtype_float, type(self).__name__)
+        return cell
+
     def _get_reciprocal_basis_matrix(self) -> torch.Tensor:
-        """Cached ``(3, 3)`` reciprocal basis (a*, b*, c* as rows).
-
-        Raises ``RuntimeError`` if no cell is set, and refuses a cell whose dtype
-        differs from ``self.dtype_float``.
-        """
-        if self._cell is None:
-            raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
-        require_cell_dtype(self._cell, self.dtype_float, type(self).__name__)
-
-        if self._recB is None:
-            self._recB = reciprocal_basis_matrix(self._cell.data)
-
+        """``(3, 3)`` reciprocal basis (a*, b*, c* as rows), memoised per cell value."""
+        cell = self._require_cell()
+        if self._recB is None or self._recB_key != cell.key:
+            self._recB = reciprocal_basis_matrix(cell.data)
+            self._recB_key = cell.key
         return self._recB
 
     def _compute_scattering_factors(
@@ -236,12 +179,10 @@ class SfDS(DeviceMovementMixin, nn.Module):
         """``(N, 3)`` Cartesian coordinates to fractional; needs a cell whose
         dtype matches ``self.dtype_float``.
         """
-        if self._cell is None:
-            raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
-        require_cell_dtype(self._cell, self.dtype_float, type(self).__name__)
+        cell = self._require_cell()
 
         # fractional = cartesian @ inv_frac_matrix.T
-        return torch.matmul(xyz_cartesian, self.inv_fractional_matrix.T)
+        return torch.matmul(xyz_cartesian, cell.inv_fractional_matrix.T)
 
     # =========================================================================
     # Structure Factor Computation
@@ -293,11 +234,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         None
             Second return value is None (for API compatibility with SfFFT).
         """
-        if self._cell is None:
-            raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
-        # Refused, not reconciled: unlike the device normalization just below, a dtype cast
-        # is lossy, so the cell is the caller's to fix. See ``require_cell_dtype``.
-        require_cell_dtype(self._cell, self.dtype_float, type(self).__name__)
+        self._require_cell()
 
         # Normalize the input hkl onto this module's device. The symmetry
         # helpers derive equiv_hkls/phases from hkl.device while sf_total is
@@ -319,7 +256,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         )
 
         # No symmetry: compute F_P1 directly
-        if not apply_symmetry or self._spacegroup is None:
+        if not apply_symmetry or self.ctx.spacegroup is None:
             sf_p1 = self._compute_p1_sf(
                 hkl,
                 xyz_frac_iso,
@@ -336,9 +273,9 @@ class SfDS(DeviceMovementMixin, nn.Module):
             return sf_p1, None
 
         # Apply late symmetry: F_sym(h) = Σ_ops exp(2πi h.t) * F_P1(R^T @ h)
-        n_ops = self._spacegroup.n_ops
-        equiv_hkls = self._spacegroup.expand_reciprocal(hkl)  # (n_ops, N, 3)
-        phases = self._spacegroup.phase_factors(hkl)  # (n_ops, N)
+        n_ops = self.ctx.spacegroup.n_ops
+        equiv_hkls = self.ctx.spacegroup.expand_reciprocal(hkl)  # (n_ops, N, 3)
+        phases = self.ctx.spacegroup.phase_factors(hkl)  # (n_ops, N)
 
         # Compute F_P1 at each equivalent HKL and combine
         sf_total = torch.zeros(
@@ -390,7 +327,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         """
         # Get reciprocal basis matrix and compute scattering vectors
         recB = self._get_reciprocal_basis_matrix()
-        s_vectors = get_scattering_vectors(hkl, self._cell.data, recB)
+        s_vectors = get_scattering_vectors(hkl, self.ctx.cell.data, recB)
         s = torch.norm(s_vectors, dim=1)
 
         sf_total = torch.zeros(
@@ -434,34 +371,6 @@ class SfDS(DeviceMovementMixin, nn.Module):
     # =========================================================================
 
     def reset_cache(self) -> None:
-        """Drop the cached reciprocal-basis matrix; recomputed on next use."""
+        """Drop the memoised reciprocal basis; recomputed on next use."""
         self._recB = None
-
-    def copy(self) -> "SfDS":
-        """Create a deep copy of this SfDS module.
-
-        Returns
-        -------
-        SfDS
-            A new SfDS instance with cloned cell and spacegroup.
-        """
-        # Clone the cell
-        new_cell = self._cell.clone() if self._cell is not None else None
-
-        # Copy the spacegroup
-        new_spacegroup = (
-            self._spacegroup.copy() if self._spacegroup is not None else None
-        )
-
-        # Create new SfDS with copied components
-        new_ds = SfDS(
-            cell=new_cell,
-            spacegroup=new_spacegroup,
-            dtype_float=self.dtype_float,
-            device=self.device,
-            verbose=self.verbose,
-            max_memory_gb=self.max_memory_gb,
-            force_portable=self.force_portable,
-        )
-
-        return new_ds
+        self._recB_key = None

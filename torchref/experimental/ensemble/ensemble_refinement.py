@@ -488,7 +488,7 @@ class EnsembleRefinement(LBFGSRefinement):
                 )
         self.model.cell = self.reflection_data.cell
         self.model.spacegroup = self.reflection_data.spacegroup
-        self.model.setup_grid(max_res=self.max_res)
+        self.model.max_res = self.max_res
 
         # Rebuild the scaler against the ensemble model.
         self.scaler = Scaler(

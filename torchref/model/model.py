@@ -256,14 +256,25 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     @spacegroup.setter
     def spacegroup(self, value):
-        """Set the space group from a SpaceGroup, gemmi object, name or number."""
-        if value is not None:
+        """Set the space group from a SpaceGroup, gemmi object, name or number.
+
+        The model owns its space group: an incoming ``SpaceGroup`` is copied rather
+        than shared, because ``.to()`` moves in place and would otherwise relocate
+        the caller's object. The copy lands on the model's device and float dtype.
+        """
+        if value is None:
+            self.ctx.spacegroup = None
+        elif isinstance(value, SpaceGroup):
+            self.ctx.spacegroup = value.copy().to(
+                device=self.device, dtype=self.dtype_float
+            )
+        else:
             # ``device=self.device``: SpaceGroup falls back to the global
             # default otherwise, so setting a spacegroup on a CPU-pinned Model
             # would silently plant accelerator-resident matrices on it.
-            self.ctx.spacegroup = SpaceGroup(value, device=self.device)
-        else:
-            self.ctx.spacegroup = None
+            self.ctx.spacegroup = SpaceGroup(
+                value, dtype=self.dtype_float, device=self.device
+            )
 
     # =========================================================================
     # Crystallographic matrix properties (delegated to Cell)
@@ -1964,16 +1975,18 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 continue
             if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
                 continue
+            if pname == "gridsize":
+                # The constructor argument is the explicit override, not the
+                # derived grid a ``gridsize`` attribute would return.
+                if hasattr(self, "explicit_gridsize"):
+                    ctor_kw[pname] = self.explicit_gridsize
+                continue
             if hasattr(self, pname):
                 ctor_kw[pname] = getattr(self, pname)
-        if "gridsize" in sig.parameters and hasattr(self, "_explicit_gridsize"):
-            ctor_kw["gridsize"] = self._explicit_gridsize
 
         new_model = self.__class__(**ctor_kw)
         sg_str = self.spacegroup.xhm if self.spacegroup else "P 1"
         new_model.load(lambda: (df, self.pdb.attrs.get("cell"), sg_str))
-        if hasattr(new_model, "setup_grid"):
-            new_model.setup_grid()
         # Propagate CIF restraint paths so restraints are rebuilt correctly
         if self.ctx.cif_path is not None:
             new_model._cif_path = self.ctx.cif_path

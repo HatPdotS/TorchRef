@@ -252,12 +252,16 @@ def test_sfds_matches_gemmi_with_symmetry(gemmi_iso_symmetry):
     assert len(structure.cell.images) > 0, "structure was not set up with symmetry"
 
     F_gemmi = H.gemmi_sf(structure, scene.hkl_list)
-    ds = SfDS(
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
+    ctx = ModelContext(
         cell=scene.cell,
-        spacegroup=scene.spacegroup,
-        dtype_float=torch.float64,
-        device=torch.device("cpu"),
+        spacegroup=SpaceGroup(
+            scene.spacegroup, dtype=torch.float64, device=torch.device("cpu")
+        ),
     )
+    ds = SfDS(ctx, dtype_float=torch.float64, device=torch.device("cpu"))
     with torch.no_grad():
         F_sym, _ = ds.compute_structure_factors(
             scene.hkl, scene.xyz, scene.adp, scene.occ, scene.A, scene.B,

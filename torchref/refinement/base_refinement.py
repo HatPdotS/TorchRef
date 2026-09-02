@@ -846,7 +846,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 f"  data cell: {d}",
                 stacklevel=2,
             )
-        self.model.cell = self.reflection_data.cell
+        self.model.cell = self.reflection_data.cell.clone()
         self.model.reset_cache()
 
     def parameters(self, recurse: bool = True):

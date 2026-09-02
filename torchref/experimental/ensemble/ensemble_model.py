@@ -38,7 +38,7 @@ than fabricating cross-member bonds from the flat replicated DataFrame.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -345,7 +345,7 @@ class EnsembleModel(ModelFT):
         # load would invalidate that. Off by default here, unlike on the base class.
         add_hydrogens: bool = False,
         max_res: float = 1.0,
-        gridsize: Optional[int] = None,
+        gridsize: Optional[Tuple[int, int, int]] = None,
         wavelength: float = 1.0,
         anomalous_threshold: float = 0.5,
     ):

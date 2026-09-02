@@ -32,6 +32,7 @@ from torchref.base import (
     ifft,
 )
 from torchref.config import get_default_device, get_float_dtype
+from torchref.model.context import ModelContext
 from torchref.model.sf_fft import SfFFT
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
@@ -195,16 +196,20 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         # because the nonlinear occupancy needs the full-cell density assembled
         # before the mask. The per-atom splat radius is governed by
         # torchref.sigma_cutoff_ed inside the density builder.
+        # Its own context: the cell is shared with the model, but the space group
+        # is copied because it memoises operators per grid shape and this engine's
+        # coarse grid must not evict the model's.
+        solvent_ctx = ModelContext(
+            cell=model.cell, spacegroup=model.spacegroup.copy()
+        )
         self.solvent_fft = SfFFT(
-            cell=model.cell,
-            spacegroup=model.fft.spacegroup,
+            ctx=solvent_ctx,
             max_res=self.solvent_res,
             dtype_float=float_type,
             device=device,
             verbose=max(0, verbose - 1),
             use_late_symmetry=False,
         )
-        self.solvent_fft.setup_grid()
 
     # ------------------------------------------------------------------
     # Density -> occupancy -> structure factor

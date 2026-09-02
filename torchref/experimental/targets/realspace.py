@@ -111,19 +111,11 @@ class RealSpaceTarget(DataTarget):
         # Caches (not registered as buffers since they're lazily computed)
         self._data_p1 = None
         self._molecular_mask = None
-        self._gridsize = None
 
         # P1 expansion cache (ASU → P1 mapping)
         self._hkl_p1 = None
         self._p1_indices = None
         self._p1_phase_shifts = None
-
-    def _ensure_grid(self):
-        """Ensure model's SfFFT grid is set up."""
-        if self._model is None:
-            raise RuntimeError("No model set for RealSpaceTarget")
-        if self._model.gridsize is None:
-            self._model.setup_grid()
 
     def _get_data_p1(self) -> "ReflectionData":
         """Return P1-expanded ReflectionData, cached after first call."""
@@ -153,19 +145,11 @@ class RealSpaceTarget(DataTarget):
         return fcalc_p1 * torch.exp(1j * self._p1_phase_shifts)
 
     def _get_gridsize(self) -> Tuple[int, int, int]:
-        """
-        Get grid size for map computation.
-
-        Uses the model's FFT grid size to ensure compatibility with
-        the molecular mask (which is built on the model's grid).
-        """
-        if self._gridsize is not None:
-            return self._gridsize
-
-        self._ensure_grid()
-        gs = self._model.fft.gridsize
-        self._gridsize = tuple(int(x) for x in gs)
-        return self._gridsize
+        """Grid size for map computation: the model's, so it matches the
+        molecular mask built on the model's grid."""
+        if self._model is None:
+            raise RuntimeError("No model set for RealSpaceTarget")
+        return self._model.fft.grid_shape
 
     def _compute_observed_map(self) -> torch.Tensor:
         """
@@ -243,7 +227,6 @@ class RealSpaceTarget(DataTarget):
         """
         from torchref.scaling.solvent import SolventModel
 
-        self._ensure_grid()
 
         with torch.no_grad():
             solvent = SolventModel(

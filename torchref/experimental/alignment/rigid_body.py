@@ -163,7 +163,11 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         self.cell = data.cell
         self.spacegroup = data.spacegroup
 
-        self.fft = SfFFT(self.cell, self.spacegroup, max_res=max_res)
+        from torchref.model.context import ModelContext
+
+        self.fft = SfFFT(
+            ModelContext(cell=self.cell, spacegroup=self.spacegroup), max_res=max_res
+        )
 
         self.verbose = verbose
         self.rfactor_converged_threshold = rfactor_converged_threshold
