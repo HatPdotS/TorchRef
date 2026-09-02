@@ -7,10 +7,10 @@ Two stages, and the division of labour between them is the design:
    to rank well, and measurably does not: over 30 seeded cells it puts truth at
    rank 0 in 6 of them. What it does reliably is put truth somewhere in the top
    twenty.
-2. **Fast Translation Function** — for *each* of the top-N orientations, a
-   Crowther-Blow amplitude-correlation search over the fractional cell,
-   optionally re-ranked by a Rice/Woolfson LLG, then an analytical-R local
-   refine. On the same 30 cells it puts truth at rank 0 in 27. Rotation ghosts
+2. **Fast Translation Function** — for *each* of the top-N orientations, one
+   Crowther-Blow FFT over the fractional cell on a resolution-sized grid, with
+   the rotation function's own normalised score equation as its coefficients,
+   then the Rice/Woolfson likelihood at the best few peaks. Rotation ghosts
    are morphologically identical to truth in a rotation function by
    construction; they are not identical once the crystal is involved.
 
@@ -60,15 +60,10 @@ from .rotation_search import prepare_frf_inputs, search_peaks
 from .translation import (
     DirectModelEvaluator,
     TranslationObs,
-    TranslationPeak,
-    amplitude_translation_search,
-    correlation_at,
-    llg_at,
-    fit_model_error,
-    llg_translation_rescore,
-    local_translation_refine,
-    normalise_calc,
-    precompute_G_for_rotation,
+    analytic_r_at,
+    fast_translation_function,
+    llg_at_translations,
+    prepare_candidate,
 )
 
 if TYPE_CHECKING:
@@ -158,7 +153,7 @@ class MRSolution:
     rotation_score : float
         The rotation function's score for this candidate.
     translation_score : float
-        The translation function's correlation at the chosen translation, higher
+        The fast translation function's score at the chosen peak, higher
         better. Reported, not ranked -- see the sort in :meth:`run`.
     r_factor : float
         The analytical-scale R at that placement, lower better. Reported, not
@@ -166,10 +161,9 @@ class MRSolution:
         would return -- build one on the returned model if that is wanted.
     llg_score : float
         **The ranking key**: the translation likelihood at that placement,
-        higher better. ``nan`` when ``rank_by`` is not ``"llg"``, since it costs
-        a sigma_A fit and a likelihood evaluation per candidate.
+        higher better.
     model : ModelFT
-        The rotated (+translated +refined) model for this candidate.
+        The rotated and translated model for this candidate.
     """
 
     rotation: np.ndarray
@@ -241,10 +235,10 @@ class MolecularReplacementPipeline(DeviceMixin):
         model_error_A: Optional[float] = None,
         # --- candidate tree ---
         n_rotation_candidates: int = 25,
-        n_translation_peaks: int = 20,
+        # Peaks of the fast translation function re-scored by the likelihood
+        # for each orientation. The fast map only has to get the true peak
+        # into this many; the likelihood picks.
         n_translation_candidates: int = 3,
-        translation_grid_steps: int = 16,
-        use_llg_tf: bool = False,
         # Which score picks the winner among placed candidates. "llg" is the
         # translation function's Rice/Woolfson likelihood; "r" the
         # analytical-scale R-factor; "corr" the translation correlation. Not a
@@ -280,10 +274,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.model_error_A = float(model_error_A)
 
         self.n_rotation_candidates = n_rotation_candidates
-        self.n_translation_peaks = n_translation_peaks
         self.n_translation_candidates = n_translation_candidates
-        self.translation_grid_steps = translation_grid_steps
-        self.use_llg_tf = use_llg_tf
         if rank_by not in ("r", "corr", "llg"):
             raise ValueError(
                 f"rank_by={rank_by!r}; expected 'r', 'corr' or 'llg'.")
@@ -582,7 +573,6 @@ class MolecularReplacementPipeline(DeviceMixin):
             data.spacegroup, data.cell,
             sig_F=None if sig_F_full is None else sig_F_full[tmask],
             delta_vrms_A=self.model_error_A,
-            n_shells=max(self.n_shells // 2, 8),
             device=device,
         )
         if self.verbose >= 1:
@@ -594,26 +584,18 @@ class MolecularReplacementPipeline(DeviceMixin):
                             else " (no sigmas: unit weight)"))
 
     def _placement_for_candidate(self, rotated_k) -> Optional[tuple]:
-        """Translation search + analytical-R local refine for one rotation.
+        """Translation search for one rotation candidate.
 
-        Returns ``(r_analytic, t_refined, tf_score, llg_score)`` for the best
-        translation of this rotation candidate, or ``None`` if no translation
-        peaks were found. ``llg_score`` is ``nan`` unless it is the ranking key.
-
-        ``tf_score`` is the translation function's own score at its top peak.
-        It does not select anything -- ``r_analytic`` does -- but it is carried
-        out so ``verbose >= 2`` can report both. Which of the two a wrong
-        placement disagreed on is the first thing anyone diagnosing one asks,
-        and it is not recoverable afterwards from the winner alone.
+        Returns ``(r_analytic, t, tf_score, llg)`` for the translation the
+        likelihood prefers among the fast search's top peaks, or ``None`` if the
+        map had no peaks. All three scores are at the same ``t``, so the
+        reported numbers belong to the placement that was actually chosen.
         """
         data = self.data
         timer = self._timer
-        eye3 = self._eye3
+        obs = self._obs
 
         if str(rotated_k.spacegroup) != str(data.spacegroup):
-            # NOTE: assign the space-group NAME, not a SpaceGroup object. SpaceGroup is an
-            # nn.Module, so nn.Module.__setattr__ intercepts object assignment, stores it in
-            # _modules and never runs the property setter -- a silent no-op.
             rotated_k.spacegroup = data.spacegroup.hm
         rotated_p1 = rotated_k.copy()
         # Size the P1 copy's FFT grid to the translation set, not to the
@@ -633,130 +615,39 @@ class MolecularReplacementPipeline(DeviceMixin):
         rotated_p1.spacegroup = "P 1"
         evaluator = DirectModelEvaluator(rotated_p1)
 
-        timer.start("5_precompute_G")
-        G_pre, h_R_pre = precompute_G_for_rotation(
-            evaluator, eye3, self._obs.hkl, data.spacegroup, data.cell,
-        )
-        timer.stop("5_precompute_G")
+        timer.start("5_candidate_transform")
+        cand = prepare_candidate(evaluator, obs, data.spacegroup, data.cell)
+        timer.stop("5_candidate_transform")
 
-        timer.start("6_amplitude_TF")
-        _, _, t_peaks = amplitude_translation_search(
-            obs=self._obs, interpolator=evaluator, R_rotation=eye3,
-            spacegroup=data.spacegroup, real_cell=data.cell,
-            grid_steps=self.translation_grid_steps,
-            n_peaks=self.n_translation_peaks,
-            cluster_radius=0.05,
-            precomputed_G=G_pre, precomputed_h_R=h_R_pre,
+        # One FFT on a grid a third of the set's resolution apart: dense enough
+        # that the parabolic peak refinement lands within a fraction of a step,
+        # and no coarse-then-refine pair whose coarse half could miss the peak.
+        d_min_set = 1.0 / float(obs.s_mag.max())
+        timer.start("6_translation_function")
+        _, t_peaks = fast_translation_function(
+            obs, cand, data.cell,
+            grid_spacing_A=d_min_set / 3.0,
+            n_peaks=self.n_translation_candidates,
+            cluster_radius_A=d_min_set,
         )
-        timer.stop("6_amplitude_TF")
+        timer.stop("6_translation_function")
         if not t_peaks:
             return None
 
-        if self.use_llg_tf:
-            t_peaks = self._llg_tf_rescore(t_peaks, G_pre, h_R_pre)
-
-        tf_top = float(t_peaks[0].score)
-        if self.verbose >= 3:
-            tt = tuple(round(float(x), 3) for x in t_peaks[0].translation.tolist())
-            self._log(3, f"  top translation t={tt} score={tf_top:.4f}")
-
-        best = None
-        for k_t, tp in enumerate(t_peaks[:self.n_translation_candidates]):
-            t_init = torch.as_tensor(tp.translation, dtype=torch.float64)
-            timer.start("7_local_TF_refine")
-            t_refined, r_analytic = local_translation_refine(
-                obs=self._obs, interpolator=evaluator, R_rotation=eye3,
-                spacegroup=data.spacegroup, real_cell=data.cell,
-                t_init=t_init, radius=0.06, grid_steps=13,
-                n_refinement_passes=1,
-                precomputed_G=G_pre, precomputed_h_R=h_R_pre,
-            )
-            timer.stop("7_local_TF_refine")
-            # Both scores at the REFINED position, so the reported correlation
-            # belongs to the translation that was actually chosen. Selection is
-            # by R: ranking candidates by the correlation instead was measured
-            # end to end and is WORSE (32/40 against 36/40 over four structures
-            # x ten seeds), despite a rank-level harness predicting the reverse.
-            tf_ref = correlation_at(self._obs, G_pre, h_R_pre, t_refined)
-            self._log(3, f"    trans{k_t}: tf={tf_ref:.5f} "
-                         f"R(analytic)={r_analytic:.4f}, "
-                         f"t={[round(float(x), 3) for x in t_refined.tolist()]}")
-            if best is None or r_analytic < best[0]:
-                best = (r_analytic, t_refined, tf_ref)
-        if best is None:
-            return None
-        llg = float("nan")
-        if self.rank_by == "llg":
-            # Model error at the chosen translation, per candidate. Fitting it
-            # once and sharing it across candidates was measured to give
-            # identical rankings, so the cheaper-to-reason-about form is used.
-            E_calc = normalise_calc(
-                self._fcalc_at(G_pre, h_R_pre, best[1]), self._obs)
-            alpha, beta = fit_model_error(self._obs, E_calc)
-            llg = llg_at(self._obs, G_pre, h_R_pre, best[1], alpha, beta)
-        return (best[0], best[1], best[2], llg)
-
-    def _fcalc_at(self, G, h_R, t):
-        """``|F_calc(h, t)|`` from the precomputed per-symop contributions."""
-        tt = t.detach().to(G.device).to(torch.float64).reshape(3)
-        phase = torch.exp(2j * torch.pi * torch.einsum(
-            "ind,d->in", h_R.to(torch.float64), tt).to(G.dtype))
-        return (G * phase).sum(dim=0).abs().to(torch.float64)
-
-
-    def _llg_tf_rescore(self, t_peaks, G_pre, h_R_pre):
-        """Re-rank translation peaks by a shared-σA Rice/Woolfson LLG.
-
-        Mirrors Phaser's FTF: the amplitude correlation is a cheap pre-filter,
-        and this is the likelihood that ranks its peaks. It reuses the run's
-        single Wilson normalisation and its shell binning, so ``E_obs`` here is
-        the same ``E_obs`` the correlation maximised.
-
-        Off by default. It is the strongest discriminator at rank level, and
-        end-to-end it changes nothing: 27/30 against 28/30 with one discordant
-        cell in 30, which the correlation wins.
-        """
-        device = self.device
-        obs = self._obs
-        self._timer.start("6b_llg_tf_rescore")
-
-        # The model error is fitted against the top translation only and reused
-        # for every candidate. It is a model-reliability curve, not a
-        # per-candidate score: refitting it per t would let each candidate
-        # choose the alpha that flatters it, which is scoring a model against a
-        # likelihood tuned to that model.
-        t_top_t = torch.as_tensor(
-            t_peaks[0].translation, dtype=torch.float64, device=device,
-        )
-        phase_top = torch.exp(
-            2j * torch.pi * torch.einsum(
-                "ind,d->in", h_R_pre.to(torch.float64), t_top_t,
-            ).to(G_pre.dtype),
-        )
-        Fc_top = (G_pre * phase_top).sum(dim=0).abs().to(torch.float64)
-        E_calc_top = normalise_calc(Fc_top, obs)
-        alpha_tf, beta_tf = fit_model_error(obs, E_calc_top)
-
+        timer.start("7_translation_llg")
         t_cands = torch.as_tensor(
-            np.stack([p.translation for p in t_peaks]),
-            dtype=torch.float64, device=device,
+            np.stack([p.translation for p in t_peaks]), dtype=torch.float64,
         )
-        llg_tf = llg_translation_rescore(
-            obs=obs, G=G_pre, h_R=h_R_pre, t_candidates=t_cands,
-            alpha=alpha_tf, beta=beta_tf,
-        )
-        self._timer.stop("6b_llg_tf_rescore")
-
-        llg_list = llg_tf.detach().cpu().tolist()
-        order = sorted(range(len(t_peaks)), key=lambda i: llg_list[i], reverse=True)
-        return [
-            TranslationPeak(
-                translation=t_peaks[i].translation,
-                score=float(llg_list[i]),
-                sigma=float(llg_list[i]),
-            )
-            for i in order
-        ]
+        llg = llg_at_translations(obs, cand, t_cands)
+        k_best = int(llg.argmax())
+        t_best = t_cands[k_best]
+        r_analytic = analytic_r_at(obs, cand, t_best)
+        timer.stop("7_translation_llg")
+        for k_t, tp in enumerate(t_peaks):
+            self._log(3, f"    trans{k_t}: tf={tp.score:.4f} z={tp.sigma:.2f} "
+                         f"llg={float(llg[k_t]):.1f} "
+                         f"t={[round(float(x), 3) for x in tp.translation]}")
+        return (r_analytic, t_best, float(t_peaks[k_best].score), float(llg[k_best]))
 
 
 # ---------------------------------------------------------------------------
@@ -774,11 +665,8 @@ def align_model_to_data(
     n_rotation_peaks: int = 500,
     verbose: int = 0,
     do_translation: bool = True,
-    n_translation_peaks: int = 20,
     n_translation_candidates: int = 3,
-    translation_grid_steps: int = 16,
     n_rotation_candidates: int = 25,
-    use_llg_tf: bool = False,
     rank_by: str = "llg",
     tf_d_min: Optional[float] = None,
     tf_d_max: Optional[float] = None,
@@ -806,10 +694,8 @@ def align_model_to_data(
         n_rotation_peaks=n_rotation_peaks,
         model_error_A=model_error_A,
         n_rotation_candidates=n_rotation_candidates,
-        n_translation_peaks=n_translation_peaks,
         n_translation_candidates=n_translation_candidates,
-        translation_grid_steps=translation_grid_steps,
-        use_llg_tf=use_llg_tf, rank_by=rank_by,
+        rank_by=rank_by,
         tf_d_min=tf_d_min, tf_d_max=tf_d_max,
     )
     solutions = pipeline.run(do_translation=do_translation)

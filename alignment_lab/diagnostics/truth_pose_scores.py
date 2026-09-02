@@ -24,26 +24,21 @@ from lab import (BENCH_PDBS, allowed_origin_shifts, load_case, pose_error,  # no
 
 
 def scores_at(pipe, model_placed):
-    """(corr, R, llg) of an already-placed model through the pipeline's path."""
+    """(tf score, R, llg) of an already-placed model through the pipeline's path."""
     from torchref.experimental.alignment.translation import (
-        DirectModelEvaluator, correlation_at, fit_model_error, llg_at,
-        normalise_calc, precompute_G_for_rotation)
+        DirectModelEvaluator, analytic_r_at, llg_at_translations,
+        prepare_candidate, translation_score_at)
     data, obs = pipe.data, pipe._obs
     m = model_placed.copy()
+    if pipe.tf_d_min > 0.0:
+        m.max_res = pipe.tf_d_min / 1.5
     m.spacegroup = "P 1"
-    ev = DirectModelEvaluator(m)
-    eye3 = torch.eye(3, dtype=torch.float64)
-    G, h_R = precompute_G_for_rotation(ev, eye3, obs.hkl, data.spacegroup, data.cell)
+    cand = prepare_candidate(DirectModelEvaluator(m), obs, data.spacegroup, data.cell)
     t0 = torch.zeros(3, dtype=torch.float64)
-    corr = correlation_at(obs, G, h_R, t0)
-    Fc = G.sum(dim=0).abs().to(torch.float64)
-    Fo = obs.F_obs.to(Fc.device).to(torch.float64)
-    k = (Fo * Fc).sum() / (Fc * Fc).sum().clamp(min=1e-30)
-    r = float(((Fo - k * Fc).abs().sum() / Fo.sum()).item())
-    E_calc = normalise_calc(Fc, obs)
-    alpha, beta = fit_model_error(obs, E_calc)
-    llg = llg_at(obs, G, h_R, t0, alpha, beta)
-    return corr, r, llg
+    tf = translation_score_at(obs, cand, t0)
+    r = analytic_r_at(obs, cand, t0)
+    llg = float(llg_at_translations(obs, cand, t0.view(1, 3))[0])
+    return tf, r, llg
 
 
 def main() -> int:
@@ -80,7 +75,7 @@ def main() -> int:
     print("SANITY deposited-vs-deposited rot/trans:",
           pose_error(canonical, canonical, data.cell, data.spacegroup))
     rot, trans = pose_error(win.model.xyz(), canonical, data.cell, data.spacegroup)
-    print(f"WINNER rot_deg={rot:.3f} trans_A={trans:.2f} corr={win.translation_score:.5f} "
+    print(f"WINNER rot_deg={rot:.3f} trans_A={trans:.2f} tf={win.translation_score:.5f} "
           f"R={win.r_factor:.5f} llg={win.llg_score:.1f}")
 
     # Raw fractional centroid offset to every symmetry image of canonical.
@@ -97,9 +92,9 @@ def main() -> int:
               f"|.|={float((B @ d).norm()):.1f} A")
 
     c_dep, r_dep, llg_dep = scores_at(pipe, model)
-    print(f"DEPOSITED corr={c_dep:.5f} R={r_dep:.5f} llg={llg_dep:.1f}")
+    print(f"DEPOSITED tf={c_dep:.5f} R={r_dep:.5f} llg={llg_dep:.1f}")
     c_w, r_w, llg_w = scores_at(pipe, win.model)
-    print(f"WINNER(re-scored) corr={c_w:.5f} R={r_w:.5f} llg={llg_w:.1f}")
+    print(f"WINNER(re-scored) tf={c_w:.5f} R={r_w:.5f} llg={llg_w:.1f}")
     return 0
 
 

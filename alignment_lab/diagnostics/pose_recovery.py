@@ -23,10 +23,6 @@ Arms (``--arms``) sweep how translation candidates are ranked:
     the other two arms' 36/40: worse, and worse paired against ``llg`` 5 to 1,
     despite a rank-level harness predicting the reverse on a truth label that
     disagreed with coordinate superposition.
-``llg_tf``
-    a different question -- re-rank each candidate's TRANSLATIONS by the
-    likelihood, still selecting the candidate by R.
-
 Success is a pose: final coordinates within ``--success-deg`` of canonical in
 orientation AND within ``--success-A`` of it in position, modulo the crystal
 symmetry (Cartesian point-group mates, lattice translations, allowed origin
@@ -36,7 +32,7 @@ placements 40-55 A from the true position on 2DQ6, 4BX9 and 6G9X.
 Usage::
 
     python alignment_lab/diagnostics/pose_recovery.py --pdb 1DAW --trial 0 \
-        --arms analytic_r,llg_tf --out-csv alignment_lab/runs/pose.csv
+        --arms analytic_r,llg --out-csv alignment_lab/runs/pose.csv
 """
 
 from __future__ import annotations
@@ -59,12 +55,9 @@ from lab import (BENCH_PDBS, ResultWriter, cartesian_symops, load_case,  # noqa:
 
 ARMS = {
     # How the winner is chosen among placed candidates.
-    "analytic_r": dict(use_llg_tf=False, rank_by="r"),
-    "corr":       dict(use_llg_tf=False, rank_by="corr"),
-    "llg":        dict(use_llg_tf=False, rank_by="llg"),
-    # Re-ranks each candidate's TRANSLATIONS by the likelihood, then still
-    # selects the candidate by R -- a different question from the three above.
-    "llg_tf":     dict(use_llg_tf=True, rank_by="r"),
+    "analytic_r": dict(rank_by="r"),
+    "corr":       dict(rank_by="corr"),
+    "llg":        dict(rank_by="llg"),
 }
 
 
@@ -181,7 +174,7 @@ def main() -> int:
     writer = None
     if args.out_csv:
         writer = ResultWriter(args.out_csv, "pose_recovery",
-                              extra_fields=("arm", "use_llg_tf",
+                              extra_fields=("arm",
                                             "residual_deg", "success",
                                             "n_rotation_candidates",
                                             "pipeline_seconds"))
@@ -236,7 +229,6 @@ def main() -> int:
                          orbit_side="kabsch", orbit_frame="cart",
                          lmax_cap=_LMAX_CAP, d_min=4.0, d_max=15.0,
                          device="cpu", arm=arm,
-                         use_llg_tf=int(flags["use_llg_tf"]),
                          residual_deg=(round(resid, 4) if resid == resid else ""),
                          success=int(bool(ok)),
                          n_rotation_candidates=args.n_rotation_candidates,

@@ -5,8 +5,6 @@ Profile `ModelFT.fit_to_data` to find where the time goes.
 Run from the repo root:
     .venv/bin/python tests/integration/alignment/profile_fit.py [--pdb 1DAW] \
                      [--n-rotation-candidates 3] [--n-translation-candidates 3] \
-                     [--translation-grid-steps 16]
-
 Output: top-50 cumulative-time entries from cProfile + a custom per-stage timer
 breakdown (rotation search, ML rescore, TF, local refine, joint refine,
 final Scaler refit).
@@ -80,7 +78,6 @@ def main():
     ap.add_argument("--pdb", default="1DAW", choices=sorted(PAIRS.keys()))
     ap.add_argument("--n-rotation-candidates", type=int, default=3)
     ap.add_argument("--n-translation-candidates", type=int, default=3)
-    ap.add_argument("--translation-grid-steps", type=int, default=16)
     ap.add_argument("--top", type=int, default=40, help="top N cProfile entries")
     args = ap.parse_args()
 
@@ -109,7 +106,6 @@ def main():
         data,
         n_rotation_candidates=args.n_rotation_candidates,
         n_translation_candidates=args.n_translation_candidates,
-        translation_grid_steps=args.translation_grid_steps,
         verbose=0,
     )
     profiler.disable()

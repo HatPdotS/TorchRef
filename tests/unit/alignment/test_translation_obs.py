@@ -11,7 +11,6 @@ shared Wilson fit, the weight is a real per-reflection weight rather than a
 per-shell one (per-shell weights cancel in a correlation), and the whole object
 is invariant to the units the amplitudes arrive in.
 """
-import math
 
 import pytest
 import torch
@@ -56,7 +55,7 @@ def test_normalisation_is_the_shared_wilson_fit():
         obs.F_obs * obs.F_obs, obs.s_mag, eps=obs.eps, centric=obs.centric,
         n_coeff=6,
     )
-    torch.testing.assert_close(obs.E_obs, direct.E.to(torch.float64))
+    torch.testing.assert_close(obs.E_obs, direct.E.to(obs.E_obs.dtype))
 
 
 @pytest.mark.unit
@@ -105,9 +104,14 @@ def test_weight_varies_within_a_shell():
     # Give two reflections at the SAME resolution very different sigmas.
     obs = TranslationObs.build(F, hkl, sg, cell, sig_F=sig_F)
 
+    from torchref.experimental.alignment.sh import (assign_shells,
+                                                    equal_count_shell_edges)
+
+    edges, _ = equal_count_shell_edges(obs.s_mag, 20)
+    shell_idx = assign_shells(obs.s_mag, edges).clamp(min=0)
     within = []
-    for shell in range(obs.n_shells):
-        w = obs.weight[obs.shell_idx == shell]
+    for shell in range(20):
+        w = obs.weight[shell_idx == shell]
         if w.numel() > 20:
             within.append(float(w.std() / w.mean().clamp(min=1e-30)))
     assert within, "no populated shells"
@@ -148,27 +152,24 @@ def test_epsilon_and_centricity_come_from_the_spacegroup(sg_name):
     obs = TranslationObs.build(F, hkl, sg, cell)
     hkl_l = obs.hkl.round().to(torch.int64)
     torch.testing.assert_close(
-        obs.eps, sg.epsilon(hkl_l, friedel=False).to(torch.float64).clamp(min=1.0),
+        obs.eps, sg.epsilon(hkl_l, friedel=False).to(obs.eps.dtype).clamp(min=1.0),
     )
     torch.testing.assert_close(obs.centric, sg.is_centric(hkl_l).to(torch.bool))
 
 
 @pytest.mark.unit
-def test_shell_binning_is_equal_count_and_shared():
-    """One binning, used by both the sigma_A fit and the likelihood.
+def test_coefficient_is_the_rotation_functions_score_equation():
+    """The fast search's coefficient is LERF1's intensity times sigma_A^2.
 
-    They used to derive their own from the same |s| -- one rank-based, one
-    value-based -- which put boundary reflections in different shells depending
-    on which stage asked.
+    One score equation for both searches: ``cw (E^2 - 1) w`` is what the
+    rotation function expands, and ``sigma_A^2`` is its calc-side weight.
     """
-    F, _, hkl, sg, cell, _ = _case()
-    obs = TranslationObs.build(F, hkl, sg, cell, n_shells=10)
-    counts = torch.bincount(obs.shell_idx, minlength=obs.n_shells)
-    assert obs.n_shells == 10
-    assert int(counts.min()) > 0
-    # Equal-count binning: no shell should be wildly larger than the mean.
-    assert float(counts.max()) < 3.0 * float(counts.to(torch.float64).mean())
-    # And it must be monotone in |s|: shells partition resolution, not noise.
-    hi = torch.stack([obs.s_mag[obs.shell_idx == b].max()
-                      for b in range(obs.n_shells)])
-    assert bool((hi[1:] >= hi[:-1]).all())
+    from torchref.experimental.alignment.frf.preprocessing import (
+        build_lerf1_intensity, eterm_sigma_a)
+
+    F, sig_F, hkl, sg, cell, _ = _case()
+    obs = TranslationObs.build(F, hkl, sg, cell, sig_F=sig_F, delta_vrms_A=0.8)
+    expected = (build_lerf1_intensity(obs.E_obs, obs.centric, weight=obs.weight)
+                * eterm_sigma_a(obs.s_mag, 0.8) ** 2)
+    torch.testing.assert_close(obs.coeff, expected)
+    torch.testing.assert_close(obs.sigma_a, eterm_sigma_a(obs.s_mag, 0.8))

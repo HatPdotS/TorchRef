@@ -1,18 +1,19 @@
 #!/bin/bash
-#SBATCH --job-name=ftfsmoke
+#SBATCH --job-name=esa
 #SBATCH --output=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/slurm/%x_%j.out
 #SBATCH --error=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/slurm/%x_%j.err
 #SBATCH --partition=hour
-#SBATCH --time=00:30:00
-#SBATCH --cpus-per-task=8
+#SBATCH --time=00:20:00
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --constraint=cpu_epyc9335
 set -uo pipefail
 REPO=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement
 PY=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/.dev/bin/python
-export PYTHONPATH="$REPO" PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=""
-export TORCHREF_NUM_THREADS=8 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
 cd "$REPO"
-"$PY" -u alignment_lab/diagnostics/frf_vs_ftf_discrimination.py \
-  --pdb 1DAW --trials 1 --n-cand 4 --n-rotation-peaks 60 2>&1 | tail -30
-echo "RC=${PIPESTATUS[0]}"
+export PYTHONPATH="$REPO:$REPO/alignment_lab" TORCHREF_NUM_THREADS=4 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4
+export PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=""
+for P in 1DAW 2DQ6 3K7M; do
+  "$PY" -u alignment_lab/diagnostics/empirical_sigma_a_check.py --pdb $P 2>&1 | grep -v "Warning\|warnings.warn" | grep -A14 "^ROW\|Traceback" 
+done
+echo DONE
