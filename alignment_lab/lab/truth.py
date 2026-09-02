@@ -16,7 +16,7 @@ silently changed results rather than raising:
 from __future__ import annotations
 
 import math
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import torch
 
@@ -81,7 +81,7 @@ def symmetry_orbit(
     R_true: torch.Tensor,
     symops: torch.Tensor,
     *,
-    side: str = "left",
+    side: str = "right",
     frame: str = "cart",
     reciprocal_basis: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
@@ -96,7 +96,11 @@ def symmetry_orbit(
         (fractional).
     side : {'left', 'right'}, optional
         ``'left'`` builds ``S_k @ R_true``; ``'right'`` builds ``R_true @ S_k``.
-        These are different sets for non-commuting operators.
+        These are different sets for non-commuting operators. The engine's
+        peaks obey ``'right'``: on real peak lists the left orbit finds zero
+        coincident pairs among the top 25 and the right orbit finds every mate
+        (187 of 300 pairs on 3K7M). ``'left'`` was the default, and is why the
+        orbit-based truth rank disagreed with coordinate superposition.
     frame : {'cart', 'frac'}, optional
         ``'cart'`` converts the operators to the Cartesian frame first, which is
         the frame the rotation function works in. ``'frac'`` uses them as
@@ -151,7 +155,7 @@ def orbit_rank(
     R_true: torch.Tensor,
     symops: torch.Tensor,
     *,
-    side: str = "left",
+    side: str = "right",
     frame: str = "cart",
     reciprocal_basis: Optional[torch.Tensor] = None,
     thr_deg: float = 5.0,

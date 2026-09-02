@@ -113,7 +113,7 @@ def run_one(pdb: str, trial: int, arm: str, *, n_peaks: int, top_n: int,
     rank, ang = orbit_rank(
         res.peaks, R_true, data.spacegroup.matrices.to(torch.float64).cpu(),
         reciprocal_basis=data.cell.reciprocal_basis_matrix.to(torch.float64).cpu(),
-        side="left", frame="cart", thr_deg=thr_deg,
+        side="right", frame="cart", thr_deg=thr_deg,
     )
     # Exclusive, not inclusive: the nested stages would otherwise be counted
     # twice and "unattributed" could come out negative.

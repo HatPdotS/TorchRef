@@ -10,12 +10,22 @@ routines). Phaser's strategy is essentially:
      rotations (not by α, β, γ box distance — that would double-count
      near the poles).
 
-We implement the same flow in PyTorch, vectorised where possible.
+We implement the same flow in PyTorch, vectorised where possible, and the
+suppression is **modulo the crystal's point group** when the Cartesian
+symmetry rotations are supplied: an orientation and its symmetry mates are one
+answer, and without this the shortlist handed downstream is mostly copies. On
+3K7M (P432) 187 of the 300 pairs among the top 25 peaks were mates of each
+other; on 2DQ6 (P3(1)21) 15 of 25 candidates were one orientation.
+
+The group acts on the **right**: a peak ``R`` maps the search-model frame onto
+the crystal frame, and its mates are ``R R_g``. Measured, not assumed --
+composing on the left finds zero coincident pairs on every structure tried, the
+right side finds all of them.
 """
 from __future__ import annotations
 
 import math
-from typing import List
+from typing import List, Optional
 
 import torch
 
@@ -34,11 +44,14 @@ def _so3_greedy_nms(
     values: torch.Tensor,
     nms_radius_deg: float,
     keep_at_most: int,
+    sym_cart: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Return indices (into the input order) of kept peaks after SO(3) NMS.
 
     Greedy: walk the values in descending order; keep a candidate if its
-    angular distance from every already-kept rotation is > nms_radius_deg.
+    angular distance from every already-kept rotation -- and, with
+    ``sym_cart``, from every point-group mate ``R R_g`` of it -- is
+    > nms_radius_deg.
     """
     n = values.shape[0]
     if n == 0:
@@ -62,18 +75,22 @@ def _so3_greedy_nms(
     )  # (n, 3, 3)
     # angle > nms_radius  ⇔  cos(angle) < cos(nms_radius); cos(angle) from trace.
     cos_thresh = math.cos(math.radians(nms_radius_deg))
+    # The orbit of each kept rotation, R R_g over the point group; the identity
+    # alone when no symmetry is supplied.
+    G = (torch.eye(3, dtype=torch.float64).unsqueeze(0) if sym_cart is None
+         else sym_cart.to(torch.float64).cpu())
     kept_idx: List[int] = []
-    kept_R = torch.empty((keep_at_most, 3, 3), dtype=torch.float64)
+    kept_orbit = torch.empty((keep_at_most, G.shape[0], 3, 3), dtype=torch.float64)
     count = 0
     for i_t in order:
         Ri = R_all[i_t]
         if count > 0:
-            trace = torch.einsum("kij,ij->k", kept_R[:count], Ri)
+            trace = torch.einsum("kgij,ij->kg", kept_orbit[:count], Ri)
             cos_theta = ((trace - 1.0) * 0.5).clamp(min=-1.0, max=1.0)
-            # Some kept rotation within nms_radius (cos_theta > cos_thresh) → skip.
+            # Some kept rotation, or a mate of one, within nms_radius → skip.
             if bool((cos_theta > cos_thresh).any()):
                 continue
-        kept_R[count] = Ri
+        kept_orbit[count] = Ri.unsqueeze(0) @ G
         kept_idx.append(i_t)
         count += 1
         if count >= keep_at_most:
@@ -86,11 +103,15 @@ def find_rotation_peaks(
     n_peaks: int = 500,
     sigma_threshold: float = -5.0,
     nms_radius_deg: float = 6.0,
+    sym_cart: Optional[torch.Tensor] = None,
 ) -> List[RotationPeak]:
     """Greedy SO(3) NMS over the adaptive sample list.
 
     Returns peaks sorted by descending value, capped at ``n_peaks`` and
-    filtered by ``sigma >= sigma_threshold``.
+    filtered by ``sigma >= sigma_threshold``. With ``sym_cart`` -- the crystal's
+    point-group rotations as Cartesian ``(n_ops, 3, 3)`` matrices -- symmetry
+    mates of a kept peak are suppressed too, so every returned peak is a
+    distinct orientation.
     """
     values = arf.values
     if values.numel() == 0:
@@ -122,6 +143,7 @@ def find_rotation_peaks(
         a, b, g, v,
         nms_radius_deg=nms_radius_deg,
         keep_at_most=n_peaks,
+        sym_cart=sym_cart,
     )
 
     # Gather kept peaks and move to CPU once (avoids a per-peak device sync).

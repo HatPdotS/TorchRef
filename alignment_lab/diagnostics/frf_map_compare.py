@@ -151,7 +151,7 @@ def _orbit_of_identity(data):
     symops = data.spacegroup.matrices.to(torch.float64).cpu()
     recip = data.cell.reciprocal_basis_matrix.to(torch.float64).cpu()
     I = torch.eye(3, dtype=torch.float64)
-    return symmetry_orbit(I, symops, side="left", frame="cart",
+    return symmetry_orbit(I, symops, side="right", frame="cart",
                           reciprocal_basis=recip)
 
 

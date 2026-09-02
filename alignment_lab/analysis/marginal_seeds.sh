@@ -14,12 +14,12 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
 #SBATCH --constraint=cpu_epyc9335
-#SBATCH --array=0-3
+#SBATCH --array=0-5
 set -uo pipefail
 REPO=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement
 PY=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/.dev/bin/python
-# Two known-marginal structures and two the panel has never lost, as controls.
-PDBS=(2DQ6 6G9X 1DAW 3K7M)
+# The four structures the translation search used to mis-place, and two controls.
+PDBS=(2DQ6 6G9X 1DAW 3K7M 3VRJ 4BX9)
 PDB=${PDBS[$SLURM_ARRAY_TASK_ID]}
 cd "$REPO"
 export PYTHONPATH="$REPO:$REPO/alignment_lab" TORCHREF_NUM_THREADS=4

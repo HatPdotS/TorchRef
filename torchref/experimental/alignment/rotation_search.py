@@ -124,8 +124,9 @@ class RotationSolutions:
         ``(n, 3, 3)`` float64. ``rotations[i]`` maps the search-model frame onto
         the crystal frame, so the coordinate rotation that places the model is
         its transpose: ``model.copy().rotate(rotations[i].T)``. Each is
-        determined only up to the crystal's rotational symmetry, so a solution
-        and its symmetry mates are the same answer.
+        determined only up to the crystal's rotational symmetry -- its mates are
+        ``rotations[i] @ R_g`` -- and the list carries one representative per
+        orbit, so consecutive entries are distinct orientations.
     scores : torch.Tensor
         ``(n,)`` rotation-function value at each orientation.
     z_scores : torch.Tensor
@@ -445,6 +446,13 @@ def search_peaks(
         # `frf/preprocessing` with no production caller at all -- it was kept for
         # the ML rescore, and that was deleted.
 
+        # Point-group rotations in the Cartesian frame, so the peak finder can
+        # treat an orientation and its symmetry mates as one peak. As a set
+        # these equal B S B^-1; `hkl_symops_to_cartesian` returns the same
+        # rotations in a different order.
+        from .sh import hkl_symops_to_cartesian
+        sym_cart = hkl_symops_to_cartesian(sg_mats, rec_basis)
+
         engine = FastRotationFunction(
             s_obs, F_obs, centric, sg_mats,
             L=L, d_min=d_min, d_max=d_max,
@@ -456,6 +464,7 @@ def search_peaks(
             s_mag_asu=s_mag_asu,
             obs_weight=obs_weight, snr_cap=snr_cap, trust_cap=trust_cap,
             shell_variance_weights=shell_variance_weights,
+            sym_cart=sym_cart,
         )
         _arf, peaks = engine.score_model(
             s_calc, F_calc, n_peaks=n_peaks,

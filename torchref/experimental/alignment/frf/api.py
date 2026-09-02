@@ -154,8 +154,15 @@ class FastRotationFunction:
         snr_cap: float = DEFAULT_SNR_CAP,
         trust_cap: float = DEFAULT_TRUST_CAP,
         shell_variance_weights: bool = False,
+        sym_cart: Optional[torch.Tensor] = None,
     ):
         self.device = s_obs.device
+        # The point group as Cartesian rotations, for the peak finder: with it,
+        # the returned peaks are distinct orientations rather than an
+        # orientation and its mates. `sym_mats` above is in the fractional
+        # basis and only detects the z-axis order; a direct caller without a
+        # cell cannot supply this and gets the plain suppression.
+        self.sym_cart = sym_cart
 
         # `L` and `d_min` arrive already coupled: the caller runs
         # `phaser_lmax_resolution` because it needs the same pair to size the
@@ -414,5 +421,6 @@ class FastRotationFunction:
             n_peaks=n_peaks,
             sigma_threshold=sigma_threshold,
             nms_radius_deg=max(2.0 * self.grid_sampling_deg, 6.0),
+            sym_cart=self.sym_cart,
         )
         return arf, peaks

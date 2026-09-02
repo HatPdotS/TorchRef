@@ -111,7 +111,7 @@ def run_one(pdb: str, trial: int, arm: Arm, base: FRFConfig,
     rank, ang = orbit_rank(
         peaks, R_true, data.spacegroup.matrices.to(torch.float64).cpu(),
         reciprocal_basis=data.cell.reciprocal_basis_matrix.to(torch.float64).cpu(),
-        side="left", frame="cart", thr_deg=thr_deg,
+        side="right", frame="cart", thr_deg=thr_deg,
     )
     row = {"experiment": EXPERIMENT, "pdb": pdb, "trial": trial,
            "arm": arm.name, "seed": seed}

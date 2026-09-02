@@ -87,7 +87,7 @@ def _orbit_of_identity(data):
     recip = data.cell.reciprocal_basis_matrix.to(torch.float64).cpu()
     return symmetry_orbit(
         torch.eye(3, dtype=torch.float64), symops,
-        side="left", frame="cart", reciprocal_basis=recip,
+        side="right", frame="cart", reciprocal_basis=recip,
     )
 
 
