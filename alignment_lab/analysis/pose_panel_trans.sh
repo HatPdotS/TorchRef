@@ -1,6 +1,7 @@
 #!/bin/bash
-# The 10 x 3 panel with the translation error reported, at the default
-# translation window (all data) and at 15-4 A. The old gate was rotation-only.
+# The 10 x 3 panel with the pose gate (rotation AND translation), at the
+# pipeline's default translation window and with the window removed. The
+# default is now the rotation search's own window; "full" is what it used to be.
 #SBATCH --job-name=ptrans
 #SBATCH --output=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/slurm/%x_%A_%a.out
 #SBATCH --error=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/slurm/%x_%A_%a.err
@@ -20,8 +21,8 @@ export PYTHONPATH="$REPO:$REPO/alignment_lab" TORCHREF_NUM_THREADS=8
 export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=""
 for T in 0 1 2; do
   "$PY" -u alignment_lab/diagnostics/pose_recovery.py --pdb "$PDB" --trial $T --arms llg \
-    2>/dev/null | grep '^ROW ' | sed 's/^ROW/ROW window=full/'
+    2>/dev/null | grep '^ROW ' | sed 's/^ROW/ROW window=default/'
   "$PY" -u alignment_lab/diagnostics/pose_recovery.py --pdb "$PDB" --trial $T --arms llg \
-    --tf-d-min 4.0 --tf-d-max 15.0 2>/dev/null | grep '^ROW ' | sed 's/^ROW/ROW window=15-4/'
+    --tf-d-min 0 --tf-d-max inf 2>/dev/null | grep '^ROW ' | sed 's/^ROW/ROW window=full/'
 done
 echo DONE

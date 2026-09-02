@@ -252,9 +252,10 @@ class MolecularReplacementPipeline(DeviceMixin):
         # proxy got the ordering wrong, so the comparison has to be made end to
         # end. See the sort in `run` for what that measured.
         rank_by: str = "llg",
-        # Resolution window for the TRANSLATION set only, independent of the
-        # rotation search's [d_max, d_min]. None means no cut, which is what
-        # this stage has always done -- see `_prepare_translation_arrays`.
+        # Resolution window for the translation set. None means the rotation
+        # search's own [d_max, d_min], so one window and one normalisation
+        # serve both stages. Pass 0.0 / inf to remove a cut -- and see
+        # `_prepare_translation_arrays` for what the uncut set does.
         tf_d_min: Optional[float] = None,
         tf_d_max: Optional[float] = None,
     ):
@@ -287,8 +288,8 @@ class MolecularReplacementPipeline(DeviceMixin):
             raise ValueError(
                 f"rank_by={rank_by!r}; expected 'r', 'corr' or 'llg'.")
         self.rank_by = rank_by
-        self.tf_d_min = tf_d_min
-        self.tf_d_max = tf_d_max
+        self.tf_d_min = float(d_min if tf_d_min is None else tf_d_min)
+        self.tf_d_max = float(d_max if tf_d_max is None else tf_d_max)
 
         self._timer = _StageTimer(enabled=verbose >= 2)
         # Filled in by run().
@@ -541,15 +542,20 @@ class MolecularReplacementPipeline(DeviceMixin):
         """Mask the observations for the translation search and normalise them once.
 
         The window is ``[tf_d_max, tf_d_min]`` on top of the dataset's own
-        validity mask. Both default to ``None``, meaning **no resolution cut** --
-        which is what this stage has always done, though it used to claim
-        otherwise. So the translation search sees the data's full resolution
-        while the rotation search runs at ``[d_max, d_min]`` = [15, 4] A. That
-        asymmetry is deliberate on one side and unexamined on the other: the
-        rotation function is bandwidth-limited and cannot use high-resolution
-        terms, and nobody has measured what the translation function wants. The
-        parameter exists so that choosing is possible; the default does not
-        choose.
+        validity mask, and by default it is the rotation search's ``[d_max,
+        d_min]``: one resolution window, one Wilson normalisation, both stages.
+
+        The uncut set is not a safe default. With all data -- 228k reflections
+        to 1.5 A on 2DQ6 -- the translation search places the four largest panel
+        structures (2DQ6, 3VRJ, 4BX9, 6G9X) at the right orientation and 20-56 A
+        from the true position, on every trial, while its own score is HIGHER
+        at the wrong place than at the deposited pose (0.665 against 0.350 on
+        2DQ6, where the likelihood is 1616 against 157865). At 15-4 A the same
+        search recovers all thirty poses to within 0.32 A. The objective's
+        calc side is raw ``|F_calc|^2``, so at high resolution it is dominated
+        by whatever reflections happen to carry the largest calculated
+        intensity rather than by the fit; the window is the first line of
+        defence and the normalisation of that objective is the second.
         """
         data = self.data
         device = self.device
@@ -561,14 +567,13 @@ class MolecularReplacementPipeline(DeviceMixin):
             tmask = torch.ones(
                 F_obs_full.shape[0], dtype=torch.bool, device=F_obs_full.device,
             )
-        if self.tf_d_min is not None or self.tf_d_max is not None:
-            rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)
-            s_all = (hkl_full.to(torch.float64) @ rec_basis.to(hkl_full.device)
-                     ).norm(dim=-1)
-            if self.tf_d_min is not None:
-                tmask = tmask & (s_all <= 1.0 / float(self.tf_d_min))
-            if self.tf_d_max is not None:
-                tmask = tmask & (s_all >= 1.0 / float(self.tf_d_max))
+        rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)
+        s_all = (hkl_full.to(torch.float64) @ rec_basis.to(hkl_full.device)
+                 ).norm(dim=-1)
+        if self.tf_d_min > 0.0:
+            tmask = tmask & (s_all <= 1.0 / self.tf_d_min)
+        if np.isfinite(self.tf_d_max):
+            tmask = tmask & (s_all >= 1.0 / self.tf_d_max)
         self._tmask = tmask
 
         sig_F_full = getattr(data, "F_sigma", None)
@@ -611,6 +616,20 @@ class MolecularReplacementPipeline(DeviceMixin):
             # _modules and never runs the property setter -- a silent no-op.
             rotated_k.spacegroup = data.spacegroup.hm
         rotated_p1 = rotated_k.copy()
+        # Size the P1 copy's FFT grid to the translation set, not to the
+        # model's default 1.0 A: |s| is invariant under the symmetry rotations,
+        # so every rotated index the evaluator is asked for lies inside
+        # 1/tf_d_min. This is where the placement stage spent most of its time,
+        # on a grid 30-48x larger than the reflections it was asked for.
+        #
+        # Two thirds of the window's resolution, not the resolution itself. At
+        # max_res = tf_d_min the transform's coherence with the 1.0 A grid over
+        # the 15-4 A set is 0.987 on 2DQ6 (0.9987-0.9999 on 1DAW, 3K7M, 4BX9);
+        # at tf_d_min/1.5 it is 0.9995-1.0000 everywhere, at 10-38 ms against
+        # 200-860 ms. max_res first -- the space-group setter rebuilds the FFT
+        # and reads it.
+        if self.tf_d_min > 0.0:
+            rotated_p1.max_res = self.tf_d_min / 1.5
         rotated_p1.spacegroup = "P 1"
         evaluator = DirectModelEvaluator(rotated_p1)
 

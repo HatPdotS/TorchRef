@@ -1,23 +1,22 @@
 """
-Integration test for `ModelFT.fit_to_data`: end-to-end Patterson rotation
-search + Sim MLRF rescoring, returning a re-oriented ModelFT.
+Integration test for ``align_model_to_data``: end-to-end rotation search
+returning a re-oriented ModelFT.
 
 Setup:
 - F_obs: real 1DAW.mtz at its native C2 spacegroup.
 - Search model: P1 copy of 1DAW.pdb whose atomic coordinates have been
   rotated by a random R_true.
 
-Acceptance: after `fit_to_data`, the returned model's atom coordinates are
+Acceptance: after ``align_model_to_data``, the returned model's atom coordinates are
 within 8° rotation distance (modulo C2 symmetry of F_obs) of the un-rotated
 canonical orientation, for 5/5 random trials.
 """
-import math
 from pathlib import Path
 
 import pytest
 import torch
 
-from torchref.experimental.alignment.align import align_model_to_data
+from torchref.experimental.alignment import align_model_to_data
 from torchref.experimental.alignment.frf.rotation_utils import rotation_angular_distance_deg
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
@@ -67,17 +66,30 @@ def _best_alignment_rotation(xyz_a: torch.Tensor, xyz_b: torch.Tensor) -> torch.
     return R
 
 
+def _cartesian_symops(data) -> torch.Tensor:
+    """Point-group rotations as Cartesian matrices, ``B S B^-1``.
+
+    ``spacegroup.matrices`` act on fractional coordinates. A Kabsch rotation is
+    Cartesian, and comparing the two directly is only right when the cell is
+    orthogonal and the operator diagonal -- in a trigonal cell two of the six
+    mates of a correct placement read as 30 and 21 degrees.
+    """
+    B = data.cell.fractional_matrix.to(torch.float64)
+    S = data.spacegroup.matrices.to(torch.float64)
+    return B @ S @ torch.linalg.inv(B)
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("trial", range(5))
 def test_fit_to_data_real_1daw(real_setup, trial):
     """
-    Apply a random R_true to a P1 search model, call `fit_to_data(real_F_obs)`,
-    and verify the returned model is within 8° rotation distance of the
+    Apply a random R_true to a P1 search model, align it to the real data, and
+    verify the returned model is within 8° rotation distance of the
     canonical orientation (modulo C2 symmetry of F_obs).
     """
     data, make_model = real_setup
-    sym_mats = data.spacegroup.matrices.to(torch.float64)
+    sym_mats = _cartesian_symops(data)
 
     canonical = make_model()
     xyz_canonical = canonical.xyz().clone()
@@ -91,7 +103,7 @@ def test_fit_to_data_real_1daw(real_setup, trial):
         data,
         d_min=4.0, d_max=15.0,
         n_shells=20,
-        n_rotation_peaks=200, n_ml_refine=200,
+        n_rotation_peaks=200,
         do_translation=False,  # this test only checks rotation accuracy
         verbose=0,
     )

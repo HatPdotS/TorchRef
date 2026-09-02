@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from torchref.experimental.alignment.align import align_model_to_data
+from torchref.experimental.alignment import align_model_to_data
 from torchref.experimental.alignment.frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
