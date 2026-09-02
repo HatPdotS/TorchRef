@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from torchref.base.fourier import fft, ifft
-from torchref.config import canonical_device, dtypes, get_float_dtype
+from torchref.config import canonical_device, dtypes, get_default_device, get_float_dtype
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
@@ -872,7 +872,7 @@ class ModelFT(CachedForwardMixin, Model):
             State dictionary from torch.save(model.state_dict(), ...).
         device : torch.device, optional
             Move the restored model here once it is built. The restore itself always
-            runs on CPU, and ``None`` leaves it there; see
+            runs on CPU; ``None`` then moves it to the configured default device; see
             :meth:`Model.create_from_state_dict`.
         verbose : int, optional
             Verbosity level. Default is 1.
@@ -892,9 +892,12 @@ class ModelFT(CachedForwardMixin, Model):
         :meth:`load`, so the positive-definite parametrization round-trips.
         """
         # Build on CPU throughout and move once at the end, as Model does; the grid
-        # setup below otherwise sizes an accelerator allocation for a model the caller
-        # has not asked to put there.
-        target_device = canonical_device(device) if device is not None else None
+        # setup below otherwise sizes an accelerator allocation before the model is
+        # placed. The final target is the caller's device, or the configured default
+        # when they name none, so a restore lands beside a same-config model.
+        target_device = (
+            canonical_device(device) if device is not None else get_default_device()
+        )
         device = torch.device("cpu")
         if dtype_float is None:
             dtype_float = get_float_dtype()
@@ -991,8 +994,8 @@ class ModelFT(CachedForwardMixin, Model):
 
         instance.load_state_dict(filtered_state_dict, strict=False)
 
-        if target_device is not None:
-            instance.to(target_device)
+        # Always placed: target_device is the caller's device or the configured default.
+        instance.to(target_device)
 
         instance.reset_cache()
 
