@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- Every hard-coded dtype in the alignment package either moved to the configured dtype or carries a ``# dtype-ok:`` justification, as the dtype-conformance guard requires: three casts to double dropped from the empirical sigma_A ratio and the dense P1 transform, the translation set's resolution mask and peak translations use the configured float dtype, and the rest (index tensors, host-side 3x3 rotation algebra, the rotation function's double accumulation, the anisotropy fit) are annotated
 - Removed ``DirectModelEvaluator``; the translation search evaluates an ordinary P1 ``ModelFT`` directly. With the model's grid derived lazily from cell, space group and ``max_res`` there was nothing left for the wrapper to do
 - The molecular-replacement pipeline carries 10 rotation candidates by default instead of 25. With symmetry mates suppressed the rotation function's first peak is the true orientation in 50 of 50 pose-gated cells, and the panel is 30/30 at either depth. Warm on one EPYC 9335 node: 1DAW 0.42 s, 2DQ6 0.67 s, 6G9X 0.67 s, 3K7M 1.02 s, 4BX9 1.11 s per alignment
 - The fast translation function accumulates only the upper triangle of symmetry pairs; the lower triangle is its conjugate mirror and the diagonal a constant. Half the scatter, which is the stage's cost on high-symmetry cells: 3K7M's translation stage 1.04 s to 0.72 s. ``MRSolution.candidate_index`` records each solution's position in the rotation function's list

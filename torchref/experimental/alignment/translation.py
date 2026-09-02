@@ -146,7 +146,7 @@ class TranslationObs:
         rec_basis = real_cell.reciprocal_basis_matrix.to(dev).to(real)
         s_mag = (hkl_i.to(real) @ rec_basis).norm(dim=-1)
 
-        hkl_l = hkl_i.round().to(torch.int64)
+        hkl_l = hkl_i.round().to(torch.int64)  # dtype-ok: Miller indices are integers
         # friedel=False: Wilson's <I> = eps*Sigma counts the operations mapping
         # h to itself, which add coherently and set the mean. The Friedel-folded
         # branch changes the distribution instead, and that is centricity --
@@ -241,7 +241,7 @@ def prepare_candidate(
     # h_R[i, n, d] = sum_e hkl[n, e] sym_R[i, e, d]: the h.S convention.
     h_R = torch.einsum("ne,ied->ind", hkl, sym_R)
     phase = torch.exp((2j * math.pi) * torch.einsum("ne,ie->in", hkl, sym_t).to(cplx))
-    hkl_SN = h_R.reshape(-1, 3).round().to(torch.int64).to(model_p1.xyz().device)
+    hkl_SN = h_R.reshape(-1, 3).round().to(torch.int64).to(model_p1.xyz().device)  # dtype-ok: Miller indices are integers
     with torch.no_grad():
         F_all = model_p1(hkl_SN).to(device).reshape(S, N).to(cplx)
     G_raw = F_all * phase
@@ -387,7 +387,7 @@ def fast_translation_function(
     G = cand.G.to(device).to(cplx)
     S, N = G.shape
     coeff = obs.coeff.to(device).to(cplx)
-    h_R_int = cand.h_R.round().to(torch.int64)
+    h_R_int = cand.h_R.round().to(torch.int64)  # dtype-ok: Miller indices are integers
 
     # The pair (j, i) is the conjugate of (i, j) at -dh, so the map is twice
     # the real part of the upper triangle's transform plus the diagonal, which

@@ -55,7 +55,7 @@ def _so3_greedy_nms(
     """
     n = values.shape[0]
     if n == 0:
-        return torch.empty(0, dtype=torch.int64, device=values.device)
+        return torch.empty(0, dtype=torch.int64, device=values.device)  # dtype-ok: index tensor; index_add_/gather need int64
     # The greedy walk is inherently sequential and latency-bound; on GPU a
     # per-iteration `.item()` sync would dominate. Move the (tiny) candidate
     # rotations to CPU once and run the loop there with no device syncs, a
@@ -71,16 +71,16 @@ def _so3_greedy_nms(
     # sitting exactly on it.
     R_all = (
         rotation_matrix_euler_zyz(torch.stack([alphas, betas, gammas], dim=-1))
-        .to(torch.float64).cpu()
+        .to(torch.float64).cpu()  # dtype-ok: 3x3 rotation algebra in double on the host
     )  # (n, 3, 3)
     # angle > nms_radius  ⇔  cos(angle) < cos(nms_radius); cos(angle) from trace.
     cos_thresh = math.cos(math.radians(nms_radius_deg))
     # The orbit of each kept rotation, R R_g over the point group; the identity
     # alone when no symmetry is supplied.
-    G = (torch.eye(3, dtype=torch.float64).unsqueeze(0) if sym_cart is None
-         else sym_cart.to(torch.float64).cpu())
+    G = (torch.eye(3, dtype=torch.float64).unsqueeze(0) if sym_cart is None  # dtype-ok: 3x3 rotation algebra in double on the host
+         else sym_cart.to(torch.float64).cpu())  # dtype-ok: 3x3 rotation algebra in double on the host
     kept_idx: List[int] = []
-    kept_orbit = torch.empty((keep_at_most, G.shape[0], 3, 3), dtype=torch.float64)
+    kept_orbit = torch.empty((keep_at_most, G.shape[0], 3, 3), dtype=torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
     count = 0
     for i_t in order:
         Ri = R_all[i_t]
@@ -95,7 +95,7 @@ def _so3_greedy_nms(
         count += 1
         if count >= keep_at_most:
             break
-    return torch.tensor(kept_idx, dtype=torch.int64, device=values.device)
+    return torch.tensor(kept_idx, dtype=torch.int64, device=values.device)  # dtype-ok: index tensor; index_add_/gather need int64
 
 
 def find_rotation_peaks(

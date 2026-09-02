@@ -34,7 +34,7 @@ LEGENDRE_BACKENDS = BackendTable(
             name="cpu_fused",
             kernel=(_CPU, "legendre_shell_accumulate", "legendre_shell_accumulate"),
             device="cpu",
-            dtypes=(torch.float32,),
+            dtypes=(torch.float32,),  # dtype-ok: backend capability declaration
             # The kernel reads every array through a raw `float*`, so a mixed-dtype
             # call would reinterpret the buffer rather than convert it. The gate
             # keeps that from reaching the kernel; the kernel checks it too, since

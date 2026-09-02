@@ -51,10 +51,10 @@ def _wigner_eig_table(L: int):
     table = []
     for l in range(1, L):
         sz = 2 * l + 1
-        p = torch.arange(sz - 1, dtype=torch.float64)
+        p = torch.arange(sz - 1, dtype=torch.float64)  # dtype-ok: eigendecomposition in double for the Wigner-d recursion
         sup = 0.5 * torch.sqrt((2 * l - p) * (p + 1.0))
         A = torch.diag(sup, 1) - torch.diag(sup, -1)           # A = -i J_y
-        w, V = torch.linalg.eigh(1j * A.to(torch.complex128))  # w∈[-l..l]
+        w, V = torch.linalg.eigh(1j * A.to(torch.complex128))  # w∈[-l..l]  # dtype-ok: eigendecomposition in double for the Wigner-d recursion
         table.append((w, V))
     _WIGNER_EIG_CACHE[key] = table
     return table
@@ -91,14 +91,14 @@ def _wigner_d_blocks(L: int, betas: torch.Tensor, device: torch.device,
         int(L),
         str(canonical_device(device)),
         dtype,
-        tuple(betas.detach().to(torch.float64).cpu().tolist()),
+        tuple(betas.detach().to(torch.float64).cpu().tolist()),  # dtype-ok: memo key: exact host-side doubles
     )
     hit = _WIGNER_D_CACHE.get(key)
     if hit is not None:
         return hit
 
     eig_table = _wigner_eig_table(L)                           # host, cached
-    betas_host = betas.detach().to(torch.float64).cpu()
+    betas_host = betas.detach().to(torch.float64).cpu()  # dtype-ok: memo key: exact host-side doubles
     blocks = []
     for l in range(1, L):
         w, V = eig_table[l - 1]                                # data-independent
@@ -147,7 +147,7 @@ def wigner_contraction_per_beta(
     # working precision, so widening here would buy nothing and cost a 2x
     # complex buffer in this stage and in the FFT it feeds.
     xi = xi_lmn
-    real_dtype = torch.float64 if xi.dtype == torch.complex128 else torch.float32
+    real_dtype = torch.float64 if xi.dtype == torch.complex128 else torch.float32  # dtype-ok: follows the accumulator's width
 
     # Per-l loop over the small-d blocks, which come from the J_y
     # eigendecomposition (small_d_stable's method, stable to any l). Contract

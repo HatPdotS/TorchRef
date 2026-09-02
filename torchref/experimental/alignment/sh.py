@@ -50,8 +50,8 @@ def legendre_recurrence_coefficients(L: int, dtype, device):
     runs this recurrence itself, fused with its own accumulation, and two copies
     of these formulae would be two chances to get them subtly different.
     """
-    ll = torch.arange(L, dtype=torch.float64, device=device).view(L, 1)
-    mm = torch.arange(L, dtype=torch.float64, device=device).view(1, L)
+    ll = torch.arange(L, dtype=torch.float64, device=device).view(L, 1)  # dtype-ok: harmonic indices as exact doubles
+    mm = torch.arange(L, dtype=torch.float64, device=device).view(1, L)  # dtype-ok: harmonic indices as exact doubles
     valid = ll > mm
     denom = (ll - mm) * (ll + mm)
     denom_safe = torch.where(valid, denom, torch.ones_like(denom))
@@ -62,7 +62,7 @@ def legendre_recurrence_coefficients(L: int, dtype, device):
         b_num / torch.where(b_den == 0, torch.ones_like(b_den), b_den), min=0.0))
     a = torch.where(valid, a, torch.zeros_like(a)).to(dtype)
     b = torch.where(valid, b, torch.zeros_like(b)).to(dtype)
-    m_arange = torch.arange(L, dtype=torch.float64, device=device)
+    m_arange = torch.arange(L, dtype=torch.float64, device=device)  # dtype-ok: harmonic indices as exact doubles
     sect = torch.sqrt(
         (2.0 * m_arange + 1.0) / (2.0 * m_arange).clamp(min=1.0)).to(dtype)
     return a, b, sect
@@ -131,9 +131,9 @@ def _bar_legendre_recurrence(
     if keep_l is None:
         rows = torch.arange(L, device=device)
     else:
-        rows = keep_l.to(device=device, dtype=torch.long)
+        rows = keep_l.to(device=device, dtype=torch.long)  # dtype-ok: index tensor; index_add_/gather need int64
     # l -> its position in the output, or -1 when it is not kept.
-    where = torch.full((L,), -1, dtype=torch.long, device=device)
+    where = torch.full((L,), -1, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
     where[rows] = torch.arange(rows.numel(), device=device)
     where_list = where.tolist()
 
@@ -175,12 +175,12 @@ def get_axis_order(sym_mats: torch.Tensor, axis: int) -> int:
     coefficients: the Patterson is invariant under the spacegroup rotations,
     so m-values that violate the highest-order axis symmetry are pure noise.
     """
-    a = torch.zeros(3, dtype=torch.float64, device=sym_mats.device)
+    a = torch.zeros(3, dtype=torch.float64, device=sym_mats.device)  # dtype-ok: 3x3 rotation algebra in double on the host
     a[axis] = 1.0
     max_order = 1
     n_ops = sym_mats.shape[0]
     for k in range(n_ops):
-        R = sym_mats[k].to(torch.float64)
+        R = sym_mats[k].to(torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
         # Axis must be invariant under R (proper or improper rotation about it).
         if (R @ a - a).norm().item() > 1e-3:
             continue
@@ -241,7 +241,7 @@ def equal_count_shell_edges(
     s_sorted, _ = torch.sort(s)
     N = s_sorted.numel()
     # quantile-based partition
-    idx = torch.linspace(0, N - 1, P + 1, dtype=torch.float64, device=s.device).round().long()
+    idx = torch.linspace(0, N - 1, P + 1, dtype=torch.float64, device=s.device).round().long()  # dtype-ok: equal-count edge positions in double, then rounded
     edges = s_sorted[idx]
     # nudge endpoints so the data is fully covered (avoid floating-point miss)
     if s_min is not None:
@@ -317,8 +317,8 @@ def fit_overall_anisotropy(
         reflections survive to constrain seven parameters.
     """
     valid = shell_idx >= 0
-    F = F_obs[valid].to(torch.float64)
-    s = s_vectors[valid].to(torch.float64)
+    F = F_obs[valid].to(torch.float64)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
+    s = s_vectors[valid].to(torch.float64)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
     idx = shell_idx[valid]
     cen = centric[valid].bool()
 
@@ -326,11 +326,11 @@ def fit_overall_anisotropy(
     F, s, idx, cen = F[ok], s[ok], idx[ok], cen[ok]
 
     I = F * F
-    count = torch.zeros(P, dtype=torch.int64, device=F.device)
-    total = torch.zeros(P, dtype=torch.float64, device=F.device)
+    count = torch.zeros(P, dtype=torch.int64, device=F.device)  # dtype-ok: index tensor; index_add_/gather need int64
+    total = torch.zeros(P, dtype=torch.float64, device=F.device)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
     count.index_add_(0, idx, torch.ones_like(idx))
     total.index_add_(0, idx, I)
-    mean_I = (total / count.clamp(min=1).to(torch.float64)).clamp(min=1e-30)
+    mean_I = (total / count.clamp(min=1).to(torch.float64)).clamp(min=1e-30)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
 
     keep = (count >= min_count)[idx]
     if int(keep.sum()) < 50:
@@ -348,7 +348,7 @@ def fit_overall_anisotropy(
                    -2.0 * (torch.pi ** 2) * quad], dim=1)
     w = torch.where(cenk, torch.full_like(ratio, 0.5), torch.ones_like(ratio))
 
-    theta = torch.zeros(7, dtype=torch.float64, device=F.device)
+    theta = torch.zeros(7, dtype=torch.float64, device=F.device)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
     for _ in range(n_iter):
         model = torch.exp((A @ theta).clamp(min=-20.0, max=20.0))
         J = model.unsqueeze(1) * A
@@ -395,7 +395,7 @@ def hkl_symops_to_cartesian(
     -------
     sym_mats_cart : torch.Tensor, shape (n_ops, 3, 3), real
     """
-    dtype = torch.float64
+    dtype = torch.float64  # dtype-ok: 3x3 rotation algebra in double on the host
     M = rec_basis.to(dtype).transpose(-1, -2)            # (3, 3)
     M_inv = torch.linalg.inv(M)
     S = sg_mats.to(dtype)                                 # (n_ops, 3, 3)
@@ -514,7 +514,7 @@ def compute_patterson_shell_variance(
     valid = shell_idx >= 0
     patt_v = patt[valid]
     idx_v = shell_idx[valid]
-    count = torch.zeros(P, dtype=torch.int64, device=device)
+    count = torch.zeros(P, dtype=torch.int64, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
     count.index_add_(0, idx_v, torch.ones_like(idx_v))
     sum1 = torch.zeros(P, dtype=dtype, device=device)
     sum2 = torch.zeros(P, dtype=dtype, device=device)

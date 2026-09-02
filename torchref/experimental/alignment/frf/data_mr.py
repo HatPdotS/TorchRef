@@ -142,7 +142,7 @@ def spherical_bessel_table(
     inv_threshold = 1.0 / threshold
     # Rescales applied so far, per element. Every element's ladder sits in the
     # single frame 2**(-_BESSEL_RESCALE_EXP * n_rescales).
-    n_rescales = torch.zeros_like(x64, dtype=torch.int32)
+    n_rescales = torch.zeros_like(x64, dtype=torch.int32)  # dtype-ok: small integer counter
 
     for n in range(n_start, 0, -1):
         j_low = (2.0 * n + 1.0) * inv_x * j_mid - j_high
@@ -161,7 +161,7 @@ def spherical_bessel_table(
             j_high = j_high * factor
             if n - 1 <= u_max:
                 j_table[n - 1:] = j_table[n - 1:] * factor
-            n_rescales = n_rescales + over.to(torch.int32)
+            n_rescales = n_rescales + over.to(torch.int32)  # dtype-ok: small integer counter
 
     true_j0 = torch.sin(x64) * inv_x
     true_j0 = torch.where(x64 < 1e-30, torch.ones_like(x64), true_j0)
@@ -249,7 +249,6 @@ def bessel_sh_expand(
     # from the input: the input is deliberately wider (see the docstring).
     comp_real = get_float_dtype()
     complex_dtype = get_complex_dtype()
-    real_dtype = comp_real
 
     lmax = L - 1
     lmax_even = lmax if (lmax % 2 == 0) else (lmax - 1)
@@ -276,15 +275,15 @@ def bessel_sh_expand(
             n_list.append(n)
             u_list.append(u)
             w_list.append(math.sqrt(float(2 * u + 1)))
-    l_idx = torch.tensor(l_list, dtype=torch.long, device=device)
-    n_idx = torch.tensor(n_list, dtype=torch.long, device=device)
-    u_idx = torch.tensor(u_list, dtype=torch.long, device=device)
+    l_idx = torch.tensor(l_list, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
+    n_idx = torch.tensor(n_list, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
+    u_idx = torch.tensor(u_list, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
     w_vec = torch.tensor(w_list, dtype=comp_real, device=device)
     # Only even degrees l ∈ [2, lmax_even] carry signal (odd-l and l=0 are zeroed
     # by Patterson centrosymmetry). Compute / contract Y_lm on these rows only —
     # the assembly + einsum are the bottleneck, so this ~halves them. The full
     # c_nlm keeps the (L, ...) shape with odd/zero rows left at zero.
-    even_l_idx = torch.tensor(even_ls, dtype=torch.long, device=device)
+    even_l_idx = torch.tensor(even_ls, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
 
     M = s_vectors.shape[0]
     einsum_dtype = complex_dtype
@@ -317,8 +316,8 @@ def bessel_sh_expand(
     # Separate resolutions for the two factors: the radial term needs a fine
     # |s| key, the angular term does not. One shared key forces the finer of the
     # two on both, which costs merges the angular part never needed.
-    k_s = (s_mag_all * _GROUP_SCALE_S).round().to(torch.int64)
-    k_c = (cos_all * _GROUP_SCALE_COS).round().to(torch.int64) + _GROUP_SCALE_COS
+    k_s = (s_mag_all * _GROUP_SCALE_S).round().to(torch.int64)  # dtype-ok: exact clustering key; needs double
+    k_c = (cos_all * _GROUP_SCALE_COS).round().to(torch.int64) + _GROUP_SCALE_COS  # dtype-ok: exact clustering key; needs double
     key = k_s * (2 * _GROUP_SCALE_COS + 1) + k_c
     uniq_key, inverse = torch.unique(key, return_inverse=True)
     n_clusters = int(uniq_key.shape[0])
@@ -344,7 +343,7 @@ def bessel_sh_expand(
     # over the benchmark: 2.7 to 39 clusters per shell.
     uniq_ks, inv_s = torch.unique(k_s, return_inverse=True)
     n_shells = int(uniq_ks.shape[0])
-    shell_of_cluster = torch.zeros(n_clusters, dtype=torch.long, device=device)
+    shell_of_cluster = torch.zeros(n_clusters, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
     shell_of_cluster[inverse] = inv_s
     shell_smag = _group_mean(s_mag_all.to(comp_real), inv_s, n_shells)
 
@@ -443,7 +442,7 @@ def bessel_sh_expand(
     # answer c_pos is a few MB, so both stay in cache.
     c_pos = torch.zeros((N_radial, n_even, L), dtype=einsum_dtype, device=device)
 
-    rbytes = 4 if comp_real == torch.float32 else 8
+    rbytes = 4 if comp_real == torch.float32 else 8  # dtype-ok: byte-size lookup for a memory estimate
     per_cluster = rbytes * 6 * L
     cstep = max(1, min(n_clusters, CLUSTER_CHUNK_BYTES // max(1, per_cluster)))
     for cs in range(0, n_clusters, cstep):
@@ -563,8 +562,8 @@ def cross_correlate_xi(
     # backend without float64 this falls back to the coefficients' own dtype and
     # the run pays the accuracy noted above -- there is no third option there.
     acc = widest_complex_dtype(c_obs.coeffs.device)
-    if c_obs.coeffs.dtype == torch.complex128:
-        acc = torch.complex128          # never narrow what the caller widened
+    if c_obs.coeffs.dtype == torch.complex128:  # dtype-ok: double accumulation of an oscillatory sum -- never narrow what the caller widened
+        acc = torch.complex128          # never narrow what the caller widened  # dtype-ok: double accumulation of an oscillatory sum -- never narrow what the caller widened
     return torch.einsum(
         "rln,rlm->lmn",
         c_obs.coeffs.to(acc),

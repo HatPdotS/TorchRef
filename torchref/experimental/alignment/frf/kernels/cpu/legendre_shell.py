@@ -246,7 +246,7 @@ def shell_offsets(shell: torch.Tensor, n_shells: int) -> torch.Tensor:
     write their accumulator rows without atomics.
     """
     counts = torch.bincount(shell, minlength=n_shells)
-    offsets = torch.zeros(n_shells + 1, dtype=torch.long, device=shell.device)
+    offsets = torch.zeros(n_shells + 1, dtype=torch.long, device=shell.device)  # dtype-ok: index tensor; index_add_/gather need int64
     torch.cumsum(counts, dim=0, out=offsets[1:])
     return offsets
 

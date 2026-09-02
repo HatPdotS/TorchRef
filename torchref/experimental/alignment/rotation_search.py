@@ -186,8 +186,8 @@ def fit_anisotropy(
     """
     from .sh import hkl_symops_to_cartesian, symmetrize_anisotropy
 
-    rec_basis = data.cell.reciprocal_basis_matrix.detach().cpu().to(torch.float64)
-    hkl = data.hkl.detach().cpu().to(torch.float64)
+    rec_basis = data.cell.reciprocal_basis_matrix.detach().cpu().to(torch.float64)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
+    hkl = data.hkl.detach().cpu().to(torch.float64)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
     s_vec_all = hkl @ rec_basis
     s_mag_all = s_vec_all.norm(dim=-1)
     keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
@@ -196,7 +196,7 @@ def fit_anisotropy(
             f"Only {int(keep.sum())} reflections in [{d_min}, {d_max}] A, too "
             f"few for {n_shells} shells."
         )
-    F_obs = data.F.detach().cpu().to(torch.float64).abs()[keep]
+    F_obs = data.F.detach().cpu().to(torch.float64).abs()[keep]  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
     s_vec = s_vec_all[keep]
     s_mag = s_mag_all[keep]
     centric = (
@@ -211,7 +211,7 @@ def fit_anisotropy(
         F_obs, s_vec, shell_idx, centric, P=n_shells, min_count=20,
     )
     sym_cart = hkl_symops_to_cartesian(
-        data.spacegroup.matrices.detach().cpu().to(torch.float64), rec_basis,
+        data.spacegroup.matrices.detach().cpu().to(torch.float64), rec_basis,  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
     )
     return symmetrize_anisotropy(U, sym_cart)
 
@@ -259,10 +259,10 @@ def prepare_frf_inputs(
     """
     device = get_default_device()
 
-    F_obs = data.F.to(torch.float64).abs()
+    F_obs = data.F.to(torch.float64).abs()  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
     hkl_all = data.hkl
-    rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)
-    s_vec_all = hkl_all.to(torch.float64) @ rec_basis
+    rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
+    s_vec_all = hkl_all.to(torch.float64) @ rec_basis  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
     s_mag_all = s_vec_all.norm(dim=-1)
     keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
     if keep.sum().item() < n_shells * 5:
@@ -273,7 +273,7 @@ def prepare_frf_inputs(
     F_obs = F_obs[keep].to(device)
     sig_F = getattr(data, "F_sigma", None)
     if sig_F is not None:
-        sig_F = sig_F.to(torch.float64)[keep].to(device)
+        sig_F = sig_F.to(torch.float64)[keep].to(device)  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
     hkl = hkl_all[keep].to(device)
     s_vec = s_vec_all[keep].to(device)
     s_mag = s_mag_all[keep].to(device)
@@ -331,9 +331,9 @@ def search_peaks(
     # the rest of the codebase.
     device = resolve_device(data, model, device=device)
     with torch.no_grad():
-        rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)
+        rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
         hkl_all = data.hkl.to(device)
-        s_vec_all = hkl_all.to(torch.float64) @ rec_basis
+        s_vec_all = hkl_all.to(torch.float64) @ rec_basis  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
         s_mag_all = s_vec_all.norm(dim=-1)
 
         d_min_data = float(1.0 / s_mag_all.max().item())
@@ -360,10 +360,10 @@ def search_peaks(
         s_asu = s_vec_all[keep]
         s_mag_asu = s_mag_all[keep]
         F_obs = apply_overall_anisotropy(
-            data.F.to(torch.float64).abs().to(device)[keep], s_asu, U_aniso,
+            data.F.to(torch.float64).abs().to(device)[keep], s_asu, U_aniso,  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
         )
         sigF = (
-            data.F_sigma.to(torch.float64).to(device)[keep]
+            data.F_sigma.to(torch.float64).to(device)[keep]  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
             if getattr(data, "F_sigma", None) is not None
             else None
         )
@@ -393,7 +393,7 @@ def search_peaks(
         # orthogonal symmetry matrices, so using S.h works everywhere except
         # trigonal and hexagonal, where it mixes non-equivalent reflections into
         # one orbit.
-        sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
+        sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)  # dtype-ok: 3x3 rotation algebra in double on the host
         n_ops = int(sg_mats.shape[0])
         # `expand_reciprocal` is the package's one implementation of this
         # contraction, and it carries the h.S convention so no call site has to
@@ -483,17 +483,17 @@ def _solutions(peaks: List["RotationPeak"], lmax: int, d_min: float,
     from torchref.base.alignment.rotation import rotation_matrix_euler_zyz
 
     euler = torch.tensor(
-        [[p.alpha, p.beta, p.gamma] for p in peaks], dtype=torch.float64,
+        [[p.alpha, p.beta, p.gamma] for p in peaks], dtype=torch.float64,  # dtype-ok: RotationSolutions are documented as float64
     ).reshape(-1, 3)
     rotations = (
         rotation_matrix_euler_zyz(euler)
         if euler.numel()
-        else torch.zeros((0, 3, 3), dtype=torch.float64)
+        else torch.zeros((0, 3, 3), dtype=torch.float64)  # dtype-ok: RotationSolutions are documented as float64
     )
     return RotationSolutions(
         rotations=rotations,
-        scores=torch.tensor([p.score for p in peaks], dtype=torch.float64),
-        z_scores=torch.tensor([p.sigma for p in peaks], dtype=torch.float64),
+        scores=torch.tensor([p.score for p in peaks], dtype=torch.float64),  # dtype-ok: RotationSolutions are documented as float64
+        z_scores=torch.tensor([p.sigma for p in peaks], dtype=torch.float64),  # dtype-ok: RotationSolutions are documented as float64
         euler_zyz=euler,
         lmax=lmax,
         d_min=d_min,

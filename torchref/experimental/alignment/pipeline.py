@@ -57,7 +57,7 @@ from typing import List, Optional, TYPE_CHECKING
 import numpy as np
 import torch
 
-from torchref.config import get_default_device
+from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
 from .frf.rotation_utils import rotation_matrix_from_edmonds_euler
@@ -523,7 +523,7 @@ class MolecularReplacementPipeline(DeviceMixin):
     def place(self, solution: MRSolution) -> "ModelFT":
         """Build the placed model for ``solution``: a copy of the search model,
         rotated and translated, carrying the alignment provenance attributes."""
-        R_rec = torch.as_tensor(solution.rotation, dtype=torch.float64)
+        R_rec = torch.as_tensor(solution.rotation, dtype=torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
         placed = self.model.copy().rotate(
             R_rec.T.contiguous().to(device=self.model.device,
                                     dtype=self.model.dtype_float),
@@ -599,9 +599,9 @@ class MolecularReplacementPipeline(DeviceMixin):
             tmask = torch.ones(
                 F_obs_full.shape[0], dtype=torch.bool, device=F_obs_full.device,
             )
-        rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)
-        s_all = (hkl_full.to(torch.float64) @ rec_basis.to(hkl_full.device)
-                 ).norm(dim=-1)
+        real = get_float_dtype()
+        rec_basis = data.cell.reciprocal_basis_matrix.to(real)
+        s_all = (hkl_full.to(real) @ rec_basis.to(hkl_full.device)).norm(dim=-1)
         if self.tf_d_min > 0.0:
             tmask = tmask & (s_all <= 1.0 / self.tf_d_min)
         if np.isfinite(self.tf_d_max):
@@ -678,7 +678,7 @@ class MolecularReplacementPipeline(DeviceMixin):
 
         timer.start("7_translation_llg")
         t_cands = torch.as_tensor(
-            np.stack([p.translation for p in t_peaks]), dtype=torch.float64,
+            np.stack([p.translation for p in t_peaks]), dtype=get_float_dtype(),
         )
         llg = llg_at_translations(obs, cand, t_cands)
         k_best = int(llg.argmax())

@@ -12,7 +12,7 @@ import torch
 
 
 def rotation_matrix_from_edmonds_euler(
-    alpha: float, beta: float, gamma: float, dtype=torch.float64,
+    alpha: float, beta: float, gamma: float, dtype=torch.float64,  # dtype-ok: 3x3 rotation algebra in double on the host
 ) -> torch.Tensor:
     """Build ``R = R_z(α) R_y(β) R_z(γ)`` (Edmonds active ZYZ).
 
@@ -35,7 +35,7 @@ def edmonds_euler_from_rotation_matrix(R: torch.Tensor) -> Tuple[float, float, f
     when ``β = 0`` or ``π`` (only ``α+γ`` is determined); in those cases
     ``γ=0`` is returned.
     """
-    R = R.to(torch.float64)
+    R = R.to(torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
     cos_beta = R[2, 2].clamp(-1.0, 1.0).item()
     beta = math.acos(cos_beta)
     sin_beta = math.sin(beta)
@@ -63,8 +63,8 @@ def axis_angle_to_matrix(omega: torch.Tensor) -> torch.Tensor:
     below θ = 1e-10 rather than letting the trigonometric factors vanish. Above
     that threshold the two agree term for term.
     """
-    if omega.dtype not in (torch.float32, torch.float64):
-        omega = omega.to(torch.float64)
+    if omega.dtype not in (torch.float32, torch.float64):  # dtype-ok: 3x3 rotation algebra in double on the host
+        omega = omega.to(torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
     single = omega.dim() == 1
     if single:
         omega = omega.unsqueeze(0)
@@ -86,7 +86,7 @@ def axis_angle_to_matrix(omega: torch.Tensor) -> torch.Tensor:
 
 def rotation_angular_distance_deg(R1: torch.Tensor, R2: torch.Tensor) -> float:
     """Geodesic distance on SO(3) in degrees: ``arccos((tr(R1 R2^T) − 1)/2)``."""
-    R = R1.to(torch.float64) @ R2.to(torch.float64).T
+    R = R1.to(torch.float64) @ R2.to(torch.float64).T  # dtype-ok: 3x3 rotation algebra in double on the host
     tr = (R[0, 0] + R[1, 1] + R[2, 2]).clamp(-1.0, 3.0).item()
     cos_a = max(-1.0, min(1.0, (tr - 1.0) / 2.0))
     return math.degrees(math.acos(cos_a))

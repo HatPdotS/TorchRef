@@ -431,7 +431,7 @@ class WilsonNormaliser:
         branches feed two different parameters of the same likelihood.
         """
         work = get_float_dtype()
-        hkl_l = hkl.to(torch.long)
+        hkl_l = hkl.to(torch.long)  # dtype-ok: Miller indices are integers
         # The cell may carry the configured default device while the reflections
         # are somewhere else; the caller should not have to reconcile them.
         rec = cell.reciprocal_basis_matrix.to(device=hkl_l.device, dtype=work)

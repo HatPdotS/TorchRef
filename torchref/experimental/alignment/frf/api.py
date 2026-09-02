@@ -371,8 +371,8 @@ class FastRotationFunction:
             # solvent deficit is simply what the ratio measures, per structure,
             # instead of two universal constants.
             eterm = empirical_sigma_a(
-                self._conv_obs.evaluate(smag_calc).to(torch.float64),
-                self._conv_calc.evaluate(smag_calc).to(torch.float64),
+                self._conv_obs.evaluate(smag_calc),
+                self._conv_calc.evaluate(smag_calc),
             ).to(F_calc.dtype)
         elif sigma_a_source == "luzzati":
             eterm = eterm_sigma_a(smag_calc, self.delta_vrms_A)

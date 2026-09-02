@@ -107,7 +107,7 @@ def apply_shell_variance_weights(
         shell_idx = assign_shells(s_mag, edges)
     valid = shell_idx >= 0
     var_p = compute_patterson_shell_variance(
-        intensity[valid].to(torch.float64),
+        intensity[valid].to(torch.float64),  # dtype-ok: shell variance accumulated in double
         shell_idx[valid],
         P=n_var_shells,
     )
@@ -140,7 +140,7 @@ def detect_zsymm(sym_mats: Optional[torch.Tensor]) -> int:
     """
     if sym_mats is None:
         return 1
-    axis, zsymm = get_high_order_axis(sym_mats.to(torch.float64).cpu())
+    axis, zsymm = get_high_order_axis(sym_mats.to(torch.float64).cpu())  # dtype-ok: 3x3 rotation algebra in double on the host
     if axis != 2:  # high-order axis not along z → don't apply a wrong filter
         return 1
     return int(zsymm)
@@ -288,15 +288,15 @@ def fit_relative_wilson_b(
     if not valid_obs.any() or not valid_calc.any():
         return 0.0
 
-    F2_obs = (F_obs * F_obs).to(torch.float64)
-    F2_calc = (F_calc * F_calc).to(torch.float64)
-    s2_obs = (s_mag * s_mag).to(torch.float64)
+    F2_obs = (F_obs * F_obs).to(torch.float64)  # dtype-ok: per-shell sums in double for the relative-B fit
+    F2_calc = (F_calc * F_calc).to(torch.float64)  # dtype-ok: per-shell sums in double for the relative-B fit
+    s2_obs = (s_mag * s_mag).to(torch.float64)  # dtype-ok: per-shell sums in double for the relative-B fit
 
-    counts_obs = torch.zeros(n_shells, dtype=torch.int64, device=s_mag.device)
-    counts_calc = torch.zeros(n_shells, dtype=torch.int64, device=s_mag.device)
-    sum_F2obs = torch.zeros(n_shells, dtype=torch.float64, device=s_mag.device)
-    sum_F2calc = torch.zeros(n_shells, dtype=torch.float64, device=s_mag.device)
-    sum_s2 = torch.zeros(n_shells, dtype=torch.float64, device=s_mag.device)
+    counts_obs = torch.zeros(n_shells, dtype=torch.int64, device=s_mag.device)  # dtype-ok: per-shell counts
+    counts_calc = torch.zeros(n_shells, dtype=torch.int64, device=s_mag.device)  # dtype-ok: per-shell counts
+    sum_F2obs = torch.zeros(n_shells, dtype=torch.float64, device=s_mag.device)  # dtype-ok: per-shell sums in double for the relative-B fit
+    sum_F2calc = torch.zeros(n_shells, dtype=torch.float64, device=s_mag.device)  # dtype-ok: per-shell sums in double for the relative-B fit
+    sum_s2 = torch.zeros(n_shells, dtype=torch.float64, device=s_mag.device)  # dtype-ok: per-shell sums in double for the relative-B fit
     idx_v_obs = shell_idx_obs[valid_obs]
     idx_v_calc = shell_idx_calc[valid_calc]
     counts_obs.index_add_(0, idx_v_obs, torch.ones_like(idx_v_obs))
@@ -307,9 +307,9 @@ def fit_relative_wilson_b(
 
     # Drop shells empty on either side.
     keep = (counts_obs > 0) & (counts_calc > 0)
-    mean_F2obs = sum_F2obs[keep] / counts_obs[keep].to(torch.float64)
-    mean_F2calc = sum_F2calc[keep] / counts_calc[keep].to(torch.float64)
-    mean_s2 = sum_s2[keep] / counts_obs[keep].to(torch.float64)
+    mean_F2obs = sum_F2obs[keep] / counts_obs[keep].to(torch.float64)  # dtype-ok: per-shell sums in double for the relative-B fit
+    mean_F2calc = sum_F2calc[keep] / counts_calc[keep].to(torch.float64)  # dtype-ok: per-shell sums in double for the relative-B fit
+    mean_s2 = sum_s2[keep] / counts_obs[keep].to(torch.float64)  # dtype-ok: per-shell sums in double for the relative-B fit
 
     # log(Σ_N / Σ_P) per shell.
     eps = 1e-30
