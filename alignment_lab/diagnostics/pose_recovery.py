@@ -4,30 +4,28 @@ Rank is not the deliverable, pose is. This places a randomly reoriented copy of
 the deposited model and asks whether the pipeline gets it back, which is the
 only measurement that settles a change to either stage.
 
-The reference number to beat is **24/30** (10 structures x 3 trials): what the
-pipeline scored once the ML rescore was taken out of the middle, against 18/30
-with it. 2DQ6 and 3GR5 fail in every arm ever measured and cap recovery there.
-
-Arms (``--arms``) sweep how translation candidates are ranked:
-
-``llg``
-    the default -- rank each rotation candidate by the translation likelihood at
-    its best translation. 36/40 over four structures x ten seeds, median
-    residual 1.43 deg.
-``analytic_r``
-    rank by the analytical-scale R instead. Also 36/40, median 1.62 deg. The two
-    tie on the count and each wins one cell paired; they pick the same candidate
-    outright on 1DAW and 3K7M. The likelihood's margin is 6G9X alone.
-``corr``
-    rank by the translation function's own correlation. Measured 32/40 against
-    the other two arms' 36/40: worse, and worse paired against ``llg`` 5 to 1,
-    despite a rank-level harness predicting the reverse on a truth label that
-    disagreed with coordinate superposition.
 Success is a pose: final coordinates within ``--success-deg`` of canonical in
 orientation AND within ``--success-A`` of it in position, modulo the crystal
 symmetry (Cartesian point-group mates, lattice translations, allowed origin
 shifts and polar directions). The gate used to be rotation-only, and it passed
-placements 40-55 A from the true position on 2DQ6, 4BX9 and 6G9X.
+placements 40-55 A from the true position on 2DQ6, 3VRJ, 4BX9 and 6G9X.
+
+The panel stands at **30/30** (10 structures x 3 trials) and **60/60** over six
+structures x ten seeds, on every ranking arm.
+
+Arms (``--arms``) sweep how the winner is chosen among placed candidates:
+
+``llg``
+    the default -- the translation likelihood at each candidate's best
+    translation.
+``analytic_r``
+    the analytical-scale R instead.
+``corr``
+    the fast translation function's own score.
+
+Over the six-structure sweep the three arms pick the same candidate in all 60
+cells; the arms exist so that can be re-checked whenever a structure separates
+them.
 
 Usage::
 
@@ -112,10 +110,9 @@ def _report_candidates(solutions, R_true, symops, success_deg) -> None:
     R in 0 of 10 seeds while the pipeline solved 6 of them, because it fed the
     R-factor a different set of translation peaks.
 
-    ``SOLN`` lines are ordered as the pipeline ranked them -- by ``tf_corr``,
-    descending -- so line 0 is what it returned. ``R`` is carried alongside
-    because it used to be the ranking key and comparing the two orderings is the
-    point. ``dtruth`` is the angle from that candidate's orientation to the
+    ``SOLN`` lines are ordered as the pipeline ranked them -- by the likelihood,
+    descending -- so line 0 is what it returned. The fast score and ``R`` are
+    carried alongside so the three orderings can be compared. ``dtruth`` is the angle from that candidate's orientation to the
     true one modulo crystal symmetry; ``pick`` marks the winner and ``true``
     marks every candidate that was in fact correct.
     """
@@ -124,7 +121,7 @@ def _report_candidates(solutions, R_true, symops, success_deg) -> None:
     )
 
     R_t = R_true.to(torch.float64).cpu()
-    print("  SOLN rank  rot_score     tf_corr   R      dtruth  flags")
+    print("  SOLN rank  rot_score       tf      R      dtruth  flags")
     for i, sol in enumerate(solutions):
         R = torch.as_tensor(sol.rotation, dtype=torch.float64)
         # `rotation` maps the search-model frame onto the crystal frame; the

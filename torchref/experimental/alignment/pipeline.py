@@ -4,9 +4,11 @@ Two stages, and the division of labour between them is the design:
 
 1. **Fast Rotation Function** — Phaser-faithful Bessel-radial × SH expansion
    against a dense P1-box calc. It is a *shortlist generator*. It does not have
-   to rank well, and measurably does not: over 30 seeded cells it puts truth at
-   rank 0 in 6 of them. What it does reliably is put truth somewhere in the top
-   twenty.
+   to rank well, and it does not: over the panel its own ordering puts truth
+   first in a minority of cells. What it does reliably is put the true
+   orientation somewhere in the top twenty-five -- in every cell of every
+   panel run on record -- and its peaks are one per orientation, symmetry
+   mates suppressed.
 2. **Fast Translation Function** — for *each* of the top-N orientations, one
    Crowther-Blow FFT over the fractional cell on a resolution-sized grid, with
    the rotation function's own normalised score equation as its coefficients,
@@ -16,8 +18,10 @@ Two stages, and the division of labour between them is the design:
 
 There is deliberately nothing between them. An ML re-ranking of the FRF peaks
 used to sit there and was removed: it reorders a shortlist that already contains
-truth, and end-to-end pose recovery was 18/30 with it against 24/30 without
-(McNemar p = 0.031, 6-0 discordant).
+truth, and rotation recovery was 18/30 with it against 24/30 without (McNemar
+p = 0.031, 6-0 discordant). Those figures, like every figure on this pipeline
+before September 2026, gated on the rotation alone; see ``rank_by`` for what
+the pose-gated panel measures.
 
 Every candidate is placed and then the best is taken, with no early stopping.
 Stopping early made the pipeline's answer depend on the order the rotation
@@ -240,11 +244,11 @@ class MolecularReplacementPipeline(DeviceMixin):
         # into this many; the likelihood picks.
         n_translation_candidates: int = 3,
         # Which score picks the winner among placed candidates. "llg" is the
-        # translation function's Rice/Woolfson likelihood; "r" the
-        # analytical-scale R-factor; "corr" the translation correlation. Not a
-        # tuning knob -- it exists because the three disagree and a rank-level
-        # proxy got the ordering wrong, so the comparison has to be made end to
-        # end. See the sort in `run` for what that measured.
+        # translation likelihood; "r" the analytical-scale R-factor; "corr" the
+        # fast translation function's own score. Not a tuning knob -- it exists
+        # because the three can disagree and a rank-level proxy once got the
+        # ordering wrong, so the comparison has to be made end to end on poses.
+        # See the sort in `run` for what that measured.
         rank_by: str = "llg",
         # Resolution window for the translation set. None means the rotation
         # search's own [d_max, d_min], so one window and one normalisation
@@ -316,9 +320,9 @@ class MolecularReplacementPipeline(DeviceMixin):
 
         Fields are ``key=value`` so a reader does not depend on column order:
         ``k`` candidate index in rotation-function order, ``rf``/``rfz`` its
-        score and z, ``tf`` the translation correlation, ``llg`` the translation
-        likelihood, ``r`` the analytical-scale R, ``t`` the fractional
-        translation. All three placement scores are reported whichever one
+        score and z, ``tf`` the fast translation function's score, ``llg`` the
+        translation likelihood, ``r`` the analytical-scale R, ``t`` the
+        fractional translation. All three placement scores are reported whichever one
         ranks, because which of them a wrong placement disagreed on is the
         question, and they do disagree.
         """
@@ -430,36 +434,27 @@ class MolecularReplacementPipeline(DeviceMixin):
         if not solutions:
             raise RuntimeError("Translation + joint refine produced no candidates.")
 
-        # Highest translation likelihood. Over four structures x ten seeds,
-        # success within 8 deg of canonical modulo crystal symmetry:
+        # Highest translation likelihood. The three scores are measured end to
+        # end on POSES -- rotation and translation, against Cartesian symmetry
+        # mates -- over six structures x ten seeds (the four the translation
+        # search used to mis-place, plus two controls; job 544953):
         #
-        #     llg   36/40   median residual 1.43 deg
-        #     r     36/40                   1.62
-        #     corr  32/40                   1.98
+        #     llg    60/60
+        #     r      60/60
+        #     corr   60/60
         #
-        # The likelihood and R tie on the success count -- 36 each, and paired
-        # over the 40 cells each wins exactly one. Nothing separates them there,
-        # and an earlier 37-against-36 reading of this table did not survive
-        # remeasurement after the variance convention was corrected.
+        # and they do not merely tie: in every one of the 60 cells the three
+        # pick the SAME candidate, so the residual distributions are identical
+        # arm for arm. Once the translation objective was normalised there was
+        # nothing left for the selection rule to decide on this panel.
         #
-        # What separates them is where they differ at all, which is less often
-        # than the medians suggest: on 1DAW and 3K7M the two pick the SAME
-        # candidate and the residuals are identical. The whole difference is
-        # 6G9X, where the likelihood holds every residual under 2.3 deg and R
-        # spreads to 5.65 (medians 1.05 against 2.24). 2DQ6 goes the other way
-        # by a smaller margin (max 6.48 against 3.86). Across the 31 cells all
-        # three arms solve, the likelihood places closer 5 times against 1.
-        #
-        # So the default rests on one structure, not on a sweep-wide margin. It
-        # is kept because it is also the right object for the question -- an
-        # R-factor on a partial model at the resolution this runs at has little
-        # to distinguish with -- and because the arm is selectable if that
-        # reasoning ever stops holding.
-        #
-        # The correlation is here as a cautionary default-not-taken. A rank-level
-        # harness rated it best by a wide margin, 33/40 against R's 23/40, and
-        # end to end it is the worst of the three -- the harness's truth label
-        # disagreed with coordinate superposition.
+        # The likelihood stays the default because it is the right object for
+        # the question -- an R-factor on a partial model at this resolution has
+        # little to distinguish with, and the fast score is an expansion of the
+        # likelihood rather than the likelihood -- and because the arm is
+        # selectable if a structure ever separates them. Every earlier figure
+        # for these arms (37/40, 36/40, 32/40) gated on the rotation alone, with
+        # a metric that miscounted trigonal mates; none of them stands.
         if self.rank_by == "r":
             solutions.sort(key=lambda s: s.r_factor)
         elif self.rank_by == "corr":
@@ -479,7 +474,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         winner.model.last_alignment_rfactor = winner.r_factor
         self._log(1, f"mr: winner ({self.rank_by}) "
                      f"LLG={winner.llg_score:.1f} "
-                     f"TF corr={winner.translation_score:.5f} "
+                     f"TF={winner.translation_score:.5f} "
                      f"analytic R={winner.r_factor:.4f}")
         self._log(2, "\n" + timer.summary())
         return solutions
