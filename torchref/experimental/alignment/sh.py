@@ -50,8 +50,9 @@ def legendre_recurrence_coefficients(L: int, dtype, device):
     runs this recurrence itself, fused with its own accumulation, and two copies
     of these formulae would be two chances to get them subtly different.
     """
-    ll = torch.arange(L, dtype=torch.float64, device=device).view(L, 1)  # dtype-ok: harmonic indices as exact doubles
-    mm = torch.arange(L, dtype=torch.float64, device=device).view(1, L)  # dtype-ok: harmonic indices as exact doubles
+    # Small integers, exact in any float dtype; the results are cast to `dtype`.
+    ll = torch.arange(L, dtype=dtype, device=device).view(L, 1)
+    mm = torch.arange(L, dtype=dtype, device=device).view(1, L)
     valid = ll > mm
     denom = (ll - mm) * (ll + mm)
     denom_safe = torch.where(valid, denom, torch.ones_like(denom))
@@ -62,7 +63,7 @@ def legendre_recurrence_coefficients(L: int, dtype, device):
         b_num / torch.where(b_den == 0, torch.ones_like(b_den), b_den), min=0.0))
     a = torch.where(valid, a, torch.zeros_like(a)).to(dtype)
     b = torch.where(valid, b, torch.zeros_like(b)).to(dtype)
-    m_arange = torch.arange(L, dtype=torch.float64, device=device)  # dtype-ok: harmonic indices as exact doubles
+    m_arange = torch.arange(L, dtype=dtype, device=device)
     sect = torch.sqrt(
         (2.0 * m_arange + 1.0) / (2.0 * m_arange).clamp(min=1.0)).to(dtype)
     return a, b, sect
@@ -241,7 +242,7 @@ def equal_count_shell_edges(
     s_sorted, _ = torch.sort(s)
     N = s_sorted.numel()
     # quantile-based partition
-    idx = torch.linspace(0, N - 1, P + 1, dtype=torch.float64, device=s.device).round().long()  # dtype-ok: equal-count edge positions in double, then rounded
+    idx = torch.linspace(0, N - 1, P + 1, dtype=s.dtype, device=s.device).round().long()
     edges = s_sorted[idx]
     # nudge endpoints so the data is fully covered (avoid floating-point miss)
     if s_min is not None:

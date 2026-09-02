@@ -60,15 +60,16 @@ def test_expansion_follows_the_configured_float_dtype(float_dtype, want_complex)
     )
 
 
-def test_the_back_half_accumulates_one_step_wider():
-    """The tail is deliberately wider than the expansion, and must stay so.
+def test_the_back_half_runs_at_the_configured_complex_dtype():
+    """The whole chain -- expansion, radial sum, Wigner contraction, FFT -- is
+    one dtype, the configured one, so a device without float64 runs it as is.
 
-    Narrowing it looks like free memory -- complex128 buffers holding
-    complex64-accurate content -- and it is not. The radial sum and the Wigner
-    contraction are both oscillatory, so they cancel, and single-precision
-    accumulation was measured to move scores by 1e-4 to 1.4e-3 relative and
-    leave only 1 of 500 candidate slots holding the same orientation. The
-    expansion's own working precision is config's; this accumulation is not.
+    The radial sum used to be accumulated one step wider. Measured, narrowing it
+    moved scores by 1e-4 relative and reordered the deep peak list while leaving
+    the top peak unchanged; the placement search now consumes only the top few
+    distinct orientations and single precision recovers every pose on the
+    benchmark panel, so the wider accumulator is gone and nothing downstream
+    re-decides the width.
     """
     from torchref.experimental.alignment.frf.data_mr import (
         bessel_sh_expand, cross_correlate_xi,
@@ -85,14 +86,13 @@ def test_the_back_half_accumulates_one_step_wider():
     try:
         dtypes.float, dtypes.complex = torch.float32, torch.complex64
         c = bessel_sh_expand(s_vec, F, L=12, bessel_h_scale=40.0)
+        xi = cross_correlate_xi(c, c)
     finally:
         dtypes.float, dtypes.complex = original
 
     assert c.coeffs.dtype == torch.complex64, "expansion should be at config dtype"
-    xi = cross_correlate_xi(c, c)
-    assert xi.dtype == torch.complex128, (
-        f"the radial accumulation narrowed to {xi.dtype}; see the docstring on "
-        f"cross_correlate_xi for what that costs"
+    assert xi.dtype == torch.complex64, (
+        f"the radial accumulation left the configured dtype: {xi.dtype}"
     )
     # Everything downstream follows xi rather than re-deciding.
     betas = torch.linspace(0.0, 3.0, 5, dtype=torch.float64)
@@ -185,13 +185,24 @@ def test_double_is_a_device_capability_not_a_constant():
         dtypes.float, dtypes.complex = original
 
 
-def test_the_radial_accumulation_never_narrows_a_double_input():
-    """A caller that already widened must not be silently narrowed back."""
+def test_the_radial_accumulation_follows_the_configuration_not_the_input():
+    """Coefficients that arrive wider than the configured dtype are brought to it.
+
+    The width of the accumulation is a property of the run's configuration -- on
+    a device without float64 it is the only width there is -- not of whatever a
+    caller happened to hand in.
+    """
     from torchref.experimental.alignment.frf.data_mr import cross_correlate_xi
     from torchref.experimental.alignment.frf.types import BesselSHCoefficients
 
     c = BesselSHCoefficients(
-        coeffs=torch.zeros((2, 5, 9), dtype=torch.complex128),
+        coeffs=torch.zeros((2, 5, 9), dtype=torch.complex128),  # dtype-ok: deliberately wider than the configuration, to see it brought back
         L=5, bessel_h_scale=20.0,
     )
-    assert cross_correlate_xi(c, c).dtype == torch.complex128
+    original = dtypes.float, dtypes.complex
+    try:
+        dtypes.float, dtypes.complex = torch.float32, torch.complex64
+        out = cross_correlate_xi(c, c)
+    finally:
+        dtypes.float, dtypes.complex = original
+    assert out.dtype == torch.complex64

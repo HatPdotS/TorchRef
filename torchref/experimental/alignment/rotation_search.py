@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 
-from torchref.config import get_default_device
+from torchref.config import get_default_device, get_float_dtype
 from torchref.scaling.weighting import (DEFAULT_SNR_CAP,
                                         DEFAULT_TRUST_CAP)
 from .sh import (
@@ -258,11 +258,12 @@ def prepare_frf_inputs(
     ``model`` happens to sit on.
     """
     device = get_default_device()
+    real = get_float_dtype()
 
-    F_obs = data.F.to(torch.float64).abs()  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
+    F_obs = data.F.to(real).abs()
     hkl_all = data.hkl
-    rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
-    s_vec_all = hkl_all.to(torch.float64) @ rec_basis  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
+    rec_basis = data.cell.reciprocal_basis_matrix.to(real)
+    s_vec_all = hkl_all.to(real) @ rec_basis
     s_mag_all = s_vec_all.norm(dim=-1)
     keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
     if keep.sum().item() < n_shells * 5:
@@ -273,7 +274,7 @@ def prepare_frf_inputs(
     F_obs = F_obs[keep].to(device)
     sig_F = getattr(data, "F_sigma", None)
     if sig_F is not None:
-        sig_F = sig_F.to(torch.float64)[keep].to(device)  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
+        sig_F = sig_F.to(real)[keep].to(device)
     hkl = hkl_all[keep].to(device)
     s_vec = s_vec_all[keep].to(device)
     s_mag = s_mag_all[keep].to(device)
@@ -330,10 +331,11 @@ def search_peaks(
     # warning) and falls back to the configured default. Data first, matching
     # the rest of the codebase.
     device = resolve_device(data, model, device=device)
+    real = get_float_dtype()
     with torch.no_grad():
-        rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
+        rec_basis = data.cell.reciprocal_basis_matrix.to(real).to(device)
         hkl_all = data.hkl.to(device)
-        s_vec_all = hkl_all.to(torch.float64) @ rec_basis  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
+        s_vec_all = hkl_all.to(real) @ rec_basis
         s_mag_all = s_vec_all.norm(dim=-1)
 
         d_min_data = float(1.0 / s_mag_all.max().item())
@@ -360,10 +362,10 @@ def search_peaks(
         s_asu = s_vec_all[keep]
         s_mag_asu = s_mag_all[keep]
         F_obs = apply_overall_anisotropy(
-            data.F.to(torch.float64).abs().to(device)[keep], s_asu, U_aniso,  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
+            data.F.to(real).abs().to(device)[keep], s_asu, U_aniso,
         )
         sigF = (
-            data.F_sigma.to(torch.float64).to(device)[keep]  # dtype-ok: rotation-function inputs kept in double; the expansion casts to the working dtype and clusters on |s|
+            data.F_sigma.to(real).to(device)[keep]
             if getattr(data, "F_sigma", None) is not None
             else None
         )
@@ -393,7 +395,7 @@ def search_peaks(
         # orthogonal symmetry matrices, so using S.h works everywhere except
         # trigonal and hexagonal, where it mixes non-equivalent reflections into
         # one orbit.
-        sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)  # dtype-ok: 3x3 rotation algebra in double on the host
+        sg_mats = data.spacegroup.matrices.to(real).to(device)
         n_ops = int(sg_mats.shape[0])
         # `expand_reciprocal` is the package's one implementation of this
         # contraction, and it carries the h.S convention so no call site has to
@@ -449,9 +451,13 @@ def search_peaks(
         # Point-group rotations in the Cartesian frame, so the peak finder can
         # treat an orientation and its symmetry mates as one peak. As a set
         # these equal B S B^-1; `hkl_symops_to_cartesian` returns the same
-        # rotations in a different order.
+        # rotations in a different order. Built on the host in double, where
+        # the peak finder's 3x3 algebra runs anyway.
         from .sh import hkl_symops_to_cartesian
-        sym_cart = hkl_symops_to_cartesian(sg_mats, rec_basis)
+        sym_cart = hkl_symops_to_cartesian(
+            data.spacegroup.matrices.detach().cpu().to(torch.float64),  # dtype-ok: 3x3 rotation algebra in double on the host
+            data.cell.reciprocal_basis_matrix.detach().cpu().to(torch.float64),  # dtype-ok: 3x3 rotation algebra in double on the host
+        )
 
         engine = FastRotationFunction(
             s_obs, F_obs, centric, sg_mats,

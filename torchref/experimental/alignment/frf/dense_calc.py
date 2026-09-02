@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Tuple
 
 import torch
 
+from torchref.config import get_float_dtype
+
 if TYPE_CHECKING:
     from torchref.model import ModelFT
 
@@ -51,9 +53,9 @@ def dense_calc_via_box(
     Returns
     -------
     (s_vec, F_calc) : Tuple[torch.Tensor, torch.Tensor]
-        ``s_vec`` is the Cartesian reciprocal grid (N, 3) in double -- the
-        expansion clusters on it and needs exact keys -- and ``F_calc`` the
-        amplitudes (N,) in the model's dtype, both on the model's device.
+        ``s_vec`` is the Cartesian reciprocal grid (N, 3) and ``F_calc`` the
+        amplitudes (N,), in the configured float dtype on the model's device.
+        The expansion forms its exact clustering keys on the host itself.
     """
     from torchref.symmetry.cell import Cell
 
@@ -82,11 +84,12 @@ def dense_calc_via_box(
             [H.reshape(-1), K.reshape(-1), Lg.reshape(-1)], dim=-1
         ).to(torch.long)  # dtype-ok: Miller indices are integers
         # Cubic box: |s| = |hkl| / a.
-        smag = hkl.to(torch.float64).norm(dim=-1) / a  # dtype-ok: exact clustering key; needs double
+        real = get_float_dtype()
+        smag = hkl.to(real).norm(dim=-1) / a
         keep = (smag >= 1.0 / d_max) & (smag <= 1.0 / d_min)
         hkl = hkl[keep].contiguous()
         F = model_sf_abs(m, hkl)
-        s_vec = hkl.to(torch.float64) / a  # dtype-ok: exact clustering key; needs double
+        s_vec = hkl.to(real) / a
 
     if verbose:
         print(

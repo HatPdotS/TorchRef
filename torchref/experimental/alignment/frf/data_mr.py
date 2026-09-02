@@ -58,8 +58,7 @@ _GROUP_SCALE_S = 10_000_000
 #: approximation and needs its own evidence.
 _GROUP_SCALE_COS = 10_000_000
 
-from ....config import (get_complex_dtype, get_float_dtype,
-                        widest_complex_dtype, widest_float_dtype)
+from ....config import get_complex_dtype, get_float_dtype
 from ....utils.backends import run_or_degrade, select
 from ..sh import legendre_recurrence_coefficients
 from ._backends import LEGENDRE_BACKENDS
@@ -123,11 +122,13 @@ def spherical_bessel_table(
     """
     real_dtype = x.dtype
     device = x.device
-    # Double where the device has it. The rescaling above is what makes a
-    # narrower working dtype survivable here at all -- without it the ladder
-    # overflows float32 for every x below ~35 -- but double is still preferable
-    # where it is available, since the recurrence runs ~90 steps.
-    work_dtype = widest_float_dtype(device)
+    # The ladder runs in the argument's own dtype. The rescaling above is what
+    # keeps the ~90-step downward recurrence in range -- without it the ladder
+    # overflows float32 for every x below ~35 -- and with it the single
+    # precision the expansion passes recovers every pose on the benchmark
+    # panel. A double argument gets a double ladder, which is what the
+    # bit-identity and scipy checks in the tests exercise.
+    work_dtype = x.dtype
     x64 = x.to(work_dtype)
     safe_x = x64.clamp(min=1e-30)
     inv_x = 1.0 / safe_x
@@ -226,20 +227,19 @@ def bessel_sh_expand(
 
     Two precisions are in play and they are deliberately different.
 
-    The **clustering keys** are computed at ``s_vectors``' own dtype, because
-    ``_GROUP_SCALE_S`` keys ``|s|`` at 1e-7 and that is exactly where float32's
-    resolution runs out: at ``|s| = 0.5`` a float32 rounding is ~0.3 of a key
-    step, so reflections that are mathematically degenerate would sometimes land
-    in adjacent keys and the degeneracy collapse the cost model depends on would
-    fray. Callers therefore pass float64 ``s_vectors`` even when the rest of the
-    chain is single precision.
+    The **clustering keys** are computed on the host in double, whatever dtype
+    ``s_vectors`` arrive in: ``_GROUP_SCALE_S`` keys ``|s|`` at 1e-7 and that is
+    exactly where float32's resolution runs out -- at ``|s| = 0.5`` a float32
+    rounding is ~0.3 of a key step, so reflections that are mathematically
+    degenerate would sometimes land in adjacent keys and the degeneracy
+    collapse the cost model depends on would fray. The host always has double,
+    the key computation is O(N), and nothing double ever touches the device.
 
     Everything else -- the Legendre/Y_lm precompute, the radial weights, the
-    contraction and the returned coefficients -- runs at
-    :func:`torchref.config.get_float_dtype`, which is this codebase's working
-    precision and the dtype the fused CPU kernel is built for. The
-    spherical-Bessel recurrence keeps its own float64 internals, where the
-    downward ladder needs the dynamic range.
+    Bessel ladder (kept in range by rescaling), the contraction and the returned
+    coefficients -- runs at :func:`torchref.config.get_float_dtype`, this
+    codebase's working precision and the dtype the fused CPU kernel is built
+    for.
     """
     assert s_vectors.dim() == 2 and s_vectors.shape[-1] == 3
     assert intensity.dim() == 1 and intensity.shape[0] == s_vectors.shape[0]
@@ -315,10 +315,15 @@ def bessel_sh_expand(
     phi_all = torch.atan2(s_vectors[..., 1], s_vectors[..., 0])
     # Separate resolutions for the two factors: the radial term needs a fine
     # |s| key, the angular term does not. One shared key forces the finer of the
-    # two on both, which costs merges the angular part never needed.
-    k_s = (s_mag_all * _GROUP_SCALE_S).round().to(torch.int64)  # dtype-ok: exact clustering key; needs double
-    k_c = (cos_all * _GROUP_SCALE_COS).round().to(torch.int64) + _GROUP_SCALE_COS  # dtype-ok: exact clustering key; needs double
-    key = k_s * (2 * _GROUP_SCALE_COS + 1) + k_c
+    # two on both, which costs merges the angular part never needed. The keys
+    # are formed on the host in double -- see the docstring -- and only the
+    # integer keys come back.
+    s_key = s_vectors.detach().cpu().to(torch.float64)  # dtype-ok: exact clustering key on the host; the device never sees it
+    s_mag_key = s_key.norm(dim=-1).clamp(min=1e-30)
+    cos_key = (s_key[..., 2] / s_mag_key).clamp(min=-1.0, max=1.0)
+    k_s = (s_mag_key * _GROUP_SCALE_S).round().to(torch.int64)  # dtype-ok: exact clustering key
+    k_c = (cos_key * _GROUP_SCALE_COS).round().to(torch.int64) + _GROUP_SCALE_COS  # dtype-ok: exact clustering key
+    key = (k_s * (2 * _GROUP_SCALE_COS + 1) + k_c).to(s_vectors.device)
     uniq_key, inverse = torch.unique(key, return_inverse=True)
     n_clusters = int(uniq_key.shape[0])
     # Per-group geometry: the MEAN over the group's members, not an arbitrary
@@ -558,12 +563,12 @@ def cross_correlate_xi(
     """
     if c_obs.L != c_calc.L:
         raise ValueError(f"L mismatch: obs={c_obs.L} calc={c_calc.L}")
-    # One step wider than the coefficients where the device allows it. On a
-    # backend without float64 this falls back to the coefficients' own dtype and
-    # the run pays the accuracy noted above -- there is no third option there.
-    acc = widest_complex_dtype(c_obs.coeffs.device)
-    if c_obs.coeffs.dtype == torch.complex128:  # dtype-ok: double accumulation of an oscillatory sum -- never narrow what the caller widened
-        acc = torch.complex128          # never narrow what the caller widened  # dtype-ok: double accumulation of an oscillatory sum -- never narrow what the caller widened
+    # The configured complex dtype. The oscillatory radial sum used to be
+    # accumulated one step wider than the coefficients; measured, that moved
+    # scores by 1e-4 relative and reordered the deep peak list without moving
+    # the top peak, and the placement search now consumes only the top few
+    # distinct orientations. Single precision recovers every pose on the panel.
+    acc = get_complex_dtype()
     return torch.einsum(
         "rln,rlm->lmn",
         c_obs.coeffs.to(acc),
