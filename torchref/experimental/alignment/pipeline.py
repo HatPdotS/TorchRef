@@ -166,8 +166,12 @@ class MRSolution:
     llg_score : float
         **The ranking key**: the translation likelihood at that placement,
         higher better.
-    model : ModelFT
-        The rotated and translated model for this candidate.
+    model : ModelFT or None
+        The rotated and translated model. Built for the winner only -- copying
+        and moving a 20k-atom model 25 times was a quarter of the run on the
+        large structures, to produce 24 models nobody reads.
+        :meth:`MolecularReplacementPipeline.place` builds it for any other
+        solution on request.
     """
 
     rotation: np.ndarray
@@ -175,7 +179,7 @@ class MRSolution:
     rotation_score: float
     translation_score: float
     r_factor: float
-    model: "ModelFT"
+    model: Optional["ModelFT"] = None
     llg_score: float = float("nan")
 
 
@@ -291,7 +295,12 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._frf = None
         self._obs = None
         self._tmask = None
-        self._eye3 = torch.eye(3, dtype=torch.float64)
+        # One P1 copy of the search model, re-oriented in place per candidate
+        # -- see `_prepare_translation_arrays`.
+        self._p1 = None
+        self._p1_xyz0 = None
+        self._p1_center = None
+        self._evaluator = None
 
     #: Levels are documented on the class. They are a contract, not a dial:
     #: level 2 is specifically "one machine-readable line per candidate", and
@@ -401,10 +410,12 @@ class MolecularReplacementPipeline(DeviceMixin):
         solutions: List[MRSolution] = []
         for k in range(n_rot):
             peak_k = candidates[k]
-            rotated_k, R_rec_k = self._make_rotated(peak_k)
+            R_rec_k = rotation_matrix_from_edmonds_euler(
+                peak_k.alpha, peak_k.beta, peak_k.gamma)
+            self._orient_template(R_rec_k)
             self._log(3, f"\nfit_to_data: rot{k} "
                          f"(RF={peak_k.score:.2f}, σ_Z={peak_k.sigma:.2f})")
-            placement = self._placement_for_candidate(rotated_k)
+            placement = self._placement_for_candidate()
             if placement is None:
                 self._log(2, f"CAND k={k} rf={float(peak_k.score):.4f} "
                              f"rfz={float(peak_k.sigma):.3f} tf=nan r=nan "
@@ -413,12 +424,6 @@ class MolecularReplacementPipeline(DeviceMixin):
             r_analytic, t_refined, tf_score, llg_score = placement
             self._log_candidate(k, peak_k, r_analytic, t_refined, tf_score,
                                 llg_score)
-
-            placed = rotated_k.copy().translate(
-                t_refined.to(self.model.dtype_float), fractional=True,
-            )
-            placed.last_alignment_rotation = R_rec_k
-            placed.last_alignment_translation = t_refined
             solutions.append(
                 MRSolution(
                     rotation=R_rec_k.detach().cpu().numpy(),
@@ -426,7 +431,6 @@ class MolecularReplacementPipeline(DeviceMixin):
                     rotation_score=float(peak_k.score),
                     translation_score=float(tf_score),
                     r_factor=float(r_analytic),
-                    model=placed,
                     llg_score=float(llg_score),
                 )
             )
@@ -471,7 +475,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         # doing a worse version of that here to print a number is not worth a
         # third of the runtime. A caller that wants an R-work can build a
         # `Scaler` on the returned model.
-        winner.model.last_alignment_rfactor = winner.r_factor
+        winner.model = self.place(winner)
         self._log(1, f"mr: winner ({self.rank_by}) "
                      f"LLG={winner.llg_score:.1f} "
                      f"TF={winner.translation_score:.5f} "
@@ -503,6 +507,36 @@ class MolecularReplacementPipeline(DeviceMixin):
         # a shortlist that already contains truth and sometimes pushes truth
         # out of it. The translation function does the discrimination.
         return sorted(peaks, key=lambda p: p.score, reverse=True)
+
+    def place(self, solution: MRSolution) -> "ModelFT":
+        """Build the placed model for ``solution``: a copy of the search model,
+        rotated and translated, carrying the alignment provenance attributes."""
+        R_rec = torch.as_tensor(solution.rotation, dtype=torch.float64)
+        placed = self.model.copy().rotate(
+            R_rec.T.contiguous().to(device=self.model.device,
+                                    dtype=self.model.dtype_float),
+        )
+        if str(placed.spacegroup) != str(self.data.spacegroup):
+            placed.spacegroup = self.data.spacegroup.hm
+        if solution.translation is not None:
+            t = torch.as_tensor(solution.translation, dtype=self.model.dtype_float)
+            placed.translate(t, fractional=True)
+            placed.last_alignment_translation = t
+        placed.last_alignment_rotation = R_rec
+        placed.last_alignment_rfactor = solution.r_factor
+        return placed
+
+    def _orient_template(self, R_rec: torch.Tensor) -> None:
+        """Write the candidate orientation into the shared P1 copy.
+
+        ``xyz = R_rec^T (xyz0 - c) + c`` about the search model's centroid, the
+        same rotation ``Model.rotate`` would apply. The forward cache
+        fingerprints parameters by pointer and version, so the next
+        structure-factor call recomputes.
+        """
+        p1 = self._p1
+        R_app = R_rec.T.to(device=self._p1_xyz0.device, dtype=self._p1_xyz0.dtype)
+        p1.xyz[:] = (self._p1_xyz0 - self._p1_center) @ R_app.T + self._p1_center
 
     def _make_rotated(self, peak: "RotationPeak"):
         """Rotate the search model onto a candidate orientation.
@@ -578,8 +612,30 @@ class MolecularReplacementPipeline(DeviceMixin):
                          + ("" if sig_F_full is not None
                             else " (no sigmas: unit weight)"))
 
-    def _placement_for_candidate(self, rotated_k) -> Optional[tuple]:
-        """Translation search for one rotation candidate.
+        # One P1 copy of the search model for the whole run, re-oriented in
+        # place per candidate. Two copies per candidate -- one to rotate, one to
+        # set P1 on -- were a quarter of the run on the large structures.
+        #
+        # Its FFT grid is sized to the translation set, not to the model's
+        # default 1.0 A: |s| is invariant under the symmetry rotations, so every
+        # rotated index the evaluator is asked for lies inside 1/tf_d_min. Two
+        # thirds of the window's resolution, not the resolution itself: at
+        # max_res = tf_d_min the transform's coherence with the 1.0 A grid over
+        # the 15-4 A set is 0.987 on 2DQ6 (0.9987-0.9999 on 1DAW, 3K7M, 4BX9);
+        # at tf_d_min/1.5 it is 0.9995-1.0000 everywhere, at 10-38 ms against
+        # 200-860 ms. max_res first -- the space-group setter rebuilds the FFT
+        # and reads it.
+        p1 = self.model.copy()
+        if self.tf_d_min > 0.0:
+            p1.max_res = self.tf_d_min / 1.5
+        p1.spacegroup = "P 1"
+        self._p1 = p1
+        self._p1_xyz0 = p1.xyz().detach().clone()
+        self._p1_center = self._p1_xyz0.mean(dim=0)
+        self._evaluator = DirectModelEvaluator(p1)
+
+    def _placement_for_candidate(self) -> Optional[tuple]:
+        """Translation search for the orientation currently in the P1 template.
 
         Returns ``(r_analytic, t, tf_score, llg)`` for the translation the
         likelihood prefers among the fast search's top peaks, or ``None`` if the
@@ -590,28 +646,8 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer = self._timer
         obs = self._obs
 
-        if str(rotated_k.spacegroup) != str(data.spacegroup):
-            rotated_k.spacegroup = data.spacegroup.hm
-        rotated_p1 = rotated_k.copy()
-        # Size the P1 copy's FFT grid to the translation set, not to the
-        # model's default 1.0 A: |s| is invariant under the symmetry rotations,
-        # so every rotated index the evaluator is asked for lies inside
-        # 1/tf_d_min. This is where the placement stage spent most of its time,
-        # on a grid 30-48x larger than the reflections it was asked for.
-        #
-        # Two thirds of the window's resolution, not the resolution itself. At
-        # max_res = tf_d_min the transform's coherence with the 1.0 A grid over
-        # the 15-4 A set is 0.987 on 2DQ6 (0.9987-0.9999 on 1DAW, 3K7M, 4BX9);
-        # at tf_d_min/1.5 it is 0.9995-1.0000 everywhere, at 10-38 ms against
-        # 200-860 ms. max_res first -- the space-group setter rebuilds the FFT
-        # and reads it.
-        if self.tf_d_min > 0.0:
-            rotated_p1.max_res = self.tf_d_min / 1.5
-        rotated_p1.spacegroup = "P 1"
-        evaluator = DirectModelEvaluator(rotated_p1)
-
         timer.start("5_candidate_transform")
-        cand = prepare_candidate(evaluator, obs, data.spacegroup, data.cell)
+        cand = prepare_candidate(self._evaluator, obs, data.spacegroup, data.cell)
         timer.stop("5_candidate_transform")
 
         # One FFT on a grid a third of the set's resolution apart: dense enough
