@@ -67,8 +67,13 @@ def test_mean_e_squared_is_one():
     """
     F, _, hkl, sg, cell, _ = _case()
     obs = TranslationObs.build(F, hkl, sg, cell)
-    k = torch.where(obs.centric, 0.5, 1.0).to(torch.float64)
-    mean_e2 = (k * obs.E_obs ** 2).sum() / k.sum()
+    # Reduced on the host in double: the identity is asserted to 1e-6 over 4000
+    # reflections and the accumulation should not be what limits that -- but the
+    # widening has to happen after the readback, since a backend without float64
+    # cannot hold the wide copy.
+    k = torch.where(obs.centric.cpu(), 0.5, 1.0).to(torch.float64)
+    E2 = obs.E_obs.detach().cpu().to(torch.float64) ** 2
+    mean_e2 = (k * E2).sum() / k.sum()
     assert abs(float(mean_e2) - 1.0) < 1e-6, mean_e2
 
 
@@ -131,10 +136,18 @@ def test_weight_is_uniform_without_sigmas():
 
 @pytest.mark.unit
 def test_weight_is_normalised_to_mean_one():
-    """So the score's scale does not depend on how the sigmas happened to be scaled."""
+    """So the score's scale does not depend on how the sigmas happened to be scaled.
+
+    To a few ulps of the working dtype, not to a fixed 1e-9: the normalisation
+    divides by this very mean, so what is left is the rounding of a 4000-term
+    reduction, and at float32 one ulp is already 1.2e-7. The old fixed bound
+    passed or failed on the reduction order alone -- it held on MPS and missed
+    by exactly one ulp on the CPU.
+    """
     F, sig_F, hkl, sg, cell, _ = _case()
     obs = TranslationObs.build(F, hkl, sg, cell, sig_F=sig_F)
-    assert abs(float(obs.weight.mean()) - 1.0) < 1e-9
+    tol = 8 * torch.finfo(obs.weight.dtype).eps
+    assert abs(float(obs.weight.mean()) - 1.0) < tol
 
 
 @pytest.mark.unit

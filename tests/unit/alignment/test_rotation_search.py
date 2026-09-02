@@ -46,8 +46,8 @@ def _rotation(seed: int) -> torch.Tensor:
 
 
 def _angle_deg(a: torch.Tensor, b: torch.Tensor) -> float:
-    a = a.detach().to(torch.float64).cpu()
-    b = b.detach().to(torch.float64).cpu()
+    a = a.detach().cpu().to(torch.float64)
+    b = b.detach().cpu().to(torch.float64)
     tr = torch.diagonal(a @ b.T).sum().item()
     return math.degrees(math.acos(max(-1.0, min(1.0, (tr - 1.0) / 2.0))))
 
@@ -61,16 +61,18 @@ def _sym_cartesian(data) -> torch.Tensor:
     """
     from torchref.experimental.alignment.sh import hkl_symops_to_cartesian
 
+    # `.cpu()` before the widening: the data may sit on an accelerator that
+    # cannot hold a float64 tensor at all, and the widening is exact on the host.
     return hkl_symops_to_cartesian(
-        data.spacegroup.matrices.to(torch.float64).cpu(),
-        data.cell.reciprocal_basis_matrix.to(torch.float64).cpu(),
+        data.spacegroup.matrices.cpu().to(torch.float64),
+        data.cell.reciprocal_basis_matrix.cpu().to(torch.float64),
     )
 
 
 def _kabsch(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Rotation taking ``a`` onto ``b``, both centred. CPU float64."""
-    a = a.detach().to(torch.float64).cpu()
-    b = b.detach().to(torch.float64).cpu()
+    a = a.detach().cpu().to(torch.float64)
+    b = b.detach().cpu().to(torch.float64)
     x = a - a.mean(0)
     y = b - b.mean(0)
     u, _, vt = torch.linalg.svd(y.T @ x)

@@ -91,21 +91,28 @@ def _wigner_d_blocks(L: int, betas: torch.Tensor, device: torch.device,
         int(L),
         str(canonical_device(device)),
         dtype,
-        tuple(betas.detach().to(torch.float64).cpu().tolist()),  # dtype-ok: memo key: exact host-side doubles
+        tuple(betas.detach().cpu().to(torch.float64).tolist()),  # dtype-ok: memo key: exact host-side doubles
     )
     hit = _WIGNER_D_CACHE.get(key)
     if hit is not None:
         return hit
 
     eig_table = _wigner_eig_table(L)                           # host, cached
-    betas_host = betas.detach().to(torch.float64).cpu()  # dtype-ok: memo key: exact host-side doubles
+    # `.cpu()` before the widening, not after: float64 cannot be materialised
+    # on every backend, and widening on the host is exact either way.
+    betas_host = betas.detach().cpu().to(torch.float64)  # dtype-ok: memo key: exact host-side doubles
     blocks = []
     for l in range(1, L):
         w, V = eig_table[l - 1]                                # data-independent
         phase = torch.exp(-1j * betas_host.unsqueeze(1) * w.unsqueeze(0))  # (n_beta, sz)
         VP = V.unsqueeze(0) * phase.unsqueeze(1)               # (n_beta, sz, sz) = (k,m,a)
         blocks.append(
-            (VP @ V.conj().transpose(-1, -2)).real.to(device=device, dtype=dtype)
+            # `resolve_conj()`: a batched matmul on a lazy conjugate view drops
+            # the conjugation on MPS (see `cross_correlate_xi`). This block is
+            # built on the host today, where the bit is honoured, but the failure
+            # mode is silent and the copy is one small matrix.
+            (VP @ V.conj().resolve_conj().transpose(-1, -2))
+            .real.to(device=device, dtype=dtype)
         )
 
     _WIGNER_D_CACHE.clear()          # one entry only; see the footprint note

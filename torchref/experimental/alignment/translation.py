@@ -139,11 +139,16 @@ class TranslationObs:
         """
         dev = get_default_device() if device is None else device
         real = get_float_dtype()
-        F = F_obs.detach().to(dev)
-        F = (F.abs() if F.is_complex() else F).to(real)
+        # Cast and move in one `.to`, and take `abs()` before either. Chaining
+        # them the other way round -- `.to(dev)` and then `.to(real)` -- puts
+        # the caller's width on the device first, which throws for a float64
+        # input on a backend that has none, and double observations are a
+        # perfectly ordinary thing to be handed.
+        F = F_obs.detach()
+        F = (F.abs() if F.is_complex() else F).to(device=dev, dtype=real)
         hkl_i = hkl.detach().to(dev)
 
-        rec_basis = real_cell.reciprocal_basis_matrix.to(dev).to(real)
+        rec_basis = real_cell.reciprocal_basis_matrix.to(device=dev, dtype=real)
         s_mag = (hkl_i.to(real) @ rec_basis).norm(dim=-1)
 
         hkl_l = hkl_i.round().to(torch.int64)  # dtype-ok: Miller indices are integers
@@ -162,7 +167,7 @@ class TranslationObs:
         if sig_F is None:
             weight = torch.ones_like(F)
         else:
-            sig = sig_F.detach().to(dev).to(real).abs()
+            sig = sig_F.detach().to(device=dev, dtype=real).abs()
             weight = normalise_weight(inverse_variance_weight(
                 snr_from_amplitude(F, sig), sigma_a, eps=eps,
             ))
@@ -200,7 +205,10 @@ class CandidateTransform:
     def e_calc(self, t: torch.Tensor) -> torch.Tensor:
         """``E_calc(h, t)`` for ``t`` of shape ``(3,)`` or ``(K, 3)``: ``(N,)`` or ``(K, N)``."""
         single = t.ndim == 1
-        tt = t.reshape(-1, 3).to(self.h_R.device).to(self.h_R.dtype)
+        # One `.to`: a translation handed in as double -- a fractional vector
+        # from host-side algebra usually is -- must not be put on the device at
+        # its own width first.
+        tt = t.reshape(-1, 3).to(device=self.h_R.device, dtype=self.h_R.dtype)
         phase_arg = torch.einsum("ind,kd->kin", self.h_R, tt)
         phase = torch.exp((2j * math.pi) * phase_arg.to(self.G.dtype))
         E = (self.G.unsqueeze(0) * phase).sum(dim=1).abs()
@@ -232,9 +240,9 @@ def prepare_candidate(
     real = get_float_dtype()
     cplx = get_complex_dtype()
 
-    hkl = obs.hkl.to(device).to(real)
-    sym_R = spacegroup.matrices.detach().to(device).to(real)
-    sym_t = spacegroup.translations.detach().to(device).to(real)
+    hkl = obs.hkl.to(device=device, dtype=real)
+    sym_R = spacegroup.matrices.detach().to(device=device, dtype=real)
+    sym_t = spacegroup.translations.detach().to(device=device, dtype=real)
     S = int(sym_R.shape[0])
     N = int(hkl.shape[0])
 
@@ -247,13 +255,13 @@ def prepare_candidate(
     G_raw = F_all * phase
 
     I_P = (G_raw.abs() ** 2).mean(dim=0).to(real)
-    s_mag = obs.s_mag.to(device).to(real)
+    s_mag = obs.s_mag.to(device=device, dtype=real)
     fit_P = WilsonNormaliser(
         I_P, s_mag, n_coeff=WILSON_N_COEFF,
         s_lo=float(s_mag.min()), s_hi=float(s_mag.max()),
     )
     Sigma_c = S * fit_P.evaluate(s_mag).to(real)
-    norm = (obs.eps.to(device).to(real) * Sigma_c).clamp(min=1e-30).sqrt()
+    norm = (obs.eps.to(device=device, dtype=real) * Sigma_c).clamp(min=1e-30).sqrt()
     return CandidateTransform(G=G_raw / norm.to(cplx), h_R=h_R, norm=norm)
 
 
@@ -384,9 +392,9 @@ def fast_translation_function(
     cplx = get_complex_dtype()
 
     nx, ny, nz = _grid_sizes(real_cell, grid_spacing_A)
-    G = cand.G.to(device).to(cplx)
+    G = cand.G.to(device=device, dtype=cplx)
     S, N = G.shape
-    coeff = obs.coeff.to(device).to(cplx)
+    coeff = obs.coeff.to(device=device, dtype=cplx)
     h_R_int = cand.h_R.round().to(torch.int64)  # dtype-ok: Miller indices are integers
 
     # The pair (j, i) is the conjugate of (i, j) at -dh, so the map is twice
@@ -398,7 +406,7 @@ def fast_translation_function(
         dh = h_R_int[i + 1:] - h_R_int[i:i + 1]                     # (S-i-1, N, 3)
         flat = ((dh[..., 0] % nx) * ny + (dh[..., 1] % ny)) * nz + (dh[..., 2] % nz)
         W.index_add_(0, flat.reshape(-1), (coeff.view(1, -1) * pair).reshape(-1))
-    diag = (obs.coeff.to(device).to(real) * (G.abs() ** 2).sum(dim=0).to(real)).sum()
+    diag = (obs.coeff.to(device=device, dtype=real) * (G.abs() ** 2).sum(dim=0).to(real)).sum()
     score = (2.0 * torch.fft.ifftn(W.view(nx, ny, nz), dim=(0, 1, 2)).real
              * float(nx * ny * nz)).to(real) + diag
 
@@ -435,8 +443,8 @@ def llg_at_translations(
     E_calc = cand.e_calc(t_candidates)                               # (K, N)
     K, N = E_calc.shape
     dev, real = E_calc.device, E_calc.dtype
-    E_obs = obs.E_obs.to(dev).to(real).view(1, N).expand(K, N)
-    D = obs.sigma_a.to(dev).to(real).view(1, N)
+    E_obs = obs.E_obs.to(device=dev, dtype=real).view(1, N).expand(K, N)
+    D = obs.sigma_a.to(device=dev, dtype=real).view(1, N)
     Sigma = (1.0 - D * D).clamp(min=1e-3).expand(K, N)
     cent = obs.centric.to(dev).view(1, N).expand(K, N)
     ll = -rice_per_refl(E_obs, D * E_calc, Sigma, cent)              # (K, N)

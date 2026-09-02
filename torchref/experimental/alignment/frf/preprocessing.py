@@ -142,7 +142,10 @@ def detect_zsymm(sym_mats: Optional[torch.Tensor]) -> int:
     """
     if sym_mats is None:
         return 1
-    axis, zsymm = get_high_order_axis(sym_mats.to(torch.float64).cpu())  # dtype-ok: 3x3 rotation algebra in double on the host
+    # No cast and no copy: `get_axis_order` works at the operators' own width
+    # and batches its one readback. Widening them here was also a crash on a
+    # backend with no float64, since these arrive on the compute device.
+    axis, zsymm = get_high_order_axis(sym_mats)
     if axis != 2:  # high-order axis not along z → don't apply a wrong filter
         return 1
     return int(zsymm)

@@ -163,20 +163,22 @@ def fit_anisotropy(
     d_min: float,
     d_max: float,
     n_shells: int = N_WILSON_SHELLS,
+    device=None,
 ) -> torch.Tensor:
     """Fit the overall anisotropy tensor and project it onto the point group.
 
-    Returns ``U`` in Angstrom squared as a **host** float64 ``(3, 3)``, in the
-    convention ``F_corrected = F * exp(+pi^2 s.U.s)``.
-    :func:`~torchref.experimental.alignment.sh.apply_overall_anisotropy` moves
-    and casts it to wherever the amplitudes are.
+    Returns ``U`` in Angstrom squared as a ``(3, 3)`` at the configured float
+    dtype, in the convention ``F_corrected = F * exp(+pi^2 s.U.s)``. It stays on
+    the data's own device unless ``device`` says otherwise, so nothing crosses a
+    device boundary to be fitted and come back.
 
-    Deliberately host-side and in double precision. It is a seven-parameter
-    Gauss-Newton fit over the ``[d_max, d_min]`` window -- of order 1e4
-    reflections, once per search -- so the cost of doing it here is not
-    measurable, while a broken anisotropy fit is worth hundreds of ranks on
-    high-symmetry cases. Keeping it off the accelerator also means the engine
-    needs no float64 there.
+    It used to be pinned to the host in double. Neither is needed. Measured over
+    the 16 datasets in ``tests/files/mtz``, the same fit in float32 reproduces
+    the double one to 3.3e-5 relative in ``U`` and 4.5e-6 in the correction
+    factor it exists to produce; end to end, four of five panel cases return a
+    bit-identical peak list and the fifth (2DQ6, P3121, the most nearly
+    isotropic ``U`` of the panel) keeps its top orientation and reshuffles two
+    near-tied deep ranks.
 
     The projection matters: an unconstrained six-component fit can return a
     tensor the lattice forbids, and applying it then modulates the observations
@@ -186,8 +188,10 @@ def fit_anisotropy(
     """
     from .sh import hkl_symops_to_cartesian, symmetrize_anisotropy
 
-    rec_basis = data.cell.reciprocal_basis_matrix.detach().cpu().to(torch.float64)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
-    hkl = data.hkl.detach().cpu().to(torch.float64)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
+    real = get_float_dtype()
+    dev = data.hkl.device if device is None else device
+    rec_basis = data.cell.reciprocal_basis_matrix.detach().to(device=dev, dtype=real)
+    hkl = data.hkl.detach().to(device=dev, dtype=real)
     s_vec_all = hkl @ rec_basis
     s_mag_all = s_vec_all.norm(dim=-1)
     keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
@@ -196,11 +200,11 @@ def fit_anisotropy(
             f"Only {int(keep.sum())} reflections in [{d_min}, {d_max}] A, too "
             f"few for {n_shells} shells."
         )
-    F_obs = data.F.detach().cpu().to(torch.float64).abs()[keep]  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
+    F_obs = data.F.detach().to(device=dev, dtype=real).abs()[keep]
     s_vec = s_vec_all[keep]
     s_mag = s_mag_all[keep]
     centric = (
-        data.centric.detach().cpu()[keep].to(torch.bool)
+        data.centric.detach().to(dev)[keep].to(torch.bool)
         if hasattr(data, "centric")
         else torch.zeros_like(F_obs, dtype=torch.bool)
     )
@@ -211,7 +215,7 @@ def fit_anisotropy(
         F_obs, s_vec, shell_idx, centric, P=n_shells, min_count=20,
     )
     sym_cart = hkl_symops_to_cartesian(
-        data.spacegroup.matrices.detach().cpu().to(torch.float64), rec_basis,  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
+        data.spacegroup.matrices.detach().to(device=dev, dtype=real), rec_basis,
     )
     return symmetrize_anisotropy(U, sym_cart)
 
@@ -285,8 +289,8 @@ def prepare_frf_inputs(
     )
 
     U_aniso = fit_anisotropy(
-        data, d_min=d_min, d_max=d_max, n_shells=n_shells,
-    ).to(device)
+        data, d_min=d_min, d_max=d_max, n_shells=n_shells, device=device,
+    )
     F_obs_aniso = apply_overall_anisotropy(F_obs, s_vec, U_aniso)
     # Same multiplicative factor, so F/sigma survives the correction intact.
     sig_F_aniso = (None if sig_F is None
