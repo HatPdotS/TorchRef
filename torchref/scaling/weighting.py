@@ -203,6 +203,13 @@ def empirical_sigma_a(
     factor, so a model that is half the asymmetric unit looks like a model that
     is all of it, and only the tilt survives.
 
+    That uniform factor is removed here, by dividing each curve by its geometric
+    mean over the points supplied. The two fits carry their own absolute
+    scales -- the data's arbitrary one and the model's electron scale -- and
+    without this step the ratio's *level* set the answer rather than its shape:
+    measured 0.02-0.06 on 1DAW and 2DQ6 and 8-12 on 3K7M, giving a flat
+    ``sigma_A`` of 0.15-0.35 that said nothing about resolution.
+
     Parameters
     ----------
     sigma_obs, sigma_calc : torch.Tensor
@@ -212,6 +219,8 @@ def empirical_sigma_a(
     floor : float, optional
         Lower bound on the returned ``sigma_A``.
     """
-    r = (sigma_obs / sigma_calc.clamp(min=1e-30)).clamp(min=1e-30)
-    shared = torch.minimum(r, 1.0 / r).clamp(min=0.0, max=1.0)
+    log_r = (sigma_obs.clamp(min=1e-30).log()
+             - sigma_calc.clamp(min=1e-30).log())
+    log_r = log_r - log_r.mean()           # unit geometric mean: scale-free
+    shared = torch.exp(-log_r.abs())       # min(R, 1/R)
     return shared.sqrt().clamp(min=float(floor), max=1.0 - 1e-6)

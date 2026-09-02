@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- Fixed ``empirical_sigma_a`` taking the level of the observed-to-calculated Wilson-curve ratio rather than its shape. The two curves carry different absolute scales, so the ratio was 0.02-0.06 on one structure and 8-12 on another and the returned ``sigma_A`` was flat at 0.15-0.35 regardless of resolution; each curve is now divided by its geometric mean first. Per-shell factors are gauge in the rotation function's correlation, so its placements are unchanged (30/30)
 - The fast translation function scores the covariance of two normalised intensities -- the rotation function's LERF1 coefficient ``cw (E_obs^2 - 1) w sigma_A^2`` against the candidate's ``|E_calc(h, t)|^2``, normalised per candidate by the same Wilson fit -- instead of a raw-``|F_calc|^2`` ratio that was not a correlation and, on the four largest panel structures, was higher 40 A from the true position than at it. One FFT on a grid a third of the set's resolution apart with parabolic peak refinement replaces the 16-point coarse grid and three 100-point local refines; the Rice/Woolfson likelihood at a fixed Luzzati ``sigma_A`` picks among the top peaks and ranks the candidates. 30/30 true poses at the default window and 30/30 with the window removed, against 18/30 before
 - The translation stage runs in the configured float and complex dtypes rather than hard-coded double
 - Removed ``use_llg_tf``, ``n_translation_peaks`` and ``translation_grid_steps`` from the pipeline; the likelihood always picks the translation, and the grid is sized by resolution

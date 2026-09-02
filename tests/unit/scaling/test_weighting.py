@@ -9,8 +9,8 @@ import pytest
 import torch
 
 from torchref.scaling.weighting import (
-    DEFAULT_SNR_CAP, information_weight, inverse_variance_weight,
-    normalise_weight, snr_from_amplitude,
+    DEFAULT_SNR_CAP, empirical_sigma_a, information_weight,
+    inverse_variance_weight, normalise_weight, snr_from_amplitude,
 )
 
 pytestmark = pytest.mark.unit
@@ -122,3 +122,31 @@ def test_normalise_weight_sets_the_mean():
 def test_a_constant_weight_survives_normalisation_as_ones():
     w = torch.full((100,), 3.7, dtype=torch.float64)
     assert torch.allclose(normalise_weight(w), torch.ones_like(w))
+
+
+def test_empirical_sigma_a_ignores_the_absolute_scale():
+    """The data's scale is arbitrary and the model's is electrons; neither is information.
+
+    Before this held, the ratio's level set the answer: a flat sigma_A of 0.2 on
+    one structure and 0.33 on another, with no resolution dependence at all.
+    """
+    s = torch.linspace(0.07, 0.25, 40, dtype=torch.float64)
+    obs = torch.exp(-30.0 * s * s)
+    calc = torch.exp(-30.0 * s * s)
+    base = empirical_sigma_a(obs, calc)
+    torch.testing.assert_close(empirical_sigma_a(1000.0 * obs, calc), base)
+    torch.testing.assert_close(empirical_sigma_a(obs, 1e-3 * calc), base)
+
+
+def test_empirical_sigma_a_reads_the_shape():
+    """Identical shapes: full trust everywhere. A low-resolution deficit: less trust there."""
+    s = torch.linspace(0.07, 0.25, 40, dtype=torch.float64)
+    calc = torch.exp(-30.0 * s * s)
+    same = empirical_sigma_a(7.0 * calc, calc)
+    assert float(same.min()) > 0.999
+    # The model predicts more scattering at low resolution than the data have
+    # -- the bulk solvent it lacks -- and matches at high resolution.
+    deficit = torch.where(s < 0.12, torch.full_like(s, 0.4), torch.ones_like(s))
+    sa = empirical_sigma_a(calc * deficit, calc)
+    assert float(sa[s < 0.12].max()) < float(sa[s > 0.15].min())
+    assert bool((sa <= 1.0).all()) and bool((sa > 0.0).all())

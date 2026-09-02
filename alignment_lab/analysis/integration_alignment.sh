@@ -13,5 +13,5 @@ PY=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/.dev/bin
 cd "$REPO"
 export PYTHONPATH="$REPO" TORCHREF_NUM_THREADS=8 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
 export PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=""
-"$PY" -m pytest -c tests/pytest.ini tests/integration/alignment tests/unit/alignment --run-slow -q --tb=short 2>&1 | grep -v "^✓" | tail -60
+"$PY" -m pytest -c tests/pytest.ini tests/integration/alignment tests/unit/alignment tests/unit/scaling --run-slow -q --tb=short 2>&1 | grep -v "^✓" | tail -60
 echo "PYTEST_RC=${PIPESTATUS[0]}"
