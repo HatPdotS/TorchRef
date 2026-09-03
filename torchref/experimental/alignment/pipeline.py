@@ -292,6 +292,15 @@ class MolecularReplacementPipeline(DeviceMixin):
         fixed: Sequence["ModelFT"] = (),
     ):
         self.data = data
+        # The search model is placed in the crystal, so it is evaluated in the
+        # crystal's cell. A predicted model arrives in whatever box its writer
+        # chose -- often one that barely holds the molecule -- and the P1
+        # transform in that box aliases; 1A0F's AlphaFold chain scored a
+        # likelihood gain of 10 in its own 59 x 40 x 55 A box and 168 in the
+        # crystal cell.
+        if model.cell is None or model.cell != data.cell:
+            model = model.copy()
+            model.cell = data.cell.clone()
         self.model = model
         self.fixed = list(fixed)
         self.device = device or get_default_device()
