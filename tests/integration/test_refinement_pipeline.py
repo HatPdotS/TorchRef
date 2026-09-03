@@ -44,7 +44,7 @@ class TestRefinementSetup:
     def test_restraints_from_model(self, sample_cif_file):
         """Test building restraints from a loaded model."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))

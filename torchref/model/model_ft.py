@@ -1,8 +1,8 @@
 """ModelFT -- a :class:`~torchref.model.Model` that can compute structure factors.
 
-Adds the electron-density / FFT path (via an :class:`~torchref.model.SfFFT`
-submodule created as soon as both cell and space group are set), the ITC92
-scattering parametrization, and the anomalous f' / f'' correction.
+Adds the electron-density / FFT path (an :class:`~torchref.model.SfFFT` submodule
+that reads the crystal off the model's context and sizes its grid lazily), the
+ITC92 scattering parametrization, and the anomalous f' / f'' correction.
 """
 
 import math
@@ -13,11 +13,10 @@ import numpy as np
 import torch
 
 from torchref.base.fourier import fft, ifft
-from torchref.config import dtypes, get_float_dtype, normalize_device
+from torchref.config import canonical_device, dtypes, get_default_device, get_float_dtype
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
-from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.utils.caching import CachedForwardMixin
 
 
@@ -53,15 +52,16 @@ class ModelFT(CachedForwardMixin, Model):
     ----------
     max_res, wavelength, anomalous_threshold : float
         The constructor arguments above, readable back as attributes.
-    gridsize, real_space_grid : torch.Tensor
-        Grid dimensions ``(nx, ny, nz)`` and coordinate grid
-        ``(nx, ny, nz, 3)``; both live on the ``SfFFT`` submodule.
+    gridsize : torch.Tensor or None
+        Grid dimensions ``(nx, ny, nz)``, derived by the ``SfFFT`` submodule from
+        the cell, space group, ``max_res`` and ``explicit_gridsize`` on first use
+        and re-derived when any of them changes. A coordinate grid is not stored;
+        :meth:`real_space_grid` builds one on demand for the few callers that want
+        the Cartesian positions themselves.
     map : torch.Tensor or None
         Most recently computed electron density map.
     parametrization : dict
         ITC92 parametrization dictionary {element: (A, B)}.
-    map_symmetry : MapSymmetry
-        Symmetry operator for map calculations.
     """
 
     def __init__(
@@ -109,8 +109,17 @@ class ModelFT(CachedForwardMixin, Model):
         """
         super().__init__(*args, **kwargs)
 
-        self.max_res = max_res
-        self._explicit_gridsize = gridsize
+        # The engine reads cell and space group off ``self.ctx`` as they are set;
+        # its grid is derived on first use and re-derived when the crystal,
+        # ``max_res`` or ``explicit_gridsize`` change.
+        self._fft = SfFFT(
+            ctx=self.ctx,
+            max_res=max_res,
+            explicit_gridsize=gridsize,
+            dtype_float=self.dtype_float,
+            device=self.device,
+            verbose=self.ctx.verbose,
+        )
 
         self.wavelength = wavelength
         self.anomalous_threshold = anomalous_threshold
@@ -118,52 +127,61 @@ class ModelFT(CachedForwardMixin, Model):
         # so it round-trips through state_dict and follows .to(device). f' is always
         # applied when wavelength is set; f'' only when this is True (unmerged data).
         self.register_buffer(
-            "anomalous_bijvoet", torch.tensor(bool(apply_bijvoet)), persistent=True
+            "anomalous_bijvoet",
+            torch.tensor(bool(apply_bijvoet), device=self.device),
+            persistent=True,
         )
         self._anomalous_cache = None  # Will hold (mask, f_prime, f_double_prime)
         self._anomalous_elements_hash = (
             None  # Hash of element list for cache invalidation
         )
-        self._fft = None
+
+    # =========================================================================
+    # Engine binding and grid inputs
+    # =========================================================================
 
     @property
-    def cell(self):
-        """Unit cell object with parameters [a, b, c, alpha, beta, gamma]."""
-        return self._cell
+    def fft(self) -> SfFFT:
+        """The SfFFT submodule, bound to this model's context.
 
-    @cell.setter
-    def cell(self, value):
-        """Set the unit cell; also builds the FFT once the spacegroup is set."""
-        self._cell = value
-        self._maybe_initialize_fft()
-
-    @property
-    def spacegroup(self):
-        """Space group object."""
-        return self._spacegroup
-
-    @spacegroup.setter
-    def spacegroup(self, value):
-        """Set the space group (SpaceGroup, gemmi.SpaceGroup, name or number);
-        also builds the FFT once the cell is set.
+        ``copy()`` and ``load_state`` replace the context object itself; re-pointing
+        the engine here keeps ``fft.ctx is self.ctx`` on every path.
         """
-        if value is not None:
-            self._spacegroup = SpaceGroup(
-                value, dtype=self.dtype_float, device=self.device
-            )
-        else:
-            self._spacegroup = None
-        self._maybe_initialize_fft()
+        fft = self._fft
+        if fft.ctx is not self.ctx:
+            fft.ctx = self.ctx
+        return fft
 
-    def _maybe_initialize_fft(self):
-        """(Re)build the SfFFT submodule once both cell and spacegroup are set."""
-        if self._cell is not None and self._spacegroup is not None:
-            self._fft = SfFFT(
-                cell=self._cell,
-                spacegroup=self._spacegroup,
-                device=self.device,
-                max_res=self.max_res,
-            )
+    @property
+    def max_res(self) -> Optional[float]:
+        """Maximum resolution in Angstroms that sizes the grid; owned by the engine."""
+        return self._fft.max_res
+
+    @max_res.setter
+    def max_res(self, value) -> None:
+        self._fft.max_res = None if value is None else float(value)
+
+    @property
+    def explicit_gridsize(self) -> Optional[Tuple[int, int, int]]:
+        """Fixed grid dimensions overriding ``max_res``, or None."""
+        return self._fft.explicit_gridsize
+
+    @explicit_gridsize.setter
+    def explicit_gridsize(self, value) -> None:
+        self._fft.explicit_gridsize = value
+
+    @property
+    def grid_key(self):
+        """What the grid is derived from; see :attr:`SfFFT.grid_key`."""
+        return self.fft.grid_key
+
+    def _fingerprint_state(self):
+        """Fold the grid key into the forward-cache key.
+
+        Parameters and buffers alone would miss a cell, space-group or resolution
+        change that leaves the grid buffers untouched until the next forward.
+        """
+        return super()._fingerprint_state() + (self.fft.grid_key,)
 
     def load_pdb(self, filename):
         """
@@ -180,8 +198,6 @@ class ModelFT(CachedForwardMixin, Model):
             Self, for method chaining.
         """
         super().load_pdb(filename)
-        # FFT is now initialized via cell/spacegroup setters in parent load()
-        self.setup_grid()
         return self
 
     def select(self, selection):
@@ -189,9 +205,8 @@ class ModelFT(CachedForwardMixin, Model):
         Return a new ModelFT containing only the selected atoms.
 
         Extends :meth:`Model.select` with the FT-specific setup: rebuilding
-        the ITC92 parametrization and the real-space grid for the reduced
-        atom set. The FFT itself is initialized via the cell/spacegroup
-        setters during the base ``select``.
+        the ITC92 parametrization and carrying ``max_res`` and
+        ``explicit_gridsize`` across, so the selection sizes its grid the same way.
 
         Parameters
         ----------
@@ -205,15 +220,14 @@ class ModelFT(CachedForwardMixin, Model):
 
         Notes
         -----
-        The ModelFT-specific constructor arguments -- ``max_res``,
-        ``wavelength``, ``anomalous_threshold``, ``gridsize`` -- are **not**
-        propagated: :meth:`Model.select` passes only the base kwargs, so the
-        returned model silently carries the ModelFT defaults for those.
+        ``wavelength`` and ``anomalous_threshold`` are **not** propagated:
+        :meth:`Model.select` passes only the base kwargs, so the returned model
+        carries the ModelFT defaults for those.
         """
         selection = super().select(selection)
         selection._build_parametrization()
-        # FFT is initialized via cell/spacegroup setters in parent select()
-        selection.setup_grid()
+        selection.max_res = self.max_res
+        selection.explicit_gridsize = self.explicit_gridsize
         return selection
 
     def load_cif(self, filename):
@@ -232,35 +246,7 @@ class ModelFT(CachedForwardMixin, Model):
         """
         super().load_cif(filename)
         self._build_parametrization()
-        # FFT is now initialized via cell/spacegroup setters in parent load()
-        self.setup_grid()
         return self
-
-    def setup_gridsize(self, max_res=None):
-        """
-        Compute optimal grid dimensions.
-
-        Delegates to FFT.compute_grid_size().
-
-        Parameters
-        ----------
-        max_res : float, optional
-            Maximum resolution in Angstroms. If None, uses self.max_res.
-
-        Returns
-        -------
-        torch.Tensor
-            Grid dimensions (nx, ny, nz) as int32 tensor.
-        """
-        if max_res is not None:
-            self.max_res = max_res
-            self._fft.max_res = max_res
-
-        if self.verbose > 1:
-            print(f"Defining grid size for max_res={self.max_res} Å")
-
-        gridsize = self.cell.compute_grid_size(self.max_res)
-        return torch.tensor(gridsize, dtype=dtypes.int, device=self.device)
 
     def _build_parametrization(self):
         """Build the ITC92 parametrization (delegates to :class:`Model`)."""
@@ -283,48 +269,39 @@ class ModelFT(CachedForwardMixin, Model):
         return self._B
 
     # =========================================================================
-    # Backward-compatible properties for FFT grid attributes
+    # Grid, resolved by the engine
     # =========================================================================
 
     @property
     def gridsize(self) -> Optional[torch.Tensor]:
-        """Grid dimensions (nx, ny, nz)."""
-        return self._fft.gridsize
+        """Grid dimensions (nx, ny, nz), or None until cell and space group are set."""
+        return self.fft.gridsize
 
-    @gridsize.setter
-    def gridsize(self, value):
-        """Set grid size (for backward compatibility)."""
-        self._fft.gridsize = value
+    def real_space_grid(self) -> torch.Tensor:
+        """Build the Cartesian coordinate of every grid point, ``(nx, ny, nz, 3)``.
+
+        Not stored: at ``12 * nx * ny * nz`` bytes it is the largest tensor a model
+        would hold, and no structure-factor path reads it -- every splat derives a
+        voxel's position from its index. Built here for the callers that genuinely
+        want the coordinates, and discarded when they are done with it.
+        """
+        from torchref.base.fourier import get_real_grid
+
+        return get_real_grid(
+            fractional_matrix=self.cell.fractional_matrix,
+            gridsize=self.gridsize,
+            device=self.device,
+        )
 
     @property
-    def real_space_grid(self) -> Optional[torch.Tensor]:
-        """Real-space coordinate grid with shape (nx, ny, nz, 3)."""
-        return self._fft.real_space_grid
-
-    @real_space_grid.setter
-    def real_space_grid(self, value):
-        """Set real space grid (for backward compatibility)."""
-        self._fft.real_space_grid = value
+    def grid_shape(self) -> Optional[tuple]:
+        """Map dimensions ``(nx, ny, nz)``, or None until cell and space group are set."""
+        return self.fft.grid_shape
 
     @property
     def voxel_size(self) -> Optional[torch.Tensor]:
-        """Voxel dimensions."""
-        return self._fft.voxel_size
-
-    @voxel_size.setter
-    def voxel_size(self, value):
-        """Set voxel size (for backward compatibility)."""
-        self._fft.voxel_size = value
-
-    @property
-    def map_symmetry(self) -> Optional[MapSymmetry]:
-        """Symmetry operator for map calculations."""
-        return self._fft.map_symmetry
-
-    @map_symmetry.setter
-    def map_symmetry(self, value):
-        """Set map symmetry (for backward compatibility)."""
-        self._fft.map_symmetry = value
+        """Voxel edge vector sum, or None until cell and space group are set."""
+        return self.fft.voxel_size
 
     def get_iso(self):
         """
@@ -378,69 +355,22 @@ class ModelFT(CachedForwardMixin, Model):
 
         return xyz, u, occupancy, A, B
 
-    def setup_grid(self, max_res=None, gridsize=None):
+    def setup_grid(self, *, max_res=None, gridsize=None):
         """
-        Setup real-space grid for electron density calculation.
+        Override the grid's inputs explicitly and resolve the grid now.
 
-        Delegates to FFT.setup_grid() using the stored cell and spacegroup.
+        Not needed on the normal path: the engine sizes its grid from the cell,
+        space group and ``max_res`` on first use and follows any later change.
 
         Parameters
         ----------
         max_res : float, optional
-            Maximum resolution for grid spacing in Angstroms.
-            If None, uses self.max_res.
+            New maximum resolution in Angstroms. None leaves the current value.
         gridsize : tuple of int, optional
-            Explicit grid size (nx, ny, nz). If None, computed automatically
-            using Cell.compute_grid_size() and SpaceGroup.suggest_grid_size().
+            Fixed grid size (nx, ny, nz). None leaves :attr:`explicit_gridsize`
+            unchanged.
         """
-        if max_res is not None:
-            self.max_res = max_res
-            self._fft.max_res = max_res
-
-        if self.verbose > 1:
-            print(f"Setting up grids with max_res={self.max_res} Å")
-
-        gridsize_to_use = gridsize or self._explicit_gridsize
-
-        self._fft.setup_grid(
-            gridsize=gridsize_to_use,
-            max_res=self.max_res,
-        )
-
-        if self.verbose > 2:
-            print(f"Grid shape: {self._fft.real_space_grid.shape[:-1]}")
-            print(f"Voxel size: {self._fft.voxel_size}")
-
-    def get_radius(self, min_radius_Angstrom: float = 4.0):
-        """
-        Get a single fixed splat radius in voxels for the given minimum.
-
-        Vestigial: the density path truncates each atom at its own
-        ``torchref.sigma_cutoff_ed * sigma_eff`` radius and never consults this.
-
-        Parameters
-        ----------
-        min_radius_Angstrom : float, optional
-            Minimum radius in Angstroms. Default is 4.0.
-
-        Returns
-        -------
-        int
-            Radius in voxels.
-        """
-        if not hasattr(self, "real_space_grid") or self.real_space_grid is None:
-            self.setup_grid()
-        voxel_size = self.real_space_grid[1, 1, 1] - self.real_space_grid[0, 0, 0]
-        min_radius = (
-            torch.ceil(min_radius_Angstrom / torch.min(voxel_size))
-            .to(dtypes.int)
-            .item()
-        )
-        if self.verbose > 1:
-            print(
-                f"Calculated radius for density calculation: {min_radius} voxels (voxel size: {voxel_size}), this corresponds to at least {min_radius_Angstrom} Å"
-            )
-        return min_radius
+        self.fft.setup_grid(max_res=max_res, gridsize=gridsize)
 
     def build_complete_map(self, radius=None, apply_symmetry=True):
         """
@@ -466,7 +396,7 @@ class ModelFT(CachedForwardMixin, Model):
         """
         self.map = self.build_initial_map(apply_symmetry=apply_symmetry)
 
-        if self.verbose > 2:
+        if self.ctx.verbose > 2:
             print(
                 f"Density map built. Sum: {self.map.sum():.2f}, Max: {self.map.max():.4f}"
             )
@@ -488,15 +418,12 @@ class ModelFT(CachedForwardMixin, Model):
         torch.Tensor
             Electron density map with shape (nx, ny, nz).
         """
-        if self._fft.real_space_grid is None:
-            self.setup_grid()
-
-        if self.verbose > 2:
+        if self.ctx.verbose > 2:
             print("Building density map (per-atom variable radius)...")
 
         xyz_iso, adp_iso, occ_iso, A_iso, B_iso = self.get_iso()
 
-        if self.verbose > 3:
+        if self.ctx.verbose > 3:
             assert torch.all(
                 torch.isfinite(A_iso)
             ), "Non-finite values found in A_iso during map building."
@@ -529,7 +456,7 @@ class ModelFT(CachedForwardMixin, Model):
             apply_symmetry=apply_symmetry,
         )
 
-        if self.verbose > 3:
+        if self.ctx.verbose > 3:
             assert torch.all(
                 torch.isfinite(self.map)
             ), "Non-finite values found in map."
@@ -558,7 +485,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         np_map = self.map.detach().cpu().numpy().astype(np.float32)
         cell = self.cell.tolist()
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(f"Saving map to {filename}")
             print(f"  Map shape: {self.map.shape}")
             print(f"  Map sum: {self.map.sum():.2f}")
@@ -571,7 +498,7 @@ class ModelFT(CachedForwardMixin, Model):
         map_ccp.setup(0.0)
         map_ccp.update_ccp4_header()
         map_ccp.write_ccp4_map(filename)
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print("Map saved successfully")
 
     def get_map_statistics(self):
@@ -641,7 +568,7 @@ class ModelFT(CachedForwardMixin, Model):
                 unique_elements, self.wavelength, self.anomalous_threshold
             )
 
-            if self.verbose > 1 and significant:
+            if self.ctx.verbose > 1 and significant:
                 print(
                     f"Anomalous scatterers at {self.wavelength:.4f} Å: "
                     f"{list(significant.keys())}"
@@ -750,14 +677,6 @@ class ModelFT(CachedForwardMixin, Model):
         """
         return self(hkl, recalc=recalc, apply_anomalous=apply_anomalous)
 
-    @property
-    def fft(self):
-        """The SfFFT submodule, built on first access (needs cell + spacegroup)."""
-        if self._fft is None:
-            self._maybe_initialize_fft()
-
-        return self._fft
-
     def _check_forward_dtype(self, hkl: torch.Tensor) -> None:
         """Fail fast on a model/input float-dtype mismatch, which would otherwise
         surface as a cryptic matmul or Triton-compile error deep in the kernels.
@@ -820,7 +739,7 @@ class ModelFT(CachedForwardMixin, Model):
                 sf, hkl, include_fdp=bool(self.anomalous_bijvoet)
             )
 
-        if self.verbose > 2:
+        if self.ctx.verbose > 2:
             assert torch.all(
                 torch.isfinite(sf)
             ), "Non-finite values found while calculating fcalc."
@@ -832,8 +751,9 @@ class ModelFT(CachedForwardMixin, Model):
         Create a deep copy of the ModelFT.
 
         Creates a complete independent copy including all Model base class data,
-        FFT submodule state (gridsize, real_space_grid, voxel_size, map_symmetry),
-        ITC92 parametrization, and scalar attributes.
+        the grid inputs (``max_res``, ``explicit_gridsize``; the grid itself is
+        re-derived from the copied context), the ITC92 parametrization, and
+        scalar attributes.
         Cache is reset to empty.
 
         Parameters
@@ -841,39 +761,29 @@ class ModelFT(CachedForwardMixin, Model):
         detach : bool, optional
             If True, the copy's parameters will be detached from the
             computation graph (default: True).
-
         Returns
         -------
         ModelFT
             A new, fully independent ModelFT instance with copied data.
         """
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError("Cannot copy an uninitialized ModelFT. Load data first.")
 
         model_copy = ModelFT(
             dtype_float=self.dtype_float,
-            verbose=self.verbose,
+            verbose=self.ctx.verbose,
             device=self.device,
-            strip_H=self.strip_H,
+            strip_H=self.ctx.strip_H,
             max_res=self.max_res,
-            gridsize=self._explicit_gridsize,
+            gridsize=self.explicit_gridsize,
             wavelength=self.wavelength,
             anomalous_threshold=self.anomalous_threshold,
         )
 
-        model_copy.pdb = self.pdb.copy(deep=True)
+        # Carries the atom table, cell, space group, altloc groups and provenance.
+        model_copy.ctx = self.ctx.copy()
 
-        if self._spacegroup is not None:
-            model_copy._spacegroup = self._spacegroup.copy()
-        else:
-            model_copy._spacegroup = None
-
-        model_copy.initialized = True
-
-        if self.cell is not None:
-            model_copy.cell = self.cell.clone()
-
-        # Own buffers only; the FFT submodule's are handled by its copy() below.
+        # Own buffers only; the engine's grid buffers are derived, not copied.
         for buffer_name, buffer_value in self._buffers.items():
             if buffer_value is not None:
                 if detach:
@@ -883,36 +793,25 @@ class ModelFT(CachedForwardMixin, Model):
                 else:
                     model_copy.register_buffer(buffer_name, buffer_value.clone())
 
-        # Parameter wrappers via their own .copy(); _fft / _spacegroup are separate.
-        skip_modules = {"_fft", "_spacegroup", "spacegroup", "_symmetry", "symmetry"}
+        # Parameter wrappers via their own .copy(); the engine came from the ctor.
+        skip_modules = {"_fft"}
         for module_name, module in self._modules.items():
             if module_name in skip_modules:
                 continue
             if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
 
-        # Copy alternative conformation pairs
-        if hasattr(self, "altloc_pairs") and self.altloc_pairs:
-            model_copy.altloc_pairs = [
-                tuple(tensor.clone() for tensor in group) for group in self.altloc_pairs
-            ]
-        else:
-            model_copy.altloc_pairs = []
-
         if hasattr(self, "_parametrization") and self._parametrization is not None:
             import copy as copy_module
 
             model_copy._parametrization = copy_module.deepcopy(self._parametrization)
 
-        if self._fft is not None:
-            model_copy._fft = self._fft.copy()
-            if self._fft.real_space_grid is not None:
-                model_copy.setup_grid(max_res=self.max_res)
-
         # Don't share cached structure factors with the original.
         model_copy.reset_cache()
+        # The iso/aniso partition is derived state, not a buffer, so it is not
+        # carried by the buffer loop above; get_iso()/get_aniso() read it.
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(f"✓ ModelFT copied successfully ({len(model_copy.pdb)} atoms)")
 
         return model_copy
@@ -922,8 +821,9 @@ class ModelFT(CachedForwardMixin, Model):
         Return a dictionary containing the complete state of the ModelFT.
 
         Extends parent Model.state_dict() with FT-specific parameters:
-        ``max_res``, ``wavelength``, and ``anomalous_threshold``. Grid state
-        is handled by the FFT submodule.
+        ``max_res``, ``explicit_gridsize``, ``wavelength`` and
+        ``anomalous_threshold``. The grid is derived from these and the crystal,
+        so it is not stored.
 
         Parameters
         ----------
@@ -939,12 +839,13 @@ class ModelFT(CachedForwardMixin, Model):
         dict
             Complete state dictionary.
         """
-        # Parent covers _A/_B and the FFT submodule's buffers.
+        # Parent covers _A/_B; the engine's grid buffers are non-persistent.
         state = super().state_dict(
             destination=destination, prefix=prefix, keep_vars=keep_vars
         )
 
         state[prefix + "max_res"] = self.max_res
+        state[prefix + "explicit_gridsize"] = self.explicit_gridsize
         state[prefix + "wavelength"] = self.wavelength
         state[prefix + "anomalous_threshold"] = self.anomalous_threshold
 
@@ -971,7 +872,9 @@ class ModelFT(CachedForwardMixin, Model):
         state_dict : dict
             State dictionary from torch.save(model.state_dict(), ...).
         device : torch.device, optional
-            Device to place tensors on. Defaults to the configured device.current.
+            Move the restored model here once it is built. The restore itself always
+            runs on CPU; ``None`` then moves it to the configured default device; see
+            :meth:`Model.create_from_state_dict`.
         verbose : int, optional
             Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional
@@ -989,15 +892,19 @@ class ModelFT(CachedForwardMixin, Model):
         The anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, as in
         :meth:`load`, so the positive-definite parametrization round-trips.
         """
-        from torchref.symmetry import SpaceGroup
-
-        # Resolve dtype/device at call time so the fallback below uses the
-        # current config rather than an import-time default.
-        device = normalize_device(device)
+        # Build on CPU throughout and move once at the end, as Model does; the grid
+        # setup below otherwise sizes an accelerator allocation before the model is
+        # placed. The final target is the caller's device, or the configured default
+        # when they name none, so a restore lands beside a same-config model.
+        target_device = (
+            canonical_device(device) if device is not None else get_default_device()
+        )
+        device = torch.device("cpu")
         if dtype_float is None:
             dtype_float = get_float_dtype()
 
         max_res = state_dict.pop("max_res", 1.0)
+        explicit_gridsize = state_dict.pop("explicit_gridsize", None)
         state_dict.pop("radius_angstrom", None)  # legacy key, no longer used
         wavelength = state_dict.pop("wavelength", 1.0)
         anomalous_threshold = state_dict.pop("anomalous_threshold", 0.5)
@@ -1011,10 +918,14 @@ class ModelFT(CachedForwardMixin, Model):
         strip_H = state_dict.pop("strip_H", True)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
 
-        # FFT submodule buffers are prefixed "_fft."; older checkpoints are flat.
-        gridsize = state_dict.pop("_fft.gridsize", None)
-        if gridsize is None:
-            gridsize = state_dict.pop("gridsize", None)
+        # Checkpoints written while the grid was stored state carry its buffers
+        # ("_fft." prefixed, or flat in older ones). The size is adopted below only
+        # when it differs from what the crystal and max_res give.
+        legacy_gridsize = state_dict.pop("_fft.gridsize", None)
+        if legacy_gridsize is None:
+            legacy_gridsize = state_dict.pop("gridsize", None)
+        state_dict.pop("_fft.voxel_size", None)
+        state_dict.pop("voxel_size", None)
 
         instance = cls(
             dtype_float=saved_dtype,
@@ -1022,15 +933,16 @@ class ModelFT(CachedForwardMixin, Model):
             device=device,
             strip_H=strip_H,
             max_res=max_res,
+            gridsize=explicit_gridsize,
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
         )
 
         instance.pdb = pdb
-        instance.initialized = initialized
-        instance.altloc_pairs = altloc_pairs
+        instance.ctx.initialized = initialized
+        instance.ctx.altloc_pairs = altloc_pairs
 
-        # Setter also sets symmetry; the cell setter below then builds the FFT.
+        # The engine reads both off the context; nothing further to build.
         instance.spacegroup = spacegroup_str
 
         from torchref.symmetry import Cell
@@ -1038,87 +950,12 @@ class ModelFT(CachedForwardMixin, Model):
         if cell_tensor is not None:
             instance.cell = Cell(cell_tensor, dtype=saved_dtype, device=device)
 
-        # If PDB exists, create the parameter wrappers with correct shapes
+        # Wrappers and per-atom buffers: shared with Model so the two restores cannot
+        # drift apart again. ModelFT adds only its own scattering buffers below.
         if pdb is not None:
-            from torchref.model.parameter_wrappers import (
-                CholeskyMixedTensor,
-                MixedTensor,
-                OccupancyTensor,
-                PositiveMixedTensor,
+            cls._rebuild_wrappers_from_pdb(
+                instance, pdb, state_dict, saved_dtype, device
             )
-
-            n_atoms = len(pdb)
-
-            xyz_mask = state_dict.get("xyz.refinable_mask")
-            adp_mask = state_dict.get("adp.refinable_mask")
-            u_mask = state_dict.get("u.refinable_mask")
-
-            instance.xyz = MixedTensor(
-                torch.tensor(pdb[["x", "y", "z"]].values, dtype=saved_dtype),
-                refinable_mask=xyz_mask,
-                name="xyz",
-            )
-            instance.adp = PositiveMixedTensor(
-                torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype),
-                refinable_mask=adp_mask,
-                name="adp",
-            )
-            instance.u = CholeskyMixedTensor(
-                torch.tensor(
-                    pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
-                    dtype=saved_dtype,
-                ),
-                refinable_mask=u_mask,
-                name="aniso_U",
-            )
-
-            initial_occ = torch.tensor(pdb["occupancy"].values, dtype=saved_dtype)
-            sharing_groups, altloc_groups, refinable_mask = (
-                instance._create_occupancy_groups(pdb, initial_occ)
-            )
-
-            saved_occ_mask = state_dict.get("occupancy.refinable_mask")
-            if saved_occ_mask is not None:
-                if saved_occ_mask.device != sharing_groups.device:
-                    saved_occ_mask = saved_occ_mask.to(sharing_groups.device)
-                refinable_mask = saved_occ_mask[sharing_groups]
-
-            instance.occupancy = OccupancyTensor(
-                initial_values=initial_occ,
-                sharing_groups=sharing_groups,
-                altloc_groups=altloc_groups,
-                refinable_mask=refinable_mask,
-                dtype=saved_dtype,
-                device=device,
-                name="occupancy",
-            )
-
-            if "aniso_flag" not in instance._buffers or instance.aniso_flag is None:
-                instance.register_buffer(
-                    "aniso_flag",
-                    torch.tensor(pdb["anisou_flag"].values, dtype=torch.bool),
-                )
-
-            # Register mask buffers
-            instance.register_buffer(
-                "xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-            instance.register_buffer(
-                "adp_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-            instance.register_buffer(
-                "u_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-            instance.register_buffer(
-                "occupancy_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-
-            # Register vdw_radii if present
-            if "vdw_radii" in state_dict and state_dict["vdw_radii"] is not None:
-                instance.register_buffer(
-                    "vdw_radii",
-                    torch.zeros_like(state_dict["vdw_radii"], device=device),
-                )
 
             # Scattering buffers: accept both old-style (A, B) and new (_A, _B).
             a_key = "_A" if "_A" in state_dict else "A" if "A" in state_dict else None
@@ -1133,13 +970,17 @@ class ModelFT(CachedForwardMixin, Model):
                     "_B", torch.zeros_like(state_dict[b_key], device=device)
                 )
 
-        if gridsize is not None and cell_tensor is not None:
-            if isinstance(gridsize, torch.Tensor):
-                gs_tuple = tuple(int(x) for x in gridsize.tolist())
-            else:
-                gs_tuple = tuple(int(x) for x in gridsize)
-
-            instance.setup_grid(gridsize=gs_tuple)
+        if (
+            legacy_gridsize is not None
+            and explicit_gridsize is None
+            and instance.ctx.crystal_key is not None
+            and instance.max_res is not None
+        ):
+            if isinstance(legacy_gridsize, torch.Tensor):
+                legacy_gridsize = legacy_gridsize.tolist()
+            legacy = tuple(int(x) for x in legacy_gridsize)
+            if legacy != instance.fft.compute_optimal_gridsize(instance.max_res):
+                instance.explicit_gridsize = legacy
 
         # Drop empty placeholders, remapping old-style A/B keys to _A/_B.
         filtered_state_dict = {}
@@ -1153,6 +994,9 @@ class ModelFT(CachedForwardMixin, Model):
                     filtered_state_dict[k] = v
 
         instance.load_state_dict(filtered_state_dict, strict=False)
+
+        # Always placed: target_device is the caller's device or the configured default.
+        instance.to(target_device)
 
         instance.reset_cache()
 

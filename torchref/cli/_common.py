@@ -144,12 +144,43 @@ def add_adp_mode_arg(parser: argparse.ArgumentParser) -> None:
         "--adp-mode",
         type=str,
         default="isotropic",
-        choices=["isotropic", "anisotropic"],
+        choices=["isotropic", "anisotropic", "field", "field_aniso", "preserve"],
         help="ADP parametrization: 'isotropic' (default) refines a per-atom "
         "B-factor; 'anisotropic' refines a 6-component U tensor for the atoms "
         "given by --anisotropic-selection. The model is converted between "
         "representations and the output PDB/mmCIF follows the convention "
-        "(ANISOU only for anisotropic atoms).",
+        "(ANISOU only for anisotropic atoms). 'field' and 'field_aniso' replace "
+        "the per-atom parameters with a node field, whose size is set from the "
+        "data rather than the atom count (--reflections-per-adp-parameter). "
+        "'preserve' leaves the input file's own ADPs untouched.",
+    )
+    parser.add_argument(
+        "--adp-mode-set",
+        type=str,
+        default=None,
+        choices=["constant", "rigid", "rigid_dilation", "affine"],
+        help="Displacement-mode set for --adp-mode field_aniso. Each node carries "
+        "the covariance of these modes, so its ADP varies across the region it "
+        "serves: 'constant' is one U per node, 'rigid' is TLS, 'rigid_dilation' "
+        "adds uniform breathing, 'affine' adds shear and extension.",
+    )
+    parser.add_argument(
+        "--reflections-per-adp-parameter",
+        type=float,
+        default=7.0,
+        metavar="R",
+        help="Work reflections per ADP parameter a node field is sized to hold "
+        "(--adp-mode field/field_aniso). Default 7. Node count follows from the "
+        "data rather than the atom count, and both directions from 7 measured "
+        "worse. Ignored by the per-atom modes.",
+    )
+    parser.add_argument(
+        "--adp-nodes",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Explicit node count for a field ADP mode, bypassing "
+        "--reflections-per-adp-parameter.",
     )
     parser.add_argument(
         "--anisotropic-selection",
@@ -360,6 +391,14 @@ def add_metadata_args(parser: argparse.ArgumentParser) -> None:
         nargs="+",
         default=None,
         help="Author names for the output file header",
+    )
+    parser.add_argument(
+        "--output-remarks",
+        type=str,
+        default=None,
+        help="Free-text note for the output header (REMARK 3 OTHER REFINEMENT "
+        "REMARKS / _refine.details). Nothing is written here unless you ask "
+        "for it",
     )
     parser.add_argument(
         "--no-header",
@@ -740,6 +779,45 @@ def write_refinement_outputs(
             metadata.title = args.title
         if getattr(args, "authors", None):
             metadata.authors = args.authors
+        if getattr(args, "output_remarks", None):
+            metadata.output_remarks = args.output_remarks
+
+        # What was minimised and how. These live on the CLI namespace rather
+        # than on the refinement, which is why from_refinement cannot fill them
+        # and why the header carried no method line at all until now.
+        xray_mode = getattr(args, "xray_mode", None)
+        if xray_mode:
+            # Name the family as well as the registry key. "ML" alone is
+            # cryptic in a deposited header, and the family follows from the
+            # key's prefix, so there is no lookup table here to drift out of
+            # step with XRAY_TARGETS.
+            key = str(xray_mode).upper()
+            if key.startswith(("ML", "NLL")):
+                metadata.target_function = f"MAXIMUM LIKELIHOOD ({key})"
+            elif key.startswith("LS"):
+                metadata.target_function = f"LEAST SQUARES ({key})"
+            else:
+                metadata.target_function = key
+        optimizer_parts = []
+        n_cycles = getattr(args, "n_cycles", None)
+        if n_cycles:
+            optimizer_parts.append(
+                f"{n_cycles} MACROCYCLE" + ("S" if n_cycles != 1 else "")
+            )
+        mode = getattr(args, "mode", None)
+        if mode:
+            optimizer_parts.append(str(mode).upper())
+        adp_mode = getattr(args, "adp_mode", None)
+        if adp_mode:
+            optimizer_parts.append(f"{str(adp_mode).upper()} ADP")
+        # The scale target changes the R-factors this very header reports, so a
+        # run cannot be attributed without it (see the note beside it in the
+        # refinement_history.json parameters block).
+        scale_target = getattr(args, "scale_target", None)
+        if scale_target:
+            optimizer_parts.append(f"SCALE TARGET {str(scale_target).upper()}")
+        if optimizer_parts:
+            metadata.optimizer = ", ".join(optimizer_parts)
 
     outputs = {"pdb": None, "cif": None}
 

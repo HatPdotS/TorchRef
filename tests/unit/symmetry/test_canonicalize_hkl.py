@@ -4,7 +4,31 @@ import numpy as np
 import pytest
 import torch
 
-from torchref.symmetry.reciprocal_symmetry import canonicalize_hkl
+from torchref.symmetry import SpaceGroup
+
+
+# The HKL verbs live on the space group now. These adapters keep the assertions
+# below -- which pin the phase-sign contract -- expressed in terms of the space
+# group specifications the cases are parametrised over.
+def canonicalize_hkl(hkl, sg, include_friedel=True, device=None):
+    return SpaceGroup(sg).canonicalize_hkl(
+        hkl, include_friedel=include_friedel, device=device
+    )
+
+
+def expand_hkl(hkl, sg, include_friedel=True, remove_absences=True, device=None):
+    return SpaceGroup(sg).expand_hkl(
+        hkl,
+        include_friedel=include_friedel,
+        remove_absences=remove_absences,
+        device=device,
+    )
+
+
+def reduce_hkl(hkl, sg, include_friedel=True, device=None):
+    return SpaceGroup(sg).reduce_hkl(
+        hkl, include_friedel=include_friedel, device=device
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +65,6 @@ class TestCanonicalizeHkl:
     )
     def test_equivalents_converge(self, sg):
         """All symmetry equivalents of a reflection map to the same canonical HKL."""
-        from torchref.symmetry.reciprocal_symmetry import expand_hkl
-
         # Use (1,1,5) which satisfies centering conditions for C2
         hkl_asu = torch.tensor([[1, 1, 5]], dtype=torch.int32)
         hkl_p1, _, _ = expand_hkl(hkl_asu, sg, include_friedel=True)
@@ -70,7 +92,6 @@ class TestCanonicalizeHkl:
         then verify canonicalization produces a single consistent SF.
         """
         import gemmi
-        from torchref.symmetry.spacegroup import SpaceGroup
 
         # Reference SF at canonical h
         F_ref = 10.0

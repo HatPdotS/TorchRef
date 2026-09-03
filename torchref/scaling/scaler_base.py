@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 
 from torchref.base.math_torch import U_to_matrix
+from torchref.scaling.basis import chebyshev_design
 from torchref.base.metrics import (
     binwise_scale,
     nll_xray,
@@ -146,19 +147,16 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     def _build_iso_design(self) -> torch.Tensor:
         """``(N, n_iso_coeff)`` Chebyshev design matrix for the isotropic scale.
 
-        The abscissa is ``sqrt(s_half_sq)``, i.e. ``sin(theta)/lambda``, mapped onto
-        ``[-1, 1]``. That coordinate rather than ``s**2`` because the modulation is gentle
-        through the bulk of the resolution range but has real structure in the first few
-        percent of ``s**2``; a basis uniform in ``s**2`` spends nearly all its resolution
-        where nothing happens.
+        The abscissa is ``sqrt(s_half_sq)``, i.e. ``sin(theta)/lambda``; see
+        :func:`torchref.scaling.basis.chebyshev_design` for why that coordinate.
+
+        No explicit range: this design is built once over all reflections and
+        then *sliced* wherever a subset is needed (``forward`` does exactly
+        that), so the mapping is the same everywhere it is used.
         """
-        x = torch.sqrt(self._s_half_sq.clamp(min=0))
-        lo, hi = x.min(), x.max()
-        u = (2 * (x - lo) / (hi - lo).clamp(min=1e-12) - 1).clamp(-1.0, 1.0)
-        cols = [torch.ones_like(u), u]
-        for _ in range(2, self.n_iso_coeff):
-            cols.append(2 * u * cols[-1] - cols[-2])  # Chebyshev recurrence
-        return torch.stack(cols[: self.n_iso_coeff], dim=1)
+        return chebyshev_design(
+            torch.sqrt(self._s_half_sq.clamp(min=0)), self.n_iso_coeff,
+        )
 
     def iso_log_scale(self, design: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Per-reflection isotropic log scale ``design @ c_iso``, clamped to ``[-10, 10]``.
@@ -266,7 +264,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 initial_log_scale.detach().cpu().numpy(),
             )
         with torch.no_grad():
-            target = initial_log_scale.detach().to(self.device)[self.bins.to(torch.int64)]
+            target = initial_log_scale.detach().to(self.device)[self.bins.to(torch.int64)]  # dtype-ok: bin indices for advanced indexing; PyTorch requires int64
             design = self._iso_design.to(target.dtype)
             coeff = torch.linalg.lstsq(design, target.unsqueeze(1)).solution.squeeze(1)
         self.c_iso = nn.Parameter(coeff.detach().to(self.device))
@@ -396,7 +394,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         mean_calc_intensity = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         counts = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         counts_vals = torch.ones_like(F_calc, device=self.device, dtype=fobs.dtype)
-        bins_sel = self.bins.to(torch.int64)[sel]
+        bins_sel = self.bins.to(torch.int64)[sel]  # dtype-ok: bin indices for advanced indexing; PyTorch requires int64
         mean_obs_intensity = torch.scatter_add(
             mean_obs_intensity, 0, bins_sel, intensities[sel]
         )

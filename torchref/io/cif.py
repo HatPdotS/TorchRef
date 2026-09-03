@@ -257,12 +257,33 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
     return st
 
 
-def _add_refine_categories(doc, metadata):
-    """Inject a :class:`RefinementMetadata`'s categories into ``doc``, in place."""
+def _cif_value(val) -> str:
+    """Render one value as a CIF token, quoting it when it needs quoting.
+
+    The unset markers ``?`` and ``.`` are passed through bare: ``gemmi.cif.quote``
+    would turn them into the quoted one-character strings ``'?'`` and ``'.'``,
+    which are data rather than nulls. Everything else goes through ``quote`` --
+    an unquoted value containing whitespace silently splits into extra loop
+    columns when the file is read back.
+    """
     import gemmi
 
+    text = str(val)
+    if text in ("?", "."):
+        return text
+    return gemmi.cif.quote(text)
+
+
+def _add_refine_categories(doc, metadata):
+    """Inject a :class:`RefinementMetadata`'s categories into ``doc``, in place.
+
+    Returns the set of category prefixes written (e.g. ``{"_refine.",
+    "_software."}``) so the caller can avoid copying the same categories in
+    again from another block and either clobbering or duplicating them.
+    """
     block = doc.sole_block()
     cats = metadata.render_cif_categories()
+    written = set()
 
     for cat_name, items in cats.items():
         # List values mean a loop category rather than key-value pairs.
@@ -274,6 +295,7 @@ def _add_refine_categories(doc, metadata):
             prefix = tags[0].rsplit(".", 1)[0] + "."
             suffixes = [t.split(".")[-1] for t in tags]
             loop = block.init_loop(prefix, suffixes)
+            written.add(prefix)
             # All list values should have same length
             n_rows = max(len(v) for v in items.values() if isinstance(v, list))
             for i in range(n_rows):
@@ -281,13 +303,17 @@ def _add_refine_categories(doc, metadata):
                 for tag in tags:
                     val = items[tag]
                     if isinstance(val, list):
-                        row.append(str(val[i]) if i < len(val) else "?")
+                        cell = val[i] if i < len(val) else "?"
                     else:
-                        row.append(str(val))
+                        cell = val
+                    row.append(_cif_value(cell))
                 loop.add_row(row)
         else:
             for key, val in items.items():
-                block.set_pair(key, gemmi.cif.quote(str(val)))
+                block.set_pair(key, _cif_value(val))
+                written.add(key.rsplit(".", 1)[0] + ".")
+
+    return written
 
 
 def write_model(df, filepath: str, metadata=None) -> None:
@@ -329,7 +355,12 @@ def write_model(df, filepath: str, metadata=None) -> None:
                 "_symmetry.space_group_name_H-M", gemmi.cif.quote(str(spacegroup))
             )
 
-        _add_refine_categories(meta_doc, metadata)
+        written = _add_refine_categories(meta_doc, metadata)
+        # Categories we just wrote from metadata, plus the two written above.
+        # The structure block gemmi builds from the DataFrame carries its own
+        # version of some of these; copying those in would clobber a pair or
+        # append a second loop for the same category.
+        written |= {"_cell.", "_symmetry."}
 
         st = dataframe_to_gemmi_structure(df, cell, spacegroup)
         struct_doc = st.make_mmcif_document()
@@ -342,14 +373,15 @@ def write_model(df, filepath: str, metadata=None) -> None:
                 tags = list(loop.tags)
                 suffixes = [t.split(".")[-1] for t in tags]
                 prefix = tags[0].rsplit(".", 1)[0] + "."
+                if prefix in written:
+                    continue
                 new_loop = meta_block.init_loop(prefix, suffixes)
                 for row_idx in range(loop.length()):
                     row = [loop[row_idx, col] for col in range(loop.width())]
                     new_loop.add_row(row)
             elif item.pair is not None:
                 tag, val = item.pair
-                # Skip cell/symmetry - already added
-                if not tag.startswith(("_cell.", "_symmetry.")):
+                if tag.rsplit(".", 1)[0] + "." not in written:
                     meta_block.set_pair(tag, val)
 
         meta_doc.write_file(filepath)

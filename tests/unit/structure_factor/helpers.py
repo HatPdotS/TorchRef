@@ -442,17 +442,18 @@ def sf_fft_for(
     Pass ``fineness=1.0`` for a deliberately under-sampled grid; see
     :data:`GRID_FINENESS` for why that is the sampling-limited regime.
     """
+    from torchref.model.context import ModelContext
     from torchref.model.sf_fft import SfFFT
+    from torchref.symmetry import Cell, SpaceGroup
 
-    sf = SfFFT(
-        cell=scene.cell,
-        spacegroup=spacegroup,
-        max_res=scene.d_min / fineness,
-        dtype_float=dtype,
-        device=torch.device("cpu"),
+    cpu = torch.device("cpu")
+    # A private context: the engine reads the crystal live, so it must not share
+    # the module-scoped scene's cell with other tests.
+    ctx = ModelContext(
+        cell=Cell(scene.cell.data, dtype=dtype, device=cpu),
+        spacegroup=SpaceGroup(spacegroup, dtype=dtype, device=cpu),
     )
-    sf.setup_grid()
-    return sf
+    return SfFFT(ctx, max_res=scene.d_min / fineness, dtype_float=dtype, device=cpu)
 
 
 # ---------------------------------------------------------------------------
@@ -465,11 +466,11 @@ def sf_fft_for(
 #    falls back to the portable splat (``main.py`` catches and falls through), so a
 #    dispatch-driven test can pass while measuring a different kernel than the one it
 #    names. Calling the kernel directly settles that by construction.
-# 2. **No global-config coupling.** ``SfFFT`` builds its grid through ``get_real_grid``,
-#    which reads the *global* ``dtypes.float`` and takes no dtype argument -- so an MPS
-#    ``SfFFT`` under this package's float64 pin would try to allocate float64 on MPS and
-#    fail. ``ifft`` and ``extract_structure_factor_from_grid`` read no global config at
-#    all, so :func:`density_to_F` needs no config switching.
+# 2. **No global-config coupling.** ``build_electron_density`` allocates its map at the
+#    *global* ``dtypes.float`` when no ``dtype`` is passed, so a dispatch-driven MPS test
+#    under this package's float64 pin would try to allocate float64 on MPS and fail.
+#    ``ifft`` and ``extract_structure_factor_from_grid`` read no global config at all, so
+#    :func:`density_to_F` needs no config switching.
 #
 # The dispatch ladder is a separate concern, tested in ``test_dispatch.py``.
 
@@ -684,8 +685,8 @@ def fft_sf(scene: Scene, sf_fft, xyz=None, occ=None, third=None, *, aniso=False)
 
     ``apply_symmetry=False`` on both calls: P1 isolates the truncation and sampling
     budget, and a symmetric comparison would cancel the symmetry algebra anyway, since
-    both routes call the same ``compute_symmetry_equivalent_hkls`` /
-    ``compute_translation_phases``. Symmetry is validated against gemmi instead, in
+    both routes call the same ``Symmetry.expand_reciprocal`` /
+    ``Symmetry.phase_factors``. Symmetry is validated against gemmi instead, in
     ``test_forward.py``.
     """
     xyz = scene.xyz if xyz is None else xyz

@@ -38,7 +38,7 @@ than fabricating cross-member bonds from the flat replicated DataFrame.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -340,8 +340,12 @@ class EnsembleModel(ModelFT):
         verbose: int = 1,
         device=None,
         strip_H: bool = True,
+        # An ensemble's atom set is the replicated single copy its factories build, and
+        # _finalize_ensemble reshapes by n_atoms_per_member, so generating hydrogens on
+        # load would invalidate that. Off by default here, unlike on the base class.
+        add_hydrogens: bool = False,
         max_res: float = 1.0,
-        gridsize: Optional[int] = None,
+        gridsize: Optional[Tuple[int, int, int]] = None,
         wavelength: float = 1.0,
         anomalous_threshold: float = 0.5,
     ):
@@ -354,6 +358,7 @@ class EnsembleModel(ModelFT):
             verbose=verbose,
             device=device,
             strip_H=strip_H,
+            add_hydrogens=add_hydrogens,
             max_res=max_res,
             gridsize=gridsize,
             wavelength=wavelength,
@@ -452,6 +457,9 @@ class EnsembleModel(ModelFT):
 
         model = cls(
             verbose=verbose, device=device, strip_H=False,  # already stripped
+            # The replicated table is the atom set; _finalize_ensemble reshapes by
+            # n_atoms_per_member, so generating hydrogens here would invalidate it.
+            add_hydrogens=False,
             max_res=max_res,
             **modelft_kwargs,
         )
@@ -538,6 +546,9 @@ class EnsembleModel(ModelFT):
 
         model = cls(
             verbose=verbose, device=device, strip_H=False,
+            # See from_single: the replicated table is the atom set, and
+            # _finalize_ensemble reshapes by n_atoms_per_member.
+            add_hydrogens=False,
             max_res=max_res,
             **modelft_kwargs,
         )
@@ -752,6 +763,8 @@ class EnsembleModel(ModelFT):
 
         with torch.no_grad():
             flat = self.xyz().detach()                       # (N*n_atoms, 3)
+            # dtype-ok: SVD seeding in float64 for numerical stability. Caveat: no
+            # .cpu() first, so this errors on MPS.
             X = flat.reshape(N, n_atoms * 3).to(torch.float64)
             mu = X.mean(dim=0)                               # (D,)
             Xc = X - mu.unsqueeze(0)

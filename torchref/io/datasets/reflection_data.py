@@ -301,7 +301,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             n = 0 if self.hkl is None else len(self.hkl)
             device = self.device
             if n == 0:
-                empty = torch.empty(0, dtype=torch.long, device=device)
+                empty = torch.empty(0, dtype=torch.long, device=device)  # dtype-ok: empty index tensor; PyTorch requires int64 for indexing
                 self._subset_cache = {
                     "work": empty,
                     "free": empty,
@@ -432,7 +432,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         n_src = len(self.hkl) if self.hkl is not None else 0
         new_hkl = new_hkl.to(dtype=dtypes.int, device=self.device)
         n_out = len(new_hkl)
-        index_map = index_map.to(device=self.device, dtype=torch.long)
+        index_map = index_map.to(device=self.device, dtype=torch.long)  # dtype-ok: index map used for indexing/gather; PyTorch requires int64
         present = index_map >= 0
         src_idx = index_map[present]
 
@@ -508,13 +508,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """Remap HKL to canonical CCP4 ASU form and reorder all data in-place."""
         from dataclasses import fields as dc_fields
 
-        from torchref.symmetry.reciprocal_symmetry import canonicalize_hkl
-
         if self.hkl is None or self.spacegroup is None:
             return
 
-        canonical_hkl, phase_shifts, friedel_flags, sort_indices = canonicalize_hkl(
-            self.hkl, self.spacegroup, include_friedel=True, device=self.device
+        canonical_hkl, phase_shifts, friedel_flags, sort_indices = (
+            self.spacegroup.canonicalize_hkl(
+                self.hkl, include_friedel=True, device=self.device
+            )
         )
 
         n_refl = len(self.hkl)
@@ -709,8 +709,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Uses ``index_add_`` on float rather than ``scatter_reduce_(amax)``: the
         latter raises "not supported for torch.int64" on the MPS backend.
         """
+        # dtype-ok: float32 count accumulator for the int64-scatter MPS workaround
+        # above; the result is reduced to bool (> 0), so precision is irrelevant.
         counts = torch.zeros(n_groups, dtype=torch.float32, device=mask.device)
-        counts.index_add_(0, group_id, mask.to(torch.float32))
+        counts.index_add_(0, group_id, mask.to(torch.float32))  # dtype-ok: float32 counter for the MPS workaround above; reduced to bool
         return counts > 0
 
     @staticmethod
@@ -860,6 +862,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             rfree = rfree.clip(min=0, max=1).to(torch.bool)
             self.rfree_flags = rfree
             self.masks["flagged_initial"] = ~flagged
+            # Record the provenance for every file-sourced set, not only the
+            # ones that also carry a validation column: a header reporting
+            # R-free has to be able to say which test set produced it. Named
+            # after the reader rather than hardcoded "MTZ", since `load` also
+            # takes ReflectionCIFReader and any other compatible reader.
+            reader_name = type(reader).__name__
+            self.rfree_source = f"{reader_name} FreeR"
             # A third (validation) column goes into the separate boolean
             # ``validation_flags``; ``rfree_flags`` stays binary work/free.
             if "Validation-flags" in data_dict:
@@ -868,7 +877,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     device=self.device,
                     requires_grad=False,
                 ).to(torch.bool)
-                self.rfree_source = "MTZ FreeR+Validation"
+                self.rfree_source = f"{reader_name} FreeR+Validation"
 
         self._post_load_cleanup()
 
@@ -1207,7 +1216,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         flags[group_free[group_id]] = 0
 
         self.rfree_flags = flags
-        self.rfree_source = "Generated (resolution-binned, ASU-grouped)"
+        # The seed belongs in the provenance string: without it "generated"
+        # names a draw nobody can reproduce.
+        self.rfree_source = (
+            "Generated (resolution-binned, ASU-grouped"
+            + (f", seed {seed}" if seed is not None else "")
+            + ")"
+        )
 
         n_free = (flags == 0).sum().item()
         n_work = (flags != 0).sum().item()
@@ -1326,13 +1341,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         mean_resolutions = torch.scatter_add(
             mean_resolutions,
             0,
-            self.bin_indices[mask].to(torch.int64),
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
             self.resolution[mask],
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
             torch.ones_like(self.resolution[mask], dtype=dtypes.int),
         )
         mean_resolutions = mean_resolutions / count_per_bin.clamp(min=1).float()
@@ -1361,12 +1376,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_F = torch.scatter_add(
-            mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]
+            mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
             torch.ones_like(self.F[mask], dtype=dtypes.int),
         )
         mean_F = mean_F / count_per_bin.clamp(min=1).float()
@@ -1395,12 +1410,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_sigma = torch.scatter_add(
-            mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]
+            mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
             torch.ones_like(self.F_sigma[mask], dtype=dtypes.int),
         )
         mean_sigma = mean_sigma / count_per_bin.clamp(min=1).float()
@@ -2486,11 +2501,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
             observations depart from Wilson statistics for reasons that have
             nothing to do with being outliers.
         """
-        from torchref.base.french_wilson import (
-            epsilon_from_hkl,
-            intensities_from_amplitudes,
-        )
+        from torchref.base.french_wilson import intensities_from_amplitudes
         from torchref.base.wilson_outliers import wilson_outlier_mask
+        from torchref.refinement.model_error_estimation.sigma_a import (
+            epsilon_from_hkl,
+        )
 
         if self.F is None or self.F_sigma is None or self.resolution is None:
             return
@@ -2642,8 +2657,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # The (+) member is the unconjugated row, (-) is the Friedel-flagged row.
         arange = torch.arange(N)
-        plus_idx = torch.full((M,), -1, dtype=torch.long)
-        minus_idx = torch.full((M,), -1, dtype=torch.long)
+        plus_idx = torch.full((M,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
+        minus_idx = torch.full((M,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
         # A Bijvoet mate only counts as present if it is a real, positive
         # observation. Stacked anomalous input (rs.stack_anomalous) carries a
         # row for every *absent* mate with a NaN intensity, which French-Wilson
@@ -2982,11 +2997,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Cached on the _centric_flags dataclass field, so it survives
         # serialization.
         if not hasattr(self, "_centric_flags") or self._centric_flags is None:
-            from torchref.base.french_wilson import is_centric_from_hkl
+            sg = self.spacegroup or SpaceGroup("P1", device=self.hkl.device)
 
-            sg = self.spacegroup if self.spacegroup else "P1"
-
-            self._centric_flags = is_centric_from_hkl(self.hkl, sg)
+            self._centric_flags = sg.is_centric(self.hkl)
 
         return self._centric_flags
 
@@ -3186,8 +3199,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Missing reflections have F/I/phase/fom = 0.0,
             F_sigma/I_sigma = 1.0 and ``masks['missing'] = True``.
         """
-        from torchref.symmetry.reciprocal_symmetry import complete_hkl
-
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
         if self.cell is None:
@@ -3200,8 +3211,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             d_min = self.resolution.min().item()
 
         # Get complete HKL set with index mapping
-        filled_hkl, indices, missing = complete_hkl(
-            self.hkl, self.cell.data, self.spacegroup or "P1", d_min, device=self.device
+        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
+        filled_hkl, indices, missing = sg.complete_hkl(
+            self.hkl, self.cell.data, d_min, device=self.device
         )
 
         # Use remap to create the new dataset
@@ -3241,15 +3253,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             shift, ``resolution`` is recomputed and ``bin_indices`` is cleared.
             ``source``/``last_op`` record the provenance.
         """
-        from torchref.symmetry.reciprocal_symmetry import expand_hkl
-
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
 
         # Get expanded HKL set with index mapping and phase shifts
-        hkl_p1, indices, phase_shifts = expand_hkl(
+        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
+        hkl_p1, indices, phase_shifts = sg.expand_hkl(
             self.hkl,
-            self.spacegroup or "P1",
             include_friedel=include_friedel,
             remove_absences=remove_absences,
             device=self.device,
@@ -3302,16 +3312,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ``validation_flags`` set if any equivalent is set. Any other
         per-reflection field takes its first valid equivalent.
         """
-        from torchref.symmetry.reciprocal_symmetry import reduce_hkl
         from torchref.symmetry.spacegroup import SpaceGroup
 
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
 
         # Get reduction mapping
-        hkl_asu, reduction_indices, phase_shifts = reduce_hkl(
-            self.hkl, spacegroup, include_friedel=include_friedel, device=self.device
-        )
+        hkl_asu, reduction_indices, phase_shifts = SpaceGroup(
+            spacegroup, device=self.device
+        ).reduce_hkl(self.hkl, include_friedel=include_friedel, device=self.device)
 
         n_asu = len(hkl_asu)
         n_equiv = reduction_indices.shape[1]
@@ -3523,13 +3532,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             New object with canonicalized, sorted Miller indices.
         """
-        from torchref.symmetry.reciprocal_symmetry import canonicalize_hkl
-
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
 
-        canonical_hkl, phase_shifts, friedel_flags, sort_indices = canonicalize_hkl(
-            self.hkl, self.spacegroup or "P1", include_friedel, device=self.device
+        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
+        canonical_hkl, phase_shifts, friedel_flags, sort_indices = sg.canonicalize_hkl(
+            self.hkl, include_friedel, device=self.device
         )
 
         # Reorder all fields using __select__

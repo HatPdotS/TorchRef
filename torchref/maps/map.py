@@ -23,7 +23,6 @@ import torch
 
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.cif import write_map
-from torchref.symmetry.grid_utils import calculate_optimal_grid_size
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
@@ -104,10 +103,8 @@ class Map(DeviceMixin):
 
     def _determine_gridsize(self) -> Tuple[int, int, int]:
         """Determine optimal grid size from cell, resolution, and spacegroup."""
-        cell_params = self.data.cell.data
         max_res = float(self.data.resolution.min())
-        spacegroup = self.data.spacegroup.name
-        return calculate_optimal_grid_size(cell_params, max_res, spacegroup)
+        return self.data.spacegroup.optimal_grid_size(self.data.cell, max_res)
 
     def _compute_map_coefficients(
         self, fobs: torch.Tensor, fcalc: torch.Tensor

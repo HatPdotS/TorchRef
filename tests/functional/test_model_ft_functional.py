@@ -43,16 +43,16 @@ class TestModelFTInitialization:
         assert len(model.cell) == 6
 
     def test_modelft_has_gridsize(self, sample_cif_file):
-        """Test that ModelFT sets up gridsize after loading."""
+        """The grid resolves from the loaded cell and space group on first read."""
         from torchref.model.model_ft import ModelFT
-        
+
         model = ModelFT(max_res=2.0, verbose=0)
+        assert model.gridsize is None  # no crystal yet
         model.load_cif(str(sample_cif_file))
-        
-        # Check gridsize is set
-        if model.gridsize is not None:
-            assert len(model.gridsize) == 3
-            assert all(g > 0 for g in model.gridsize)
+
+        assert model.gridsize is not None
+        assert len(model.gridsize) == 3
+        assert all(g > 0 for g in model.gridsize)
 
 
 @pytest.mark.integration
@@ -86,29 +86,21 @@ class TestModelFTParametrization:
 class TestModelFTGridOperations:
     """Test ModelFT grid operations."""
 
-    def test_setup_gridsize(self, sample_cif_file):
-        """Test grid size setup."""
-        from torchref.model.model_ft import ModelFT
-        
-        model = ModelFT(max_res=2.0, verbose=0)
-        model.load_cif(str(sample_cif_file))
-        
-        # Setup gridsize
-        gridsize = model.setup_gridsize(max_res=2.0)
-        
-        assert gridsize is not None
-        assert len(gridsize) == 3
-        assert all(g > 0 for g in gridsize)
-
     def test_setup_grid(self, sample_cif_file):
-        """Test full grid setup."""
+        """An explicit grid size overrides the resolution-derived one."""
         from torchref.model.model_ft import ModelFT
-        
+
         model = ModelFT(max_res=2.0, verbose=0)
         model.load_cif(str(sample_cif_file))
-        
-        # Model should have grid setup
-        assert model.gridsize is not None or hasattr(model, 'map')
+        derived = model.grid_shape
+        assert derived is not None and len(derived) == 3
+
+        model.setup_grid(gridsize=(24, 24, 24))
+        assert model.grid_shape == (24, 24, 24)
+        assert model.explicit_gridsize == (24, 24, 24)
+
+        model.explicit_gridsize = None
+        assert model.grid_shape == derived
 
 
 @pytest.mark.integration
@@ -122,13 +114,12 @@ class TestModelFTRealSpaceMap:
         
         model = ModelFT(max_res=2.0, verbose=0)
         model.load_cif(str(sample_cif_file))
-        
-        if model.gridsize is not None:
-            # Get real space grid
-            grid = get_real_grid(model.cell, max_res=2.0, device='cpu')
-            
-            assert grid is not None
-            assert len(grid.shape) == 4  # Should be 4D (nx, ny, nz, 3)
+
+        assert model.gridsize is not None
+        grid = get_real_grid(model.cell, max_res=2.0, device='cpu')
+
+        assert grid is not None
+        assert len(grid.shape) == 4  # Should be 4D (nx, ny, nz, 3)
 
 
 @pytest.mark.integration
@@ -145,15 +136,13 @@ class TestModelFTSymmetry:
         # Model should have spacegroup after loading
         assert model.spacegroup is not None
         
-        # Map symmetry can be created if gridsize is available
-        if model.gridsize is not None:
-            from torchref.symmetry.map_symmetry import MapSymmetry
-            
-            gridsize = tuple(model.gridsize.tolist())
-            cell_params = model.cell
-            
-            map_sym = MapSymmetry(model.spacegroup, gridsize, cell_params)
-            assert map_sym is not None
+        # The map operator comes from the space group, keyed on the grid shape.
+        gridsize = model.grid_shape
+        assert gridsize is not None
+
+        operator = model.spacegroup.map_operator(gridsize)
+        assert operator is not None
+        assert operator.map_shape == gridsize
 
 
 @pytest.mark.integration

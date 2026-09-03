@@ -8,10 +8,12 @@ per-bin optimal scale recomputed every gradient call, no external scaler); at 6 
 below it switches to ``ml`` with the normal Scaler.
 """
 
+import copy
 from typing import List, Optional
 
 import torch
 
+from torchref.refinement.loss_state import LossState
 from torchref.scaling.scaler import Scaler
 
 
@@ -88,14 +90,57 @@ class RigidBodyRefinementStep:
     # -----------------------------------------------------------------------
     # Run
     # -----------------------------------------------------------------------
+    @staticmethod
+    def _sandbox(ref):
+        """A shallow clone of ``ref`` that shares its model but owns its namespace.
+
+        Every cutoff calls :meth:`_rebind_for_data`, which assigns
+        ``reflection_data``, ``scaler`` and the x-ray targets for that cutoff's
+        resolution and target mode. Run against the real Refinement those
+        assignments are destructive -- the caller gets its data and scaler
+        silently replaced by whatever the last cutoff used.
+
+        Directing the step at a clone confines all of it. The real Refinement is
+        never written to, so there is nothing to restore and no window in which
+        it is inconsistent. The step builds its own single-target
+        :class:`~torchref.refinement.loss_state.LossState` rather than borrowing
+        the refinement's, so the caller's targets and any weights registered on
+        them are untouched as well.
+
+        The model is deliberately shared, not copied: ``use_rigid_xyz`` swaps its
+        xyz container in place, so refined coordinates reach the caller by object
+        identity and need no copy-back.
+
+        ``nn.Module`` keeps submodules in ``_modules``; copying ``__dict__``
+        alone would leave that dict shared, and a submodule assignment on the
+        clone would write straight through to the original.
+        """
+        sandbox = copy.copy(ref)
+        sandbox.__dict__ = dict(ref.__dict__)
+        for slot in ("_modules", "_parameters", "_buffers"):
+            if slot in sandbox.__dict__:
+                sandbox.__dict__[slot] = dict(ref.__dict__[slot])
+        return sandbox
+
     def run(self):
         """Step through every cutoff coarse to fine and return
         ``[(d_min, LossState), ...]``.
 
-        Restores the original ``reflection_data`` on exit, and bakes the final transform
-        back
-        into a plain ``ModelFT`` unless ``commit=False``.
+        Runs against a sandbox clone of the refinement (see :meth:`_sandbox`), so
+        the caller's targets, weights and ``reflection_data`` are left untouched.
+        Refined coordinates still reach the caller: the model is shared.
+
+        Bakes the final transform back into a plain ``ModelFT`` unless
+        ``commit=False``.
         """
+        real = self.refinement
+        self.refinement = self._sandbox(real)
+        try:
+            return self._run()
+        finally:
+            self.refinement = real
+
+    def _run(self):
         ref = self.refinement
         original_data = ref.reflection_data
 
@@ -162,9 +207,14 @@ class RigidBodyRefinementStep:
             device=ref.device,
         )
         ref.scaler.initialize()
-        ref._init_targets(xray_mode=xray_mode)
+        # Only the x-ray half of _init_targets: the step optimizes against x-ray data
+        # alone, and TotalGeometryTarget / TotalADPTarget would be constructed here
+        # purely to be left unused -- NonBondedTarget's pair list among them.
+        # get_scales() still runs, because the x-ray target reads the scaler's
+        # parameters.
+        ref._build_xray_targets(xray_mode)
+        ref.get_scales()
 
-        ref.reset_loss_state()
         # Clear cached LBFGS optimizers (they were built over the old model's
         # parameters and would now point at stale leaves).
         if hasattr(ref, "_persistent_optimizers"):
@@ -175,81 +225,71 @@ class RigidBodyRefinementStep:
         ref = self.refinement
         rigid_model = ref.model
 
-        state = ref.complete_loss_state()
+        # Active targets during rigid-body refinement: x-ray only. Internal bonded
+        # geometry is rigid by construction; ADP / occupancy are frozen. Inter-chain vdW
+        # is intentionally off -- Phenix runs rigid-body without atomistic restraints,
+        # and we have measured that vdW adds no signal here and destabilizes the
+        # coarsest cutoff.
+        #
+        # A state of its own rather than the refinement's: nothing here has to be undone
+        # afterwards, no maintenance() hook of a target we are not using can fire (in
+        # particular NonBondedTarget rebuilds its VDW pair list whenever atoms drift
+        # >1 A, seconds of work for a term that is not in the sum), and the caller's
+        # state keeps its targets and any weights registered on it.
+        #
+        # Weight 1.0: with one term the weight is a scalar on the whole objective, and
+        # 1.0 is what DEFAULT_GROUP_WEIGHTS gives x-ray anyway.
+        state = LossState(device=ref.device)
+        state.register_target("xray", ref.xray_target_work)
+        state.set_weight("xray", 1.0)
+        state.cache_losses()
 
-        # Snapshot weights so we can restore after the step.
-        original_weights = dict(state.weights)
-        try:
-            # Active targets during rigid-body refinement: xray only. Internal
-            # bonded geometry is rigid by construction; ADP / occupancy are
-            # frozen. Inter-chain vdW is intentionally off — Phenix runs
-            # rigid-body without atomistic restraints and we've observed vdW
-            # adds no signal here and destabilizes the coarsest cutoff.
-            #
-            # We DROP non-xray targets from state entirely (not just zero
-            # their weight) so their maintenance() hooks don't fire during
-            # the rigid-body LBFGS. In particular ``NonBondedTarget``
-            # rebuilds its VDW pair list whenever atoms drift >1 Å, a
-            # multi-second recomputation that's pure waste when the
-            # target weight is 0. State is rebuilt fresh on the next
-            # cutoff via _rebind_for_data → reset_loss_state →
-            # _init_targets, so this drop is local to this cutoff.
-            keep_names = {"xray"}
-            for name in list(state.targets.keys()):
-                if name not in keep_names:
-                    state.targets.pop(name, None)
-                    original_weights.pop(name, None)
+        rigid_params = [
+            rigid_model.xyz.euler_angles,
+            rigid_model.xyz.translations,
+        ]
 
-            rigid_params = [
-                rigid_model.xyz.euler_angles,
-                rigid_model.xyz.translations,
-            ]
+        # Decide whether to use the inner-cycle (mask-refresh) loop.
+        # Triggered when the scaler has a bulk-solvent component whose
+        # mask depends on atom positions (ls_wunit_k1 path here). For
+        # the ml path the scaler is fully refit between cutoffs
+        # and co-optimized with rigid params in a single LBFGS.
+        use_inner_cycles = (
+            ref.scaler is not None
+            and getattr(ref.scaler, "solvent", None) is not None
+            and getattr(ref.scaler, "c_iso", None) is not None
+            and ref.scaler.c_iso.requires_grad is False
+        )
 
-            # Decide whether to use the inner-cycle (mask-refresh) loop.
-            # Triggered when the scaler has a bulk-solvent component whose
-            # mask depends on atom positions (ls_wunit_k1 path here). For
-            # the ml path the scaler is fully refit between cutoffs
-            # and co-optimized with rigid params in a single LBFGS.
-            use_inner_cycles = (
-                ref.scaler is not None
-                and getattr(ref.scaler, "solvent", None) is not None
-                and getattr(ref.scaler, "c_iso", None) is not None
-                and ref.scaler.c_iso.requires_grad is False
-            )
-
-            if use_inner_cycles:
-                self._run_inner_cycles(d_min, state, rigid_params, n_inner=5)
+        if use_inner_cycles:
+            self._run_inner_cycles(d_min, state, rigid_params, n_inner=5)
+        else:
+            # Single-shot path: rigid params + scaler params co-optimized.
+            if ref.scaler is not None:
+                opt_params = rigid_params + list(ref.scaler.parameters())
             else:
-                # Single-shot path: rigid params + scaler params co-optimized.
-                if ref.scaler is not None:
-                    opt_params = rigid_params + list(ref.scaler.parameters())
-                else:
-                    opt_params = rigid_params
+                opt_params = rigid_params
 
-                rigid_model.reset_cache()
-                opt = torch.optim.LBFGS(
-                    opt_params,
-                    max_iter=self.iterations_per_step,
-                    **self.DEFAULT_LBFGS_KWARGS,
+            rigid_model.reset_cache()
+            opt = torch.optim.LBFGS(
+                opt_params,
+                max_iter=self.iterations_per_step,
+                **self.DEFAULT_LBFGS_KWARGS,
+            )
+            state.step(
+                opt,
+                context=f"rigid_body[d_min={d_min:.2f}]",
+            )
+        if ref.verbose > 0:
+            try:
+                rwork, rfree = ref.get_rfactor()
+                print(
+                    f"  rigid-body d_min={d_min:.2f} "
+                    f"(lbfgs, iters={self.iterations_per_step}): "
+                    f"Rwork={rwork:.4f} Rfree={rfree:.4f}"
                 )
-                state.step(
-                    opt,
-                    context=f"rigid_body[d_min={d_min:.2f}]",
-                )
-            if ref.verbose > 0:
-                try:
-                    rwork, rfree = ref.get_rfactor()
-                    print(
-                        f"  rigid-body d_min={d_min:.2f} "
-                        f"(lbfgs, iters={self.iterations_per_step}): "
-                        f"Rwork={rwork:.4f} Rfree={rfree:.4f}"
-                    )
-                except Exception:
-                    pass
-        finally:
-            # Restore weights.
-            for name, w in original_weights.items():
-                state.set_weight(name, w)
+            except Exception:
+                pass
         return state
 
     def _run_inner_cycles(self, d_min, state, rigid_params, n_inner: int = 5):
