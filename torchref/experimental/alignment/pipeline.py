@@ -52,7 +52,7 @@ from __future__ import annotations
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, Sequence, TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -170,6 +170,9 @@ class MRSolution:
     candidate_index : int
         Position of this orientation in the rotation function's own ordering,
         so the depth of shortlist a solution came from can be read off.
+    clash_fraction : float
+        Fraction of the placed model's C-alpha atoms within contact distance
+        of a symmetry image of the fixed chains; ``0.0`` with nothing fixed.
     model : ModelFT or None
         The rotated and translated model. Built for the winner only -- copying
         and moving a 20k-atom model 25 times was a quarter of the run on the
@@ -186,6 +189,7 @@ class MRSolution:
     model: Optional["ModelFT"] = None
     llg_score: float = float("nan")
     candidate_index: int = -1
+    clash_fraction: float = 0.0
 
 
 class MolecularReplacementPipeline(DeviceMixin):
@@ -278,9 +282,15 @@ class MolecularReplacementPipeline(DeviceMixin):
         # `_prepare_translation_arrays` for what the uncut set does.
         tf_d_min: Optional[float] = None,
         tf_d_max: Optional[float] = None,
+        # Chains already placed, as ModelFTs in the crystal's space group. Their
+        # structure factors are held fixed while ``model`` is searched for; a
+        # placement that overlaps their symmetry images is rejected. Empty for
+        # the first copy.
+        fixed: Sequence["ModelFT"] = (),
     ):
         self.data = data
         self.model = model
+        self.fixed = list(fixed)
         self.device = device or get_default_device()
         self.verbose = verbose
 
@@ -318,6 +328,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._p1 = None
         self._p1_xyz0 = None
         self._p1_center = None
+        # Summed structure factors of the fixed chains on the translation set,
+        # complex (N,); None when nothing is fixed.
+        self._F_fixed = None
 
     #: Levels are documented on the class. They are a contract, not a dial:
     #: level 2 is specifically "one machine-readable line per candidate", and
@@ -363,7 +376,8 @@ class MolecularReplacementPipeline(DeviceMixin):
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
-    def run(self, do_translation: bool = True) -> List[MRSolution]:
+    def run(self, do_translation: bool = True,
+            candidates: Optional[list] = None) -> List[MRSolution]:
         """Run the MR pipeline and return solutions, best first.
 
         Ranked by ``rank_by`` -- the translation likelihood by default.
@@ -374,6 +388,14 @@ class MolecularReplacementPipeline(DeviceMixin):
             If ``False``, stop after rotation rescoring and return a single
             rotation-only solution (the model rotated onto the best
             orientation, no translation or refinement).
+        candidates : list of RotationPeak, optional
+            A rotation shortlist to place instead of running the rotation
+            search: the peaks a previous run returned in
+            :attr:`rotation_candidates`. Valid only when ``model`` is the same
+            molecule -- a sequence-identical chain of a homodimer -- since the
+            peaks are orientations of *that* molecule. The rotation function
+            sees the whole Patterson, so its list already carries every copy's
+            orientation, and the second copy need not pay for it again.
 
         Returns
         -------
@@ -387,19 +409,24 @@ class MolecularReplacementPipeline(DeviceMixin):
             )
 
         timer = self._timer
-        timer.start("0_data_prep")
-        frf = prepare_frf_inputs(
-            self.model, self.data,
-            d_min=self.d_min, d_max=self.d_max, n_shells=self.n_shells,
-            verbose=self.verbose,
-        )
-        timer.stop("0_data_prep")
-        self._frf = frf
+        if candidates is None:
+            timer.start("0_data_prep")
+            frf = prepare_frf_inputs(
+                self.model, self.data,
+                d_min=self.d_min, d_max=self.d_max, n_shells=self.n_shells,
+                verbose=self.verbose,
+            )
+            timer.stop("0_data_prep")
+            self._frf = frf
 
-        # --- Stage 1: FRF rotation search ---
-        candidates = self._rotation_candidates(frf)
+            # --- Stage 1: FRF rotation search ---
+            candidates = self._rotation_candidates(frf)
+        else:
+            candidates = list(candidates)
+            self._log(1, f"mr: reusing a rotation shortlist of {len(candidates)}")
         if not candidates:
             raise RuntimeError("Rotation search produced no peaks.")
+        self.rotation_candidates = candidates
 
         if not do_translation:
             rotated, R_rec = self._make_rotated(candidates[0])
@@ -629,6 +656,26 @@ class MolecularReplacementPipeline(DeviceMixin):
                          f"reflections, {d_lo:.1f}-{d_hi:.2f} A"
                          + ("" if sig_F_full is not None
                             else " (no sigmas: unit weight)"))
+
+        # The fixed chains' structure factors on the translation set, summed:
+        # the structure factor is linear in the atoms, and a crystal-space-group
+        # ModelFT returns the symmetry-expanded F, so this is one forward call
+        # per fixed model, once per run.
+        self._F_fixed = None
+        if self.fixed:
+            hkl_t = hkl_full[tmask]
+            with torch.no_grad():
+                F_fixed = None
+                for m in self.fixed:
+                    if str(m.spacegroup) != str(data.spacegroup):
+                        raise ValueError(
+                            "fixed models must carry the data's space group; got "
+                            f"{m.spacegroup} against {data.spacegroup}")
+                    f = m(hkl_t.to(m.xyz().device)).to(device)
+                    F_fixed = f if F_fixed is None else F_fixed + f
+            self._F_fixed = F_fixed.detach()
+            self._log(1, f"mr: {len(self.fixed)} fixed model(s) held on the "
+                         f"translation set")
 
         # One P1 copy of the search model for the whole run, re-oriented in
         # place per candidate. Two copies per candidate -- one to rotate, one to
