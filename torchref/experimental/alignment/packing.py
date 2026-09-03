@@ -82,4 +82,4 @@ def clash_fraction(
         d = d - torch.round(d)
         d2 = (d @ B.T).pow(2).sum(dim=-1)                                       # (m, P)
         hit[a:a + chunk] = (d2 < cutoff2).any(dim=1)
-    return float(hit.to(torch.float32).mean())
+    return float(hit.sum()) / max(hit.numel(), 1)
