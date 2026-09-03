@@ -157,6 +157,8 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--n-rotation-candidates", type=int, default=10)
     ap.add_argument("--n-cycles", type=int, default=10)
+    ap.add_argument("--d-min", type=float, default=4.0)
+    ap.add_argument("--d-max", type=float, default=15.0)
     ap.add_argument("--no-refine", action="store_true")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--verbose", type=int, default=0)
@@ -180,7 +182,7 @@ def main():
         for k in range(copies):
             t0 = time.time()
             pipe = MolecularReplacementPipeline(
-                data, search, d_min=4.0, d_max=15.0, n_shells=20, n_rotation_peaks=200,
+                data, search, d_min=args.d_min, d_max=args.d_max, n_shells=20, n_rotation_peaks=200,
                 n_rotation_candidates=args.n_rotation_candidates, verbose=args.verbose,
                 fixed=list(placed))
             sols = pipe.run(do_translation=True, candidates=candidates)
@@ -201,7 +203,7 @@ def main():
     search = load_search(path, args.device)
     t0 = time.time()
     pipe = MolecularReplacementPipeline(
-        data, search, d_min=4.0, d_max=15.0, n_shells=20, n_rotation_peaks=200,
+        data, search, d_min=args.d_min, d_max=args.d_max, n_shells=20, n_rotation_peaks=200,
         n_rotation_candidates=args.n_rotation_candidates, verbose=0)
     pipe.run(do_translation=True)
     seconds_warm = time.time() - t0
@@ -223,7 +225,7 @@ def main():
     worst_r = max(p["rot_deg"] for p in pose)
     rt = summary.get("refine_torchref_mr", {})
     rp = summary.get("refine_phaser_mr", {})
-    print(f"ROW code={code} sg='{data.spacegroup.hm}' n_chains={len(placed)} "
+    print(f"ROW code={code} dmin={args.d_min} sg='{data.spacegroup.hm}' n_chains={len(placed)} "
           f"place_s={seconds_place:.1f} warm_s={seconds_warm:.1f} pose_rot={worst_r:.1f} pose_trans={worst_t:.2f} "
           f"llg={chains[0]['llg']:.0f} "
           f"rfree_ours={rt.get('R_free', float('nan')):.4f} rfree_phaser={rp.get('R_free', float('nan')):.4f} "
