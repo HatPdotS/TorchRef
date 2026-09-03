@@ -44,7 +44,9 @@ from torchref.scaling.weighting import (inverse_variance_weight,
                                         normalise_weight, snr_from_amplitude)
 from torchref.symmetry.symmetry import find_fft_friendly_size
 
-from .frf.preprocessing import build_lerf1_intensity, eterm_sigma_a
+from .frf.preprocessing import (SIGMA_A_SCALES, build_lerf1_intensity,
+                                eterm_sigma_a, fit_sigma_a_scale,
+                                rice_figure_of_merit)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ...model.model_ft import ModelFT
@@ -270,15 +272,6 @@ def prepare_candidate(
     return CandidateTransform(G=G_raw / norm.to(cplx), h_R=h_R, norm=norm)
 
 
-def _figure_of_merit(E_obs, F_mean, V, centric):
-    """Rice/Woolfson figure of merit: ``I1(X)/I0(X)`` acentric, ``tanh(X/2)`` centric,
-    ``X = 2 E_obs F_mean / V``."""
-    X = (2.0 * E_obs * F_mean / V).clamp(max=1e6)
-    m_acen = torch.special.i1e(X) / torch.special.i0e(X).clamp(min=1e-30)
-    m_cen = torch.tanh(0.5 * X)
-    return torch.where(centric, m_cen, m_acen)
-
-
 @dataclass
 class FixedComponent:
     """The chains already placed, as the likelihood sees them.
@@ -375,17 +368,12 @@ class FixedComponent:
             # V = 1 and the coefficients are the LERF1 ones exactly.
             D_f = torch.zeros_like(prior)
         else:
-            grid = SIGMA_A_SCALES if scales is None else scales
-            best_c, best_ll = 1.0, -float("inf")
-            for c in grid:
-                D = (prior * float(c)).clamp(max=cls.D_CAP)
-                ll = float(-rice_per_refl(E_obs, D * E_f_abs, (1.0 - D * D), cent).sum())
-                if ll > best_ll:
-                    best_c, best_ll = float(c), ll
-            D_f = (prior * best_c).clamp(max=cls.D_CAP)
+            D_f = fit_sigma_a_scale(E_obs, prior, E_f_abs, cent,
+                                    scales=SIGMA_A_SCALES if scales is None else scales,
+                                    cap=cls.D_CAP)
         V = 1.0 - D_f * D_f
         F_mean = D_f * E_f_abs
-        m = _figure_of_merit(E_obs, F_mean, V, cent)
+        m = rice_figure_of_merit(E_obs, F_mean, V, cent)
 
         # dLL/dSigma at (F_mean, V): acentric [E^2 + F^2 - 2 m E F - V] / V^2,
         # centric half of it -- see _rice_body. Twice the derivative is the
@@ -614,16 +602,6 @@ def translation_score_at(obs: TranslationObs, cand: CandidateTransform,
     quad = (fixed.c_quad.to(E2.device).to(E2.dtype) * E2).sum()
     lin = (fixed.c_lin.to(F.device).conj() * F).real.sum()
     return float(quad + lin)
-
-
-#: Multipliers on the Luzzati ``sigma_A`` the likelihood may choose from, per
-#: translation. The prior assumes a complete model; a search model that is half
-#: the asymmetric unit accounts for roughly half the scattering, and against
-#: the full prior every placement scores as a gross mismatch. Letting each
-#: placement take the scale that explains it best is what Phaser's per-solution
-#: sigma_A refinement does; here it is a profile over a grid, one (K, N) Rice
-#: evaluation per point.
-SIGMA_A_SCALES = tuple(float(c) for c in np.linspace(0.1, 1.0, 19))
 
 
 def llg_at_translations(

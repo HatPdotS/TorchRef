@@ -34,6 +34,8 @@ from .preprocessing import (
     build_lerf1_intensity,
     detect_zsymm,
     eterm_sigma_a,
+    fit_sigma_a_scale,
+    lerf1_with_fixed,
 )
 from .sitelist_ang import evaluate_rotation_function
 from .types import AdaptiveRotationFunction, RotationPeak
@@ -155,8 +157,18 @@ class FastRotationFunction:
         trust_cap: float = DEFAULT_TRUST_CAP,
         shell_variance_weights: bool = False,
         sym_cart: Optional[torch.Tensor] = None,
+        F_fixed_obs: Optional[torch.Tensor] = None,
+        err_fixed_A: float = 1.0,
     ):
         self.device = s_obs.device
+        # |F| of chains already placed, per unique observed reflection and
+        # anisotropy-corrected like `F_obs`. With it the observed intensity is
+        # the LERF1 coefficient conditional on that partial structure, so the
+        # Patterson the search model is matched against is the part the fixed
+        # chains do not explain. `err_fixed_A` is their coordinate error prior;
+        # its scale is fitted to the data.
+        self._F_fixed_obs = F_fixed_obs
+        self._err_fixed_A = float(err_fixed_A)
         # The point group as Cartesian rotations, for the peak finder: with it,
         # the returned peaks are distinct orientations rather than an
         # orientation and its mates. `sym_mats` above is in the fractional
@@ -306,9 +318,23 @@ class FastRotationFunction:
                 f"'information' or 'none'."
             )
         self._w_obs = w_obs
-        intensity_obs = build_lerf1_intensity(
-            conv_obs.E, centric_obs, weight=w_obs, use_centric_weight=True,
-        )
+        if self._F_fixed_obs is None:
+            intensity_obs = build_lerf1_intensity(
+                conv_obs.E, centric_obs, weight=w_obs, use_centric_weight=True,
+            )
+        else:
+            # The fixed part normalised by its own Wilson fit on the same
+            # abscissa and with the same conventions as the observed side.
+            F_f = self._F_fixed_obs.to(conv_obs.E.dtype)
+            conv_f = WilsonNormaliser(
+                F_f * F_f, smag_src, centric=centric_obs,
+                n_coeff=self.wilson_n_coeff, s_lo=self._s_lo, s_hi=self._s_hi,
+            )
+            prior_f = eterm_sigma_a(smag_src, self._err_fixed_A).to(conv_obs.E.dtype)
+            D_f = fit_sigma_a_scale(conv_obs.E, prior_f, conv_f.E, centric_obs.bool())
+            intensity_obs = lerf1_with_fixed(
+                conv_obs.E, conv_f.E, D_f, centric_obs, weight=w_obs,
+            )
         if self.shell_variance_weights:
             intensity_obs = apply_shell_variance_weights(
                 intensity_obs, smag_src, n_var_shells=n_wilson_shells,

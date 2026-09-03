@@ -17,6 +17,7 @@ from typing import Optional
 
 import torch
 
+from ....base.targets.xray_likelihoods import rice_per_refl
 from ....config import get_float_dtype
 
 from ..sh import (
@@ -40,7 +41,11 @@ def eterm_sigma_a(s_mag: torch.Tensor, delta_vrms_A: float) -> torch.Tensor:
     return torch.exp(-(2.0 / 3.0) * (math.pi ** 2) * s2 * (delta_vrms_A ** 2))
 
 __all__ = [
+    "SIGMA_A_SCALES",
     "eterm_sigma_a",
+    "fit_sigma_a_scale",
+    "lerf1_with_fixed",
+    "rice_figure_of_merit",
     "get_high_order_axis",
     "build_lerf1_intensity",
     "apply_shell_variance_weights",
@@ -49,6 +54,73 @@ __all__ = [
     "oeffner_vrms",
     "fit_relative_wilson_b",
 ]
+
+
+#: Multipliers on a Luzzati ``sigma_A`` a likelihood may choose from. The
+#: prior assumes a complete model; a search model that is half the asymmetric
+#: unit accounts for roughly half the scattering, and against the full prior
+#: every placement scores as a gross mismatch. Letting each placement -- or the
+#: fixed partial structure -- take the scale that explains it best is what
+#: Phaser's per-solution sigma_A refinement does; here it is a profile over a
+#: grid, one Rice evaluation per point.
+SIGMA_A_SCALES = tuple(round(0.1 + 0.05 * i, 2) for i in range(19))
+
+
+def rice_figure_of_merit(E_obs, F_mean, V, centric):
+    """Rice/Woolfson figure of merit: ``I1(X)/I0(X)`` acentric, ``tanh(X/2)``
+    centric, ``X = 2 E_obs F_mean / V``."""
+    X = (2.0 * E_obs * F_mean / V).clamp(max=1e6)
+    m_acen = torch.special.i1e(X) / torch.special.i0e(X).clamp(min=1e-30)
+    m_cen = torch.tanh(0.5 * X)
+    return torch.where(centric, m_cen, m_acen)
+
+
+def fit_sigma_a_scale(E_obs, prior, E_calc_abs, centric, *, scales=SIGMA_A_SCALES,
+                      cap: float = 0.95):
+    """``D = c * prior`` with the scale ``c`` that maximises the Rice/Woolfson
+    likelihood of ``E_obs`` given ``E_calc_abs``, capped at ``cap``.
+
+    A profile over ``scales``: the calc side's completeness and gross error
+    are absorbed into one number, and a placement that explains nothing takes
+    the smallest scale. ``cap`` keeps ``V = 1 - D^2`` off zero.
+    """
+    best_c, best_ll = float(scales[0]), -float("inf")
+    for c in scales:
+        D = (prior * float(c)).clamp(max=cap)
+        ll = float(-rice_per_refl(E_obs, D * E_calc_abs, 1.0 - D * D, centric).sum())
+        if ll > best_ll:
+            best_c, best_ll = float(c), ll
+    return (prior * best_c).clamp(max=cap)
+
+
+def lerf1_with_fixed(
+    eEobs: torch.Tensor,
+    E_fixed_abs: torch.Tensor,
+    D_fixed: torch.Tensor,
+    centric_obs: torch.Tensor,
+    weight: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """LERF1 observed intensity conditional on a fixed partial structure.
+
+    ``2 · dLL/dSigma · weight`` with the Rice/Woolfson likelihood evaluated at
+    the fixed structure's contribution ``F = D_f E_f`` and variance
+    ``V = 1 - D_f^2``: acentric ``[E^2 + F^2 - 2 m E F - V] / V^2``, centric half
+    of it, ``m`` the figure of merit. With ``E_fixed = 0`` this is
+    :func:`build_lerf1_intensity` bit for bit. It removes both the fixed
+    structure's self-Patterson and, through ``m``, the expected fixed-moving
+    cross term, so what the moving model is matched against is the Patterson
+    the fixed part does not explain -- subtracting ``|E_fixed|^2`` alone would
+    leave the cross term, several times the signal of a small fragment.
+    """
+    V = 1.0 - D_fixed * D_fixed
+    F = D_fixed * E_fixed_abs
+    m = rice_figure_of_merit(eEobs, F, V, centric_obs.bool())
+    d = (eEobs * eEobs + F * F - 2.0 * m * eEobs * F - V) / (V * V)
+    d = torch.where(centric_obs.bool(), 0.5 * d, d)
+    if weight is None:
+        weight = torch.ones_like(eEobs)
+    # Twice the derivative: with F = 0, V = 1 this is cw (E^2 - 1), cw = 2 and 1.
+    return 2.0 * d * weight
 
 
 def build_lerf1_intensity(

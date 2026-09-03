@@ -549,7 +549,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         peaks, _lmax, _d_min = search_peaks(
             self.model, self.data, self.model_error_A,
             U_aniso=frf.U_aniso, n_peaks=self.n_rotation_peaks,
-            verbose=self.verbose,
+            verbose=self.verbose, fixed=self.fixed,
         )
         timer.stop("3_rotation_search")
 
