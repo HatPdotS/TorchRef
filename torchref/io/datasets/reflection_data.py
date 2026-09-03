@@ -862,6 +862,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             rfree = rfree.clip(min=0, max=1).to(torch.bool)
             self.rfree_flags = rfree
             self.masks["flagged_initial"] = ~flagged
+            # Record the provenance for every file-sourced set, not only the
+            # ones that also carry a validation column: a header reporting
+            # R-free has to be able to say which test set produced it. Named
+            # after the reader rather than hardcoded "MTZ", since `load` also
+            # takes ReflectionCIFReader and any other compatible reader.
+            reader_name = type(reader).__name__
+            self.rfree_source = f"{reader_name} FreeR"
             # A third (validation) column goes into the separate boolean
             # ``validation_flags``; ``rfree_flags`` stays binary work/free.
             if "Validation-flags" in data_dict:
@@ -870,7 +877,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     device=self.device,
                     requires_grad=False,
                 ).to(torch.bool)
-                self.rfree_source = "MTZ FreeR+Validation"
+                self.rfree_source = f"{reader_name} FreeR+Validation"
 
         self._post_load_cleanup()
 
@@ -1209,7 +1216,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         flags[group_free[group_id]] = 0
 
         self.rfree_flags = flags
-        self.rfree_source = "Generated (resolution-binned, ASU-grouped)"
+        # The seed belongs in the provenance string: without it "generated"
+        # names a draw nobody can reproduce.
+        self.rfree_source = (
+            "Generated (resolution-binned, ASU-grouped"
+            + (f", seed {seed}" if seed is not None else "")
+            + ")"
+        )
 
         n_free = (flags == 0).sum().item()
         n_work = (flags != 0).sum().item()
