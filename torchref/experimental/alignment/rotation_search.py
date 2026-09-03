@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 import torch
 
@@ -313,8 +313,13 @@ def search_peaks(
     shell_variance_weights: bool = False,
     snr_cap: float = DEFAULT_SNR_CAP,
     trust_cap: float = DEFAULT_TRUST_CAP,
+    fixed: Sequence["ModelFT"] = (),
 ) -> Tuple[List["RotationPeak"], int, float]:
     """Run the rotation function, returning the engine's own peak list.
+
+    ``fixed`` are chains already placed, as ModelFTs in the crystal's space
+    group: their summed structure factors on this window become the partial
+    structure the observed coefficient is conditioned on.
 
     Returns ``(peaks, lmax, d_min)``, where ``peaks`` is a list of
     :class:`~torchref.experimental.alignment.frf.types.RotationPeak` in Edmonds
@@ -374,6 +379,14 @@ def search_peaks(
             if hasattr(data, "centric")
             else torch.zeros_like(F_obs, dtype=torch.bool)
         )
+        F_fixed_obs = None
+        if fixed:
+            hk = hkl_all[keep]
+            F_fx = None
+            for m in fixed:
+                f = m(hk.to(m.xyz().device)).to(device)
+                F_fx = f if F_fx is None else F_fx + f
+            F_fixed_obs = apply_overall_anisotropy(F_fx.abs().to(real), s_asu, U_aniso)
         # Unmerged Bijvoet data puts two rows on one canonical index, so the
         # unroll below would weight those reflections twice. Detectable, so say
         # so rather than quietly double-counting.
@@ -471,6 +484,7 @@ def search_peaks(
             obs_weight=obs_weight, snr_cap=snr_cap, trust_cap=trust_cap,
             shell_variance_weights=shell_variance_weights,
             sym_cart=sym_cart,
+            F_fixed_obs=F_fixed_obs, err_fixed_A=float(model_error_A),
         )
         _arf, peaks = engine.score_model(
             s_calc, F_calc, n_peaks=n_peaks,
@@ -515,6 +529,7 @@ def rotation_search(
     n_peaks: int = 500,
     verbose: int = 0,
     device: Optional[torch.device] = None,
+    fixed: Sequence["ModelFT"] = (),
 ) -> RotationSolutions:
     """Find the orientations of ``model`` consistent with ``data``.
 
@@ -562,5 +577,6 @@ def rotation_search(
     peaks, lmax, d_min = search_peaks(
         model, data, model_error_A,
         U_aniso=U_aniso, n_peaks=n_peaks, verbose=verbose, device=device,
+        fixed=fixed,
     )
     return _solutions(peaks, lmax, d_min, model_error_A)
