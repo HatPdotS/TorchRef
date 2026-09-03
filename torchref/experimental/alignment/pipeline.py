@@ -60,6 +60,7 @@ import torch
 from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
+from .frf.preprocessing import fit_relative_wilson_b
 from .frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from .frf.types import RotationPeak
 from .rotation_search import prepare_frf_inputs, search_peaks
@@ -77,6 +78,11 @@ from .translation import (
 if TYPE_CHECKING:
     from torchref.io.datasets import ReflectionData
     from torchref.model import ModelFT
+
+#: Largest |relative Wilson B| the placed model's B column is shifted by.
+MAX_WILSON_B_SHIFT = 100.0
+#: Floor on a placed atom's B after the shift, A^2.
+MIN_PLACED_B = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +578,16 @@ class MolecularReplacementPipeline(DeviceMixin):
 
     def place(self, solution: MRSolution) -> "ModelFT":
         """Build the placed model for ``solution``: a copy of the search model,
-        rotated and translated, carrying the alignment provenance attributes."""
+        rotated and translated, at the crystal's B level, carrying the
+        alignment provenance attributes.
+
+        The search model's B column is whatever its source wrote -- a predicted
+        model carries a confidence-derived B around 6 A^2 -- while refinement
+        starts from it as a B level. Every B is shifted by the relative Wilson
+        B between the placed model's structure factors and the data, the same
+        correction Phaser applies to its output, floored at ``MIN_PLACED_B``;
+        the shift is stored as ``last_alignment_wilson_b_shift``.
+        """
         R_rec = torch.as_tensor(solution.rotation, dtype=torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
         placed = self.model.copy().rotate(
             R_rec.T.contiguous().to(device=self.model.device,
@@ -586,7 +601,40 @@ class MolecularReplacementPipeline(DeviceMixin):
             placed.last_alignment_translation = t
         placed.last_alignment_rotation = R_rec
         placed.last_alignment_rfactor = solution.r_factor
+        placed.last_alignment_wilson_b_shift = self._match_wilson_b(placed)
         return placed
+
+    def _match_wilson_b(self, placed: "ModelFT") -> float:
+        """Shift ``placed``'s B factors to the data's Wilson level in place;
+        returns the shift in A^2.
+
+        One forward call on the data's valid reflections; the fit is Phaser's
+        per-shell log-ratio regression, so the overall scale drops out and a
+        fixed partial structure in the data does not bias it.
+        """
+        data = self.data
+        hkl = data.hkl
+        if hasattr(data, "get_valid_mask"):
+            hkl = hkl[data.get_valid_mask()]
+            F_obs = data.F[data.get_valid_mask()]
+        else:
+            F_obs = data.F
+        real = get_float_dtype()
+        with torch.no_grad():
+            F_calc = placed(hkl.to(placed.xyz().device)).abs().to(self.device)
+            s_mag = (hkl.to(real) @ data.cell.reciprocal_basis_matrix.to(
+                dtype=real, device=hkl.device)).norm(dim=-1).to(self.device)
+            shift = fit_relative_wilson_b(
+                F_obs.to(self.device), F_calc, s_mag, clamp_b=MAX_WILSON_B_SHIFT,
+            )
+            if shift != 0.0:
+                B = placed.adp()
+                mask = getattr(placed, "adp_mask", None)
+                if mask is None:
+                    mask = torch.isfinite(B)
+                placed.adp.set((B[mask] + shift).clamp(min=MIN_PLACED_B), mask)
+        self._log(1, f"mr: relative Wilson B {shift:+.1f} A^2 applied to the placed model")
+        return float(shift)
 
     def _orient_template(self, R_rec: torch.Tensor) -> None:
         """Write the candidate orientation into the shared P1 copy.

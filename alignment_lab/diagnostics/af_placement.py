@@ -90,21 +90,42 @@ def ca_xyz_by_chain(path):
 
 
 def pose_vs_phaser(ours_pdb, phaser_pdb, data):
-    """For each of our chains, the closest Phaser chain of the same length
-    (rotation deg, translation A) allowing symmetry and origin freedom."""
+    """For each of our chains, the pose difference to the matching Phaser copy
+    (rotation deg, translation A) allowing symmetry and origin freedom.
+
+    Phaser writes a chain break as a new chain, so its chains are grouped in
+    file order into copies whose C-alpha counts add up to ours; the copy with
+    the smallest translation error is reported.
+    """
+    import torch
     from torchref.config import get_float_dtype
     dtype = get_float_dtype()
     ours, theirs = ca_xyz_by_chain(ours_pdb), ca_xyz_by_chain(phaser_pdb)
+    counts = sorted({xyz.shape[0] for _, xyz in ours}, reverse=True)
+    groups, i = [], 0
+    while i < len(theirs):
+        for n in counts:
+            acc, j = 0, i
+            while j < len(theirs) and acc < n:
+                acc += theirs[j][1].shape[0]
+                j += 1
+            if acc == n:
+                groups.append(("+".join(t[0] for t in theirs[i:j]),
+                               torch.cat([t[1] for t in theirs[i:j]])))
+                i = j
+                break
+        else:
+            i += 1   # a Phaser chain no copy of ours accounts for
     rows = []
     for name, xyz in ours:
         best = (None, float("inf"), float("inf"))
-        for tname, txyz in theirs:
-            if txyz.shape != xyz.shape:
+        for gname, gxyz in groups:
+            if gxyz.shape != xyz.shape:
                 continue
-            r, t = pose_error(xyz.to(dtype), txyz.to(dtype), data.cell,
+            r, t = pose_error(xyz.to(dtype), gxyz.to(dtype), data.cell,
                               data.spacegroup, allow_origin_freedom=True)
             if t < best[2]:
-                best = (tname, r, t)
+                best = (gname, r, t)
         rows.append({"chain": name, "phaser_chain": best[0], "rot_deg": best[1], "trans_A": best[2]})
     return rows
 
@@ -113,7 +134,7 @@ def refine(pdb, mtz, outdir, n_cycles, python):
     outdir.mkdir(parents=True, exist_ok=True)
     cmd = [python, "-u", str(REFINE), "-m", str(pdb), "-sf", str(mtz), "-o", str(outdir),
            "-n", str(n_cycles), "--mode", "separate", "--xray-mode", "ml",
-           "--weights", '{"adp": 0.02}']
+           "--weights", '{"adp": 0.02}', "--with-rigid-body"]
     env = dict(os.environ, PYTHONPATH=str(REPO))
     t0 = time.time()
     with open(outdir / "refine.log", "w") as log:
@@ -175,12 +196,21 @@ def main():
                   f"r={s.r_factor:.3f} clash={chains[-1]['clash']:.2f} "
                   f"seconds={chains[-1]['seconds']:.1f}", flush=True)
     seconds_place = time.time() - t_total
+    # Warm timing: the first placement again, with every cache and kernel built.
+    n_res, acc, path, copies = comps[0]
+    search = load_search(path, args.device)
+    t0 = time.time()
+    pipe = MolecularReplacementPipeline(
+        data, search, d_min=4.0, d_max=15.0, n_shells=20, n_rotation_peaks=200,
+        n_rotation_candidates=args.n_rotation_candidates, verbose=0)
+    pipe.run(do_translation=True)
+    seconds_warm = time.time() - t0
 
     ours = out / "torchref_placed.pdb"
     assemble(placed, [float(x) for x in data.cell.data.tolist()], data.spacegroup.hm, ours, out)
     pose = pose_vs_phaser(ours, phaser_pdb, data)
     summary = {"code": code, "spacegroup": data.spacegroup.hm, "n_chains": len(placed),
-               "seconds_place": seconds_place, "chains": chains, "pose_vs_phaser": pose}
+               "seconds_place": seconds_place, "seconds_warm": seconds_warm, "chains": chains, "pose_vs_phaser": pose}
 
     if not args.no_refine:
         summary["refine_torchref_mr"] = refine(ours, mtz, out / "refine_torchref_mr",
@@ -194,7 +224,7 @@ def main():
     rt = summary.get("refine_torchref_mr", {})
     rp = summary.get("refine_phaser_mr", {})
     print(f"ROW code={code} sg='{data.spacegroup.hm}' n_chains={len(placed)} "
-          f"place_s={seconds_place:.1f} pose_rot={worst_r:.1f} pose_trans={worst_t:.2f} "
+          f"place_s={seconds_place:.1f} warm_s={seconds_warm:.1f} pose_rot={worst_r:.1f} pose_trans={worst_t:.2f} "
           f"llg={chains[0]['llg']:.0f} "
           f"rfree_ours={rt.get('R_free', float('nan')):.4f} rfree_phaser={rp.get('R_free', float('nan')):.4f} "
           f"rwork_ours={rt.get('R_work', float('nan')):.4f} rwork_phaser={rp.get('R_work', float('nan')):.4f} "
