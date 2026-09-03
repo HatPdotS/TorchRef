@@ -82,7 +82,7 @@ class ChiralTarget(GeometryTarget):
 
         if "chiral" not in self.restraints.restraints:
             return {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(
+                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(  # dtype-ok: empty restraint index tensor; PyTorch requires int64 for indexing
                     0, 4
                 ),
                 "volumes": torch.tensor([], device=device),

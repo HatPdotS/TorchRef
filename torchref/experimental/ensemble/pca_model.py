@@ -92,6 +92,8 @@ class PCAEnsembleParam(nn.Module):
         member matrix. ``K`` defaults to ``N-1`` (complete reparameterization)."""
         N = int(n_members)
         with torch.no_grad():
+            # dtype-ok: SVD seeding in float64 for numerical stability; recast to
+            # xyz_flat.dtype below (line 107). Caveat: no .cpu(), so errors on MPS.
             X = xyz_flat.detach().reshape(N, n_atoms * 3).to(torch.float64)
             mu = X.mean(dim=0)
             Xc = X - mu.unsqueeze(0)

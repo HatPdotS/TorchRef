@@ -20,6 +20,7 @@ from typing import Optional
 
 import torch
 
+from torchref.config import get_complex_dtype
 from torchref.base.direct_summation.isotropic import (
     _estimate_batch_size,
     iso_structure_factor_torched,
@@ -241,7 +242,7 @@ def ds_iso(hkl, s, xyz_frac, occ, adp, A, B, *, force_portable=None, max_memory_
     reference path regardless.
     """
     if xyz_frac.shape[0] == 0:
-        return torch.zeros(hkl.shape[0], dtype=torch.complex64, device=hkl.device)
+        return torch.zeros(hkl.shape[0], dtype=get_complex_dtype(), device=hkl.device)
     return _dispatch(
         False, hkl, s, xyz_frac, occ, adp, A, B, force_portable, max_memory_gb
     )
@@ -253,7 +254,7 @@ def ds_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, *, force_portable=None, max_mem
     See :func:`ds_iso` on ``force_portable=None``.
     """
     if xyz_frac.shape[0] == 0:
-        return torch.zeros(hkl.shape[0], dtype=torch.complex64, device=hkl.device)
+        return torch.zeros(hkl.shape[0], dtype=get_complex_dtype(), device=hkl.device)
     return _dispatch(
         True, hkl, s_vec, xyz_frac, occ, U, A, B, force_portable, max_memory_gb
     )

@@ -29,8 +29,12 @@ def _atoms(device, n=8):
 @pytest.mark.integration
 def test_sfds_same_device_cpu():
     """Sanity: hkl already on the module device works and stays on it."""
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
     cell = Cell(_CELL, device="cpu")
-    sf = SfDS(cell, spacegroup="P212121").to("cpu")
+    ctx = ModelContext(cell=cell, spacegroup=SpaceGroup("P212121", device="cpu"))
+    sf = SfDS(ctx).to("cpu")
     xyz, adp, occ, A, B = _atoms("cpu")
     hkl = torch.randint(-6, 7, (50, 3)).float()
     F, _ = sf.compute_structure_factors(hkl, xyz, adp, occ, A, B)
@@ -42,9 +46,13 @@ def test_sfds_same_device_cpu():
 @pytest.mark.integration
 def test_sfds_hkl_on_different_device():
     """hkl on CPU while the module + atoms are on CUDA must not crash."""
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
     cuda = torch.device("cuda")
     cell = Cell(_CELL, device=cuda)
-    sf = SfDS(cell, spacegroup="P212121").to(cuda)
+    ctx = ModelContext(cell=cell, spacegroup=SpaceGroup("P212121", device=cuda))
+    sf = SfDS(ctx).to(cuda)
     xyz, adp, occ, A, B = _atoms(cuda)
 
     hkl_cpu = torch.randint(-6, 7, (50, 3)).float()  # deliberately on CPU

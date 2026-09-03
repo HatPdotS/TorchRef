@@ -153,7 +153,7 @@ class EdgeBlock(DeviceMixin):
     def empty(cls, arity: int, device=None) -> "EdgeBlock":
         """An edge-free block of the given arity."""
         return cls(
-            indices=torch.zeros((0, arity), dtype=torch.int64, device=device),
+            indices=torch.zeros((0, arity), dtype=torch.int64, device=device),  # dtype-ok: empty edge index tensor (0,arity); int64 index required
             origin_bounds={},
         )
 
@@ -190,7 +190,7 @@ class EdgeBlock(DeviceMixin):
         if len(indices) == 0:
             return cls.empty(arity, device=device)
         return cls(
-            indices=torch.as_tensor(indices, dtype=torch.int64, device=device),
+            indices=torch.as_tensor(indices, dtype=torch.int64, device=device),  # dtype-ok: edge atom index tensor; int64 index required
             origin_bounds=bounds,
         )
 

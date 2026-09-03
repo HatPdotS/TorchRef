@@ -272,7 +272,7 @@ def find_disulfide_links(
     rows = list(sg_rows)
     if len(rows) < 2:
         return []
-    idx = torch.as_tensor(rows, dtype=torch.int64, device=xyz.device)
+    idx = torch.as_tensor(rows, dtype=torch.int64, device=xyz.device)  # dtype-ok: residue-atom index tensor; int64 index required
     dist = torch.cdist(xyz[idx], xyz[idx])
     close = (dist > DISULFIDE_MIN_DISTANCE) & (dist < DISULFIDE_MAX_DISTANCE)
 

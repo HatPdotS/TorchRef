@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 
 # Import the Numba-accelerated matching functions
 from torchref.topology.builders_numba import (
@@ -613,7 +613,7 @@ class BondRestraintBuilder(RestraintBuilder):
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
             "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
@@ -720,7 +720,7 @@ class AngleRestraintBuilder(RestraintBuilder):
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
             "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
@@ -841,10 +841,10 @@ class TorsionRestraintBuilder(RestraintBuilder):
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
             "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
-            "periods": torch.tensor(periods, dtype=torch.long, device=device),
+            "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
         }
 
 
@@ -932,7 +932,7 @@ class PlaneRestraintBuilder(RestraintBuilder):
 
             key = f"{n_atoms}_atoms"
             result[key] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),
+                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
                 "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             }
 
@@ -1054,7 +1054,7 @@ class ChiralRestraintBuilder(RestraintBuilder):
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
             "ideal_volumes": torch.tensor(
                 ideal_volumes, dtype=get_float_dtype(), device=device
             ),
@@ -1309,7 +1309,7 @@ class InterResidueBondBuilder:
         sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
             "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
@@ -1410,7 +1410,7 @@ class InterResidueBondBuilder:
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
             "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
@@ -1532,7 +1532,7 @@ class InterResidueAngleBuilder:
         sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
             "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
@@ -1644,7 +1644,7 @@ class InterResidueAngleBuilder:
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
             "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
@@ -1781,10 +1781,10 @@ class InterResidueTorsionBuilder:
             periods = periods[sort_order]
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
             "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
-            "periods": torch.tensor(periods, dtype=torch.long, device=device),
+            "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
         }
 
     @property
@@ -1946,8 +1946,8 @@ class InterResidueTorsionBuilder:
                 indices = indices[order]
                 periods = periods[order]
             result["phi"] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),
-                "periods": torch.tensor(periods, dtype=torch.long, device=device),
+                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
+                "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
             }
 
         # Finalize psi
@@ -1959,8 +1959,8 @@ class InterResidueTorsionBuilder:
                 indices = indices[order]
                 periods = periods[order]
             result["psi"] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),
-                "periods": torch.tensor(periods, dtype=torch.long, device=device),
+                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
+                "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
             }
 
         # Finalize omega
@@ -1978,12 +1978,12 @@ class InterResidueTorsionBuilder:
                 periods = periods[order]
                 is_proline = is_proline[order]
             result["omega"] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),
+                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
                 "references": torch.tensor(
                     references, dtype=get_float_dtype(), device=device
                 ),
                 "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
-                "periods": torch.tensor(periods, dtype=torch.long, device=device),
+                "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
                 "is_proline": torch.tensor(is_proline, dtype=torch.bool, device=device),
             }
 
@@ -2017,13 +2017,13 @@ class InterResidueTorsionBuilder:
                 stypes = stypes[order]
             result["ramachandran"] = {
                 "phi_indices": torch.tensor(
-                    phi_idx, dtype=torch.long, device=device
+                    phi_idx, dtype=torch.long, device=device  # dtype-ok: phi atom-index tensor for dihedral; int64 required
                 ),
                 "psi_indices": torch.tensor(
-                    psi_idx, dtype=torch.long, device=device
+                    psi_idx, dtype=torch.long, device=device  # dtype-ok: psi atom-index tensor for dihedral; int64 required
                 ),
                 "surface_type": torch.tensor(
-                    stypes, dtype=torch.long, device=device
+                    stypes, dtype=torch.long, device=device  # dtype-ok: categorical rama surface-type code used as advanced index; int64
                 ),
             }
 
@@ -2120,7 +2120,7 @@ class InterResiduePlaneBuilder:
 
             key = f"{n_atoms}_atoms"
             result[key] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),
+                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
                 "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             }
 

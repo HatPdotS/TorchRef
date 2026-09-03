@@ -4,8 +4,10 @@ Integration tests for the unified DeviceMixin.
 The primary acceptance test exercises a CPU -> GPU -> CPU round-trip on a
 ``ModelFT`` instance: structure factors are recomputed at each leg and
 checked for the expected device placement and numerical agreement. This
-covers the ``__dict__`` walk (Cell, SfFFT, anomalous cache), the always-
-invalidate cache policy, and the post-move ``_rebuild_sf_indices`` hook.
+covers the ``__dict__`` walk (Cell, SfFFT, anomalous cache) and the always-
+invalidate cache policy. The SF index partition needs no post-move hook: it is
+keyed on its inputs and recomputed on access, so a device move invalidates it
+by changing the fingerprint rather than by being told to.
 """
 
 from __future__ import annotations

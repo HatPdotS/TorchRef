@@ -18,6 +18,7 @@ import sys
 import numpy as np
 import torch
 
+from torchref.config import get_float_dtype
 from torchref.cli._common import (
     add_general_args,
     add_resolution_args,
@@ -178,9 +179,9 @@ def main():
               f"{d_spacings.max():.2f} - {d_spacings.min():.2f} A")
 
     # --- Convert to torch ---
-    hkl_t = torch.tensor(hkl, dtype=torch.int32, device=device)
-    amp_t = torch.tensor(amplitudes, dtype=torch.float32, device=device)
-    phi_t = torch.tensor(phases_deg, dtype=torch.float32, device=device) * (np.pi / 180.0)
+    hkl_t = torch.tensor(hkl, dtype=torch.int32, device=device)  # dtype-ok: hkl Miller indices fed to symmetry expand; fixed int32 crystallographic representation
+    amp_t = torch.tensor(amplitudes, dtype=get_float_dtype(), device=device)
+    phi_t = torch.tensor(phases_deg, dtype=get_float_dtype(), device=device) * (np.pi / 180.0)
 
     # --- Expand to P1 ---
     from torchref.symmetry import Cell, SpaceGroup

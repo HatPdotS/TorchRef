@@ -49,13 +49,13 @@ def find_relevant_voxels(real_space_grid, xyz, radius_angstrom=4, inv_frac_matri
         # This ensures atoms outside the unit cell are correctly wrapped
         xyz_frac = torch.matmul(inv_frac_matrix, xyz.T).T  # (N, 3)
         xyz_frac = xyz_frac % 1.0  # Wrap to [0, 1]
-        center_idx = torch.round(xyz_frac * grid_shape.unsqueeze(0)).to(torch.int64)
+        center_idx = torch.round(xyz_frac * grid_shape.unsqueeze(0)).to(torch.int64)  # dtype-ok: rounded voxel center indices; torch indexing requires int64
     else:
         # Fallback for orthogonal cells (less accurate for non-orthogonal)
         voxelsize = real_space_grid[3, 3, 3] - real_space_grid[2, 2, 2]
         center_idx = torch.round(
             (xyz - grid_origin.unsqueeze(0)) / voxelsize.unsqueeze(0)
-        ).to(torch.int64)
+        ).to(torch.int64)  # dtype-ok: voxel index cast; torch indexing requires int64
 
     voxel_indices_wrapped = excise_angstrom_radius_around_coord(
         real_space_grid, center_idx, radius_angstrom

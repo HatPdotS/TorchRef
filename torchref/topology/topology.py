@@ -89,7 +89,7 @@ class Topology(DeviceMixin):
         mask = torch.as_tensor(keep)
         if mask.dtype != torch.bool:
             selected = torch.zeros(self.n_atoms, dtype=torch.bool)
-            selected[mask.to(torch.int64)] = True
+            selected[mask.to(torch.int64)] = True  # dtype-ok: boolean-mask->index cast for scatter select; int64 index required
             mask = selected
         mask = mask.to(device=self.atoms.residue_of.device)
 
@@ -97,8 +97,8 @@ class Topology(DeviceMixin):
             raise ValueError("subset would keep no atoms")
 
         n_kept = int(mask.sum())
-        remap = torch.full((self.n_atoms,), -1, dtype=torch.int64, device=mask.device)
-        remap[mask] = torch.arange(n_kept, dtype=torch.int64, device=mask.device)
+        remap = torch.full((self.n_atoms,), -1, dtype=torch.int64, device=mask.device)  # dtype-ok: atom remap index array (-1 sentinel); int64 index required
+        remap[mask] = torch.arange(n_kept, dtype=torch.int64, device=mask.device)  # dtype-ok: arange remap indices; int64 index required
 
         # A residue survives if any of its atoms does. Counting per residue also
         # gives the new atom ranges, contiguous because the atom order is unchanged.
@@ -112,10 +112,10 @@ class Topology(DeviceMixin):
         atom_start = atom_end - counts
 
         residue_remap = torch.full(
-            (self.n_residues,), -1, dtype=torch.int64, device=mask.device
+            (self.n_residues,), -1, dtype=torch.int64, device=mask.device  # dtype-ok: residue remap index array (-1 sentinel); int64 index required
         )
         residue_remap[torch.as_tensor(residue_keep, device=mask.device)] = torch.arange(
-            int(residue_keep.sum()), dtype=torch.int64, device=mask.device
+            int(residue_keep.sum()), dtype=torch.int64, device=mask.device  # dtype-ok: arange residue remap indices; int64 index required
         )
 
         return Topology(

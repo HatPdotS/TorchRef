@@ -39,7 +39,7 @@ DENSITY_BACKENDS = BackendTable(
             name="cuda_triton",
             kernel=(_CUDA, "add_isotropic_cuda_var", "add_anisotropic_cuda_var"),
             device="cuda",
-            dtypes=(torch.float32,),
+            dtypes=(torch.float32,),  # dtype-ok: backend capability declaration, not an allocation
             probes=_ATOM_ARGS,
             probe=(_CUDA, "why_unavailable"),
             expect_available="cuda",
@@ -53,7 +53,7 @@ DENSITY_BACKENDS = BackendTable(
             name="mps_metal",
             kernel=(_MPS, "add_isotropic_mps_var", "add_anisotropic_mps_var"),
             device="mps",
-            dtypes=(torch.float32,),
+            dtypes=(torch.float32,),  # dtype-ok: backend capability declaration, not an allocation
             probes=_ATOM_ARGS,
             probe=("torchref.base.electron_density.kernels.mps.compile",
                    "why_unavailable"),
@@ -66,7 +66,7 @@ DENSITY_BACKENDS = BackendTable(
             kernel=(_SPHERE, "add_isotropic_cpu_sphere_var",
                     "add_anisotropic_cpu_sphere_var"),
             device="cpu",
-            dtypes=(torch.float32, torch.float64),
+            dtypes=(torch.float32, torch.float64),  # dtype-ok: backend capability declaration, not an allocation
             # Uniformity, not membership: the kernel picks one ``scalar_t`` from the output
             # map and then reads every other tensor through a raw pointer of that type, so a
             # float64 map beside float32 atoms would be a 2x out-of-bounds read.

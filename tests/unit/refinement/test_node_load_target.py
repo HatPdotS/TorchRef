@@ -141,3 +141,64 @@ def test_default_weight_exists_for_the_component(pdb_path):
 
     assert "adp/node_load" in DEFAULT_GROUP_WEIGHTS
     assert DEFAULT_GROUP_WEIGHTS["adp/node_load"] > 0
+
+
+# ----------------------------------------------------------------------------------
+# Payload independence. The barrier was written against the isotropic payload, whose
+# storage is five columns wide, and the tests above poke column 1 by hand because that
+# is where its log sigma sits. A displacement-mode field is 25 to 82 columns wide with
+# log sigma near the end, so "acts through the weights, never the values" has to be
+# re-established rather than assumed to carry over.
+# ----------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "mode_set,width", [(None, 6), ("rigid", 21), ("rigid_dilation", 28), ("affine", 78)]
+)
+def test_barrier_prices_geometry_not_values_for_every_payload(pdb_path, mode_set, width):
+    """Zero gradient on the payload, non-zero on kernel width and node position.
+
+    The invariant that separates this from a magnitude prior: it removes the opportunity
+    to place an extreme ADP rather than penalising the ADP. A payload-width bug would
+    show up here as gradient leaking into the payload columns.
+    """
+    model = Model(verbose=0)
+    model.load_pdb(pdb_path)
+    model.set_adp_mode(
+        "field_aniso", n_nodes=24, k_neighbors=12, mode_set=mode_set
+    )
+    field = model.adp_field
+    assert field.payload.width == width
+    assert field.node_shape[1] == width + 4  # payload | log sigma | 3 offset
+
+    NodeLoadTarget(model)().backward()
+    grad = field.refinable_params.grad
+    assert grad is not None
+    assert float(grad[:, :width].abs().sum()) == pytest.approx(0.0, abs=1e-12), (
+        "the barrier reached the node VALUES"
+    )
+    assert float(grad[:, width].abs().sum()) > 0, "no gradient to the kernel width"
+    assert float(grad[:, width + 1 : width + 4].abs().sum()) > 0, (
+        "no gradient to the node positions"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode_set", ["rigid", "rigid_dilation", "affine"])
+def test_barrier_still_catches_a_starved_node_on_a_mode_field(pdb_path, mode_set):
+    model = Model(verbose=0)
+    model.load_pdb(pdb_path)
+    model.set_adp_mode("field_aniso", n_nodes=24, k_neighbors=12, mode_set=mode_set)
+    field = model.adp_field
+    target = NodeLoadTarget(model)
+    before = float(target())
+
+    # log sigma is the column after the payload, wherever the payload ends.
+    with torch.no_grad():
+        field.refinable_params[0, field.payload.width] -= 6.0
+    field.reset_forward_cache()
+
+    load = field.node_load().detach()
+    assert float((load / load.mean()).min()) < 0.25, "the node was not actually starved"
+    assert float(target()) > before + 1.0

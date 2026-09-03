@@ -18,6 +18,7 @@ import torch
 from typing import Dict, List, Optional, Union, Tuple
 import numpy as np
 
+from torchref.config import get_float_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
 
@@ -163,7 +164,7 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
 
         # Convert time to tensor if needed
         if not isinstance(time, torch.Tensor):
-            time = torch.tensor(time, dtype=torch.float32)
+            time = torch.tensor(time, dtype=get_float_dtype())
         self.register_buffer('time', time)
 
         # Initialize the kinetic model

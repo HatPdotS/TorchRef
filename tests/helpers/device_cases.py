@@ -151,6 +151,24 @@ def _cell(device):
     return Cell(_CELL, device=device)
 
 
+
+def _ctx(d):
+    """A ModelContext whose cell and space group both live on ``d``."""
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
+    return ModelContext(cell=_cell(d), spacegroup=SpaceGroup(_SG, device=d))
+
+
+def _sffft_with_grid(d):
+    """An SfFFT whose grid buffers exist, so the tensor walk reaches them."""
+    from torchref.model.sf_fft import SfFFT
+
+    sf = SfFFT(_ctx(d), max_res=2.0)
+    sf.ensure_grid()
+    return sf
+
+
 CASES: List[DeviceCase] = [
     DeviceCase("EdgeBlock", _edge_block, "EdgeBlock"),
     DeviceCase("AtomGraph", _atom_graph, "AtomGraph"),
@@ -169,22 +187,28 @@ CASES: List[DeviceCase] = [
         "SfFFT_from_cell",
         lambda d: __import__(
             "torchref.model.sf_fft", fromlist=["SfFFT"]
-        ).SfFFT(cell=_cell(d), spacegroup=_SG, max_res=2.0),
+        ).SfFFT(_ctx(d), max_res=2.0),
         "SfFFT",
     ),
-    # D4: explicit device disagreeing with the supplied cell.
+    # D4: explicit device disagreeing with the supplied context.
     DeviceCase(
         "SfFFT_explicit_device",
         lambda d: __import__(
             "torchref.model.sf_fft", fromlist=["SfFFT"]
-        ).SfFFT(cell=_cell("cpu"), spacegroup=_SG, max_res=2.0, device=d),
+        ).SfFFT(_ctx("cpu"), max_res=2.0, device=d),
+        "SfFFT",
+    ),
+    # The grid buffers are derived on first use; this case has them resolved.
+    DeviceCase(
+        "SfFFT_with_grid",
+        _sffft_with_grid,
         "SfFFT",
     ),
     DeviceCase(
         "SfDS_from_cell",
         lambda d: __import__(
             "torchref.model.sf_ds", fromlist=["SfDS"]
-        ).SfDS(cell=_cell(d), spacegroup=_SG),
+        ).SfDS(_ctx(d)),
         "SfDS",
     ),
     # D1: tensor-free shells, whose tracker is the only thing to check.
@@ -384,6 +408,23 @@ TARGET_CASES: List[TargetDeviceCase] = [
         ).ADPLocalityTarget(b["model"]),
         "ADPLocalityTarget",
     ),
+    # Registered unconditionally and inert off field mode, so the plain bundle
+    # model is enough to exercise their device handling.
+    TargetDeviceCase(
+        "NodeLoadTarget",
+        lambda b, d: __import__(
+            "torchref.refinement.targets.adp.node_load", fromlist=["NodeLoadTarget"]
+        ).NodeLoadTarget(b["model"]),
+        "NodeLoadTarget",
+    ),
+    TargetDeviceCase(
+        "NodeSmoothnessTarget",
+        lambda b, d: __import__(
+            "torchref.refinement.targets.adp.node_smoothness",
+            fromlist=["NodeSmoothnessTarget"],
+        ).NodeSmoothnessTarget(b["model"]),
+        "NodeSmoothnessTarget",
+    ),
     # Owns no tensors at all -- the case that exercises the request-driven
     # tracker path rather than the owned-tensor path.
     TargetDeviceCase(
@@ -409,9 +450,6 @@ UNCOVERED: Dict[str, str] = {
     "BaseWeighting": "abstract base; covered via ManualWeighting",
     "Refinement": "abstract base; covered via LBFGSRefinement in integration",
     "PassThroughTensor": "documented non-functional stub (parameter_wrappers.py)",
-    "NodePayload": "stateless strategy, holds no tensors; abstract base",
-    "IsotropicPayload": "stateless strategy, holds no tensors",
-    "AnisotropicPayload": "stateless strategy, holds only a float epsilon",
     "ADPTarget": "abstract base; needs a model with ADPs",
     "CombinedTargets": "composite container; needs its component targets",
     "CombinedModelTargets": "composite container; needs a loaded model",
@@ -472,8 +510,6 @@ UNCOVERED: Dict[str, str] = {
     "PhaseInformedDifferenceTarget": "needs two datasets + phases",
     "RiceDifferenceTarget": "needs two datasets",
     "TaylorCorrectedDifferenceTarget": "needs two datasets",
-    "RigidTransform": "alignment helper; needs a coordinate set",
-    "RigidBodyRefinement": "experimental; needs model + data",
 }
 
 # Everything under torchref/experimental is out of scope for the conformance

@@ -59,6 +59,13 @@ class NodeLoadTarget(ADPTarget):
         Verbosity level. Default is 0.
     """
 
+    #: Hierarchical key this target registers under. Required, not cosmetic:
+    #: LossState.register_targets takes the key from ``.name``, so without it the
+    #: target inherits ``Target.name`` ("model_target"), registers under that,
+    #: collides with every other unnamed target, and no ``adp/...`` weight can
+    #: reach it -- the term is then built, callable, and never in the loss.
+    name: str = "adp/node_load"
+
     def __init__(
         self,
         model: "Model" = None,
@@ -72,9 +79,14 @@ class NodeLoadTarget(ADPTarget):
 
     @property
     def _field(self):
-        """The disorder field, or ``None`` when the model is not in field mode."""
-        adp = getattr(self.model, "adp", None)
-        return adp if hasattr(adp, "node_load") else None
+        """The disorder field, or ``None`` when the model is not in field mode.
+
+        Reads ``Model.adp_field`` rather than the ``adp`` slot directly: an anisotropic
+        payload lives in ``u`` instead, and looking only at ``adp`` would leave this
+        target silently inert in exactly the mode with the most node parameters to
+        collapse.
+        """
+        return getattr(self.model, "adp_field", None)
 
     def _relative_load(self) -> torch.Tensor:
         """Each node's load as a multiple of the mean load, ``(K,)``."""

@@ -254,6 +254,15 @@ Loss weights:
         if args.dmin:
             print(f"Resolution cutoff: {args.dmin:.2f} A")
         adp_line = f"ADP mode:          {args.adp_mode}"
+        if args.adp_mode == "field_aniso" and args.adp_mode_set:
+            adp_line += f" ({args.adp_mode_set})"
+        if args.adp_mode in ("field", "field_aniso"):
+            adp_line += (
+                f", {args.adp_nodes} nodes"
+                if args.adp_nodes
+                else f", sized at {args.reflections_per_adp_parameter:g} "
+                "work reflections per parameter"
+            )
         if args.adp_mode == "anisotropic":
             adp_line += (
                 "  (selection: "
@@ -290,6 +299,9 @@ Loss weights:
         scale_target=args.scale_target,
         **_sigma_a_kwargs(args),
         adp_mode=args.adp_mode,
+        adp_mode_set=args.adp_mode_set,
+        n_nodes=args.adp_nodes,
+        reflections_per_adp_parameter=args.reflections_per_adp_parameter,
         aniso_selection=args.anisotropic_selection,
         wavelength=args.wavelength,
     )
@@ -381,6 +393,9 @@ Loss weights:
             "n_cycles": args.n_cycles,
             "mode": args.mode,
             "adp_mode": args.adp_mode,
+            "adp_mode_set": args.adp_mode_set,
+            "adp_nodes": args.adp_nodes,
+            "reflections_per_adp_parameter": args.reflections_per_adp_parameter,
             "anisotropic_selection": (
                 args.anisotropic_selection if args.adp_mode == "anisotropic" else None
             ),

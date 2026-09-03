@@ -40,8 +40,8 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     device = bonds.device
     if bonds.numel() == 0:
         return (
-            torch.zeros(n_atoms + 1, dtype=torch.int64, device=device),
-            torch.zeros(0, dtype=torch.int64, device=device),
+            torch.zeros(n_atoms + 1, dtype=torch.int64, device=device),  # dtype-ok: CSR indptr offset array; int64 index required
+            torch.zeros(0, dtype=torch.int64, device=device),  # dtype-ok: empty CSR neighbor index array; int64 index required
         )
 
     src = torch.cat([bonds[:, 0], bonds[:, 1]])
@@ -55,9 +55,9 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     src, dst = src[order], dst[order]
 
     counts = torch.bincount(src, minlength=n_atoms)
-    indptr = torch.zeros(n_atoms + 1, dtype=torch.int64, device=device)
+    indptr = torch.zeros(n_atoms + 1, dtype=torch.int64, device=device)  # dtype-ok: CSR indptr offset array; int64 index required
     torch.cumsum(counts, dim=0, out=indptr[1:])
-    return indptr, dst.to(torch.int64)
+    return indptr, dst.to(torch.int64)  # dtype-ok: CSR neighbor (dst) index array; int64 index required
 
 
 def _extend_paths(
@@ -81,13 +81,13 @@ def _extend_paths(
     """
     device = paths.device
     if paths.numel() == 0:
-        return torch.zeros((0, paths.shape[1] + 1), dtype=torch.int64, device=device)
+        return torch.zeros((0, paths.shape[1] + 1), dtype=torch.int64, device=device)  # dtype-ok: empty BFS path index array; int64 index required
 
     last, prev = paths[:, -1], paths[:, -2]
     counts = indptr[last + 1] - indptr[last]
     total = int(counts.sum())
     if total == 0:
-        return torch.zeros((0, paths.shape[1] + 1), dtype=torch.int64, device=device)
+        return torch.zeros((0, paths.shape[1] + 1), dtype=torch.int64, device=device)  # dtype-ok: empty BFS path index array; int64 index required
 
     row = torch.repeat_interleave(torch.arange(len(paths), device=device), counts)
     # Offset of each slot within its own neighbour list.

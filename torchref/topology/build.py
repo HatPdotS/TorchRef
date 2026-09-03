@@ -667,7 +667,7 @@ def _block_with_values(
         per_origin, arity, edge_type, payload
     )
     block = EdgeBlock(
-        indices=torch.as_tensor(indices, dtype=torch.int64, device=device),
+        indices=torch.as_tensor(indices, dtype=torch.int64, device=device),  # dtype-ok: atom index tensor for restraint edges; int64 index required
         origin_bounds=bounds,
     )
     values = {
@@ -934,7 +934,7 @@ def build_topology_with_values(
                 np.arange(n_res, dtype=np.int64),
                 nodes["atom_end"] - nodes["atom_start"],
             ),
-            dtype=torch.int64,
+            dtype=torch.int64,  # dtype-ok: atom index tensor; int64 index required
             device=device,
         ),
         bonds=bond_block,

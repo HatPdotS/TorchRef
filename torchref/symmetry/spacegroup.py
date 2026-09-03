@@ -65,8 +65,10 @@ def _normalize_spacegroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
 
     # Duck-typed rather than an isinstance check against SpaceGroup, so this stays
     # usable from module scope before the class below is defined.
-    if hasattr(spacegroup, "_sg_hm") and hasattr(spacegroup, "matrices"):
-        return gemmi.find_spacegroup_by_name(spacegroup._sg_hm)
+    if hasattr(spacegroup, "_sg_xhm") and hasattr(spacegroup, "matrices"):
+        # The extended symbol carries the setting; the plain H-M symbol does not
+        # (``R 3:R`` would come back as ``R 3:H``).
+        return gemmi.find_spacegroup_by_name(spacegroup._sg_xhm)
 
     if isinstance(spacegroup, int):
         try:
@@ -207,7 +209,7 @@ class SpaceGroup(Symmetry):
         Never cached: a persistent reference to the C++ singleton produces nanobind
         leak warnings at interpreter shutdown.
         """
-        return gemmi.find_spacegroup_by_name(self._sg_hm)
+        return gemmi.find_spacegroup_by_name(self._sg_xhm)
 
     @property
     def name(self) -> str:
@@ -222,6 +224,16 @@ class SpaceGroup(Symmetry):
     @property
     def xhm(self) -> str:
         """Extended Hermann-Mauguin notation, including the setting token."""
+        return self._sg_xhm
+
+    @property
+    def key(self) -> str:
+        """Value identity of this space group: the extended H-M symbol.
+
+        Two groups with the same key have the same operations in the same
+        setting. The group number alone would not do -- ``P 1 21 1`` and
+        ``P 1 1 21`` share number 4 but place the screw axis differently.
+        """
         return self._sg_xhm
 
     @property
@@ -477,15 +489,15 @@ class SpaceGroup(Symmetry):
         return new
 
     def __hash__(self) -> int:
-        """Hash on the space group number."""
-        return hash(self._sg_number)
+        """Hash on :attr:`key` (the extended H-M symbol)."""
+        return hash(self._sg_xhm)
 
     def __eq__(self, other) -> bool:
-        """Equality on the space group number; also compares to a ``gemmi.SpaceGroup``."""
+        """Equality on :attr:`key`; also compares to a ``gemmi.SpaceGroup``."""
         if isinstance(other, SpaceGroup):
-            return self._sg_number == other._sg_number
+            return self._sg_xhm == other._sg_xhm
         if isinstance(other, gemmi.SpaceGroup):
-            return self._sg_number == other.number
+            return self._sg_xhm == other.xhm()
         return False
 
     def __repr__(self) -> str:

@@ -1,0 +1,162 @@
+"""Peak finding on the adaptive SO(3) sample list.
+
+Phaser source: ``SiteListAng::findpeaks`` (referenced from FastRot.cc;
+implementation in ``SiteListAng.cc`` ``findpeaks`` and the related NMS
+routines). Phaser's strategy is essentially:
+
+  1. Compute mean + std of all samples → z-score per sample.
+  2. Sort by descending value.
+  3. Greedy non-max suppression on SO(3) by *angular distance* between
+     rotations (not by α, β, γ box distance — that would double-count
+     near the poles).
+
+We implement the same flow in PyTorch, vectorised where possible, and the
+suppression is **modulo the crystal's point group** when the Cartesian
+symmetry rotations are supplied: an orientation and its symmetry mates are one
+answer, and without this the shortlist handed downstream is mostly copies. On
+3K7M (P432) 187 of the 300 pairs among the top 25 peaks were mates of each
+other; on 2DQ6 (P3(1)21) 15 of 25 candidates were one orientation.
+
+The group acts on the **right**: a peak ``R`` maps the search-model frame onto
+the crystal frame, and its mates are ``R R_g``. Measured, not assumed --
+composing on the left finds zero coincident pairs on every structure tried, the
+right side finds all of them.
+"""
+from __future__ import annotations
+
+import math
+from typing import List, Optional
+
+import torch
+
+from ....base.alignment.rotation import rotation_matrix_euler_zyz
+from .types import AdaptiveRotationFunction, RotationPeak
+
+__all__ = [
+    "find_rotation_peaks",
+]
+
+
+def _so3_greedy_nms(
+    alphas: torch.Tensor,
+    betas: torch.Tensor,
+    gammas: torch.Tensor,
+    values: torch.Tensor,
+    nms_radius_deg: float,
+    keep_at_most: int,
+    sym_cart: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Return indices (into the input order) of kept peaks after SO(3) NMS.
+
+    Greedy: walk the values in descending order; keep a candidate if its
+    angular distance from every already-kept rotation -- and, with
+    ``sym_cart``, from every point-group mate ``R R_g`` of it -- is
+    > nms_radius_deg.
+    """
+    n = values.shape[0]
+    if n == 0:
+        return torch.empty(0, dtype=torch.int64, device=values.device)  # dtype-ok: index tensor; index_add_/gather need int64
+    # The greedy walk is inherently sequential and latency-bound; on GPU a
+    # per-iteration `.item()` sync would dominate. Move the (tiny) candidate
+    # rotations to CPU once and run the loop there with no device syncs, a
+    # preallocated kept-buffer (no repeated torch.stack), and a cosine threshold
+    # (no per-iteration arccos). Result is identical to the original distance test.
+    order = torch.argsort(values, descending=True).cpu().tolist()
+    # `rotation_matrix_euler_zyz` is the shared implementation, and it is now the
+    # only one -- the alignment package's own batch copy was deleted after being
+    # measured bit-identical to it over 180k elements in both float32 and
+    # float64. (The three-matrix product it used reduces to the same two-term
+    # sums, because the rotation factors carry exact zeros and ones.) Rounding
+    # matters here beyond tidiness: the NMS threshold below flips for pairs
+    # sitting exactly on it.
+    R_all = (
+        rotation_matrix_euler_zyz(torch.stack([alphas, betas, gammas], dim=-1))
+        .cpu().to(torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
+    )  # (n, 3, 3)
+    # angle > nms_radius  ⇔  cos(angle) < cos(nms_radius); cos(angle) from trace.
+    cos_thresh = math.cos(math.radians(nms_radius_deg))
+    # The orbit of each kept rotation, R R_g over the point group; the identity
+    # alone when no symmetry is supplied.
+    # `.cpu()` first in both: the widening happens on the host, which always
+    # has float64, and the peaks arrive on the compute device.
+    G = (torch.eye(3, dtype=torch.float64).unsqueeze(0) if sym_cart is None  # dtype-ok: 3x3 rotation algebra in double on the host
+         else sym_cart.cpu().to(torch.float64))  # dtype-ok: 3x3 rotation algebra in double on the host
+    kept_idx: List[int] = []
+    kept_orbit = torch.empty((keep_at_most, G.shape[0], 3, 3), dtype=torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
+    count = 0
+    for i_t in order:
+        Ri = R_all[i_t]
+        if count > 0:
+            trace = torch.einsum("kgij,ij->kg", kept_orbit[:count], Ri)
+            cos_theta = ((trace - 1.0) * 0.5).clamp(min=-1.0, max=1.0)
+            # Some kept rotation, or a mate of one, within nms_radius → skip.
+            if bool((cos_theta > cos_thresh).any()):
+                continue
+        kept_orbit[count] = Ri.unsqueeze(0) @ G
+        kept_idx.append(i_t)
+        count += 1
+        if count >= keep_at_most:
+            break
+    return torch.tensor(kept_idx, dtype=torch.int64, device=values.device)  # dtype-ok: index tensor; index_add_/gather need int64
+
+
+def find_rotation_peaks(
+    arf: AdaptiveRotationFunction,
+    n_peaks: int = 500,
+    sigma_threshold: float = -5.0,
+    nms_radius_deg: float = 6.0,
+    sym_cart: Optional[torch.Tensor] = None,
+) -> List[RotationPeak]:
+    """Greedy SO(3) NMS over the adaptive sample list.
+
+    Returns peaks sorted by descending value, capped at ``n_peaks`` and
+    filtered by ``sigma >= sigma_threshold``. With ``sym_cart`` -- the crystal's
+    point-group rotations as Cartesian ``(n_ops, 3, 3)`` matrices -- symmetry
+    mates of a kept peak are suppressed too, so every returned peak is a
+    distinct orientation.
+    """
+    values = arf.values
+    if values.numel() == 0:
+        return []
+
+    mean = values.mean()
+    std = values.std().clamp(min=1e-30)
+    sigma = (values - mean) / std
+
+    # Pre-filter by sigma threshold to keep the NMS loop tractable.
+    keep_mask = sigma >= sigma_threshold
+    if not keep_mask.any():
+        return []
+
+    idx_filtered = torch.nonzero(keep_mask, as_tuple=False).squeeze(-1)
+    # Optionally cap candidate set so the O(n_kept · n_cand) NMS stays small.
+    candidate_cap = max(n_peaks * 20, 2000)
+    if idx_filtered.numel() > candidate_cap:
+        top_vals = values[idx_filtered]
+        top_keep = torch.topk(top_vals, candidate_cap).indices
+        idx_filtered = idx_filtered[top_keep]
+
+    a = arf.alphas[idx_filtered]
+    b = arf.betas[idx_filtered]
+    g = arf.gammas[idx_filtered]
+    v = values[idx_filtered]
+
+    kept = _so3_greedy_nms(
+        a, b, g, v,
+        nms_radius_deg=nms_radius_deg,
+        keep_at_most=n_peaks,
+        sym_cart=sym_cart,
+    )
+
+    # Gather kept peaks and move to CPU once (avoids a per-peak device sync).
+    a_k = a[kept].cpu().tolist()
+    b_k = b[kept].cpu().tolist()
+    g_k = g[kept].cpu().tolist()
+    v_k = v[kept]
+    s_k = ((v_k - mean) / std).cpu().tolist()
+    v_k = v_k.cpu().tolist()
+    peaks: List[RotationPeak] = [
+        RotationPeak(alpha=a_k[i], beta=b_k[i], gamma=g_k[i], score=v_k[i], sigma=s_k[i])
+        for i in range(len(a_k))
+    ]
+    return peaks

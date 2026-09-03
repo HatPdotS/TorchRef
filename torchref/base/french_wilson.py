@@ -116,7 +116,7 @@ AC_ZJ = torch.tensor(
         2.906,
         3.004,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 AC_ZJ_SD = torch.tensor(
@@ -193,7 +193,7 @@ AC_ZJ_SD = torch.tensor(
         0.994,
         0.996,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 AC_ZF = torch.tensor(
@@ -270,7 +270,7 @@ AC_ZF = torch.tensor(
         1.676,
         1.706,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 AC_ZF_SD = torch.tensor(
@@ -347,7 +347,7 @@ AC_ZF_SD = torch.tensor(
         0.310,
         0.304,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 # Centric lookup tables from French-Wilson supplement (1978)
@@ -435,7 +435,7 @@ C_ZJ = torch.tensor(
         3.753,
         3.962,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 C_ZJ_SD = torch.tensor(
@@ -522,7 +522,7 @@ C_ZJ_SD = torch.tensor(
         1.029,
         1.028,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 C_ZF = torch.tensor(
@@ -609,7 +609,7 @@ C_ZF = torch.tensor(
         1.917,
         1.945,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 C_ZF_SD = torch.tensor(
@@ -696,7 +696,7 @@ C_ZF_SD = torch.tensor(
         0.278,
         0.272,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 
@@ -1194,7 +1194,7 @@ def estimate_mean_intensity_by_resolution(
 
     # Use scatter_add to compute sum of intensities per bin
     bin_sums = torch.zeros(actual_n_bins, dtype=I.dtype, device=I.device)
-    bin_counts = torch.zeros(actual_n_bins, dtype=torch.long, device=I.device)
+    bin_counts = torch.zeros(actual_n_bins, dtype=torch.long, device=I.device)  # dtype-ok: count accumulator; scatter_add source is long ones, dtype must match
     bin_sums.scatter_add_(0, bin_indices, I_sorted)
     bin_counts.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 

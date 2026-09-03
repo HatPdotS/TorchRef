@@ -204,10 +204,10 @@ class DifferenceXrayTarget(Target):
 
         device = hkl_light.device
         self._matched_indices_light = torch.tensor(
-            matched_light, dtype=torch.long, device=device
+            matched_light, dtype=torch.long, device=device  # dtype-ok: matched atom indices used for indexing; PyTorch requires int64
         )
         self._matched_indices_dark = torch.tensor(
-            matched_dark, dtype=torch.long, device=device
+            matched_dark, dtype=torch.long, device=device  # dtype-ok: matched atom indices used for indexing; PyTorch requires int64
         )
 
         # Store common HKL (using light indices, they should be identical)

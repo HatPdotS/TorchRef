@@ -220,6 +220,7 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=log_i0)
 
     if (
         li0 is log_i0
+        # dtype-ok: validation guard (compile eligibility), not an allocation
         and F_obs.dtype is not torch.float64
         and F_obs.numel() > 1  # 0/1-specialisation would force a 2nd compile
         and get_compile_targets()
