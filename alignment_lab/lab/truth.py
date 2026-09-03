@@ -248,6 +248,8 @@ def pose_error(
     canonical_xyz: torch.Tensor,
     cell,
     spacegroup,
+    *,
+    allow_origin_freedom: bool = True,
 ) -> Tuple[float, float]:
     """``(rotation_deg, translation_A)`` of a placement against the deposited pose.
 
@@ -257,7 +259,8 @@ def pose_error(
     symmetry image of the canonical model, modulo lattice vectors, the group's
     allowed origin shifts and its polar directions, in Angstrom. Both are zero
     for a placement that is the deposited structure or any symmetry-equivalent
-    copy of it.
+    copy of it. ``allow_origin_freedom=False`` drops the allowed origin shifts
+    and polar directions: with chains already fixed the origin is determined.
     """
     P = canonical_xyz.detach().cpu().to(torch.float64)
     Q = aligned_xyz.detach().cpu().to(torch.float64)
@@ -277,8 +280,13 @@ def pose_error(
     k_best = int(ang.argmin())
     rot_deg = float(ang[k_best])
 
-    # Translation, against the mate whose rotation matched.
-    shifts, polar = spacegroup.origin_shifts()
+    # Translation, against the mate whose rotation matched. With a fixed
+    # partial structure the origin is pinned, so only lattice translations
+    # (and the symmetry images) remain allowed.
+    if allow_origin_freedom:
+        shifts, polar = spacegroup.origin_shifts()
+    else:
+        shifts, polar = torch.zeros(1, 3, dtype=torch.float64), torch.zeros(3, 0, dtype=torch.float64)
     cen_a = Binv @ Q.mean(0)                                          # fractional
     cen_c = S[k_best] @ (Binv @ P.mean(0)) + T[k_best]
     delta = (cen_a - cen_c).unsqueeze(0) - shifts                     # (n_u, 3)

@@ -18,7 +18,7 @@ cd "$REPO"
 export PYTHONPATH="$REPO:$REPO/alignment_lab" TORCHREF_NUM_THREADS=8
 export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=""
 for T in 0 1 2; do
-  "$PY" -u alignment_lab/diagnostics/chain_pose_recovery.py --pdb "$PDB" --chain "$CH" --trial $T 2>&1 \
+  "$PY" -u alignment_lab/diagnostics/chain_pose_recovery.py --pdb "$PDB" --chain "$CH" --mode single --trial $T 2>&1 \
     | grep -v "Warning\|warnings.warn" | grep -A12 "^ROW\|Traceback"
 done
 echo DONE

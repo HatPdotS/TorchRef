@@ -205,14 +205,19 @@ class CandidateTransform:
     h_R: torch.Tensor
     norm: torch.Tensor
 
-    def e_calc(self, t: torch.Tensor) -> torch.Tensor:
-        """``E_calc(h, t)`` for ``t`` of shape ``(3,)`` or ``(K, 3)``: ``(N,)`` or ``(K, N)``."""
+    def f_calc(self, t: torch.Tensor) -> torch.Tensor:
+        """The normalised complex transform ``sum_i G_i exp(2 pi i (h R_i).t)``
+        for ``t`` of shape ``(3,)`` or ``(K, 3)``: ``(N,)`` or ``(K, N)`` complex."""
         single = t.ndim == 1
         tt = t.reshape(-1, 3).to(self.h_R.device).to(self.h_R.dtype)
         phase_arg = torch.einsum("ind,kd->kin", self.h_R, tt)
         phase = torch.exp((2j * math.pi) * phase_arg.to(self.G.dtype))
-        E = (self.G.unsqueeze(0) * phase).sum(dim=1).abs()
-        return E[0] if single else E
+        F = (self.G.unsqueeze(0) * phase).sum(dim=1)
+        return F[0] if single else F
+
+    def e_calc(self, t: torch.Tensor) -> torch.Tensor:
+        """``|E_calc(h, t)|`` for ``t`` of shape ``(3,)`` or ``(K, 3)``: ``(N,)`` or ``(K, N)``."""
+        return self.f_calc(t).abs()
 
 
 def prepare_candidate(
@@ -263,6 +268,140 @@ def prepare_candidate(
     Sigma_c = S * fit_P.evaluate(s_mag).to(real)
     norm = (obs.eps.to(device).to(real) * Sigma_c).clamp(min=1e-30).sqrt()
     return CandidateTransform(G=G_raw / norm.to(cplx), h_R=h_R, norm=norm)
+
+
+def _figure_of_merit(E_obs, F_mean, V, centric):
+    """Rice/Woolfson figure of merit: ``I1(X)/I0(X)`` acentric, ``tanh(X/2)`` centric,
+    ``X = 2 E_obs F_mean / V``."""
+    X = (2.0 * E_obs * F_mean / V).clamp(max=1e6)
+    m_acen = torch.special.i1e(X) / torch.special.i0e(X).clamp(min=1e-30)
+    m_cen = torch.tanh(0.5 * X)
+    return torch.where(centric, m_cen, m_acen)
+
+
+@dataclass
+class FixedComponent:
+    """The chains already placed, as the likelihood sees them.
+
+    Everything here is the Rice/Woolfson likelihood ``rice_per_refl`` evaluated
+    around the fixed structure's contribution ``D_f E_f`` with variance
+    ``V = 1 - D_f^2``. The moving model is then a perturbation of that point,
+    and the two coefficients below are the likelihood's first and second
+    derivatives there, so the fast translation map is the second-order
+    expansion of the very likelihood the peaks are scored with:
+
+    * ``c_quad = 2 w sigma_A^2 dLL/dSigma`` multiplies ``|E_m(h, t)|^2`` --
+      the Crowther-Blow pair terms. With nothing fixed it is bit for bit the
+      LERF1 coefficient ``cw (E_obs^2 - 1) w sigma_A^2`` the rotation function
+      expands; with a fixed part it also removes the fixed-moving cross term
+      from the Patterson, which is why it is what the difference rotation
+      function uses too.
+    * ``c_lin = 2 w sigma_A dLL/d|F_c| exp(i phi_f)`` multiplies
+      ``Re(conj(c_lin) E_m(h, t))`` -- the phased translation function, Read's
+      figure-of-merit-weighted difference-map coefficient. Linear in the
+      moving model, so a small fragment keeps its contrast.
+
+    Attributes
+    ----------
+    E_f : torch.Tensor
+        ``(N,)`` complex, ``F_f / sqrt(eps Sigma_f)`` with ``Sigma_f`` the fixed
+        structure's own Wilson fit on the observed side's abscissa.
+    D_f, V, m : torch.Tensor
+        ``(N,)`` real: the fixed part's reliability, the conditional variance
+        and the figure of merit. ``D_f`` is the Luzzati prior for the fixed
+        chains' coordinate error times one scale fitted to the data: a placed
+        half of the asymmetric unit accounts for half the scattering, and the
+        complete-model prior would call every placement a mismatch.
+    c_quad, c_lin : torch.Tensor
+        ``(N,)`` real and complex, above.
+    F_f_raw : torch.Tensor
+        ``(N,)`` complex, the fixed structure factors on the model's scale, for
+        the analytical R.
+    ll_ref : torch.Tensor
+        The fixed-only log-likelihood, the reference the gain is measured from.
+    """
+
+    E_f: torch.Tensor
+    D_f: torch.Tensor
+    V: torch.Tensor
+    m: torch.Tensor
+    c_quad: torch.Tensor
+    c_lin: torch.Tensor
+    F_f_raw: torch.Tensor
+    ll_ref: torch.Tensor
+
+    #: Ceiling on the fixed part's D: V = 1 - D^2 floors at about 0.1, which
+    #: keeps 1/V^2 in the coefficients from amplifying a well-fitted fixed part
+    #: into a weight nothing else can compete with.
+    D_CAP = 0.95
+
+    @classmethod
+    def build(
+        cls,
+        obs: TranslationObs,
+        F_fixed: torch.Tensor,
+        *,
+        err_fixed_A: float,
+        scales: Tuple[float, ...] = None,
+    ) -> "FixedComponent":
+        device = get_default_device()
+        real = get_float_dtype()
+        cplx = get_complex_dtype()
+        F_f = F_fixed.detach().to(device).to(cplx)
+        s_mag = obs.s_mag.to(device).to(real)
+        eps = obs.eps.to(device).to(real)
+        cent = obs.centric.to(device)
+        E_obs = obs.E_obs.to(device).to(real)
+        w = obs.weight.to(device).to(real)
+        sig_a = obs.sigma_a.to(device).to(real)
+
+        I_f = (F_f.abs() ** 2).to(real)
+        if float(I_f.max()) <= 0.0:
+            # Nothing fixed after all: the coefficients must be the LERF1 ones.
+            E_f = torch.zeros_like(F_f)
+        else:
+            fit_f = WilsonNormaliser(
+                I_f, s_mag, eps=eps, centric=cent,
+                n_coeff=WILSON_N_COEFF, s_lo=float(s_mag.min()), s_hi=float(s_mag.max()),
+            )
+            E_f = F_f / (eps * fit_f.evaluate(s_mag).to(real)).clamp(min=1e-30).sqrt().to(cplx)
+        E_f_abs = E_f.abs()
+
+        # One scale on the Luzzati prior for the fixed chains, fitted to the
+        # data: a profile over the same grid the moving part's likelihood uses.
+        prior = eterm_sigma_a(s_mag, float(err_fixed_A)).to(real)
+        if float(E_f_abs.max()) <= 0.0:
+            # A fixed part that explains nothing has no reliability either:
+            # V = 1 and the coefficients are the LERF1 ones exactly.
+            D_f = torch.zeros_like(prior)
+        else:
+            grid = SIGMA_A_SCALES if scales is None else scales
+            best_c, best_ll = 1.0, -float("inf")
+            for c in grid:
+                D = (prior * float(c)).clamp(max=cls.D_CAP)
+                ll = float(-rice_per_refl(E_obs, D * E_f_abs, (1.0 - D * D), cent).sum())
+                if ll > best_ll:
+                    best_c, best_ll = float(c), ll
+            D_f = (prior * best_c).clamp(max=cls.D_CAP)
+        V = 1.0 - D_f * D_f
+        F_mean = D_f * E_f_abs
+        m = _figure_of_merit(E_obs, F_mean, V, cent)
+
+        # dLL/dSigma at (F_mean, V): acentric [E^2 + F^2 - 2 m E F - V] / V^2,
+        # centric half of it -- see _rice_body. Twice the derivative is the
+        # LERF1 convention: with F = 0, V = 1 it is cw (E^2 - 1), cw = 2 and 1.
+        dll_dsigma = (E_obs ** 2 + F_mean ** 2 - 2.0 * m * E_obs * F_mean - V) / (V * V)
+        dll_dsigma = torch.where(cent, 0.5 * dll_dsigma, dll_dsigma)
+        # dLL/d|F_c| at the same point: acentric 2 (m E - F) / V, centric (m E - F) / V.
+        dll_dfc = (m * E_obs - F_mean) / V
+        dll_dfc = torch.where(cent, dll_dfc, 2.0 * dll_dfc)
+        phase_f = torch.exp(1j * torch.angle(F_f).to(real)).to(cplx)
+
+        c_quad = 2.0 * w * sig_a ** 2 * dll_dsigma
+        c_lin = (2.0 * w * sig_a * dll_dfc).to(cplx) * phase_f
+        ll_ref = -rice_per_refl(E_obs, F_mean, V, cent).sum()
+        return cls(E_f=E_f, D_f=D_f, V=V, m=m, c_quad=c_quad, c_lin=c_lin,
+                   F_f_raw=F_f, ll_ref=ll_ref)
 
 
 @dataclass
@@ -381,6 +520,7 @@ def fast_translation_function(
     grid_spacing_A: float,
     n_peaks: int = 3,
     cluster_radius_A: float = 4.0,
+    fixed: Optional[FixedComponent] = None,
 ) -> Tuple[torch.Tensor, List[TranslationPeak]]:
     """The Crowther-Blow map of ``sum_h coeff(h) |E_calc(h, t)|^2`` and its peaks.
 
@@ -404,6 +544,12 @@ def fast_translation_function(
         a polar axis does not make a new peak.
     cluster_radius_A : float
         Peaks closer than this (per axis, periodic) are one peak.
+    fixed : FixedComponent, optional
+        Chains already placed. The pair terms then take ``fixed.c_quad`` for
+        their coefficient and the map gains the phased term
+        ``Re(conj(c_lin) E_m(h, t))``, one more scatter per operation on the
+        same grid; and the origin freedom is gone, so peaks are distinct only
+        modulo the lattice.
 
     Returns
     -------
@@ -418,7 +564,8 @@ def fast_translation_function(
     nx, ny, nz = _grid_sizes(real_cell, grid_spacing_A)
     G = cand.G.to(device).to(cplx)
     S, N = G.shape
-    coeff = obs.coeff.to(device).to(cplx)
+    coeff_real = (obs.coeff if fixed is None else fixed.c_quad).to(device).to(real)
+    coeff = coeff_real.to(cplx)
     h_R_int = cand.h_R.round().to(torch.int64)  # dtype-ok: Miller indices are integers
 
     # The pair (j, i) is the conjugate of (i, j) at -dh, so the map is twice
@@ -430,22 +577,43 @@ def fast_translation_function(
         dh = h_R_int[i + 1:] - h_R_int[i:i + 1]                     # (S-i-1, N, 3)
         flat = ((dh[..., 0] % nx) * ny + (dh[..., 1] % ny)) * nz + (dh[..., 2] % nz)
         W.index_add_(0, flat.reshape(-1), (coeff.view(1, -1) * pair).reshape(-1))
-    diag = (obs.coeff.to(device).to(real) * (G.abs() ** 2).sum(dim=0).to(real)).sum()
+    if fixed is not None:
+        # The phased term Re(conj(c_lin) sum_i G_i e^{2 pi i (h R_i).t}) lands at
+        # frequency h R_i; half of it, since the 2 Re below doubles it.
+        half_lin = (0.5 * fixed.c_lin.conj().to(device).to(cplx)).view(1, -1) * G   # (S, N)
+        flat_i = ((h_R_int[..., 0] % nx) * ny + (h_R_int[..., 1] % ny)) * nz + (h_R_int[..., 2] % nz)
+        W.index_add_(0, flat_i.reshape(-1), half_lin.reshape(-1))
+    diag = (coeff_real * (G.abs() ** 2).sum(dim=0).to(real)).sum()
     score = (2.0 * torch.fft.ifftn(W.view(nx, ny, nz), dim=(0, 1, 2)).real
              * float(nx * ny * nz)).to(real) + diag
 
     radii = tuple(float(cluster_radius_A) / float(L)
                   for L in (real_cell.a, real_cell.b, real_cell.c))
-    shifts, polar = spacegroup.origin_shifts()
-    peaks = _find_peaks(score, n_peaks, radii, shifts.numpy(), polar.numpy())
+    if fixed is None:
+        shifts, polar = spacegroup.origin_shifts()
+        shifts, polar = shifts.numpy(), polar.numpy()
+    else:
+        # A fixed component pins the origin: only the lattice remains.
+        shifts, polar = np.zeros((1, 3)), np.zeros((3, 0))
+    peaks = _find_peaks(score, n_peaks, radii, shifts, polar)
     return score, peaks
 
 
 def translation_score_at(obs: TranslationObs, cand: CandidateTransform,
-                         t: torch.Tensor) -> float:
-    """The fast search's score at one translation, without the FFT."""
-    E2 = cand.e_calc(t) ** 2
-    return float((obs.coeff.to(E2.device).to(E2.dtype) * E2).sum())
+                         t: torch.Tensor, fixed: Optional[FixedComponent] = None) -> float:
+    """The fast search's score at one translation, without the FFT.
+
+    ``sum_h [Re(conj(c_lin) E_m) + c_quad |E_m|^2]`` with a fixed component,
+    ``sum_h coeff |E_m|^2`` without; the same functional the map evaluates on
+    its grid, up to the map's t-independent constant.
+    """
+    F = cand.f_calc(t)
+    E2 = F.abs() ** 2
+    if fixed is None:
+        return float((obs.coeff.to(E2.device).to(E2.dtype) * E2).sum())
+    quad = (fixed.c_quad.to(E2.device).to(E2.dtype) * E2).sum()
+    lin = (fixed.c_lin.to(F.device).conj() * F).real.sum()
+    return float(quad + lin)
 
 
 #: Multipliers on the Luzzati ``sigma_A`` the likelihood may choose from, per
@@ -464,6 +632,7 @@ def llg_at_translations(
     t_candidates: torch.Tensor,
     *,
     scales: Tuple[float, ...] = SIGMA_A_SCALES,
+    fixed: Optional[FixedComponent] = None,
 ) -> torch.Tensor:
     """Rice/Woolfson log-likelihood gain at each of ``K`` translations.
 
@@ -484,36 +653,58 @@ def llg_at_translations(
     should score. For a complete model the maximum sits at ``c = 1`` and
     nothing changes.
 
+    With ``fixed``, the mean is ``D_f E_f + c sigma_A E_m(t)`` as a complex
+    sum -- the moving model's phase relative to the fixed structure is what a
+    placement determines -- with variance ``1 - D_f^2 - c^2 sigma_A^2``, and
+    the gain is measured from the fixed-only likelihood rather than Wilson's.
+
     Returns ``(K,)``.
     """
-    E_calc = cand.e_calc(t_candidates)                               # (K, N)
-    K, N = E_calc.shape
-    dev, real = E_calc.device, E_calc.dtype
+    F_calc = cand.f_calc(t_candidates)                               # (K, N) complex
+    K, N = F_calc.shape
+    dev = F_calc.device
+    real = F_calc.real.dtype
     E_obs = obs.E_obs.to(dev).to(real).view(1, N).expand(K, N)
     D0 = obs.sigma_a.to(dev).to(real).view(1, N)
     cent = obs.centric.to(dev).view(1, N).expand(K, N)
-    ll_wil = -rice_per_refl(
-        E_obs[0], torch.zeros(N, dtype=real, device=dev),
-        torch.ones(N, dtype=real, device=dev), cent[0],
-    ).sum()
+    if fixed is None:
+        E_calc = F_calc.abs()
+        ll_ref = -rice_per_refl(
+            E_obs[0], torch.zeros(N, dtype=real, device=dev),
+            torch.ones(N, dtype=real, device=dev), cent[0],
+        ).sum()
+        base_mean = None
+        var0 = torch.ones(1, N, dtype=real, device=dev)
+    else:
+        E_calc = None
+        ll_ref = fixed.ll_ref.to(real)
+        base_mean = (fixed.D_f.to(real) * fixed.E_f).to(F_calc.dtype).view(1, N)
+        var0 = fixed.V.to(dev).to(real).view(1, N)
     best = torch.full((K,), -float("inf"), dtype=real, device=dev)
     for c in scales:
         D = D0 * float(c)
-        Sigma = (1.0 - D * D).clamp(min=1e-3).expand(K, N)
-        ll = -rice_per_refl(E_obs, D * E_calc, Sigma, cent).sum(dim=1) - ll_wil
+        Sigma = (var0 - D * D).clamp(min=1e-3).expand(K, N)
+        if base_mean is None:
+            mean = D * E_calc
+        else:
+            mean = (base_mean + D.to(F_calc.dtype) * F_calc).abs()
+        ll = -rice_per_refl(E_obs, mean, Sigma, cent).sum(dim=1) - ll_ref
         best = torch.maximum(best, ll)
     return best
 
 
 def analytic_r_at(obs: TranslationObs, cand: CandidateTransform,
-                  t: torch.Tensor) -> float:
+                  t: torch.Tensor, fixed: Optional[FixedComponent] = None) -> float:
     """``R = sum ||F_obs| - k |F_calc(t)|| / sum |F_obs|`` with one global scale.
 
     On raw amplitudes, because that is what a crystallographer reads; not the
     number a full Scaler would return, since there is no bulk solvent and no
     B-factor scaling behind ``k``.
     """
-    F_c = cand.e_calc(t) * cand.norm.to(cand.G.device)
+    F_m = cand.f_calc(t) * cand.norm.to(cand.G.device).to(cand.G.dtype)
+    if fixed is not None:
+        F_m = F_m + fixed.F_f_raw.to(F_m.device).to(F_m.dtype)
+    F_c = F_m.abs()
     F_o = obs.F_obs.to(F_c.device).to(F_c.dtype)
     k = (F_o * F_c).sum() / (F_c * F_c).sum().clamp(min=1e-30)
     return float((F_o - k * F_c).abs().sum() / F_o.sum().clamp(min=1e-30))

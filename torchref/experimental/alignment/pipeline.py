@@ -63,7 +63,10 @@ from torchref.utils.device_mixin import DeviceMixin
 from .frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from .frf.types import RotationPeak
 from .rotation_search import prepare_frf_inputs, search_peaks
+from .packing import (MAX_CLASH_FRACTION, calpha_mask, clash_fraction,
+                      fixed_images_frac)
 from .translation import (
+    FixedComponent,
     TranslationObs,
     analytic_r_at,
     fast_translation_function,
@@ -329,8 +332,12 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._p1_xyz0 = None
         self._p1_center = None
         # Summed structure factors of the fixed chains on the translation set,
-        # complex (N,); None when nothing is fixed.
+        # complex (N,); None when nothing is fixed. `_fixed` is the likelihood's
+        # view of them, `_fixed_ca` their C-alpha symmetry images for packing.
         self._F_fixed = None
+        self._fixed = None
+        self._fixed_ca = None
+        self._p1_ca = None
 
     #: Levels are documented on the class. They are a contract, not a dial:
     #: level 2 is specifically "one machine-readable line per candidate", and
@@ -463,9 +470,9 @@ class MolecularReplacementPipeline(DeviceMixin):
             if placement is None:
                 self._log(2, f"CAND k={k} rf={float(peak_k.score):.4f} "
                              f"rfz={float(peak_k.sigma):.3f} tf=nan r=nan "
-                             f"t=none  # no translation peaks")
+                             f"t=none  # no translation peaks, or all clash")
                 continue
-            r_analytic, t_refined, tf_score, llg_score = placement
+            r_analytic, t_refined, tf_score, llg_score, clash = placement
             self._log_candidate(k, peak_k, r_analytic, t_refined, tf_score,
                                 llg_score)
             solutions.append(
@@ -477,6 +484,7 @@ class MolecularReplacementPipeline(DeviceMixin):
                     r_factor=float(r_analytic),
                     llg_score=float(llg_score),
                     candidate_index=k,
+                    clash_fraction=clash,
                 )
             )
 
@@ -674,8 +682,18 @@ class MolecularReplacementPipeline(DeviceMixin):
                     f = m(hkl_t.to(m.xyz().device)).to(device)
                     F_fixed = f if F_fixed is None else F_fixed + f
             self._F_fixed = F_fixed.detach()
+            self._fixed = FixedComponent.build(
+                self._obs, self._F_fixed, err_fixed_A=self.model_error_A,
+            )
+            ca_frac = torch.cat([
+                data.cell.cartesian_to_fractional(m.xyz()[calpha_mask(m).to(m.xyz().device)])
+                .detach().to(device)
+                for m in self.fixed
+            ], dim=0)
+            self._fixed_ca = fixed_images_frac(ca_frac, data.spacegroup)
             self._log(1, f"mr: {len(self.fixed)} fixed model(s) held on the "
-                         f"translation set")
+                         f"translation set; D_f median "
+                         f"{float(self._fixed.D_f.median()):.2f}")
 
         # One P1 copy of the search model for the whole run, re-oriented in
         # place per candidate. Two copies per candidate -- one to rotate, one to
@@ -697,14 +715,16 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._p1 = p1
         self._p1_xyz0 = p1.xyz().detach().clone()
         self._p1_center = self._p1_xyz0.mean(dim=0)
+        self._p1_ca = calpha_mask(p1).to(self._p1_xyz0.device)
 
     def _placement_for_candidate(self) -> Optional[tuple]:
         """Translation search for the orientation currently in the P1 template.
 
-        Returns ``(r_analytic, t, tf_score, llg)`` for the translation the
-        likelihood prefers among the fast search's top peaks, or ``None`` if the
-        map had no peaks. All three scores are at the same ``t``, so the
-        reported numbers belong to the placement that was actually chosen.
+        Returns ``(r_analytic, t, tf_score, llg, clash)`` for the translation
+        the likelihood prefers among the fast search's top peaks that do not
+        clash with the fixed chains, or ``None`` if the map had no peaks or
+        every peak clashed. All scores are at the same ``t``, so the reported
+        numbers belong to the placement that was actually chosen.
         """
         data = self.data
         timer = self._timer
@@ -724,6 +744,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             grid_spacing_A=d_min_set / 3.0,
             n_peaks=self.n_translation_candidates,
             cluster_radius_A=d_min_set,
+            fixed=self._fixed,
         )
         timer.stop("6_translation_function")
         if not t_peaks:
@@ -733,16 +754,38 @@ class MolecularReplacementPipeline(DeviceMixin):
         t_cands = torch.as_tensor(
             np.stack([p.translation for p in t_peaks]), dtype=get_float_dtype(),
         )
-        llg = llg_at_translations(obs, cand, t_cands)
-        k_best = int(llg.argmax())
+        llg = llg_at_translations(obs, cand, t_cands, fixed=self._fixed)
+        # Walk the peaks in likelihood order and take the first that does not
+        # sit on the fixed chains. With nothing fixed the first is it.
+        k_best, clash = None, 0.0
+        for k_t in torch.argsort(llg, descending=True).tolist():
+            if self._fixed_ca is not None:
+                clash = self._clash_fraction_at(t_cands[k_t])
+                if clash > MAX_CLASH_FRACTION:
+                    self._log(3, f"    trans{k_t}: rejected, clash {clash:.2f} "
+                                 f"llg={float(llg[k_t]):.1f}")
+                    continue
+            k_best = k_t
+            break
+        if k_best is None:
+            timer.stop("7_translation_llg")
+            return None
         t_best = t_cands[k_best]
-        r_analytic = analytic_r_at(obs, cand, t_best)
+        r_analytic = analytic_r_at(obs, cand, t_best, fixed=self._fixed)
         timer.stop("7_translation_llg")
         for k_t, tp in enumerate(t_peaks):
             self._log(3, f"    trans{k_t}: tf={tp.score:.4f} z={tp.sigma:.2f} "
                          f"llg={float(llg[k_t]):.1f} "
                          f"t={[round(float(x), 3) for x in tp.translation]}")
-        return (r_analytic, t_best, float(t_peaks[k_best].score), float(llg[k_best]))
+        return (r_analytic, t_best, float(t_peaks[k_best].score),
+                float(llg[k_best]), float(clash))
+
+    def _clash_fraction_at(self, t_frac: torch.Tensor) -> float:
+        """C-alpha clash fraction of the oriented template translated by ``t``."""
+        xyz_ca = self._p1.xyz().detach()[self._p1_ca]
+        frac = self.data.cell.cartesian_to_fractional(xyz_ca).to(torch.float64)  # dtype-ok: fractional geometry on the host side of the check
+        frac = frac + t_frac.to(frac.device).to(frac.dtype).view(1, 3)
+        return clash_fraction(frac, self._fixed_ca.to(frac.dtype), self.data.cell)
 
 
 # ---------------------------------------------------------------------------

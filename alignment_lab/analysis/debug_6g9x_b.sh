@@ -12,5 +12,5 @@ REPO=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement
 PY=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/.dev/bin/python
 cd "$REPO"
 export PYTHONPATH="$REPO:$REPO/alignment_lab" TORCHREF_NUM_THREADS=8 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=""
-for C in "6G9X B 0" "3E98 B 0" "3E98 B 1"; do read P CH T <<< "$C"; echo "=== $C"; "$PY" -u alignment_lab/diagnostics/debug_6g9x_b.py --pdb $P --chain $CH --trial $T 2>&1 | grep -v "Warning\|warnings.warn\|copied" | grep -E "^siblings|^deposited|^SOL|^DEPOSITED|^CAND|trans[0-9]|Traceback" -A2; done
+for C in "3VRJ B 0" "3E98 B 0" "6G9X B 0"; do read P CH T <<< "$C"; echo "=== $C"; "$PY" -u alignment_lab/diagnostics/debug_fixed_component.py --pdb $P --chain $CH --trial $T 2>&1 | grep -v "Warning\|warnings.warn\|copied" | grep -E "^FIXED|^CONVENTION|^F_fixed|^true-orientation|^PEAK|^TRUE-T|Traceback" -A2; done
 echo DONE
