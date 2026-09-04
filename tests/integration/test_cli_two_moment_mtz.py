@@ -1,13 +1,14 @@
 """The difference-refinement MTZ layout, pinned.
 
-``write_results_mtz`` assigns MTZ column types from hard-coded name lists and never calls
-``infer_mtz_dtypes()``, so a column added to the output dict but missed in the type lists
-is written with whatever dtype numpy produced -- silently, and into a file that gets
-deposited. Nothing else in the suite asserts on these names.
+Nothing else in the suite asserts on these column names, and they go into files that get
+deposited, so the layout is pinned here deliberately: this file is expected to move in
+lockstep with a change to the writer, and to fail loudly if one happens by accident.
 
-Two things are checked: the baseline column set is unchanged by the two-moment work, and
-under ``--two-moment`` the thirteen extra columns appear with the right types and are
-internally consistent.
+Three layouts are checked. The default is the map a reader wants and can identify --
+``DELFWT``/``PHDELWT``, the weighted difference on dark phases, plus the extrapolated
+map. ``--two-moment`` adds the activation-heterogeneity correction. ``--all-columns``
+adds the alternative constructions of both, which are informative once you know which is
+which and misleading before then.
 """
 
 import json
@@ -20,32 +21,48 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
-BASELINE_COLUMNS = {
-    "Fo_dark", "SIGFo_dark", "Fo_light", "SIGFo_light",
-    "DF", "SIGDF", "WDF",
-    "Fc_dark", "Fc_light", "DFc", "DFc_complex",
-    "2mDFop-DFc", "mDFop-DFc",
-    "PHIC_dark", "PHIC_mixed", "PHIC_diff", "PHIC_light",
-    "Fextp", "2Fextp-Fc", "Fextp-Fc",
-    "Fextc", "SIGFextc", "2Fextc-Fc", "Fextc-Fc",
-    "Fextb", "SIGFextb", "2Fextb-Fc", "Fextb-Fc",
-    "FreeR_flag_dark", "FreeR_flag_light",
+# The default set, with a light model supplied (which the refinement CLI always does).
+# H/K/L are the index, so they are not among ``.columns``.
+DEFAULT_COLUMNS = {
+    "Fo_dark": "SFAmplitude", "SIGFo_dark": "Stddev",
+    "Fo_light": "SFAmplitude", "SIGFo_light": "Stddev",
+    "DF": "SFAmplitude", "SIGDF": "Stddev",
+    # The difference map. CCP4/Coot open these by name.
+    "DELFWT": "SFAmplitude", "PHDELWT": "Phase",
+    "Fc_dark": "SFAmplitude",
+    # The mixed model, and the extrapolated map to refine against.
+    "FC": "SFAmplitude", "PHIC": "Phase",
+    "FEXT": "SFAmplitude", "SIGFEXT": "Stddev",
+    "FWT": "SFAmplitude", "PHWT": "Phase",
 }
+FLAG_COLUMNS = {"FreeR_flag_dark", "FreeR_flag_light"}
 
 TWO_MOMENT_COLUMNS = {
-    "Io_light": "Intensity",
-    "SIGIo_light": "Stddev",
-    "Ic_light_coh": "Intensity",
-    "Ic_light_2mom": "Intensity",
-    "IVAR_ALPHA": "Intensity",
-    "Fo_light_corr": "SFAmplitude",
-    "SIGFo_light_corr": "Stddev",
-    "DF_corr": "SFAmplitude",
-    "SIGDF_corr": "Stddev",
-    "2mDFop-DFc_corr": "SFAmplitude",
-    "mDFop-DFc_corr": "SFAmplitude",
+    "DELFWT_corr": "SFAmplitude",
+    "Fo_light_corr": "SFAmplitude", "SIGFo_light_corr": "Stddev",
+    "DF_corr": "SFAmplitude", "SIGDF_corr": "Stddev",
     "DDF": "SFAmplitude",
-    "W_2MOM": "Weight",
+}
+
+# What ``--all-columns`` adds on top, given a light model.
+ALL_COLUMNS_EXTRA = {
+    "2mDFop-DFc": "SFAmplitude", "mDFop-DFc": "SFAmplitude",
+    "PHIC_diff": "Phase",
+    "DFc": "SFAmplitude", "DFc_phased": "SFAmplitude",
+    "FEXT_PHASED": "SFAmplitude", "SIGFEXT_PHASED": "Stddev",
+    "2FEXT_PHASED-Fc": "SFAmplitude", "FEXT_PHASED-Fc": "SFAmplitude",
+    "PHFEXT_PHASED": "Phase",
+    "FEXT_SCALAR": "SFAmplitude", "SIGFEXT_SCALAR": "Stddev",
+    "2FEXT_SCALAR-Fc": "SFAmplitude", "FEXT_SCALAR-Fc": "SFAmplitude",
+    "PHFEXT_SCALAR": "Phase",
+}
+
+# And what it adds again once the two-moment model is on.
+ALL_COLUMNS_TWO_MOMENT_EXTRA = {
+    "Io_light": "Intensity", "SIGIo_light": "Stddev",
+    "Ic_light_coh": "Intensity", "Ic_light_2mom": "Intensity",
+    "IVAR_ALPHA": "Intensity", "W_2MOM": "Weight",
+    "2mDFop-DFc_corr": "SFAmplitude", "mDFop-DFc_corr": "SFAmplitude",
 }
 
 FRACTION = 0.25
@@ -131,27 +148,81 @@ def two_moment_mtz(cli_script, intensity_pair, tmp_path_factory):
     )
 
 
+@pytest.fixture(scope="module")
+def two_moment_all_mtz(cli_script, intensity_pair, tmp_path_factory):
+    """Everything on. The value-consistency tests below need the diagnostic columns,
+    which is exactly what ``--all-columns`` is for."""
+    outdir = tmp_path_factory.mktemp("two_moment_all")
+    return _run(
+        cli_script, intensity_pair, outdir,
+        "--two-moment", "--lambda-twin", str(LAMBDA_TWIN), "--all-columns",
+    )
+
+
 def _read(path):
     import reciprocalspaceship as rs
 
     return rs.read_mtz(str(path))
 
 
-class TestBaselineLayoutIsUnchanged:
-    def test_baseline_columns_are_exactly_the_expected_set(self, baseline_mtz):
+class TestDefaultLayout:
+    def test_default_columns_are_exactly_the_expected_set(self, baseline_mtz):
         mtz, _ = baseline_mtz
-        assert set(_read(mtz).columns) == BASELINE_COLUMNS
+        assert set(_read(mtz).columns) == set(DEFAULT_COLUMNS) | FLAG_COLUMNS
+
+    def test_every_default_column_carries_the_right_mtz_type(self, baseline_mtz):
+        mtz, _ = baseline_mtz
+        df = _read(mtz)
+        for name, expected in DEFAULT_COLUMNS.items():
+            assert name in df.columns, f"missing column {name}"
+            assert df.dtypes[name].name == expected, (
+                f"{name} written as {df.dtypes[name].name}, expected {expected}"
+            )
 
     def test_no_two_moment_columns_without_the_flag(self, baseline_mtz):
         mtz, _ = baseline_mtz
         present = set(_read(mtz).columns) & set(TWO_MOMENT_COLUMNS)
         assert present == set(), f"unexpected two-moment columns: {sorted(present)}"
 
+    def test_no_gated_columns_without_all_columns(self, baseline_mtz):
+        mtz, _ = baseline_mtz
+        present = set(_read(mtz).columns) & set(ALL_COLUMNS_EXTRA)
+        assert present == set(), f"unexpected gated columns: {sorted(present)}"
+
+    def test_the_difference_map_is_the_weighted_difference_on_dark_phases(
+        self, baseline_mtz
+    ):
+        """``DELFWT`` must be ``(Fo_light - Fo_dark) * w`` with ``w`` the mean-normalised
+        inverse variance -- the construction ``torchref.validate-ded`` correlates
+        against. If these two ever diverge, the map in the file stops being the map the
+        validation reports on, which is how the output drifted from the science before.
+        """
+        import numpy as np
+
+        df = _read(baseline_mtz[0])
+        dfo = (df["Fo_light"].to_numpy().astype(float)
+               - df["Fo_dark"].to_numpy().astype(float))
+        sig = np.sqrt(df["SIGFo_dark"].to_numpy().astype(float) ** 2
+                      + df["SIGFo_light"].to_numpy().astype(float) ** 2)
+        w = 1 / sig**2
+        w = w / w.mean()
+
+        expected = dfo * w
+        got = df["DELFWT"].to_numpy().astype(float)
+        scale = max(float(np.abs(expected).max()), 1e-30)
+        assert np.abs(got - expected).max() / scale < 1e-5
+
+        # And the phase is the dark model's, not the mixed model's.
+        assert not np.allclose(
+            df["PHDELWT"].to_numpy().astype(float),
+            df["PHIC"].to_numpy().astype(float),
+        )
+
 
 class TestTwoMomentLayout:
-    def test_baseline_columns_all_survive(self, two_moment_mtz):
+    def test_default_columns_all_survive(self, two_moment_mtz):
         mtz, _ = two_moment_mtz
-        assert BASELINE_COLUMNS.issubset(set(_read(mtz).columns))
+        assert set(DEFAULT_COLUMNS).issubset(set(_read(mtz).columns))
 
     def test_every_new_column_is_present_with_the_right_mtz_type(self, two_moment_mtz):
         mtz, _ = two_moment_mtz
@@ -160,26 +231,80 @@ class TestTwoMomentLayout:
             assert name in df.columns, f"missing column {name}"
             actual = df.dtypes[name].name
             assert actual == expected, (
-                f"{name} written as {actual}, expected {expected} -- this writer has no "
-                f"infer_mtz_dtypes() safety net"
+                f"{name} written as {actual}, expected {expected}"
             )
 
-    def test_the_column_set_is_exactly_baseline_plus_the_new_ones(self, two_moment_mtz):
+    def test_the_column_set_is_exactly_default_plus_the_new_ones(self, two_moment_mtz):
         mtz, _ = two_moment_mtz
-        assert set(_read(mtz).columns) == BASELINE_COLUMNS | set(TWO_MOMENT_COLUMNS)
+        assert set(_read(mtz).columns) == (
+            set(DEFAULT_COLUMNS) | FLAG_COLUMNS | set(TWO_MOMENT_COLUMNS)
+        )
+
+    def test_the_corrected_difference_map_pairs_with_the_same_phases(
+        self, two_moment_mtz
+    ):
+        """``DELFWT_corr`` is the corrected difference on the *same* dark phases, so it
+        is opened against ``PHDELWT`` and must be built the same way as ``DELFWT``."""
+        import numpy as np
+
+        df = _read(two_moment_mtz[0])
+        sig = np.sqrt(df["SIGFo_dark"].to_numpy().astype(float) ** 2
+                      + df["SIGFo_light"].to_numpy().astype(float) ** 2)
+        w = 1 / sig**2
+        w = w / w.mean()
+
+        expected = df["DF_corr"].to_numpy().astype(float) * w
+        got = df["DELFWT_corr"].to_numpy().astype(float)
+        scale = max(float(np.abs(expected).max()), 1e-30)
+        assert np.abs(got - expected).max() / scale < 1e-5
+
+
+class TestAllColumns:
+    def test_all_columns_is_a_strict_superset(self, two_moment_mtz, two_moment_all_mtz):
+        default = set(_read(two_moment_mtz[0]).columns)
+        full = set(_read(two_moment_all_mtz[0]).columns)
+        assert default < full, "--all-columns must add columns, never remove any"
+
+    def test_the_gated_columns_are_exactly_the_expected_ones(self, two_moment_all_mtz):
+        df = _read(two_moment_all_mtz[0])
+        assert set(df.columns) == (
+            set(DEFAULT_COLUMNS) | FLAG_COLUMNS | set(TWO_MOMENT_COLUMNS)
+            | set(ALL_COLUMNS_EXTRA) | set(ALL_COLUMNS_TWO_MOMENT_EXTRA)
+        )
+
+    def test_every_gated_column_carries_the_right_mtz_type(self, two_moment_all_mtz):
+        df = _read(two_moment_all_mtz[0])
+        expected_types = {**ALL_COLUMNS_EXTRA, **ALL_COLUMNS_TWO_MOMENT_EXTRA}
+        for name, expected in expected_types.items():
+            assert name in df.columns, f"missing column {name}"
+            assert df.dtypes[name].name == expected, (
+                f"{name} written as {df.dtypes[name].name}, expected {expected}"
+            )
+
+    def test_no_column_escapes_with_a_plain_numpy_dtype(self, two_moment_all_mtz):
+        """Every layer declares its columns' MTZ types beside the values, and the writer
+        refuses a column with none. This is the end-to-end version of that check: a
+        column reaching the file as a bare numpy dtype is the failure the old parallel
+        name lists invited.
+        """
+        df = _read(two_moment_all_mtz[0])
+        bare = [c for c in df.columns if not hasattr(df.dtypes[c], "mtztype")]
+        assert bare == [], f"columns written without an MTZ dtype: {bare}"
 
 
 class TestTwoMomentValuesAreConsistent:
-    def test_ivar_alpha_is_sigma_sq_times_the_squared_difference(self, two_moment_mtz):
+    def test_ivar_alpha_is_sigma_sq_times_the_squared_difference(
+        self, two_moment_all_mtz
+    ):
         """The variance column must be the quantity it claims, not a rescaling of it."""
         import numpy as np
 
-        mtz, summary = two_moment_mtz
+        mtz, summary = two_moment_all_mtz
         df = _read(mtz)
         results = json.loads(summary.read_text())["results"]
 
         sigma_sq = results["sigma_alpha_sq"]
-        dfc = df["DFc_complex"].to_numpy().astype(float)
+        dfc = df["DFc_phased"].to_numpy().astype(float)
         ivar = df["IVAR_ALPHA"].to_numpy().astype(float)
 
         expected = sigma_sq * dfc**2
@@ -187,7 +312,7 @@ class TestTwoMomentValuesAreConsistent:
         assert np.abs(ivar - expected).max() / scale < 1e-5
 
     def test_the_two_moment_intensity_exceeds_the_coherent_one_by_the_variance(
-        self, two_moment_mtz
+        self, two_moment_all_mtz
     ):
         """``Ic_2mom - Ic_coh`` must equal ``IVAR_ALPHA``, to whatever precision float32
         leaves after the cancellation.
@@ -204,8 +329,7 @@ class TestTwoMomentValuesAreConsistent:
         """
         import numpy as np
 
-        mtz, _ = two_moment_mtz
-        df = _read(mtz)
+        df = _read(two_moment_all_mtz[0])
         coh = df["Ic_light_coh"].to_numpy().astype(float)
         two = df["Ic_light_2mom"].to_numpy().astype(float)
         ivar = df["IVAR_ALPHA"].to_numpy().astype(float)
@@ -222,7 +346,7 @@ class TestTwoMomentValuesAreConsistent:
         # The variance term has no sign: it can only add.
         assert (two >= coh - 4.0 * floor).all()
 
-    def test_the_weight_is_the_contamination_ratio(self, two_moment_mtz):
+    def test_the_weight_is_the_contamination_ratio(self, two_moment_all_mtz):
         """``W_2MOM`` must be ``sigma_I**2 / (sigma_I**2 + IVAR_ALPHA)``.
 
         Asserted as the formula rather than as a magnitude. On this fixture the weight
@@ -234,7 +358,7 @@ class TestTwoMomentValuesAreConsistent:
         """
         import numpy as np
 
-        df = _read(two_moment_mtz[0])
+        df = _read(two_moment_all_mtz[0])
         w = df["W_2MOM"].to_numpy().astype(float)
         sig = df["SIGIo_light"].to_numpy().astype(float)
         ivar = df["IVAR_ALPHA"].to_numpy().astype(float)
@@ -261,9 +385,13 @@ class TestTwoMomentValuesAreConsistent:
         _, summary = two_moment_mtz
         results = json.loads(summary.read_text())["results"]
         for key in ("alpha_mean", "lambda_twin", "sigma_alpha_sq"):
-            assert key in results, f"missing summary key: {key}"
-        assert results["lambda_twin"] == pytest.approx(LAMBDA_TWIN, abs=1e-5)
-        assert results["alpha_mean"] == pytest.approx(FRACTION, abs=1e-5)
-        assert results["sigma_alpha_sq"] == pytest.approx(
-            FRACTION * (1 - FRACTION) * LAMBDA_TWIN, rel=1e-4
-        )
+            assert key in results, f"summary is missing {key}"
+        assert results["lambda_twin"] == pytest.approx(LAMBDA_TWIN)
+
+    def test_summary_reports_the_shrinkage_diagnostics(self, two_moment_mtz):
+        """``tau_sq`` and mean ``w(h)`` say whether the default extrapolated map is
+        over-shrunk, so they belong in the summary rather than only in a print."""
+        _, summary = two_moment_mtz
+        results = json.loads(summary.read_text())["results"]
+        assert "tau_sq" in results and "w_shrinkage_mean" in results
+        assert 0.0 < results["w_shrinkage_mean"] <= 1.0

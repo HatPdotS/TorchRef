@@ -313,6 +313,7 @@ def add_dual_model_args(
     parser: argparse.ArgumentParser,
     fraction_required: bool = True,
     fraction_default: Optional[float] = None,
+    light_model_required: bool = True,
 ) -> None:
     """Add the standard dual-model (dark/light) input arguments.
 
@@ -320,6 +321,10 @@ def add_dual_model_args(
     ``-lm``/``--light-model``, ``-dsf``/``--dark-structure-factor``,
     ``-lsf``/``--light-structure-factor``, ``--fraction``, ``--cif``
     and a *Column selection* group with per-side column flags.
+
+    ``light_model_required=False`` makes ``-lm`` optional, for tools that can do
+    something useful with the dark model alone -- a weighted difference map needs only
+    the dark state's phases. Refinement cannot: it refines the light model.
     """
     inp = parser.add_argument_group("Input files")
     inp.add_argument(
@@ -329,13 +334,24 @@ def add_dual_model_args(
         type=str,
         help="Dark / reference state model file (PDB or CIF)",
     )
-    inp.add_argument(
-        "-lm",
-        "--light-model",
-        required=True,
-        type=str,
-        help="Light / triggered state model file (PDB or CIF)",
-    )
+    if light_model_required:
+        inp.add_argument(
+            "-lm",
+            "--light-model",
+            required=True,
+            type=str,
+            help="Light / triggered state model file (PDB or CIF)",
+        )
+    else:
+        inp.add_argument(
+            "-lm",
+            "--light-model",
+            type=str,
+            default=None,
+            help="Light / triggered state model file (PDB or CIF). Optional: without "
+                 "it only the weighted difference map is written, which needs the dark "
+                 "state's phases and no light-state model at all.",
+        )
     inp.add_argument(
         "-dsf",
         "--dark-structure-factor",
@@ -364,6 +380,22 @@ def add_dual_model_args(
 
     col = parser.add_argument_group("Column selection")
     add_dual_column_args(col)
+
+
+def add_all_columns_arg(parser: argparse.ArgumentParser) -> None:
+    """Add ``--all-columns`` for the difference MTZ writer.
+
+    Off by default so the output file holds the map a reader wants and can identify.
+    The gated columns are alternative constructions of the same quantities -- a
+    model-phased difference, two more extrapolations, the intensity block -- which are
+    useful once you know which is which and misleading before then.
+    """
+    parser.add_argument(
+        "--all-columns", action="store_true", default=False,
+        help="Write every alternative map coefficient and diagnostic column, not just "
+             "the default difference and extrapolated maps. Costs two further scale "
+             "fits for the extra extrapolations.",
+    )
 
 
 def add_output_format_args(parser: argparse.ArgumentParser) -> None:

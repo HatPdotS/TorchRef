@@ -95,7 +95,7 @@ def main():
         Fo_d = ds["Fo_dark"].to_numpy(float)
         Fo_l = ds["Fo_light"].to_numpy(float)
         Fc_d = ds["Fc_dark"].to_numpy(float)
-        Fc_l = ds["Fc_light"].to_numpy(float)
+        Fc_l = ds["FC"].to_numpy(float)          # was Fc_light
         free = ds["FreeR_flag_light"].to_numpy() == 0
 
         Id = np.full(len(H), np.nan); Il = np.full(len(H), np.nan)

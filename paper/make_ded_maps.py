@@ -29,13 +29,24 @@ import gemmi
 import numpy as np
 
 # label -> (amplitude column, phase column). Skipped silently when absent.
+#
+# The dark-phased entries come first because they are the default output and the
+# construction ``torchref.validate-ded`` correlates against. ``ddf`` and ``wdf`` used to
+# be paired with ``PHIC_diff``, the *model* difference phase -- the right amplitude on
+# the wrong phase, and a different map from the one being validated.
+#
+# The ``PHIC_diff`` entries need ``--all-columns`` on the writer. They are phased
+# difference *residuals*: the light state's model phases enter the observed amplitude,
+# so they are model-biased where the dark-phased maps are not.
 MAPS = {
-    "ded":        ("mDFop-DFc", "PHIC_diff"),
-    "ded_corr":   ("mDFop-DFc_corr", "PHIC_diff"),
-    "ded2":       ("2mDFop-DFc", "PHIC_diff"),
-    "ded2_corr":  ("2mDFop-DFc_corr", "PHIC_diff"),
-    "ddf":        ("DDF", "PHIC_diff"),
-    "wdf":        ("WDF", "PHIC_diff"),
+    "ded":        ("DELFWT", "PHDELWT"),
+    "ded_corr":   ("DELFWT_corr", "PHDELWT"),
+    "ddf":        ("DDF", "PHDELWT"),
+    "ext":        ("FWT", "PHWT"),
+    "ded_phased":       ("mDFop-DFc", "PHIC_diff"),
+    "ded_phased_corr":  ("mDFop-DFc_corr", "PHIC_diff"),
+    "ded2_phased":      ("2mDFop-DFc", "PHIC_diff"),
+    "ded2_phased_corr": ("2mDFop-DFc_corr", "PHIC_diff"),
 }
 
 
