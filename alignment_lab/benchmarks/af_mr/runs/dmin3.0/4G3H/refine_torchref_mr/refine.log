@@ -1,0 +1,113 @@
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/torchref/cli/refine.py:21: UserWarning: TorchRef using user-specified 8 threads from TORCHREF_NUM_THREADS.
+  from torchref.cli._common import (
+================================================================================
+TorchRef LBFGS Refinement
+================================================================================
+Model:             /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin3.0/4G3H/torchref_placed.pdb
+Structure factor:  /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/data/4G3H/4G3H.mtz
+Output directory:  /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin3.0/4G3H/refine_torchref_mr
+Refinement mode:   separate
+X-ray target:      ml
+Refinement cycles: 10
+Rigid-body step:   on (iterations/cutoff = 30)
+Device:            auto
+ADP mode:          isotropic
+Wavelength:        1 A
+Manual weights:    {"adp": 0.02}
+================================================================================
+
+Initializing refinement...
+found non-finite F values (NaN/Inf):  0
+found non-finite F_sigma values (NaN/Inf):  0
+Wilson outlier rejection: 207/61133 (0.3386%) of tested reflections flagged (207 too strong, 0 too weak)
+Loaded 9692 atoms
+Building restraints...
+Found 109 link definitions
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 50 valid (symop, offset) combos
+  Grid: [15, 17, 24], 4432/6120 cells occupied, max 437 entries/cell
+  Built 168421 VDW restraints, 5611 symmetry contacts
+  Hydrogen topology: 9756 riding H atoms
+  H candidate pairs: 417021 (107596 H-H, 309425 H-heavy, 12359 symmetry)
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 20
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Bonds: 8640
+  Angles: 9580
+  Torsions: 2612
+  Planes: 1860
+  Chirals: 1484
+
+INTER-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Peptide bonds: 1188
+  Peptide angles: 3588
+  Disulfide bonds: 0
+  Disulfide angles: 0
+  Disulfide torsions: 0
+  LINK bonds: 0
+
+BACKBONE TORSIONS:
+--------------------------------------------------------------------------------
+  Phi: 1188
+  Psi: 1188
+  Omega: 1188
+  Ramachandran: 1172
+
+VDW RESTRAINTS:
+--------------------------------------------------------------------------------
+  Non-bonded contacts: 168421 (162810 intra-ASU, 5611 symmetry)
+================================================================================
+Generated 9760 hydrogens
+ADP representation: isotropic, 19452 parameters, 3.7 work reflections each
+Initialized ScalerBase with 10 bins.
+Building restraints...
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 52 valid (symop, offset) combos
+  Grid: [15, 17, 24], 4730/6120 cells occupied, max 665 entries/cell
+  Built 718140 VDW restraints, 26540 symmetry contacts
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 20
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Bonds: 18400
+  Angles: 30628
+  Torsions: 3816
+  Planes: 3232
+  Chirals: 1484
+
+INTER-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Peptide bonds: 1188
+  Peptide angles: 4752
+  Disulfide bonds: 0
+  Disulfide angles: 0
+  Disulfide torsions: 0
+  LINK bonds: 0
+
+BACKBONE TORSIONS:
+--------------------------------------------------------------------------------
+  Phi: 1188
+  Psi: 1188
+  Omega: 1188
+  Ramachandran: 1172
+
+VDW RESTRAINTS:
+--------------------------------------------------------------------------------
+  Non-bonded contacts: 718140 (691600 intra-ASU, 26540 symmetry)
+================================================================================
+Initializing TotalGeometryTarget with component targets...
+Initializing TotalADPTarget with component targets: simu, locality, sigd
+Parametrization built for 5 unique atom types
+SfFFT: Using late symmetry (reciprocal space)

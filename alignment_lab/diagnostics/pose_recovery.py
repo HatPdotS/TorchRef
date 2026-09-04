@@ -151,6 +151,8 @@ def main() -> int:
     ap.add_argument("--success-A", type=float, default=4.0)
     ap.add_argument("--verbose", type=int, default=0)
     ap.add_argument("--out-csv", default=None)
+    ap.add_argument("--d-min", type=float, default=4.0)
+    ap.add_argument("--d-max", type=float, default=15.0)
     ap.add_argument("--tf-d-min", type=float, default=None)
     ap.add_argument("--tf-d-max", type=float, default=None)
     args = ap.parse_args()
@@ -191,7 +193,7 @@ def main() -> int:
             # the winner. Every candidate's score is the diagnosis when a
             # placement goes wrong, and the pipeline already computed them.
             pipe = MolecularReplacementPipeline(
-                data, search, d_min=4.0, d_max=15.0, n_shells=20,
+                data, search, d_min=args.d_min, d_max=args.d_max, n_shells=20,
                 n_rotation_peaks=args.n_rotation_peaks,
                 n_rotation_candidates=args.n_rotation_candidates,
                 verbose=args.verbose, tf_d_min=args.tf_d_min,
@@ -224,7 +226,7 @@ def main() -> int:
                          truth_rank="", truth_angle_deg=(round(resid, 4)
                                                          if resid == resid else ""),
                          orbit_side="kabsch", orbit_frame="cart",
-                         lmax_cap=_LMAX_CAP, d_min=4.0, d_max=15.0,
+                         lmax_cap=_LMAX_CAP, d_min=args.d_min, d_max=args.d_max,
                          device="cpu", arm=arm,
                          residual_deg=(round(resid, 4) if resid == resid else ""),
                          success=int(bool(ok)),

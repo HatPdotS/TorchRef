@@ -1,0 +1,274 @@
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/torchref/cli/refine.py:21: UserWarning: TorchRef using user-specified 8 threads from TORCHREF_NUM_THREADS.
+  from torchref.cli._common import (
+================================================================================
+TorchRef LBFGS Refinement
+================================================================================
+Model:             /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin3.0/1APX/torchref_placed.pdb
+Structure factor:  /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/data/1APX/1APX.mtz
+Output directory:  /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin3.0/1APX/refine_torchref_mr
+Refinement mode:   separate
+X-ray target:      ml
+Refinement cycles: 10
+Rigid-body step:   on (iterations/cutoff = 30)
+Device:            auto
+ADP mode:          isotropic
+Wavelength:        1 A
+Manual weights:    {"adp": 0.02}
+================================================================================
+
+Initializing refinement...
+found non-finite F values (NaN/Inf):  0
+found non-finite F_sigma values (NaN/Inf):  0
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/torchref/io/datasets/reflection_data.py:2280: UserWarning: Found 1038 non-positive F values, masking them out. This really should not happen!
+  warnings.warn(
+Wilson outlier rejection: 0/59593 (0.0000%) of tested reflections flagged (0 too strong, 0 too weak)
+Loaded 7640 atoms
+Building restraints...
+Found 109 link definitions
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 64 valid (symop, offset) combos
+  Grid: [22, 8, 28], 3512/4928 cells occupied, max 441 entries/cell
+  Built 133763 VDW restraints, 6054 symmetry contacts
+  Hydrogen topology: 7472 riding H atoms
+  H candidate pairs: 321708 (79370 H-H, 242338 H-heavy, 14192 symmetry)
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 20
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Bonds: 6852
+  Angles: 7588
+  Torsions: 2016
+  Planes: 1504
+  Chirals: 1136
+
+INTER-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Peptide bonds: 988
+  Peptide angles: 3036
+  Disulfide bonds: 0
+  Disulfide angles: 0
+  Disulfide torsions: 0
+  LINK bonds: 0
+
+BACKBONE TORSIONS:
+--------------------------------------------------------------------------------
+  Phi: 988
+  Psi: 988
+  Omega: 988
+  Ramachandran: 984
+
+VDW RESTRAINTS:
+--------------------------------------------------------------------------------
+  Non-bonded contacts: 133763 (127709 intra-ASU, 6054 symmetry)
+================================================================================
+Generated 7472 hydrogens
+ADP representation: isotropic, 15112 parameters, 4.5 work reflections each
+Initialized ScalerBase with 10 bins.
+Building restraints...
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 64 valid (symop, offset) combos
+  Grid: [22, 8, 28], 3748/4928 cells occupied, max 777 entries/cell
+  Built 555101 VDW restraints, 30220 symmetry contacts
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 20
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Bonds: 14324
+  Angles: 23768
+  Torsions: 2900
+  Planes: 2532
+  Chirals: 1136
+
+INTER-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Peptide bonds: 988
+  Peptide angles: 3952
+  Disulfide bonds: 0
+  Disulfide angles: 0
+  Disulfide torsions: 0
+  LINK bonds: 0
+
+BACKBONE TORSIONS:
+--------------------------------------------------------------------------------
+  Phi: 988
+  Psi: 988
+  Omega: 988
+  Ramachandran: 984
+
+VDW RESTRAINTS:
+--------------------------------------------------------------------------------
+  Non-bonded contacts: 555101 (524881 intra-ASU, 30220 symmetry)
+================================================================================
+Initializing TotalGeometryTarget with component targets...
+Initializing TotalADPTarget with component targets: simu, locality, sigd
+Parametrization built for 5 unique atom types
+SfFFT: Using late symmetry (reciprocal space)
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.3908, rfree: 0.3961
+
+Final Scale Parameters: 
+  c_iso: tensor([-2.5250e+00,  1.3315e+00,  3.2831e-01, -5.7856e-02,  2.9143e-02,
+        -1.9498e-03])
+  U: tensor([0.5920, 0.6561, 0.5690, 0.0062, 0.0032, 0.0036])
+  solvent.log_k_solvent: -1.0469276905059814
+  solvent.log_ss_half: -4.068371772766113
+  solvent.log_n_exp: 1.0906767845153809
+  solvent.phase_offset: -0.017022959887981415
+Initialized targets with xray_mode='ml'
+Applied manual group weights: {'xray': 1.0, 'geometry': 0.2, 'geometry/ramachandran': 0.0, 'adp': 0.02, 'adp/sigd': 1.0, 'adp/node_load': 10.0, 'adp/node_smoothness': 0.0}
+Refinement initialized successfully.
+
+Starting refinement with 10 macro cycles...
+
+Rigid-body step enabled: one multi-resolution rigid-body pass will run once at the start of refinement.
+
+
+--- Rigid-body step (once, at start) ---
+Switched to rigid-body parametrization: RigidXYZTensor(n_atoms=15112, n_chains=4) (4 chain(s))
+Filtering: 2835/70327 reflections in range [inf - 6.0] Å (2834 valid after all masks)
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2874, rfree: 0.2735
+
+Final Scale Parameters: 
+  c_iso: tensor([-3.5786, -0.1911, -0.2514,  0.1706,  0.3293,  0.1869])
+  U: tensor([0.6142, 0.6571, 0.3955, 0.0032, 0.0687, 0.1266])
+  solvent.log_k_solvent: -1.0787460803985596
+  solvent.log_ss_half: -3.9114303588867188
+  solvent.log_n_exp: 1.6465303897857666
+  solvent.phase_offset: -0.010519436560571194
+  rigid-body d_min=6.00 (lbfgs, iters=30): Rwork=0.2768 Rfree=0.2774
+Filtering: 15017/70327 reflections in range [inf - 3.4563017511890983] Å (14988 valid after all masks)
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.3001, rfree: 0.3151
+
+Final Scale Parameters: 
+  c_iso: tensor([-2.8587,  0.3834, -0.7432, -0.4392,  0.0138,  0.1126])
+  U: tensor([ 1.0852,  1.1561,  0.9116, -0.0198,  0.0335,  0.0418])
+  solvent.log_k_solvent: -1.127058982849121
+  solvent.log_ss_half: -4.365893363952637
+  solvent.log_n_exp: 0.6643532514572144
+  solvent.phase_offset: -0.006220398470759392
+  rigid-body d_min=3.46 (lbfgs, iters=30): Rwork=0.2922 Rfree=0.3065
+Filtering: 70327/70327 reflections in range [inf - 1.9910036325454712] Å (69289 valid after all masks)
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.3474, rfree: 0.3583
+
+Final Scale Parameters: 
+  c_iso: tensor([-2.5574,  1.2825,  0.3152, -0.0629,  0.0274, -0.0045])
+  U: tensor([5.6205e-01, 6.3013e-01, 5.4598e-01, 7.3006e-03, 2.9659e-05, 7.2044e-03])
+  solvent.log_k_solvent: -1.0421603918075562
+  solvent.log_ss_half: -4.0208868980407715
+  solvent.log_n_exp: 1.1504504680633545
+  solvent.phase_offset: 0.0007989552104845643
+  rigid-body d_min=1.99 (lbfgs, iters=30): Rwork=0.3459 Rfree=0.3562
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.3455, rfree: 0.3554
+
+Final Scale Parameters: 
+  c_iso: tensor([-2.5812,  1.2549,  0.3101, -0.0622,  0.0269, -0.0040])
+  U: tensor([ 5.4957e-01,  6.1812e-01,  5.3447e-01,  7.3681e-03, -4.3988e-04,
+         7.0311e-03])
+  solvent.log_k_solvent: -1.0410802364349365
+  solvent.log_ss_half: -4.006321907043457
+  solvent.log_n_exp: 1.1783263683319092
+  solvent.phase_offset: 0.003817063756287098
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.3455, rfree: 0.3554
+
+Final Scale Parameters: 
+  c_iso: tensor([-2.5677,  1.2711,  0.3133, -0.0623,  0.0270, -0.0042])
+  U: tensor([ 5.5618e-01,  6.2459e-01,  5.4099e-01,  7.2994e-03, -4.3267e-04,
+         7.1526e-03])
+  solvent.log_k_solvent: -1.0416831970214844
+  solvent.log_ss_half: -4.0115180015563965
+  solvent.log_n_exp: 1.1657555103302002
+  solvent.phase_offset: 0.004635067656636238
+
+============================================================
+LBFGS Refinement - Cycle 1/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.3455, rfree: 0.3554
+
+Final Scale Parameters: 
+  c_iso: tensor([-2.5084,  1.3454,  0.3262, -0.0607,  0.0261, -0.0035])
+  U: tensor([ 5.8568e-01,  6.5413e-01,  5.7053e-01,  7.3000e-03, -4.5495e-04,
+         7.1154e-03])
+  solvent.log_k_solvent: -1.0483293533325195
+  solvent.log_ss_half: -4.029177665710449
+  solvent.log_n_exp: 1.1375707387924194
+  solvent.phase_offset: 0.00479730311781168
+After scaling: Rwork=0.3455, Rfree=0.3554
+  VDW rebuild: max drift 1.69 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 64 valid (symop, offset) combos
+  Grid: [22, 8, 28], 3748/4928 cells occupied, max 777 entries/cell
+  Built 555101 VDW restraints, 30220 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                     1324.1     1324.1     0.0000
+    scaler_U                    38414.4    38414.4     0.0000
+    scaler_log_scale           893072.2   893072.2     0.0000
+    sigd                         9744.6     9744.6     0.0000
+    simu                        24784.4    24784.4     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -62507.0   -67004.1    -4497.1
+    bond                       -47194.5   -50627.6    -3433.1
+    chiral                    -642.4233  -722.7128   -80.2895
+    nonbonded                 -138593.7  -145882.7    -7289.0
+    planarity                  -28301.8   -30934.3    -2632.5
+    torsion                     12516.8    12698.6  +181.8301
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       219749.3   213740.8    -6008.5
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                         19346.8    19346.8     0.0000
+    geometry                   -52944.5   -56494.5    -3550.0
+    xray                       219749.3   213740.8    -6008.5
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 1.69 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 64 valid (symop, offset) combos
+  Grid: [22, 8, 28], 3748/4928 cells occupied, max 777 entries/cell

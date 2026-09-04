@@ -24,22 +24,41 @@ def load(tag):
     out = {}
     for f in sorted((HERE / "runs" / tag).glob("*/summary.json")):
         try:
-            out[f.parent.name] = json.loads(f.read_text())
+            d = json.loads(f.read_text())
         except json.JSONDecodeError:
-            pass
+            continue
+        # Summaries written before the harness carried the pose onto each
+        # chain keep it in a parallel list; line the two up here so the rest
+        # of the reader sees one shape.
+        chains, poses = d.get("chains", []), d.get("pose_vs_phaser", [])
+        if chains and poses and "rot_deg" not in chains[0]:
+            for c, p in zip([c for c in chains if not c.get("failed")], poses):
+                c["rot_deg"], c["trans_A"] = p["rot_deg"], p["trans_A"]
+        out[f.parent.name] = d
     return out
 
 
 def placement(d, rot_tol, trans_tol):
-    """Fraction of residues placed on Phaser's pose, and the worst miss."""
-    poses, chains = d.get("pose_vs_phaser", []), d.get("chains", [])
-    if not poses or len(poses) != len(chains):
+    """Fraction of residues placed on Phaser's pose, and the worst miss.
+
+    Scored over every component the run attempted, so a component the pipeline
+    could not place at all counts against the structure exactly like one it
+    placed in the wrong orientation.
+    """
+    chains = d.get("chains", [])
+    if not chains:
         return 0.0, float("inf")
-    ok = [p["rot_deg"] <= rot_tol and p["trans_A"] <= trans_tol for p in poses]
-    sizes = [c["n_res"] for c in chains]
-    total = sum(sizes) or 1
-    worst = max((p["rot_deg"] for p, k in zip(poses, ok) if not k), default=0.0)
-    return sum(s for s, k in zip(sizes, ok) if k) / total, worst
+    total = sum(c["n_res"] for c in chains) or 1
+    placed_res, worst = 0, 0.0
+    for c in chains:
+        if c.get("failed") or "rot_deg" not in c:
+            worst = float("inf")
+            continue
+        if c["rot_deg"] <= rot_tol and c["trans_A"] <= trans_tol:
+            placed_res += c["n_res"]
+        else:
+            worst = max(worst, c["rot_deg"])
+    return placed_res / total, worst
 
 
 def main():

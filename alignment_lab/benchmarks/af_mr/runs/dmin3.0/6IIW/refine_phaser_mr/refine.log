@@ -1,0 +1,119 @@
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/torchref/cli/refine.py:21: UserWarning: TorchRef using user-specified 8 threads from TORCHREF_NUM_THREADS.
+  from torchref.cli._common import (
+================================================================================
+TorchRef LBFGS Refinement
+================================================================================
+Model:             /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure2_alphafold_start/placed/6IIW_af.pdb
+Structure factor:  /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/data/6IIW/6IIW.mtz
+Output directory:  /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin3.0/6IIW/refine_phaser_mr
+Refinement mode:   separate
+X-ray target:      ml
+Refinement cycles: 10
+Rigid-body step:   on (iterations/cutoff = 30)
+Device:            auto
+ADP mode:          isotropic
+Wavelength:        1 A
+Manual weights:    {"adp": 0.02}
+================================================================================
+
+Initializing refinement...
+FrenchWilson initialized:
+  Reflections: 10662
+  Resolution: 1.70 - 36.69 Å
+  Space group: SpaceGroup('P6122', number=178, n_ops=12)
+  Centric: 2996 (28.1%)
+French-Wilson input guard: 4/10662 (0.0375%) reflections unusable as intensities (absent, or too negative to be a noisy measurement)
+found non-finite F values (NaN/Inf):  3
+found non-finite F_sigma values (NaN/Inf):  3
+Wilson outlier rejection: 0/9701 (0.0000%) of tested reflections flagged (0 too strong, 0 too weak)
+Loaded 443 atoms
+Building restraints...
+Found 109 link definitions
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 26 valid (symop, offset) combos
+  Grid: [6, 6, 36], 352/1296 cells occupied, max 119 entries/cell
+  Built 6831 VDW restraints, 972 symmetry contacts
+  Hydrogen topology: 408 riding H atoms
+  H candidate pairs: 14704 (3436 H-H, 11268 H-heavy, 1708 symmetry)
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 19
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Bonds: 398
+  Angles: 444
+  Torsions: 123
+  Planes: 91
+  Chirals: 63
+
+INTER-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Peptide bonds: 54
+  Peptide angles: 166
+  Disulfide bonds: 0
+  Disulfide angles: 0
+  Disulfide torsions: 0
+  LINK bonds: 0
+
+BACKBONE TORSIONS:
+--------------------------------------------------------------------------------
+  Phi: 54
+  Psi: 54
+  Omega: 54
+  Ramachandran: 52
+
+VDW RESTRAINTS:
+--------------------------------------------------------------------------------
+  Non-bonded contacts: 6831 (5859 intra-ASU, 972 symmetry)
+================================================================================
+Generated 408 hydrogens
+ADP representation: isotropic, 851 parameters, 12.3 work reflections each
+Initialized ScalerBase with 10 bins.
+Building restraints...
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 26 valid (symop, offset) combos
+  Grid: [6, 6, 36], 389/1296 cells occupied, max 196 entries/cell
+  Built 26882 VDW restraints, 3969 symmetry contacts
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 19
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Bonds: 806
+  Angles: 1323
+  Torsions: 174
+  Planes: 152
+  Chirals: 63
+
+INTER-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Peptide bonds: 54
+  Peptide angles: 216
+  Disulfide bonds: 0
+  Disulfide angles: 0
+  Disulfide torsions: 0
+  LINK bonds: 0
+
+BACKBONE TORSIONS:
+--------------------------------------------------------------------------------
+  Phi: 54
+  Psi: 54
+  Omega: 54
+  Ramachandran: 52
+
+VDW RESTRAINTS:
+--------------------------------------------------------------------------------
+  Non-bonded contacts: 26882 (22913 intra-ASU, 3969 symmetry)
+================================================================================
+Initializing TotalGeometryTarget with component targets...
+Initializing TotalADPTarget with component targets: simu, locality, sigd
+Parametrization built for 5 unique atom types
+SfFFT: Using late symmetry (reciprocal space)

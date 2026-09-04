@@ -185,11 +185,24 @@ def main():
                 data, search, d_min=args.d_min, d_max=args.d_max, n_shells=20, n_rotation_peaks=200,
                 n_rotation_candidates=args.n_rotation_candidates, verbose=args.verbose,
                 fixed=list(placed))
-            sols = pipe.run(do_translation=True, candidates=candidates)
+            # A component the pipeline cannot place -- no translation peak
+            # survives the packing rejection, say -- is a result, not a crash:
+            # record it and keep the components that did place, so one bad
+            # component does not cost the whole structure.
+            try:
+                sols = pipe.run(do_translation=True, candidates=candidates)
+            except Exception as exc:
+                chains.append({"acc": acc, "copy": k, "n_res": n_res,
+                               "failed": True, "error": f"{type(exc).__name__}: {exc}",
+                               "seconds": time.time() - t0})
+                print(f"UNPLACED {code} {acc} copy={k} n_res={n_res} "
+                      f"error={type(exc).__name__}: {exc}", flush=True)
+                break
             candidates = pipe.rotation_candidates
             s = sols[0]
             placed.append(pipe.place(s))
-            chains.append({"acc": acc, "copy": k, "n_res": n_res, "llg": float(s.llg_score),
+            chains.append({"acc": acc, "copy": k, "n_res": n_res, "failed": False,
+                           "llg": float(s.llg_score),
                            "llg_next": float(sols[1].llg_score) if len(sols) > 1 else None,
                            "tf": float(s.translation_score), "r_factor": float(s.r_factor),
                            "clash": float(getattr(s, "clash_fraction", 0.0) or 0.0),
@@ -197,6 +210,8 @@ def main():
             print(f"PLACED {code} {acc} copy={k} n_res={n_res} llg={s.llg_score:.0f} "
                   f"r={s.r_factor:.3f} clash={chains[-1]['clash']:.2f} "
                   f"seconds={chains[-1]['seconds']:.1f}", flush=True)
+    if not placed:
+        raise SystemExit(f"{code}: no component could be placed")
     seconds_place = time.time() - t_total
     # Warm timing: the first placement again, with every cache and kernel built.
     n_res, acc, path, copies = comps[0]
@@ -211,6 +226,12 @@ def main():
     ours = out / "torchref_placed.pdb"
     assemble(placed, [float(x) for x in data.cell.data.tolist()], data.spacegroup.hm, ours, out)
     pose = pose_vs_phaser(ours, phaser_pdb, data)
+    # `pose` has one row per chain of the assembled file, in the order the
+    # components were placed; the failed ones contributed no chain.
+    for entry, row in zip([c for c in chains if not c.get("failed")], pose):
+        entry["rot_deg"] = row["rot_deg"]
+        entry["trans_A"] = row["trans_A"]
+        entry["phaser_chain"] = row["phaser_chain"]
     summary = {"code": code, "spacegroup": data.spacegroup.hm, "n_chains": len(placed),
                "d_min": args.d_min, "d_max": args.d_max,
                "n_rotation_candidates": args.n_rotation_candidates,

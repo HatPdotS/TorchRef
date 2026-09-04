@@ -1,0 +1,1244 @@
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/torchref/cli/refine.py:21: UserWarning: TorchRef using user-specified 8 threads from TORCHREF_NUM_THREADS.
+  from torchref.cli._common import (
+================================================================================
+TorchRef LBFGS Refinement
+================================================================================
+Model:             /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/torchref_placed.pdb
+Structure factor:  /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/data/3E7P/3E7P.mtz
+Output directory:  /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr
+Refinement mode:   separate
+X-ray target:      ml
+Refinement cycles: 10
+Rigid-body step:   on (iterations/cutoff = 30)
+Device:            auto
+ADP mode:          isotropic
+Wavelength:        1 A
+Manual weights:    {"adp": 0.02}
+================================================================================
+
+Initializing refinement...
+found non-finite F values (NaN/Inf):  0
+found non-finite F_sigma values (NaN/Inf):  0
+Wilson outlier rejection: 0/19982 (0.0000%) of tested reflections flagged (0 too strong, 0 too weak)
+Loaded 1999 atoms
+Building restraints...
+Found 109 link definitions
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 10 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1206/3366 cells occupied, max 57 entries/cell
+  Built 34570 VDW restraints, 1572 symmetry contacts
+  Hydrogen topology: 1936 riding H atoms
+  H candidate pairs: 80149 (19558 H-H, 60591 H-heavy, 3691 symmetry)
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 20
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Bonds: 1805
+  Angles: 2023
+  Torsions: 502
+  Planes: 403
+  Chirals: 290
+
+INTER-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Peptide bonds: 248
+  Peptide angles: 754
+  Disulfide bonds: 0
+  Disulfide angles: 0
+  Disulfide torsions: 0
+  LINK bonds: 0
+
+BACKBONE TORSIONS:
+--------------------------------------------------------------------------------
+  Phi: 248
+  Psi: 248
+  Omega: 248
+  Ramachandran: 247
+
+VDW RESTRAINTS:
+--------------------------------------------------------------------------------
+  Non-bonded contacts: 34570 (32998 intra-ASU, 1572 symmetry)
+================================================================================
+Generated 1936 hydrogens
+ADP representation: isotropic, 3935 parameters, 5.8 work reflections each
+Initialized ScalerBase with 10 bins.
+Building restraints...
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 20
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Bonds: 3741
+  Angles: 6179
+  Torsions: 736
+  Planes: 680
+  Chirals: 290
+
+INTER-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+  Peptide bonds: 248
+  Peptide angles: 992
+  Disulfide bonds: 0
+  Disulfide angles: 0
+  Disulfide torsions: 0
+  LINK bonds: 0
+
+BACKBONE TORSIONS:
+--------------------------------------------------------------------------------
+  Phi: 248
+  Psi: 248
+  Omega: 248
+  Ramachandran: 247
+
+VDW RESTRAINTS:
+--------------------------------------------------------------------------------
+  Non-bonded contacts: 141419 (133873 intra-ASU, 7546 symmetry)
+================================================================================
+Initializing TotalGeometryTarget with component targets...
+Initializing TotalADPTarget with component targets: simu, locality, sigd
+Parametrization built for 5 unique atom types
+SfFFT: Using late symmetry (reciprocal space)
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.4655, rfree: 0.5089
+
+Final Scale Parameters: 
+  c_iso: tensor([0.7808, 0.9371, 0.3314, 0.0514, 0.0850, 0.0719])
+  U: tensor([ 0.4241,  0.4607,  0.4002, -0.0176, -0.0222, -0.0069])
+  solvent.log_k_solvent: -0.9916577935218811
+  solvent.log_ss_half: -4.0005202293396
+  solvent.log_n_exp: 1.658158540725708
+  solvent.phase_offset: -0.09165260940790176
+Initialized targets with xray_mode='ml'
+Applied manual group weights: {'xray': 1.0, 'geometry': 0.2, 'geometry/ramachandran': 0.0, 'adp': 0.02, 'adp/sigd': 1.0, 'adp/node_load': 10.0, 'adp/node_smoothness': 0.0}
+Refinement initialized successfully.
+
+Starting refinement with 10 macro cycles...
+
+Rigid-body step enabled: one multi-resolution rigid-body pass will run once at the start of refinement.
+
+
+--- Rigid-body step (once, at start) ---
+Switched to rigid-body parametrization: RigidXYZTensor(n_atoms=3935, n_chains=1) (1 chain(s))
+Filtering: 1023/23357 reflections in range [inf - 6.0] Å (1023 valid after all masks)
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.3593, rfree: 0.5516
+
+Final Scale Parameters: 
+  c_iso: tensor([-0.5424, -0.2833,  0.5646, -0.0993, -0.6085, -0.2549])
+  U: tensor([-0.1034, -0.1020, -0.0023,  0.0164, -0.1095,  0.1458])
+  solvent.log_k_solvent: -0.9153267741203308
+  solvent.log_ss_half: -3.837587356567383
+  solvent.log_n_exp: 1.7231833934783936
+  solvent.phase_offset: -0.15249235928058624
+  rigid-body d_min=6.00 (lbfgs, iters=30): Rwork=0.4120 Rfree=0.6108
+Filtering: 5571/23357 reflections in range [inf - 3.3768042933693647] Å (5571 valid after all masks)
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.3872, rfree: 0.4277
+
+Final Scale Parameters: 
+  c_iso: tensor([ 0.4633,  0.2222, -0.4549, -0.1868,  0.0835,  0.2048])
+  U: tensor([ 0.6842,  0.6958,  0.5520, -0.0250, -0.0126,  0.0174])
+  solvent.log_k_solvent: -1.0715713500976562
+  solvent.log_ss_half: -4.151883125305176
+  solvent.log_n_exp: 1.442574381828308
+  solvent.phase_offset: -0.03808742016553879
+  rigid-body d_min=3.38 (lbfgs, iters=30): Rwork=0.3834 Rfree=0.4178
+Filtering: 23357/23357 reflections in range [inf - 1.900467872619629] Å (23357 valid after all masks)
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.4141, rfree: 0.4423
+
+Final Scale Parameters: 
+  c_iso: tensor([0.9368, 1.0930, 0.3603, 0.0498, 0.0891, 0.0700])
+  U: tensor([ 0.4764,  0.4861,  0.4513, -0.0067, -0.0212,  0.0038])
+  solvent.log_k_solvent: -1.001774549484253
+  solvent.log_ss_half: -4.026041030883789
+  solvent.log_n_exp: 1.4588415622711182
+  solvent.phase_offset: -0.07121206074953079
+  rigid-body d_min=1.90 (lbfgs, iters=30): Rwork=0.4137 Rfree=0.4352
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.4107, rfree: 0.4408
+
+Final Scale Parameters: 
+  c_iso: tensor([1.1315, 1.3348, 0.4019, 0.0465, 0.0794, 0.0664])
+  U: tensor([ 5.6580e-01,  5.7700e-01,  5.4783e-01, -7.0684e-03, -2.6591e-02,
+         5.0748e-04])
+  solvent.log_k_solvent: -1.0192722082138062
+  solvent.log_ss_half: -4.054043292999268
+  solvent.log_n_exp: 1.372011661529541
+  solvent.phase_offset: -0.06651034951210022
+Initialized ScalerBase with 10 bins.
+Calculating initial scale factors using 10 bins.
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.4107, rfree: 0.4408
+
+Final Scale Parameters: 
+  c_iso: tensor([1.1335, 1.3367, 0.4026, 0.0463, 0.0794, 0.0662])
+  U: tensor([ 5.6661e-01,  5.7783e-01,  5.4866e-01, -7.0627e-03, -2.6540e-02,
+         4.7375e-04])
+  solvent.log_k_solvent: -1.019132137298584
+  solvent.log_ss_half: -4.05479097366333
+  solvent.log_n_exp: 1.3686069250106812
+  solvent.phase_offset: -0.06645507365465164
+
+============================================================
+LBFGS Refinement - Cycle 1/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.4107, rfree: 0.4408
+
+Final Scale Parameters: 
+  c_iso: tensor([1.1336, 1.3375, 0.4026, 0.0466, 0.0793, 0.0664])
+  U: tensor([ 5.6668e-01,  5.7786e-01,  5.4884e-01, -6.9880e-03, -2.6604e-02,
+         4.2525e-04])
+  solvent.log_k_solvent: -1.0193527936935425
+  solvent.log_ss_half: -4.054316997528076
+  solvent.log_n_exp: 1.3689441680908203
+  solvent.phase_offset: -0.06647436320781708
+After scaling: Rwork=0.4107, Rfree=0.4408
+  VDW rebuild: max drift 2.73 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                   475.3671   475.3671     0.0000
+    scaler_U                    11162.8    11162.8     0.0000
+    scaler_log_scale           222462.6   222462.6     0.0000
+    sigd                         2539.9     2539.9     0.0000
+    simu                         6540.4     6540.4     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -16265.3   -17050.9  -785.6475
+    bond                       -12253.8   -13158.3  -904.5088
+    chiral                    -160.8587  -180.9376   -20.0789
+    nonbonded                  -30645.8   -36606.6    -5960.8
+    planarity                   -8208.9    -8419.0  -210.0527
+    torsion                      4049.8     4129.8   +80.0513
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       136008.7   134037.6    -1971.0
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          4863.6     4863.6     0.0000
+    geometry                   -12697.0   -14257.2    -1560.2
+    xray                       136008.7   134037.6    -1971.0
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 2.73 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                   472.2738     8345.5    +7873.2
+    scaler_U                    11162.8    11162.8     0.0000
+    scaler_log_scale           222462.6   222462.6     0.0000
+    sigd                         2539.9     2638.3   +98.3613
+    simu                         6540.4    12544.0    +6003.6
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17050.9   -17050.9     0.0000
+    bond                       -13158.3   -13158.3     0.0000
+    chiral                    -180.9376  -180.9376     0.0000
+    nonbonded                  -36606.6   -36606.6     0.0000
+    planarity                   -8419.0    -8419.0     0.0000
+    torsion                      4129.8     4129.8     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       134037.6   131897.0    -2140.6
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          4863.6     5143.1  +279.5039
+    geometry                   -14257.2   -14257.2     0.0000
+    xray                       134037.6   131897.0    -2140.6
+────────────────────────────────────────────────────────────────────
+
+============================================================
+LBFGS Refinement - Cycle 2/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.3344, rfree: 0.3684
+
+Final Scale Parameters: 
+  c_iso: tensor([0.5693, 0.6564, 0.1888, 0.0387, 0.0901, 0.0776])
+  U: tensor([ 0.2918,  0.3343,  0.2822, -0.0058, -0.0129,  0.0048])
+  solvent.log_k_solvent: -1.0299386978149414
+  solvent.log_ss_half: -3.9567384719848633
+  solvent.log_n_exp: 1.4609251022338867
+  solvent.phase_offset: -0.06256470084190369
+After scaling: Rwork=0.3344, Rfree=0.3684
+  VDW rebuild: max drift 2.84 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                     8345.5     8345.5     0.0000
+    scaler_U                     3211.4     3211.4     0.0000
+    scaler_log_scale            43716.0    43716.0     0.0000
+    sigd                         2638.3     2638.3     0.0000
+    simu                        12544.0    12544.0     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17050.9   -17205.8  -154.9258
+    bond                       -13158.3   -12991.0  +167.3105
+    chiral                    -180.9376  -177.4103    +3.5273
+    nonbonded                  -36606.6   -36607.4    -0.8008
+    planarity                   -8419.0    -8466.0   -47.0674
+    torsion                      4129.8     4114.6   -15.2119
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       131957.1   130154.7    -1802.5
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1409.1     1409.1     0.0000
+    geometry                   -14257.2   -14266.6    -9.4335
+    xray                       131957.1   130154.7    -1802.5
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 2.84 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                     8310.1    12152.3    +3842.2
+    scaler_U                     3211.4     3211.4     0.0000
+    scaler_log_scale            43716.0    43716.0     0.0000
+    sigd                         2638.3     2662.1   +23.8484
+    simu                        12544.0    15970.7    +3426.7
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17205.8   -17205.8     0.0000
+    bond                       -12991.0   -12991.0     0.0000
+    chiral                    -177.4103  -177.4103     0.0000
+    nonbonded                  -36607.4   -36607.4     0.0000
+    planarity                   -8466.0    -8466.0     0.0000
+    torsion                      4114.6     4114.6     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       130154.7   129704.6  -450.0859
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1408.4     1554.3  +145.8557
+    geometry                   -14266.6   -14266.6     0.0000
+    xray                       130154.7   129704.6  -450.0859
+────────────────────────────────────────────────────────────────────
+
+============================================================
+LBFGS Refinement - Cycle 3/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2955, rfree: 0.3388
+
+Final Scale Parameters: 
+  c_iso: tensor([0.5621, 0.6193, 0.1662, 0.0203, 0.0901, 0.0781])
+  U: tensor([ 0.2879,  0.3279,  0.2674, -0.0046, -0.0119,  0.0078])
+  solvent.log_k_solvent: -1.0476839542388916
+  solvent.log_ss_half: -3.958531618118286
+  solvent.log_n_exp: 1.4157805442810059
+  solvent.phase_offset: -0.05661573261022568
+After scaling: Rwork=0.2955, Rfree=0.3388
+  VDW rebuild: max drift 2.95 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    12152.3    12152.3     0.0000
+    scaler_U                     3037.0     3037.0     0.0000
+    scaler_log_scale            38208.1    38208.1     0.0000
+    sigd                         2662.1     2662.1     0.0000
+    simu                        15970.7    15970.7     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17205.8   -17430.6  -224.8164
+    bond                       -12991.0   -13293.7  -302.6826
+    chiral                    -177.4103  -179.1372    -1.7269
+    nonbonded                  -36607.4   -36635.1   -27.6562
+    planarity                   -8466.0    -8503.2   -37.1641
+    torsion                      4114.6     4138.7   +24.1172
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       129713.4   129053.8  -659.5859
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1440.6     1440.6     0.0000
+    geometry                   -14266.6   -14380.6  -113.9861
+    xray                       129713.4   129053.8  -659.5859
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 2.95 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    12113.5    12773.4  +659.9004
+    scaler_U                     3037.0     3037.0     0.0000
+    scaler_log_scale            38208.1    38208.1     0.0000
+    sigd                         2662.1     2643.9   -18.2087
+    simu                        15970.7    16433.5  +462.8301
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17430.6   -17430.6     0.0000
+    bond                       -13293.7   -13293.7     0.0000
+    chiral                    -179.1372  -179.1372     0.0000
+    nonbonded                  -36635.1   -36635.1     0.0000
+    planarity                   -8503.2    -8503.2     0.0000
+    torsion                      4138.7     4138.7     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       129053.8   128897.8  -156.0000
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1439.8     1461.9   +22.0904
+    geometry                   -14380.6   -14380.6     0.0000
+    xray                       129053.8   128897.8  -156.0000
+────────────────────────────────────────────────────────────────────
+
+============================================================
+LBFGS Refinement - Cycle 4/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2797, rfree: 0.3227
+
+Final Scale Parameters: 
+  c_iso: tensor([0.5384, 0.6076, 0.1465, 0.0213, 0.0821, 0.0783])
+  U: tensor([ 0.2843,  0.3255,  0.2621, -0.0069, -0.0103,  0.0060])
+  solvent.log_k_solvent: -1.054819941520691
+  solvent.log_ss_half: -3.949155807495117
+  solvent.log_n_exp: 1.3903110027313232
+  solvent.phase_offset: -0.046639420092105865
+After scaling: Rwork=0.2797, Rfree=0.3227
+  VDW rebuild: max drift 3.08 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    12773.4    12773.4     0.0000
+    scaler_U                     2959.4     2959.4     0.0000
+    scaler_log_scale            35489.9    35489.9     0.0000
+    sigd                         2643.9     2643.9     0.0000
+    simu                        16433.5    16433.5     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17430.6   -17353.3   +77.3242
+    bond                       -13293.7   -13211.2   +82.4912
+    chiral                    -179.1372  -176.4669    +2.6703
+    nonbonded                  -36635.1   -36573.4   +61.7148
+    planarity                   -8503.2    -8517.2   -14.0010
+    torsion                      4138.7     4132.4    -6.3091
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       128919.4   128260.2  -659.2109
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1406.0     1406.0     0.0000
+    geometry                   -14380.6   -14339.8   +40.7780
+    xray                       128919.4   128260.2  -659.2109
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 3.08 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    12773.1    12999.5  +226.4170
+    scaler_U                     2959.4     2959.4     0.0000
+    scaler_log_scale            35489.9    35489.9     0.0000
+    sigd                         2643.9     2629.0   -14.9434
+    simu                        16433.5    16852.9  +419.3281
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17353.3   -17353.3     0.0000
+    bond                       -13211.2   -13211.2     0.0000
+    chiral                    -176.4669  -176.4669     0.0000
+    nonbonded                  -36573.4   -36573.4     0.0000
+    planarity                   -8517.2    -8517.2     0.0000
+    torsion                      4132.4     4132.4     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       128260.2   128170.5   -89.7500
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1406.0     1418.6   +12.6160
+    geometry                   -14339.8   -14339.8     0.0000
+    xray                       128260.2   128170.5   -89.7500
+────────────────────────────────────────────────────────────────────
+
+============================================================
+LBFGS Refinement - Cycle 5/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2684, rfree: 0.3110
+
+Final Scale Parameters: 
+  c_iso: tensor([0.4769, 0.5336, 0.1270, 0.0173, 0.0793, 0.0777])
+  U: tensor([ 0.2643,  0.3010,  0.2358, -0.0080, -0.0127,  0.0078])
+  solvent.log_k_solvent: -1.0586801767349243
+  solvent.log_ss_half: -3.92745304107666
+  solvent.log_n_exp: 1.472819209098816
+  solvent.phase_offset: -0.0478297583758831
+After scaling: Rwork=0.2684, Rfree=0.3110
+  VDW rebuild: max drift 3.11 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    12999.5    12999.5     0.0000
+    scaler_U                     2498.2     2498.2     0.0000
+    scaler_log_scale            26471.4    26471.4     0.0000
+    sigd                         2629.0     2629.0     0.0000
+    simu                        16852.9    16852.9     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17353.3   -17406.3   -52.9492
+    bond                       -13211.2   -13279.5   -68.3369
+    chiral                    -176.4669  -178.7127    -2.2458
+    nonbonded                  -36573.4   -36548.6   +24.7539
+    planarity                   -8517.2    -8533.1   -15.9355
+    torsion                      4132.4     4139.5    +7.0557
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       128210.7   127909.8  -300.9688
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1229.0     1229.0     0.0000
+    geometry                   -14339.8   -14361.4   -21.5316
+    xray                       128210.7   127909.8  -300.9688
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 3.11 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13017.3    13387.7  +370.3730
+    scaler_U                     2498.2     2498.2     0.0000
+    scaler_log_scale            26471.4    26471.4     0.0000
+    sigd                         2629.0     2619.7    -9.2659
+    simu                        16852.9    17153.2  +300.3535
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17406.3   -17406.3     0.0000
+    bond                       -13279.5   -13279.5     0.0000
+    chiral                    -178.7127  -178.7127     0.0000
+    nonbonded                  -36548.6   -36548.6     0.0000
+    planarity                   -8533.1    -8533.1     0.0000
+    torsion                      4139.5     4139.5     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127909.8   127860.7   -49.1094
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1229.4     1242.6   +13.2292
+    geometry                   -14361.4   -14361.4     0.0000
+    xray                       127909.8   127860.7   -49.1094
+────────────────────────────────────────────────────────────────────
+
+============================================================
+LBFGS Refinement - Cycle 6/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2620, rfree: 0.3044
+
+Final Scale Parameters: 
+  c_iso: tensor([0.5657, 0.6451, 0.1446, 0.0154, 0.0753, 0.0748])
+  U: tensor([ 0.3111,  0.3489,  0.2797, -0.0087, -0.0127,  0.0088])
+  solvent.log_k_solvent: -1.0671616792678833
+  solvent.log_ss_half: -3.959782123565674
+  solvent.log_n_exp: 1.4134198427200317
+  solvent.phase_offset: -0.04036300256848335
+After scaling: Rwork=0.2620, Rfree=0.3044
+  VDW rebuild: max drift 3.17 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13387.7    13387.7     0.0000
+    scaler_U                     3437.9     3437.9     0.0000
+    scaler_log_scale            40872.9    40872.9     0.0000
+    sigd                         2619.7     2619.7     0.0000
+    simu                        17153.2    17153.2     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17406.3   -17326.8   +79.4512
+    bond                       -13279.5   -13228.2   +51.2988
+    chiral                    -178.7127  -176.8082    +1.9045
+    nonbonded                  -36548.6   -36526.9   +21.7461
+    planarity                   -8533.1    -8533.1    +0.0029
+    torsion                      4139.5     4136.7    -2.7593
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127898.7   127579.1  -319.6875
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1549.4     1549.4     0.0000
+    geometry                   -14361.4   -14331.0   +30.3291
+    xray                       127898.7   127579.1  -319.6875
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 3.17 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13407.8    13182.6  -225.1836
+    scaler_U                     3437.9     3437.9     0.0000
+    scaler_log_scale            40872.9    40872.9     0.0000
+    sigd                         2619.7     2613.0    -6.6829
+    simu                        17153.2    16706.0  -447.1836
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17326.8   -17326.8     0.0000
+    bond                       -13228.2   -13228.2     0.0000
+    chiral                    -176.8082  -176.8082     0.0000
+    nonbonded                  -36526.9   -36526.9     0.0000
+    planarity                   -8533.1    -8533.1     0.0000
+    torsion                      4136.7     4136.7     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127579.1   127596.1   +17.0781
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1549.8     1536.2   -13.5810
+    geometry                   -14331.0   -14331.0     0.0000
+    xray                       127579.1   127596.1   +17.0781
+────────────────────────────────────────────────────────────────────
+
+============================================================
+LBFGS Refinement - Cycle 7/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2571, rfree: 0.3032
+
+Final Scale Parameters: 
+  c_iso: tensor([0.5731, 0.6568, 0.1466, 0.0162, 0.0750, 0.0753])
+  U: tensor([ 0.3210,  0.3589,  0.2871, -0.0089, -0.0128,  0.0112])
+  solvent.log_k_solvent: -1.0735783576965332
+  solvent.log_ss_half: -3.9459288120269775
+  solvent.log_n_exp: 1.4332045316696167
+  solvent.phase_offset: -0.0376102551817894
+After scaling: Rwork=0.2571, Rfree=0.3032
+  VDW rebuild: max drift 3.13 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13182.6    13182.6     0.0000
+    scaler_U                     3640.6     3640.6     0.0000
+    scaler_log_scale            42469.8    42469.8     0.0000
+    sigd                         2613.0     2613.0     0.0000
+    simu                        16706.0    16706.0     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17326.8   -17403.5   -76.7266
+    bond                       -13228.2   -13289.5   -61.2373
+    chiral                    -176.8082  -179.2116    -2.4034
+    nonbonded                  -36526.9   -36542.4   -15.5312
+    planarity                   -8533.1    -8543.1    -9.9961
+    torsion                      4136.7     4141.8    +5.0386
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127676.0   127438.1  -237.8125
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1572.2     1572.2     0.0000
+    geometry                   -14331.0   -14363.2   -32.1714
+    xray                       127676.0   127438.1  -237.8125
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 3.13 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13201.6    13297.2   +95.6436
+    scaler_U                     3640.6     3640.6     0.0000
+    scaler_log_scale            42469.8    42469.8     0.0000
+    sigd                         2613.0     2612.6    -0.4294
+    simu                        16706.0    16484.8  -221.2266
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17403.5   -17403.5     0.0000
+    bond                       -13289.5   -13289.5     0.0000
+    chiral                    -179.2116  -179.2116     0.0000
+    nonbonded                  -36542.4   -36542.4     0.0000
+    planarity                   -8543.1    -8543.1     0.0000
+    torsion                      4141.8     4141.8     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127438.1   127457.5   +19.3594
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1572.6     1570.1    -2.5203
+    geometry                   -14363.2   -14363.2     0.0000
+    xray                       127438.1   127457.5   +19.3594
+────────────────────────────────────────────────────────────────────
+
+============================================================
+LBFGS Refinement - Cycle 8/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2549, rfree: 0.3011
+
+Final Scale Parameters: 
+  c_iso: tensor([0.5727, 0.6511, 0.1524, 0.0153, 0.0775, 0.0745])
+  U: tensor([ 0.3254,  0.3661,  0.2939, -0.0075, -0.0125,  0.0093])
+  solvent.log_k_solvent: -1.071265459060669
+  solvent.log_ss_half: -3.9414117336273193
+  solvent.log_n_exp: 1.4312183856964111
+  solvent.phase_offset: -0.02494453638792038
+After scaling: Rwork=0.2549, Rfree=0.3011
+  VDW rebuild: max drift 3.15 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13297.2    13297.2     0.0000
+    scaler_U                     3780.3     3780.3     0.0000
+    scaler_log_scale            42255.6    42255.6     0.0000
+    sigd                         2612.6     2612.6     0.0000
+    simu                        16484.8    16484.8     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17403.5   -17353.5   +49.9961
+    bond                       -13289.5   -13254.2   +35.2480
+    chiral                    -179.2116  -177.7345    +1.4771
+    nonbonded                  -36542.4   -36532.7    +9.7344
+    planarity                   -8543.1    -8542.9    +0.2285
+    torsion                      4141.8     4142.9    +1.1865
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127568.4   127247.9  -320.5000
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1568.6     1568.6     0.0000
+    geometry                   -14363.2   -14343.6   +19.5740
+    xray                       127568.4   127247.9  -320.5000
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 3.15 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13302.8    13147.6  -155.1787
+    scaler_U                     3780.3     3780.3     0.0000
+    scaler_log_scale            42255.6    42255.6     0.0000
+    sigd                         2612.6     2614.6    +1.9648
+    simu                        16484.8    16131.6  -353.2236
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17353.5   -17353.5     0.0000
+    bond                       -13254.2   -13254.2     0.0000
+    chiral                    -177.7345  -177.7345     0.0000
+    nonbonded                  -36532.7   -36532.7     0.0000
+    planarity                   -8542.9    -8542.9     0.0000
+    torsion                      4142.9     4142.9     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127247.9   127276.7   +28.8125
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1568.7     1558.6   -10.1287
+    geometry                   -14343.6   -14343.6     0.0000
+    xray                       127247.9   127276.7   +28.8125
+────────────────────────────────────────────────────────────────────
+
+============================================================
+LBFGS Refinement - Cycle 9/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2523, rfree: 0.2973
+
+Final Scale Parameters: 
+  c_iso: tensor([0.6267, 0.7205, 0.1649, 0.0198, 0.0762, 0.0782])
+  U: tensor([ 0.3581,  0.3978,  0.3265, -0.0072, -0.0137,  0.0106])
+  solvent.log_k_solvent: -1.0773701667785645
+  solvent.log_ss_half: -3.9550728797912598
+  solvent.log_n_exp: 1.399653673171997
+  solvent.phase_offset: -0.01040798518806696
+After scaling: Rwork=0.2523, Rfree=0.2973
+  VDW rebuild: max drift 3.08 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13147.6    13147.6     0.0000
+    scaler_U                     4560.8     4560.8     0.0000
+    scaler_log_scale            52287.0    52287.0     0.0000
+    sigd                         2614.6     2614.6     0.0000
+    simu                        16131.6    16131.6     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17353.5   -17394.0   -40.4531
+    bond                       -13254.2   -13276.9   -22.6543
+    chiral                    -177.7345  -178.6584    -0.9239
+    nonbonded                  -36532.7   -36542.0    -9.3398
+    planarity                   -8542.9    -8548.4    -5.4893
+    torsion                      4142.9     4148.7    +5.7612
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127397.3   127149.2  -248.1250
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1774.8     1774.8     0.0000
+    geometry                   -14343.6   -14358.2   -14.6194
+    xray                       127397.3   127149.2  -248.1250
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 3.08 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13150.7    13290.0  +139.3701
+    scaler_U                     4560.8     4560.8     0.0000
+    scaler_log_scale            52287.0    52287.0     0.0000
+    sigd                         2614.6     2618.8    +4.2388
+    simu                        16131.6    16019.4  -112.2383
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17394.0   -17394.0     0.0000
+    bond                       -13276.9   -13276.9     0.0000
+    chiral                    -178.6584  -178.6584     0.0000
+    nonbonded                  -36542.0   -36542.0     0.0000
+    planarity                   -8548.4    -8548.4     0.0000
+    torsion                      4148.7     4148.7     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127149.2   127170.2   +21.0312
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1774.9     1775.5    +0.6274
+    geometry                   -14358.2   -14358.2     0.0000
+    xray                       127149.2   127170.2   +21.0312
+────────────────────────────────────────────────────────────────────
+
+============================================================
+LBFGS Refinement - Cycle 10/10
+============================================================
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2503, rfree: 0.2942
+
+Final Scale Parameters: 
+  c_iso: tensor([0.6238, 0.7133, 0.1661, 0.0185, 0.0772, 0.0774])
+  U: tensor([ 0.3649,  0.4051,  0.3339, -0.0069, -0.0143,  0.0109])
+  solvent.log_k_solvent: -1.0739015340805054
+  solvent.log_ss_half: -3.960533618927002
+  solvent.log_n_exp: 1.3889092206954956
+  solvent.phase_offset: -0.013565950095653534
+After scaling: Rwork=0.2503, Rfree=0.2942
+  VDW rebuild: max drift 3.10 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  XYZ Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13290.0    13290.0     0.0000
+    scaler_U                     4743.8     4743.8     0.0000
+    scaler_log_scale            51498.3    51498.3     0.0000
+    sigd                         2618.8     2618.8     0.0000
+    simu                        16019.4    16019.4     0.0000
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17394.0   -17344.7   +49.3105
+    bond                       -13276.9   -13251.2   +25.6367
+    chiral                    -178.6584  -177.5410    +1.1174
+    nonbonded                  -36542.0   -36536.3    +5.7305
+    planarity                   -8548.4    -8551.7    -3.3027
+    torsion                      4148.7     4150.2    +1.4937
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127312.8   127013.0  -299.8438
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1763.4     1763.4     0.0000
+    geometry                   -14358.2   -14342.2   +15.9969
+    xray                       127312.8   127013.0  -299.8438
+────────────────────────────────────────────────────────────────────
+  VDW rebuild: max drift 3.10 Å > threshold 1.00 Å
+
+Building VDW (non-bonded) restraints...
+  Symmetry expansion: 12 valid (symop, offset) combos
+  Grid: [9, 17, 22], 1545/3366 cells occupied, max 93 entries/cell
+  Built 141419 VDW restraints, 7546 symmetry contacts
+
+────────────────────────────────────────────────────────────────────
+  ADP Refinement
+────────────────────────────────────────────────────────────────────
+
+  adp (weight: 0.0200)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    locality                    13295.7    13315.3   +19.5879
+    scaler_U                     4743.8     4743.8     0.0000
+    scaler_log_scale            51498.3    51498.3     0.0000
+    sigd                         2618.8     2623.1    +4.2668
+    simu                        16019.4    15753.0  -266.3418
+
+  geometry (weight: 0.2000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    angle                      -17344.7   -17344.7     0.0000
+    bond                       -13251.2   -13251.2     0.0000
+    chiral                    -177.5410  -177.5410     0.0000
+    nonbonded                  -36536.3   -36536.3     0.0000
+    planarity                   -8551.7    -8551.7     0.0000
+    torsion                      4150.2     4150.2     0.0000
+
+  other (weight: 1.0000)
+  ────────────────────────────────────────────────────────────────
+    Metric                       Before      After     Change
+    xray                       127013.0   127049.4   +36.4922
+
+  Group Totals
+  ────────────────────────────────────────────────────────────────
+    Group                        Before      After     Change
+    adp                          1763.5     1758.7    -4.8497
+    geometry                   -14342.2   -14342.2     0.0000
+    xray                       127013.0   127049.4   +36.4922
+────────────────────────────────────────────────────────────────────
+Calculating initial scale factors using 10 bins.
+Refining scales with LBFGS...
+Scale refinement complete. rwork: 0.2483, rfree: 0.2946
+
+Final Scale Parameters: 
+  c_iso: tensor([0.6182, 0.7124, 0.1631, 0.0229, 0.0777, 0.0792])
+  U: tensor([ 0.3717,  0.4125,  0.3406, -0.0063, -0.0145,  0.0108])
+  solvent.log_k_solvent: -1.077268362045288
+  solvent.log_ss_half: -3.963327407836914
+  solvent.log_n_exp: 1.377195119857788
+  solvent.phase_offset: -0.007471870165318251
+
+Refinement completed successfully.
+
+Saving results to /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr...
+  Refined structure (PDB): /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr/refined.pdb
+  Refined structure (mmCIF): /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr/refined.cif
+Added map coefficients:
+  2Fo-Fc: FWT, PHWT
+  Fo-Fc: DELFWT, PHDELWT
+  Resolution range: 1.90 - 19.47 Å
+✓ Wrote MTZ file: /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr/refined.mtz
+  Reflections: 23357
+  Columns: H, K, L, F-obs, SIGF-obs, R-free-flags, FWT, PHWT, DELFWT, PHDELWT, F-model, PH-model
+  Refined structure factors: /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr/refined.mtz
+  Refinement history: /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr/refinement_history.json
+
+================================================================================
+Refinement Summary
+================================================================================
+R-work:  0.2483 (22897 reflections)
+R-free:  0.2946 (460 reflections)
+NLL work: 127209.02
+NLL test: 2603.41
+================================================================================
+
+Output files:
+  - /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr/refined.pdb
+  - /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr/refined.cif
+  - /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr/refined.mtz
+  - /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/benchmarks/af_mr/runs/dmin4.0/3E7P/refine_torchref_mr/refinement_history.json
+
+Refinement completed successfully!
+
+Timing: 219.8s wall, 273.0s CPU
