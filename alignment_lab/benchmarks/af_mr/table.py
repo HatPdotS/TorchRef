@@ -61,6 +61,54 @@ def placement(d, rot_tol, trans_tol):
     return placed_res / total, worst
 
 
+def compare(args):
+    """Two windows, paired on the structures both ran.
+
+    Paired, because the structures differ enormously in difficulty: the median
+    of the per-structure differences is the number, not the difference of the
+    two medians.
+    """
+    a, b = load(args.tag), load(args.compare)
+    both = sorted(set(a) & set(b))
+    if not both:
+        raise SystemExit(f"no structure ran under both {args.tag} and {args.compare}")
+    hdr = (f"{'code':6s} {'placed A':>9s} {'placed B':>9s} "
+           f"{'R-free A':>9s} {'R-free B':>9s} {'B - A':>8s}")
+    print(f"A = {args.tag}, B = {args.compare}\n")
+    print(hdr)
+    print("-" * len(hdr))
+    gained, lost, diffs = [], [], []
+    for c in both:
+        fa, _ = placement(a[c], args.rot_tol, args.trans_tol)
+        fb, _ = placement(b[c], args.rot_tol, args.trans_tol)
+        ra = (a[c].get("refine_torchref_mr") or {}).get("R_free")
+        rb = (b[c].get("refine_torchref_mr") or {}).get("R_free")
+        d = (rb - ra) if (ra is not None and rb is not None) else None
+        # Only compare R-free where both windows placed the whole structure;
+        # elsewhere the number measures the misplacement, not the window.
+        if d is not None and fa >= 0.999 and fb >= 0.999:
+            diffs.append(d)
+        if fb >= 0.999 > fa:
+            gained.append(c)
+        if fa >= 0.999 > fb:
+            lost.append(c)
+        print(f"{c:6s} {fa*100:8.0f}% {fb*100:8.0f}% "
+              f"{ra if ra is not None else float('nan'):9.4f} "
+              f"{rb if rb is not None else float('nan'):9.4f} "
+              f"{d if d is not None else float('nan'):+8.4f}")
+    print(f"\n{len(both)} structures ran under both")
+    print(f"  fully placed by {args.compare} but not {args.tag}: "
+          f"{len(gained)} {gained if gained else ''}")
+    print(f"  fully placed by {args.tag} but not {args.compare}: "
+          f"{len(lost)} {lost if lost else ''}")
+    if diffs:
+        diffs.sort()
+        med = diffs[len(diffs) // 2]
+        print(f"  median paired R-free difference over the {len(diffs)} placed by both "
+              f"({args.compare} minus {args.tag}): {med:+.4f}")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -69,7 +117,12 @@ def main():
     ap.add_argument("--trans-tol", type=float, default=2.0)
     ap.add_argument("--close", type=float, default=0.010,
                     help="R-free within this of the Phaser arm counts as a match")
+    ap.add_argument("--compare", metavar="TAG",
+                    help="second tag to compare against, paired per structure")
     args = ap.parse_args()
+
+    if args.compare:
+        return compare(args)
 
     runs = load(args.tag)
     if not runs:
