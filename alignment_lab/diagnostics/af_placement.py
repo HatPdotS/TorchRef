@@ -212,6 +212,9 @@ def main():
     assemble(placed, [float(x) for x in data.cell.data.tolist()], data.spacegroup.hm, ours, out)
     pose = pose_vs_phaser(ours, phaser_pdb, data)
     summary = {"code": code, "spacegroup": data.spacegroup.hm, "n_chains": len(placed),
+               "d_min": args.d_min, "d_max": args.d_max,
+               "n_rotation_candidates": args.n_rotation_candidates,
+               "n_cycles": args.n_cycles,
                "seconds_place": seconds_place, "seconds_warm": seconds_warm, "chains": chains, "pose_vs_phaser": pose}
 
     if not args.no_refine:
