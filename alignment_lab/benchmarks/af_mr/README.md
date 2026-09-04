@@ -50,6 +50,17 @@ were once wrong here:
   its file hands the rigid-body step two bodies where ours gives one. On 1BIA
   that is worth 0.10 in R-free by itself.
 
+## When a component cannot be placed at all
+
+The pipeline raises when no translation peak for a component survives the
+packing rejection. The harness records that component as unplaced, keeps the
+components that did place, and refines them, so one bad component does not cost
+the structure; the run prints `UNPLACED` and the summary carries `failed: true`
+and the error. `placed` is scored over every component the run attempted, so an
+unplaceable component counts against the structure exactly as a misoriented one
+does. 3W3W is the case that prompted this: its 1028-residue chain places, its
+second component finds no acceptable peak.
+
 ## Known limits
 
 * `pose_vs_phaser` groups Phaser's split chains into copies by C-alpha count
