@@ -1,0 +1,94 @@
+{
+ "code": "6GP7",
+ "spacegroup": "P 21 21 21",
+ "n_chains": 3,
+ "d_min": 4.0,
+ "d_max": 15.0,
+ "n_rotation_candidates": 10,
+ "n_cycles": 10,
+ "seconds_place": 1952.3123710155487,
+ "seconds_warm": 0.8158836364746094,
+ "chains": [
+  {
+   "acc": "P0CI74",
+   "copy": 0,
+   "n_res": 59,
+   "llg": 44.8651123046875,
+   "llg_next": 31.52398681640625,
+   "tf": 873.151611328125,
+   "r_factor": 0.5671388506889343,
+   "clash": 0.0,
+   "seconds": 1942.7065298557281
+  },
+  {
+   "acc": "P0CI74",
+   "copy": 1,
+   "n_res": 59,
+   "llg": 7.296875,
+   "llg_next": 6.8974609375,
+   "tf": 878.2667236328125,
+   "r_factor": 0.5761805176734924,
+   "clash": 0.0,
+   "seconds": 0.26003551483154297
+  },
+  {
+   "acc": "P39793",
+   "copy": 0,
+   "n_res": 17,
+   "llg": 6.3514404296875,
+   "llg_next": 5.32012939453125,
+   "tf": 700.069580078125,
+   "r_factor": 0.5800004005432129,
+   "clash": 0.0,
+   "seconds": 0.6281778812408447
+  }
+ ],
+ "pose_vs_phaser": [
+  {
+   "chain": "A",
+   "phaser_chain": "A",
+   "rot_deg": 3.532362063848083,
+   "trans_A": 0.14692693440781615
+  },
+  {
+   "chain": "B",
+   "phaser_chain": "B",
+   "rot_deg": 26.24003648499675,
+   "trans_A": 9.603399760513762
+  },
+  {
+   "chain": "C",
+   "phaser_chain": null,
+   "rot_deg": Infinity,
+   "trans_A": Infinity
+  }
+ ],
+ "refine_torchref_mr": {
+  "rc": 0,
+  "seconds": 446.7444553375244,
+  "R_work": 0.4860016405582428,
+  "R_free": 0.5160517692565918,
+  "NLL_work": 42188.78515625,
+  "NLL_test": 841.32470703125,
+  "n_reflections_work": 10945,
+  "n_reflections_test": 220,
+  "initial": {
+   "R_work": 0.5433877110481262,
+   "R_free": 0.521433413028717
+  }
+ },
+ "refine_phaser_mr": {
+  "rc": 0,
+  "seconds": 78.63496112823486,
+  "R_work": 0.2971588969230652,
+  "R_free": 0.324593722820282,
+  "NLL_work": 38554.90625,
+  "NLL_test": 797.5037231445312,
+  "n_reflections_work": 10945,
+  "n_reflections_test": 220,
+  "initial": {
+   "R_work": 0.44046226143836975,
+   "R_free": 0.3921915888786316
+  }
+ }
+}

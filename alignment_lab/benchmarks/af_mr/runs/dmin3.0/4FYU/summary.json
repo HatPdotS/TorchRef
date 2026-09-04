@@ -1,0 +1,94 @@
+{
+ "code": "4FYU",
+ "spacegroup": "I 4 2 2",
+ "n_chains": 3,
+ "d_min": 3.0,
+ "d_max": 15.0,
+ "n_rotation_candidates": 10,
+ "n_cycles": 10,
+ "seconds_place": 786.8986096382141,
+ "seconds_warm": 1.5972795486450195,
+ "chains": [
+  {
+   "acc": "Q8ISA0",
+   "copy": 0,
+   "n_res": 142,
+   "llg": 219.9892578125,
+   "llg_next": 166.80224609375,
+   "tf": 2943.381591796875,
+   "r_factor": 0.54506915807724,
+   "clash": 0.0,
+   "seconds": 773.7967824935913
+  },
+  {
+   "acc": "Q8ISA0",
+   "copy": 1,
+   "n_res": 142,
+   "llg": 612.66943359375,
+   "llg_next": 446.833984375,
+   "tf": 6252.42041015625,
+   "r_factor": 0.49182671308517456,
+   "clash": 0.0,
+   "seconds": 1.7464044094085693
+  },
+  {
+   "acc": "Q8ISA0",
+   "copy": 2,
+   "n_res": 142,
+   "llg": 899.14501953125,
+   "llg_next": 347.2373046875,
+   "tf": 11942.177734375,
+   "r_factor": 0.4369741976261139,
+   "clash": 0.0,
+   "seconds": 2.1949236392974854
+  }
+ ],
+ "pose_vs_phaser": [
+  {
+   "chain": "A",
+   "phaser_chain": "A",
+   "rot_deg": 1.0267676582441543,
+   "trans_A": 0.16825274838376025
+  },
+  {
+   "chain": "B",
+   "phaser_chain": "B",
+   "rot_deg": 1.2461698009943374,
+   "trans_A": 0.18327561238205942
+  },
+  {
+   "chain": "C",
+   "phaser_chain": "C",
+   "rot_deg": 1.0276243184473222,
+   "trans_A": 0.09616429789810371
+  }
+ ],
+ "refine_torchref_mr": {
+  "rc": 0,
+  "seconds": 969.9000968933105,
+  "R_work": 0.26936590671539307,
+  "R_free": 0.30656635761260986,
+  "NLL_work": 154962.53125,
+  "NLL_test": 3207.8359375,
+  "n_reflections_work": 34495,
+  "n_reflections_test": 696,
+  "initial": {
+   "R_work": 0.4021701514720917,
+   "R_free": 0.39829427003860474
+  }
+ },
+ "refine_phaser_mr": {
+  "rc": 0,
+  "seconds": 200.0628764629364,
+  "R_work": 0.2691301107406616,
+  "R_free": 0.30553773045539856,
+  "NLL_work": 154897.421875,
+  "NLL_test": 3207.03515625,
+  "n_reflections_work": 34495,
+  "n_reflections_test": 696,
+  "initial": {
+   "R_work": 0.3976190984249115,
+   "R_free": 0.3950646221637726
+  }
+ }
+}

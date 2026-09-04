@@ -1,0 +1,111 @@
+{
+ "code": "5E15",
+ "spacegroup": "P 1 21 1",
+ "n_chains": 4,
+ "d_min": 3.0,
+ "d_max": 15.0,
+ "n_rotation_candidates": 10,
+ "n_cycles": 10,
+ "seconds_place": 74.58350014686584,
+ "seconds_warm": 0.8268458843231201,
+ "chains": [
+  {
+   "acc": "P03372",
+   "copy": 0,
+   "n_res": 233,
+   "llg": 153.09033203125,
+   "llg_next": 138.96044921875,
+   "tf": 3708.361572265625,
+   "r_factor": 0.5181893706321716,
+   "clash": 0.0,
+   "seconds": 62.61298704147339
+  },
+  {
+   "acc": "P03372",
+   "copy": 1,
+   "n_res": 233,
+   "llg": 399.10302734375,
+   "llg_next": 167.5478515625,
+   "tf": 6750.7109375,
+   "r_factor": 0.46788907051086426,
+   "clash": 0.0,
+   "seconds": 0.598707914352417
+  },
+  {
+   "acc": "Q15596",
+   "copy": 0,
+   "n_res": 14,
+   "llg": -1.2841796875,
+   "llg_next": -4.03369140625,
+   "tf": 2583.86181640625,
+   "r_factor": 0.46356201171875,
+   "clash": 0.0,
+   "seconds": 0.9598467350006104
+  },
+  {
+   "acc": "Q15596",
+   "copy": 1,
+   "n_res": 14,
+   "llg": -8.35400390625,
+   "llg_next": -8.623046875,
+   "tf": 1515.0562744140625,
+   "r_factor": 0.46379804611206055,
+   "clash": 0.0,
+   "seconds": 0.6698653697967529
+  }
+ ],
+ "pose_vs_phaser": [
+  {
+   "chain": "A",
+   "phaser_chain": "A",
+   "rot_deg": 1.9018623126317533,
+   "trans_A": 0.09837102971436483
+  },
+  {
+   "chain": "B",
+   "phaser_chain": "B",
+   "rot_deg": 1.9012291952158693,
+   "trans_A": 0.17115765354042992
+  },
+  {
+   "chain": "C",
+   "phaser_chain": null,
+   "rot_deg": Infinity,
+   "trans_A": Infinity
+  },
+  {
+   "chain": "D",
+   "phaser_chain": null,
+   "rot_deg": Infinity,
+   "trans_A": Infinity
+  }
+ ],
+ "refine_torchref_mr": {
+  "rc": 0,
+  "seconds": 1774.5030500888824,
+  "R_work": 0.2965075671672821,
+  "R_free": 0.3602789044380188,
+  "NLL_work": 43708.1640625,
+  "NLL_test": 904.230712890625,
+  "n_reflections_work": 22046,
+  "n_reflections_test": 436,
+  "initial": {
+   "R_work": 0.4310339689254761,
+   "R_free": 0.41866323351860046
+  }
+ },
+ "refine_phaser_mr": {
+  "rc": 0,
+  "seconds": 464.51281213760376,
+  "R_work": 0.2876765727996826,
+  "R_free": 0.3456021547317505,
+  "NLL_work": 43465.703125,
+  "NLL_test": 900.41650390625,
+  "n_reflections_work": 22046,
+  "n_reflections_test": 436,
+  "initial": {
+   "R_work": 0.4206305146217346,
+   "R_free": 0.4113800823688507
+  }
+ }
+}

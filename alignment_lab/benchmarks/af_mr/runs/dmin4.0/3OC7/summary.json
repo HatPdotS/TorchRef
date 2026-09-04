@@ -1,0 +1,60 @@
+{
+ "code": "3OC7",
+ "spacegroup": "R 3",
+ "n_chains": 1,
+ "d_min": 4.0,
+ "d_max": 15.0,
+ "n_rotation_candidates": 10,
+ "n_cycles": 10,
+ "seconds_place": 1477.4042208194733,
+ "seconds_warm": 1.0106806755065918,
+ "chains": [
+  {
+   "acc": "A0A0H2ZTL3",
+   "copy": 0,
+   "n_res": 250,
+   "llg": 357.890869140625,
+   "llg_next": 123.8255615234375,
+   "tf": 1993.306396484375,
+   "r_factor": 0.40898630023002625,
+   "clash": 0.0,
+   "seconds": 1467.8382296562195
+  }
+ ],
+ "pose_vs_phaser": [
+  {
+   "chain": "A",
+   "phaser_chain": "A+B",
+   "rot_deg": 1.64539934183041,
+   "trans_A": 0.25210224256313485
+  }
+ ],
+ "refine_torchref_mr": {
+  "rc": 0,
+  "seconds": 568.6598088741302,
+  "R_work": 0.2109387367963791,
+  "R_free": 0.24203339219093323,
+  "NLL_work": 217782.40625,
+  "NLL_test": 4453.373046875,
+  "n_reflections_work": 38076,
+  "n_reflections_test": 760,
+  "initial": {
+   "R_work": 0.4202880263328552,
+   "R_free": 0.39940446615219116
+  }
+ },
+ "refine_phaser_mr": {
+  "rc": 0,
+  "seconds": 166.27693486213684,
+  "R_work": 0.21041704714298248,
+  "R_free": 0.24127750098705292,
+  "NLL_work": 217650.8125,
+  "NLL_test": 4455.24560546875,
+  "n_reflections_work": 38076,
+  "n_reflections_test": 760,
+  "initial": {
+   "R_work": 0.4132334291934967,
+   "R_free": 0.3986533582210541
+  }
+ }
+}

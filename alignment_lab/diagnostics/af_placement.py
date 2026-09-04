@@ -89,7 +89,13 @@ def ca_xyz_by_chain(path):
     return out
 
 
-def pose_vs_phaser(ours_pdb, phaser_pdb, data):
+def _cost(rt, rot_tol, trans_tol):
+    """Pairing cost: each error as a fraction of its own tolerance, summed."""
+    r, t = rt
+    return r / rot_tol + t / trans_tol
+
+
+def pose_vs_phaser(ours_pdb, phaser_pdb, data, rot_tol=5.0, trans_tol=2.0):
     """For each of our chains, the pose difference to the matching Phaser copy
     (rotation deg, translation A) allowing symmetry and origin freedom.
 
@@ -116,17 +122,60 @@ def pose_vs_phaser(ours_pdb, phaser_pdb, data):
                 break
         else:
             i += 1   # a Phaser chain no copy of ours accounts for
-    rows = []
-    for name, xyz in ours:
-        best = (None, float("inf"), float("inf"))
-        for gname, gxyz in groups:
+    # Each of our chains against each Phaser copy of the same size. A
+    # homodimer's sites are indistinguishable, so our chain A matching their
+    # copy B is a correct answer -- but a copy can only be matched ONCE, or two
+    # of our chains both claim the copy nearest them and the other copy's site
+    # is scored as a miss.
+    #
+    # The pairing is chosen on rotation AND translation, each scaled by its own
+    # tolerance. Translation alone does not discriminate: with origin freedom
+    # allowed it is 0.00 A for every pair in a P1 cell (2XN4, two copies of one
+    # 286-residue chain: all four pairings 0.00 A, rotations 2.6, 59, 177, 179
+    # degrees), so a translation-ranked assignment picks among them at random.
+    err = {}
+    for i, (_, xyz) in enumerate(ours):
+        for j, (_, gxyz) in enumerate(groups):
             if gxyz.shape != xyz.shape:
                 continue
-            r, t = pose_error(xyz.to(dtype), gxyz.to(dtype), data.cell,
-                              data.spacegroup, allow_origin_freedom=True)
-            if t < best[2]:
-                best = (gname, r, t)
-        rows.append({"chain": name, "phaser_chain": best[0], "rot_deg": best[1], "trans_A": best[2]})
+            err[i, j] = pose_error(xyz.to(dtype), gxyz.to(dtype), data.cell,
+                                   data.spacegroup, allow_origin_freedom=True)
+
+    n, m = len(ours), len(groups)
+    best_assign, best_cost = {}, float("inf")
+    if n <= 7 and m <= 7:
+        # Exhaustive over injective assignments: the counts here are single
+        # digits, and greedy can pick a pair that strands a better one.
+        import itertools
+        for perm in itertools.permutations(range(m), min(n, m)):
+            cand, cost = {}, 0.0
+            for i, j in enumerate(perm):
+                if (i, j) not in err:
+                    cost = float("inf")
+                    break
+                cand[i] = j
+                cost += _cost(err[i, j], rot_tol, trans_tol)
+            if cost < best_cost:
+                best_assign, best_cost = cand, cost
+    if not best_assign:
+        # Fall back to greedy on the global minimum, each copy used once.
+        taken, remaining = set(), sorted(
+            err, key=lambda k: _cost(err[k], rot_tol, trans_tol))
+        for i, j in remaining:
+            if i not in best_assign and j not in taken:
+                best_assign[i] = j
+                taken.add(j)
+
+    rows = []
+    for i, (name, _) in enumerate(ours):
+        j = best_assign.get(i)
+        if j is None:
+            rows.append({"chain": name, "phaser_chain": None,
+                         "rot_deg": float("inf"), "trans_A": float("inf")})
+            continue
+        r, t = err[i, j]
+        rows.append({"chain": name, "phaser_chain": groups[j][0],
+                     "rot_deg": r, "trans_A": t})
     return rows
 
 
