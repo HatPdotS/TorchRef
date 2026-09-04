@@ -18,7 +18,10 @@
    "tf": 7380.16748046875,
    "r_factor": 0.4917472302913666,
    "clash": 0.0,
-   "seconds": 60.40523982048035
+   "seconds": 60.40523982048035,
+   "rot_deg": 1.5349259413655751,
+   "trans_A": 0.0,
+   "phaser_chain": "D+E+F"
   },
   {
    "acc": "P0AES0",
@@ -29,14 +32,17 @@
    "tf": 14258.779296875,
    "r_factor": 0.4144807755947113,
    "clash": 0.0,
-   "seconds": 1.073432445526123
+   "seconds": 1.073432445526123,
+   "rot_deg": 1.913693857766149,
+   "trans_A": 0.0,
+   "phaser_chain": "A+B+C"
   }
  ],
  "pose_vs_phaser": [
   {
    "chain": "A",
-   "phaser_chain": "A+B+C",
-   "rot_deg": 179.00684091778152,
+   "phaser_chain": "D+E+F",
+   "rot_deg": 1.5349259413655751,
    "trans_A": 0.0
   },
   {

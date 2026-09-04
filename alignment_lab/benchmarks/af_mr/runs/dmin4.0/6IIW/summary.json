@@ -18,7 +18,10 @@
    "tf": 691.3170166015625,
    "r_factor": 0.611779510974884,
    "clash": 0.0,
-   "seconds": 63.5321900844574
+   "seconds": 63.5321900844574,
+   "rot_deg": 3.1985179550259892,
+   "trans_A": 0.6914977956947754,
+   "phaser_chain": "A"
   },
   {
    "acc": "Q15004",
@@ -29,7 +32,10 @@
    "tf": 632.144287109375,
    "r_factor": 0.5963428616523743,
    "clash": 0.0,
-   "seconds": 0.5266146659851074
+   "seconds": 0.5266146659851074,
+   "rot_deg": Infinity,
+   "trans_A": Infinity,
+   "phaser_chain": null
   }
  ],
  "pose_vs_phaser": [

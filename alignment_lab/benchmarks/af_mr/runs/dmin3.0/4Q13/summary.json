@@ -18,7 +18,10 @@
    "tf": 6128.8740234375,
    "r_factor": 0.501812756061554,
    "clash": 0.0,
-   "seconds": 1321.595341205597
+   "seconds": 1321.595341205597,
+   "rot_deg": 0.8520976438322376,
+   "trans_A": 0.0705125260275709,
+   "phaser_chain": "A"
   },
   {
    "acc": "P03372",
@@ -29,7 +32,10 @@
    "tf": 13859.451171875,
    "r_factor": 0.4255397617816925,
    "clash": 0.0,
-   "seconds": 0.7335774898529053
+   "seconds": 0.7335774898529053,
+   "rot_deg": 1.295267573936432,
+   "trans_A": 0.17138247814601848,
+   "phaser_chain": "B"
   },
   {
    "acc": "Q15596",
@@ -40,7 +46,10 @@
    "tf": 1879.726806640625,
    "r_factor": 0.42855292558670044,
    "clash": 0.0,
-   "seconds": 1.0689430236816406
+   "seconds": 1.0689430236816406,
+   "rot_deg": 112.87921269786035,
+   "trans_A": 9.66056340327084,
+   "phaser_chain": "C"
   },
   {
    "acc": "Q15596",
@@ -51,7 +60,10 @@
    "tf": 1721.42529296875,
    "r_factor": 0.43062663078308105,
    "clash": 0.0,
-   "seconds": 0.7753615379333496
+   "seconds": 0.7753615379333496,
+   "rot_deg": Infinity,
+   "trans_A": Infinity,
+   "phaser_chain": null
   }
  ],
  "pose_vs_phaser": [
@@ -75,9 +87,9 @@
   },
   {
    "chain": "D",
-   "phaser_chain": "C",
-   "rot_deg": 112.8807479749392,
-   "trans_A": 11.750992142263275
+   "phaser_chain": null,
+   "rot_deg": Infinity,
+   "trans_A": Infinity
   }
  ],
  "refine_torchref_mr": {

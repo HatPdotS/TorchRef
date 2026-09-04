@@ -18,7 +18,10 @@
    "tf": 1130.8704833984375,
    "r_factor": 0.44869422912597656,
    "clash": 0.0,
-   "seconds": 141.07602977752686
+   "seconds": 141.07602977752686,
+   "rot_deg": 0.8106819082187207,
+   "trans_A": 0.3872327166728276,
+   "phaser_chain": "A"
   },
   {
    "acc": "Q9QXL2",
@@ -29,7 +32,10 @@
    "tf": 1269.0589599609375,
    "r_factor": 0.4624769687652588,
    "clash": 0.0,
-   "seconds": 0.7582871913909912
+   "seconds": 0.7582871913909912,
+   "rot_deg": Infinity,
+   "trans_A": Infinity,
+   "phaser_chain": null
   }
  ],
  "pose_vs_phaser": [
