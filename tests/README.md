@@ -6,7 +6,8 @@ This directory contains the complete test suite for torchref.
 
 ```
 tests/
-├── conftest.py              # Root fixtures (paths, devices, skip decorators)
+├── conftest.py              # Fixture registration and test-selection hooks
+├── fixtures/                # Shared setup, grouped by responsibility (see fixtures/README.md)
 ├── pytest.ini               # Pytest configuration
 ├── __init__.py
 ├── files/                   # Test data files (CIF, PDB, MTZ)
@@ -15,7 +16,7 @@ tests/
 │   ├── mtz/                 # Reflection MTZ files
 │   └── cif_sf/              # Structure factor CIF files
 ├── unit/                    # Unit tests (fast, no I/O)
-│   ├── conftest.py          # Unit test fixtures (mock data)
+│   ├── conftest.py          # Imports scoped numerical fixtures
 │   ├── math_functions/      # Math module tests
 │   ├── model/               # Model module tests
 │   ├── refinement/          # Refinement module tests
