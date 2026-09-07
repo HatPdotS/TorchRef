@@ -14,16 +14,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
-    from torchref.io import ReflectionData
-    from torchref.model import Model, ModelFT
-
-
-@pytest.fixture(scope="module")
-def shared_model(sample_cif_file: Path) -> Model:
-    """Load the sample CIF once per module for read-only atomic-model checks."""
-    from torchref.model import Model
-
-    return Model(verbose=0).load_cif(str(sample_cif_file))
+    from torchref.model import ModelFT
 
 
 @pytest.fixture(scope="module")
@@ -32,11 +23,3 @@ def shared_model_ft(sample_cif_file: Path) -> ModelFT:
     from torchref.model import ModelFT
 
     return ModelFT(max_res=2.0, verbose=0).load_cif(str(sample_cif_file))
-
-
-@pytest.fixture(scope="module")
-def shared_reflection_data(sample_mtz_file: Path) -> ReflectionData:
-    """Load the sample MTZ once per module for read-only reflection checks."""
-    from torchref.io import ReflectionData
-
-    return ReflectionData().load_mtz(str(sample_mtz_file))

@@ -12,10 +12,10 @@ Keep a fixture in its test module when only that module needs it.
 | `precision.py` | Comparison tolerances and CPU-double reference context | All tests; reference fixture restores state after each test |
 | `objects.py` | Mutable models, data, scalers and restraints | All tests; fresh per test except explicitly shared bundles |
 | `numerical.py` | Synthetic tensors and factories | Imported only by `unit/conftest.py`; function |
-| `functional.py` | `shared_model`, `shared_model_ft`, `shared_reflection_data` | Imported only by `functional/conftest.py`; module |
+| `functional.py` | Read-only `shared_model_ft` | Imported only by `functional/conftest.py`; module |
 
-Existing fixture names remain available without imports in tests. Import reusable
-helpers from their defining module, never from the root `conftest.py`. Subtree
+Fixtures are available without imports in tests. Import reusable helpers from
+their defining module, never from the root `conftest.py`. Subtree
 conftests import fixture functions explicitly; register shared plugins only at
 the root so pytest also works when invoked from a subdirectory.
 
@@ -25,7 +25,8 @@ parameters, tables, masks or grids, backpropagate through them, or use them in
 tests that switch global configuration. A target or scaler can mutate a model it
 borrows, so a shared model must not be passed to such an operation.
 
-Tests that verify loading must invoke the loader themselves. Tests of mutation,
+Tests that verify loading must execute a fresh loader, directly or through a
+function-scoped fixture. Tests of mutation,
 device movement, or empty caches use fresh objects. `loaded_model`,
 `loaded_model_ft`, `loaded_reflection_data`, and their composed fixtures in `objects.py` provide
 fresh mutable objects per test. The explicitly shared session bundles in that

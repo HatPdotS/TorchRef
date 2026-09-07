@@ -28,19 +28,6 @@ class TestModelFTInitialization:
         model = ModelFT(max_res=1.5)
         assert model.max_res == 1.5
 
-    def test_modelft_load_cif(self, sample_cif_file):
-        """Test loading a CIF file into ModelFT."""
-        from torchref.model.model_ft import ModelFT
-
-        model = ModelFT(max_res=2.0, verbose=0)
-        model.load_cif(str(sample_cif_file))
-
-        # Verify basic properties
-        assert model.xyz() is not None
-        assert model.xyz().shape[0] > 0
-        assert model.cell is not None
-        assert len(model.cell) == 6
-
     def test_modelft_has_gridsize(self, sample_cif_file):
         """The grid resolves from the loaded cell and space group on first read."""
         from torchref.model.model_ft import ModelFT
@@ -52,29 +39,10 @@ class TestModelFTInitialization:
         assert model.gridsize is not None
         assert len(model.gridsize) == 3
         assert all(g > 0 for g in model.gridsize)
-
-
-@pytest.mark.integration
-class TestModelFTParametrization:
-    """Test ModelFT parametrization with real structures."""
-
-    def test_parametrization_built(self, shared_model_ft):
-        """Test that parametrization is built after loading."""
-
-        model = shared_model_ft
-
-        # Parametrization should be set
-        assert model.parametrization is not None
-
-    def test_scattering_factors_available(self, shared_model_ft):
-        """Test that scattering factors can be computed."""
-
-        model = shared_model_ft
-
-        # Should be able to access atom properties
-        xyz = model.xyz()
-        assert xyz is not None
-        assert xyz.dtype == torch.float32 or xyz.dtype == torch.float64
+        assert model.xyz().shape[0] > 0
+        assert model.parametrization
+        assert model.adp().shape == (len(model.xyz()),)
+        assert torch.all(model.adp() >= 0)
 
 
 @pytest.mark.integration
@@ -104,14 +72,15 @@ class TestModelFTRealSpaceMap:
         """Test getting real space grid."""
         from torchref.base.math_torch import get_real_grid
 
-        # The grid helper moves its Cell in place when targeting CPU.
         model = loaded_model_ft
 
         assert model.gridsize is not None
-        grid = get_real_grid(model.cell, max_res=2.0, device="cpu")
+        grid = get_real_grid(model.cell, max_res=2.0, device=model.device)
 
         assert grid is not None
         assert len(grid.shape) == 4  # Should be 4D (nx, ny, nz, 3)
+        assert grid.device == model.xyz().device
+        assert grid.dtype == model.xyz().dtype
 
 
 @pytest.mark.integration
@@ -133,60 +102,6 @@ class TestModelFTSymmetry:
         operator = model.spacegroup.map_operator(gridsize)
         assert operator is not None
         assert operator.map_shape == gridsize
-
-
-@pytest.mark.integration
-class TestModelFTStateDictFunctional:
-    """Test ModelFT state dict operations with real data."""
-
-    def test_save_and_load_state_dict(self, loaded_model_ft, tmp_path):
-        """Test saving and loading state dict."""
-        from torchref.model.model_ft import ModelFT
-
-        model = loaded_model_ft
-
-        original_xyz = model.xyz().clone()
-
-        # Save state dict
-        state_dict = model.state_dict()
-
-        # Create new model and load state
-        model2 = ModelFT(max_res=2.0, verbose=0)
-
-        # We need to ensure proper initialization
-        # For now just verify state_dict works
-        assert state_dict is not None
-        assert len(state_dict) > 0
-
-
-@pytest.mark.integration
-class TestModelFTForwardPass:
-    """Test ModelFT forward pass (structure factor calculation)."""
-
-    def test_forward_method_exists(self, shared_model_ft):
-        """Test that forward method is available."""
-
-        model = shared_model_ft
-
-        # Check forward method exists
-        assert hasattr(model, "forward")
-
-    def test_build_map_method(self, sample_cif_file):
-        """Test build_map method if available."""
-        from torchref.model.model_ft import ModelFT
-
-        model = ModelFT(max_res=3.0, verbose=0)  # Lower res for faster test
-        model.load_cif(str(sample_cif_file))
-
-        # Check build_map method
-        if hasattr(model, "build_map"):
-            # Try to build map
-            try:
-                model.build_map()
-                assert model.map is not None
-            except Exception as e:
-                # May fail if missing dependencies
-                pytest.skip(f"build_map not available: {e}")
 
 
 @pytest.mark.integration
@@ -216,48 +131,8 @@ class TestModelFTMultipleStructures:
 
 
 @pytest.mark.integration
-class TestModelFTCaching:
-    """Test ModelFT caching mechanism."""
-
-    def test_cache_initialization(self, loaded_model_ft):
-        """Test that CachedForwardMixin cache starts empty."""
-
-        model = loaded_model_ft
-
-        # Mixin cache should start empty (lazily initialized)
-        assert getattr(model, "_fwd_cached_output", None) is None
-
-    def test_cache_usage(self, shared_model_ft):
-        """Test that cache can be used for computations."""
-
-        model = shared_model_ft
-
-        # Access xyz twice - should use caching
-        xyz1 = model.xyz()
-        xyz2 = model.xyz()
-
-        # Should return same tensor
-        assert torch.allclose(xyz1, xyz2)
-
-
-@pytest.mark.integration
 class TestModelFTCoordinateOperations:
     """Test ModelFT coordinate operations."""
-
-    def test_cartesian_to_fractional(self, shared_model_ft):
-        """Test coordinate conversion."""
-        from torchref.base.math_torch import cartesian_to_fractional_torch
-
-        model = shared_model_ft
-
-        xyz = model.xyz()
-        cell = model.cell
-
-        # Convert to fractional
-        frac = cartesian_to_fractional_torch(xyz, cell.data)
-
-        # Fractional coords should be bounded (mostly between 0 and 1)
-        assert frac.shape == xyz.shape
 
     def test_fractional_to_cartesian(self, shared_model_ft):
         """Test fractional to cartesian conversion."""
@@ -273,6 +148,7 @@ class TestModelFTCoordinateOperations:
 
         # Round trip conversion
         frac = cartesian_to_fractional_torch(xyz, cell.data)
+        assert frac.shape == xyz.shape
         xyz_back = fractional_to_cartesian_torch(frac, cell.data)
 
         # Should get back original coordinates (float32 roundtrip)
@@ -280,28 +156,35 @@ class TestModelFTCoordinateOperations:
 
 
 @pytest.mark.integration
-class TestModelFTAnisoHandling:
-    """Test ModelFT handling of anisotropic parameters."""
+def test_forward_cache_contract(
+    loaded_model_ft, loaded_reflection_data, monkeypatch
+) -> None:
+    """A model computes complex structure factors and caches only until invalidation."""
+    from unittest.mock import Mock
 
-    def test_access_aniso_atoms(self, shared_model_ft):
-        """Test accessing anisotropic atom information."""
+    from torchref.config import caching, get_complex_dtype
 
-        model = shared_model_ft
+    model = loaded_model_ft
+    hkl = loaded_reflection_data.hkl[:32]
+    monkeypatch.setattr(caching, "value", True)
+    forward = Mock(wraps=model.forward)
+    monkeypatch.setattr(model, "forward", forward)
+    assert getattr(model, "_fwd_cached_output", None) is None
 
-        # Check if aniso is available
-        if hasattr(model, "get_aniso") or hasattr(model, "aniso"):
-            # Structure has aniso
-            pass
+    first = model(hkl)
+    assert first.shape == (len(hkl),)
+    assert first.dtype == get_complex_dtype()
+    assert first.device == hkl.device
+    assert torch.isfinite(first).all()
+    assert first.abs().sum() > 0
+    assert model(hkl) is first
+    assert forward.call_count == 1
 
-    def test_isotropic_b_factors(self, shared_model_ft):
-        """Test accessing isotropic B-factors."""
-
-        model = shared_model_ft
-
-        # Get B-factors (now accessed via adp())
-        b_factors = model.adp()
-
-        assert b_factors is not None
-        assert b_factors.shape[0] == model.xyz().shape[0]
-        # B-factors should be positive
-        assert torch.all(b_factors > 0) or torch.all(b_factors >= 0)
+    refreshed = model(hkl, recalc=True)
+    assert forward.call_count == 2
+    assert refreshed is not first
+    # Accelerator reductions need not repeat bit-for-bit after recomputation.
+    relative_error = torch.linalg.vector_norm(
+        (refreshed - first).abs()
+    ) / torch.linalg.vector_norm(first.abs())
+    assert relative_error < 256 * torch.finfo(first.real.dtype).eps

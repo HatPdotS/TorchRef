@@ -1,7 +1,3 @@
 """Expose module-shared read-only fixtures to functional tests."""
 
-from tests.fixtures.functional import (  # noqa: F401
-    shared_model,
-    shared_model_ft,
-    shared_reflection_data,
-)
+from tests.fixtures.functional import shared_model_ft  # noqa: F401

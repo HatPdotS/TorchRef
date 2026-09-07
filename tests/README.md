@@ -48,6 +48,9 @@ tests/
 | Gaussian amplitude-metric values and reductions | `unit/base/test_loss.py` |
 | Restraint kernel values on deposited coordinates | `unit/base/test_target_values.py` |
 | Gradient RMS norm | `unit/utils/test_gradnorm.py` |
+| CIF atomic fields and crystal metadata | `integration/test_io_cif.py` |
+| MTZ fields, resolution bins and model/data crystal agreement | `integration/test_io_reflections.py` |
+| ModelFT forward cache and grid integration | `functional/test_model_ft_functional.py` |
 | Numerical derivatives and backend parity | `unit/test_gradient_correctness.py`, `unit/structure_factor/` |
 
 A production call must participate in the assertion: computing a formula only in

@@ -4,9 +4,9 @@ Functional tests for refinement targets.
 Tests target functions with real model and data objects.
 """
 
+import numpy as np
 import pytest
 import torch
-import numpy as np
 
 
 class TestXrayTargetsFunctional:
@@ -15,9 +15,9 @@ class TestXrayTargetsFunctional:
     @pytest.mark.integration
     def test_gaussian_nll_with_real_data(self, sample_structure_pair):
         """Test Gaussian NLL calculation with real reflection data."""
-        from torchref.model.model import Model
-        from torchref.io import ReflectionData
         from torchref.base.math_torch import nll_xray
+        from torchref.io import ReflectionData
+        from torchref.model.model import Model
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -43,8 +43,8 @@ class TestXrayTargetsFunctional:
     @pytest.mark.integration
     def test_least_squares_with_real_data(self, sample_structure_pair):
         """Test least squares calculation with real data."""
-        from torchref.model.model import Model
         from torchref.io import ReflectionData
+        from torchref.model.model import Model
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -74,9 +74,9 @@ class TestRfactorCalculationsFunctional:
     @pytest.mark.integration
     def test_rfactor_with_real_data(self, sample_structure_pair):
         """Test R-factor calculation with real reflection data."""
-        from torchref.model.model import Model
-        from torchref.io import ReflectionData
         from torchref.base.math_torch import get_rfactors
+        from torchref.io import ReflectionData
+        from torchref.model.model import Model
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -110,9 +110,9 @@ class TestRfactorCalculationsFunctional:
     @pytest.mark.integration
     def test_bin_wise_rfactors(self, sample_structure_pair):
         """Test bin-wise R-factor calculation."""
-        from torchref.model.model import Model
-        from torchref.io import ReflectionData
         from torchref.base.math_torch import bin_wise_rfactors
+        from torchref.io import ReflectionData
+        from torchref.model.model import Model
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -234,27 +234,6 @@ class TestGeometryTargetsFunctional:
             assert torch.isfinite(loss)
 
 
-class TestStructureFactorCalculationFunctional:
-    """Functional tests for structure factor calculation."""
-
-    @pytest.mark.integration
-    def test_fcalc_shape_matches_data(self, sample_structure_pair):
-        """Test that calculated structure factors have correct shape."""
-        from torchref.model.model import Model
-        from torchref.io import ReflectionData
-
-        model = Model()
-        model.load_cif(str(sample_structure_pair["model"]))
-
-        data = ReflectionData()
-        data.load_mtz(str(sample_structure_pair["reflections"]))
-
-        # Check if model has fcalc calculation method
-        if hasattr(model, 'calc_fcalc'):
-            fcalc = model.calc_fcalc(data)
-
-            # Fcalc should have same number of reflections as data
-            assert fcalc.shape[0] == data.hkl.shape[0]
 
 
 class TestScalingWithRealData:
@@ -263,8 +242,8 @@ class TestScalingWithRealData:
     @pytest.mark.integration
     def test_scaler_initialization_with_real_data(self, sample_structure_pair):
         """Test scaler initialization with real model and data."""
-        from torchref.model.model import Model
         from torchref.io import ReflectionData
+        from torchref.model.model import Model
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -285,8 +264,8 @@ class TestScalingWithRealData:
     @pytest.mark.integration
     def test_anisotropy_correction_values(self, sample_structure_pair):
         """Test that anisotropy correction produces reasonable values."""
-        from torchref.model.model import Model
         from torchref.io import ReflectionData
+        from torchref.model.model import Model
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -315,8 +294,8 @@ class TestMathFunctionsFunctional:
     @pytest.mark.integration
     def test_scattering_vectors_from_real_data(self, sample_structure_pair):
         """Test scattering vector calculation with real HKL and cell."""
-        from torchref.io import ReflectionData
         from torchref.base.math_torch import get_scattering_vectors
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -333,11 +312,11 @@ class TestMathFunctionsFunctional:
     @pytest.mark.integration
     def test_coordinate_transformations_with_real_cell(self, sample_cif_file):
         """Test coordinate transformations with real unit cell."""
-        from torchref.model.model import Model
         from torchref.base.math_torch import (
             cartesian_to_fractional_torch,
-            fractional_to_cartesian_torch
+            fractional_to_cartesian_torch,
         )
+        from torchref.model.model import Model
         
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -439,8 +418,8 @@ class TestNLLFunctionsFunctional:
     @pytest.mark.integration
     def test_nll_xray_with_identical_data(self, sample_structure_pair):
         """Test NLL is minimal when Fobs equals Fcalc."""
-        from torchref.io import ReflectionData
         from torchref.base.math_torch import nll_xray
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -463,8 +442,8 @@ class TestNLLFunctionsFunctional:
     @pytest.mark.integration
     def test_nll_xray_increases_with_error(self, sample_structure_pair):
         """Test NLL increases as Fcalc differs from Fobs."""
-        from torchref.io import ReflectionData
         from torchref.base.math_torch import nll_xray
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -494,8 +473,8 @@ class TestNLLFunctionsFunctional:
     @pytest.mark.integration
     def test_nll_xray_lognormal(self, sample_structure_pair):
         """Test lognormal NLL calculation."""
-        from torchref.io import ReflectionData
         from torchref.base.math_torch import nll_xray_lognormal
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -520,8 +499,9 @@ class TestRiceDistributionFunctional:
     @pytest.mark.integration
     def test_rice_nll_acentric(self, sample_structure_pair):
         """Test Rice NLL for acentric reflections."""
-        from torchref.io import ReflectionData
         from torch.special import i0
+
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -592,8 +572,8 @@ class TestWeightingSchemesFunctional:
     @pytest.mark.integration
     def test_resolution_weighting(self, sample_structure_pair):
         """Test resolution-based weighting."""
-        from torchref.io import ReflectionData
         from torchref.base.math_torch import get_scattering_vectors
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -704,9 +684,9 @@ class TestCombinedLossFunctional:
     @pytest.mark.integration
     def test_xray_plus_geometry_loss(self, sample_structure_pair, external_monomer_library):
         """Test combining X-ray and geometry losses."""
-        from torchref.model.model import Model
-        from torchref.io import ReflectionData
         from torchref.base.math_torch import nll_xray
+        from torchref.io import ReflectionData
+        from torchref.model.model import Model
 
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
