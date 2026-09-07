@@ -39,6 +39,22 @@ tests/
 
 ## Running Tests
 
+### Coverage ownership
+
+| Contract | Owner |
+|---|---|
+| Loss weights, aggregation, cached loss reads | `unit/refinement/test_loss_state.py` |
+| Refinement's default group weights | `unit/refinement/test_loss_weighting.py` |
+| Gaussian amplitude-metric values and reductions | `unit/base/test_loss.py` |
+| Restraint kernel values on deposited coordinates | `unit/base/test_target_values.py` |
+| Gradient RMS norm | `unit/utils/test_gradnorm.py` |
+| Numerical derivatives and backend parity | `unit/test_gradient_correctness.py`, `unit/structure_factor/` |
+
+A production call must participate in the assertion: computing a formula only in
+the test does not check its implementation. Kernel values, target registration,
+device transitions, and default configuration are separate contracts even when
+they exercise the same class. Keep mutation tests on fresh objects.
+
 ### Quick Local Run (on login node, for small tests only)
 
 ```bash

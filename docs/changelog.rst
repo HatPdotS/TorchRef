@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- Replaced local-arithmetic target tests with configured-device production-kernel checks on deposited coordinates and explicit least-squares expectations.
 - Consolidated weighting tests by API ownership and strengthened Gaussian-likelihood, gradient-norm, and cached-loss assertions.
 - Organized test fixtures into focused modules and reused module-scoped loaded objects for read-only functional checks while retaining fresh objects for mutation and loading tests.
 - Rigid-body refinement stores its Euler angles pre-multiplied by the chain's radius of gyration, so a unit step in an angle and a unit step in a translation displace atoms comparably. In radians against Angstroms the rotation block of the Hessian carried 190-530x the curvature of the translation block on 1DAW and 3E98 -- the geometric ``Rg**2``, 411 and 442/516 -- putting ``cond(H)`` at 1e3-5e3, which is why six parameters needed ~250 L-BFGS iterations to place. Dividing the scale out in ``forward()`` brings the ratio to 0.4-1.3 and ``cond(H)`` to 3-18. Over ten structures the step then converges rather than exhausting its iteration budget, on about half the gradient evaluations, with R-free no worse anywhere. ``RigidXYZTensor.rotation_radians`` returns the physical angle, and setting ``angle_scale`` to ones restores the unscaled parametrization. Not a fix for the one or two negative Hessian eigenvalues at the finer cutoffs -- scaling a saddle leaves it a saddle -- and those counts are unchanged
