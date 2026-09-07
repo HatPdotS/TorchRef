@@ -6,7 +6,6 @@ Tests symmetry operations for crystallographic space groups.
 
 import pytest
 import torch
-import torch.nn as nn
 
 
 class TestSpaceGroupInitialization:
@@ -131,7 +130,9 @@ class TestSpaceGroupMatrices:
 
         for i in range(sg.matrices.shape[0]):
             det = torch.linalg.det(sg.matrices[i])
-            assert torch.isclose(torch.abs(det), torch.tensor(1.0, dtype=det.dtype), atol=1e-5)
+            assert torch.isclose(
+                torch.abs(det), torch.tensor(1.0, dtype=det.dtype), atol=1e-5
+            )
 
 
 class TestSpaceGroupApplication:
@@ -189,10 +190,10 @@ class TestSpaceGroupDeviceHandling:
         """Test SpaceGroup on CPU."""
         from torchref.symmetry import SpaceGroup
 
-        sg = SpaceGroup("P21", device=torch.device('cpu'))
+        sg = SpaceGroup("P21", device=torch.device("cpu"))
 
-        assert sg.matrices.device.type == 'cpu'
-        assert sg.translations.device.type == 'cpu'
+        assert sg.matrices.device.type == "cpu"
+        assert sg.translations.device.type == "cpu"
 
     @pytest.mark.unit
     @pytest.mark.gpu
@@ -220,7 +221,23 @@ class TestSpaceGroupMapping:
     """Tests for space group name mapping."""
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("sg_name", ["P1", "P21", "P212121", "C2", "P21212"])
+    @pytest.mark.parametrize(
+        "sg_name",
+        [
+            "P1",
+            "P21",
+            "P212121",
+            "C2",
+            "P21212",
+            "P 1",
+            "P 21",
+            "P 21 21 21",
+            "P 43 21 2",
+            "P 3 2 1",
+            "P 6 2 2",
+            "P 2 3",
+        ],
+    )
     def test_common_spacegroups(self, sg_name):
         """Test common crystallographic space groups."""
         from torchref.symmetry import SpaceGroup

@@ -19,6 +19,31 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
+def compatibility_model(compatibility_structure_pair: dict) -> Model:
+    """Load a fresh model for one slow compatibility case."""
+    from torchref.model import Model
+
+    path = compatibility_structure_pair["model"]
+    assert path.is_file()
+    return Model(verbose=0).load_cif(str(path))
+
+
+@pytest.fixture
+def compatibility_model_and_data(
+    compatibility_model: Model, compatibility_structure_pair: dict
+) -> dict:
+    """Load observations only for the single crystal used by the current pipeline case."""
+    from torchref.io import ReflectionData
+
+    path = compatibility_structure_pair["reflections"]
+    assert path.is_file()
+    return {
+        "model": compatibility_model,
+        "data": ReflectionData(verbose=0).load_mtz(str(path)),
+    }
+
+
+@pytest.fixture
 def loaded_model(sample_cif_file: Path) -> Model:
     """Load a fresh mutable Model from the sample CIF file."""
     from torchref.model.model import Model
@@ -95,42 +120,6 @@ def model_with_restraints(loaded_model: Model) -> dict[str, Any]:
     )
     restraints.build_restraints()
     return {"model": loaded_model, "restraints": restraints}
-
-
-@pytest.fixture(scope="session")
-def all_test_structures(
-    all_structure_pairs: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Return all loaded model/data pairs for comprehensive testing."""
-    from torchref.io import ReflectionData
-    from torchref.model.model import Model
-
-    structures = []
-    for pair in all_structure_pairs:
-        try:
-            model = Model()
-            model.load_cif(str(pair["model"]))
-
-            data = ReflectionData()
-            data.load_mtz(str(pair["reflections"]))
-
-            structures.append(
-                {
-                    "pdb_id": pair["pdb_id"],
-                    "model": model,
-                    "data": data,
-                    "model_path": pair["model"],
-                    "data_path": pair["reflections"],
-                }
-            )
-        except Exception:
-            # Skip structures that fail to load
-            continue
-
-    if not structures:
-        pytest.skip("No structures could be loaded")
-
-    return structures
 
 
 @pytest.fixture(scope="session")

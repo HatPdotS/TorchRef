@@ -4,6 +4,23 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers.structure_cases import EXTENDED_PAIR_CODES
+
+
+@pytest.fixture(
+    params=[pytest.param(code, marks=pytest.mark.slow) for code in EXTENDED_PAIR_CODES]
+)
+def compatibility_structure_pair(
+    cif_dir: Path, mtz_dir: Path, request: pytest.FixtureRequest
+) -> dict:
+    """Select one named extended crystal without loading its model or observations."""
+    code = request.param
+    return {
+        "pdb_id": code,
+        "model": cif_dir / f"{code}.cif",
+        "reflections": mtz_dir / f"{code}.mtz",
+    }
+
 
 @pytest.fixture(scope="session")
 def sample_cif_file(cif_dir: Path) -> Path:
@@ -70,29 +87,3 @@ def sample_structure_pair(cif_dir: Path, mtz_dir: Path) -> dict[str, Path]:
         return {"model": cif_files[pdb_id], "reflections": mtz_files[pdb_id]}
 
     pytest.skip("No matching CIF/MTZ pairs found in test data")
-
-
-@pytest.fixture(scope="session")
-def all_structure_pairs(cif_dir: Path, mtz_dir: Path) -> list[dict[str, Path | str]]:
-    """Return all matching pairs of CIF models and MTZ reflections."""
-    cif_files = {f.stem: f for f in cif_dir.glob("*.cif")}
-    mtz_files = {f.stem: f for f in mtz_dir.glob("*.mtz")}
-
-    common_ids = set(cif_files.keys()) & set(mtz_files.keys())
-
-    if not common_ids:
-        pytest.skip("No matching CIF/MTZ pairs found in test data")
-
-    return [
-        {"pdb_id": pdb_id, "model": cif_files[pdb_id], "reflections": mtz_files[pdb_id]}
-        for pdb_id in sorted(common_ids)
-    ]
-
-
-@pytest.fixture(scope="session")
-def all_cif_files(cif_dir: Path) -> list[Path]:
-    """Return all available CIF test structure files."""
-    cif_files = sorted(cif_dir.glob("*.cif"))
-    if not cif_files:
-        pytest.skip("No CIF files found in test data directory")
-    return cif_files

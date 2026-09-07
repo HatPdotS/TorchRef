@@ -105,32 +105,6 @@ class TestModelFTSymmetry:
 
 
 @pytest.mark.integration
-class TestModelFTMultipleStructures:
-    """Test ModelFT with multiple structures."""
-
-    def test_modelft_multiple_structures(self, all_structure_pairs):
-        """Test ModelFT works with different structures."""
-        from torchref.model.model_ft import ModelFT
-
-        tested = 0
-        for pair in all_structure_pairs[:3]:  # Test first 3
-            try:
-                model = ModelFT(max_res=3.0, verbose=0)
-                model.load_cif(str(pair["model"]))
-
-                # Basic checks
-                assert model.xyz() is not None
-                assert model.xyz().shape[0] > 0
-
-                tested += 1
-            except Exception as e:
-                # Some structures may fail to load
-                continue
-
-        assert tested >= 1, "At least one structure should load"
-
-
-@pytest.mark.integration
 class TestModelFTCoordinateOperations:
     """Test ModelFT coordinate operations."""
 

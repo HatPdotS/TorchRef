@@ -51,12 +51,21 @@ tests/
 | CIF atomic fields and crystal metadata | `integration/test_io_cif.py` |
 | MTZ fields, resolution bins and model/data crystal agreement | `integration/test_io_reflections.py` |
 | ModelFT forward cache and grid integration | `functional/test_model_ft_functional.py` |
+| Extra deposited files and input inventory | `integration/test_structure_compatibility.py`, `helpers/structure_cases.py` |
 | Numerical derivatives and backend parity | `unit/test_gradient_correctness.py`, `unit/structure_factor/` |
 
 A production call must participate in the assertion: computing a formula only in
 the test does not check its implementation. Kernel values, target registration,
 device transitions, and default configuration are separate contracts even when
 they exercise the same class. Keep mutation tests on fresh objects.
+
+The quick reader contracts use 1DAW. Extended reader compatibility runs with
+`pytest tests/integration/test_structure_compatibility.py --run-slow`; each file
+is a separate case and must succeed. The manifest covers the bundled CIF, MTZ
+and SF-CIF inputs, including the IHM fixture and reflection-only depositions.
+Adding a data file requires an explicit coverage assignment in the manifest.
+Extended scaler and restraint cases use 2DQ6 (trigonal) and 3A5V (body-centred
+tetragonal), with fresh objects per case and `--run-slow` required.
 
 ### Quick Local Run (on login node, for small tests only)
 

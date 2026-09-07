@@ -7,7 +7,7 @@ Keep a fixture in its test module when only that module needs it.
 | Module | Responsibility | Visibility / lifetime |
 |---|---|---|
 | `paths.py` | Repository, bundled-data and optional library paths | All tests; session |
-| `files.py` | Sample-file selection and matching structure pairs | All tests; session; no model loading |
+| `files.py` | Sample paths and named compatibility pairs | All tests; sample paths session-scoped, extended pairs function-scoped; no loading |
 | `devices.py` | Configured device, explicit backends, device parametrization | All tests; existing per-fixture scopes |
 | `precision.py` | Comparison tolerances and CPU-double reference context | All tests; reference fixture restores state after each test |
 | `objects.py` | Mutable models, data, scalers and restraints | All tests; fresh per test except explicitly shared bundles |
@@ -31,6 +31,11 @@ device movement, or empty caches use fresh objects. `loaded_model`,
 `loaded_model_ft`, `loaded_reflection_data`, and their composed fixtures in `objects.py` provide
 fresh mutable objects per test. The explicitly shared session bundles in that
 module retain their documented ownership contracts.
+
+`compatibility_structure_pair` selects named slow cases from
+`tests/helpers/structure_cases.py`. `compatibility_model` loads just that model;
+`compatibility_model_and_data` adds observations only when needed. Skipped slow
+cases do not load any structures.
 
 Use `cpu_double_precision()` to scope an explicit numerical reference, or request
 `double_cpu` for a single test. The structure-factor package uses the same context
