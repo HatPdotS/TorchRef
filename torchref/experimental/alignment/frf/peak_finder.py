@@ -71,14 +71,16 @@ def _so3_greedy_nms(
     # sitting exactly on it.
     R_all = (
         rotation_matrix_euler_zyz(torch.stack([alphas, betas, gammas], dim=-1))
-        .to(torch.float64).cpu()  # dtype-ok: 3x3 rotation algebra in double on the host
+        .cpu().to(torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
     )  # (n, 3, 3)
     # angle > nms_radius  ⇔  cos(angle) < cos(nms_radius); cos(angle) from trace.
     cos_thresh = math.cos(math.radians(nms_radius_deg))
     # The orbit of each kept rotation, R R_g over the point group; the identity
     # alone when no symmetry is supplied.
+    # `.cpu()` first in both: the widening happens on the host, which always
+    # has float64, and the peaks arrive on the compute device.
     G = (torch.eye(3, dtype=torch.float64).unsqueeze(0) if sym_cart is None  # dtype-ok: 3x3 rotation algebra in double on the host
-         else sym_cart.to(torch.float64).cpu())  # dtype-ok: 3x3 rotation algebra in double on the host
+         else sym_cart.cpu().to(torch.float64))  # dtype-ok: 3x3 rotation algebra in double on the host
     kept_idx: List[int] = []
     kept_orbit = torch.empty((keep_at_most, G.shape[0], 3, 3), dtype=torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
     count = 0

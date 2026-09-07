@@ -151,6 +151,20 @@ class RigidBodyRefinementStep:
             else self.default_cutoffs(native_dmin)
         )
 
+        # ``cut_res`` masks in place and returns ``self``, so each cutoff below
+        # stamps ``masks["resolution"]`` on the caller's own object and rebinding
+        # restores nothing. Snapshot it (or its absence) to put back.
+        had_resolution_mask = "resolution" in original_data.masks
+        saved_resolution_mask = (
+            original_data.masks["resolution"].clone() if had_resolution_mask else None
+        )
+
+        def restore_resolution_mask():
+            if had_resolution_mask:
+                original_data.masks["resolution"] = saved_resolution_mask
+            else:
+                original_data.masks.pop("resolution", None)
+
         # Swap the model's xyz container in place for a RigidXYZTensor.
         ref.model.use_rigid_xyz()
 
@@ -165,7 +179,9 @@ class RigidBodyRefinementStep:
                 step_state = self._run_one_cutoff(d_min)
                 history.append((float(d_min), step_state))
         finally:
-            # Restore full-resolution data view.
+            # Before rebinding, so the scaler and targets are built against the
+            # data the caller has.
+            restore_resolution_mask()
             self._rebind_for_data(original_data)
 
         if self.commit:
@@ -250,10 +266,8 @@ class RigidBodyRefinementStep:
         ]
 
         # Decide whether to use the inner-cycle (mask-refresh) loop.
-        # Triggered when the scaler has a bulk-solvent component whose
-        # mask depends on atom positions (ls_wunit_k1 path here). For
-        # the ml path the scaler is fully refit between cutoffs
-        # and co-optimized with rigid params in a single LBFGS.
+        # Unsatisfiable as it stands: nothing sets ``c_iso.requires_grad =
+        # False``, so ``_run_inner_cycles`` does not run.
         use_inner_cycles = (
             ref.scaler is not None
             and getattr(ref.scaler, "solvent", None) is not None
@@ -264,11 +278,13 @@ class RigidBodyRefinementStep:
         if use_inner_cycles:
             self._run_inner_cycles(d_min, state, rigid_params, n_inner=5)
         else:
-            # Single-shot path: rigid params + scaler params co-optimized.
-            if ref.scaler is not None:
-                opt_params = rigid_params + list(ref.scaler.parameters())
-            else:
-                opt_params = rigid_params
+            # Rigid parameters only. The body target centres on
+            # ``alpha*|F_calc|`` and ``alpha`` absorbs a rescaling of ``F_calc``
+            # exactly, so the scale has a flat direction here -- the rule
+            # ``SCALE_TARGETS`` states for the scale fit. ``refine_scaler``
+            # (objective ``ls``) owns the scale, between cutoffs. Omitting them
+            # is enough: ``LossState.run`` freezes leaves the optimizer lacks.
+            opt_params = rigid_params
 
             rigid_model.reset_cache()
             opt = torch.optim.LBFGS(

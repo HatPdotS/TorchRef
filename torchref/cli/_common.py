@@ -393,6 +393,14 @@ def add_metadata_args(parser: argparse.ArgumentParser) -> None:
         help="Author names for the output file header",
     )
     parser.add_argument(
+        "--output-remarks",
+        type=str,
+        default=None,
+        help="Free-text note for the output header (REMARK 3 OTHER REFINEMENT "
+        "REMARKS / _refine.details). Nothing is written here unless you ask "
+        "for it",
+    )
+    parser.add_argument(
         "--no-header",
         action="store_true",
         default=False,
@@ -771,6 +779,45 @@ def write_refinement_outputs(
             metadata.title = args.title
         if getattr(args, "authors", None):
             metadata.authors = args.authors
+        if getattr(args, "output_remarks", None):
+            metadata.output_remarks = args.output_remarks
+
+        # What was minimised and how. These live on the CLI namespace rather
+        # than on the refinement, which is why from_refinement cannot fill them
+        # and why the header carried no method line at all until now.
+        xray_mode = getattr(args, "xray_mode", None)
+        if xray_mode:
+            # Name the family as well as the registry key. "ML" alone is
+            # cryptic in a deposited header, and the family follows from the
+            # key's prefix, so there is no lookup table here to drift out of
+            # step with XRAY_TARGETS.
+            key = str(xray_mode).upper()
+            if key.startswith(("ML", "NLL")):
+                metadata.target_function = f"MAXIMUM LIKELIHOOD ({key})"
+            elif key.startswith("LS"):
+                metadata.target_function = f"LEAST SQUARES ({key})"
+            else:
+                metadata.target_function = key
+        optimizer_parts = []
+        n_cycles = getattr(args, "n_cycles", None)
+        if n_cycles:
+            optimizer_parts.append(
+                f"{n_cycles} MACROCYCLE" + ("S" if n_cycles != 1 else "")
+            )
+        mode = getattr(args, "mode", None)
+        if mode:
+            optimizer_parts.append(str(mode).upper())
+        adp_mode = getattr(args, "adp_mode", None)
+        if adp_mode:
+            optimizer_parts.append(f"{str(adp_mode).upper()} ADP")
+        # The scale target changes the R-factors this very header reports, so a
+        # run cannot be attributed without it (see the note beside it in the
+        # refinement_history.json parameters block).
+        scale_target = getattr(args, "scale_target", None)
+        if scale_target:
+            optimizer_parts.append(f"SCALE TARGET {str(scale_target).upper()}")
+        if optimizer_parts:
+            metadata.optimizer = ", ".join(optimizer_parts)
 
     outputs = {"pdb": None, "cif": None}
 

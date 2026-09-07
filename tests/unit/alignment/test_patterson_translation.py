@@ -39,9 +39,13 @@ def setup():
     canonical = ModelFT().load_pdb(str(PDB_1DAW))
     data = ReflectionData().load_mtz(str(MTZ_1DAW))
     # The pipeline's default window: the rotation search's 15-4 A.
-    rec = data.cell.reciprocal_basis_matrix.to(torch.float64)
-    s = (data.hkl.to(torch.float64) @ rec).norm(dim=-1)
-    mask = data.get_valid_mask() & (s >= 1.0 / 15.0) & (s <= 1.0 / 4.0)
+    # The resolution arithmetic runs on the host in double -- `.cpu()` before
+    # the widening, since a backend without float64 cannot hold the wide copy --
+    # and only the resulting boolean goes back to where the data live.
+    rec = data.cell.reciprocal_basis_matrix.cpu().to(torch.float64)
+    s = (data.hkl.cpu().to(torch.float64) @ rec).norm(dim=-1)
+    window = ((s >= 1.0 / 15.0) & (s <= 1.0 / 4.0)).to(data.hkl.device)
+    mask = data.get_valid_mask() & window
     return canonical, data, mask
 
 

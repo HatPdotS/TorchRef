@@ -210,8 +210,8 @@ def orbit_rank(
             "best_rfz": 0.0, "top1_ang_deg": float("inf"),
             "any_below_threshold": False, "n_peaks": 0,
         }
-    R_target = R_target.to(torch.float64).cpu()
-    sym_mats = sym_mats.to(torch.float64).cpu()
+    R_target = R_target.cpu().to(torch.float64)
+    sym_mats = sym_mats.cpu().to(torch.float64)
 
     alphas = torch.tensor(
         [math.radians(p.alpha_deg) for p in peaks], dtype=torch.float64,

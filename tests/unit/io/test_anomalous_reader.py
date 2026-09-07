@@ -127,7 +127,11 @@ def test_generated_rfree_shared_across_mates(anomalous_two_column_mtz):
     assert bool(d.friedel_flags.any())
 
     d.regenerate_rfree_flags(force=True, seed=0)
-    assert d.rfree_source == "Generated (resolution-binned, ASU-grouped)"
+    # The seed is part of the provenance: "generated" without it names a draw
+    # nobody can reproduce.
+    assert d.rfree_source == (
+        "Generated (resolution-binned, ASU-grouped, seed 0)"
+    )
     assert bool((d.rfree_flags == 0).any())  # a free set actually exists
     assert _mixed_partition_groups(d) == []
 

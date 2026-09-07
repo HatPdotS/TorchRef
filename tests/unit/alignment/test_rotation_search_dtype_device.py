@@ -1,16 +1,15 @@
-"""The rotation search takes its working precision and its device from config.
+"""The rotation search takes its working precision from config.
 
-Two properties, both easy to lose silently:
+**Precision is `torchref.config`'s, not an argument's.** The expansion used to
+be handed ``compute_dtype=torch.complex64`` by one call site, which made the
+fused CPU Legendre kernel reachable only through that argument -- its
+``BackendTable`` row gates on ``dtypes=(torch.float32,)``, so dropping the
+argument silently routed to the portable path. Now the default *is* float32, so
+the gate matches by construction and flipping the config flips the engine.
 
-* **Precision is `torchref.config`'s, not an argument's.** The expansion used to
-  be handed ``compute_dtype=torch.complex64`` by one call site, which made the
-  fused CPU Legendre kernel reachable only through that argument -- its
-  ``BackendTable`` row gates on ``dtypes=(torch.float32,)``, so dropping the
-  argument silently routed to the portable path. Now the default *is* float32,
-  so the gate matches by construction and flipping the config flips the engine.
-* **The device is resolved from both inputs**, not read off whichever one the
-  code happens to touch first. Model and data on different devices used to
-  either cross-device or throw depending on which line ran.
+Device resolution -- that both inputs are read, rather than whichever one the
+code happens to touch first -- lives in ``tests/unit/utils/test_device_resolution.py``,
+which exercises ``resolve_device`` directly instead of through a loaded case.
 """
 
 import pytest
@@ -120,35 +119,6 @@ def test_wigner_blocks_carry_no_float64_to_the_device():
     for l, b in enumerate(blocks, start=1):
         eye = torch.eye(2 * l + 1, dtype=torch.float32)
         assert torch.allclose(b[0], eye, atol=1e-5), f"d^{l}(0) is not I"
-
-
-def test_anisotropy_fit_runs_on_the_host_in_double():
-    """It is 7 parameters over ~1e4 reflections; precision there is worth more
-    than locality, and keeping it on the host removes a float64 requirement."""
-    from alignment_lab.lab.benchmark import load_case
-    from torchref.experimental.alignment.rotation_search import (
-        ANISO_FIT_WINDOW_A, fit_anisotropy,
-    )
-
-    _, data = load_case("1DAW")[:2]
-    d_max, d_min = ANISO_FIT_WINDOW_A
-    U = fit_anisotropy(data, d_min=d_min, d_max=d_max)
-    assert U.device.type == "cpu"
-    assert U.dtype == torch.float64
-    assert U.shape == (3, 3)
-    assert torch.allclose(U, U.T, atol=1e-12), "U must be symmetric"
-
-
-def test_device_is_resolved_from_both_inputs():
-    """Reading one input's device is what let model and data disagree."""
-    from alignment_lab.lab.benchmark import load_case
-    from torchref.utils import resolve_device
-
-    model, data = load_case("1DAW")[:2]
-    # Data-first precedence, per the convention in torchref/maps/map.py.
-    resolved = resolve_device(data, model)
-    assert resolved == data.hkl.device or resolved.type == data.hkl.device.type
-    assert model.xyz().device.type == resolved.type
 
 
 def test_double_is_a_device_capability_not_a_constant():

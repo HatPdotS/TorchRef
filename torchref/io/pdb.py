@@ -492,7 +492,7 @@ def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
     return df
 
 
-def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) -> None:
+def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     """
     Write a DataFrame to a PDB file.
 
@@ -504,9 +504,6 @@ def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) 
         tempfactor, element, charge.
     filepath : str
         Output PDB filename.
-    template : str, optional
-        PDB template file to copy header from. Deprecated in favour of
-        ``metadata``; no ``DeprecationWarning`` is emitted when it is used.
     metadata : RefinementMetadata, optional
         Metadata to render as PDB header (REMARK 3, TITLE, etc.).
 
@@ -524,14 +521,6 @@ def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) 
         # Write metadata header if provided (before CRYST1)
         if metadata is not None:
             n.write(metadata.render_pdb_header())
-
-        # Copy template header if provided (deprecated path)
-        if template is not None:
-            with open(template) as t:
-                for line in t:
-                    if "REMARK" not in line and "ATOM" in line:
-                        break
-                    n.write(line)
 
         # Write CRYST1 record if cell info available (directly before atoms)
         try:
@@ -613,8 +602,8 @@ def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) 
                 s = (
                     f"{str(ATOM):<6}{int(serial):>5} {name_field}{str(altloc):>1}"
                     f"{str(resname):>3}{str(chainid):>2}{int(resseq):>4}{str(icode):>4}"
-                    f"{round(x, 3):>8}{round(y, 3):>8}{round(z_coord, 3):>8}"
-                    f"{round(occupancy, 3):>6.2f}{round(tempfactor, 2):>6}"
+                    f"{x:>8.3f}{y:>8.3f}{z_coord:>8.3f}"
+                    f"{occupancy:>6.2f}{tempfactor:>6.2f}"
                     f"{str(element):>12}{charge:>2}\n"
                 )
                 n.write(s)
@@ -730,8 +719,8 @@ def write_multi_model(
                     s = (
                         f"{str(ATOM):<6}{int(serial):>5} {name_field}{altloc:>1}"
                         f"{resname:>3}{chainid:>2}{resseq:>4}{icode:>4}"
-                        f"{round(x, 3):>8}{round(y, 3):>8}{round(z_coord, 3):>8}"
-                        f"{round(occupancy, 3):>6.2f}{round(tempfactor, 2):>6}"
+                        f"{x:>8.3f}{y:>8.3f}{z_coord:>8.3f}"
+                        f"{occupancy:>6.2f}{tempfactor:>6.2f}"
                         f"{element:>12}{charge_str:>2}\n"
                     )
                     f.write(s)

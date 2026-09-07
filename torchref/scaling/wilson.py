@@ -335,13 +335,37 @@ class WilsonNormaliser:
         A = A + torch.eye(self.n_coeff, dtype=A.dtype, device=A.device) * (
             1e-10 * float(torch.diagonal(A).abs().max().clamp(min=1e-30))
         )
-        lu = torch.linalg.lu_factor(A)
+        # Factorised once, and by Cholesky rather than LU. `A` is `X^T W X`
+        # plus a ridge with positive IRLS weights, so it is symmetric positive
+        # definite by construction -- and MPS implements neither `lu_solve` nor
+        # `cholesky_solve` (torch 2.9.1), which left the per-iteration solve to
+        # a CPU round trip: 1015 us against 114 us for two triangular solves, on
+        # a 200k x 6 problem whose unavoidable `XtW @ z` is 966 us. Same
+        # arithmetic -- over the 16 datasets in ``tests/files/mtz`` the two
+        # agree to 1e-5 relative in float32 and 1e-14 in float64, with identical
+        # iteration counts on every one.
+        #
+        # `cholesky_ex` reports rather than raises, because a fully collinear
+        # basis is a thing this fit sees: the high-order Chebyshev columns go
+        # near-singular when the data cover only part of the basis range, and
+        # the ridge does not always rescue that. LU carried no definiteness
+        # requirement, so that case falls back to a general solve instead of
+        # failing.
+        chol = torch.linalg.cholesky_ex(A)
+        L_A = chol.L if int(chol.info) == 0 else None
+
+        def _solve(rhs):
+            if L_A is None:
+                return torch.linalg.solve(A, rhs)
+            return torch.linalg.solve_triangular(
+                L_A.mT,
+                torch.linalg.solve_triangular(L_A, rhs, upper=False),
+                upper=True,
+            )
 
         for it in range(1, max_iter + 1):
             z = eta + (y - mu) / mu                      # working response
-            step = torch.linalg.lu_solve(
-                *lu, (XtW @ z).unsqueeze(-1),
-            ).squeeze(-1) - beta
+            step = _solve((XtW @ z).unsqueeze(-1)).squeeze(-1) - beta
             if not torch.isfinite(step).all():
                 raise RuntimeError(
                     f"Wilson fit diverged at iteration {it}: the IRLS solve "

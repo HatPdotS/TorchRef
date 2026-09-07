@@ -9,6 +9,15 @@ Cartesian coordinates by rotating each chain around its mass-weighted
 centroid and translating it. XYZ Euler matches Phenix's default
 ``euler_angle_convention`` and keeps the rotation Jacobian full-rank at the
 origin (no gimbal lock when angles reset to zero after ``bake()``).
+
+**``euler_angles`` is NOT in radians.** It is stored pre-multiplied by
+``angle_scale``, the per-chain radius of gyration in Angstroms, so a unit step in
+an angle and a unit step in a translation displace atoms comparably. Without it
+the rotation block of the Hessian carries ~``Rg**2`` the curvature of the
+translation block and L-BFGS needs an order of magnitude more iterations to place
+six parameters. ``forward()`` divides the scale out;
+:attr:`RigidXYZTensor.rotation_radians` returns the physical angle. Setting
+``angle_scale`` to ones gives the unscaled parametrization.
 """
 
 from typing import Optional, Sequence
@@ -71,6 +80,7 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
                 "mobile_mask", torch.empty(0, dtype=torch.bool, device=device)
             )
             self.register_buffer("atom_weights", torch.empty(0, device=device, dtype=dtype))
+            self.register_buffer("angle_scale", torch.empty(0, device=device, dtype=dtype))
             self.euler_angles = nn.Parameter(torch.empty(0, 3, device=device, dtype=dtype))
             self.translations = nn.Parameter(torch.empty(0, 3, device=device, dtype=dtype))
             self._n_chains = 0
@@ -162,6 +172,12 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         self.register_buffer("chain_centers", chain_centers)
         self.register_buffer("mobile_mask", mobile_t)
         self.register_buffer("atom_weights", atom_weights_t)
+        self.register_buffer(
+            "angle_scale",
+            self._compute_angle_scale(
+                original_xyz_t, chain_centers, mobile_idx, mobile_t, n_chains
+            ),
+        )
 
         self.euler_angles = nn.Parameter(
             torch.zeros((n_chains, 3), dtype=dtype, device=device)
@@ -172,6 +188,28 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
 
         self._n_chains = n_chains
         self._chain_id_order = list(chain_id_order)
+
+    # -----------------------------------------------------------------------
+    # Angle scaling (preconditioning)
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _compute_angle_scale(xyz, centers, mobile_idx, mobile_mask, n_chains):
+        """Per-chain radius of gyration about the rotation centre, in Angstroms.
+
+        The lever arm converting radians into Angstroms of atom displacement.
+        Floored at 1 A so a two-atom body cannot divide by ~0.
+        """
+        d = xyz[mobile_mask] - centers[mobile_idx]
+        sq = torch.zeros(n_chains, dtype=xyz.dtype, device=xyz.device)
+        sq.index_add_(0, mobile_idx, d.pow(2).sum(dim=1))
+        counts = torch.zeros(n_chains, dtype=xyz.dtype, device=xyz.device)
+        counts.index_add_(0, mobile_idx, torch.ones_like(d[:, 0]))
+        return (sq / counts.clamp(min=1.0)).sqrt().clamp(min=1.0)
+
+    @property
+    def rotation_radians(self) -> torch.Tensor:
+        """The physical per-chain XYZ-Euler angles, in radians."""
+        return self.euler_angles / self.angle_scale.unsqueeze(1)
 
     # -----------------------------------------------------------------------
     # Forward — reconstruct full xyz
@@ -185,7 +223,7 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         # the angles are exactly zero): XYZ keeps the Jacobian full-rank
         # at the origin, while ZYZ has a gimbal-lock singularity there
         # (dR/dα_1 and dR/dα_3 collapse onto z-axis rotations when β=0).
-        R = rotation_matrix_euler_xyz(self.euler_angles)  # (n_chains, 3, 3)
+        R = rotation_matrix_euler_xyz(self.rotation_radians)  # (n_chains, 3, 3)
 
         per_atom_R = R[self.chain_indices]  # (N, 3, 3)
         per_atom_center = self.chain_centers[self.chain_indices]  # (N, 3)
@@ -333,6 +371,14 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             )
             centers.index_add_(0, mobile_idx, mobile_xyz * mobile_w.unsqueeze(1))
             self.chain_centers.copy_(centers / w_sum.unsqueeze(1).clamp(min=1e-12))
+            # The scale follows the chain geometry. A rigid re-pose leaves it
+            # unchanged, but any coordinates are accepted here, so recompute.
+            self.angle_scale.copy_(
+                self._compute_angle_scale(
+                    self.original_xyz, self.chain_centers, mobile_idx, mobile,
+                    self._n_chains,
+                )
+            )
             self.euler_angles.zero_()
             self.translations.zero_()
         self.reset_forward_cache()
@@ -355,6 +401,11 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             atom_weights=self.atom_weights.clone(),
         )
         with torch.no_grad():
+            # Carry the scale rather than letting the constructor re-derive it:
+            # the angles are copied raw, so a scale that has been overridden
+            # (``angle_scale.fill_(1.0)``) would otherwise give the copy a
+            # different pose from the original.
+            new.angle_scale.copy_(self.angle_scale)
             new.euler_angles.copy_(self.euler_angles)
             new.translations.copy_(self.translations)
         return new

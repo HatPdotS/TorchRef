@@ -149,11 +149,16 @@ class TranslationObs:
         """
         dev = get_default_device() if device is None else device
         real = get_float_dtype()
-        F = F_obs.detach().to(dev)
-        F = (F.abs() if F.is_complex() else F).to(real)
+        # Cast and move in one `.to`, and take `abs()` before either. Chaining
+        # them the other way round -- `.to(dev)` and then `.to(real)` -- puts
+        # the caller's width on the device first, which throws for a float64
+        # input on a backend that has none, and double observations are a
+        # perfectly ordinary thing to be handed.
+        F = F_obs.detach()
+        F = (F.abs() if F.is_complex() else F).to(device=dev, dtype=real)
         hkl_i = hkl.detach().to(dev)
 
-        rec_basis = real_cell.reciprocal_basis_matrix.to(dev).to(real)
+        rec_basis = real_cell.reciprocal_basis_matrix.to(device=dev, dtype=real)
         s_mag = (hkl_i.to(real) @ rec_basis).norm(dim=-1)
 
         hkl_l = hkl_i.round().to(torch.int64)  # dtype-ok: Miller indices are integers
@@ -172,7 +177,7 @@ class TranslationObs:
         if sig_F is None:
             weight = torch.ones_like(F)
         else:
-            sig = sig_F.detach().to(dev).to(real).abs()
+            sig = sig_F.detach().to(device=dev, dtype=real).abs()
             weight = normalise_weight(inverse_variance_weight(
                 snr_from_amplitude(F, sig), sigma_a, eps=eps,
             ))
@@ -211,7 +216,10 @@ class CandidateTransform:
         """The normalised complex transform ``sum_i G_i exp(2 pi i (h R_i).t)``
         for ``t`` of shape ``(3,)`` or ``(K, 3)``: ``(N,)`` or ``(K, N)`` complex."""
         single = t.ndim == 1
-        tt = t.reshape(-1, 3).to(self.h_R.device).to(self.h_R.dtype)
+        # One `.to`: a translation handed in as double -- a fractional vector
+        # from host-side algebra usually is -- must not be put on the device at
+        # its own width first.
+        tt = t.reshape(-1, 3).to(device=self.h_R.device, dtype=self.h_R.dtype)
         phase_arg = torch.einsum("ind,kd->kin", self.h_R, tt)
         phase = torch.exp((2j * math.pi) * phase_arg.to(self.G.dtype))
         F = (self.G.unsqueeze(0) * phase).sum(dim=1)
@@ -247,9 +255,9 @@ def prepare_candidate(
     real = get_float_dtype()
     cplx = get_complex_dtype()
 
-    hkl = obs.hkl.to(device).to(real)
-    sym_R = spacegroup.matrices.detach().to(device).to(real)
-    sym_t = spacegroup.translations.detach().to(device).to(real)
+    hkl = obs.hkl.to(device=device, dtype=real)
+    sym_R = spacegroup.matrices.detach().to(device=device, dtype=real)
+    sym_t = spacegroup.translations.detach().to(device=device, dtype=real)
     S = int(sym_R.shape[0])
     N = int(hkl.shape[0])
 
@@ -262,13 +270,13 @@ def prepare_candidate(
     G_raw = F_all * phase
 
     I_P = (G_raw.abs() ** 2).mean(dim=0).to(real)
-    s_mag = obs.s_mag.to(device).to(real)
+    s_mag = obs.s_mag.to(device=device, dtype=real)
     fit_P = WilsonNormaliser(
         I_P, s_mag, n_coeff=WILSON_N_COEFF,
         s_lo=float(s_mag.min()), s_hi=float(s_mag.max()),
     )
     Sigma_c = S * fit_P.evaluate(s_mag).to(real)
-    norm = (obs.eps.to(device).to(real) * Sigma_c).clamp(min=1e-30).sqrt()
+    norm = (obs.eps.to(device=device, dtype=real) * Sigma_c).clamp(min=1e-30).sqrt()
     return CandidateTransform(G=G_raw / norm.to(cplx), h_R=h_R, norm=norm)
 
 
@@ -340,13 +348,13 @@ class FixedComponent:
         device = get_default_device()
         real = get_float_dtype()
         cplx = get_complex_dtype()
-        F_f = F_fixed.detach().to(device).to(cplx)
-        s_mag = obs.s_mag.to(device).to(real)
-        eps = obs.eps.to(device).to(real)
+        F_f = F_fixed.detach().to(device=device, dtype=cplx)
+        s_mag = obs.s_mag.to(device=device, dtype=real)
+        eps = obs.eps.to(device=device, dtype=real)
         cent = obs.centric.to(device)
-        E_obs = obs.E_obs.to(device).to(real)
-        w = obs.weight.to(device).to(real)
-        sig_a = obs.sigma_a.to(device).to(real)
+        E_obs = obs.E_obs.to(device=device, dtype=real)
+        w = obs.weight.to(device=device, dtype=real)
+        sig_a = obs.sigma_a.to(device=device, dtype=real)
 
         I_f = (F_f.abs() ** 2).to(real)
         if float(I_f.max()) <= 0.0:
@@ -550,9 +558,9 @@ def fast_translation_function(
     cplx = get_complex_dtype()
 
     nx, ny, nz = _grid_sizes(real_cell, grid_spacing_A)
-    G = cand.G.to(device).to(cplx)
+    G = cand.G.to(device=device, dtype=cplx)
     S, N = G.shape
-    coeff_real = (obs.coeff if fixed is None else fixed.c_quad).to(device).to(real)
+    coeff_real = (obs.coeff if fixed is None else fixed.c_quad).to(device=device, dtype=real)
     coeff = coeff_real.to(cplx)
     h_R_int = cand.h_R.round().to(torch.int64)  # dtype-ok: Miller indices are integers
 
@@ -568,7 +576,7 @@ def fast_translation_function(
     if fixed is not None:
         # The phased term Re(conj(c_lin) sum_i G_i e^{2 pi i (h R_i).t}) lands at
         # frequency h R_i; half of it, since the 2 Re below doubles it.
-        half_lin = (0.5 * fixed.c_lin.conj().to(device).to(cplx)).view(1, -1) * G   # (S, N)
+        half_lin = (0.5 * fixed.c_lin.conj().to(device=device, dtype=cplx)).view(1, -1) * G   # (S, N)
         flat_i = ((h_R_int[..., 0] % nx) * ny + (h_R_int[..., 1] % ny)) * nz + (h_R_int[..., 2] % nz)
         W.index_add_(0, flat_i.reshape(-1), half_lin.reshape(-1))
     diag = (coeff_real * (G.abs() ** 2).sum(dim=0).to(real)).sum()
@@ -598,8 +606,8 @@ def translation_score_at(obs: TranslationObs, cand: CandidateTransform,
     F = cand.f_calc(t)
     E2 = F.abs() ** 2
     if fixed is None:
-        return float((obs.coeff.to(E2.device).to(E2.dtype) * E2).sum())
-    quad = (fixed.c_quad.to(E2.device).to(E2.dtype) * E2).sum()
+        return float((obs.coeff.to(device=E2.device, dtype=E2.dtype) * E2).sum())
+    quad = (fixed.c_quad.to(device=E2.device, dtype=E2.dtype) * E2).sum()
     lin = (fixed.c_lin.to(F.device).conj() * F).real.sum()
     return float(quad + lin)
 
@@ -642,8 +650,8 @@ def llg_at_translations(
     K, N = F_calc.shape
     dev = F_calc.device
     real = F_calc.real.dtype
-    E_obs = obs.E_obs.to(dev).to(real).view(1, N).expand(K, N)
-    D0 = obs.sigma_a.to(dev).to(real).view(1, N)
+    E_obs = obs.E_obs.to(device=dev, dtype=real).view(1, N).expand(K, N)
+    D0 = obs.sigma_a.to(device=dev, dtype=real).view(1, N)
     cent = obs.centric.to(dev).view(1, N).expand(K, N)
     if fixed is None:
         E_calc = F_calc.abs()
@@ -657,7 +665,7 @@ def llg_at_translations(
         E_calc = None
         ll_ref = fixed.ll_ref.to(real)
         base_mean = (fixed.D_f.to(real) * fixed.E_f).to(F_calc.dtype).view(1, N)
-        var0 = fixed.V.to(dev).to(real).view(1, N)
+        var0 = fixed.V.to(device=dev, dtype=real).view(1, N)
     best = torch.full((K,), -float("inf"), dtype=real, device=dev)
     for c in scales:
         D = D0 * float(c)
@@ -679,10 +687,10 @@ def analytic_r_at(obs: TranslationObs, cand: CandidateTransform,
     number a full Scaler would return, since there is no bulk solvent and no
     B-factor scaling behind ``k``.
     """
-    F_m = cand.f_calc(t) * cand.norm.to(cand.G.device).to(cand.G.dtype)
+    F_m = cand.f_calc(t) * cand.norm.to(device=cand.G.device, dtype=cand.G.dtype)
     if fixed is not None:
-        F_m = F_m + fixed.F_f_raw.to(F_m.device).to(F_m.dtype)
+        F_m = F_m + fixed.F_f_raw.to(device=F_m.device, dtype=F_m.dtype)
     F_c = F_m.abs()
-    F_o = obs.F_obs.to(F_c.device).to(F_c.dtype)
+    F_o = obs.F_obs.to(device=F_c.device, dtype=F_c.dtype)
     k = (F_o * F_c).sum() / (F_c * F_c).sum().clamp(min=1e-30)
     return float((F_o - k * F_c).abs().sum() / F_o.sum().clamp(min=1e-30))
