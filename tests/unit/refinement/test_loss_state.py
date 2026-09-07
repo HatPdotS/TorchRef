@@ -8,6 +8,66 @@ import pytest
 import torch
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["empty", "disabled", "disabled_compilable"])
+@pytest.mark.parametrize("log_values", [False, True])
+def test_zero_aggregate_uses_configured_dtype_and_device(
+    mode: str, log_values: bool
+) -> None:
+    """An aggregate without active targets is a configured scalar zero."""
+    from torchref.config import get_default_device, get_float_dtype
+    from torchref.refinement.loss_state import LossState
+
+    state = LossState()
+    if mode != "empty":
+
+        def disabled_target():
+            pytest.fail("A zero-weight target must not be evaluated")
+
+        state.register_target(
+            "geometry/bond",
+            disabled_target,
+            compile=mode == "disabled_compilable",
+            probe=False,
+        )
+        state.set_weight("geometry", 0.0)
+        state.compile_aggregate()
+
+    total = state.aggregate(log_values=log_values)
+
+    expected = torch.zeros((), dtype=get_float_dtype(), device=get_default_device())
+    torch.testing.assert_close(total, expected)
+    assert state._losses == {}
+    assert state.history == ([{"total": 0.0}] if log_values else [])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("compiled", [False, True])
+def test_aggregate_ignores_torch_default_dtype(
+    monkeypatch: pytest.MonkeyPatch, compiled: bool
+) -> None:
+    """Eager and compiled sums use TorchRef's dtype, not PyTorch's default."""
+    from torchref.config import device, dtypes, get_float_dtype
+    from torchref.refinement.loss_state import LossState
+
+    monkeypatch.setattr(device, "current", torch.device("cpu"))
+    monkeypatch.setattr(dtypes, "float", torch.float32)
+    state = LossState()
+    value = torch.tensor(2.0, dtype=get_float_dtype(), device=state.device)
+    state.register_target("geometry/bond", lambda: value, compile=compiled)
+    state.set_weight("geometry", 3.0)
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(torch.float64)
+        if compiled:
+            state.compile_aggregate(backend="eager")
+        total = state.aggregate()
+    finally:
+        torch.set_default_dtype(previous_dtype)
+
+    torch.testing.assert_close(total, value * 3.0)
+
+
 class TestLossStateBasic:
     """Tests for basic LossState functionality."""
 
@@ -121,7 +181,7 @@ class TestTargetRegistration:
 
         total = state.aggregate()
         # Expected: 0.5 * 1.0 + 1.0 * 2.0 = 2.5
-        assert torch.isclose(total, torch.tensor(2.5))
+        assert total.item() == pytest.approx(2.5)
 
 
 class TestWeightManagement:
@@ -221,7 +281,7 @@ class TestAggregation:
         total = state.aggregate(log_values=False)
 
         # 2.0 * 1.0 + 1.0 * 0.5 = 2.5
-        assert torch.isclose(total, torch.tensor(2.5))
+        assert total.item() == pytest.approx(2.5)
 
     @pytest.mark.unit
     def test_aggregate_hierarchical(self):
@@ -240,7 +300,7 @@ class TestAggregation:
         # geometry/bond: 1.0 * 0.5 * 2.0 = 1.0
         # geometry/angle: 2.0 * 0.5 * 1.0 = 1.0
         # total = 2.0
-        assert torch.isclose(total, torch.tensor(2.0))
+        assert total.item() == pytest.approx(2.0)
 
     @pytest.mark.unit
     def test_aggregate_default_weights(self):
@@ -255,7 +315,7 @@ class TestAggregation:
         total = state.aggregate(log_values=False)
 
         # 2.0 * 1.0 + 1.0 * 1.0 = 3.0
-        assert torch.isclose(total, torch.tensor(3.0))
+        assert total.item() == pytest.approx(3.0)
 
     @pytest.mark.unit
     def test_aggregate_caches_losses(self):

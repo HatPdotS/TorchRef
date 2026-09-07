@@ -58,7 +58,7 @@ class TestWeightingMathOperations:
         total = state.aggregate()
 
         # Expected: 10*1.0 + 5*0.5 + 2*0.25 = 10 + 2.5 + 0.5 = 13.0
-        assert torch.isclose(total, torch.tensor(13.0))
+        assert total.item() == pytest.approx(13.0)
 
 
 @pytest.mark.integration
@@ -146,7 +146,7 @@ class TestWeightingEdgeCases:
 
         # Zero weight should effectively disable ADP term
         total = state.aggregate()
-        assert torch.isclose(total, torch.tensor(0.0))
+        assert total.item() == pytest.approx(0.0)
 
 
 @pytest.mark.integration
@@ -166,8 +166,7 @@ class TestLossAggregatorFunctional:
         total = state.aggregate()
 
         # Expected: 2.0 * 1.0 + 1.0 * 0.5 = 2.5
-        expected = torch.tensor(2.5)
-        assert torch.isclose(total, expected)
+        assert total.item() == pytest.approx(2.5)
 
     def test_loss_state_caches_losses(self):
         """Test that LossState caches computed losses."""
@@ -194,5 +193,4 @@ class TestLossAggregatorFunctional:
         cached = state.get_loss('xray')
         assert cached is not None
         assert torch.isclose(cached, torch.tensor(2.0))
-
 

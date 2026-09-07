@@ -48,8 +48,7 @@ class TestTotalLossFromState:
         total = state.aggregate(log_values=False)
 
         # Expected: 2.0 * 1.0 + 1.0 * 0.5 = 2.5
-        expected = torch.tensor(2.5)
-        assert torch.isclose(total, expected)
+        assert total.item() == pytest.approx(2.5)
 
 
 class TestDefaultGroupWeights:
