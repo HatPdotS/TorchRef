@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- Loss aggregation uses the configured floating-point dtype in eager and compiled execution, including empty and zero-weight aggregates.
 - Named broad structure-compatibility cases explicitly, moved extra datasets to the slow tier, and removed eager all-model loading and swallowed reader failures.
 - Consolidated CIF/MTZ loading contracts, checked configured tensor placement, and replaced ModelFT smoke checks with exercised forward-cache behavior.
 - Replaced local-arithmetic target tests with configured-device production-kernel checks on deposited coordinates and explicit least-squares expectations.
