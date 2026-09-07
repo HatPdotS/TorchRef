@@ -29,6 +29,8 @@ from typing import Optional, Tuple
 
 import torch
 
+from ...config import get_float_dtype
+
 
 def legendre_recurrence_coefficients(L: int, dtype, device):
     """Coefficient tables for the fully-normalised Legendre recurrence.
@@ -176,26 +178,27 @@ def get_axis_order(sym_mats: torch.Tensor, axis: int) -> int:
     coefficients: the Patterson is invariant under the spacegroup rotations,
     so m-values that violate the highest-order axis symmetry are pure noise.
     """
-    a = torch.zeros(3, dtype=torch.float64, device=sym_mats.device)  # dtype-ok: 3x3 rotation algebra in double on the host
+    dtype = sym_mats.dtype if sym_mats.is_floating_point() else get_float_dtype()
+    R = sym_mats.to(dtype)
+    a = torch.zeros(3, dtype=dtype, device=R.device)
     a[axis] = 1.0
-    max_order = 1
-    n_ops = sym_mats.shape[0]
-    for k in range(n_ops):
-        R = sym_mats[k].to(torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host
-        # Axis must be invariant under R (proper or improper rotation about it).
-        if (R @ a - a).norm().item() > 1e-3:
-            continue
-        # Trace of a rotation by angle θ about the preserved axis is 1+2cosθ.
-        tr = R.diagonal().sum().item()
-        cos_a = max(-1.0, min(1.0, (tr - 1.0) / 2.0))
-        # Identity (angle ~0) → order 1.
-        if cos_a >= 1.0 - 1e-6:
-            continue
-        angle = math.acos(cos_a)
-        n = round(2 * math.pi / angle)
-        if n > max_order:
-            max_order = n
-    return max_order
+    # The working precision is enough here and the operators can stay wherever
+    # they are: the entries of a Miller-index symop are small integers, exact in
+    # float32, and the Cartesian form of one is accurate to ~1e-7 -- an order of
+    # magnitude inside the 1e-3 and 1e-6 tolerances this test uses. Batched, so
+    # the answer costs one transfer of two short vectors rather than a device
+    # sync per operation.
+    #
+    # Axis must be invariant under R (proper or improper rotation about it), and
+    # the trace of a rotation by angle θ about the preserved axis is 1+2cosθ.
+    keeps = (R @ a - a).norm(dim=-1) <= 1e-3
+    cos_a = ((R.diagonal(dim1=-2, dim2=-1).sum(dim=-1) - 1.0) * 0.5).clamp(-1.0, 1.0)
+    keeps = keeps & (cos_a < 1.0 - 1e-6)          # identity (angle ~0) → order 1
+    orders = [
+        round(2 * math.pi / math.acos(c))
+        for c in cos_a[keeps].detach().cpu().tolist()
+    ]
+    return max(orders) if orders else 1
 
 
 def get_high_order_axis(sym_mats: torch.Tensor) -> Tuple[int, int]:
@@ -318,8 +321,16 @@ def fit_overall_anisotropy(
         reflections survive to constrain seven parameters.
     """
     valid = shell_idx >= 0
-    F = F_obs[valid].to(torch.float64)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
-    s = s_vectors[valid].to(torch.float64)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
+    # The fit runs at the amplitudes' own width, wherever they are. It used to
+    # force double on the host, which was measured against this: over the 16
+    # datasets in ``tests/files/mtz``, float32 reproduces U to 3.3e-5 relative
+    # and the correction it exists to apply, exp(+pi^2 s.U.s), to 4.5e-6. The
+    # design matrix is well scaled by construction -- a constant column beside
+    # 2 pi^2 s.s terms of order 0.1-1 over the fitting window -- so there is no
+    # precision cliff for seven parameters to fall off.
+    work = F_obs.dtype if F_obs.is_floating_point() else get_float_dtype()
+    F = F_obs[valid].to(work)
+    s = s_vectors[valid].to(work)
     idx = shell_idx[valid]
     cen = centric[valid].bool()
 
@@ -328,10 +339,10 @@ def fit_overall_anisotropy(
 
     I = F * F
     count = torch.zeros(P, dtype=torch.int64, device=F.device)  # dtype-ok: index tensor; index_add_/gather need int64
-    total = torch.zeros(P, dtype=torch.float64, device=F.device)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
+    total = torch.zeros(P, dtype=work, device=F.device)
     count.index_add_(0, idx, torch.ones_like(idx))
     total.index_add_(0, idx, I)
-    mean_I = (total / count.clamp(min=1).to(torch.float64)).clamp(min=1e-30)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
+    mean_I = (total / count.clamp(min=1).to(work)).clamp(min=1e-30)
 
     keep = (count >= min_count)[idx]
     if int(keep.sum()) < 50:
@@ -349,7 +360,7 @@ def fit_overall_anisotropy(
                    -2.0 * (torch.pi ** 2) * quad], dim=1)
     w = torch.where(cenk, torch.full_like(ratio, 0.5), torch.ones_like(ratio))
 
-    theta = torch.zeros(7, dtype=torch.float64, device=F.device)  # dtype-ok: seven-parameter Gauss-Newton fit in double on the host, once per search
+    theta = torch.zeros(7, dtype=work, device=F.device)
     for _ in range(n_iter):
         model = torch.exp((A @ theta).clamp(min=-20.0, max=20.0))
         J = model.unsqueeze(1) * A
@@ -396,10 +407,17 @@ def hkl_symops_to_cartesian(
     -------
     sym_mats_cart : torch.Tensor, shape (n_ops, 3, 3), real
     """
-    dtype = torch.float64  # dtype-ok: 3x3 rotation algebra in double on the host
-    M = rec_basis.to(dtype).transpose(-1, -2)            # (3, 3)
+    # Whatever width the caller brought. Double when it hands us double -- the
+    # peak finder's host-side 3x3 algebra does -- and the working precision
+    # otherwise, so this is usable on a backend without float64. The integer
+    # symops carry no width of their own, hence the fallback.
+    dtype = rec_basis.dtype if rec_basis.is_floating_point() else get_float_dtype()
+    M = rec_basis.to(dtype).transpose(-1, -2).contiguous()   # (3, 3)
+    # `.contiguous()` is not cosmetic on a 3x3: MPS's `linalg.inv` trips an
+    # internal contiguity assert on the transposed view (torch 2.9.1), and the
+    # copy costs nine elements.
     M_inv = torch.linalg.inv(M)
-    S = sg_mats.to(dtype)                                 # (n_ops, 3, 3)
+    S = sg_mats.to(device=M.device, dtype=dtype)          # (n_ops, 3, 3)
     # S^T, not S: reciprocal space transforms as h' = h.S, so the operator
     # acting on Cartesian s as a column vector is (B^-1 S B)^T = M S^T M^-1
     # with M = B^T. Using S here returns matrices that are not rotations at all
@@ -469,8 +487,11 @@ def apply_overall_anisotropy(
     """
     device = F.device
     dtype = F.dtype
-    s = s_vectors.to(device).to(dtype)
-    U_t = U.to(device).to(dtype)
+    # One `.to` per tensor, not two: `.to(device).to(dtype)` materialises the
+    # source width on the target device first, which throws on a backend that
+    # has no float64 -- and a host-side double U is a thing this is handed.
+    s = s_vectors.to(device=device, dtype=dtype)
+    U_t = U.to(device=device, dtype=dtype)
     s_dot_U = s @ U_t                                       # (N, 3)
     arg = (torch.pi ** 2) * (s_dot_U * s).sum(dim=-1)
     return F * torch.exp(arg.clamp(min=-10.0, max=10.0))

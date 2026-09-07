@@ -186,6 +186,32 @@ def spherical_bessel_table(
     return j_table.to(real_dtype)
 
 
+def _unit_power_ladder(z: torch.Tensor, L: int) -> torch.Tensor:
+    """``[z^0, z^1, ..., z^{L-1}]`` for unit-modulus ``z``, shape ``(n, L)``.
+
+    Built by doubling -- the block of powers already computed, times the next
+    power -- rather than by ``torch.cumprod``, for portability: MPS has no
+    complex cumulative kernels at all (torch 2.9.1 raises "cumulative ops are
+    not yet supported for complex"), and this was the last thing in the rotation
+    search that could not run on Apple silicon.
+
+    Not an accuracy change. Measured against the exact powers in double over
+    5000 angles at L=101, the ladder gives 5.7e-6 where ``cumprod`` gives 4.1e-6
+    in complex64, and 3.4e-14 against 3.3e-14 in complex128 -- the same, because
+    the error is dominated by ``z``'s own rounding amplified by ``p``, which no
+    grouping of the multiplies avoids. ``log2(L)`` wide multiplies in place of
+    one fused pass, so it is not a cost change either.
+    """
+    out = torch.ones((z.shape[0], L), dtype=z.dtype, device=z.device)
+    width = 1                                    # out[:, :width] is filled
+    while width < L:
+        z_w = out[:, width - 1] * z              # z^width
+        take = min(width, L - width)
+        out[:, width:width + take] = out[:, :take] * z_w.unsqueeze(1)
+        width += take
+    return out
+
+
 def bessel_sh_expand(
     s_vectors: torch.Tensor,
     intensity: torch.Tensor,
@@ -347,6 +373,11 @@ def bessel_sh_expand(
     # than clusters, because many directions share a |s| on a lattice. Measured
     # over the benchmark: 2.7 to 39 clusters per shell.
     uniq_ks, inv_s = torch.unique(k_s, return_inverse=True)
+    # `k_s` is one of the host-side keys, so its inverse comes back on the host
+    # while everything it indexes -- `shell_of_cluster`, `s_mag_all` -- is on the
+    # compute device. Bring it across here, once, rather than leaving a host
+    # index to meet device values.
+    inv_s = inv_s.to(device)
     n_shells = int(uniq_ks.shape[0])
     shell_of_cluster = torch.zeros(n_clusters, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
     shell_of_cluster[inverse] = inv_s
@@ -389,15 +420,13 @@ def bessel_sh_expand(
         ph = phi_all[start_i:stop].to(comp_real)                   # (c,)
         i_c = intensity[start_i:stop].to(comp_real)                # (c,)
         # e^{-i p phi} = z^p with z = e^{-i phi}, so one transcendental per
-        # reflection and a running product over p, rather than a transcendental
+        # reflection and a power ladder over p, rather than a transcendental
         # per (reflection, p). At L=101 over 2.6e6 reflections that is 2.6e8
-        # sincos calls replaced by 2.6e6 of them plus a complex multiply each.
-        # The product accumulates about L * eps of relative error, ~2e-14, six
-        # orders below what the grouping already costs.
+        # sincos calls replaced by 2.6e6 of them plus a few complex multiplies
+        # each. `_unit_power_ladder` builds it by doubling rather than with a
+        # cumulative product, which no complex MPS kernel implements.
         z = torch.polar(torch.ones_like(ph), -ph)                  # (c,)
-        ladder = z.unsqueeze(1).expand(-1, L).clone()
-        ladder[:, 0] = 1.0                                          # p = 0
-        e_neg = torch.cumprod(ladder, dim=1)                        # (c, L) = z^p
+        e_neg = _unit_power_ladder(z, L)                            # (c, L) = z^p
         e_neg = (e_neg * i_c.unsqueeze(1)).to(einsum_dtype)
         Sp.index_add_(0, cluster_of_refl[start_i:stop], e_neg)
     sign_p = ((-1.0) ** p_idx.to(comp_real)).to(einsum_dtype)      # (L,)
@@ -542,20 +571,13 @@ def cross_correlate_xi(
         xi[l, m, n] = Σ_r c_obs[r, l, n] · conj(c_calc[r, l, m])
     so that the peak Euler triple satisfies ``s_calc = R · s_obs``.
 
-    **Accumulated one step wider than the coefficients.** The radial sum runs
-    over oscillating ``j_u``, so the terms alternate in sign and cancel; the
-    relative error on the result is then far worse than ``eps * sqrt(n_terms)``
-    would suggest, and it compounds through the equally oscillatory Wigner
-    contraction and the FFT downstream. Accumulating single-precision data in
-    double is the ordinary remedy and it is cheap here -- ``xi`` is
-    ``(L, 2L-1, 2L-1)``, 17 MB at L=65, against the 4.4M-element FFT it feeds.
-
-    Running the whole tail in single instead was measured on 3K7M and 1DAW: the
-    top peak and its z-score were unchanged to seven figures, but scores moved
-    by 1e-4 to 1.4e-3 relative and only **1 of 500** candidate slots still held
-    the same orientation, because the greedy SO(3) NMS is sequential and a
-    reordering cascades through the suppression decisions. The candidate list is
-    what the placement search consumes, so that is not a free trade.
+    Accumulated at the configured complex dtype. The radial sum runs over
+    oscillating ``j_u``, so the terms alternate in sign and cancel, and this was
+    once accumulated one step wider for that reason. Measured, the width is not
+    what the result needs: from one set of complex64 coefficients, a complex64
+    contraction lands within 1.5e-5 of the complex128 one whose peak magnitude
+    is 109. What it does need is for the conjugate below to be *materialised* --
+    see the ``resolve_conj`` note.
 
     Returns
     -------
@@ -569,8 +591,15 @@ def cross_correlate_xi(
     # the top peak, and the placement search now consumes only the top few
     # distinct orientations. Single precision recovers every pose on the panel.
     acc = get_complex_dtype()
+    # `resolve_conj()` is load-bearing, not tidiness. `torch.conj` returns a
+    # lazy view carrying a conjugate BIT, and MPS's batched complex matmul --
+    # which is what this einsum lowers to -- ignores that bit and contracts the
+    # unconjugated values. It is silent: the result is a plausible tensor that
+    # is simply wrong, here by 173% of |xi|max, which then reorders the whole
+    # peak list. Elementwise ops, `where`, `index_add` and 2-D matmul all honour
+    # the bit; only the batched matmul path does not.
     return torch.einsum(
         "rln,rlm->lmn",
         c_obs.coeffs.to(acc),
-        torch.conj(c_calc.coeffs).to(acc),
+        torch.conj(c_calc.coeffs).resolve_conj().to(acc),
     )
