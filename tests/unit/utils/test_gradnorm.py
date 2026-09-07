@@ -1,75 +1,34 @@
-"""
-Unit tests for torchref.utils.gradnorm
+"""Pin the RMS gradient norm across one or several parameter tensors."""
 
-Tests gradient norm calculation utilities.
-"""
+import math
 
 import pytest
 import torch
-import torch.nn as nn
+
+from torchref.config import get_default_device, get_float_dtype
+from torchref.utils.gradnorm import gradnorm
+
+pytestmark = pytest.mark.unit
 
 
-class TestGradNorm:
-    """Tests for gradient norm calculation."""
+@pytest.mark.parametrize("split", [False, True], ids=["single", "multiple"])
+def test_gradnorm_rms(split: bool) -> None:
+    """The norm weights individual gradient elements, not parameter tensors."""
+    values = torch.tensor(
+        [1.0, 2.0, 3.0], dtype=get_float_dtype(), device=get_default_device()
+    )
+    chunks = (values[:1], values[1:]) if split else (values,)
+    params = [chunk.clone().requires_grad_() for chunk in chunks]
+    loss = sum((param.square().sum() for param in params))
+    expected = values.new_tensor(math.sqrt(56.0 / 3.0))
+    torch.testing.assert_close(gradnorm(loss, iter(params)), expected)
 
-    @pytest.mark.unit
-    def test_gradnorm_basic(self):
-        """Test basic gradient norm calculation."""
-        from torchref.utils.gradnorm import gradnorm
-        
-        # Simple linear model
-        model = nn.Linear(10, 1, bias=False)
-        x = torch.randn(5, 10)
-        y = torch.randn(5, 1)
-        
-        # Forward pass
-        pred = model(x)
-        loss = ((pred - y) ** 2).mean()
-        
-        # Calculate gradient norm
-        grad_norm = gradnorm(loss, model.parameters())
-        
-        assert isinstance(grad_norm, torch.Tensor)
-        assert grad_norm.ndim == 0  # Scalar
-        assert grad_norm >= 0  # Non-negative
 
-    @pytest.mark.unit
-    def test_gradnorm_zero_gradient(self):
-        """Gradient norm should handle zero gradients."""
-        from torchref.utils.gradnorm import gradnorm
-        
-        model = nn.Linear(10, 1, bias=False)
-        
-        # Create a loss that depends on the model but has zero gradient
-        x = torch.randn(3, 10)
-        pred = model(x)
-        loss = (pred * 0.0).sum()  # Zero gradient
-        # DON'T call backward before gradnorm - it calls backward internally
-        
-        grad_norm = gradnorm(loss, model.parameters())
-        
-        # Should be 0 (zero gradients)
-        assert torch.isclose(grad_norm, torch.tensor(0.0, dtype=grad_norm.dtype), atol=1e-10)
-
-    @pytest.mark.unit
-    def test_gradnorm_multiple_params(self):
-        """Test gradient norm with multiple parameter groups."""
-        from torchref.utils.gradnorm import gradnorm
-        
-        # Model with multiple layers
-        model = nn.Sequential(
-            nn.Linear(10, 5),
-            nn.ReLU(),
-            nn.Linear(5, 1)
-        )
-        
-        x = torch.randn(3, 10)
-        y = torch.randn(3, 1)
-        
-        pred = model(x)
-        loss = ((pred - y) ** 2).mean()
-        
-        grad_norm = gradnorm(loss, model.parameters())
-        
-        assert isinstance(grad_norm, torch.Tensor)
-        assert grad_norm >= 0
+def test_gradnorm_zero_gradient() -> None:
+    """A connected loss with zero derivative has zero RMS gradient."""
+    param = torch.ones(
+        3, dtype=get_float_dtype(), device=get_default_device(), requires_grad=True
+    )
+    torch.testing.assert_close(
+        gradnorm((param * 0).sum(), [param]), param.new_zeros(())
+    )

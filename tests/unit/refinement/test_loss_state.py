@@ -44,7 +44,9 @@ class TestTargetRegistration:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        target_fn = lambda: torch.tensor(1.0)
+
+        def target_fn():
+            return torch.tensor(1.0)
 
         result = state.register_target("geometry/bond", target_fn)
 
@@ -136,6 +138,7 @@ class TestWeightManagement:
         result = state.set_weight("geometry", 0.5)
 
         assert state.weights["geometry"] == 0.5
+        assert state.get_weight("geometry") == 0.5
         assert result is state  # Method chaining
 
     @pytest.mark.unit
@@ -184,12 +187,11 @@ class TestWeightManagement:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.set_weight("geometry", 0.5)
-        state.set_weight("geometry/bond", 2.0)
+        state.set_weight("geometry", 2.0)
+        state.set_weight("geometry/bond", 3.0)
 
-        # geometry/bond -> geometry (0.5) * geometry/bond (2.0) = 1.0
         effective = state.get_effective_weight("geometry/bond")
-        assert effective == 1.0
+        assert effective == 6.0
 
     @pytest.mark.unit
     def test_get_effective_weight_missing_intermediate(self):
@@ -206,6 +208,22 @@ class TestWeightManagement:
 
 class TestAggregation:
     """Tests for loss aggregation."""
+
+    @pytest.mark.unit
+    def test_zero_weight(self):
+        """A zero weight contributes zero to the aggregate."""
+        from torchref.config import get_default_device, get_float_dtype
+        from torchref.refinement.loss_state import LossState
+
+        value = torch.tensor(
+            100.0, dtype=get_float_dtype(), device=get_default_device()
+        )
+        state = LossState()
+        state.register_target("adp", lambda: value)
+        state.set_weight("adp", 0.0)
+        total = state.aggregate()
+        assert total.ndim == 0
+        assert total.item() == 0.0
 
     @pytest.mark.unit
     def test_aggregate_simple(self):
@@ -260,15 +278,25 @@ class TestAggregation:
     @pytest.mark.unit
     def test_aggregate_caches_losses(self):
         """Test that aggregate caches computed losses."""
+        from torchref.config import get_default_device, get_float_dtype
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target("xray", lambda: torch.tensor(2.0))
+        value = torch.tensor(2.0, dtype=get_float_dtype(), device=get_default_device())
+        calls = 0
 
+        def target():
+            nonlocal calls
+            calls += 1
+            return value
+
+        state.register_target("xray", target)
+        # Registration probes the autograd graph; count only subsequent evaluations.
+        calls = 0
         state.aggregate(log_values=False)
-
-        loss = state.get_loss("xray")
-        assert torch.isclose(loss, torch.tensor(2.0))
+        assert calls == 1
+        torch.testing.assert_close(state.get_loss("xray"), value)
+        assert calls == 1
 
 
 class TestHistoryLogging:
