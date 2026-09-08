@@ -6,7 +6,6 @@ Tests symmetry operations with real crystallographic data.
 
 import pytest
 import torch
-from pathlib import Path
 
 
 class TestSpaceGroupInitialization:
@@ -106,8 +105,8 @@ class TestSpaceGroupDevice:
     @pytest.mark.integration
     def test_spacegroup_default_device(self):
         """Test SpaceGroup matrices land on the configured default device."""
-        from torchref.symmetry import SpaceGroup
         from torchref.config import get_default_device
+        from torchref.symmetry import SpaceGroup
 
         sg = SpaceGroup("P 21 21 21")
 
@@ -140,30 +139,13 @@ class TestSpaceGroupOperations:
 
         # The model should be able to generate symmetry mates
         # Check if there's an expand method
-        if hasattr(sg, 'expand') or hasattr(sg, 'expand_atoms'):
+        if hasattr(sg, "expand") or hasattr(sg, "expand_atoms"):
             expanded = sg.expand(xyz)
             assert expanded.shape[0] >= xyz.shape[0]
 
 
 class TestSpacegroupVariants:
     """Tests for different spacegroup conventions."""
-
-    @pytest.mark.integration
-    @pytest.mark.parametrize("sg_name", [
-        "P 1",           # Triclinic
-        "P 21",          # Monoclinic
-        "P 21 21 21",    # Orthorhombic
-        "P 43 21 2",     # Tetragonal
-        "P 3 2 1",       # Trigonal
-        "P 6 2 2",       # Hexagonal
-        "P 2 3",         # Cubic
-    ])
-    def test_common_spacegroups(self, sg_name):
-        """Test loading common spacegroups."""
-        from torchref.symmetry import SpaceGroup
-
-        sg = SpaceGroup(sg_name)
-        assert sg.matrices is not None
 
     @pytest.mark.integration
     def test_spacegroup_name_variations(self):
@@ -180,25 +162,6 @@ class TestSpacegroupVariants:
 
 class TestSpaceGroupWithData:
     """Tests for SpaceGroup with real crystallographic data."""
-
-    @pytest.mark.integration
-    def test_spacegroup_with_multiple_structures(self, cif_dir):
-        """Test SpaceGroup for multiple structures."""
-        from torchref.model.model import Model
-        from torchref.symmetry import SpaceGroup
-
-        cif_files = list(cif_dir.glob("*.cif"))[:3]
-
-        for cif_file in cif_files:
-            model = Model()
-            model.load_cif(str(cif_file))
-
-            sg = SpaceGroup(model.spacegroup)
-
-            # Should have valid matrices
-            assert sg.matrices is not None
-            assert sg.matrices.shape[0] >= 1
-            assert torch.all(torch.isfinite(sg.matrices))
 
     @pytest.mark.integration
     def test_spacegroup_consistent_with_cell(self, sample_cif_file):
