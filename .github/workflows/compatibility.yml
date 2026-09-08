@@ -21,6 +21,7 @@ on:
 
   # Also run on PRs that modify dependencies
   pull_request:
+    branches-ignore: [dev]
     paths:
       - 'pyproject.toml'
       - 'tox.ini'
