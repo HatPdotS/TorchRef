@@ -92,9 +92,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Computation device. Defaults to the configured device.current.
     strip_H : bool, optional
         Whether to strip hydrogen atoms when loading. Default False: hydrogens are kept
-        where the file has them and generated where it does not.
+        where the file has them.
     add_hydrogens : bool, optional
-        Generate hydrogens on load for residues that arrive without them. Default True;
+        Generate missing hydrogens on load when True. Default False;
         ignored when ``strip_H`` is set.
 
     Attributes
@@ -130,7 +130,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         verbose=1,
         device=None,
         strip_H: bool = False,
-        add_hydrogens: bool = True,
+        add_hydrogens: bool = False,
     ):
         """
         Initialize an empty Model shell.
@@ -148,10 +148,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Computation device. Defaults to the configured device.current.
         strip_H : bool, optional
             Whether to strip hydrogen atoms when loading. Default False: hydrogens are
-            kept where the file has them and generated where it does not.
+            kept where the file has them.
         add_hydrogens : bool, optional
-            Generate hydrogens on load for residues that arrive without them. Default
-            True; ignored when ``strip_H`` is set.
+            Generate missing hydrogens on load when True. Default False;
+            ignored when ``strip_H`` is set.
         """
         super().__init__()
         # Resolve dtype/device at call time (not import time) so a runtime
@@ -738,8 +738,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         fixed point.
 
         Costs a restraint build that is then discarded, because the plan needs the
-        topology and the topology is built over the atoms as loaded. Set
-        ``add_hydrogens=False`` to skip it for a model that will never be refined.
+        topology and the topology is built over the atoms as loaded. Loading invokes
+        this only when ``add_hydrogens=True`` is requested.
         """
         from torchref.topology.hydrogens import (
             augment_atom_table,
@@ -2009,7 +2009,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def _new_model_from_df(self, df, *, strip_H=None, add_hydrogens=False):
         """Build a fresh model of the same class from a DataFrame.
 
-        ``add_hydrogens`` defaults to False, unlike the constructor: the caller has
+        ``add_hydrogens`` defaults to False: the caller has
         already settled which atoms the table holds, and generating more would fight
         that. :meth:`hydrogenate` passes an already-augmented table for the same reason.
         """

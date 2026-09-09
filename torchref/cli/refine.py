@@ -115,6 +115,12 @@ Loss weights:
     refine_group = parser.add_argument_group("Refinement")
     add_n_cycles_arg(refine_group)
     refine_group.add_argument(
+        "--add-hydrogens",
+        action="store_true",
+        help="Generate missing hydrogens when loading the model (default: off). "
+        "Hydrogens already present in the input are retained either way.",
+    )
+    refine_group.add_argument(
         "--mode",
         type=str,
         default="separate",
@@ -248,6 +254,7 @@ Loss weights:
         print(f"Refinement mode:   {args.mode}")
         print(f"X-ray target:      {args.xray_mode}")
         print(f"Refinement cycles: {args.n_cycles}")
+        print(f"Add hydrogens:     {'on' if args.add_hydrogens else 'off'}")
         if args.with_rigid_body:
             print(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
         print(f"Device:            {args.device}")
@@ -304,6 +311,7 @@ Loss weights:
         reflections_per_adp_parameter=args.reflections_per_adp_parameter,
         aniso_selection=args.anisotropic_selection,
         wavelength=args.wavelength,
+        add_hydrogens=args.add_hydrogens,
     )
 
     # Merge onto DEFAULT_GROUP_WEIGHTS so unspecified groups keep their defaults;

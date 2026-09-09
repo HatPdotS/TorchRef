@@ -137,6 +137,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         shrink: bool = SHRINK_ENABLED,
         scale_target: str = DEFAULT_SCALE_TARGET,
         aniso_selection: Optional[str] = None,
+        add_hydrogens: bool = False,
     ):
         """Initialize Refinement, fully if ``data_file`` and ``pdb`` are given.
 
@@ -204,6 +205,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         aniso_selection : str, optional
             Phenix-style selection of atoms refined anisotropically when
             ``adp_mode="anisotropic"``. Defaults to all non-water heavy atoms.
+        add_hydrogens : bool, optional
+            Generate missing hydrogens when loading the model. Default False.
+            Hydrogens already present in the input are retained either way.
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -274,6 +278,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 device=self.device,
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
+                add_hydrogens=add_hydrogens,
             )
             self.scaler = Scaler(
                 verbose=self.verbose, device=self.device, nbins=self.nbins,
@@ -320,6 +325,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 device=self.device,
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
+                add_hydrogens=add_hydrogens,
                 # Apply the f'' (Bijvoet) term only when the data were loaded as
                 # explicit Friedel pairs; merged data gate it off.
                 apply_bijvoet=not self.reflection_data.friedel_merged,

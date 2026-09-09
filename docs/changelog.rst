@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- Hydrogen generation on model loading is off by default; use ``torchref.refine --add-hydrogens`` or ``add_hydrogens=True`` in Python to opt in. Hydrogens already present in input files are retained unless ``strip_H=True``.
 - Pull requests into ``dev`` run one Python 3.12 CPU test job and one MPS test job, without the dependency-compatibility matrix.
 - Loss aggregation uses the configured floating-point dtype in eager and compiled execution, including empty and zero-weight aggregates.
 - Named broad structure-compatibility cases explicitly, moved extra datasets to the slow tier, and removed eager all-model loading and swallowed reader failures.

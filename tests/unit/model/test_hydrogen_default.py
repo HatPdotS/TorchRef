@@ -1,14 +1,17 @@
-"""Hydrogens are present by default: kept where the file has them, generated where not.
+"""Keep deposited hydrogens by default and generate missing ones only on request.
 
 The interesting cases are the partially-hydrogenated file, which has to be topped up per
 parent rather than left alone, and the per-atom buffers that are cached lazily and go
 stale the moment the atom set grows.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from torchref.model.model import Model
+from torchref.model.model_ft import ModelFT
 
 
 def _elements(model):
@@ -22,9 +25,57 @@ def _counts(model):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("model_class", [Model, ModelFT])
+@pytest.mark.parametrize("filename", ["1DAW.pdb", "1AK5_with_H.pdb", "7L84.pdb"])
+def test_default_preserves_deposited_atoms(
+    pdb_dir: Path,
+    filename: str,
+    monkeypatch: pytest.MonkeyPatch,
+    model_class: type[Model],
+) -> None:
+    """Default loading neither generates hydrogens nor removes deposited ones."""
+    from torchref.io.pdb import PDBReader
+
+    path = pdb_dir / filename
+    deposited, _, _ = PDBReader(verbose=0).read(str(path))()
+
+    def unexpected_generation(self: Model) -> None:
+        pytest.fail("Default loading must not generate hydrogens")
+
+    monkeypatch.setattr(Model, "_add_missing_hydrogens", unexpected_generation)
+    model = model_class(verbose=0).load_pdb(str(path))
+
+    np.testing.assert_array_equal(_elements(model), deposited["element"].str.strip())
+
+
+@pytest.mark.unit
+def test_default_cif_load_does_not_generate_hydrogens(
+    cif_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mmCIF loading also leaves missing hydrogens absent by default."""
+
+    def unexpected_generation(self: Model) -> None:
+        pytest.fail("Default mmCIF loading must not generate hydrogens")
+
+    monkeypatch.setattr(Model, "_add_missing_hydrogens", unexpected_generation)
+    model = Model(verbose=0).load_cif(str(cif_dir / "1DAW.cif"))
+    total, n_h = _counts(model)
+    assert total > 0
+    assert n_h == 0
+
+
+@pytest.mark.unit
+def test_context_defaults_to_no_hydrogen_generation() -> None:
+    """A standalone model context leaves hydrogen generation disabled."""
+    from torchref.model.context import ModelContext
+
+    assert ModelContext().add_hydrogens is False
+
+
+@pytest.mark.unit
 def test_a_file_without_hydrogens_gets_them(pdb_dir):
     """1DAW ships none, so every hydrogen here is generated."""
-    model = Model(verbose=0)
+    model = Model(verbose=0, add_hydrogens=True)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
 
     total, n_h = _counts(model)
@@ -47,7 +98,7 @@ def test_a_partially_hydrogenated_file_is_topped_up(pdb_dir):
     kept.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
     _, n_kept = _counts(kept)
 
-    topped = Model(verbose=0)
+    topped = Model(verbose=0, add_hydrogens=True)
     topped.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
     _, n_topped = _counts(topped)
 
@@ -61,7 +112,7 @@ def test_a_partially_hydrogenated_file_is_topped_up(pdb_dir):
 def test_strip_H_still_removes_everything(pdb_dir):
     """The opt-out is unaffected: no hydrogen survives, generated or deposited."""
     for name in ("1DAW.pdb", "7L84.pdb"):
-        model = Model(verbose=0, strip_H=True)
+        model = Model(verbose=0, strip_H=True, add_hydrogens=True)
         model.load_pdb(str(pdb_dir / name))
         _, n_h = _counts(model)
         assert n_h == 0, f"{name} kept {n_h} hydrogens under strip_H"
@@ -75,7 +126,7 @@ def test_add_hydrogens_false_keeps_the_file_as_it_is(pdb_dir):
     total, n_h = _counts(model)
     assert n_h > 0, "7L84 ships hydrogens, so they should have been kept"
 
-    generated = Model(verbose=0)
+    generated = Model(verbose=0, add_hydrogens=True)
     generated.load_pdb(str(pdb_dir / "7L84.pdb"))
     assert _counts(generated)[0] >= total
 
@@ -89,7 +140,7 @@ def test_per_atom_buffers_are_rebuilt_for_the_new_atom_set(pdb_dir):
     place left the van der Waals radii at the heavy-atom count while the pair list
     indexed the full set, and the non-bonded build raised ``IndexError``.
     """
-    model = Model(verbose=0)
+    model = Model(verbose=0, add_hydrogens=True)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     n_atoms = len(model.pdb)
 
@@ -106,12 +157,13 @@ def test_per_atom_buffers_are_rebuilt_for_the_new_atom_set(pdb_dir):
 @pytest.mark.unit
 def test_restraints_build_over_the_hydrogenated_model(pdb_dir):
     """Restraints cover the hydrogens, and each carries exactly one bond."""
-    model = Model(verbose=0)
+    model = Model(verbose=0, add_hydrogens=True)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     restraints = model.restraints
 
     elements = _elements(model)
     is_h = elements == "H"
+    assert is_h.any()
     bonds = restraints.restraints["bond"]["all"]["indices"].cpu().numpy()
     involves_h = is_h[bonds[:, 0]] | is_h[bonds[:, 1]]
     assert int(involves_h.sum()) == int(is_h.sum())
@@ -132,7 +184,7 @@ def test_riding_hydrogens_are_not_placed_when_real_ones_exist(pdb_dir):
     because the riding builder counts bonded neighbours by distance while the generator
     reads them off the bond graph.
     """
-    model = Model(verbose=0)
+    model = Model(verbose=0, add_hydrogens=True)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     restraints = model.restraints
 

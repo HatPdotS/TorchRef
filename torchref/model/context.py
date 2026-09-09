@@ -53,7 +53,7 @@ class ModelContext(DeviceMixin):
         Whether hydrogens were stripped on load.
     exclude_H_from_sf : bool, default False
         Whether hydrogens are excluded from structure-factor calculation.
-    add_hydrogens : bool, default True
+    add_hydrogens : bool, default False
         Generate hydrogens on load for residues that arrive without them. Ignored when
         ``strip_H`` is set, which removes them again.
     initialized : bool, default False
@@ -80,7 +80,7 @@ class ModelContext(DeviceMixin):
     verbose: int = 1
     strip_H: bool = True
     exclude_H_from_sf: bool = False
-    add_hydrogens: bool = True
+    add_hydrogens: bool = False
     initialized: bool = False
 
     def copy(self) -> "ModelContext":
