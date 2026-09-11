@@ -35,7 +35,9 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     -------
     indptr, indices : torch.Tensor
         ``indices[indptr[i]:indptr[i + 1]]`` are atom ``i``'s bonded neighbours,
-        ascending. Each bond contributes both directions.
+        ascending, each partner listed once. A bond row repeated in the edge list --
+        once per altloc conformer for a bond between two shared atoms, or from a LINK
+        record that appears twice -- therefore does not inflate an atom's degree.
     """
     device = bonds.device
     if bonds.numel() == 0:
@@ -47,12 +49,10 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     src = torch.cat([bonds[:, 0], bonds[:, 1]])
     dst = torch.cat([bonds[:, 1], bonds[:, 0]])
 
-    # Sort by (src, dst). Two stable passes, least significant first, give the same
-    # order as a lexicographic sort without materialising a composite key.
-    order = torch.argsort(dst, stable=True)
-    src, dst = src[order], dst[order]
-    order = torch.argsort(src, stable=True)
-    src, dst = src[order], dst[order]
+    # Unique directed pairs, which ``torch.unique`` returns in lexicographic
+    # (src, dst) order -- the CSR layout wanted below.
+    pairs = torch.unique(torch.stack([src, dst], dim=1), dim=0)
+    src, dst = pairs[:, 0], pairs[:, 1]
 
     counts = torch.bincount(src, minlength=n_atoms)
     indptr = torch.zeros(n_atoms + 1, dtype=torch.int64, device=device)  # dtype-ok: CSR indptr offset array; int64 index required

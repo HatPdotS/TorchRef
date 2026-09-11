@@ -324,7 +324,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             res for res in self.unique_residues if res not in self.cif_dict
         ]
 
-        if len(self.missing_residues) > 1:
+        if len(self.missing_residues) >= 1:
             if self.verbose > 0:
                 print(
                     f"Warning: The following residues are missing from the CIF dictionary "

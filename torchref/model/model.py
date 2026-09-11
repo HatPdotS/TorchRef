@@ -96,6 +96,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     add_hydrogens : bool, optional
         Generate missing hydrogens on load when True. Default False;
         ignored when ``strip_H`` is set.
+    cif_path : str or list of str, optional
+        Restraint dictionary file(s) for residues the monomer library does not know, or
+        whose library entry should be overridden. Given here rather than after loading so
+        that hydrogen generation on load reads the same dictionary the restraints will.
 
     Attributes
     ----------
@@ -131,6 +135,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         device=None,
         strip_H: bool = False,
         add_hydrogens: bool = False,
+        cif_path: Optional[Union[str, List[str]]] = None,
     ):
         """
         Initialize an empty Model shell.
@@ -152,6 +157,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         add_hydrogens : bool, optional
             Generate missing hydrogens on load when True. Default False;
             ignored when ``strip_H`` is set.
+        cif_path : str or list of str, optional
+            Restraint dictionary file(s); see the class docstring. :meth:`set_restraints_cif`
+            can still change it after loading, but generation on load only sees the value
+            given here.
         """
         super().__init__()
         # Resolve dtype/device at call time (not import time) so a runtime
@@ -168,7 +177,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # Everything the model is loaded from and sits in, as opposed to what is
         # refined. Populated by load() / create_from_state_dict().
         self.ctx = ModelContext(
-            verbose=verbose, strip_H=strip_H, add_hydrogens=add_hydrogens
+            verbose=verbose,
+            strip_H=strip_H,
+            add_hydrogens=add_hydrogens,
+            cif_path=cif_path,
         )
 
         # Submodules (created during load or load_state_dict)
@@ -752,6 +764,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         plan = plan_hydrogens(
             restraints.topology, restraints.cif_dict, xyz, verbose=self.ctx.verbose
         )
+        if self.ctx.verbose > 0 and restraints.missing_residues:
+            print(
+                "No restraint dictionary for "
+                f"{sorted(restraints.missing_residues)}: not hydrogenated. Pass one "
+                "with cif_path / --cif."
+            )
         if plan.n_hydrogens == 0:
             return
         optimise_free_torsions(plan, restraints.topology, xyz)
@@ -2022,6 +2040,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             device=self.device,
             strip_H=sh,
             add_hydrogens=add_hydrogens,
+            cif_path=self.ctx.cif_path,
         )
         sig = inspect.signature(self.__class__.__init__)
         for pname, param in sig.parameters.items():
@@ -2041,9 +2060,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         new_model = self.__class__(**ctor_kw)
         sg_str = self.spacegroup.xhm if self.spacegroup else "P 1"
         new_model.load(lambda: (df, self.pdb.attrs.get("cell"), sg_str))
-        # Propagate CIF restraint paths so restraints are rebuilt correctly
-        if self.ctx.cif_path is not None:
-            new_model._cif_path = self.ctx.cif_path
         return new_model
 
     def strip_altlocs(self) -> "Model":
@@ -2192,6 +2208,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         state[prefix + "dtype_float"] = self.dtype_float
         state[prefix + "device"] = self.device
         state[prefix + "strip_H"] = self.ctx.strip_H
+        state[prefix + "cif_path"] = self.ctx.cif_path
         state[prefix + "altloc_pairs"] = self.ctx.altloc_pairs
 
         return state
@@ -2449,10 +2466,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         saved_dtype = state_dict.pop("dtype_float", dtype_float)
         state_dict.pop("device", None)  # popped so it never reaches load_state_dict
         strip_H = state_dict.pop("strip_H", True)
+        cif_path = state_dict.pop("cif_path", None)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
 
         instance = cls(
-            dtype_float=saved_dtype, verbose=verbose, device=device, strip_H=strip_H
+            dtype_float=saved_dtype,
+            verbose=verbose,
+            device=device,
+            strip_H=strip_H,
+            cif_path=cif_path,
         )
 
         instance.pdb = pdb
@@ -2593,6 +2615,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             verbose=self.ctx.verbose,
             device=self.device,
             strip_H=self.ctx.strip_H,
+            cif_path=self.ctx.cif_path,
         )
 
         # ``index`` must be renumbered: the occupancy grouping below reads it.

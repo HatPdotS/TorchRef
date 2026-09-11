@@ -7,10 +7,15 @@ read the hydrogen positions off it, and correct each to its ideal bond length.
 
 Two things the bond graph decides that a distance criterion previously guessed at:
 
-* **How many hydrogens a parent can carry.** The count is the parent's standard valence
-  minus the heavy atoms actually bonded to it, taken from the graph. A distance sweep
-  gets this wrong on a distorted or predicted model, where a bond can fall outside the
-  window; and it cannot distinguish a real bond from two atoms that merely sit close.
+* **How many hydrogens a parent can carry.** The smaller of two budgets: the parent's
+  standard valence minus the heavy atoms actually bonded to it in the graph, and the
+  template's own hydrogen count minus every graph bond the template does not know about
+  (a peptide bond, a LINK record, a metal contact). The first budget handles the
+  template's own chemistry; the second is what stops an acetyl cap's aldehyde hydrogen
+  or a metal-bound histidine NE2 hydrogen from being generated when the graph degree
+  sits below the nominal valence only because a double bond counts as one edge. Both
+  read the graph rather than a distance sweep, which gets a distorted or predicted model
+  wrong and cannot tell a bond from two atoms that merely sit close.
 * **Which hydrogens have a free torsion.** A hydrogen whose parent has exactly one heavy
   neighbour -- hydroxyl, thiol, amine, methyl -- can rotate about the parent-neighbour
   axis, and the template's angle for it is arbitrary. Those get scanned; the rest are
@@ -21,9 +26,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 
-#: Standard heavy-atom valences, used to cap how many hydrogens a parent may take. The
-#: fallback of 4 matches the previous behaviour for elements not listed.
+#: Standard heavy-atom valences, one of the two budgets that cap how many hydrogens a
+#: parent may take. Elements not listed fall back to 4 and are then bounded only by the
+#: template's own hydrogen count.
 STANDARD_VALENCE = {"C": 4, "N": 3, "O": 2, "S": 2}
 _DEFAULT_VALENCE = 4
 
@@ -139,6 +146,7 @@ def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
     parent_of: Dict[str, str] = {}
     ideal_length: Dict[str, float] = {}
     heavy_adjacency: Dict[str, List[str]] = {}
+    h_count: Dict[str, int] = {}
 
     bonds = component.get("bonds")
     if bonds is not None and len(bonds) > 0:
@@ -154,10 +162,12 @@ def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
                 continue
             if is_h[ia] and not is_h[ib]:
                 parent_of[a] = b
+                h_count[b] = h_count.get(b, 0) + 1
                 if np.isfinite(values[i]):
                     ideal_length[a] = float(values[i])
             elif is_h[ib] and not is_h[ia]:
                 parent_of[b] = a
+                h_count[a] = h_count.get(a, 0) + 1
                 if np.isfinite(values[i]):
                     ideal_length[b] = float(values[i])
             elif not is_h[ia] and not is_h[ib]:
@@ -174,6 +184,7 @@ def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
         "heavy_coords": coords[~is_h],
         "h_names": ids[is_h],
         "parent_of": parent_of,
+        "h_count": h_count,
         "ideal_length": ideal_length,
         "heavy_adjacency": heavy_adjacency,
     }
@@ -254,11 +265,18 @@ def _half_hydrogen_angle(template: Dict, parent_name: str, h_names: List[str]) -
     return 0.5 * np.arccos(-1.0 / 3.0)
 
 
-def _split_neighbours(topology, atom_index: int) -> Tuple[np.ndarray, int]:
+def _split_neighbours(
+    topology, atom_index: int, altloc: str = ""
+) -> Tuple[np.ndarray, int]:
     """Heavy neighbour rows of ``atom_index``, and how many hydrogens it already has.
 
     Coordinate-independent, unlike a distance sweep: a stretched bond in a predicted or
     mid-refinement model still counts, and two atoms that merely sit close do not.
+
+    Restricted to the conformer being hydrogenated when ``altloc`` is given: a shared
+    backbone atom is bonded to every altloc copy of a split neighbour, and counting them
+    all makes a CA with two CB copies look saturated and lose its HA, or an N with two CA
+    copies lose its H. Blank-altloc neighbours always count.
 
     The hydrogen count is what makes generation idempotent and makes a partially
     hydrogenated structure top up correctly. Both consume the parent's valence, so
@@ -269,6 +287,12 @@ def _split_neighbours(topology, atom_index: int) -> Tuple[np.ndarray, int]:
     neighbours = topology.atoms.neighbors(atom_index)
     if neighbours.numel() == 0:
         return np.zeros(0, dtype=np.int64), 0
+    if altloc:
+        alts = np.char.strip(topology.atoms.altloc[neighbours.cpu().numpy()].astype(str))
+        keep = torch.as_tensor((alts == "") | (alts == altloc), device=neighbours.device)
+        neighbours = neighbours[keep]
+        if neighbours.numel() == 0:
+            return np.zeros(0, dtype=np.int64), 0
     is_h = topology.atoms.is_hydrogen[neighbours]
     return neighbours[~is_h].cpu().numpy(), int(is_h.sum())
 
@@ -445,13 +469,24 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
                 parent_row = name_to_row[parent_name]
                 parent_position = coords[parent_row]
 
-                heavy_rows, existing_h = _split_neighbours(topology, parent_row)
+                heavy_rows, existing_h = _split_neighbours(
+                    topology, parent_row, altloc
+                )
                 heavy_bonded = len(heavy_rows)
                 element = str(
                     template["elements"][template["id_to_index"][parent_name]]
                 ).upper()
                 valence = STANDARD_VALENCE.get(element, _DEFAULT_VALENCE)
-                allowed = max(0, valence - heavy_bonded - existing_h)
+                # Two budgets; see the module docstring. ``extra_bonds`` are graph
+                # bonds the template has never heard of -- a peptide link, a LINK
+                # record, a metal -- each of which displaces one template hydrogen.
+                template_h = template["h_count"].get(parent_name, len(group))
+                template_heavy = len(template["heavy_adjacency"].get(parent_name, []))
+                extra_bonds = max(0, heavy_bonded - template_heavy)
+                allowed = max(
+                    0,
+                    min(valence - heavy_bonded, template_h - extra_bonds) - existing_h,
+                )
                 group = group[:allowed]
                 if not group:
                     continue

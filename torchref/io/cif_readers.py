@@ -1267,7 +1267,11 @@ class ReflectionCIFReader:
 class ModelCIFReader:
     """
     Reader for model/structure CIF files (e.g. ``*.cif`` from the PDB):
-    coordinates, altlocs, ANISOU, cell and space group.
+    coordinates, altlocs, ANISOU, cell, space group and covalent links.
+
+    Covalent and metal ``_struct_conn`` rows are exposed as ``.links`` in the same table
+    the PDB reader builds from LINK records, so :meth:`torchref.model.model.Model.load`
+    picks them up either way.
 
     Calling the instance gives the same unpack order as the PDB reader::
 
@@ -1307,6 +1311,7 @@ class ModelCIFReader:
             self.cell = cell_params
 
         self.spacegroup = self.get_space_group()
+        self.links = self.get_link_records()
 
         # Store as DataFrame attributes (like legacy PDB reader)
         self.dataframe.attrs["cell"] = self.cell
@@ -1318,6 +1323,81 @@ class ModelCIFReader:
             print(f"  Atoms: {len(self.dataframe)}")
             print(f"  Cell: {self.cell}")
             print(f"  Spacegroup: {self.spacegroup}")
+            print(f"  Links: {len(self.links)}")
+
+    #: ``_struct_conn.conn_type_id`` prefixes that describe a covalent bond the topology
+    #: should carry. Disulfides are detected from SG-SG distance instead (the PDB reader
+    #: ignores SSBOND the same way); hydrogen bonds, salt bridges and mismatches are not
+    #: bonds.
+    _LINK_CONN_TYPES = ("covale", "metalc")
+
+    #: Symmetry operators under which a ``_struct_conn`` row joins atoms of the same
+    #: asymmetric unit copy; the PDB reader keeps LINK records with ``1555`` or blank.
+    _LINK_SYMMETRY_OK = frozenset({"1_555", "", "?", "."})
+
+    def get_link_records(self) -> pd.DataFrame:
+        """Covalent and metal links from ``_struct_conn``, in the LINK-record table.
+
+        Same columns as :func:`torchref.io.pdb.extract_link_records`. Rows whose
+        connection type is not covalent or metal, that cross a symmetry operator, or
+        whose residue numbers are unreadable are dropped. Blank alternative locations and
+        insertion codes (``?`` or ``.``) become empty strings, which is what the atom
+        table carries and what the LINK lookup compares against.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Empty, with the LINK columns, when the file has no ``_struct_conn`` loop.
+        """
+        from torchref.io.pdb import LINK_COLUMNS
+
+        empty = pd.DataFrame(columns=list(LINK_COLUMNS))
+        conn = self.cif.data.get("struct_conn")
+        if conn is None or len(conn) == 0:
+            return empty
+
+        def column(names, default=""):
+            for name in names:
+                if name in conn.columns:
+                    values = conn[name].astype(str).str.strip()
+                    return values.where(~values.isin(["?", "."]), default)
+            return pd.Series([default] * len(conn), index=conn.index, dtype=object)
+
+        kind = column(["_struct_conn.conn_type_id"]).str.lower()
+        keep = kind.str.startswith(self._LINK_CONN_TYPES)
+        for side in ("1", "2"):
+            keep &= column([f"_struct_conn.ptnr{side}_symmetry"]).isin(
+                self._LINK_SYMMETRY_OK
+            )
+
+        out = pd.DataFrame(index=conn.index)
+        for side in ("1", "2"):
+            ptnr = f"_struct_conn.ptnr{side}_"
+            pdbx = f"_struct_conn.pdbx_ptnr{side}_"
+            # Same precedence as get_atom_data: label_* for atom and residue names,
+            # auth_* for chain and residue number, so the lookup matches the table.
+            out[f"name{side}"] = column([ptnr + "label_atom_id", ptnr + "auth_atom_id"])
+            out[f"altloc{side}"] = column([pdbx + "label_alt_id"])
+            out[f"resname{side}"] = column([ptnr + "label_comp_id", ptnr + "auth_comp_id"])
+            out[f"chainid{side}"] = column([ptnr + "auth_asym_id", ptnr + "label_asym_id"])
+            out[f"resseq{side}"] = pd.to_numeric(
+                column([ptnr + "auth_seq_id", ptnr + "label_seq_id"], default="nan"),
+                errors="coerce",
+            )
+            out[f"icode{side}"] = column([pdbx + "PDB_ins_code"])
+        out["length"] = pd.to_numeric(
+            column(["_struct_conn.pdbx_dist_value"], default="nan"), errors="coerce"
+        )
+
+        keep &= out["resseq1"].notna() & out["resseq2"].notna()
+        out = out.loc[keep].copy()
+        if len(out) == 0:
+            return empty
+        out["resseq1"] = out["resseq1"].astype(int)
+        out["resseq2"] = out["resseq2"].astype(int)
+        if self.verbose > 1:
+            print(f"_struct_conn: kept {len(out)} of {len(conn)} rows as links")
+        return out[list(LINK_COLUMNS)].reset_index(drop=True)
 
     def read(self, filepath: str = None):
         """Re-read ``filepath`` (default: the init path); returns ``self``."""

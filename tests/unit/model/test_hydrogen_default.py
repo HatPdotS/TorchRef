@@ -196,3 +196,109 @@ def test_riding_hydrogens_are_not_placed_when_real_ones_exist(pdb_dir):
     assert (
         stripped.restraints.h_topo.n_hydrogens > 0
     ), "with hydrogens absent the riding stand-in should still be built"
+
+
+# --- The user's restraint dictionary is the one that hydrogenates ------------------
+
+RENAMED_GLU_H = {"HAX", "HBX", "HBY", "HGX", "HGY"}
+
+
+@pytest.fixture
+def renamed_glu_cif(test_files_dir):
+    """A GLU dictionary whose side-chain hydrogens carry names the library lacks."""
+    return str(test_files_dir / "restraints" / "GLU_renamed.cif")
+
+
+def _glu_hydrogen_names(model):
+    pdb = model.pdb
+    glu_h = (pdb["resname"].astype(str).str.strip() == "GLU") & (
+        pdb["element"].astype(str).str.strip() == "H"
+    )
+    return set(pdb.loc[glu_h, "name"].astype(str).str.strip())
+
+
+@pytest.mark.unit
+def test_generation_reads_the_cif_given_at_construction(pdb_dir, renamed_glu_cif):
+    """A dictionary passed to the constructor overrides the library for generation.
+
+    The names prove which dictionary was read, and the bond degree proves the generated
+    hydrogens are the ones the restraints know: a hydrogen generated from one
+    dictionary and restrained by another has no bond edge at all.
+    """
+    model = Model(verbose=0, add_hydrogens=True, cif_path=renamed_glu_cif)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    assert model.ctx.cif_path == renamed_glu_cif
+    names = _glu_hydrogen_names(model)
+    assert RENAMED_GLU_H <= names
+    assert not {"HA", "HB2", "HB3", "HG2", "HG3"} & names
+
+    atoms = model.restraints.topology.atoms
+    is_h = atoms.is_hydrogen.cpu().numpy()
+    degree = atoms.degree().cpu().numpy()
+    assert (degree[is_h] > 0).all(), "generated hydrogens without a bond restraint"
+
+
+@pytest.mark.unit
+def test_derived_models_keep_the_restraint_cif(pdb_dir, renamed_glu_cif):
+    """hydrogenate, strip_hydrogens and select all carry the dictionary along."""
+    model = Model(verbose=0, add_hydrogens=False, cif_path=renamed_glu_cif)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+
+    hydrogenated = model.hydrogenate()
+    assert hydrogenated.ctx.cif_path == renamed_glu_cif
+    assert RENAMED_GLU_H <= _glu_hydrogen_names(hydrogenated)
+    assert "GLU" in hydrogenated.restraints.cif_dict
+    template_h = set(
+        hydrogenated.restraints.cif_dict["GLU"]["atoms"]["atom_id"].astype(str).str.strip()
+    )
+    assert RENAMED_GLU_H <= template_h
+
+    assert hydrogenated.strip_hydrogens().ctx.cif_path == renamed_glu_cif
+    assert model.select("resname GLU").ctx.cif_path == renamed_glu_cif
+
+
+@pytest.mark.unit
+def test_state_dict_round_trips_the_restraint_cif(pdb_dir, renamed_glu_cif):
+    model = Model(verbose=0, cif_path=renamed_glu_cif)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    restored = Model.create_from_state_dict(model.state_dict(), verbose=0)
+    assert restored.ctx.cif_path == renamed_glu_cif
+
+
+@pytest.mark.unit
+def test_load_model_registers_the_cif_before_loading(pdb_dir, renamed_glu_cif):
+    """The shared CLI loader generates from the user dictionary too."""
+    from torchref.cli._common import load_model
+
+    model = load_model(
+        str(pdb_dir / "1DAW.pdb"), verbose=0, cif=renamed_glu_cif, add_hydrogens=True
+    )
+    assert model.ctx.cif_path == renamed_glu_cif
+    assert RENAMED_GLU_H <= _glu_hydrogen_names(model)
+
+
+@pytest.mark.unit
+def test_generation_reads_every_compound_of_a_multi_block_cif(pdb_dir, test_files_dir):
+    """A dictionary with several ``data_comp_`` blocks hydrogenates each of its compounds.
+
+    Multi-compound dictionaries once restrained only their last block; generation now
+    reads the same dictionary, so both renamed sets must appear and every generated
+    hydrogen must carry a bond edge.
+    """
+    cif = test_files_dir / "restraints" / "GLU_ASP_renamed.cif"
+    blocks = [l for l in cif.read_text().splitlines() if l.startswith("data_comp_")]
+    assert len(blocks) == 3, blocks  # comp_list + GLU + ASP: the fixture is really multi-block
+
+    model = Model(verbose=0, add_hydrogens=True, cif_path=str(cif))
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    pdb = model.pdb
+    is_h = pdb["element"].astype(str).str.strip() == "H"
+    resname = pdb["resname"].astype(str).str.strip()
+    names = pdb["name"].astype(str).str.strip()
+    assert RENAMED_GLU_H <= set(names[is_h & (resname == "GLU")])
+    assert {"HBQ", "HBR"} <= set(names[is_h & (resname == "ASP")])
+    assert not {"HB2", "HB3"} & set(names[is_h & (resname == "ASP")])
+
+    atoms = model.restraints.topology.atoms
+    degree = atoms.degree().cpu().numpy()
+    assert (degree[atoms.is_hydrogen.cpu().numpy()] > 0).all()

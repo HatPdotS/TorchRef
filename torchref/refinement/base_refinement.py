@@ -150,8 +150,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Path to the MTZ or CIF file holding reflection data.
         pdb : str, optional
             Path to the PDB or CIF file holding the initial model.
-        cif : str, optional
-            Path to a CIF file of restraints (monomer library).
+        cif : str or list of str, optional
+            Restraint dictionary file(s) for residues the monomer library lacks. Given to
+            the model at construction so hydrogen generation on load reads it too.
         verbose : int, optional
             Verbosity level. Default 1.
         max_res : float, optional
@@ -279,6 +280,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
                 add_hydrogens=add_hydrogens,
+                cif_path=cif,
             )
             self.scaler = Scaler(
                 verbose=self.verbose, device=self.device, nbins=self.nbins,
@@ -326,6 +328,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
                 add_hydrogens=add_hydrogens,
+                # Before load, not after: generation on load reads this dictionary.
+                cif_path=cif,
                 # Apply the f'' (Bijvoet) term only when the data were loaded as
                 # explicit Friedel pairs; merged data gate it off.
                 apply_bijvoet=not self.reflection_data.friedel_merged,
@@ -352,8 +356,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 reflections_per_parameter=self.reflections_per_adp_parameter,
             )
             self.setup_scaler()
-            # Configure CIF path for lazy restraint building (restraints built on first access)
-            self.model.set_restraints_cif(cif)
+            # The CIF path went in at construction; build the restraints over it now.
             self.model._build_restraints()
             self._freeze_unrestrained_residues()
 

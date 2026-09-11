@@ -184,7 +184,9 @@ def test_adjacency_matches_bond_block(built, code):
         from_block.add((min(int(a), int(b)), max(int(a), int(b))))
 
     assert from_adjacency == from_block
-    assert int(atoms.degree().sum()) == 2 * atoms.bonds.n_edges
+    # Each distinct partner once: a bond row repeated per altloc conformer or per
+    # duplicated LINK record does not add to the degree.
+    assert int(atoms.degree().sum()) == 2 * len(from_block)
 
 
 @pytest.mark.unit

@@ -5,6 +5,10 @@ Changelog
 Unreleased
 ----------
 - Hydrogen generation on model loading is off by default; use ``torchref.refine --add-hydrogens`` or ``add_hydrogens=True`` in Python to opt in. Hydrogens already present in input files are retained unless ``strip_H=True``.
+- Hydrogen generation reads the user's restraint CIF: ``cif_path`` is a model constructor argument, set before loading by ``torchref.refine --cif`` and the shared CLI loader, and carried by ``hydrogenate``, ``strip_hydrogens``, ``select`` and state dicts.
+- mmCIF models carry their covalent and metal ``_struct_conn`` links, as PDB LINK records already did.
+- A LINK record repeated in a file, or a bond emitted once per altloc conformer, now counts once in the atom graph.
+- Hydrogen count per atom is capped by the template's own hydrogen count minus extra covalent partners, so linked hetero atoms (acetyl caps, Schiff bases, glycosylated ASN, metal-bound HIS) no longer receive displaced hydrogens; shared backbone atoms of split residues keep their HA/H.
 - Pull requests into ``dev`` run one Python 3.12 CPU test job and one MPS test job, without the dependency-compatibility matrix.
 - Loss aggregation uses the configured floating-point dtype in eager and compiled execution, including empty and zero-weight aggregates.
 - Named broad structure-compatibility cases explicitly, moved extra datasets to the slow tier, and removed eager all-model loading and swallowed reader failures.

@@ -410,6 +410,15 @@ def extract_pdb_headers(filepath: str) -> list:
     return headers
 
 
+#: Columns of the LINK-record table that ``Model.load`` reads off a reader's ``.links``.
+#: Shared by the PDB and mmCIF readers so the topology builder sees one schema.
+LINK_COLUMNS = (
+    "name1", "altloc1", "resname1", "chainid1", "resseq1", "icode1",
+    "name2", "altloc2", "resname2", "chainid2", "resseq2", "icode2",
+    "length",
+)
+
+
 def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
     """Parse LINK records from a PDB file (PDB v3.3 format).
 
@@ -476,14 +485,7 @@ def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
                 if verbose > 1:
                     print(f"Warning: skipping malformed LINK: {line.rstrip()}")
 
-    df = pd.DataFrame(
-        rows,
-        columns=[
-            "name1", "altloc1", "resname1", "chainid1", "resseq1", "icode1",
-            "name2", "altloc2", "resname2", "chainid2", "resseq2", "icode2",
-            "length",
-        ],
-    )
+    df = pd.DataFrame(rows, columns=list(LINK_COLUMNS))
     if verbose > 0 and (len(df) or skipped_sym or skipped_bad):
         print(
             f"LINK records: parsed {len(df)}, "

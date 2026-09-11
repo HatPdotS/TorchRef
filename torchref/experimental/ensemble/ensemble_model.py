@@ -348,6 +348,7 @@ class EnsembleModel(ModelFT):
         gridsize: Optional[Tuple[int, int, int]] = None,
         wavelength: float = 1.0,
         anomalous_threshold: float = 0.5,
+        cif_path=None,
     ):
         if dtype_float is None:
             dtype_float = get_float_dtype()
@@ -363,6 +364,7 @@ class EnsembleModel(ModelFT):
             gridsize=gridsize,
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
+            cif_path=cif_path,
         )
         # Filled in by ``_finalize_ensemble`` after ``load`` returns.
         self.n_members: int = 0

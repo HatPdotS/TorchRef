@@ -651,6 +651,7 @@ def load_model(
     device: Union[str, "torch.device", None] = None,
     verbose: int = 0,
     cif: Optional[Union[str, List[str]]] = None,
+    add_hydrogens: bool = False,
 ) -> "ModelFT":
     """Load a model from PDB or CIF, auto-detected by file extension.
 
@@ -665,7 +666,10 @@ def load_model(
     verbose : int
         Verbosity passed to ModelFT.
     cif : str or list of str, optional
-        CIF restraint file(s) to load after the model.
+        CIF restraint file(s), registered on the model before it loads so that hydrogen
+        generation and the restraints read the same dictionary.
+    add_hydrogens : bool, optional
+        Generate missing hydrogens on load. Default False.
 
     Returns
     -------
@@ -675,16 +679,18 @@ def load_model(
     from torchref.config import normalize_device
 
     device = normalize_device(device)
-    model = ModelFT(max_res=max_res, device=device, verbose=verbose)
+    model = ModelFT(
+        max_res=max_res,
+        device=device,
+        verbose=verbose,
+        cif_path=cif,
+        add_hydrogens=add_hydrogens,
+    )
     suffix = Path(path).suffix.lower()
     if suffix in (".cif", ".mmcif"):
         model.load_cif(path)
     else:
         model.load_pdb(path)
-
-    if cif is not None:
-        model.set_restraints_cif(cif)
-
     return model
 
 

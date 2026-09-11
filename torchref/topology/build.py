@@ -586,7 +586,8 @@ def _link_record_edges(
     """Bond edges for the accepted ``LINK`` records, and the atom pairs they join.
 
     A record duplicating an auto-detected disulfide is dropped, since that link already
-    contributed its bond, angles and torsions.
+    contributed its bond, angles and torsions; so is a record repeating an earlier one,
+    which would otherwise add a second bond edge and a second restraint on the same pair.
 
     Returns
     -------
@@ -634,6 +635,7 @@ def _link_record_edges(
         pair = (min(idx1, idx2), max(idx1, idx2))
         if pair in existing:
             continue
+        existing.add(pair)
         rows.append((idx1, idx2))
         length = link["length"]
         usable = isinstance(length, (int, float)) and length == length and length > 0
