@@ -22,8 +22,33 @@ from typing import Optional, Tuple
 
 import torch
 
-from torchref.base.french_wilson import epsilon_from_hkl  # noqa: F401  (re-export)
 from torchref.config import get_float_dtype
+
+
+def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
+    """Per-reflection epsilon, tolerating a missing space group.
+
+    Thin adapter over :meth:`~torchref.symmetry.symmetry.Symmetry.epsilon`, which owns
+    the multiplicity count. It exists because reflection data may carry no space group
+    at all, and every consumer here would otherwise repeat the same guard.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices, shape ``(N, 3)``.
+    spacegroup : Symmetry or None
+        The group. ``None`` means no symmetry information, which yields ones -- the
+        same answer P1 gives.
+
+    Returns
+    -------
+    torch.Tensor
+        Multiplicities, shape ``(N,)``, at the configured float dtype, on ``hkl``'s
+        device.
+    """
+    if spacegroup is None or not hasattr(spacegroup, "epsilon"):
+        return torch.ones(hkl.shape[0], device=hkl.device, dtype=get_float_dtype())
+    return spacegroup.epsilon(hkl)
 
 # --- sigma_A estimator constants -------------------------------------------------
 #: Upper bound on the per-shell ``sigma_A``, i.e. the floor on the model-error variance at
@@ -238,10 +263,10 @@ def _segment_layout(lengths: Tuple[int, ...], device_str: str):
     ``lengths`` is a tuple so it can be a cache key.
     """
     device = torch.device(device_str)
-    L = torch.tensor(lengths, dtype=torch.long, device=device)
+    L = torch.tensor(lengths, dtype=torch.long, device=device)  # dtype-ok: segment lengths for cumsum offsets/gather index; PyTorch requires int64
     total = int(L.sum())
     max_len = int(L.max()) if L.numel() else 0
-    zero = torch.zeros(1, dtype=torch.long, device=device)
+    zero = torch.zeros(1, dtype=torch.long, device=device)  # dtype-ok: zero offset concatenated into gather index; PyTorch requires int64
     starts = torch.cat([zero, L.cumsum(0)[:-1]])
     ar = torch.arange(max_len, device=device).reshape(1, max_len)
     # Clamp keeps the gather in bounds for the padding slots; `mask` zeroes them anyway.
@@ -523,7 +548,7 @@ def estimate_beta(
     out_dtype = F_obs.dtype
 
     dtype = torch.promote_types(get_float_dtype(), out_dtype)
-    if dtype == torch.float64 and device.type == "mps":
+    if dtype == torch.float64 and device.type == "mps":  # dtype-ok: MPS capability guard, not an allocation
         raise RuntimeError(
             "MPS has no float64; set the defaults float dtype to float32 or use CPU"
         )

@@ -80,7 +80,7 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
         inv_frac_matrix=inv_frac,
     )
 
-    mask = torch.zeros(grid_shape, dtype=torch.int32, device=device)
+    mask = torch.zeros(grid_shape, dtype=torch.int32, device=device)  # dtype-ok: integer solvent-mask accumulator (mask>0); categorical count, not model-precision data
     mask = add_to_solvent_mask(
         surrounding_coords,
         voxel_indices,
@@ -227,10 +227,9 @@ def setup_ded_context(
     import gemmi
 
     from torchref import DatasetCollection
-    from torchref.symmetry.grid_utils import calculate_optimal_grid_size
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
 
-    from torchref.config import normalize_device
+    from torchref.config import get_float_dtype, normalize_device
 
     device = normalize_device(device)
 
@@ -305,12 +304,13 @@ def setup_ded_context(
     )
     if dmin is None:
         dmin = float(d_spacings.min())
-    d_spacing = torch.tensor(d_spacings, dtype=torch.float32, device=device)
+    d_spacing = torch.tensor(d_spacings, dtype=get_float_dtype(), device=device)
 
     # P1 expansion and grid
-    gridsize = calculate_optimal_grid_size(cell_t, dmin, sg_name)
-    hkl_p1, orig_idx, phase_shifts = expand_hkl(
-        hkl, sg_name, include_friedel=False, remove_absences=True
+    sg = SpaceGroup(sg_name, device=device)
+    gridsize = sg.optimal_grid_size(Cell(cell_t, device=device), dmin)
+    hkl_p1, orig_idx, phase_shifts = sg.expand_hkl(
+        hkl, include_friedel=False, remove_absences=True
     )
     w_dfo_p1 = w_dfo[orig_idx]
     weights_p1 = weights[orig_idx]

@@ -74,12 +74,6 @@ def _cell(beta_deg, dtype=torch.float32, dims=(48, 40, 34), abc=(28.0, 24.0, 20.
     return f64.to(dtype), torch.linalg.inv(f64).to(dtype), dims, f64
 
 
-def _voxel_size(f64, dims):
-    """``voxel_size`` as ``sf_fft`` derives it; unused by the kernels, still in the
-    ``build_electron_density`` signature."""
-    return (f64.norm(dim=0) / torch.tensor(dims, dtype=torch.float64)).float()
-
-
 def _iso_atoms(f64, n=36, dtype=torch.float32, seed=0):
     g = torch.Generator().manual_seed(seed)
     z = torch.tensor([6, 7, 8, 16]).repeat(n // 4 + 1)[:n]
@@ -242,8 +236,7 @@ def test_fused_float64_is_exact():
 # AUTO vs EAGER through the real dispatch: no accelerator needed
 # ===========================================================================
 
-def _build(pin, dims, frac, inv_frac, voxel, dtype, iso=None, aniso=None):
-    rsg = torch.zeros(*dims, 3, dtype=dtype)  # shape only; no kernel reads its values
+def _build(pin, dims, frac, inv_frac, dtype, iso=None, aniso=None):
     xi, ai, oi, Ai, Bi = iso if iso is not None else _empty_iso(dtype)
     kw = {}
     if aniso is not None:
@@ -251,7 +244,8 @@ def _build(pin, dims, frac, inv_frac, voxel, dtype, iso=None, aniso=None):
         kw = dict(xyz_aniso=xa, u_aniso=ua, occ_aniso=oa, A_aniso=Aa, B_aniso=Ba)
     with (use_portable() if pin else contextlib.nullcontext()):
         return build_electron_density(
-            rsg, xi, ai, oi, Ai, Bi, inv_frac, frac, voxel, dtype=dtype, **kw)
+            dims, torch.device("cpu"), xi, ai, oi, Ai, Bi, inv_frac, frac,
+            dtype=dtype, **kw)
 
 
 @pytest.mark.parametrize("beta", _BETAS)
@@ -259,10 +253,9 @@ def _build(pin, dims, frac, inv_frac, voxel, dtype, iso=None, aniso=None):
                          ids=["float32", "float64"])
 def test_auto_matches_eager_iso(beta, dtype):
     frac, inv_frac, dims, f64 = _cell(beta, dtype=dtype)
-    voxel = _voxel_size(f64, dims)
     atoms = _iso_atoms(f64, dtype=dtype)
-    ref = _build(True, dims, frac, inv_frac, voxel, dtype, iso=atoms)
-    got = _build(False, dims, frac, inv_frac, voxel, dtype, iso=atoms)
+    ref = _build(True, dims, frac, inv_frac, dtype, iso=atoms)
+    got = _build(False, dims, frac, inv_frac, dtype, iso=atoms)
     tol = _F32_TOL if dtype is torch.float32 else 1e-12
     assert _rel_l2(got, ref) < tol
 
@@ -270,10 +263,9 @@ def test_auto_matches_eager_iso(beta, dtype):
 @pytest.mark.parametrize("beta", _BETAS)
 def test_auto_matches_eager_aniso(beta):
     frac, inv_frac, dims, f64 = _cell(beta)
-    voxel = _voxel_size(f64, dims)
     atoms = _aniso_atoms(f64)
-    ref = _build(True, dims, frac, inv_frac, voxel, torch.float32, aniso=atoms)
-    got = _build(False, dims, frac, inv_frac, voxel, torch.float32, aniso=atoms)
+    ref = _build(True, dims, frac, inv_frac, torch.float32, aniso=atoms)
+    got = _build(False, dims, frac, inv_frac, torch.float32, aniso=atoms)
     assert _rel_l2(got, ref) < _F32_TOL
 
 
@@ -282,7 +274,6 @@ def test_auto_matches_eager_gradients(kind):
     """Direction *and* magnitude: a kernel returning ``2 * grad`` is perfectly
     parallel, so cosine alone cannot catch it."""
     frac, inv_frac, dims, f64 = _cell(100.0, dtype=torch.float64, dims=(32, 28, 24))
-    voxel = _voxel_size(f64, dims)
     w = torch.randn(dims, generator=torch.Generator().manual_seed(7),
                     dtype=torch.float64)
     if kind == "iso":
@@ -293,7 +284,7 @@ def test_auto_matches_eager_gradients(kind):
     def grads(pin):
         x, pp, o = (t.clone().requires_grad_() for t in (xyz, p, occ))
         pack = (x, pp, o, A, B)
-        dm = _build(pin, dims, frac, inv_frac, voxel, torch.float64,
+        dm = _build(pin, dims, frac, inv_frac, torch.float64,
                     **({"iso": pack} if kind == "iso" else {"aniso": pack}))
         (dm * w).sum().backward()
         return x.grad, pp.grad, o.grad
@@ -350,7 +341,7 @@ def test_auto_actually_dispatches_the_fused_kernel(dtype, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(sphere_splat, "add_isotropic_cpu_sphere_var", recording)
-    _build(False, dims, frac, inv_frac, _voxel_size(f64, dims), dtype,
+    _build(False, dims, frac, inv_frac, dtype,
            iso=_iso_atoms(f64, dtype=dtype))
     assert calls, f"the default did not reach the fused CPU splat for {dtype}"
 
@@ -358,22 +349,20 @@ def test_auto_actually_dispatches_the_fused_kernel(dtype, monkeypatch):
 def test_empty_atom_sets():
     """A structure with no isotropic (or no anisotropic) atoms must not crash."""
     frac, inv_frac, dims, f64 = _cell(90.0)
-    voxel = _voxel_size(f64, dims)
-    only_aniso = _build(False, dims, frac, inv_frac, voxel, torch.float32,
+    only_aniso = _build(False, dims, frac, inv_frac, torch.float32,
                         aniso=_aniso_atoms(f64))
     assert torch.isfinite(only_aniso).all() and float(only_aniso.abs().sum()) > 0
-    both_empty = _build(False, dims, frac, inv_frac, voxel, torch.float32)
+    both_empty = _build(False, dims, frac, inv_frac, torch.float32)
     assert float(both_empty.abs().sum()) == 0.0
 
 
 def test_density_map_accumulates_not_overwrites():
     """Both passes add into one map, so the aniso pass must not clobber the iso one."""
     frac, inv_frac, dims, f64 = _cell(90.0)
-    voxel = _voxel_size(f64, dims)
     iso, aniso = _iso_atoms(f64), _aniso_atoms(f64)
-    a = _build(False, dims, frac, inv_frac, voxel, torch.float32, iso=iso)
-    b = _build(False, dims, frac, inv_frac, voxel, torch.float32, aniso=aniso)
-    both = _build(False, dims, frac, inv_frac, voxel, torch.float32,
+    a = _build(False, dims, frac, inv_frac, torch.float32, iso=iso)
+    b = _build(False, dims, frac, inv_frac, torch.float32, aniso=aniso)
+    both = _build(False, dims, frac, inv_frac, torch.float32,
                   iso=iso, aniso=aniso)
     assert _rel_l2(both, a + b) < 1e-6
 
@@ -407,20 +396,19 @@ def test_aniso_reduces_to_isotropic(beta, pin):
     """
     frac, inv_frac, dims, f64 = _cell(beta, dtype=torch.float64)
     xyz, adp, occ, A, B = _iso_atoms(f64, n=24, dtype=torch.float64)
-    voxel = _voxel_size(f64, dims)
-    grid = torch.zeros(*dims, 3, dtype=torch.float64)
 
     u_sph = torch.zeros(xyz.shape[0], 6, dtype=torch.float64)
     u_sph[:, :3] = (adp / (8.0 * math.pi**2)).unsqueeze(1)
 
     with (use_portable() if pin else contextlib.nullcontext()):
         iso_map = build_electron_density(
-            grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float64
+            dims, torch.device("cpu"), xyz, adp, occ, A, B, inv_frac, frac,
+            dtype=torch.float64
         )
         aniso_map = build_electron_density(
-            grid,
+            dims, torch.device("cpu"),
             xyz[:0], adp[:0], occ[:0], A[:0], B[:0],
-            inv_frac, frac, voxel,
+            inv_frac, frac,
             xyz_aniso=xyz, u_aniso=u_sph, occ_aniso=occ, A_aniso=A, B_aniso=B,
             dtype=torch.float64,
         )
@@ -465,20 +453,20 @@ def test_fused_kernel_is_thread_invariant(n_threads):
 
     frac, inv_frac, dims, f64 = _cell(115.0, dtype=torch.float32)
     xyz, adp, occ, A, B = _iso_atoms(f64, n=96, dtype=torch.float32, seed=7)
-    voxel = _voxel_size(f64, dims)
-    grid = torch.zeros(*dims, 3, dtype=torch.float32)
 
     original = torch.get_num_threads()
     try:
         torch.set_num_threads(1)
         with contextlib.nullcontext():
             ref = build_electron_density(
-                grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float32
+                dims, torch.device("cpu"), xyz, adp, occ, A, B, inv_frac, frac,
+                dtype=torch.float32
             )
         torch.set_num_threads(n_threads)
         with contextlib.nullcontext():
             got = build_electron_density(
-                grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float32
+                dims, torch.device("cpu"), xyz, adp, occ, A, B, inv_frac, frac,
+                dtype=torch.float32
             )
     finally:
         torch.set_num_threads(original)

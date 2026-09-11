@@ -241,7 +241,7 @@ class NonBondedTarget(GeometryTarget):
             return pos1, pos2, min_distances
 
         cell = self.model.cell
-        sg = self.model.symmetry
+        sg = self.model.spacegroup
 
         mate_source = xyz[indices[:, 1]]  # (N_pairs, 3) -- gradients flow
         frac = cell.cartesian_to_fractional(mate_source)
@@ -285,8 +285,8 @@ class NonBondedTarget(GeometryTarget):
                 vdw_data["min_distances"],
                 vdw_data.get("symop_indices"),
                 vdw_data.get("cell_offsets"),
-                self.model.symmetry.matrices,
-                self.model.symmetry.translations,
+                self.model.spacegroup.matrices,
+                self.model.spacegroup.translations,
                 self.model.cell.fractional_matrix,
                 self.model.cell.inv_fractional_matrix,
                 self._c_rep, self._r_exp,
@@ -346,7 +346,7 @@ class NonBondedTarget(GeometryTarget):
 
         if "vdw" not in self.restraints.restraints:
             return {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(
+                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(  # dtype-ok: empty restraint index tensor; PyTorch requires int64 for indexing
                     0, 2
                 ),
                 "violations": torch.tensor([], device=device),
@@ -359,7 +359,7 @@ class NonBondedTarget(GeometryTarget):
 
         if indices is None or len(indices) == 0:
             return {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(
+                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(  # dtype-ok: empty restraint index tensor; PyTorch requires int64 for indexing
                     0, 2
                 ),
                 "violations": torch.tensor([], device=device),

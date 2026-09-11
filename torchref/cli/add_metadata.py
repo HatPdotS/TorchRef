@@ -128,7 +128,12 @@ Examples:
     # Start with pass-through from input file
     input_suffix = input_path.suffix.lower()
     if input_suffix == ".pdb":
-        metadata = RefinementMetadata.from_pdb_file(str(input_path))
+        # This tool annotates a file, it does not re-refine it -- so the input's
+        # REMARK 3 and AUTHOR records are not superseded by anything and are
+        # kept. Refinement output takes the default and drops them.
+        metadata = RefinementMetadata.from_pdb_file(
+            str(input_path), supersede_refinement=False
+        )
     elif input_suffix in (".cif", ".mmcif"):
         metadata = RefinementMetadata.from_cif_file(str(input_path))
     else:

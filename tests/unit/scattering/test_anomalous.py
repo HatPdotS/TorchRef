@@ -246,7 +246,9 @@ END
         assert model.wavelength is None
 
         # Create HKL reflections
-        hkl = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.int32)
+        hkl = torch.tensor(
+            [[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.int32, device=model.device
+        )
 
         # Should compute structure factors without anomalous correction
         sf = model.get_structure_factor(hkl)
@@ -260,7 +262,11 @@ END
         model = ModelFT(wavelength=1.0, anomalous_threshold=0.5, verbose=0)
         model.load_pdb(test_pdb_file)
 
-        hkl = torch.tensor([[1, 0, 0], [2, 1, 0], [1, 1, 1]], dtype=torch.int32)
+        hkl = torch.tensor(
+
+            [[1, 0, 0], [2, 1, 0], [1, 1, 1]], dtype=torch.int32, device=model.device
+
+        )
 
         # Compute with anomalous correction
         sf_with = model.get_structure_factor(
@@ -288,7 +294,11 @@ END
         model = ModelFT(wavelength=1.0, anomalous_threshold=0.5, verbose=0)
         model.load_pdb(test_pdb_file)
 
-        hkl = torch.tensor([[1, 2, 3], [2, 1, 0], [3, 3, 3]], dtype=torch.int32)
+        hkl = torch.tensor(
+
+            [[1, 2, 3], [2, 1, 0], [3, 3, 3]], dtype=torch.int32, device=model.device
+
+        )
 
         sf_plus = model.get_structure_factor(hkl, apply_anomalous=True, recalc=True)
         sf_minus = model.get_structure_factor(-hkl, apply_anomalous=True, recalc=True)
@@ -361,7 +371,11 @@ END
         model.load_pdb(test_pdb_file)
         # xyz.refinable_params should already have requires_grad=True by default
 
-        hkl = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.int32)
+        hkl = torch.tensor(
+
+            [[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.int32, device=model.device
+
+        )
 
         sf = model.get_structure_factor(hkl, apply_anomalous=True, recalc=True)
 

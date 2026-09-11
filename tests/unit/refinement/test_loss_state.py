@@ -8,6 +8,66 @@ import pytest
 import torch
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["empty", "disabled", "disabled_compilable"])
+@pytest.mark.parametrize("log_values", [False, True])
+def test_zero_aggregate_uses_configured_dtype_and_device(
+    mode: str, log_values: bool
+) -> None:
+    """An aggregate without active targets is a configured scalar zero."""
+    from torchref.config import get_default_device, get_float_dtype
+    from torchref.refinement.loss_state import LossState
+
+    state = LossState()
+    if mode != "empty":
+
+        def disabled_target():
+            pytest.fail("A zero-weight target must not be evaluated")
+
+        state.register_target(
+            "geometry/bond",
+            disabled_target,
+            compile=mode == "disabled_compilable",
+            probe=False,
+        )
+        state.set_weight("geometry", 0.0)
+        state.compile_aggregate()
+
+    total = state.aggregate(log_values=log_values)
+
+    expected = torch.zeros((), dtype=get_float_dtype(), device=get_default_device())
+    torch.testing.assert_close(total, expected)
+    assert state._losses == {}
+    assert state.history == ([{"total": 0.0}] if log_values else [])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("compiled", [False, True])
+def test_aggregate_ignores_torch_default_dtype(
+    monkeypatch: pytest.MonkeyPatch, compiled: bool
+) -> None:
+    """Eager and compiled sums use TorchRef's dtype, not PyTorch's default."""
+    from torchref.config import device, dtypes, get_float_dtype
+    from torchref.refinement.loss_state import LossState
+
+    monkeypatch.setattr(device, "current", torch.device("cpu"))
+    monkeypatch.setattr(dtypes, "float", torch.float32)
+    state = LossState()
+    value = torch.tensor(2.0, dtype=get_float_dtype(), device=state.device)
+    state.register_target("geometry/bond", lambda: value, compile=compiled)
+    state.set_weight("geometry", 3.0)
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(torch.float64)
+        if compiled:
+            state.compile_aggregate(backend="eager")
+        total = state.aggregate()
+    finally:
+        torch.set_default_dtype(previous_dtype)
+
+    torch.testing.assert_close(total, value * 3.0)
+
+
 class TestLossStateBasic:
     """Tests for basic LossState functionality."""
 
@@ -44,7 +104,9 @@ class TestTargetRegistration:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        target_fn = lambda: torch.tensor(1.0)
+
+        def target_fn():
+            return torch.tensor(1.0)
 
         result = state.register_target("geometry/bond", target_fn)
 
@@ -121,7 +183,7 @@ class TestTargetRegistration:
 
         total = state.aggregate()
         # Expected: 0.5 * 1.0 + 1.0 * 2.0 = 2.5
-        assert torch.isclose(total, torch.tensor(2.5))
+        assert total.item() == pytest.approx(2.5)
 
 
 class TestWeightManagement:
@@ -136,6 +198,7 @@ class TestWeightManagement:
         result = state.set_weight("geometry", 0.5)
 
         assert state.weights["geometry"] == 0.5
+        assert state.get_weight("geometry") == 0.5
         assert result is state  # Method chaining
 
     @pytest.mark.unit
@@ -184,12 +247,11 @@ class TestWeightManagement:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.set_weight("geometry", 0.5)
-        state.set_weight("geometry/bond", 2.0)
+        state.set_weight("geometry", 2.0)
+        state.set_weight("geometry/bond", 3.0)
 
-        # geometry/bond -> geometry (0.5) * geometry/bond (2.0) = 1.0
         effective = state.get_effective_weight("geometry/bond")
-        assert effective == 1.0
+        assert effective == 6.0
 
     @pytest.mark.unit
     def test_get_effective_weight_missing_intermediate(self):
@@ -208,6 +270,22 @@ class TestAggregation:
     """Tests for loss aggregation."""
 
     @pytest.mark.unit
+    def test_zero_weight(self):
+        """A zero weight contributes zero to the aggregate."""
+        from torchref.config import get_default_device, get_float_dtype
+        from torchref.refinement.loss_state import LossState
+
+        value = torch.tensor(
+            100.0, dtype=get_float_dtype(), device=get_default_device()
+        )
+        state = LossState()
+        state.register_target("adp", lambda: value)
+        state.set_weight("adp", 0.0)
+        total = state.aggregate()
+        assert total.ndim == 0
+        assert total.item() == 0.0
+
+    @pytest.mark.unit
     def test_aggregate_simple(self):
         """Test simple aggregation."""
         from torchref.refinement.loss_state import LossState
@@ -221,7 +299,7 @@ class TestAggregation:
         total = state.aggregate(log_values=False)
 
         # 2.0 * 1.0 + 1.0 * 0.5 = 2.5
-        assert torch.isclose(total, torch.tensor(2.5))
+        assert total.item() == pytest.approx(2.5)
 
     @pytest.mark.unit
     def test_aggregate_hierarchical(self):
@@ -240,7 +318,7 @@ class TestAggregation:
         # geometry/bond: 1.0 * 0.5 * 2.0 = 1.0
         # geometry/angle: 2.0 * 0.5 * 1.0 = 1.0
         # total = 2.0
-        assert torch.isclose(total, torch.tensor(2.0))
+        assert total.item() == pytest.approx(2.0)
 
     @pytest.mark.unit
     def test_aggregate_default_weights(self):
@@ -255,20 +333,30 @@ class TestAggregation:
         total = state.aggregate(log_values=False)
 
         # 2.0 * 1.0 + 1.0 * 1.0 = 3.0
-        assert torch.isclose(total, torch.tensor(3.0))
+        assert total.item() == pytest.approx(3.0)
 
     @pytest.mark.unit
     def test_aggregate_caches_losses(self):
         """Test that aggregate caches computed losses."""
+        from torchref.config import get_default_device, get_float_dtype
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target("xray", lambda: torch.tensor(2.0))
+        value = torch.tensor(2.0, dtype=get_float_dtype(), device=get_default_device())
+        calls = 0
 
+        def target():
+            nonlocal calls
+            calls += 1
+            return value
+
+        state.register_target("xray", target)
+        # Registration probes the autograd graph; count only subsequent evaluations.
+        calls = 0
         state.aggregate(log_values=False)
-
-        loss = state.get_loss("xray")
-        assert torch.isclose(loss, torch.tensor(2.0))
+        assert calls == 1
+        torch.testing.assert_close(state.get_loss("xray"), value)
+        assert calls == 1
 
 
 class TestHistoryLogging:

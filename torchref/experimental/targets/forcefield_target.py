@@ -178,11 +178,11 @@ class ForceFieldTarget(ModelTarget):
         Z = self.model.Z        # Shape: (n_atoms,)
 
         # Ensure Z is long tensor
-        if Z.dtype != torch.long:
+        if Z.dtype != torch.long:  # dtype-ok: dtype guard comparison against torch.long, not an allocation
             Z = Z.long()
 
         # Create batch tensor (single structure = all zeros)
-        batch = torch.zeros(len(Z), dtype=torch.long, device=xyz.device)
+        batch = torch.zeros(len(Z), dtype=torch.long, device=xyz.device)  # dtype-ok: batch index tensor for TorchMD-Net graph scatter; PyTorch requires int64
 
         # Compute energy via TorchMD-Net
         # Returns (energy, forces) or just energy depending on model config

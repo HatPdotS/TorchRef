@@ -32,7 +32,7 @@ def setup_target():
     )
     ens.cell = data.cell
     ens.spacegroup = data.spacegroup
-    ens.setup_grid(max_res=data.get_max_res())
+    ens.max_res = data.get_max_res()
 
     scaler = Scaler(model=ens, data=data, nbins=10, verbose=0)
     fcalc0 = ens(data.hkl)

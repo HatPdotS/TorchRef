@@ -58,7 +58,7 @@ def binwise_scale(
     Fo = Fo.reshape(-1)
     device, dtype = Fc.device, Fc.dtype
 
-    bins = bins.reshape(-1).to(device=device, dtype=torch.int64)
+    bins = bins.reshape(-1).to(device=device, dtype=torch.int64)  # dtype-ok: resolution-bin indices used as scatter_add index; requires int64
     if nbins is None:
         nbins = int(bins.max().item()) + 1 if bins.numel() else 0
 

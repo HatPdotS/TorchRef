@@ -15,7 +15,7 @@ Intended workflow::
     mh = (Model(verbose=0, strip_H=True)
           .load_pdb('structure.pdb')
           .strip_altlocs()
-          .generate_hydrogens())
+          .hydrogenate())
     target = AmberTarget(model=mh)                               # protein-only
     target = AmberTarget(model=mh, residue_charges={'LIG': -1})  # with ligand
 
@@ -351,16 +351,16 @@ class AmberTarget(ModelTarget):
         tleap and are NOT included in the atom map or gradient.
 
         Passing a model that already has H atoms (via
-        ``model.generate_hydrogens()`` or loading a PDB with H) speeds up
+        ``model.hydrogenate()`` or loading a PDB with H) speeds up
         initialisation because ``Modeller.addHydrogens()`` converges
         faster from existing positions.
 
         **GAFF2 ligands**: antechamber's BCC charge scheme runs a
         semiempirical QM step (sqm) that needs a fully protonated molecule.
         Heavy-only ligands are auto-protonated from the monomer library
-        (``generate_hydrogens``) first; an error is raised only if no
+        (``hydrogenate``) first; an error is raised only if no
         monomer CIF resolves AND the heavy-atom electron count is odd.
-        Calling ``model.generate_hydrogens()`` or loading the PDB with
+        Calling ``model.hydrogenate()`` or loading the PDB with
         ``strip_H=False`` beforehand avoids relying on that fallback.
     cutoff : float
         Non-bonded cutoff in Angstroms.  Default 5.0.
@@ -452,7 +452,7 @@ class AmberTarget(ModelTarget):
         self._tleap_residue_map: Optional[List[Dict[str, int]]] = None
         # Cached protonated chemistry PDB (filled lazily by the first ligand
         # parameterisation that needs H). None = not yet computed; False =
-        # generate_hydrogens failed (don't retry).
+        # hydrogenate failed (don't retry).
         self._protonated_pdb_cache = None
 
         if self._chem_model is None:
@@ -597,21 +597,21 @@ class AmberTarget(ModelTarget):
     def _protonated_chem_pdb(self):
         """Protonated chemistry-model PDB DataFrame (cached), or ``None``.
 
-        Uses :meth:`Model.generate_hydrogens` once on the whole chemistry model
-        (which has a unit cell + full residue context, so gemmi's topology engine
-        is well-posed). H come from the monomer-library CIF at ideal geometry via
-        TorchRef's auto-fetching monomer library — no full CCP4 install needed.
-        Cached so repeated ligand parameterisations don't re-run it.
+        Uses :meth:`Model.hydrogenate` once on the whole chemistry model, which has a
+        unit cell and full residue context so every centre has neighbours to orient its
+        template against. H come from the monomer-library CIF at ideal geometry via
+        TorchRef's auto-fetching monomer library -- no full CCP4 install needed. Cached
+        so repeated ligand parameterisations don't re-run it.
         """
         if self._protonated_pdb_cache is None:
             try:
-                m_h = self._chem_model.generate_hydrogens()
+                m_h = self._chem_model.hydrogenate()
                 self._protonated_pdb_cache = (
                     m_h.update_pdb() if hasattr(m_h, "update_pdb") else m_h.pdb
                 )
             except Exception as exc:  # missing CIF/lib, gemmi failure, etc.
                 if self.verbose >= 1:
-                    print(f"[AmberTarget] generate_hydrogens failed: {exc}")
+                    print(f"[AmberTarget] hydrogenate failed: {exc}")
                 self._protonated_pdb_cache = False
         if self._protonated_pdb_cache is False:
             return None
@@ -1470,14 +1470,14 @@ class AmberTarget(ModelTarget):
             or getattr(self, "_h_tensors_dtype", None) != dtype
         ):
             self._h_parent_idx_t = torch.as_tensor(
-                self._h_parent_idx, dtype=torch.long, device=device,
+                self._h_parent_idx, dtype=torch.long, device=device,  # dtype-ok: H-parent atom index for indexing; PyTorch requires int64
             )
             # For invalid frames clamp neighbor indices to 0 so the gather is
             # safe; the value is masked out by `where` below.
             n1 = np.where(self._h_n1_idx >= 0, self._h_n1_idx, 0)
             n2 = np.where(self._h_n2_idx >= 0, self._h_n2_idx, 0)
-            self._h_n1_idx_t = torch.as_tensor(n1, dtype=torch.long, device=device)
-            self._h_n2_idx_t = torch.as_tensor(n2, dtype=torch.long, device=device)
+            self._h_n1_idx_t = torch.as_tensor(n1, dtype=torch.long, device=device)  # dtype-ok: neighbor atom index for indexing; PyTorch requires int64
+            self._h_n2_idx_t = torch.as_tensor(n2, dtype=torch.long, device=device)  # dtype-ok: neighbor atom index for indexing; PyTorch requires int64
             self._h_local_pos_t = torch.as_tensor(
                 self._h_local_pos, dtype=dtype, device=device,
             )
@@ -1530,10 +1530,10 @@ class AmberTarget(ModelTarget):
                 valid_np, dtype=torch.bool, device=device,
             )
             self._model_valid_model_idx_t = torch.as_tensor(
-                np.where(valid_np)[0], dtype=torch.long, device=device,
+                np.where(valid_np)[0], dtype=torch.long, device=device,  # dtype-ok: valid-atom index (np.where) for indexing; PyTorch requires int64
             )
             self._model_valid_omm_idx_t = torch.as_tensor(
-                self._model_to_omm[valid_np], dtype=torch.long, device=device,
+                self._model_to_omm[valid_np], dtype=torch.long, device=device,  # dtype-ok: model->OMM mapping index for indexing; PyTorch requires int64
             )
             # Construction-time snapshot for unmatched heavy slots + initial Hs
             self._pos_buf_t = torch.as_tensor(
@@ -1558,7 +1558,7 @@ class AmberTarget(ModelTarget):
             h_xyz = self._place_hydrogens(full)
             if not hasattr(self, "_h_idx_t_for_omm"):
                 self._h_idx_t_for_omm = torch.as_tensor(
-                    self._h_idx, dtype=torch.long, device=device,
+                    self._h_idx, dtype=torch.long, device=device,  # dtype-ok: H-atom index for indexing; PyTorch requires int64
                 )
             elif self._h_idx_t_for_omm.device != device:
                 self._h_idx_t_for_omm = self._h_idx_t_for_omm.to(device)

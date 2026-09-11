@@ -22,22 +22,20 @@ class RiceXrayTarget(XrayTarget):
     empirically it was the worst-behaved target measured, destroying geometry (bond RMSZ
     28.0 where every other target sat near 1.3). See ``_specs.py``'s module docstring.
 
-    This class survives for exactly one caller:
-    :class:`torchref.experimental.alignment.rigid_body.RigidBodyRefinement`, the FFT-direct
-    rigid-body aligner in the molecular-replacement pipeline, which constructs it directly
-    rather than through the factory.
+    **It now has no caller at all, and is a deletion candidate.** It survived the
+    2026-08 target refactor for exactly one: the FFT-direct rigid-body aligner in the
+    molecular-replacement pipeline, which constructed it directly rather than through
+    the factory. That aligner had no test coverage
+    (``tests/integration/test_rigid_body_refinement.py`` exercises the *other*
+    rigid-body module, ``refinement/rigid_body_refinement.py``), so repointing it at
+    ``nll`` would have been an untested numerical change in a live path -- the
+    likelihood was kept and only its *implementation* de-duplicated onto the shared
+    :func:`~torchref.base.targets.xray_likelihoods.rice_math` primitive.
 
-    **Why it was not simply repointed at ``nll``** during the 2026-08 target refactor, as
-    originally planned: that aligner has **no test coverage whatsoever**
-    (``tests/integration/test_rigid_body_refinement.py`` exercises the *other* rigid-body
-    module, ``refinement/rigid_body_refinement.py``). Swapping a Rice likelihood for a
-    Gaussian there would be an untested numerical change in a live MR path, so the
-    likelihood was kept and only its *implementation* was de-duplicated -- the body now
-    calls the shared :func:`~torchref.base.targets.xray_likelihoods.rice_math` primitive
-    instead of a second copy of the Rice in the deleted ``xray_ml`` module.
-
-    Whoever gives that aligner a test should revisit this: ``nll`` or ``ml_noalpha`` is
-    almost certainly the better objective, and then this class can go.
+    The MR pipeline no longer polishes placements, so that aligner is gone and the
+    constraint with it. What remains is this class, three unit tests of it, and an
+    export. Removing all of that is a ``refinement/`` change and belongs in a
+    ``refinement/`` commit, not an alignment one.
     """
 
     #: ``epsilon * beta`` was clamped here in the implementation this replaced. Preserved

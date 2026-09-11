@@ -152,7 +152,7 @@ class CollectionScaler(ScalerBase):
                 pos_mask = torch.ones_like(fobs, dtype=torch.bool)
             mask = (work_mask & pos_mask).to(torch.bool)
 
-            bins = self.bins[mask].to(torch.int64)
+            bins = self.bins[mask].to(torch.int64)  # dtype-ok: bin indices for scatter/index_select; PyTorch requires int64
             log_ratios = (
                 torch.log(fobs_clamped[mask]) - torch.log(fcalc_amp[mask])
             ).to(self.device)
@@ -165,7 +165,7 @@ class CollectionScaler(ScalerBase):
 
         per_bin = scales / (counts + 1e-6)
         with torch.no_grad():
-            target = per_bin.detach()[self.bins.to(torch.int64)]
+            target = per_bin.detach()[self.bins.to(torch.int64)]  # dtype-ok: bin indices for advanced indexing; PyTorch requires int64
             design = self._iso_design.to(target.dtype)
             coeff = torch.linalg.lstsq(design, target.unsqueeze(1)).solution.squeeze(1)
         self.c_iso = nn.Parameter(coeff.detach())

@@ -52,7 +52,7 @@ def _bucket_by_radius(radius: torch.Tensor, center_1d: torch.Tensor):
         spans.append((float(r), cursor, cursor + idx.numel()))
         cursor += idx.numel()
     order = (torch.cat(order_parts) if order_parts
-             else torch.zeros(0, dtype=torch.long, device=radius.device))
+             else torch.zeros(0, dtype=torch.long, device=radius.device))  # dtype-ok: empty voxel-index fallback; must stay long for indexing
     return order, spans
 
 
@@ -88,7 +88,7 @@ def _canonical_setup(xyz, inv_frac, frac, grid_dims, radius_per_atom, dtype):
     nx, ny, nz = grid_dims
     grid_f = torch.tensor(grid_dims, device=device, dtype=dtype)
     xyz_frac = (xyz @ inv_frac.T) % 1.0
-    center_idx = torch.round(xyz_frac * grid_f).to(torch.long)
+    center_idx = torch.round(xyz_frac * grid_f).to(torch.long)  # dtype-ok: rounded voxel center indices; torch indexing requires long
     # w0: atom position relative to its anchor node, in Cartesian. This is what
     # centres the sphere on the atom rather than on the node.
     w0 = (xyz_frac - center_idx.to(dtype) / grid_f) @ frac.T
@@ -111,8 +111,8 @@ def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)
     grid_dims = (nx, ny, nz)
-    strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
-    grid_shape = torch.tensor(grid_dims, device=device, dtype=torch.long)
+    strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)  # dtype-ok: strides for flat voxel-index arithmetic; indexing requires long
+    grid_shape = torch.tensor(grid_dims, device=device, dtype=torch.long)  # dtype-ok: grid_shape for flat voxel-index arithmetic; indexing requires long
 
     order, spans, center_idx, w0 = _canonical_setup(
         xyz, inv_frac_matrix, frac_matrix, grid_dims, radius_per_atom, dtype)
@@ -151,8 +151,8 @@ def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)
     grid_dims = (nx, ny, nz)
-    strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
-    grid_shape = torch.tensor(grid_dims, device=device, dtype=torch.long)
+    strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)  # dtype-ok: strides for flat voxel-index arithmetic; indexing requires long
+    grid_shape = torch.tensor(grid_dims, device=device, dtype=torch.long)  # dtype-ok: grid_shape for flat voxel-index arithmetic; indexing requires long
 
     order, spans, center_idx, w0 = _canonical_setup(
         xyz, inv_frac_matrix, frac_matrix, grid_dims, radius_per_atom, dtype)

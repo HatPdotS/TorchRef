@@ -13,8 +13,8 @@ Example
     from torchref.experimental.kinetic import ModelCollection, KineticRefinement
 
     # Base models
-    model_dark = ModelFT(max_res=1.5).load_pdb("dark.pdb")
-    model_light = ModelFT(max_res=1.5).load_pdb("light.pdb")
+    model_dark = ModelFT(max_res=1.5, cif_path=cif_paths).load_pdb("dark.pdb")
+    model_light = ModelFT(max_res=1.5, cif_path=cif_paths).load_pdb("light.pdb")
 
     # Collections
     models = ModelCollection([model_dark, model_light])

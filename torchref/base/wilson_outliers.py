@@ -520,6 +520,7 @@ def _normal_quantile(p: float) -> float:
     low, high = -40.0, 10.0
     for _ in range(200):
         mid = 0.5 * (low + high)
+        # dtype-ok: deliberate float64 for a scalar CDF; extracted via float()
         value = float(log_normal_cdf(torch.tensor(mid, dtype=torch.float64)))
         if value < target:
             low = mid

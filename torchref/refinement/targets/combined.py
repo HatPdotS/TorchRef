@@ -20,6 +20,8 @@ from torchref.refinement.targets.geometry import (
 )
 from torchref.refinement.targets.adp import (
     ADPSimilarityTarget, ADPLocalityTarget, ADPSigdTarget,
+    NodeLoadTarget,
+    NodeSmoothnessTarget,
 )
 from torchref.utils.stats import (
     VERBOSITY_DETAILED,
@@ -363,15 +365,43 @@ class TotalADPTarget(CombinedModelTargets):
     """
 
     def _create_targets(self) -> Dict[str, Target]:
-        """Build the three ADP component targets."""
-        print("Initializing TotalADPTarget with component targets...")
-        return {
-            "simu": ADPSimilarityTarget(self.model, verbose=self.verbose),
-            "locality": ADPLocalityTarget(
-                self.model, verbose=self.verbose
-            ),
-            "sigd": ADPSigdTarget(self.model, verbose=self.verbose),
-        }
+        """Build the ADP component targets that apply to the model's representation.
+
+        Only the applicable ones are registered, rather than registering all of them and
+        zero-weighting the inapplicable half. ``simu`` and ``locality`` restrain by
+        penalty exactly the spatial smoothness a node field enforces by construction, so
+        in field mode they are not a weak prior but a duplicate of the parametrisation;
+        and ``node_load`` / ``node_smoothness`` have nothing to act on off it.
+
+        Registering-then-zeroing would cost nothing at run time --- ``LossState.aggregate``
+        skips a zero-weight target --- but it leaves the correctness of the setup resting
+        on a weight, so anyone who touches the ``adp`` group weight for their own reasons
+        silently re-enables a double-counted restraint. Whether a term applies is a
+        property of the representation, not a number to be tuned.
+
+        ``sigd`` applies either way: it is a prior on the marginal B distribution, which
+        a field constrains no more than a per-atom parametrisation does.
+        """
+        if self.model.adp_is_field:
+            targets = {
+                "sigd": ADPSigdTarget(self.model, verbose=self.verbose),
+                "node_load": NodeLoadTarget(self.model, verbose=self.verbose),
+                "node_smoothness": NodeSmoothnessTarget(
+                    self.model, verbose=self.verbose
+                ),
+            }
+        else:
+            targets = {
+                "simu": ADPSimilarityTarget(self.model, verbose=self.verbose),
+                "locality": ADPLocalityTarget(self.model, verbose=self.verbose),
+                "sigd": ADPSigdTarget(self.model, verbose=self.verbose),
+            }
+        if self.verbose > 0:
+            print(
+                "Initializing TotalADPTarget with component targets: "
+                + ", ".join(targets)
+            )
+        return targets
 
     def print_statistics(self) -> None:
         """

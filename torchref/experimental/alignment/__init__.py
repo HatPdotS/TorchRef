@@ -1,47 +1,35 @@
-"""
-Experimental ball-harmonic molecular-replacement engine for TorchRef.
+"""Molecular replacement: a rotation search feeding a translation search.
 
-Experimental / unstable API. This is the opt-in **ball-harmonic MR engine**;
-the production / canonical MR entry point is ``torchref.alignment`` (the
-consolidated FRF engine, default ``engine="frf_separate"``). Everything in this
-package may change without notice (importing it emits a ``FutureWarning``).
+Two stages and one normalisation between them.
 
-Provides molecular replacement functionality including:
+1. **Fast Rotation Function** (:func:`rotation_search`, over
+   :class:`~torchref.experimental.alignment.frf.FastRotationFunction`) --
+   Phaser-faithful Bessel-radial x spherical-harmonic expansion against a dense
+   P1-box calc, with stable Wigner-d. It is a **shortlist generator**: over 30
+   seeded cells it puts the true orientation at rank 0 six times, and inside the
+   top twenty essentially always. Only the second of those is required.
+2. **Fast Translation Function** (:mod:`~torchref.experimental.alignment.translation`)
+   -- a Crowther-Blow correlation over the fractional cell, run per rotation
+   candidate, then an analytical-R local refine. On the same 30 cells it reaches
+   rank 0 in 24, and its likelihood in 27. Rotation ghosts are morphologically
+   identical to truth in a Patterson by construction; they stop being identical
+   once the crystal lattice is involved.
 
-1. Fast Rotation Function: Ball harmonic transform for rotation search
-2. Translation Search: FFT-based translation function
-3. Rigid Body Refinement: Optimization of rotation and translation
-4. Unified Pipeline: Complete MR workflow with early stopping
+There is deliberately nothing between the two. An ML rescore used to sit there
+and was removed: it reordered a shortlist that already contained truth, and
+end-to-end pose recovery was 18/30 with it against 24/30 without.
 
-Notes
------
-Optional dependency surface. The pipeline and ball rotation-search symbols
-(``MolecularReplacementPipeline``, ``MRSolution``, ``ball_rotation_search``,
-``ball_rotation_search_torch``, ``BallHarmonicCoefficients``,
-``splat_evalues_to_ball``, ``compute_ball_harmonic_coefficients``,
-``compute_ball_cross_correlation_coefficients``, ``evaluate_rotation_function``,
-``find_rotation_peaks``, ``reduce_rotation_by_symmetry``, ``RotationCluster``,
-``cluster_rotation_peaks`` and the other rotation/Euler helpers) require the
-JAX/s2fft stack and are exported only when ``pip install torchref[alignment]``
-is present. Without that extra they fall back to stubs (or are absent from
-``__all__``); only translation search, rigid-body refinement, transforms, clash
-scoring, distributions, and the sampling utilities are unconditionally
-available.
+Both stages normalise through :class:`torchref.scaling.WilsonNormaliser` and
+weight through :mod:`torchref.scaling.weighting`, so ``E_obs`` means one thing
+across the whole run.
 
-The package-level ``cluster_rotation_peaks`` is the ``.ball_transform`` version
-(signature ``(peaks, cluster_radius_deg=5.0, symmetry_matrices=None,
-return_details=False)`` returning 6-tuples / ``RotationCluster`` objects). The
-``.pipeline`` module keeps its own simpler variant for internal use, reachable
-as ``torchref.experimental.alignment.pipeline.cluster_rotation_peaks``.
+The pipeline returns a **placement** -- rotation and translation -- and stops.
+Refining it is downstream refinement's job, and deleting the post-placement
+polish that used to be here took pose recovery from 24/30 to 30/30, because on
+the hard cases it walked a correct placement away from truth.
 
-A handful of public ball helpers (``compute_ball_harmonic_coefficients_analytical``,
-``refine_peaks_analytical``, ``refine_peaks_subvoxel_wrapper``,
-``evaluate_rotation_function_at_angles``, ``build_wigner_index_mapping``) are
-documented in their modules but are not re-exported here and are not part of the
-supported package API.
-
-Example - Full MR Pipeline
---------------------------
+Example
+-------
 ::
 
     from torchref.experimental.alignment import MolecularReplacementPipeline
@@ -51,37 +39,8 @@ Example - Full MR Pipeline
     data = ReflectionData().load_mtz('observed.mtz')
     model = ModelFT().load_pdb('search_model.pdb')
 
-    pipeline = MolecularReplacementPipeline(data, model)
-    solutions = pipeline.run(n_rotation_peaks=50, min_tries=3, max_tries=10)
-    print(f"Best R-factor: {solutions[0].r_factor:.3f}")
-
-Example - Individual Components
--------------------------------
-::
-
-    from torchref.experimental.alignment import (
-        ball_rotation_search_torch,
-        fft_translation_search_torch,
-        RigidBodyRefinement,
-    )
-
-    # E_obs, s_obs, E_calc, s_calc, F_obs, F_calc_rotated, hkl assumed
-    # computed beforehand from the data/model.
-
-    # 1. Rotation search
-    rf, angles, peaks = ball_rotation_search_torch(
-        E_obs, s_obs, E_calc, s_calc, L=32, P=20
-    )
-
-    # 2. Translation search for top rotation
-    alpha, beta, gamma, score, sigma = peaks[0]
-    corr_map, best_trans, trans_peaks = fft_translation_search_torch(
-        F_obs, F_calc_rotated, hkl
-    )
-
-    # 3. Rigid body refinement
-    rb = RigidBodyRefinement(model, data, initial_rotation=..., initial_translation=...)
-    result = rb.refine()
+    solutions = MolecularReplacementPipeline(data, model).run()
+    print(f"best R-work: {solutions[0].r_factor:.3f}")
 """
 
 import warnings
@@ -91,197 +50,59 @@ warnings.warn(
     FutureWarning,
 )
 
-# =============================================================================
-# Pipeline & Rotation search require JAX + s2fft (dev dependencies)
-# =============================================================================
-try:
-    from .pipeline import (
-        MolecularReplacementPipeline,
-        MRSolution,
-        rotation_angular_distance,
-        euler_angular_distance,
-    )
-    from .ball_transform import (
-        ball_rotation_search,
-        ball_rotation_search_torch,
-        rotation_matrix_from_euler_zyz,
-        rotation_matrix_to_euler_zyz,
-        rotation_matrix_to_quaternion,
-        check_rotation_recovery,
-        BallHarmonicCoefficients,
-        splat_evalues_to_ball,
-        compute_ball_harmonic_coefficients,
-        compute_ball_cross_correlation_coefficients,
-        evaluate_rotation_function,
-        find_rotation_peaks,
-        reduce_rotation_by_symmetry,
-        reduce_peaks_by_symmetry,
-        reduce_peaks_by_symmetry_torch,
-        cluster_rotation_peaks,
-        cluster_rotation_peaks_torch,
-        RotationCluster,
-    )
-    _HAS_BALL_TRANSFORM = True
-except ImportError:
-    _HAS_BALL_TRANSFORM = False
-
-    _BALL_TRANSFORM_MSG = (
-        "The alignment pipeline and rotation search require jax, s2fft, "
-        "s2ball, spherical, and quaternionic. "
-        "Install with:  pip install torchref[alignment]"
-    )
-
-    def _missing_dep_factory(name):
-        """Create a callable stub that raises ImportError with install hint."""
-        def _stub(*args, **kwargs):
-            raise ImportError(
-                f"{name} is not available. {_BALL_TRANSFORM_MSG}"
-            )
-        _stub.__name__ = name
-        _stub.__qualname__ = name
-        return _stub
-
-    # Provide stubs so that attribute access works but calling raises
-    MolecularReplacementPipeline = _missing_dep_factory("MolecularReplacementPipeline")
-    MRSolution = _missing_dep_factory("MRSolution")
-    ball_rotation_search = _missing_dep_factory("ball_rotation_search")
-    ball_rotation_search_torch = _missing_dep_factory("ball_rotation_search_torch")
-
-# =============================================================================
-# Translation search
-# =============================================================================
+from .frf import (
+    FastRotationFunction,
+    RotationPeak,
+    dense_calc_via_box,
+    edmonds_euler_from_rotation_matrix,
+    phaser_lmax_resolution,
+    rotation_angular_distance_deg,
+    rotation_matrix_from_edmonds_euler,
+)
+from .rotation_search import (
+    FRFInputs,
+    RotationSolutions,
+    prepare_frf_inputs,
+    rotation_search,
+)
 from .translation import (
-    fft_translation_search,
-    fft_translation_search_torch,
+    CandidateTransform,
+    TranslationObs,
     TranslationPeak,
-    find_translation_peaks,
-    apply_translation_to_fcalc,
-    apply_translation_to_fcalc_torch,
+    analytic_r_at,
+    fast_translation_function,
+    llg_at_translations,
+    prepare_candidate,
 )
-
-# =============================================================================
-# Rigid body refinement
-# =============================================================================
-from .rigid_body import RigidBodyRefinement, RigidBodyResult
-
-# =============================================================================
-# Rigid body transformations
-# =============================================================================
-from .transform import (
-    RigidTransform,
-    quaternion_normalize,
-    quaternion_conjugate,
-    quaternion_multiply,
-    quaternion_rotate,
-    quaternion_to_matrix,
-    matrix_to_quaternion,
-    axis_angle_to_quaternion,
-    quaternion_to_axis_angle,
-    quaternion_to_euler_zyz,
-    euler_zyz_to_quaternion,
-    rotation_matrix_from_euler,
-    sample_angles,
+from .pipeline import (
+    MolecularReplacementPipeline,
+    MRSolution,
+    align_model_to_data,
 )
-
-# =============================================================================
-# Clash scoring
-# =============================================================================
-from .clashscore import ClashScoreCalculator, AtomSampler, compute_clash_score
-
-# =============================================================================
-# ML distributions
-# =============================================================================
-from .distributions import (
-    stable_log_bessel_i0,
-    rice_log_likelihood,
-    woolfson_log_likelihood,
-    combined_log_likelihood,
-    acentric_pdf,
-    centric_pdf,
-)
-
-# =============================================================================
-# Sampling utilities
-# =============================================================================
-from .sampling import VectorSampler, get_rotation_sampling_range
 
 __all__ = [
-    # -------------------------------------------------------------------------
+    # Entry points
+    "align_model_to_data",
+    "MolecularReplacementPipeline",
+    "MRSolution",
+    # Rotation search
+    "rotation_search",
+    "RotationSolutions",
+    "FastRotationFunction",
+    "FRFInputs",
+    "prepare_frf_inputs",
+    "phaser_lmax_resolution",
+    "dense_calc_via_box",
+    "RotationPeak",
+    "rotation_matrix_from_edmonds_euler",
+    "edmonds_euler_from_rotation_matrix",
+    "rotation_angular_distance_deg",
     # Translation search
-    # -------------------------------------------------------------------------
-    "fft_translation_search",
-    "fft_translation_search_torch",
+    "TranslationObs",
     "TranslationPeak",
-    "find_translation_peaks",
-    "apply_translation_to_fcalc",
-    "apply_translation_to_fcalc_torch",
-    # -------------------------------------------------------------------------
-    # Rigid body refinement
-    # -------------------------------------------------------------------------
-    "RigidBodyRefinement",
-    "RigidBodyResult",
-    # -------------------------------------------------------------------------
-    # Transforms
-    # -------------------------------------------------------------------------
-    "RigidTransform",
-    "quaternion_normalize",
-    "quaternion_conjugate",
-    "quaternion_multiply",
-    "quaternion_rotate",
-    "quaternion_to_matrix",
-    "matrix_to_quaternion",
-    "axis_angle_to_quaternion",
-    "quaternion_to_axis_angle",
-    "quaternion_to_euler_zyz",
-    "euler_zyz_to_quaternion",
-    "rotation_matrix_from_euler",
-    "sample_angles",
-    # -------------------------------------------------------------------------
-    # Clash scoring
-    # -------------------------------------------------------------------------
-    "ClashScoreCalculator",
-    "AtomSampler",
-    "compute_clash_score",
-    # -------------------------------------------------------------------------
-    # Distributions
-    # -------------------------------------------------------------------------
-    "stable_log_bessel_i0",
-    "rice_log_likelihood",
-    "woolfson_log_likelihood",
-    "combined_log_likelihood",
-    "acentric_pdf",
-    "centric_pdf",
-    # -------------------------------------------------------------------------
-    # Utilities
-    # -------------------------------------------------------------------------
-    "VectorSampler",
-    "get_rotation_sampling_range",
+    "fast_translation_function",
+    "CandidateTransform",
+    "analytic_r_at",
+    "prepare_candidate",
+    "llg_at_translations",
 ]
-
-if _HAS_BALL_TRANSFORM:
-    __all__ += [
-        # Pipeline (main entry point)
-        "MolecularReplacementPipeline",
-        "MRSolution",
-        "rotation_angular_distance",
-        "euler_angular_distance",
-        # Rotation search
-        "ball_rotation_search",
-        "ball_rotation_search_torch",
-        "rotation_matrix_from_euler_zyz",
-        "rotation_matrix_to_euler_zyz",
-        "rotation_matrix_to_quaternion",
-        "check_rotation_recovery",
-        "BallHarmonicCoefficients",
-        "splat_evalues_to_ball",
-        "compute_ball_harmonic_coefficients",
-        "compute_ball_cross_correlation_coefficients",
-        "evaluate_rotation_function",
-        "find_rotation_peaks",
-        "reduce_rotation_by_symmetry",
-        "reduce_peaks_by_symmetry",
-        "reduce_peaks_by_symmetry_torch",
-        "cluster_rotation_peaks",
-        "cluster_rotation_peaks_torch",
-        "RotationCluster",
-    ]

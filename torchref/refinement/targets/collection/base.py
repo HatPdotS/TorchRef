@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 import torch
 
 from torchref.base.metrics.rfactor import rfactor_work_free
+from torchref.config import get_float_dtype
 from torchref.refinement.targets.base import Target
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
@@ -172,8 +173,9 @@ class CollectionXrayTarget(Target):
         """10/25/50/75/90 percentiles of a list of per-dataset R-factors."""
         if not values:
             return {}
-        t = torch.tensor(values, dtype=torch.float64)
-        q = torch.quantile(t, torch.tensor(_R_PERCENTILES, dtype=torch.float64))
+        dtype = get_float_dtype()
+        t = torch.tensor(values, dtype=dtype)
+        q = torch.quantile(t, torch.tensor(_R_PERCENTILES, dtype=dtype))
         return {lbl: q[i].item() for i, lbl in enumerate(_R_PCT_LABELS)}
 
     # ------------------------------------------------------------------

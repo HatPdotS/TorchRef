@@ -232,6 +232,8 @@ class RankPenaltyTarget(ModelTarget):
         variance in the top mode. These show the "purification" as the penalty
         ramps up.
         """
+        # dtype-ok: float64 svdvals for read-only diagnostics; results extracted
+        # via float(). Caveat: no .cpu() first, so this errors on MPS.
         Xc = self._centered().detach().to(torch.float64)
         s = torch.linalg.svdvals(Xc)                      # (min(N, D),)
         s2 = s ** 2

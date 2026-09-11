@@ -19,8 +19,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 import torch
 
 from torchref.base.reciprocal.grid_operations import place_on_grid
-from torchref.symmetry.grid_utils import calculate_optimal_grid_size
-from torchref.symmetry.reciprocal_symmetry import expand_hkl
+from torchref.symmetry import SpaceGroup
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -112,19 +111,11 @@ class RealSpaceTarget(DataTarget):
         # Caches (not registered as buffers since they're lazily computed)
         self._data_p1 = None
         self._molecular_mask = None
-        self._gridsize = None
 
         # P1 expansion cache (ASU → P1 mapping)
         self._hkl_p1 = None
         self._p1_indices = None
         self._p1_phase_shifts = None
-
-    def _ensure_grid(self):
-        """Ensure model's SfFFT grid is set up."""
-        if self._model is None:
-            raise RuntimeError("No model set for RealSpaceTarget")
-        if self._model.real_space_grid is None:
-            self._model.setup_grid()
 
     def _get_data_p1(self) -> "ReflectionData":
         """Return P1-expanded ReflectionData, cached after first call."""
@@ -136,9 +127,9 @@ class RealSpaceTarget(DataTarget):
         """Compute and cache the ASU → P1 expansion mapping."""
         if self._hkl_p1 is not None:
             return
-        hkl_p1, indices, phase_shifts = expand_hkl(
+        sg = self._data.spacegroup or SpaceGroup("P1")
+        hkl_p1, indices, phase_shifts = sg.expand_hkl(
             self._data.hkl,
-            self._data.spacegroup or "P1",
             include_friedel=True,
             remove_absences=True,
             device=self._data.hkl.device,
@@ -154,19 +145,11 @@ class RealSpaceTarget(DataTarget):
         return fcalc_p1 * torch.exp(1j * self._p1_phase_shifts)
 
     def _get_gridsize(self) -> Tuple[int, int, int]:
-        """
-        Get grid size for map computation.
-
-        Uses the model's FFT grid size to ensure compatibility with
-        the molecular mask (which is built on the model's grid).
-        """
-        if self._gridsize is not None:
-            return self._gridsize
-
-        self._ensure_grid()
-        gs = self._model.fft.gridsize
-        self._gridsize = tuple(int(x) for x in gs)
-        return self._gridsize
+        """Grid size for map computation: the model's, so it matches the
+        molecular mask built on the model's grid."""
+        if self._model is None:
+            raise RuntimeError("No model set for RealSpaceTarget")
+        return self._model.fft.grid_shape
 
     def _compute_observed_map(self) -> torch.Tensor:
         """
@@ -244,7 +227,6 @@ class RealSpaceTarget(DataTarget):
         """
         from torchref.scaling.solvent import SolventModel
 
-        self._ensure_grid()
 
         with torch.no_grad():
             solvent = SolventModel(
@@ -624,9 +606,8 @@ class RealSpaceExtrapolatedTarget(RealSpaceTarget):
             return
 
         spacegroup = self._data_light.spacegroup
-        hkl_p1, indices, phase_shifts = expand_hkl(
+        hkl_p1, indices, phase_shifts = spacegroup.expand_hkl(
             self._hkl,
-            spacegroup,
             include_friedel=True,
             remove_absences=True,
             device=self._hkl.device,

@@ -74,7 +74,7 @@ DS_BACKENDS = BackendTable(
             name="ds_triton",
             kernel=(_THIS, "_ds_iso_triton", "_ds_aniso_triton"),
             device="cuda",
-            dtypes=(torch.float32,),
+            dtypes=(torch.float32,),  # dtype-ok: backend capability declaration, not an allocation
             # Every argument except ``hkl`` (position 0), whose dtype provably costs
             # nothing -- see the module docstring.
             probes=(1, 2, 3, 4, 5, 6),

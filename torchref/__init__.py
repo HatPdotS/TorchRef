@@ -40,7 +40,7 @@ utils
     General utilities and debugging tools.
 """
 
-__version__ = "0.6.4"
+__version__ = "0.7.0"
 
 
 import os
@@ -106,10 +106,11 @@ from torchref.model.rigid_xyz import RigidXYZTensor
 # Refinement
 from torchref.refinement import LBFGSRefinement, Refinement
 from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
-from torchref.symmetry import Cell, SpaceGroup
+from torchref.symmetry import Cell, SpaceGroup, Symmetry
 
 # Restraints
-# from torchref.restraints import Restraints # Initialized lazily due to monomer library download requirement
+# torchref.topology.restraints.Restraints is not imported here: constructing it can
+# trigger a monomer-library download, so it stays lazy.
 
 # Scaling
 from torchref.scaling import Scaler, SolventModel, ScalerBase
@@ -151,6 +152,7 @@ __all__ = [
     # Symmetry
     "Cell",
     "SpaceGroup",
+    "Symmetry",
     # Maps
     "Map",
     "DifferenceMap",

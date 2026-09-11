@@ -133,7 +133,7 @@ class SigmaMEstimator:
         s_half_sq = s_half_sq.to(device=device, dtype=dtype)
         s_sq = 4.0 * s_half_sq
 
-        valid_f = validity.to(torch.bool).to(device).to(dtype)
+        valid_f = validity.to(torch.bool).to(device=device, dtype=dtype)
         n_valid = valid_f.sum().clamp(min=1.0)
         sigma_obs = sigma_obs.to(device=device, dtype=dtype)
         self.sigma_d_mean = (sigma_obs * valid_f).sum() / n_valid

@@ -972,6 +972,137 @@ class PositiveMixedTensor(MixedTensor):
         )
 
 
+# ----------------------------------------------------------------------------------
+# U <-> Cholesky transforms. Free functions because two unrelated holders need them:
+# CholeskyMixedTensor for per-atom ADPs, and the node-field anisotropic payload for
+# per-node ones. Both operate on (..., 6) tensors and pass NaN rows through untouched.
+# ----------------------------------------------------------------------------------
+
+
+def u6_to_matrix(U: torch.Tensor) -> torch.Tensor:
+    """``(..., 6)`` U components to a symmetric ``(..., 3, 3)`` matrix."""
+    M = U.new_zeros(*U.shape[:-1], 3, 3)
+    M[..., 0, 0] = U[..., 0]
+    M[..., 1, 1] = U[..., 1]
+    M[..., 2, 2] = U[..., 2]
+    M[..., 0, 1] = M[..., 1, 0] = U[..., 3]
+    M[..., 0, 2] = M[..., 2, 0] = U[..., 4]
+    M[..., 1, 2] = M[..., 2, 1] = U[..., 5]
+    return M
+
+
+def raw6_to_u6(raw: torch.Tensor, epsilon: float) -> torch.Tensor:
+    """Cholesky free parameters to U components, ``U = L L^T``.
+
+    Positive-definite for any input: the diagonal of ``L`` is ``exp(x) + epsilon``, so
+    ``epsilon`` bounds the smallest eigenvalue of ``U`` from below. No factorisation
+    happens here, which is what makes this safe to call in a forward pass.
+    """
+    diag, off = raw[..., :3], raw[..., 3:]
+    L11 = torch.exp(diag[..., 0]) + epsilon
+    L22 = torch.exp(diag[..., 1]) + epsilon
+    L33 = torch.exp(diag[..., 2]) + epsilon
+    L21, L31, L32 = off[..., 0], off[..., 1], off[..., 2]
+    return torch.stack(
+        [
+            L11 * L11,
+            L21 * L21 + L22 * L22,
+            L31 * L31 + L32 * L32 + L33 * L33,
+            L21 * L11,
+            L31 * L11,
+            L31 * L21 + L32 * L22,
+        ],
+        dim=-1,
+    )
+
+
+def u6_to_raw6(U: torch.Tensor, epsilon: float) -> torch.Tensor:
+    """U components to Cholesky free parameters, projecting onto positive-definite.
+
+    A least-squares or deposited U need not be PD, so the matrix is symmetrised and its
+    eigenvalues clamped before factorising. Runs at construction and on mask changes,
+    never in a forward pass. Forced onto the CPU: cuSolver's batched kernels fail on
+    the large degenerate batches an isotropic model produces, while LAPACK handles them.
+    """
+    finite = torch.isfinite(U).all(dim=-1)
+    M = u6_to_matrix(torch.nan_to_num(U, nan=0.0))
+    eye = torch.eye(3, dtype=M.dtype, device=M.device).expand_as(M)
+    M = torch.where(finite[..., None, None], M, eye)
+    M = 0.5 * (M + M.transpose(-1, -2))
+
+    src_device = M.device
+    M = M.cpu()
+    w, V = torch.linalg.eigh(M)
+    w = w.clamp(min=epsilon * epsilon)
+    M = (V * w.unsqueeze(-2)) @ V.transpose(-1, -2)
+    L = torch.linalg.cholesky(M)
+    diag = torch.stack([L[..., 0, 0], L[..., 1, 1], L[..., 2, 2]], dim=-1)
+    off = torch.stack([L[..., 1, 0], L[..., 2, 0], L[..., 2, 1]], dim=-1)
+    raw_diag = torch.log((diag - epsilon).clamp(min=1e-12))
+    raw = torch.cat([raw_diag, off], dim=-1).to(src_device)
+    return torch.where(finite.unsqueeze(-1), raw, torch.full_like(raw, float("nan")))
+
+
+# ----------------------------------------------------------------------------------
+# The same transform at arbitrary size, for a covariance that is not a 3x3 U tensor.
+# A node of the disorder field carries the covariance of its displacement modes, which
+# is q x q for q modes; the pair above is the q = 3 case with the indexing unrolled.
+# Kept as the general form rather than replacing the unrolled pair, which is a forward
+# hot path.
+# ----------------------------------------------------------------------------------
+
+
+def chol_param_count(q: int) -> int:
+    """Free parameters in a ``q x q`` lower-triangular factor."""
+    return q * (q + 1) // 2
+
+
+def raw_to_cholesky(raw: torch.Tensor, q: int, epsilon: float) -> torch.Tensor:
+    """Free parameters to a lower-triangular ``(..., q, q)`` factor.
+
+    Layout is ``[log diagonal (q) | strict lower triangle (q(q-1)/2), row major]``, and
+    the diagonal is ``exp(x) + epsilon``, so ``L L^T`` is positive-definite for any
+    input and ``epsilon`` bounds its smallest eigenvalue from below. At ``q = 3`` this
+    is the same layout and the same convention as :func:`raw6_to_u6`.
+
+    No factorisation happens here, which is what makes it safe in a forward pass.
+    """
+    rows, cols = torch.tril_indices(q, q, offset=-1, device=raw.device)
+    L = raw.new_zeros(*raw.shape[:-1], q, q)
+    diag = torch.exp(raw[..., :q]) + epsilon
+    idx = torch.arange(q, device=raw.device)
+    L[..., idx, idx] = diag
+    if rows.numel():
+        L[..., rows, cols] = raw[..., q:]
+    return L
+
+
+def psd_to_raw(M: torch.Tensor, epsilon: float) -> torch.Tensor:
+    """Symmetric ``(..., q, q)`` matrix to Cholesky free parameters, projecting onto PSD.
+
+    The inverse of :func:`raw_to_cholesky`, with the same eigenvalue clamp and the same
+    CPU-forced ``eigh`` as :func:`u6_to_raw6`: a least-squares or seeded covariance need
+    not be positive-definite, and cuSolver's batched kernels fail on the degenerate
+    batches a near-isotropic model produces. Runs at construction, never in a forward
+    pass.
+    """
+    q = M.shape[-1]
+    src_device = M.device
+    M = 0.5 * (M + M.transpose(-1, -2))
+    M = M.cpu()
+    w, V = torch.linalg.eigh(M)
+    w = w.clamp(min=epsilon * epsilon)
+    M = (V * w.unsqueeze(-2)) @ V.transpose(-1, -2)
+    L = torch.linalg.cholesky(M)
+    idx = torch.arange(q)
+    rows, cols = torch.tril_indices(q, q, offset=-1)
+    raw_diag = torch.log((L[..., idx, idx] - epsilon).clamp(min=1e-12))
+    parts = [raw_diag]
+    if rows.numel():
+        parts.append(L[..., rows, cols])
+    return torch.cat(parts, dim=-1).to(src_device)
+
+
 class CholeskyMixedTensor(MixedTensor):
     """A MixedTensor for anisotropic ADPs (U tensors) kept positive-definite.
 
@@ -1029,57 +1160,16 @@ class CholeskyMixedTensor(MixedTensor):
     # ------------------------------------------------------------------
     @staticmethod
     def _u6_to_matrix(U: torch.Tensor) -> torch.Tensor:
-        M = U.new_zeros(*U.shape[:-1], 3, 3)
-        M[..., 0, 0] = U[..., 0]
-        M[..., 1, 1] = U[..., 1]
-        M[..., 2, 2] = U[..., 2]
-        M[..., 0, 1] = M[..., 1, 0] = U[..., 3]
-        M[..., 0, 2] = M[..., 2, 0] = U[..., 4]
-        M[..., 1, 2] = M[..., 2, 1] = U[..., 5]
-        return M
+        """Delegate to :func:`u6_to_matrix`."""
+        return u6_to_matrix(U)
 
     def _u6_to_raw6(self, U: torch.Tensor) -> torch.Tensor:
-        """U components -> Cholesky free parameters [log(L_ii - eps); L_offdiag]."""
-        eps = self.epsilon
-        finite = torch.isfinite(U).all(dim=-1)
-        M = self._u6_to_matrix(torch.nan_to_num(U, nan=0.0))
-        eye = torch.eye(3, dtype=M.dtype, device=M.device).expand_as(M)
-        M = torch.where(finite[..., None, None], M, eye)
-        # Project to positive-definite: symmetrise, clamp eigenvalues off zero.
-        # No-op for well-conditioned deposited U; rescues marginally non-PD input.
-        M = 0.5 * (M + M.transpose(-1, -2))
-        # eigh + Cholesky forced onto the CPU: cuSolver's *batched* kernels fail
-        # (CUSOLVER_STATUS_INVALID_VALUE) on the large degenerate batches an
-        # isotropic ensemble produces (U ≡ 0), while LAPACK handles them. This
-        # runs only at load / mask change, never per optimizer step.
-        src_device = M.device
-        M = M.cpu()
-        w, V = torch.linalg.eigh(M)
-        w = w.clamp(min=eps * eps)
-        M = (V * w.unsqueeze(-2)) @ V.transpose(-1, -2)
-        L = torch.linalg.cholesky(M)
-        diag = torch.stack([L[..., 0, 0], L[..., 1, 1], L[..., 2, 2]], dim=-1)
-        off = torch.stack([L[..., 1, 0], L[..., 2, 0], L[..., 2, 1]], dim=-1)
-        raw_diag = torch.log((diag - eps).clamp(min=1e-12))  # invert exp(x)+eps
-        raw = torch.cat([raw_diag, off], dim=-1).to(src_device)
-        nan = torch.full_like(raw, float("nan"))
-        return torch.where(finite.unsqueeze(-1), raw, nan)
+        """U components -> Cholesky free parameters. See :func:`u6_to_raw6`."""
+        return u6_to_raw6(U, self.epsilon)
 
     def _raw6_to_u6(self, raw: torch.Tensor) -> torch.Tensor:
-        """Cholesky free parameters -> U components (U = L Lᵀ). PD by construction."""
-        eps = self.epsilon
-        diag, off = raw[..., :3], raw[..., 3:]
-        L11 = torch.exp(diag[..., 0]) + eps
-        L22 = torch.exp(diag[..., 1]) + eps
-        L33 = torch.exp(diag[..., 2]) + eps
-        L21, L31, L32 = off[..., 0], off[..., 1], off[..., 2]
-        U11 = L11 * L11
-        U22 = L21 * L21 + L22 * L22
-        U33 = L31 * L31 + L32 * L32 + L33 * L33
-        U12 = L21 * L11
-        U13 = L31 * L11
-        U23 = L31 * L21 + L32 * L22
-        return torch.stack([U11, U22, U33, U12, U13, U23], dim=-1)
+        """Cholesky free parameters -> U components. See :func:`raw6_to_u6`."""
+        return raw6_to_u6(raw, self.epsilon)
 
     def forward(self) -> torch.Tensor:
         """Return the full U tensor (positive-definite per finite row)."""
@@ -1372,11 +1462,11 @@ class OccupancyTensor(MixedTensor):
         # Use sharing_groups directly as the expansion mask
         if sharing_groups is None:
             # No sharing - each atom maps to its own index
-            expansion_mask = torch.arange(n_atoms, dtype=torch.long, device=device)
+            expansion_mask = torch.arange(n_atoms, dtype=torch.long, device=device)  # dtype-ok: arange expansion_mask atom indices; index requires long
             self._collapsed_shape = n_atoms
         else:
             # Use the provided index tensor
-            expansion_mask = sharing_groups.to(device=device, dtype=torch.long)
+            expansion_mask = sharing_groups.to(device=device, dtype=torch.long)  # dtype-ok: expansion_mask atom/group indices for scatter; requires long
             self._collapsed_shape = expansion_mask.max().item() + 1
 
         self.register_buffer("expansion_mask", expansion_mask)
@@ -1398,10 +1488,10 @@ class OccupancyTensor(MixedTensor):
                 for conf_atoms in conf_groups:
                     if isinstance(conf_atoms, (list, tuple)):
                         conf_atoms = torch.tensor(
-                            conf_atoms, dtype=torch.long, device=device
+                            conf_atoms, dtype=torch.long, device=device  # dtype-ok: conf_atoms atom indices; indexing requires long
                         )
                     else:
-                        conf_atoms = conf_atoms.to(device=device, dtype=torch.long)
+                        conf_atoms = conf_atoms.to(device=device, dtype=torch.long)  # dtype-ok: conf_atoms atom indices cast; indexing requires long
 
                     # Get collapsed index for first atom
                     collapsed_idx = expansion_mask[conf_atoms[0]].item()
@@ -1429,7 +1519,7 @@ class OccupancyTensor(MixedTensor):
         # Store as dictionary with keys like 'linked_occ_2', 'linked_occ_3', etc.
         for n_conf, groups in linked_occupancies.items():
             # Shape: (N_groups, n_conf)
-            tensor = torch.tensor(groups, dtype=torch.long, device=device)
+            tensor = torch.tensor(groups, dtype=torch.long, device=device)  # dtype-ok: linked-occupancy group index buffer; indexing requires long
             self.register_buffer(f"linked_occ_{n_conf}", tensor)
 
         # Store which sizes we have
@@ -1437,7 +1527,7 @@ class OccupancyTensor(MixedTensor):
 
         # Create count buffer for vectorized collapse operations
         # counts[i] = number of atoms that map to collapsed index i
-        counts = torch.zeros(self._collapsed_shape, dtype=torch.long, device=device)
+        counts = torch.zeros(self._collapsed_shape, dtype=torch.long, device=device)  # dtype-ok: count accumulator; scatter_add source is long ones, dtype must match
         counts.scatter_add_(0, expansion_mask, torch.ones_like(expansion_mask))
         self.register_buffer("collapse_counts", counts)
 
@@ -1915,7 +2005,7 @@ class OccupancyTensor(MixedTensor):
         grouped = pdb_dataframe.groupby(["resname", "resseq", "chainid", "altloc"])
 
         n_atoms = len(initial_values)
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)
+        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)  # dtype-ok: arange atom indices (sharing groups); index requires long
         # Singletons keep their arange ids (0..n_atoms-1); start multi-atom
         # group ids past that range so a group id can never collide with a
         # singleton's leftover arange id (the torch.unique compaction below

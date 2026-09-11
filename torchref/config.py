@@ -568,3 +568,38 @@ device = DeviceConfig()
 def get_default_device() -> torch.device:
     """Get the current default device."""
     return device.current
+
+
+# ---------------------------------------------------------------------------
+# Double-precision availability
+# ---------------------------------------------------------------------------
+#: Device types with no float64 at all. MPS is the live case and it *raises*
+#: rather than quietly downcasting, so a float64 tensor there is an error and not
+#: merely slow.
+_NO_DOUBLE_DEVICE_TYPES = ("mps",)
+
+
+def supports_double(dev=None) -> bool:
+    """Whether ``dev`` can hold float64 / complex128 at all."""
+    return normalize_device(dev).type not in _NO_DOUBLE_DEVICE_TYPES
+
+
+def widest_float_dtype(dev=None) -> torch.dtype:
+    """``float64`` where the device has it, else the configured working float.
+
+    For computations whose *precision* is load-bearing rather than their storage:
+    accumulating single-precision data in double is the ordinary remedy, and the
+    dynamic range of an unnormalised recurrence is a hard requirement rather than
+    a preference. The right width for those is a property of the device, so it
+    belongs here and not in a constant at the call site.
+
+    Where the device lacks float64 the caller gets the working dtype and whatever
+    accuracy that implies. That is the only option there, not a choice -- callers
+    that care should say what it costs in their own docstring.
+    """
+    return torch.float64 if supports_double(dev) else get_float_dtype()
+
+
+def widest_complex_dtype(dev=None) -> torch.dtype:
+    """``complex128`` where the device has it, else the configured working complex."""
+    return torch.complex128 if supports_double(dev) else get_complex_dtype()

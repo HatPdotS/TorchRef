@@ -205,9 +205,14 @@ def test_sfds_refuses_a_cell_recast_after_construction():
     """
     from torchref.model.sf_ds import SfDS
 
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
     cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float32, device="cpu")
-    sf = SfDS(cell=cell, spacegroup="P 1", dtype_float=torch.float32,
-              device=torch.device("cpu"))
+    ctx = ModelContext(
+        cell=cell, spacegroup=SpaceGroup("P 1", dtype=torch.float32, device="cpu")
+    )
+    sf = SfDS(ctx, dtype_float=torch.float32, device=torch.device("cpu"))
     xyz = torch.zeros(3, 3, dtype=torch.float32)
     sf._cartesian_to_fractional(xyz)  # consistent: fine
 
