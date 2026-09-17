@@ -14,6 +14,8 @@ Variable naming conventions:
 
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
+import warnings
+
 import gemmi
 import torch
 import torch.nn as nn
@@ -136,6 +138,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         strip_H: bool = False,
         add_hydrogens: bool = False,
         cif_path: Optional[Union[str, List[str]]] = None,
+        hydrogens_in_xray: bool = True,
     ):
         """
         Initialize an empty Model shell.
@@ -161,6 +164,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Restraint dictionary file(s); see the class docstring. :meth:`set_restraints_cif`
             can still change it after loading, but generation on load only sees the value
             given here.
+        hydrogens_in_xray : bool, optional
+            Whether hydrogens contribute to the structure factors. Default True. They
+            stay in the restraints either way; see :attr:`hydrogens_in_xray`.
         """
         super().__init__()
         # Resolve dtype/device at call time (not import time) so a runtime
@@ -181,6 +187,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             strip_H=strip_H,
             add_hydrogens=add_hydrogens,
             cif_path=cif_path,
+            hydrogens_in_xray=hydrogens_in_xray,
         )
 
         # Submodules (created during load or load_state_dict)
@@ -205,15 +212,61 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return self.ctx.initialized
 
     @property
-    def exclude_H_from_sf(self) -> bool:
-        """Drop H from ``get_iso()`` / ``get_aniso()`` (so from Fcalc) while
-        keeping them in the geometry and VDW restraints. Default False.
+    def hydrogens_in_xray(self) -> bool:
+        """Whether hydrogens enter ``get_iso()`` / ``get_aniso()`` and so Fcalc.
+
+        Restraints and the non-bonded term see the hydrogens either way, and the
+        bulk-solvent mask never does. Default True. Changing it re-keys the
+        iso/aniso partition on the next access; no cache needs clearing.
         """
-        return self.ctx.exclude_H_from_sf
+        return self.ctx.hydrogens_in_xray
+
+    @hydrogens_in_xray.setter
+    def hydrogens_in_xray(self, value: bool):
+        self.ctx.hydrogens_in_xray = bool(value)
+
+    @property
+    def exclude_H_from_sf(self) -> bool:
+        """Inverse of :attr:`hydrogens_in_xray`.
+
+        .. deprecated::
+            Use ``hydrogens_in_xray`` instead.
+        """
+        warnings.warn(
+            "exclude_H_from_sf is deprecated; use hydrogens_in_xray",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return not self.ctx.hydrogens_in_xray
 
     @exclude_H_from_sf.setter
     def exclude_H_from_sf(self, value: bool):
-        self.ctx.exclude_H_from_sf = bool(value)
+        warnings.warn(
+            "exclude_H_from_sf is deprecated; use hydrogens_in_xray",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.ctx.hydrogens_in_xray = not bool(value)
+
+    def _sf_atom_mask(self) -> Optional[torch.Tensor]:
+        """Atoms that enter Fcalc, or None when every atom does.
+
+        Boolean ``(N,)`` over the atom table. Built lazily as the ``_heavy_atom_mask``
+        buffer, which is dropped with the other per-atom caches when the atom set
+        changes, so it never outlives the table it was built for.
+        """
+        if self.ctx.hydrogens_in_xray or self.pdb is None:
+            return None
+        if getattr(self, "_heavy_atom_mask", None) is None:
+            self.register_buffer(
+                "_heavy_atom_mask",
+                torch.tensor(
+                    (self.pdb["element"].str.strip().str.upper() != "H").values,
+                    dtype=torch.bool,
+                    device=self.device,
+                ),
+            )
+        return self._heavy_atom_mask
 
     # -- iso/aniso partition, derived on access ---------------------------
     #
@@ -236,7 +289,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         heavy = getattr(self, "_heavy_atom_mask", None)
         fp = (
             (flag.data_ptr(), flag._version) if flag is not None else None,
-            bool(self.ctx.exclude_H_from_sf),
+            bool(self.ctx.hydrogens_in_xray),
             None if heavy is None else (heavy.data_ptr(), heavy._version),
             0 if self.pdb is None else len(self.pdb),
         )
@@ -246,23 +299,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         iso_mask = ~flag
         aniso_mask = flag
-        if self.ctx.exclude_H_from_sf and self.pdb is not None:
-            if getattr(self, "_heavy_atom_mask", None) is None:
-                self.register_buffer(
-                    "_heavy_atom_mask",
-                    torch.tensor(
-                        (self.pdb["element"].str.strip() != "H").values,
-                        dtype=torch.bool,
-                        device=self.device,
-                    ),
-                )
-                # The mask is part of the key, so re-key after building it.
-                fp = (fp[0], fp[1],
-                      (self._heavy_atom_mask.data_ptr(),
-                       self._heavy_atom_mask._version),
-                      fp[3])
-            iso_mask = iso_mask & self._heavy_atom_mask
-            aniso_mask = aniso_mask & self._heavy_atom_mask
+        sf_atoms = self._sf_atom_mask()
+        if sf_atoms is not None:
+            # The mask is part of the key, so re-key after building it.
+            fp = (fp[0], fp[1], (sf_atoms.data_ptr(), sf_atoms._version), fp[3])
+            iso_mask = iso_mask & sf_atoms
+            aniso_mask = aniso_mask & sf_atoms
 
         iso_idx = iso_mask.nonzero(as_tuple=True)[0]
         aniso_idx = aniso_mask.nonzero(as_tuple=True)[0]
@@ -467,9 +509,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Notes
         -----
-        ``n_iso_atoms`` honors ``exclude_H_from_sf``: when H exclusion is
-        active the isotropic count is the H-excluded count (mirroring
-        :meth:`get_iso`).
+        ``n_iso_atoms`` honors ``hydrogens_in_xray``: when hydrogens are excluded
+        the isotropic count is the heavy-atom count (mirroring :meth:`get_iso`).
         """
         self._build_parametrization()
         idx = self._iso_indices
@@ -488,9 +529,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Notes
         -----
-        ``n_aniso_atoms`` honors ``exclude_H_from_sf``: when H exclusion is
-        active the anisotropic count is the H-excluded count (mirroring
-        :meth:`get_aniso`).
+        ``n_aniso_atoms`` honors ``hydrogens_in_xray``: when hydrogens are excluded
+        the anisotropic count is the heavy-atom count (mirroring :meth:`get_aniso`).
         """
         self._build_parametrization()
         idx = self._aniso_indices
@@ -624,6 +664,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         for name in self._ATOM_DERIVED_BUFFERS:
             if hasattr(self, name):
                 delattr(self, name)
+        self._parametrization = None
 
     def load(self, reader, add_hydrogens: bool = None):
         """
@@ -690,7 +731,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 self.pdb["anisou_flag"].values, dtype=torch.bool, device=self.device
             ),
         )
-        # Pre-compute integer indices for SF calculation (respects exclude_H_from_sf)
 
         self.xyz = MixedTensor(
             torch.tensor(self.pdb[["x", "y", "z"]].values, dtype=self.dtype_float),
@@ -1143,12 +1183,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
 
-        # A wrapper that borrows the coordinates carries that reference through its
-        # own ``copy``, so it still points at THIS model's ``xyz``. Re-point it, or
-        # the two models silently share coordinates and the copy is not independent.
-        for module in model_copy._modules.values():
-            if module is not None and hasattr(module, "set_xyz_fn"):
-                module.set_xyz_fn(model_copy.xyz)
+        # Anything that borrows the coordinates -- the ADP node field, the restraints'
+        # pair-list maintenance -- carries the reference through its own ``copy`` and
+        # still points at THIS model's ``xyz``. Re-point it, or the two models silently
+        # share coordinates and the copy is not independent.
+        model_copy._repoint_coordinate_accessors()
 
         if self.ctx.verbose > 0:
             print(f"✓ Model copied successfully ({len(model_copy.pdb)} atoms)")
@@ -1190,7 +1229,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Return per-atom parameters for the isotropic atom subset.
 
         Selects atoms whose ADP is a single scalar ``b``: ``~self.aniso_flag``,
-        intersected with the heavy-atom mask when ``exclude_H_from_sf`` is on.
+        intersected with the heavy-atom mask when ``hydrogens_in_xray`` is off.
 
         Returns
         -------
@@ -1257,17 +1296,20 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Returns
         -------
         list of nn.Parameter
-            The ``refinable_params`` leaf for each requested type, in the
-            order the types were given.
+            Leaves for each requested type, in the order the types were given.
+            Coordinate wrappers may expose additional torsion and rotation leaves.
         """
         out: List[nn.Parameter] = []
         for t in types:
             wrapper = getattr(self, t, None)
             if wrapper is None:
                 continue
-            rp = getattr(wrapper, "refinable_params", None)
-            if rp is not None:
-                out.append(rp)
+            if hasattr(wrapper, "optimization_parameters"):
+                out.extend(wrapper.optimization_parameters())
+            else:
+                rp = getattr(wrapper, "refinable_params", None)
+                if rp is not None:
+                    out.append(rp)
         return out
 
     def freeze(self, target: str):
@@ -1853,7 +1895,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Selects atoms whose ADP is the 6-element tensor
         ``u = (u11, u22, u33, u12, u13, u23)``: ``self.aniso_flag``, intersected
-        with the heavy-atom mask when ``exclude_H_from_sf`` is on.
+        with the heavy-atom mask when ``hydrogens_in_xray`` is off.
 
         Returns
         -------
@@ -2004,9 +2046,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         new_xyz = xyz + torch.normal(
             mean=0.0, std=stddev, size=xyz.shape, device=self.device
         )
-        self.xyz = MixedTensor(
-            new_xyz, refinable_mask=self.xyz.refinable_mask, name="xyz"
-        )
+        if hasattr(self.xyz, "with_values"):
+            # A riding wrapper keeps its frames; only the stored rows take the noise.
+            self.xyz = self.xyz.with_values(new_xyz)
+        else:
+            self.xyz = MixedTensor(
+                new_xyz, refinable_mask=self.xyz.refinable_mask, name="xyz"
+            )
+        self._repoint_coordinate_accessors()
 
     def shake_adp(self, stddev: float):
         """
@@ -2134,7 +2181,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Hydrogen generation is template instantiation over the topology: each residue's
         library template is aligned onto the heavy atoms present and its hydrogens read
         off, and the bond graph decides how many hydrogens a parent can carry and which
-        of them have a free torsion. The original model is not modified.
+        of them have a free torsion. Missing HOH hydrogens use the water dictionary
+        geometry with a random initial orientation, controlled by ``torch.manual_seed``.
+        Existing hydrogen coordinates are retained. The original model is not modified.
 
         Parameters
         ----------
@@ -2210,6 +2259,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         state[prefix + "strip_H"] = self.ctx.strip_H
         state[prefix + "cif_path"] = self.ctx.cif_path
         state[prefix + "altloc_pairs"] = self.ctx.altloc_pairs
+        state[prefix + "hydrogens_in_xray"] = self.ctx.hydrogens_in_xray
+        state[prefix + "hydrogen_mode"] = self.ctx.hydrogen_mode
 
         return state
 
@@ -2358,11 +2409,37 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         n_atoms = len(pdb)
 
-        instance.xyz = MixedTensor(
-            torch.tensor(pdb[["x", "y", "z"]].values, dtype=saved_dtype),
-            refinable_mask=state_dict.get("xyz.refinable_mask"),
-            name="xyz",
-        )
+        xyz_values = torch.tensor(pdb[["x", "y", "z"]].values, dtype=saved_dtype)
+        if state_dict.get("xyz.h_row") is not None:
+            # A saved riding wrapper is recognised by its frame buffers, never by
+            # shape: its storage is (n_base, 3), a plain wrapper's (n_atoms, 3), and
+            # both are 2-D. The frames restore from the buffers, so no topology is
+            # needed here.
+            from torchref.model.riding_xyz import RidingXYZTensor
+            from torchref.topology.hydrogens import HydrogenFrames
+
+            frames = HydrogenFrames.from_tensors(
+                state_dict["xyz.h_row"],
+                state_dict["xyz.parent_row"],
+                state_dict["xyz.n1_row"],
+                state_dict["xyz.n2_row"],
+                state_dict["xyz.frame_valid"],
+                state_dict.get("xyz.torsion_group"),
+                state_dict.get("xyz.rotation_group"),
+            )
+            instance.xyz = RidingXYZTensor(
+                xyz_values,
+                frames,
+                refinable_mask=state_dict.get("xyz.refinable_mask"),
+                mask_in_base_space=True,
+                name="xyz",
+            )
+        else:
+            instance.xyz = MixedTensor(
+                xyz_values,
+                refinable_mask=state_dict.get("xyz.refinable_mask"),
+                name="xyz",
+            )
         instance.adp = cls._restore_adp_slot(
             "adp", state_dict, pdb, saved_dtype, instance.xyz
         )
@@ -2468,6 +2545,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         strip_H = state_dict.pop("strip_H", True)
         cif_path = state_dict.pop("cif_path", None)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
+        hydrogens_in_xray = state_dict.pop("hydrogens_in_xray", True)
+        hydrogen_mode = state_dict.pop("hydrogen_mode", None)
 
         instance = cls(
             dtype_float=saved_dtype,
@@ -2475,7 +2554,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             device=device,
             strip_H=strip_H,
             cif_path=cif_path,
+            hydrogens_in_xray=hydrogens_in_xray,
         )
+        if hydrogen_mode is None:
+            # Older checkpoints: riding wrappers did not exist, so any hydrogens
+            # present were free parameters.
+            hydrogen_mode = "riding" if state_dict.get("xyz.h_row") is not None else "free"
+        instance.ctx.hydrogen_mode = hydrogen_mode
 
         instance.pdb = pdb
         instance.ctx.initialized = initialized
@@ -2616,6 +2701,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             device=self.device,
             strip_H=self.ctx.strip_H,
             cif_path=self.ctx.cif_path,
+            hydrogens_in_xray=self.ctx.hydrogens_in_xray,
         )
 
         # ``index`` must be renumbered: the occupancy grouping below reads it.
@@ -2636,17 +2722,21 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             selected_model.register_buffer(
                 "aniso_flag", self.aniso_flag[selection_mask].clone()
             )
-            # Pre-compute SF indices (respects exclude_H_from_sf)
 
-        selected_model.xyz = MixedTensor(
-            self.xyz()[selection_mask].clone().detach(),
-            refinable_mask=(
-                self.xyz.refinable_mask[selection_mask]
-                if self.xyz.refinable_mask is not None
-                else None
-            ),
-            name="xyz",
-        )
+        if hasattr(self.xyz, "select_rows"):
+            # Riding wrapper: frames are remapped, a hydrogen whose parent is cut
+            # becomes an ordinary row.
+            selected_model.xyz = self.xyz.select_rows(selection_mask)
+        else:
+            selected_model.xyz = MixedTensor(
+                self.xyz()[selection_mask].clone().detach(),
+                refinable_mask=(
+                    self.xyz.refinable_mask[selection_mask]
+                    if self.xyz.refinable_mask is not None
+                    else None
+                ),
+                name="xyz",
+            )
 
         selected_model.adp = PositiveMixedTensor(
             self.adp()[selection_mask].clone().detach(),
@@ -2686,6 +2776,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         selected_model.set_default_masks()
         selected_model.register_alternative_conformations()
         selected_model.ctx.initialized = True
+        selected_model.ctx.hydrogen_mode = self.ctx.hydrogen_mode
 
         if self.ctx.verbose > 0:
             print(f"Selected {n_selected}/{len(self.pdb)} atoms with '{selection}'")
@@ -2819,6 +2910,228 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         return self.xyz().mean(dim=0)
 
+    # ------------------------------------------------------------------
+    # Hydrogen parametrisation
+    # ------------------------------------------------------------------
+
+    @property
+    def hydrogen_mode(self) -> str:
+        """``"riding"``, ``"free"`` or ``"none"``; see :class:`ModelContext`."""
+        return self.ctx.hydrogen_mode
+
+    def hydrogen_frames(self):
+        """Which rows ride on which heavy atoms, for the current atom table.
+
+        Read off the riding coordinate wrapper when one is installed, else derived
+        from the bond graph, which costs a restraint build the first time.
+
+        Returns
+        -------
+        HydrogenFrames
+        """
+        if hasattr(self.xyz, "hydrogen_frames"):
+            return self.xyz.hydrogen_frames()
+        frames = getattr(self, "_hydrogen_frames", None)
+        if frames is not None and frames.n_hydrogens >= 0:
+            return frames
+        from torchref.topology.hydrogens import hydrogen_frames
+
+        return hydrogen_frames(self.restraints.topology)
+
+    def _repoint_coordinate_accessors(self) -> None:
+        """Make every borrowed coordinate accessor read the current ``xyz`` wrapper.
+
+        The restraints keep ``xyz_fn`` for pair-list maintenance and the ADP node
+        field borrows the coordinates through ``set_xyz_fn``; after the wrapper slot
+        is replaced both would otherwise keep reading a dead module.
+        """
+        restraints = self._restraints
+        if restraints is not None:
+            restraints._xyz_fn = self.xyz
+            restraints._adp_fn = self.adp
+            restraints._vdw_radii_fn = self.get_vdw_radii
+        for module in self._modules.values():
+            if module is not None and hasattr(module, "set_xyz_fn"):
+                module.set_xyz_fn(self.xyz)
+
+    def _complete_riding_waters(self, frames):
+        """Complete HOH residues once and remap frames and refinement selections."""
+        from dataclasses import fields
+
+        import numpy as np
+
+        from torchref.topology.hydrogens import (
+            HydrogenFrames,
+            augment_atom_table_with_maps,
+            hydrogen_frames,
+            plan_hydrogens,
+        )
+
+        if not self.ctx.add_hydrogens or self.ctx.strip_H:
+            return frames
+        if not self.pdb["resname"].str.strip().eq("HOH").any():
+            return frames
+        restraints = self.restraints
+        dictionaries = {
+            key: value for key, value in restraints.cif_dict.items() if key == "HOH"
+        }
+        plan = plan_hydrogens(restraints.topology, dictionaries, self.xyz().detach())
+        if plan.n_hydrogens == 0:
+            return frames
+
+        generated = hydrogen_frames(restraints.topology, plan)
+        if frames is not None:
+            # Water groups include both existing and planned H atoms; keep custom
+            # frames for the rest of the table and give the water groups fresh IDs.
+            water = self.pdb["resname"].str.strip().eq("HOH").to_numpy()
+            keep = ~water[frames.parent_row]
+            take = water[generated.parent_row]
+            arrays = {}
+            for field in fields(HydrogenFrames):
+                existing = getattr(frames, field.name)[keep]
+                added = getattr(generated, field.name)[take].copy()
+                if field.name in ("torsion_group", "rotation_group"):
+                    added[added >= 0] += int(existing.max(initial=-1)) + 1
+                arrays[field.name] = np.concatenate((existing, added))
+            generated = HydrogenFrames(**arrays)
+
+        self.update_pdb()
+        augmented, old_rows, new_rows = augment_atom_table_with_maps(
+            self.pdb, plan, restraints.topology
+        )
+        frames = generated.remap(old_rows).fill_planned_rows(new_rows)
+        source = torch.empty(len(augmented), dtype=torch.long, device=self.device)
+        old_index = torch.as_tensor(old_rows, device=self.device)
+        new_index = torch.as_tensor(new_rows, device=self.device)
+        source[old_index] = torch.arange(len(self.pdb), device=self.device)
+        source[new_index] = torch.as_tensor(plan.parent, device=self.device)
+        xyz = (
+            self.xyz.to_mixed_tensor()
+            if hasattr(self.xyz, "to_mixed_tensor")
+            else self.xyz
+        )
+        masks = {
+            "xyz": xyz.refinable_mask[source],
+            "occupancy": self.occupancy.get_refinable_atoms()[source],
+        }
+        from torchref.model.disorder_field import DisorderFieldTensor
+
+        adp_fields = {}
+        for name in ("adp", "u"):
+            wrapper = getattr(self, name)
+            if isinstance(wrapper, DisorderFieldTensor):
+                adp_fields[name] = wrapper
+            else:
+                masks[name] = wrapper.refinable_mask[source]
+        if "u" in masks:
+            masks["u"][new_index] = False
+        gradients = {
+            name: getattr(self, name).refinable_params.requires_grad for name in masks
+        }
+        adp = self.adp().detach()
+        cell, spacegroup, links = self.cell, self.spacegroup, self.ctx.links
+
+        def reader():
+            return augmented, cell.data.cpu().numpy(), spacegroup
+
+        reader.links = links
+        strip_h = self.ctx.strip_H
+        self.ctx.strip_H = False
+        self._restraints = None
+        try:
+            self.load(reader, add_hydrogens=False)
+        finally:
+            self.ctx.strip_H = strip_h
+        if "adp" in masks:
+            self.adp[old_index] = adp
+        for name, mask in masks.items():
+            wrapper = getattr(self, name)
+            wrapper.update_refinable_mask(mask)
+            wrapper.refinable_params.requires_grad_(gradients[name])
+        for name, field in adp_fields.items():
+            field.anchor_atom = old_index[field.anchor_atom]
+            field.neighbor_list = field.neighbor_list[source]
+            field._full_shape = len(augmented)
+            field.set_xyz_fn(self.xyz)
+            setattr(self, name, field)
+        self._hydrogen_frames = frames
+        return frames
+
+    def set_hydrogen_mode(self, mode: str, frames=None) -> "Model":
+        """Switch the hydrogen parametrisation of the current atom table.
+
+        Parameters
+        ----------
+        mode : str
+            ``"riding"``: hydrogen coordinates derive from their parents each forward;
+            rotatable groups retain shared torsion or orientation parameters.
+            Missing HOH hydrogens are completed only when ``ctx.add_hydrogens``
+            is True and ``ctx.strip_H`` is False. With hydrogen generation disabled,
+            the atom table is unchanged.
+            ``"free"``: hydrogens are ordinary refinable atoms again.
+            ``"none"`` is a different atom table; use
+            :meth:`strip_hydrogens`.
+        frames : HydrogenFrames, optional
+            Riding frames for the current table; default :meth:`hydrogen_frames`.
+            Water frames are completed and row indices remapped if atoms are added.
+
+        Returns
+        -------
+        Model
+            Self, for chaining.
+
+        Notes
+        -----
+        Replaces the ``xyz`` wrapper, so any optimizer or ``LossState`` built over the
+        old parameters is stale; :meth:`Refinement.set_hydrogen_mode` does the
+        engine-side reset. The refinable set carries over row for row (a hydrogen
+        released to ``"free"`` follows its parent's mask). Existing atom coordinates
+        are preserved. Completing waters rebuilds the per-atom wrappers and
+        restraints; new hydrogens inherit their oxygen's refinement selections.
+        Water initialization follows ``torch.manual_seed`` and never runs in forward.
+        """
+        from torchref.model.riding_xyz import RidingXYZTensor
+
+        if not self.ctx.initialized:
+            raise RuntimeError("Load a structure before setting the hydrogen mode.")
+        if mode == "none":
+            raise ValueError(
+                "hydrogen_mode 'none' changes the atom table; use strip_hydrogens()"
+            )
+        if mode not in ("riding", "free"):
+            raise ValueError(f"unknown hydrogen_mode {mode!r}")
+
+        if mode == "riding":
+            frames = self._complete_riding_waters(frames)
+            if isinstance(self.xyz, RidingXYZTensor) and frames is None:
+                return self
+            if frames is None:
+                frames = self.hydrogen_frames()
+            if isinstance(self.xyz, RidingXYZTensor):
+                current = self.xyz.to_mixed_tensor()
+            else:
+                current = self.xyz
+            new_xyz = RidingXYZTensor.from_mixed_tensor(current, frames)
+        else:
+            if isinstance(self.xyz, RidingXYZTensor):
+                frames = self.xyz.hydrogen_frames()
+                new_xyz = self.xyz.to_mixed_tensor()
+            else:
+                new_xyz = self.xyz
+
+        if new_xyz is not self.xyz:
+            # Pop first so the new wrapper registers as a fresh submodule.
+            self._modules.pop("xyz")
+            self.xyz = new_xyz
+            self._repoint_coordinate_accessors()
+        self._hydrogen_frames = frames
+        self.ctx.hydrogen_mode = mode
+        if hasattr(self, "reset_cache"):
+            self.reset_cache()
+        if self.ctx.verbose > 0:
+            print(f"Hydrogen mode: {mode} ({self.xyz})")
+        return self
+
     def use_rigid_xyz(self) -> "Model":
         """
         Swap ``self.xyz`` for a per-chain :class:`RigidXYZTensor`.
@@ -2902,6 +3215,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # submodule cleanly rather than colliding with the old one.
         self._rigid_original_xyz_container = self._modules.pop("xyz")
         self.xyz = rigid_xyz
+        self._repoint_coordinate_accessors()
 
         # Snapshot which groups were refinable BEFORE freezing them, so the
         # restore re-enables exactly those and leaves already-frozen ones alone.
@@ -2953,7 +3267,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if commit:
             with torch.no_grad():
                 current = self.xyz().detach().clone()
-            new_xyz = MixedTensor(current, name="xyz", device=self.device)
+            stashed = getattr(self, "_rigid_original_xyz_container", None)
+            if stashed is not None and hasattr(stashed, "with_values"):
+                # A riding wrapper keeps its frames; a rigid motion leaves every
+                # local offset unchanged.
+                new_xyz = stashed.with_values(current)
+            else:
+                new_xyz = MixedTensor(current, name="xyz", device=self.device)
             self._modules.pop("xyz", None)
             self.xyz = new_xyz
             xyz_mask = getattr(self, "xyz_mask", None)
@@ -2972,6 +3292,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         if hasattr(self, "_rigid_original_xyz_container"):
             del self._rigid_original_xyz_container
+        self._repoint_coordinate_accessors()
 
         # Re-enable exactly the groups use_rigid_xyz() froze, so subsequent
         # per-atom / ADP refinement has parameters to optimize.

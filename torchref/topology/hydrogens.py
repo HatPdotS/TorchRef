@@ -8,7 +8,8 @@ read the hydrogen positions off it, and correct each to its ideal bond length.
 Two things the bond graph decides that a distance criterion previously guessed at:
 
 * **How many hydrogens a parent can carry.** The smaller of two budgets: the parent's
-  standard valence minus the heavy atoms actually bonded to it in the graph, and the
+  valence (including tetrahedral ammonium nitrogen) minus the heavy atoms actually
+  bonded to it in the graph, and the
   template's own hydrogen count minus every graph bond the template does not know about
   (a peptide bond, a LINK record, a metal contact). The first budget handles the
   template's own chemistry; the second is what stops an acetyl cap's aldehyde hydrogen
@@ -27,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+from torchref.config import get_float_dtype
 
 #: Standard heavy-atom valences, one of the two budgets that cap how many hydrogens a
 #: parent may take. Elements not listed fall back to 4 and are then bounded only by the
@@ -113,6 +115,53 @@ def _kabsch(source: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray, np.ndar
     return rotation, target_centre - rotation @ source_centre
 
 
+def template_atom_types(component: Dict) -> Tuple[Dict[str, str], Dict[str, int]]:
+    """Energy type of every template atom, and the hydrogen count of every heavy one.
+
+    Parameters
+    ----------
+    component : dict
+        One residue's restraint sections as the CIF reader returns them; needs an
+        ``atoms`` section, and ``bonds`` for the counts.
+
+    Returns
+    -------
+    energy_type : dict
+        ``{atom name: CCP4 energy type}``; ``''`` where the dictionary carries none.
+    h_count : dict
+        ``{heavy atom name: number of hydrogens bonded to it in the template}``. Heavy
+        atoms with none are absent.
+    """
+    atoms = component.get("atoms")
+    if atoms is None or len(atoms) == 0:
+        return {}, {}
+    ids = atoms["atom_id"].astype(str).str.strip().values.astype(str)
+    elements = np.char.upper(
+        atoms["type_symbol"].astype(str).str.strip().values.astype(str)
+    )
+    if "type_energy" in atoms.columns:
+        types = atoms["type_energy"].astype(str).str.strip().values.astype(str)
+        types = np.where(np.isin(types, ["nan", ".", "?", "<NA>", "None"]), "", types)
+    else:
+        types = np.full(len(ids), "", dtype="<U1")
+    energy_type = {name: str(kind) for name, kind in zip(ids, types)}
+    is_h = dict(zip(ids, elements == "H"))
+
+    h_count: Dict[str, int] = {}
+    bonds = component.get("bonds")
+    if bonds is not None and len(bonds) > 0:
+        first = bonds["atom1"].astype(str).str.strip().values
+        second = bonds["atom2"].astype(str).str.strip().values
+        for a, b in zip(first, second):
+            if a not in is_h or b not in is_h:
+                continue
+            if is_h[a] and not is_h[b]:
+                h_count[b] = h_count.get(b, 0) + 1
+            elif is_h[b] and not is_h[a]:
+                h_count[a] = h_count.get(a, 0) + 1
+    return energy_type, h_count
+
+
 def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
     """Template atoms, hydrogen parents, ideal bond lengths and heavy adjacency.
 
@@ -146,7 +195,7 @@ def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
     parent_of: Dict[str, str] = {}
     ideal_length: Dict[str, float] = {}
     heavy_adjacency: Dict[str, List[str]] = {}
-    h_count: Dict[str, int] = {}
+    _, h_count = template_atom_types(component)
 
     bonds = component.get("bonds")
     if bonds is not None and len(bonds) > 0:
@@ -162,12 +211,10 @@ def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
                 continue
             if is_h[ia] and not is_h[ib]:
                 parent_of[a] = b
-                h_count[b] = h_count.get(b, 0) + 1
                 if np.isfinite(values[i]):
                     ideal_length[a] = float(values[i])
             elif is_h[ib] and not is_h[ia]:
                 parent_of[b] = a
-                h_count[a] = h_count.get(a, 0) + 1
                 if np.isfinite(values[i]):
                     ideal_length[b] = float(values[i])
             elif not is_h[ia] and not is_h[ib]:
@@ -337,6 +384,45 @@ def _place_group(
     Returns None when none applies, so the caller can count the hydrogen as undetermined
     rather than putting it somewhere arbitrary.
     """
+    if (
+        heavy_bonded == 0
+        and len(template["heavy_names"]) == 1
+        and str(template["elements"][template["id_to_index"][parent_name]]).upper()
+        == "O"
+    ):
+        index = template["id_to_index"]
+        origin = template["coords"][index[parent_name]]
+        # Randomness is confined to initialization and follows TorchRef's torch seed.
+        rotation, r = np.linalg.qr(
+            torch.randn(3, 3, dtype=get_float_dtype(), device="cpu").numpy()
+        )
+        rotation = rotation * np.sign(np.diag(r))[None, :]
+        rotation[:, -1] *= np.linalg.det(rotation)
+        present_h = [h for h in template["h_names"] if h in name_to_row]
+        if present_h:
+            h = present_h[0]
+            source = template["coords"][index[h]] - origin
+            target = coords[name_to_row[h]] - parent_position
+            if np.linalg.norm(target) < 1e-8:
+                return None
+            source /= np.linalg.norm(source)
+            target /= np.linalg.norm(target)
+            t1, t2 = _orthonormal_frame(source)
+            m1 = rotation[:, 0] - target * (rotation[:, 0] @ target)
+            if np.linalg.norm(m1) < 1e-8:
+                m1, _ = _orthonormal_frame(target)
+            m1 /= np.linalg.norm(m1)
+            rotation = (
+                np.column_stack([target, m1, np.cross(target, m1)])
+                @ np.column_stack([source, t1, t2]).T
+            )
+        offsets = np.array([template["coords"][index[h]] - origin for h in h_names])
+        offsets = offsets @ rotation.T
+        return (
+            parent_position
+            + offsets * (lengths / np.linalg.norm(offsets, axis=1))[:, None]
+        )
+
     covered = _template_covers_neighbours(template, parent_name, heavy_bonded)
 
     if covered:
@@ -409,6 +495,14 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
     Returns
     -------
     HydrogenPlan
+        Missing hydrogen rows with Cartesian positions in Å.
+
+    Notes
+    -----
+    HOH uses the bundled water dictionary when no water dictionary is supplied.
+    Waters without an existing hydrogen get a random reference orientation;
+    ``torch.manual_seed`` controls reproducibility. An existing O–H direction is
+    preserved when completing a partially hydrogenated water.
     """
     coords = np.asarray(xyz.detach().cpu(), dtype=np.float64)
     residues = topology.residues
@@ -428,6 +522,16 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
             "group",
         )
     }
+    if "HOH" in set(residues.resname.astype(str)) and "HOH" not in cif_dict:
+        from pathlib import Path
+
+        from torchref import PATH_TORCHREF_DATA
+        from torchref.topology.monomer.cif import read_cif
+
+        cif_dict = dict(cif_dict)
+        cif_dict.update(
+            read_cif(str(Path(PATH_TORCHREF_DATA) / "monomer_library/h/HOH.cif"))
+        )
     next_group = 0
     n_unplaceable = 0
     n_no_template = 0
@@ -436,11 +540,8 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
         resname = str(residues.resname[residue]).strip()
         template = _template(cif_dict, resname)
         if template is None:
-            # No usable template. In practice these are the single-atom residues --
-            # waters and ions -- which the restraint dictionary omits because they carry
-            # no intra-residue geometry. They could not be hydrogenated anyway: one
-            # heavy atom gives no frame to orient a template against and no bond to
-            # rotate about, so a water's hydrogens would point somewhere arbitrary.
+            # Atoms without a dictionary cannot supply either bond geometry or
+            # hydrogen identities; leave those residues unchanged.
             n_no_template += 1
             continue
 
@@ -448,6 +549,9 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
             int(residues.atom_start[residue]), int(residues.atom_end[residue])
         )
         present = set(names[rows])
+        h1_alias = "H" in template["h_names"] and "H1" not in template["h_names"]
+        if h1_alias and "H1" in present:
+            present.add("H")
         candidates = [h for h in template["h_names"] if h not in present]
         if not candidates:
             continue
@@ -455,7 +559,8 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
         for altloc, conformer in _conformer_rows(rows, altlocs):
             name_to_row = {}
             for row in conformer:
-                name_to_row.setdefault(names[row], row)
+                name = "H" if h1_alias and names[row] == "H1" else names[row]
+                name_to_row.setdefault(name, row)
 
             # Hydrogens grouped by the parent they hang off, in name order so the cap
             # below takes a deterministic subset.
@@ -469,9 +574,11 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
                 parent_row = name_to_row[parent_name]
                 parent_position = coords[parent_row]
 
-                heavy_rows, existing_h = _split_neighbours(
-                    topology, parent_row, altloc
-                )
+                heavy_rows, existing_h = _split_neighbours(topology, parent_row, altloc)
+                # A water-metal contact does not replace an O-H covalent bond or
+                # provide the water's orientational reference.
+                if resname == "HOH":
+                    heavy_rows = np.zeros(0, dtype=np.int64)
                 heavy_bonded = len(heavy_rows)
                 element = str(
                     template["elements"][template["id_to_index"][parent_name]]
@@ -483,6 +590,19 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
                 template_h = template["h_count"].get(parent_name, len(group))
                 template_heavy = len(template["heavy_adjacency"].get(parent_name, []))
                 extra_bonds = max(0, heavy_bonded - template_heavy)
+                energy_types = topology.atoms.energy_type
+                # Free NT* amines carry four neighbours. Peptide modifications
+                # retype N as NH1; explicit LINK/cap bonds also displace the free
+                # amine protonation even when no type modification is available.
+                if element == "N" and extra_bonds == 0 and energy_types is not None:
+                    if str(energy_types[parent_row]).strip() in {
+                        "NT",
+                        "NT1",
+                        "NT2",
+                        "NT3",
+                        "NT4",
+                    }:
+                        valence = 4
                 allowed = max(
                     0,
                     min(valence - heavy_bonded, template_h - extra_bonds) - existing_h,
@@ -769,9 +889,13 @@ def _rotate_about(vectors: np.ndarray, axis: np.ndarray, angle: float) -> np.nda
 
 __all__ = [
     "HydrogenPlan",
+    "HydrogenFrames",
     "plan_hydrogens",
     "optimise_free_torsions",
     "augment_atom_table",
+    "augment_atom_table_with_maps",
+    "hydrogen_frames",
+    "template_atom_types",
     "STANDARD_VALENCE",
     "MAX_PLACEMENT_DISTANCE",
     "TORSION_SCAN_STEPS",
@@ -804,20 +928,50 @@ def augment_atom_table(pdb, plan: HydrogenPlan, topology):
     pandas.DataFrame
         A new table with ``serial`` and ``index`` renumbered.
     """
+    return augment_atom_table_with_maps(pdb, plan, topology)[0]
+
+
+def augment_atom_table_with_maps(pdb, plan: HydrogenPlan, topology):
+    """:func:`augment_atom_table` plus the row maps the insertion implies.
+
+    Parameters
+    ----------
+    pdb : pandas.DataFrame
+        Atom table to extend.
+    plan : HydrogenPlan
+    topology : Topology
+        Supplies the residue partition the insertion points come from.
+
+    Returns
+    -------
+    augmented : pandas.DataFrame
+        The extended table, ``serial`` and ``index`` renumbered.
+    old_to_new : numpy.ndarray
+        New row of every old row, shape ``(N_old,)``. Existing rows are never dropped,
+        so every entry is valid.
+    plan_to_new : numpy.ndarray
+        New row of every planned hydrogen, shape ``(plan.n_hydrogens,)``.
+    """
     import pandas as pd
 
+    n_old = len(pdb)
     if plan.n_hydrogens == 0:
-        return pdb.copy()
+        return pdb.copy(), np.arange(n_old, dtype=np.int64), np.zeros(0, dtype=np.int64)
 
     by_residue: Dict[int, List[int]] = {}
     for i, residue in enumerate(plan.residue.tolist()):
         by_residue.setdefault(residue, []).append(i)
 
+    old_to_new = np.full(n_old, -1, dtype=np.int64)
+    plan_to_new = np.full(plan.n_hydrogens, -1, dtype=np.int64)
     pieces = []
+    offset = 0
     for residue in range(topology.n_residues):
         start = int(topology.residues.atom_start[residue])
         end = int(topology.residues.atom_end[residue])
         pieces.append(pdb.iloc[start:end])
+        old_to_new[start:end] = offset + np.arange(end - start)
+        offset += end - start
 
         members = by_residue.get(residue)
         if not members:
@@ -833,10 +987,303 @@ def augment_atom_table(pdb, plan: HydrogenPlan, topology):
             if column in rows.columns:
                 rows[column] = float("nan")
         pieces.append(rows)
+        plan_to_new[members] = offset + np.arange(len(members))
+        offset += len(members)
 
     augmented = pd.concat(pieces, ignore_index=True)
     augmented["index"] = augmented.index.to_numpy(dtype=int)
     if "serial" in augmented.columns:
         augmented["serial"] = augmented.index.to_numpy(dtype=int) + 1
     augmented.attrs = dict(pdb.attrs)
-    return augmented
+    return augmented, old_to_new, plan_to_new
+
+
+@dataclass
+class HydrogenFrames:
+    """Which atom-table rows are riding hydrogens, and the frame each one rides in.
+
+    Row indices are into the atom table the frames were built for; ``-1`` marks an
+    absent atom. A hydrogen whose ``parent_row`` is ``-1`` is not a riding hydrogen at
+    all and is dropped by :meth:`remap`; one whose ``n1_row`` or ``n2_row`` is ``-1``
+    keeps riding but with ``frame_valid`` False, so it translates rigidly with its
+    parent instead of turning with the frame.
+
+    The frame is ``(parent, n1, n2)``: ``n1`` is the parent's first heavy neighbour,
+    ``n2`` its second, or -- for a parent with a single heavy neighbour, i.e. every
+    hydroxyl, thiol, amine and methyl -- a heavy neighbour of ``n1`` other than the
+    parent, so the hydrogen turns with the torsion about the ``n1-parent`` bond.
+
+    Parameters
+    ----------
+    h_row, parent_row, n1_row, n2_row : numpy.ndarray
+        ``int64`` rows, shape ``(H,)``. ``h_row`` is ``-1`` for a planned hydrogen
+        that has not been inserted into a table yet; :meth:`fill_planned_rows` sets it.
+    frame_valid : numpy.ndarray
+        Boolean ``(H,)``; False where the frame is incomplete.
+    torsion_group, rotation_group : numpy.ndarray, optional
+        Group labels, shape ``(H,)``; ``-1`` means no independent orientation.
+        Torsion groups rotate about the parent-to-n1 bond; rotation groups have
+        three rotational degrees of freedom in Cartesian space. Labels need not
+        be contiguous. Hydrogens in one group share their parent and orientation.
+    """
+
+    h_row: np.ndarray
+    parent_row: np.ndarray
+    n1_row: np.ndarray
+    n2_row: np.ndarray
+    frame_valid: np.ndarray
+    torsion_group: Optional[np.ndarray] = None
+    rotation_group: Optional[np.ndarray] = None
+
+    def __post_init__(self) -> None:
+        """Fill absent orientation groups with the fixed-orientation sentinel."""
+        for name in ("torsion_group", "rotation_group"):
+            value = getattr(self, name)
+            if value is None:
+                value = np.full(len(self.h_row), -1, dtype=np.int64)
+            value = np.asarray(value, dtype=np.int64)
+            if value.shape != self.h_row.shape:
+                raise ValueError(f"{name} must have shape {self.h_row.shape}")
+            setattr(self, name, value)
+        if ((self.torsion_group >= 0) & (self.rotation_group >= 0)).any():
+            raise ValueError("A hydrogen cannot belong to both orientation types")
+
+    @classmethod
+    def empty(cls) -> "HydrogenFrames":
+        """Frames for a model with no riding hydrogens."""
+        z = np.zeros(0, dtype=np.int64)
+        return cls(z, z.copy(), z.copy(), z.copy(), np.zeros(0, dtype=bool))
+
+    @property
+    def n_hydrogens(self) -> int:
+        """How many hydrogens ride."""
+        return len(self.h_row)
+
+    @property
+    def n_planned(self) -> int:
+        """How many entries still await a row from :meth:`fill_planned_rows`."""
+        return int((self.h_row < 0).sum())
+
+    def remap(self, old_to_new: np.ndarray) -> "HydrogenFrames":
+        """The frames over a reindexed table.
+
+        Parameters
+        ----------
+        old_to_new : numpy.ndarray
+            New row of each old row, ``-1`` where the atom was dropped.
+
+        Returns
+        -------
+        HydrogenFrames
+            Entries whose hydrogen or parent was dropped are removed; a lost ``n1`` or
+            ``n2`` leaves the entry with ``frame_valid`` False. Planned entries
+            (``h_row == -1``) are kept as planned.
+        """
+        table = np.asarray(old_to_new, dtype=np.int64)
+
+        def follow(rows: np.ndarray) -> np.ndarray:
+            out = np.full(len(rows), -1, dtype=np.int64)
+            present = rows >= 0
+            out[present] = table[rows[present]]
+            return out
+
+        h = follow(self.h_row)
+        h[self.h_row < 0] = -1
+        parent = follow(self.parent_row)
+        n1 = follow(self.n1_row)
+        n2 = follow(self.n2_row)
+        keep = (parent >= 0) & ((h >= 0) | (self.h_row < 0))
+        return HydrogenFrames(
+            h_row=h[keep],
+            parent_row=parent[keep],
+            n1_row=n1[keep],
+            n2_row=n2[keep],
+            frame_valid=self.frame_valid[keep] & (n1[keep] >= 0) & (n2[keep] >= 0),
+            torsion_group=np.where(n1[keep] >= 0, self.torsion_group[keep], -1),
+            rotation_group=self.rotation_group[keep],
+        )
+
+    def fill_planned_rows(self, rows: np.ndarray) -> "HydrogenFrames":
+        """Give the planned entries their table rows, in plan order.
+
+        Parameters
+        ----------
+        rows : numpy.ndarray
+            New row of each planned hydrogen, shape ``(n_planned,)``.
+        """
+        rows = np.asarray(rows, dtype=np.int64)
+        planned = self.h_row < 0
+        if int(planned.sum()) != len(rows):
+            raise ValueError(
+                f"{int(planned.sum())} planned hydrogens but {len(rows)} rows given"
+            )
+        h = self.h_row.copy()
+        h[planned] = rows
+        return HydrogenFrames(
+            h,
+            self.parent_row.copy(),
+            self.n1_row.copy(),
+            self.n2_row.copy(),
+            self.frame_valid.copy(),
+            self.torsion_group.copy(),
+            self.rotation_group.copy(),
+        )
+
+    def sorted_by_row(self) -> "HydrogenFrames":
+        """The same frames ordered by ``h_row``."""
+        order = np.argsort(self.h_row, kind="stable")
+        return HydrogenFrames(
+            self.h_row[order],
+            self.parent_row[order],
+            self.n1_row[order],
+            self.n2_row[order],
+            self.frame_valid[order],
+            self.torsion_group[order],
+            self.rotation_group[order],
+        )
+
+    def to_tensors(self, device=None) -> Dict[str, torch.Tensor]:
+        """Return frame and orientation arrays as tensors, keyed by field name."""
+        return {
+            "h_row": torch.as_tensor(
+                self.h_row, dtype=torch.int64, device=device
+            ),  # dtype-ok: row index; int64 required
+            "parent_row": torch.as_tensor(
+                self.parent_row, dtype=torch.int64, device=device
+            ),  # dtype-ok: row index; int64 required
+            "n1_row": torch.as_tensor(
+                self.n1_row, dtype=torch.int64, device=device
+            ),  # dtype-ok: row index; int64 required
+            "n2_row": torch.as_tensor(
+                self.n2_row, dtype=torch.int64, device=device
+            ),  # dtype-ok: row index; int64 required
+            "frame_valid": torch.as_tensor(
+                self.frame_valid, dtype=torch.bool, device=device
+            ),
+            "torsion_group": torch.as_tensor(self.torsion_group, device=device),
+            "rotation_group": torch.as_tensor(self.rotation_group, device=device),
+        }
+
+    @classmethod
+    def from_tensors(
+        cls,
+        h_row: torch.Tensor,
+        parent_row: torch.Tensor,
+        n1_row: torch.Tensor,
+        n2_row: torch.Tensor,
+        frame_valid: torch.Tensor,
+        torsion_group: Optional[torch.Tensor] = None,
+        rotation_group: Optional[torch.Tensor] = None,
+    ) -> "HydrogenFrames":
+        """Rebuild from the tensors :meth:`to_tensors` produced."""
+        as_np = lambda t: np.asarray(t.detach().cpu().numpy(), dtype=np.int64)
+        return cls(
+            as_np(h_row),
+            as_np(parent_row),
+            as_np(n1_row),
+            as_np(n2_row),
+            np.asarray(frame_valid.detach().cpu().numpy(), dtype=bool),
+            None if torsion_group is None else as_np(torsion_group),
+            None if rotation_group is None else as_np(rotation_group),
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"HydrogenFrames(n_hydrogens={self.n_hydrogens}, "
+            f"planned={self.n_planned}, rigid={int((~self.frame_valid).sum())})"
+        )
+
+
+def _frame_atoms(topology, parent_row: int, altloc: str) -> Tuple[int, int]:
+    """``(n1, n2)`` rows for a frame anchored on ``parent_row``; ``-1`` where absent.
+
+    ``n1`` is the parent's first heavy neighbour in the conformer, ``n2`` its second,
+    or a heavy neighbour of ``n1`` other than the parent when the parent has only one.
+    """
+    heavy, _ = _split_neighbours(topology, parent_row, altloc)
+    if len(heavy) == 0:
+        return -1, -1
+    n1 = int(heavy[0])
+    if len(heavy) >= 2:
+        return n1, int(heavy[1])
+    grand, _ = _split_neighbours(topology, n1, altloc)
+    grand = grand[grand != parent_row]
+    return n1, (int(grand[0]) if len(grand) else -1)
+
+
+def hydrogen_frames(topology, plan: Optional[HydrogenPlan] = None) -> HydrogenFrames:
+    """Riding frames for every hydrogen the table has, plus the ones a plan adds.
+
+    Read off the bond graph, not off distances, so a stretched or predicted model
+    still frames each hydrogen on its bonded parent.
+
+    Parameters
+    ----------
+    topology : Topology
+        Connectivity of the table the frames index into.
+    plan : HydrogenPlan, optional
+        Hydrogens about to be inserted. Their entries carry ``h_row == -1`` until
+        :meth:`HydrogenFrames.fill_planned_rows` is given the rows the insertion made;
+        their parent and frame atoms are rows of the *current* table, to be carried
+        through :meth:`HydrogenFrames.remap` with everything else.
+
+    Returns
+    -------
+    HydrogenFrames
+        Deposited hydrogens first, in row order, then planned ones in plan order. A
+        hydrogen bonded to no heavy atom is left out: nothing can carry it.
+    """
+    atoms = topology.atoms
+    is_h = atoms.is_hydrogen.cpu().numpy()
+    altlocs = np.char.strip(atoms.altloc.astype(str))
+
+    rows: List[Tuple[int, int, int, int]] = []
+    for h in np.nonzero(is_h)[0].tolist():
+        neighbours = atoms.neighbors(h).cpu().numpy()
+        heavy = neighbours[~is_h[neighbours]]
+        if len(heavy) == 0:
+            continue
+        parent = int(heavy[0])
+        altloc = str(altlocs[h])
+        n1, n2 = _frame_atoms(topology, parent, altloc)
+        rows.append((h, parent, n1, n2))
+
+    if plan is not None:
+        for k in range(plan.n_hydrogens):
+            parent = int(plan.parent[k])
+            n1, n2 = _frame_atoms(topology, parent, str(plan.altloc[k]).strip())
+            rows.append((-1, parent, n1, n2))
+
+    if not rows:
+        return HydrogenFrames.empty()
+    arr = np.array(rows, dtype=np.int64)
+    torsion = np.full(len(rows), -1, dtype=np.int64)
+    rotation = np.full(len(rows), -1, dtype=np.int64)
+    elements = np.char.upper(np.char.strip(atoms.element.astype(str)))
+    groups = {}
+    n_existing = len(rows) - (0 if plan is None else plan.n_hydrogens)
+    for i, (h, parent, _, _) in enumerate(rows):
+        altloc = str(altlocs[h]) if h >= 0 else str(plan.altloc[i - n_existing]).strip()
+        groups.setdefault((parent, altloc), []).append(i)
+    for group, ((parent, altloc), members) in enumerate(groups.items()):
+        heavy, _ = _split_neighbours(topology, parent, altloc)
+        residue = int(atoms.residue_of[parent])
+        is_water = str(topology.residues.resname[residue]).strip() == "HOH"
+        if len(heavy) == 0 or is_water:
+            rotation[members] = group
+        elif len(heavy) == 1 and (
+            (elements[parent] == "C" and len(members) == 3)
+            or elements[parent] in ("O", "S")
+        ):
+            # Planar amide NH2 groups also have one heavy neighbour, but their
+            # orientation is constrained by conjugation rather than freely rotatable.
+            torsion[members] = group
+    return HydrogenFrames(
+        h_row=arr[:, 0],
+        parent_row=arr[:, 1],
+        n1_row=arr[:, 2],
+        n2_row=arr[:, 3],
+        frame_valid=(arr[:, 2] >= 0) & (arr[:, 3] >= 0),
+        torsion_group=torsion,
+        rotation_group=rotation,
+    )

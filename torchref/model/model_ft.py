@@ -806,6 +806,10 @@ class ModelFT(CachedForwardMixin, Model):
 
             model_copy._parametrization = copy_module.deepcopy(self._parametrization)
 
+        # Borrowed coordinate accessors (restraints, ADP node field) still point at
+        # THIS model's wrappers after their own ``copy``; re-point them.
+        model_copy._repoint_coordinate_accessors()
+
         # Don't share cached structure factors with the original.
         model_copy.reset_cache()
         # The iso/aniso partition is derived state, not a buffer, so it is not
@@ -917,6 +921,8 @@ class ModelFT(CachedForwardMixin, Model):
         state_dict.pop("device", None)  # Remove but don't use (use provided device)
         strip_H = state_dict.pop("strip_H", True)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
+        hydrogens_in_xray = state_dict.pop("hydrogens_in_xray", True)
+        hydrogen_mode = state_dict.pop("hydrogen_mode", None)
 
         # Checkpoints written while the grid was stored state carry its buffers
         # ("_fft." prefixed, or flat in older ones). The size is adopted below only
@@ -936,11 +942,15 @@ class ModelFT(CachedForwardMixin, Model):
             gridsize=explicit_gridsize,
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
+            hydrogens_in_xray=hydrogens_in_xray,
         )
 
         instance.pdb = pdb
         instance.ctx.initialized = initialized
         instance.ctx.altloc_pairs = altloc_pairs
+        if hydrogen_mode is None:
+            hydrogen_mode = "riding" if state_dict.get("xyz.h_row") is not None else "free"
+        instance.ctx.hydrogen_mode = hydrogen_mode
 
         # The engine reads both off the context; nothing further to build.
         instance.spacegroup = spacegroup_str

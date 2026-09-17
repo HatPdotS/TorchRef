@@ -299,12 +299,24 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
 
         self._set_values(key, value)
 
+    @property
+    def _storage_rows(self) -> int:
+        """Rows of the stored tensor. Equal to ``shape[0]`` unless a subclass derives
+        rows it does not store, in which case masks handed to the mutation methods
+        below are in storage space."""
+        return 0 if self.fixed_values is None else int(self.fixed_values.shape[0])
+
+    def _storage_values(self) -> torch.Tensor:
+        """The stored rows assembled, in public units. Equal to ``forward()`` unless a
+        subclass derives extra rows."""
+        return self.forward()
+
     def _set_values(self, key, value: torch.Tensor) -> None:
         """Write already-cast values into the storage; override to re-encode.
 
         Rebuilds ``fixed_values`` and re-extracts ``refinable_params``.
         """
-        current_full = self.forward().detach()
+        current_full = self._storage_values().detach()
         current_full[key] = value
 
         self.fixed_values = current_full.clone()
@@ -445,13 +457,13 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             If True, also re-baseline ``fixed_values`` to the current values.
             Default is False.
         """
-        if new_mask.shape[0] != self.shape[0]:
+        if new_mask.shape[0] != self._storage_rows:
             raise ValueError(
                 f"new_mask shape {new_mask.shape} must match "
                 f"tensor shape {self.shape}"
             )
 
-        current_full = self.forward().detach()
+        current_full = self._storage_values().detach()
 
         new_mask = self._normalize_refinable_mask(new_mask)
         self.refinable_mask = new_mask
@@ -539,7 +551,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             If True, re-baseline ``fixed_values`` to the current values first.
             Default is False.
         """
-        current_full = self.forward().detach()
+        current_full = self._storage_values().detach()
 
         # Union of the current refinable mask with the new selection.
         new_mask = self.refinable_mask.clone()
@@ -547,7 +559,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         if isinstance(selection, torch.Tensor):
             if selection.dtype == torch.bool:
                 if len(self.shape) > 1:
-                    if selection.shape[0] != self.shape[0] or len(selection.shape) != 1:
+                    if selection.shape[0] != self._storage_rows or len(selection.shape) != 1:
                         raise ValueError(
                             f"Boolean selection shape {selection.shape} must be 1D "
                             f"matching first dimension {self.shape[0]} for multi-dimensional "
@@ -600,7 +612,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             If True (default), freeze at the current values; if False, the
             selected elements revert to the stored ``fixed_values``.
         """
-        current_full = self.forward().detach()
+        current_full = self._storage_values().detach()
 
         # Current refinable mask minus the selection.
         new_mask = self.refinable_mask.clone()
@@ -608,7 +620,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         if isinstance(selection, torch.Tensor):
             if selection.dtype == torch.bool:
                 if len(self.shape) > 1:
-                    if selection.shape[0] != self.shape[0] or len(selection.shape) != 1:
+                    if selection.shape[0] != self._storage_rows or len(selection.shape) != 1:
                         raise ValueError(
                             f"Boolean selection shape {selection.shape} must be 1D "
                             f"matching first dimension {self.shape[0]} for multi-dimensional "
@@ -859,7 +871,7 @@ class PositiveMixedTensor(MixedTensor):
         ValueError
             If the shapes disagree or any value is non-positive.
         """
-        if mask.shape[0] != self.shape[0]:
+        if mask.shape[0] != self._storage_rows:
             raise ValueError(
                 f"Mask shape {mask.shape} must match tensor's first dimension {self.shape[0]}"
             )
@@ -1177,7 +1189,7 @@ class CholeskyMixedTensor(MixedTensor):
 
     def _set_values(self, key, value: torch.Tensor) -> None:
         """Set U-space values at ``key``; stored internally as Cholesky params."""
-        current = self.forward().detach()
+        current = self._storage_values().detach()
         current[key] = value
         raw = self._u6_to_raw6(current)
         self.fixed_values = raw.clone()
@@ -1191,14 +1203,14 @@ class CholeskyMixedTensor(MixedTensor):
         """Freeze rows, storing their current value in Cholesky space."""
         if freeze_at_current:
             with torch.no_grad():
-                raw = self._u6_to_raw6(self.forward())
+                raw = self._u6_to_raw6(self._storage_values())
             self.fixed_values[mask] = raw[mask]
         super().fix(mask, freeze_at_current=False)
 
     def refine(self, mask: torch.Tensor):
         """Make rows refinable, preserving their current value in Cholesky space."""
         with torch.no_grad():
-            raw = self._u6_to_raw6(self.forward())
+            raw = self._u6_to_raw6(self._storage_values())
         self.fixed_values[mask] = raw[mask]
         super().refine(mask)
 
@@ -1216,12 +1228,12 @@ class CholeskyMixedTensor(MixedTensor):
         storage); convert to Cholesky parameters first, mirroring
         :meth:`PositiveMixedTensor.update_refinable_mask`.
         """
-        if new_mask.shape[0] != self.shape[0]:
+        if new_mask.shape[0] != self._storage_rows:
             raise ValueError(
                 f"new_mask shape {new_mask.shape} must match tensor shape {self.shape}"
             )
         with torch.no_grad():
-            current_raw = self._u6_to_raw6(self.forward())
+            current_raw = self._u6_to_raw6(self._storage_values())
         new_mask = self._normalize_refinable_mask(new_mask)
         self.refinable_mask = new_mask
         self.fixed_mask = ~new_mask

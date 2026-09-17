@@ -111,8 +111,8 @@ def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min,
             sys.stdout.flush()
         model_dark = model_dark.hydrogenate(verbose=max(0, verbose - 1))
         model_light = model_light.hydrogenate(verbose=max(0, verbose - 1))
-        model_dark.exclude_H_from_sf = True
-        model_light.exclude_H_from_sf = True
+        model_dark.hydrogens_in_xray = False
+        model_light.hydrogens_in_xray = False
 
     mc = ModelCollection([model_dark, model_light], dark_key="dark")
     mc.add_dark()

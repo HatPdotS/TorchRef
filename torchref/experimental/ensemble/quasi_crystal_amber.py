@@ -31,8 +31,7 @@ non-special-position atoms), giving us as **inherited** state:
 
 - the antechamber pipeline + GAFF2 setup for non-standard residues;
 - the template OpenMM ``System`` (single-molecule, AMBER14 / GAFF2);
-- the H virtual-site frame tables (``_build_h_attachment``) and the shared
-  local-frame placement (``_place_hydrogens_local_frame``);
+- a complete atom map including the model's hydrogens;
 - the autograd Function ``_OpenMMAMBERFunction``.
 
 This target then replicates the template ``System`` into the symmetry-expanded
@@ -44,13 +43,14 @@ state and:
 1. replicate the System into a supercell with
    :func:`_replicate_to_supercell_system`;
 2. build a new ``Context`` on the supercell (CUDA > OpenCL > CPU);
-3. tile the template's atom map + H-attachment indices per member.
+3. tile the template's complete atom map per member.
 
 Forward reads
 ``ensemble.xyz_per_member``, applies the supercell layout's sym+tile
-transform, scatters into the unified OpenMM position tensor (heavy via
-``_compose_full_omm_xyz``-style scatter; H via the tiled local-frame
-placement), and calls the same ``_OpenMMAMBERFunction.apply``.
+transform, scatters all model atoms into the unified OpenMM position tensor,
+and calls ``_OpenMMAMBERFunction.apply``. Hydrogen positions come from TorchRef.
+Construction leaves coordinates unchanged unless ``relax_on_init=True`` is
+explicitly requested.
 """
 
 from __future__ import annotations
@@ -63,7 +63,6 @@ import torch
 from torchref.experimental.targets.amber_target import (
     AmberTarget,
     _OpenMMAMBERFunction,
-    _place_hydrogens_local_frame,
 )
 from .ensemble_model import build_single_copy_model
 from .supercell import SupercellLayout, _replicate_to_supercell_system
@@ -176,6 +175,9 @@ class QuasiCrystalAmberTarget(AmberTarget):
     charge_method : str
         antechamber charge method ('gas' or 'bcc'). Default 'gas' (fast,
         no QM); matches the ensemble setup.
+    relax_on_init : bool, default False
+        If True, explicitly minimize with OpenMM and write relaxed positions
+        back to the ensemble. Leave False to keep TorchRef's initial coordinates.
     verbose : int
         Verbosity (0 = silent, 1 = setup messages).
 
@@ -204,7 +206,7 @@ class QuasiCrystalAmberTarget(AmberTarget):
         gaff2_files: Optional[Dict[str, Tuple[str, str]]] = None,
         charge_method: str = "gas",
         drop_special_position_threshold_ang: float = 0.0,
-        relax_on_init: bool = True,
+        relax_on_init: bool = False,
         relax_max_iterations: int = 200,
         force_clamp: float = 10000.0,
         verbose: int = 0,
@@ -291,7 +293,7 @@ class QuasiCrystalAmberTarget(AmberTarget):
         # As an AmberTarget subclass we run the full antechamber + ForceField
         # pipeline against a genuine single-conformation Model (the ensemble's
         # ``_pdb_single`` restricted to non-special-position atoms). This
-        # populates self._system / _pos_buf / _model_to_omm / _h_* for ONE
+        # populates self._system / _pos_buf / _model_to_omm for ONE
         # member; we replicate them into the supercell below. ``_model`` stays
         # the ensemble (its per-member coords drive forward()); the
         # single-molecule context the base builds is replaced by the supercell
@@ -322,9 +324,7 @@ class QuasiCrystalAmberTarget(AmberTarget):
         template_map = np.asarray(self._model_to_omm, dtype=np.int64)
         self._template_model_to_omm = template_map
         # Index pairs: model atom `src_model_idx[k]` lives in OMM slot
-        # `dst_omm_idx[k]` (single-member, in [0, n_omm_per_member)). Atoms
-        # with template_map == -1 (waters, OXT, ligands tleap regenerated)
-        # are excluded — their OMM slot keeps the construction-time position.
+        # `dst_omm_idx[k]` (single-member, in [0, n_omm_per_member)).
         valid_mask = template_map >= 0
         self._src_model_idx_np = np.where(valid_mask)[0].astype(np.int64)
         self._dst_omm_idx_np = template_map[valid_mask].astype(np.int64)
@@ -348,29 +348,6 @@ class QuasiCrystalAmberTarget(AmberTarget):
         self._pos_buf = supercell_pos_nm.copy()
         self._n_omm_total = int(supercell_pos_nm.shape[0])
         assert self._n_omm_total == N * self._n_omm_per_member
-
-        # --- H attachment, template arrays (numpy, into [0, n_omm_per_member)).
-        # The tiling per member is deferred to the forward path: each H index
-        # gets ``+ m · n_omm_per_member`` added per member m.
-        #
-        # AmberTarget marks rigid-fallback Hs (no valid local frame) with
-        # sentinel ``-1`` in ``_h_n1_idx`` / ``_h_n2_idx``. The corresponding
-        # ``_h_frame_valid`` row is False, so the local-frame branch never
-        # uses these indices. But ``index_select`` still evaluates the lookup
-        # and errors on negative indices, so clamp the sentinels to 0 — a
-        # safe in-bounds dummy whose result is then masked away by the
-        # ``frame_valid`` ``torch.where`` in :meth:`_place_hydrogens`.
-        self._h_idx_template = np.asarray(self._h_idx, dtype=np.int64).copy()
-        self._h_parent_idx_template = np.asarray(self._h_parent_idx, dtype=np.int64).copy()
-        h_n1 = np.asarray(self._h_n1_idx, dtype=np.int64).copy()
-        h_n2 = np.asarray(self._h_n2_idx, dtype=np.int64).copy()
-        h_n1[h_n1 < 0] = 0
-        h_n2[h_n2 < 0] = 0
-        self._h_n1_idx_template = h_n1
-        self._h_n2_idx_template = h_n2
-        self._h_local_pos_template = np.asarray(self._h_local_pos, dtype=np.float64).copy()
-        self._h_frame_valid_template = np.asarray(self._h_frame_valid, dtype=bool).copy()
-        self._h_offset_template = np.asarray(self._h_offset, dtype=np.float64).copy()
 
         # Build the supercell System (replicate + PME + PBC).
         self._system = _replicate_to_supercell_system(
@@ -575,91 +552,33 @@ class QuasiCrystalAmberTarget(AmberTarget):
     # Lazy device buffers
     # ------------------------------------------------------------------
 
-    def _ensure_torch_buffers(
-        self, device: torch.device, dtype: torch.dtype
-    ) -> None:
-        """Move/build the torch buffers for ``forward``: atom maps, tiled H
-        indices, and the constant init-positions tensor. Caches per
+    def _ensure_torch_buffers(self, device: torch.device, dtype: torch.dtype) -> None:
+        """Move/build atom maps and initial positions for ``forward``. Cache per
         (device, dtype). No work on repeat calls with the same key."""
-        if (
-            self._buffers_device == device
-            and self._buffers_dtype == dtype
-        ):
+        if self._buffers_device == device and self._buffers_dtype == dtype:
             return
 
         N = self._n_members
         n_omm = self._n_omm_per_member
 
-        # Initial sym-tiled positions for every OMM atom (nm). Used as the
-        # "fallback" position for slots that don't have a model atom mapped to
-        # them (waters, OXT, etc. tleap regenerated).
-        self._pos_buf_torch = torch.from_numpy(self._pos_buf).to(
-            device=device, dtype=dtype
-        )
-
         # Index pairs (long) for the scatter from model atoms into OMM slots.
         self._src_model_idx_torch = torch.from_numpy(self._src_model_idx_np).to(
-            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
+            device=device,
+            dtype=torch.long,  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
         )
         self._dst_omm_idx_torch = torch.from_numpy(self._dst_omm_idx_np).to(
-            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
+            device=device,
+            dtype=torch.long,  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
         )
 
         # Index of ensemble-model atoms (in the FULL EnsembleModel layout)
         # that survived the special-position filter — used in forward to
         # subset ``xyz_per_member`` before applying the layout transform.
-        self._keep_atom_idx_torch = torch.from_numpy(
-            self._keep_atom_idx_np
-        ).to(device=device, dtype=torch.long)  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
+        self._keep_atom_idx_torch = torch.from_numpy(self._keep_atom_idx_np).to(
+            device=device, dtype=torch.long
+        )  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
 
-        # Boolean mask: True where the OMM slot has NO model atom mapped to
-        # it (so we keep the init position there).
-        unmapped = torch.ones(n_omm, dtype=torch.bool, device=device)
-        unmapped[self._dst_omm_idx_torch] = False
-        self._unmapped_mask_torch = unmapped  # (n_omm,)
-
-        # H-attachment indices tiled per member: template indices live in
-        # [0, n_omm); full-tensor indices live in [0, N · n_omm).
-        member_offset = (
-            torch.arange(N, device=device, dtype=torch.long).unsqueeze(1)  # dtype-ok: arange index for broadcasting/indexing; PyTorch requires int64
-            * n_omm
-        )  # (N, 1)
-        h_idx_t = torch.from_numpy(self._h_idx_template).to(
-            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
-        )
-        h_parent_t = torch.from_numpy(self._h_parent_idx_template).to(
-            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
-        )
-        h_n1_t = torch.from_numpy(self._h_n1_idx_template).to(
-            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
-        )
-        h_n2_t = torch.from_numpy(self._h_n2_idx_template).to(
-            device=device, dtype=torch.long  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
-        )
-
-        self._h_idx_tiled = (member_offset + h_idx_t.unsqueeze(0)).reshape(-1)
-        self._h_parent_idx_tiled = (
-            member_offset + h_parent_t.unsqueeze(0)
-        ).reshape(-1)
-        self._h_n1_idx_tiled = (
-            member_offset + h_n1_t.unsqueeze(0)
-        ).reshape(-1)
-        self._h_n2_idx_tiled = (
-            member_offset + h_n2_t.unsqueeze(0)
-        ).reshape(-1)
-
-        # Per-H constants tiled by member (same value for each member's
-        # corresponding H).
-        self._h_local_pos_tiled = torch.from_numpy(
-            self._h_local_pos_template
-        ).to(device=device, dtype=dtype).repeat(N, 1)
-        self._h_frame_valid_tiled = torch.from_numpy(
-            self._h_frame_valid_template
-        ).to(device=device, dtype=torch.bool).repeat(N)
-        self._h_offset_tiled = torch.from_numpy(
-            self._h_offset_template
-        ).to(device=device, dtype=dtype).repeat(N, 1)
-
+        self._omm_to_model = self._omm_to_model.to(device)
         self._buffers_device = device
         self._buffers_dtype = dtype
 
@@ -667,16 +586,11 @@ class QuasiCrystalAmberTarget(AmberTarget):
     # Position composition
     # ------------------------------------------------------------------
 
-    def _compose_full_omm_xyz(
-        self, supercell_xyz_nm: torch.Tensor
-    ) -> torch.Tensor:
+    def _compose_full_omm_xyz(self, supercell_xyz_nm: torch.Tensor) -> torch.Tensor:
         """Build the full ``(N · n_omm_per_member, 3)`` OpenMM xyz tensor.
 
-        Mapped (heavy) OMM slots get the current model coords (sym + tile
-        applied via the supercell layout); unmapped slots keep the construction-
-        time positions (tleap-regenerated atoms — waters, OXT, etc. that don't
-        move with the model). H atoms are then placed analytically from the
-        heavy positions via the tiled local-frame machinery.
+        Every OpenMM slot receives the current model coordinate after the
+        symmetry and tile transforms, including all hydrogen coordinates.
 
         Parameters
         ----------
@@ -690,50 +604,12 @@ class QuasiCrystalAmberTarget(AmberTarget):
             Flat OpenMM-order positions in nm, differentiable in
             ``supercell_xyz_nm`` (and thus in ``model.xyz_per_member``).
         """
-        N = self._n_members
-        n_omm = self._n_omm_per_member
-        device = supercell_xyz_nm.device
-        dtype = supercell_xyz_nm.dtype
+        if supercell_xyz_nm.shape != (self._n_members, self._n_model_per_member, 3):
+            raise ValueError(
+                "[QuasiCrystalAmberTarget] Atom layout changed; rebuild the target."
+            )
+        return supercell_xyz_nm.index_select(1, self._omm_to_model).reshape(-1, 3)
 
-        pos_init = self._pos_buf_torch.view(N, n_omm, 3)  # (N, n_omm, 3)
-        # Scatter mapped model atoms into a zero tensor at the OMM slots.
-        src = supercell_xyz_nm.index_select(1, self._src_model_idx_torch)
-        # index_copy is autograd-friendly and returns a new tensor.
-        scattered = torch.zeros(
-            (N, n_omm, 3), device=device, dtype=dtype
-        ).index_copy(1, self._dst_omm_idx_torch, src)
-        # Where the slot is unmapped, use the init position; otherwise use
-        # scattered (the current model coord).
-        mask = self._unmapped_mask_torch.view(1, n_omm, 1)
-        heavy = torch.where(mask, pos_init, scattered)  # (N, n_omm, 3)
-
-        # Place hydrogens (operates on the flat (N·n_omm, 3) view).
-        full_flat = heavy.reshape(-1, 3)
-        return self._place_hydrogens(full_flat)
-
-    def _place_hydrogens(self, heavy_xyz_nm: torch.Tensor) -> torch.Tensor:
-        """Vectorized H placement across all members via tiled local frames.
-
-        Mirrors :meth:`AmberTarget._place_hydrogens` but operates on the
-        ``(N·n_omm_per_member, 3)`` supercell positions with tiled parent /
-        neighbour indices and per-H constants. Frame: parent + first heavy
-        neighbour for ``e1``, second heavy neighbour projected for ``e2``,
-        cross for ``e3``; H position is ``p + Σ local_pos[k] · e_k``. Rigid
-        fallback for the small fraction of Hs without two heavy neighbours.
-        """
-        # Same local-frame physics as the single-molecule path — one shared
-        # implementation, here applied with member-tiled index tensors.
-        h_pos = _place_hydrogens_local_frame(
-            heavy_xyz_nm,
-            self._h_parent_idx_tiled,
-            self._h_n1_idx_tiled,
-            self._h_n2_idx_tiled,
-            self._h_local_pos_tiled,
-            self._h_frame_valid_tiled,
-            self._h_offset_tiled,
-        )
-        # Write H positions into the heavy tensor via functional index_copy.
-        return heavy_xyz_nm.index_copy(0, self._h_idx_tiled, h_pos)
 
     # ------------------------------------------------------------------
     # Forward

@@ -305,8 +305,16 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         self.missing_residues = [
             res for res in self.unique_residues if res not in self.cif_dict
         ]
+        from pathlib import Path
+        from torchref import PATH_TORCHREF_DATA
+
         additional_files = [
-            find_cif_file_in_library(res) for res in self.missing_residues
+            (
+                Path(PATH_TORCHREF_DATA) / "monomer_library/h/HOH.cif"
+                if res == "HOH"
+                else find_cif_file_in_library(res)
+            )
+            for res in self.missing_residues
         ]
 
         for cif_file in additional_files:
@@ -1195,7 +1203,21 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         """
         import copy
 
-        duplicate = copy.deepcopy(self)
+        # The coordinate and ADP accessors are borrowed from the model, not owned:
+        # duplicating them would hand the copy a third, orphaned parameter set (and
+        # deep-copying a wrapper with a cached forward fails on its graph tensor).
+        # They are carried across by reference; the owning model re-points them.
+        borrowed = ("_xyz_fn", "_adp_fn", "_vdw_radii_fn")
+        saved = {name: getattr(self, name, None) for name in borrowed}
+        for name in borrowed:
+            setattr(self, name, None)
+        try:
+            duplicate = copy.deepcopy(self)
+        finally:
+            for name, value in saved.items():
+                setattr(self, name, value)
+        for name, value in saved.items():
+            setattr(duplicate, name, value)
         duplicate._rebuild_entries()
         return duplicate
 

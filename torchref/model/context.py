@@ -51,11 +51,16 @@ class ModelContext(DeviceMixin):
         Verbosity level.
     strip_H : bool, default True
         Whether hydrogens were stripped on load.
-    exclude_H_from_sf : bool, default False
-        Whether hydrogens are excluded from structure-factor calculation.
+    hydrogens_in_xray : bool, default True
+        Whether hydrogens enter the structure-factor calculation. Restraints and the
+        non-bonded term see them either way; the bulk-solvent mask never does.
     add_hydrogens : bool, default False
         Generate hydrogens on load for residues that arrive without them. Ignored when
         ``strip_H`` is set, which removes them again.
+    hydrogen_mode : str, default "free"
+        How hydrogen rows are parametrised: ``"riding"`` (positions derived from the
+        parent heavy atoms each forward, not refined), ``"free"`` (ordinary refinable
+        atoms) or ``"none"`` (the table holds no hydrogens).
     initialized : bool, default False
         Whether a structure has been loaded. ``if model:`` tests this.
 
@@ -79,8 +84,9 @@ class ModelContext(DeviceMixin):
     cif_path: Optional[str] = None
     verbose: int = 1
     strip_H: bool = True
-    exclude_H_from_sf: bool = False
+    hydrogens_in_xray: bool = True
     add_hydrogens: bool = False
+    hydrogen_mode: str = "free"
     initialized: bool = False
 
     def copy(self) -> "ModelContext":
@@ -110,8 +116,9 @@ class ModelContext(DeviceMixin):
             cif_path=self.cif_path,
             verbose=self.verbose,
             strip_H=self.strip_H,
-            exclude_H_from_sf=self.exclude_H_from_sf,
+            hydrogens_in_xray=self.hydrogens_in_xray,
             add_hydrogens=self.add_hydrogens,
+            hydrogen_mode=self.hydrogen_mode,
             initialized=self.initialized,
         )
 

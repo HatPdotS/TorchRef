@@ -56,6 +56,38 @@ class DeviceCase:
     ignore: tuple = field(default_factory=tuple)
 
 
+def _riding_xyz(device):
+    """A bonded torsion group and a water exercise both orientation buffers."""
+    import numpy as np
+
+    from torchref.model.riding_xyz import RidingXYZTensor
+    from torchref.topology.hydrogens import HydrogenFrames
+
+    xyz = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.5, 0.0, 0.0],
+            [1.5, 1.5, 0.0],
+            [-0.6, 0.8, 0.0],
+            [-0.6, -0.8, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.8, 0.0, 0.0],
+            [2.8, 0.8, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    frames = HydrogenFrames(
+        h_row=np.array([3, 4, 6, 7]),
+        parent_row=np.array([0, 0, 5, 5]),
+        n1_row=np.array([1, 1, -1, -1]),
+        n2_row=np.array([2, 2, -1, -1]),
+        frame_valid=np.array([True, True, False, False]),
+        torsion_group=np.array([0, 0, -1, -1]),
+        rotation_group=np.array([-1, -1, 0, 0]),
+    )
+    return RidingXYZTensor(xyz, frames, device=device)
+
+
 def _symmetry(device):
     """A bare Symmetry from an explicit operation list (no space group involved)."""
     import torch as _torch
@@ -254,6 +286,18 @@ CASES: List[DeviceCase] = [
             device=d,
         ),
         "MixedTensor",
+    ),
+    DeviceCase(
+        "RidingXYZTensor_empty",
+        lambda d: __import__(
+            "torchref.model.riding_xyz", fromlist=["RidingXYZTensor"]
+        ).RidingXYZTensor(device=d),
+        "RidingXYZTensor",
+    ),
+    DeviceCase(
+        "RidingXYZTensor_populated",
+        _riding_xyz,
+        "RidingXYZTensor",
     ),
     DeviceCase(
         "PositiveMixedTensor",

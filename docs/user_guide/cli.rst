@@ -31,6 +31,9 @@ and a ``refinement_history.json`` log.
 * ``-n`` / ``--n-cycles`` number of macro cycles (default 5)
 * ``--add-hydrogens`` generate missing hydrogens on model loading (default off).
   Hydrogens already present in the input are retained with or without this flag
+* ``--hydrogens-in-xray`` / ``--no-hydrogens-in-xray`` include hydrogen atoms in the
+  structure-factor calculation (default on). Off keeps them in the restraints only;
+  the bulk-solvent mask is built from heavy atoms in either case
 * ``--mode`` ``separate`` (separated XYZ then ADP, default) or ``everything``
   (joint XYZ+ADP)
 * ``--xray-mode`` one of ``ml`` (default; Read MLF at variance ε·β, conditional

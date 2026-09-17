@@ -349,6 +349,7 @@ class EnsembleModel(ModelFT):
         wavelength: float = 1.0,
         anomalous_threshold: float = 0.5,
         cif_path=None,
+        hydrogens_in_xray: bool = True,
     ):
         if dtype_float is None:
             dtype_float = get_float_dtype()
@@ -365,6 +366,7 @@ class EnsembleModel(ModelFT):
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
             cif_path=cif_path,
+            hydrogens_in_xray=hydrogens_in_xray,
         )
         # Filled in by ``_finalize_ensemble`` after ``load`` returns.
         self.n_members: int = 0

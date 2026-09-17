@@ -652,6 +652,7 @@ def load_model(
     verbose: int = 0,
     cif: Optional[Union[str, List[str]]] = None,
     add_hydrogens: bool = False,
+    hydrogens_in_xray: bool = True,
 ) -> "ModelFT":
     """Load a model from PDB or CIF, auto-detected by file extension.
 
@@ -670,6 +671,8 @@ def load_model(
         generation and the restraints read the same dictionary.
     add_hydrogens : bool, optional
         Generate missing hydrogens on load. Default False.
+    hydrogens_in_xray : bool, optional
+        Whether hydrogens contribute to the structure factors. Default True.
 
     Returns
     -------
@@ -685,6 +688,7 @@ def load_model(
         verbose=verbose,
         cif_path=cif,
         add_hydrogens=add_hydrogens,
+        hydrogens_in_xray=hydrogens_in_xray,
     )
     suffix = Path(path).suffix.lower()
     if suffix in (".cif", ".mmcif"):

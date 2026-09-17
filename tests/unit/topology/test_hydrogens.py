@@ -78,7 +78,9 @@ def test_every_candidate_hydrogen_is_placed(built, code):
     checked = 0
     for residue in range(residues.n_residues):
         start, end = int(residues.atom_start[residue]), int(residues.atom_end[residue])
-        template = _template(restraints.cif_dict, str(residues.resname[residue]).strip())
+        template = _template(
+            restraints.cif_dict, str(residues.resname[residue]).strip()
+        )
         if template is None:
             continue
         # Residues with altlocs plan one hydrogen per conformer; the two-sided count
@@ -94,10 +96,14 @@ def test_every_candidate_hydrogen_is_placed(built, code):
             element = str(atoms.element[parent]).strip().upper()
             template_heavy = len(template["heavy_adjacency"].get(names[parent], []))
             extra_bonds = max(0, heavy - template_heavy)
-            expected = max(
-                0,
-                min(STANDARD_VALENCE.get(element, 4) - heavy, template_h - extra_bonds),
-            )
+            valence = STANDARD_VALENCE.get(element, 4)
+            if (
+                element == "N"
+                and extra_bonds == 0
+                and str(atoms.energy_type[parent]).startswith("NT")
+            ):
+                valence = 4
+            expected = max(0, min(valence - heavy, template_h - extra_bonds))
             placed = int((plan.parent == parent).sum())
             assert placed == expected, (
                 f"{code}: atom {parent} ({names[parent]} {element}) has {heavy} heavy "
@@ -120,7 +126,9 @@ def test_free_torsions_are_exactly_the_single_neighbour_centres(built, code):
         parent = int(plan.parent[i])
         neighbours = topology.atoms.neighbors(parent)
         heavy = int((~is_h[neighbours]).sum())
-        assert (plan.group[i] >= 0) == (heavy == 1), (
+        residue = int(topology.atoms.residue_of[parent])
+        water = str(topology.residues.resname[residue]).strip() == "HOH"
+        assert (plan.group[i] >= 0) == (heavy == 1 and not water), (
             f"{code}: hydrogen {plan.name[i]} on atom {parent} with {heavy} heavy "
             f"neighbours has group {plan.group[i]}"
         )
@@ -248,12 +256,8 @@ def test_augmented_table_keeps_residues_contiguous(built, code):
 
 
 @pytest.mark.unit
-def test_waters_are_not_hydrogenated(built):
-    """A single-atom residue is skipped, and for a reason rather than by accident.
-
-    One heavy atom gives no frame to align a template against and no bond to rotate
-    about, so a water's hydrogens could only be placed in an arbitrary direction.
-    """
+def test_waters_receive_two_hydrogens_with_initial_orientations(built):
+    """Explicit generation supplies two HOH hydrogens, including coordinated waters."""
     _, restraints, plan = built("7L84")
     topology = restraints.topology
 
@@ -263,7 +267,8 @@ def test_waters_are_not_hydrogenated(built):
         if str(topology.residues.resname[i]).strip() == "HOH"
     ]
     assert waters, "7L84 has no waters, so this asserts nothing"
-    assert not set(plan.residue.tolist()) & set(waters)
+    for residue in waters:
+        assert int((plan.residue == residue).sum()) == 2
 
 
 @pytest.mark.unit
@@ -384,7 +389,9 @@ def test_acetyl_cap_carbon_gets_no_hydrogen(tmp_path):
     model.load_pdb(str(path))
     model.set_restraints_cif(None)
     restraints = model.restraints
-    plan = plan_hydrogens(restraints.topology, restraints.cif_dict, model.xyz().detach())
+    plan = plan_hydrogens(
+        restraints.topology, restraints.cif_dict, model.xyz().detach()
+    )
 
     by_parent = {}
     for parent, name in zip(plan.parent.tolist(), plan.name.tolist()):

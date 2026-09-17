@@ -143,6 +143,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         verbose=1,
         float_type=None,
         device=None,
+        ignore_hydrogens=True,
     ):
         """
         Initialize SolventModel.
@@ -171,6 +172,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             Initial phase offset in radians.
         verbose : int, default 1
             Verbosity level.
+        ignore_hydrogens : bool, default True
+            Build the mask from heavy atoms only, whatever the model carries.
         float_type : torch.dtype, optional
             Float dtype. ``None`` (default) resolves at runtime to
             ``get_float_dtype()``, not a hard-wired ``torch.float32``.
@@ -190,6 +193,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         self.solvent_radius = radius
         self.erosion_radius = erosion_radius
         self.optimize_phase = optimize_phase
+        # Heavy-atom radii already stand in for the hydrogens they carry, so a mask
+        # built over hydrogen rows too would exclude solvent twice.
+        self.ignore_hydrogens = bool(ignore_hydrogens)
         self._cache = TensorDict()
 
         # Empty initialization
@@ -351,6 +357,16 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
 
         xyz = self.model.xyz()  # (N_atoms, 3)
         vdw_radii = self.model.get_vdw_radii()  # (N_atoms,)
+        if self.ignore_hydrogens:
+            # Heavy-atom radii are calibrated for masks built without hydrogens, so
+            # adding hydrogen spheres on top would exclude solvent twice.
+            heavy = torch.as_tensor(
+                (self.model.pdb["element"].str.strip().str.upper() != "H").values,
+                device=xyz.device,
+            )
+            if not bool(heavy.all()):
+                xyz = xyz[heavy]
+                vdw_radii = vdw_radii[heavy]
         inv_frac = self.model.inv_fractional_matrix
         frac = self.model.fractional_matrix
 

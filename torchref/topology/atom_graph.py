@@ -118,6 +118,17 @@ class AtomGraph(DeviceMixin):
     planes : dict
         ``{n_atoms_in_plane: EdgeBlock}`` -- planes are ragged, so they are grouped by
         atom count the way the plane restraints already are.
+    energy_type : numpy.ndarray, optional
+        CCP4 energy type per atom (``NH1``, ``OC``, ``CH3``, ...), shape ``(N,)``,
+        ``''`` where the template does not say. Keys the contact radii and the
+        hydrogen-bond roles.
+    template_h_count : torch.Tensor, optional
+        How many hydrogens the atom carries in its template, shape ``(N,)``,
+        ``int8``; ``-1`` where unknown. Together with the bonded hydrogens actually
+        present this gives :meth:`implicit_h_count`.
+    hb_type : torch.Tensor, optional
+        Hydrogen-bond role code per atom, shape ``(N,)``, ``int8``; see the contact
+        policy for the enumeration. None until assigned.
 
     Notes
     -----
@@ -135,6 +146,9 @@ class AtomGraph(DeviceMixin):
     torsions: EdgeBlock
     chirals: EdgeBlock
     planes: Dict[int, EdgeBlock] = field(default_factory=dict)
+    energy_type: Optional[np.ndarray] = None
+    template_h_count: Optional[torch.Tensor] = None
+    hb_type: Optional[torch.Tensor] = None
 
     _adj_indptr: Optional[torch.Tensor] = field(default=None, repr=False)
     _adj_indices: Optional[torch.Tensor] = field(default=None, repr=False)
@@ -171,7 +185,36 @@ class AtomGraph(DeviceMixin):
             torsions=self.torsions.copy(),
             chirals=self.chirals.copy(),
             planes={size: block.copy() for size, block in self.planes.items()},
+            energy_type=None if self.energy_type is None else self.energy_type.copy(),
+            template_h_count=(
+                None if self.template_h_count is None else self.template_h_count.clone()
+            ),
+            hb_type=None if self.hb_type is None else self.hb_type.clone(),
         )
+
+    def implicit_h_count(self) -> Optional[torch.Tensor]:
+        """Hydrogens each atom should carry but the table does not hold, ``(N,)``.
+
+        ``template_h_count`` minus the bonded hydrogens actually present, floored at
+        zero; ``0`` where the template count is unknown. None when the graph carries
+        no template counts. What decides whether an atom takes its with-hydrogen
+        contact radius.
+        """
+        if self.template_h_count is None:
+            return None
+        is_h = self.is_hydrogen
+        bonds = self.bonds.indices
+        present = torch.zeros(self.n_atoms, dtype=torch.int64, device=bonds.device)  # dtype-ok: bincount output; int64
+        if bonds.numel():
+            heavy_of_h = torch.cat(
+                [bonds[is_h[bonds[:, 1]] & ~is_h[bonds[:, 0]], 0],
+                 bonds[is_h[bonds[:, 0]] & ~is_h[bonds[:, 1]], 1]]
+            )
+            if heavy_of_h.numel():
+                present = torch.bincount(heavy_of_h, minlength=self.n_atoms)
+        known = self.template_h_count >= 0
+        missing = self.template_h_count.to(torch.int64) - present
+        return torch.where(known, missing.clamp(min=0), torch.zeros_like(missing))
 
     def subset(self, remap: torch.Tensor, residue_remap: torch.Tensor) -> "AtomGraph":
         """The atoms ``remap`` keeps, with every edge set reindexed.
@@ -196,16 +239,22 @@ class AtomGraph(DeviceMixin):
             if reduced.n_edges:
                 planes[size] = reduced
 
+        keep_t = torch.as_tensor(keep, device=self.residue_of.device)
         return AtomGraph(
             name=self.name[keep],
             element=self.element[keep],
             altloc=self.altloc[keep],
-            residue_of=residue_remap[self.residue_of[torch.as_tensor(keep)]],
+            residue_of=residue_remap[self.residue_of[keep_t]],
             bonds=self.bonds.subset(remap),
             angles=self.angles.subset(remap),
             torsions=self.torsions.subset(remap),
             chirals=self.chirals.subset(remap),
             planes=planes,
+            energy_type=None if self.energy_type is None else self.energy_type[keep],
+            template_h_count=(
+                None if self.template_h_count is None else self.template_h_count[keep_t]
+            ),
+            hb_type=None if self.hb_type is None else self.hb_type[keep_t],
         )
 
     def rebuild_adjacency(self) -> None:

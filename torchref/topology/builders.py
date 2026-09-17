@@ -1359,6 +1359,8 @@ class InterResidueBondBuilder:
         # Pre-process PDB
         if filter_atom_type:
             pdb = pdb[pdb["ATOM"] == filter_atom_type]
+        if pdb.empty:
+            return None
         pp_pdb = PreprocessedPDB(pdb)
 
         # Build per-conformation maps for each residue (altloc-aware)
@@ -1583,6 +1585,8 @@ class InterResidueAngleBuilder:
 
         if filter_atom_type:
             pdb = pdb[pdb["ATOM"] == filter_atom_type]
+        if pdb.empty:
+            return None
         pp_pdb = PreprocessedPDB(pdb)
         conf_maps = build_residue_conformation_maps(pp_pdb)
         pairs = find_consecutive_residue_pairs(pp_pdb)
@@ -1827,6 +1831,8 @@ class InterResidueTorsionBuilder:
 
         if filter_atom_type:
             pdb = pdb[pdb["ATOM"] == filter_atom_type]
+        if pdb.empty:
+            return None
         pp_pdb = PreprocessedPDB(pdb)
         conf_maps = build_residue_conformation_maps(pp_pdb)
         pairs = find_consecutive_residue_pairs(pp_pdb)
@@ -2061,6 +2067,8 @@ class InterResiduePlaneBuilder:
 
         if filter_atom_type:
             pdb = pdb[pdb["ATOM"] == filter_atom_type]
+        if pdb.empty:
+            return None
         pp_pdb = PreprocessedPDB(pdb)
         conf_maps = build_residue_conformation_maps(pp_pdb)
         pairs = find_consecutive_residue_pairs(pp_pdb)

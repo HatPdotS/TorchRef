@@ -13,10 +13,13 @@ Skipping them leaves a residue restrained toward geometry it cannot reach: aroun
 peptide carbonyl carbon the intra-residue ``CA-C-O`` plus the link's ``CA-C-N`` and
 ``O-C-N`` sum to 360 deg only once ``DEL-OXT`` has been applied.
 
-``_chem_mod_atom`` and ``_chem_mod_tree`` are deliberately ignored. The restraint
-builders match library restraints against the atoms actually present in the model
-and silently skip any whose atoms are missing, so adding or deleting atom
-*definitions* changes nothing downstream; only the restraint sections matter.
+Of ``_chem_mod_atom`` only the ``change`` rows are applied, and only to the energy
+type and charge: ``DEL-HN1`` retypes the backbone ``N`` from the free-amine ``NT3`` to
+the amide ``NH1``, which is what the contact radii and hydrogen-bond roles read.
+Adding or deleting atom *definitions* is ignored, as is ``_chem_mod_tree``: the
+restraint builders match library restraints against the atoms actually present in
+the model and silently skip any whose atoms are missing, so those rows change nothing
+downstream.
 """
 
 from functools import lru_cache
@@ -28,6 +31,7 @@ from torchref.topology.monomer.cif import read_library_blocks
 
 #: CIF category -> section name, matching :func:`read_link_definitions`.
 _CATEGORY_MAP = {
+    "chem_mod_atom": "atoms",
     "chem_mod_bond": "bonds",
     "chem_mod_angle": "angles",
     "chem_mod_tor": "torsions",
@@ -38,6 +42,7 @@ _CATEGORY_MAP = {
 #: Per section: the columns identifying a restraint, and the columns a
 #: ``change``/``add`` row may overwrite.
 _ATOM_COLUMNS = {
+    "atoms": ("atom_id",),
     "bonds": ("atom1", "atom2"),
     "angles": ("atom1", "atom2", "atom3"),
     "torsions": ("atom1", "atom2", "atom3", "atom4"),
@@ -45,12 +50,18 @@ _ATOM_COLUMNS = {
     "chirals": ("atom_centre", "atom1", "atom2", "atom3"),
 }
 _VALUE_COLUMNS = {
+    "atoms": ("type_energy", "charge"),
     "bonds": ("value", "sigma"),
     "angles": ("value", "sigma"),
     "torsions": ("value", "sigma", "periodicity"),
     "planes": ("sigma",),
     "chirals": ("volume_sign",),
 }
+#: Value columns that hold text, so they are not coerced to numbers.
+_TEXT_COLUMNS = {"volume_sign", "type_energy"}
+#: Sections where only ``change`` rows are meaningful; ``add``/``delete`` rows are
+#: skipped rather than editing the atom list (see the module docstring).
+_CHANGE_ONLY = {"atoms"}
 #: Sections whose row is meaningless without a target value, so an ``add`` row
 #: carrying only ``.`` placeholders is dropped rather than appended as NaN.
 _REQUIRES_VALUE = {"bonds", "angles", "torsions"}
@@ -63,6 +74,8 @@ def _restraint_key(section: str, row: Mapping) -> tuple:
     outer pair, torsions on the atom quadruple in either direction, chirals on the
     centre plus the unordered substituents. Planes key on ``(plane_id, atom)``.
     """
+    if section == "atoms":
+        return (str(row["atom_id"]).strip(),)
     if section == "bonds":
         return tuple(sorted((row["atom1"], row["atom2"])))
     if section == "angles":
@@ -137,7 +150,10 @@ def _standardize_mod_columns(df: pd.DataFrame, section: str) -> pd.DataFrame:
             "atom_id_3": "atom3",
             "atom_id_4": "atom4",
             "atom_id_centre": "atom_centre",
-            "atom_id": "atom",
+            # Planes name their atom ``atom_id``; the atoms section keeps that name.
+            **({} if section == "atoms" else {"atom_id": "atom"}),
+            "new_type_energy": "type_energy",
+            "new_charge": "charge",
             "new_value_dist": "value",
             "new_value_dist_esd": "sigma",
             "new_value_angle": "value",
@@ -152,7 +168,10 @@ def _standardize_mod_columns(df: pd.DataFrame, section: str) -> pd.DataFrame:
     for column in _VALUE_COLUMNS[section]:
         if column not in df.columns:
             df[column] = pd.NA
-        elif column != "volume_sign":
+        elif column in _TEXT_COLUMNS:
+            text = df[column].astype(str).str.strip()
+            df[column] = text.where(~text.isin(["", ".", "?", "nan"]), pd.NA)
+        else:
             df[column] = pd.to_numeric(df[column], errors="coerce")
         columns.append(column)
 
@@ -230,9 +249,14 @@ def apply_modifications(
                 continue
             target = result.get(section)
             if target is None:
+                if section in _CHANGE_ONLY:
+                    continue
                 target = pd.DataFrame(
                     columns=list(_ATOM_COLUMNS[section]) + list(_VALUE_COLUMNS[section])
                 )
+            for column in _VALUE_COLUMNS[section]:
+                if column not in target.columns:
+                    target[column] = pd.NA
             result[section] = _apply_section(target, mod_rows, section)
     return result
 
@@ -253,6 +277,8 @@ def _apply_section(
     additions = []
     for _, mod_row in mod_rows.iterrows():
         function = mod_row["function"]
+        if section in _CHANGE_ONLY and function != "change":
+            continue
         key = _restraint_key(section, mod_row)
         positions = [p for p in by_key.get(key, []) if p not in dropped]
 

@@ -108,6 +108,48 @@ def _conformers(
     return [(names[altlocs == a], indices[altlocs == a]) for a in unique]
 
 
+def _atom_types(
+    cols: Dict[str, np.ndarray],
+    nodes: Dict[str, np.ndarray],
+    template_key: np.ndarray,
+    comp_dict: Dict,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-atom energy type and template hydrogen count, by name in the patched template.
+
+    Returns
+    -------
+    energy_type : numpy.ndarray
+        Shape ``(N,)``, ``''`` where the residue has no template or the atom is not
+        in it.
+    template_h_count : numpy.ndarray
+        Shape ``(N,)``, ``int8``; hydrogens the atom carries in its template, ``0``
+        for template atoms with none (hydrogens included), ``-1`` where unknown.
+    """
+    from torchref.topology.hydrogens import template_atom_types
+
+    n_atoms = len(cols["name"])
+    energy = np.full(n_atoms, "", dtype="<U8")
+    counts = np.full(n_atoms, -1, dtype=np.int8)
+    cache: Dict[str, Tuple[Dict[str, str], Dict[str, int]]] = {}
+    for r in range(len(nodes["chain"])):
+        key = str(template_key[r])
+        component = comp_dict.get(key)
+        if component is None:
+            continue
+        if key not in cache:
+            cache[key] = template_atom_types(component)
+        types, h_count = cache[key]
+        if not types:
+            continue
+        start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
+        for row in range(start, end):
+            name = cols["name"][row]
+            if name in types:
+                energy[row] = types[name]
+                counts[row] = h_count.get(name, 0)
+    return energy, counts
+
+
 def _match_intra(
     cols: Dict[str, np.ndarray],
     nodes: Dict[str, np.ndarray],
@@ -782,10 +824,29 @@ def build_topology_with_values(
         nodes["resname"], peptide_pairs, cif_dict, link_list, verbose=verbose
     )
     pp_cif = PreprocessedCIF(comp_dict)
+    match_cols = dict(cols)
+    match_cols["name"] = cols["name"].copy()
+    # PDB terminal H1 is the monomer dictionary's H. Resolve the alias only
+    # for matching, preserving the model's atom names and row identities.
+    for r in range(n_res):
+        start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
+        names = match_cols["name"][start:end]
+        if "H1" not in names or "H" in names:
+            continue
+        component = comp_dict.get(str(template_key[r]), {})
+        atom_table = component.get("atoms")
+        if atom_table is None:
+            continue
+        template_names = set(atom_table["atom_id"].astype(str).str.strip())
+        if "H" in template_names and "H1" not in template_names:
+            names[names == "H1"] = "H"
+    energy_type, template_h_count = _atom_types(
+        match_cols, nodes, template_key, comp_dict
+    )
 
-    intra, intra_values = _match_intra(cols, nodes, template_key, pp_cif)
+    intra, intra_values = _match_intra(match_cols, nodes, template_key, pp_cif)
     intra_planes, intra_plane_values = _match_intra_planes(
-        cols, nodes, template_key, pp_cif
+        match_cols, nodes, template_key, pp_cif
     )
     inter, inter_values, extras = _inter_residue_edges(pdb, link_dict, verbose)
 
@@ -944,6 +1005,10 @@ def build_topology_with_values(
         torsions=torsion_block,
         chirals=chiral_block,
         planes=plane_blocks,
+        energy_type=energy_type,
+        template_h_count=torch.as_tensor(
+            template_h_count, dtype=torch.int8, device=device
+        ),
     )
 
     values: Dict[str, Dict] = {

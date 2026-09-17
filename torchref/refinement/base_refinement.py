@@ -138,6 +138,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         scale_target: str = DEFAULT_SCALE_TARGET,
         aniso_selection: Optional[str] = None,
         add_hydrogens: bool = False,
+        hydrogens_in_xray: bool = True,
     ):
         """Initialize Refinement, fully if ``data_file`` and ``pdb`` are given.
 
@@ -209,6 +210,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         add_hydrogens : bool, optional
             Generate missing hydrogens when loading the model. Default False.
             Hydrogens already present in the input are retained either way.
+        hydrogens_in_xray : bool, optional
+            Whether hydrogens contribute to the structure factors. Default True. They
+            take part in the restraints either way.
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -281,6 +285,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 anomalous_threshold=self.anomalous_threshold,
                 add_hydrogens=add_hydrogens,
                 cif_path=cif,
+                hydrogens_in_xray=hydrogens_in_xray,
             )
             self.scaler = Scaler(
                 verbose=self.verbose, device=self.device, nbins=self.nbins,
@@ -328,6 +333,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
                 add_hydrogens=add_hydrogens,
+                hydrogens_in_xray=hydrogens_in_xray,
                 # Before load, not after: generation on load reads this dictionary.
                 cif_path=cif,
                 # Apply the f'' (Bijvoet) term only when the data were loaded as
@@ -745,6 +751,38 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         """
         self._loss_state = None
         self._logger = None
+
+    def set_hydrogen_mode(self, mode: str) -> "Refinement":
+        """Switch the model's hydrogen parametrisation and reset the engine state.
+
+        Parameters
+        ----------
+        mode : str
+            ``"riding"`` or ``"free"``; see :meth:`Model.set_hydrogen_mode`.
+
+        Returns
+        -------
+        Refinement
+            Self, for chaining.
+
+        Notes
+        -----
+        The coordinate wrapper is replaced, so cached optimizers and the persistent
+        ``LossState`` are dropped and rebuilt on the next step. Call between macro
+        cycles, never inside one.
+        """
+        n_atoms = len(self.model.pdb)
+        self.model.set_hydrogen_mode(mode)
+        if (
+            len(self.model.pdb) != n_atoms
+            and getattr(self, "adp_target", None) is not None
+        ):
+            self._init_targets()
+        persistent = getattr(self, "_persistent_optimizers", None)
+        if persistent is not None:
+            persistent.clear()
+        self.reset_loss_state()
+        return self
 
     def refine_scaler(self):
         """Refit the scaler against the current model.

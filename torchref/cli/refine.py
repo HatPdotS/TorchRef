@@ -121,6 +121,14 @@ Loss weights:
         "Hydrogens already present in the input are retained either way.",
     )
     refine_group.add_argument(
+        "--hydrogens-in-xray",
+        dest="hydrogens_in_xray",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include hydrogen atoms in the structure-factor calculation (default: on). "
+        "--no-hydrogens-in-xray keeps them in the restraints only.",
+    )
+    refine_group.add_argument(
         "--mode",
         type=str,
         default="separate",
@@ -255,6 +263,7 @@ Loss weights:
         print(f"X-ray target:      {args.xray_mode}")
         print(f"Refinement cycles: {args.n_cycles}")
         print(f"Add hydrogens:     {'on' if args.add_hydrogens else 'off'}")
+        print(f"Hydrogens in Fcalc: {'on' if args.hydrogens_in_xray else 'off'}")
         if args.with_rigid_body:
             print(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
         print(f"Device:            {args.device}")
@@ -312,6 +321,7 @@ Loss weights:
         aniso_selection=args.anisotropic_selection,
         wavelength=args.wavelength,
         add_hydrogens=args.add_hydrogens,
+        hydrogens_in_xray=args.hydrogens_in_xray,
     )
 
     # Merge onto DEFAULT_GROUP_WEIGHTS so unspecified groups keep their defaults;
