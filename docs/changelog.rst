@@ -4,6 +4,8 @@ Changelog
 
 Unreleased
 ----------
+- Read scaled observations directly in subset and collection accessors, avoiding unused sigma/amplitude corrections and removing redundant internal forwarding helpers.
+- Remove one-off diagnostic scripts and consolidate difference-refinement regression tests while retaining numerical and output-format coverage.
 - Restore the cell and space-group imports needed by difference-density validation setup.
 - Keep ``torchref.phased-difference-map`` as an alias for ``torchref.difference-map``.
 - Add a matched classic/AMBER refinement benchmark with shared prepared hydrogens, initial riding-parameter gradient calibration, and per-cycle R factors and geometry diagnostics.

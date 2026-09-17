@@ -1,16 +1,4 @@
-"""Simulated intensities must keep their negatives.
-
-``add_noise`` draws two independent noisy half-datasets and returns their mean. The
-amplitude it derives has to be clamped -- an amplitude cannot be negative -- but the
-*intensity* must not be, and both the intensity and its sigma have to survive on the
-returned dataset.
-
-Why this is not a detail: clamping ``I_mean`` at zero puts a **positive bias** on exactly
-the weak reflections where the noise dominates. That bias is smooth, positive, and largest
-where the signal is weakest -- the same signature as a genuine positive perturbation of the
-merged intensity. Any study of an effect at the 1e-3 level built on clamped simulated data
-would be measuring its own generator.
-"""
+"""Unbiased noisy intensities, uncertainty propagation and reproducible draws."""
 
 import pytest
 import torch
@@ -18,11 +6,7 @@ import torch
 
 @pytest.fixture
 def fcalc_scene():
-    """A small P1 scene with a deliberately wide dynamic range.
-
-    The weak tail is the point: with strong reflections only, noise never pushes an
-    intensity negative and nothing below can distinguish clamped from unclamped.
-    """
+    """A small P1 scene with a deliberately wide dynamic range."""
     from torchref.io.datasets import FcalcDataset
 
     dataset = FcalcDataset.from_cell_and_resolution(
@@ -64,24 +48,11 @@ class TestNegativesSurvive:
 
     @staticmethod
     def _weak(noisy, truth):
-        """The subset a clamp at zero can touch: reflections within 2 sigma of zero.
-
-        Measuring over the whole list instead would drown the effect -- the strong
-        reflections contribute nothing to the bias but dominate its standard error, so
-        the very reflections the clamp distorts are the ones averaged away.
-
-        Note this needs a noise model whose sigma does **not** scale with the intensity.
-        Under purely multiplicative noise ``sigma = f * I``, so no reflection is ever weak
-        relative to its own sigma and this subset is empty; the Poisson-like ``sigma_lin``
-        term below gives ``sigma ~ sqrt(I)`` and therefore a genuine weak tail.
-        """
+        """The subset a clamp at zero can touch: reflections within 2 sigma of zero."""
         return truth < 2.0 * noisy.I_sigma
 
     def test_the_intensity_is_unbiased_on_the_weak_reflections(self, fcalc_scene):
-        """The property the clamp breaks, as a bound on the mean of the weak tail.
-
-        The tolerance is the standard error over that subset, not a percentage.
-        """
+        """The property the clamp breaks, as a bound on the mean of the weak tail."""
         noisy = fcalc_scene.add_noise(
             sigma_lin=200.0, sigma_mul=0.0, seed=5, verbose=False
         )
@@ -89,6 +60,7 @@ class TestNegativesSurvive:
         weak = self._weak(noisy, truth)
         assert int(weak.sum()) > 50, "too few weak reflections to say anything"
 
+        assert (noisy.I[weak] < 0).any()
         residual = (noisy.I - truth)[weak]
         sem = float(noisy.I_sigma[weak].pow(2).sum().sqrt() / int(weak.sum()))
         bias = float(residual.mean())
@@ -97,49 +69,21 @@ class TestNegativesSurvive:
             f"({4 * sem:.4g}); the intensities are being clamped or otherwise skewed"
         )
 
-    def test_clamping_would_be_detectable_on_this_scene(self, fcalc_scene):
-        """Anti-vacuity: quantify what the defect would have looked like here.
-
-        Without this, the test above could pass simply because the scene has no
-        reflections weak enough for a clamp to reach.
-
-        Measured on this scene, the clamp bias runs only about one to two times the
-        statistical error on the same mean, and needs a high noise level to stand clear
-        of it at all. That is not a reason to tolerate it: the bias is **systematic**, so
-        it repeats identically across datasets and survives averaging, while the error it
-        is being compared against shrinks as 1/sqrt(N). It is the accumulation, not the
-        size on any one dataset, that would corrupt a calibration curve.
-        """
-        noisy = fcalc_scene.add_noise(
-            sigma_lin=200.0, sigma_mul=0.0, seed=5, verbose=False
-        )
-        truth = fcalc_scene.fcalc_amp**2
-        weak = self._weak(noisy, truth)
-        assert int(weak.sum()) > 50
-
-        honest = float((noisy.I - truth)[weak].mean())
-        clamped = float((noisy.I.clamp(min=0.0) - truth)[weak].mean())
-        sem = float(noisy.I_sigma[weak].pow(2).sum().sqrt() / int(weak.sum()))
-
-        assert clamped > honest, "clamping did not raise the mean on this scene"
-        assert clamped > 4.0 * sem, (
-            f"the clamped bias ({clamped:.4g}) would fall inside the noise "
-            f"({4 * sem:.4g}) here, so this scene cannot demonstrate the defect"
-        )
-
 
 @pytest.mark.unit
 class TestSigmaAndHalves:
-    def test_sigma_of_the_mean_is_the_single_draw_sigma_over_root_two(self, fcalc_scene):
+    def test_sigma_of_the_mean_is_the_single_draw_sigma_over_root_two(
+        self, fcalc_scene
+    ):
         a = fcalc_scene.add_noise(sigma_mul=0.2, seed=11, verbose=False)
         b = fcalc_scene.add_noise(sigma_mul=0.2, seed=12, verbose=False)
         # Same model, same noise scale: the reported sigma is a property of the model,
         # not of the draw, so it must be identical across seeds.
         assert torch.allclose(a.I_sigma, b.I_sigma)
 
-        expected = torch.sqrt(
-            torch.tensor(0.2) ** 2 * fcalc_scene.fcalc_amp**4
-        ) / (2.0**0.5)
+        expected = torch.sqrt(torch.tensor(0.2) ** 2 * fcalc_scene.fcalc_amp**4) / (
+            2.0**0.5
+        )
         assert torch.allclose(a.I_sigma, expected, rtol=1e-5)
 
     def test_amplitude_sigma_uses_the_true_amplitude(self, fcalc_scene):
@@ -191,8 +135,10 @@ class TestReferenceDriven:
 
         # Build on the reference's own HKL list, which is what makes grafting 1:1.
         scene = FcalcDataset(
-            hkl=ref.hkl.clone(), cell=fcalc_scene.cell,
-            spacegroup=fcalc_scene.spacegroup, device=torch.device("cpu"),
+            hkl=ref.hkl.clone(),
+            cell=fcalc_scene.cell,
+            spacegroup=fcalc_scene.spacegroup,
+            device=torch.device("cpu"),
         )
         gen = torch.Generator().manual_seed(2)
         amp = torch.rand(len(ref.hkl), generator=gen) * 100.0

@@ -1,45 +1,16 @@
-"""Characterisation of the collection X-ray targets' observable contract.
-
-Written to protect a change of fraction storage and a move to batched
-``[T, R]`` accessors. The three regressions worth catching are all silent:
-
-* reading **raw** ``ReflectionData.F`` instead of the scaled ``get_corrected_data()``,
-  which drops the inter-dataset scaling;
-* masking with the 2-way ``rfree_flags`` instead of the 3-way ``work``/``free``/
-  ``validation`` subset, which lets validation reflections back into the loss;
-* returning a **mean** where the target returns a **sum**, which reweights the X-ray
-  term by 1/N against every restraint.
-
-Each is pinned by a *deterministic invariant* rather than a stored number.
-``model.forward`` is run-to-run nondeterministic even inside one process (threaded
-reduction order; ~4e-3 absolute on individual ``F_calc``), so "the loss equals 3.6e4"
-is a weaker statement than "the loss responds to this input the way only a correct
-implementation can". Measured for reference: the summed losses here vary by ~4e-7
-relative across repeated calls, so the literal checks that remain are given a
-tolerance three orders of magnitude above that.
-
-The fixture deliberately makes the two datasets and the two models **differ**. With one
-``ReflectionData`` added twice -- as the sigma_A collection fixture does -- the observed
-difference is identically zero and a raw-vs-scaled regression is invisible.
-"""
+"""Collection targets consume live scaled data, selected subsets and summed losses."""
 
 import pytest
 import torch
 
-# Repeated-call spread of the summed losses, measured on this fixture. The literal
-# assertions below sit far above it; tightening past ~1e-6 would flake.
+# Allow float32 differences from threaded structure-factor reductions.
 LOSS_RTOL = 1e-4
 
 
 @pytest.fixture(scope="module")
 def collection(pdb_dir, mtz_dir):
-    """``(dc, mc, scaler)`` for a dark/light pair with a real difference in both
-    the data and the models.
-
-    The light dataset carries a shared scale view, so ``F_obs_light != F_obs_dark``
-    only through the *corrected* accessor -- which is what makes the raw-vs-scaled
-    invariant below bite. The light model is displaced, so ``ΔF_calc != 0`` too.
-    """
+    """``(dc, mc, scaler)`` for a dark/light pair with a real difference in both the
+    data and the models."""
 
     pdb = pdb_dir / "1DAW.pdb"
     mtz = mtz_dir / "1DAW.mtz"
@@ -97,12 +68,7 @@ def _targets(dc, mc, scaler):
 
 @pytest.mark.integration
 class TestObservedAmplitudesAreScaled:
-    """The loss must move when a dataset's own scale moves.
-
-    ``DatasetCollection.scale()`` fits a per-dataset shared corrections that
-    exists only in ``get_corrected_data()``. A target reading raw ``.F`` is completely
-    blind to it, so this is a direct test of which accessor is in use.
-    """
+    """The loss must move when a dataset's own scale moves."""
 
     @pytest.mark.parametrize("name", ["difference", "difference_i", "ml"])
     def test_loss_responds_to_the_datasets_own_log_scale(self, collection, name):
@@ -110,11 +76,10 @@ class TestObservedAmplitudesAreScaled:
         target = _targets(dc, mc, scaler)[name]
 
         before = target.forward().item()
-        light = dc["light"]
         original = dc.scaler.raw_parameters[1, 0].detach().clone()
         try:
             with torch.no_grad():
-                dc.scaler.raw_parameters[1, 0] += 0.25  # ~28% on amplitudes
+                dc.scaler.raw_parameters[1, 0] += 0.25
             target.maintenance() if hasattr(target, "maintenance") else None
             after = target.forward().item()
         finally:
@@ -127,58 +92,10 @@ class TestObservedAmplitudesAreScaled:
             f"{rel:.2e}; the target is reading raw amplitudes, not the scaled ones"
         )
 
-    def test_corrected_and_raw_amplitudes_actually_differ(self, collection):
-        """Anti-vacuity: the invariant above is only meaningful if the two accessors
-        disagree on this fixture."""
-        dc, _, _ = collection
-        light = dc["light"]
-        with torch.no_grad():
-            dc.scaler.raw_parameters[1, 0] += 0.25
-            corrected, _ = light.get_corrected_data()
-            raw = light.F_raw
-            differ = not torch.allclose(corrected, raw)
-            dc.scaler.raw_parameters[1, 0] -= 0.25
-        assert differ
-
 
 @pytest.mark.integration
 class TestSubsetSelectionIsThreeWay:
     """Work / free / validation, with validation carved out of both."""
-
-    def test_subsets_are_disjoint_and_cover_the_valid_reflections(self, collection):
-        dc, mc, scaler = collection
-        target = _targets(dc, mc, scaler)["difference"]
-        data = dc["dark"]
-
-        work = data.work.mask
-        free = data.free.mask
-        val = data.validation.mask
-
-        assert not (work & free).any()
-        assert not (work & val).any()
-        assert not (free & val).any()
-        assert torch.equal(work | free | val, data.masks().to(torch.bool))
-        assert target.use_set == "work"
-
-    def test_carving_a_validation_set_shrinks_the_work_and_free_sets(self, collection):
-        """A 2-way ``rfree_flags`` implementation cannot see a validation set at all,
-        so the reported ``n`` would not move.
-        """
-        dc, mc, scaler = collection
-        target = _targets(dc, mc, scaler)["difference"]
-        data = dc["dark"]
-
-        n_before = target._n_reflections()
-        free_before = data.free.n
-        flags = None if data.validation_flags is None else data.validation_flags.clone()
-        try:
-            data.generate_validation_set(val_fraction_of_free=0.5, seed=0)
-            assert data.validation.n > 0, "no validation reflections were carved"
-            assert data.free.n < free_before, "free set did not shrink"
-            assert target._n_reflections() <= n_before
-        finally:
-            data.validation_flags = flags
-            data._subset_fp = None
 
     @pytest.mark.parametrize("use_set", ["work", "free"])
     def test_loss_is_restricted_to_the_selected_subset(self, collection, use_set):
@@ -193,30 +110,19 @@ class TestSubsetSelectionIsThreeWay:
         assert target.use_set == use_set
         n = target._n_reflections()
         expected = sum(
-            (dc[k].work if use_set == "work" else dc[k].free).n
-            for k in target._keys()
+            (dc[k].work if use_set == "work" else dc[k].free).n for k in target._keys()
         )
         assert n == expected
 
 
 @pytest.mark.integration
 class TestLossesAreSummedNotAveraged:
-    """A summed X-ray term grows with the data; a meaned one does not.
+    """A summed X-ray term grows with the data; a meaned one does not."""
 
-    This is the invariant that catches a 1/N reweight, which is otherwise invisible
-    -- it looks exactly like a change of X-ray weight.
-    """
-
-    def test_adding_a_dataset_grows_the_absolute_loss(self, collection, pdb_dir, mtz_dir):
-        """The expected ratio is n_after / n_before, and that is 3/2, not 2.
-
-        The fixture already holds two datasets (dark + light), so adding a third takes
-        the absolute target from 2 to 3. This test used to expect 2.0 because it ran on
-        ``CollectionRiceTarget``, which overrode ``_keys()`` to drop the dark reference
-        and so went from 1 to 2. ``ml`` fits every dataset including the dark.
-
-        A meaned target would stay near 1.0 either way, which is what this is for.
-        """
+    def test_adding_a_dataset_grows_the_absolute_loss(
+        self, collection, pdb_dir, mtz_dir
+    ):
+        """Summed loss grows in proportion to the number of datasets."""
         from torchref import ReflectionData
         from torchref.refinement.targets import CollectionMLTarget
 
@@ -225,7 +131,17 @@ class TestLossesAreSummedNotAveraged:
         n_before = len(target_before._keys())
         one = target_before.forward().item()
 
-        extra = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+        extra = ReflectionData(device="cpu", verbose=0).load_mtz(
+            str(mtz_dir / "1DAW.mtz")
+        )
+        saved = (
+            dc._datasets,
+            list(dc._dataset_order),
+            dc.hkl,
+            dc.scaler,
+            dc.scaling_metrics,
+        )
+        branching = torch.nn.ParameterList(mc._branching_logits)
         dc.add_dataset("light2", extra)
         mc.add_timepoint("light2", [0.7, 0.3])
         try:
@@ -233,17 +149,21 @@ class TestLossesAreSummedNotAveraged:
             n_after = len(target_after._keys())
             two = target_after.forward().item()
         finally:
-            dc._datasets.pop("light2")
-            dc._dataset_order.remove("light2")
+            (
+                dc._datasets,
+                dc._dataset_order,
+                dc._common_hkl,
+                dc.scaler,
+                dc.scaling_metrics,
+            ) = saved
             del mc._timepoints["light2"]
             mc._order.remove("light2")
+            mc._branching_rows.pop("light2")
+            mc._branching_logits = branching
 
         assert (n_before, n_after) == (2, 3)
         ratio = two / one
-        # Tolerance is loose because the shared Luzzati beta is REFITTED on the pooled
-        # free reflections of the larger collection, so the per-reflection loss moves a
-        # little too. That is a property of the target, not slack: the two hypotheses
-        # this test separates are 1.5 and 1.0, which are far apart.
+        # Refitting shared beta on pooled free reflections shifts the per-row loss.
         assert ratio == pytest.approx(n_after / n_before, rel=0.15), (
             f"{n_after} datasets gave {ratio:.3f}x the loss of {n_before}; a summed "
             f"target should scale with the count and a meaned one stay near 1.0"

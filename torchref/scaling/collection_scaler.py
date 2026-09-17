@@ -8,7 +8,7 @@ built per base model; a mixed model's solvent contribution is their linear
 combination at the same population fractions as the structural models.
 """
 
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict
 
 import torch
 import torch.nn as nn
@@ -46,17 +46,6 @@ class _DatasetScalerView(nn.Module):
         super().__init__()
         self._parent = ModuleReference(parent)
         self.register_buffer("_fractions", fractions.detach().clone())
-
-    @property
-    def device(self):
-        """The parent's device.
-
-        Needed explicitly: a target's ``_adopt_device`` reads ``scaler.device``, and
-        ``nn.Module.__getattr__`` raises before :class:`ModuleReference` gets a chance to
-        forward it -- the reference lives in ``__dict__``, so attribute lookup on *this*
-        object never reaches it.
-        """
-        return self._parent.device
 
     def __getattr__(self, name):
         """Anything this view does not own belongs to the parent.
@@ -499,11 +488,8 @@ class CollectionScaler(ScalerBase):
                 )
             )
 
-        # One constant applied to every term, so the objective is an exact rescaling.
-        # ``torch.optim.LBFGS`` converges on ABSOLUTE tolerances, so the objective has to
-        # be O(1) for them to mean anything; unnormalised it carries the data's own
-        # magnitude and the float32 ulp of the loss exceeds the decrease the line search
-        # is trying to resolve. This fit had NO normaliser at all before.
+        # Use one fixed normalizer: LBFGS uses absolute tolerances, and a large
+        # float32 loss can round away the decrease sought by the line search.
         with torch.no_grad():
             ssq = sum(
                 float(dc[n].work.F.detach().pow(2).sum())

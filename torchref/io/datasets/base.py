@@ -9,7 +9,7 @@ annotation) both store a ``torchref.symmetry.SpaceGroup`` object in it.
 
 import warnings
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import gemmi
 import torch

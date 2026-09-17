@@ -9,7 +9,7 @@ intensities, and R-free flags.
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ import torch
 
 from torchref.base import math_torch
 from torchref.base.french_wilson import FrenchWilson
-from torchref.config import dtypes, get_default_device, normalize_device
+from torchref.config import dtypes, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
 from torchref.symmetry import Cell, SpaceGroup
@@ -87,13 +87,11 @@ class _ReflectionSubset:
     # Subset reads dispatch through the parent observation attributes.
     @property
     def F(self) -> torch.Tensor:
-        F_corr, _ = self._parent._corrected_or_raw()
-        return F_corr.index_select(0, self.indices)
+        return self._parent.F.index_select(0, self.indices)
 
     @property
     def sigF(self) -> torch.Tensor:
-        _, sig_corr = self._parent._corrected_or_raw()
-        return sig_corr.index_select(0, self.indices)
+        return self._parent.F_sigma.index_select(0, self.indices)
 
     # -- raw (uncorrected) amplitudes -------------------------------------
     @property
@@ -121,13 +119,13 @@ class _ReflectionSubset:
         Corrected, like :attr:`F` -- both the anisotropy factor and the overall scale
         enter squared. Use :attr:`I_raw` for the unscaled values.
         """
-        I_corr, _ = self._parent._corrected_or_raw_intensities()
+        I_corr = self._parent.I
         return I_corr.index_select(0, self.indices) if I_corr is not None else None
 
     @property
     def sigI(self):
         """Scaled intensity sigmas, or None. See :attr:`I`."""
-        _, sig_corr = self._parent._corrected_or_raw_intensities()
+        sig_corr = self._parent.I_sigma
         return sig_corr.index_select(0, self.indices) if sig_corr is not None else None
 
     @property
@@ -340,10 +338,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             }
             self._subset_fp = fp
         return self._subset_cache[kind]
-
-    def _corrected_or_raw(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return the observations exposed by this dataset, without caching."""
-        return self.get_corrected_data()
 
     @property
     def F_raw(self) -> Optional[torch.Tensor]:
@@ -3470,10 +3464,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         if self.I is None:
             raise ValueError("No intensities on this dataset (I/SIGI required)")
-        return self.I, self.I_sigma
-
-    def _corrected_or_raw_intensities(self):
-        """Return intensity observations, or (None, None) when absent."""
         return self.I, self.I_sigma
 
     def generate_validation_set(

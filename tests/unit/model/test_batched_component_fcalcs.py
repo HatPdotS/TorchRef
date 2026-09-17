@@ -1,15 +1,4 @@
-"""The batched component/mixture structure factors must equal the per-timepoint loop.
-
-``compute_component_fcalcs`` + ``mix_component_fcalcs`` exist to evaluate each shared base
-model once instead of once per timepoint. That is only a saving if it produces the same
-numbers as the loop it replaces, including the signed-index and Friedel bookkeeping that
-:meth:`ReflectionData.structure_factors` owns.
-
-Both sides are built from a single set of model forwards (one ``recalc=True``, then cache
-hits) because repeated structure-factor evaluation is not bit-reproducible: two
-``recalc=True`` calls on identical input differ by ~4e-3 on individual ``F_calc``. Comparing
-two independent evaluations would measure that noise instead of the contraction.
-"""
+"""Batched structure factors preserve mixed-model values and Friedel phases."""
 
 import pytest
 import torch
@@ -55,9 +44,9 @@ class TestBatchedMatchesTheLoop:
 
         for k, model in enumerate(mc.base_models):
             reference = data.structure_factors(model, recalc=False)
-            assert torch.equal(stacked[k], reference), (
-                f"component {k} differs from data.structure_factors"
-            )
+            assert torch.equal(
+                stacked[k], reference
+            ), f"component {k} differs from data.structure_factors"
 
     def test_mixture_matches_the_per_timepoint_forward(self, pair):
         """The whole point: one contraction standing in for T mixed forwards."""
@@ -70,9 +59,9 @@ class TestBatchedMatchesTheLoop:
 
         for row, key in enumerate(mc.keys()):
             reference = data.structure_factors(mc[key], recalc=False)
-            assert torch.allclose(mixed[row], reference, rtol=1e-6, atol=1e-6), (
-                f"timepoint {key!r} differs from its own mixed forward"
-            )
+            assert torch.allclose(
+                mixed[row], reference, rtol=1e-6, atol=1e-6
+            ), f"timepoint {key!r} differs from its own mixed forward"
 
     def test_compute_all_fcalc_agrees_on_the_signed_index(self, pair):
         """``compute_all_fcalc`` takes the caller's indices verbatim, so handed the
@@ -92,14 +81,7 @@ class TestBatchedMatchesTheLoop:
 
 @pytest.fixture(scope="module")
 def flagged_pair(pair):
-    """The same models against data with **manufactured** Friedel-flagged rows.
-
-    Every reflection file under ``tests/files/`` is already inside the CCP4 ASU, so
-    ``friedel_flags.any()`` is False on all of them and any assertion about the index
-    convention is silently vacuous. Negating half the Miller indices forces
-    canonicalisation to flip them back, reproducing the ~50% flagged fraction real
-    P1 data carries. Cell and space group are preserved, so the same models apply.
-    """
+    """The same models against data with **manufactured** Friedel-flagged rows."""
     from torchref import ReflectionData
     from torchref.io.datasets.collection import DatasetCollection
 
@@ -122,6 +104,7 @@ def flagged_pair(pair):
         verbose=0,
     )
 
+    assert data.friedel_flags.any() and (~data.friedel_flags).any()
     dc = DatasetCollection(verbose=0, device="cpu")
     dc.add_dataset("dark", data, set_as_reference=True)
     return dc, mc
@@ -129,49 +112,18 @@ def flagged_pair(pair):
 
 @pytest.mark.integration
 class TestConventionIsNotSkipped:
-    def test_the_fixture_actually_has_flagged_rows(self, flagged_pair):
-        """The precondition, asserted rather than assumed."""
-        data = flagged_pair[0]["dark"]
-        assert data.friedel_flags is not None
-        frac = data.friedel_flags.float().mean().item()
-        assert 0.2 < frac < 0.8, f"expected a mixed flag population, got {frac:.3f}"
-
-    def test_conjugation_moves_phases_and_leaves_amplitudes(self, flagged_pair):
-        dc, mc = flagged_pair
-        data = dc["dark"]
-
-        raw = mc.compute_component_fcalcs(data._hkl_for_sf(), recalc=True)
-        corrected = data.conjugate_friedel(raw)
-
-        assert torch.allclose(raw.abs(), corrected.abs())
-        assert not torch.allclose(torch.angle(raw), torch.angle(corrected))
 
     def test_component_stack_is_conjugated_where_flagged(self, flagged_pair):
-        """``component_structure_factors`` must apply the conjugation, not skip it.
-
-        Compared against the per-model supported entry point, which is the definition
-        of the convention.
-        """
+        """``component_structure_factors`` must apply the conjugation, not skip it."""
         dc, mc = flagged_pair
         data = dc["dark"]
 
         stacked = dc.component_structure_factors(mc, recalc=True)
+        naive = mc.compute_component_fcalcs(data.hkl, recalc=False)
+        assert not torch.allclose(stacked, naive)
         for k, model in enumerate(mc.base_models):
             reference = data.structure_factors(model, recalc=False)
             assert torch.equal(stacked[k], reference), f"component {k} phases differ"
-
-    def test_skipping_the_conjugation_would_be_detected(self, flagged_pair):
-        """Anti-vacuity: the naive call this method exists to replace disagrees."""
-        dc, mc = flagged_pair
-        data = dc["dark"]
-
-        correct = dc.component_structure_factors(mc, recalc=True)
-        naive = mc.compute_component_fcalcs(data.hkl, recalc=True)
-
-        assert not torch.allclose(correct, naive), (
-            "evaluating on the canonical index gives the same answer as the signed "
-            "index plus conjugation -- this fixture cannot detect a convention bug"
-        )
 
 
 @pytest.mark.integration

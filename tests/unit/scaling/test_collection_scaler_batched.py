@@ -1,21 +1,4 @@
-"""``forward_batched`` must agree with ``forward_mixed`` row by row, and stay affine.
-
-The batched form exists so ``T`` mixtures share one pass through the scale parameters.
-Two properties make it usable:
-
-* **row agreement** -- row ``i`` of the batch must equal the unbatched call on row ``i``,
-  otherwise the saving is bought with wrong numbers;
-* **affinity in the mixing weights** -- ``ScalerBase.forward`` is
-  ``K * b * (aniso * F_calc + f_sol)`` and the mixed solvent is linear in the weights, so
-  scaling a *derivative* of the fractions returns the derivative of the scaled structure
-  factors. That is what lets a second moment be built from the same machinery instead of
-  a separate differentiation path.
-
-Affinity is tested with a **secant**, not a finite difference. Because the mixture is
-exactly linear in the activation fraction, ``S(a1) - S(a2)`` equals
-``(a1 - a2) * dS/da`` exactly, with no truncation term to tolerate -- so the assertion
-is at float precision rather than ``O(h^2)``.
-"""
+"""Batched scaling preserves individual results, affinity and solvent caches."""
 
 import pytest
 import torch
@@ -76,22 +59,16 @@ class TestBatchedMatchesUnbatched:
 
         for i in range(w.shape[0]):
             single = scaler.forward_mixed(fcalc[i], w[i])
-            assert torch.allclose(batched[i], single, rtol=1e-6, atol=1e-6), (
-                f"batched row {i} disagrees with forward_mixed"
-            )
+            assert torch.allclose(
+                batched[i], single, rtol=1e-6, atol=1e-6
+            ), f"batched row {i} disagrees with forward_mixed"
 
-    def test_component_solvent_stack_shape(self, scaled_collection):
-        dc, mc, scaler = scaled_collection
-        stack = scaler.compute_component_solvent_raw()
-        assert stack.shape == (mc.n_base_models, len(dc.hkl))
-        assert stack.is_complex()
-
-    def test_solvent_stack_rows_are_the_per_component_solvents(
-        self, scaled_collection
-    ):
+    def test_solvent_stack_rows_are_the_per_component_solvents(self, scaled_collection):
         """A transposed or misordered stack would still have the right shape."""
         _, mc, scaler = scaled_collection
         stack = scaler.compute_component_solvent_raw()
+        assert stack.shape == (mc.n_base_models, len(scaler.hkl))
+        assert stack.is_complex()
         for k in range(mc.n_base_models):
             assert torch.equal(stack[k], scaler._get_component_f_sol_raw(k))
 
@@ -99,46 +76,27 @@ class TestBatchedMatchesUnbatched:
 @pytest.mark.integration
 class TestAffineInTheMixingWeights:
     def test_secant_in_alpha_equals_the_scaled_jacobian(self, scaled_collection):
-        """The property the two-moment forward model rests on.
-
-        ``forward_batched(dF, J)`` with ``J = dW/da`` is the derivative of the scaled
-        mixture, including the solvent term. Exact, because everything between the
-        weights and the output is affine.
-        """
+        """The property the two-moment forward model rests on."""
         dc, mc, scaler = scaled_collection
         components = dc.component_structure_factors(mc, recalc=True)
 
+        solvent = scaler.compute_component_solvent_raw()
+        assert not torch.allclose(solvent[0], solvent[1])
         a1, a2 = 0.60, 0.10
         w1, w2 = _weights(a1), _weights(a2)
         jac = torch.tensor([[-1.0, 1.0]])  # d/da of [1 - a, a]
 
         s1 = scaler.forward_batched(mc.mix_component_fcalcs(components, w1), w1)
         s2 = scaler.forward_batched(mc.mix_component_fcalcs(components, w2), w2)
-        deriv = scaler.forward_batched(
-            mc.mix_component_fcalcs(components, jac), jac
-        )
+        deriv = scaler.forward_batched(mc.mix_component_fcalcs(components, jac), jac)
 
         secant = s1 - s2
         expected = (a1 - a2) * deriv
 
-        rel = (secant - expected).abs().max() / expected.abs().max()
-        assert rel < 1e-5, (
-            f"secant and scaled Jacobian disagree by {rel:.2e}; the scaler is not "
-            f"affine in the mixing weights, so a derivative cannot be scaled this way"
-        )
-
-    def test_the_solvent_term_is_included_in_the_derivative(self, scaled_collection):
-        """Anti-vacuity: if the per-component solvents were identical, the solvent
-        would cancel out of the Jacobian and the test above would hold even with the
-        solvent term dropped."""
-        _, mc, scaler = scaled_collection
-        stack = scaler.compute_component_solvent_raw()
-        if mc.n_base_models < 2:
-            pytest.skip("needs at least two components")
-        assert not torch.allclose(stack[0], stack[1]), (
-            "per-component solvents are identical, so this fixture cannot detect a "
-            "dropped solvent derivative"
-        )
+        # Subtraction roundoff scales with its operands, not the smaller secant.
+        scale = (s1.abs() + s2.abs() + expected.abs()).max()
+        tolerance = 16 * torch.finfo(s1.real.dtype).eps * scale
+        assert (secant - expected).abs().max() <= tolerance
 
     def test_scaling_is_linear_in_the_structure_factors(self, scaled_collection):
         """The other half of affinity: doubling F_calc at fixed weights doubles the
@@ -161,11 +119,7 @@ class TestAffineInTheMixingWeights:
 @pytest.mark.integration
 class TestSolventCacheIsNotPoisoned:
     def test_batched_calls_leave_the_cache_alone(self, scaled_collection):
-        """Two batched calls with different weights, then a plain one.
-
-        The Jacobian-weighted call carries negative weights, so a leaked cache would
-        show up as a sign error rather than a small perturbation.
-        """
+        """Two batched calls with different weights, then a plain one."""
         dc, mc, scaler = scaled_collection
         components = dc.component_structure_factors(mc, recalc=True)
         w = _weights(0.22)
@@ -178,6 +132,6 @@ class TestSolventCacheIsNotPoisoned:
         scaler.forward_batched(mc.mix_component_fcalcs(components, jac), jac)
 
         after = scaler.forward_mixed(fcalc[0], w[0])
-        assert torch.allclose(after, before, rtol=1e-6, atol=1e-6), (
-            "a batched call changed what a later forward_mixed returns"
-        )
+        assert torch.allclose(
+            after, before, rtol=1e-6, atol=1e-6
+        ), "a batched call changed what a later forward_mixed returns"

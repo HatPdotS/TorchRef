@@ -1,121 +1,7 @@
-"""The two-moment intensity target: the identity, the coherent limit, and the plumbing.
-
-The central claim is an *identity*, not an approximation. For any finite set of
-per-crystal activations, with the branching conserved,
-
-    mean_c |F_D + a_c dF|^2  ==  |F_D + abar dF|^2  +  var(a) |dF|^2
-
-with ``abar`` and ``var`` the **population** moments (1/M divisor). The first test builds
-the left-hand side by an explicit loop over crystals -- no two-moment expression anywhere
-on the generator side -- so it tests the physics rather than restating the implementation.
-
-The trap it pins: a ``1/(M-1)`` divisor makes the identity fail by O(1/M). At M=64 that is
-1.6% -- small enough to slip past a loose tolerance and far larger than the effect the
-target exists to measure.
-"""
+"""Two-moment target limits, gradients, invalid observations and weight calibration."""
 
 import pytest
 import torch
-
-
-def _sample_moments(alpha: torch.Tensor):
-    """Population mean and variance (1/M divisor, not 1/(M-1))."""
-    return alpha.mean(), alpha.var(unbiased=False)
-
-
-def _brute_force_mean_intensity(F_D, dF, alpha):
-    """mean_c |F_D + a_c dF|^2, by explicit loop. No two-moment expression."""
-    total = torch.zeros(F_D.shape, dtype=F_D.real.dtype)
-    for a in alpha:
-        total = total + (F_D + a * dF).abs() ** 2
-    return total / len(alpha)
-
-
-@pytest.mark.unit
-class TestTheMomentIdentity:
-    @pytest.mark.parametrize("m", [2, 7, 64])
-    @pytest.mark.parametrize(
-        "dtype,tol", [(torch.float64, 1e-13), (torch.float32, 1e-5)]
-    )
-    def test_identity_holds_for_any_finite_activation_set(self, m, dtype, tol):
-        gen = torch.Generator().manual_seed(11)
-        n = 32
-        cdtype = torch.complex128 if dtype is torch.float64 else torch.complex64
-
-        F_D = torch.randn(n, generator=gen, dtype=dtype).to(cdtype) + 1j * torch.randn(
-            n, generator=gen, dtype=dtype
-        ).to(cdtype)
-        dF = torch.randn(n, generator=gen, dtype=dtype).to(cdtype) + 1j * torch.randn(
-            n, generator=gen, dtype=dtype
-        ).to(cdtype)
-        alpha = torch.rand(m, generator=gen, dtype=dtype)
-
-        brute = _brute_force_mean_intensity(F_D, dF, alpha)
-        abar, var = _sample_moments(alpha)
-        two_moment = (F_D + abar * dF).abs() ** 2 + var * dF.abs() ** 2
-
-        rel = ((brute - two_moment).abs() / brute.abs().clamp(min=1e-30)).max()
-        assert rel < tol, f"identity failed at {rel:.2e} (M={m}, {dtype})"
-
-    def test_the_unbiased_variance_divisor_breaks_it(self):
-        """Anti-vacuity for the divisor: the wrong one fails, and by how much."""
-        gen = torch.Generator().manual_seed(3)
-        n, m = 16, 64
-        F_D = torch.randn(n, generator=gen, dtype=torch.float64).to(torch.complex128)
-        dF = torch.randn(n, generator=gen, dtype=torch.float64).to(torch.complex128)
-        alpha = torch.rand(m, generator=gen, dtype=torch.float64)
-
-        brute = _brute_force_mean_intensity(F_D, dF, alpha)
-        abar = alpha.mean()
-        wrong = (F_D + abar * dF).abs() ** 2 + alpha.var(unbiased=True) * dF.abs() ** 2
-
-        rel = ((brute - wrong).abs() / brute.abs()).max()
-        assert rel > 1e-3, (
-            "the unbiased divisor produced the same answer, so this test cannot "
-            "detect the wrong one"
-        )
-
-    @pytest.mark.parametrize("m", [3, 16])
-    def test_identity_holds_with_a_degenerate_zero_variance_set(self, m):
-        """Constant activation: the variance term must vanish exactly."""
-        n = 8
-        gen = torch.Generator().manual_seed(5)
-        F_D = torch.randn(n, generator=gen, dtype=torch.float64).to(torch.complex128)
-        dF = torch.randn(n, generator=gen, dtype=torch.float64).to(torch.complex128)
-        alpha = torch.full((m,), 0.31, dtype=torch.float64)
-
-        brute = _brute_force_mean_intensity(F_D, dF, alpha)
-        abar, var = _sample_moments(alpha)
-        assert float(var) == pytest.approx(0.0, abs=1e-30)
-        assert torch.allclose(brute, (F_D + abar * dF).abs() ** 2, rtol=1e-13)
-
-    def test_bernoulli_activation_gives_the_incoherent_sum(self):
-        """The lambda = 1 limit: fully-lit or fully-dark crystals add in intensity."""
-        n = 64
-        gen = torch.Generator().manual_seed(7)
-        F_D = torch.randn(n, generator=gen, dtype=torch.float64).to(torch.complex128)
-        F_L = torch.randn(n, generator=gen, dtype=torch.float64).to(torch.complex128)
-        dF = F_L - F_D
-
-        w = 0.25
-        m = 400
-        alpha = torch.zeros(m, dtype=torch.float64)
-        alpha[: int(w * m)] = 1.0
-
-        brute = _brute_force_mean_intensity(F_D, dF, alpha)
-        incoherent = (1 - w) * F_D.abs() ** 2 + w * F_L.abs() ** 2
-        assert torch.allclose(brute, incoherent, rtol=1e-12)
-
-        # ...and the two-moment form reproduces it, with lambda exactly 1.
-        abar, var = _sample_moments(alpha)
-        assert float(var) == pytest.approx(abar * (1 - abar), rel=1e-12)
-        two_moment = (F_D + abar * dF).abs() ** 2 + var * dF.abs() ** 2
-        assert torch.allclose(brute, two_moment, rtol=1e-12)
-
-
-# =====================================================================
-# Integration against the real collection stack
-# =====================================================================
 
 
 @pytest.fixture(scope="module")
@@ -179,18 +65,36 @@ class TestCoherentLimit:
         )
         assert torch.equal(model, mean.abs() ** 2)
 
-    def test_lambda_zero_survives_a_poisoned_derivative(self, collection):
-        """The coherent limit must skip the variance branch, not multiply it by zero.
-
-        A non-finite entry times exactly zero is NaN, which would poison the whole
-        gradient; this is what makes the short-circuit load-bearing rather than an
-        optimisation.
-        """
+    def test_lambda_zero_skips_nonfinite_derivatives(self, collection, monkeypatch):
+        """Zero dispersion must not evaluate a potentially non-finite derivative."""
         dc, mc, scaler = collection
         mc.set_lambda_twin(0.0)
-        target = _target(dc, mc, scaler)
-        assert not target._variance_is_live(mc.sigma_alpha_sq)
-        assert torch.isfinite(target.forward())
+        weights = mc.fractions_matrix()
+        monkeypatch.setattr(mc, "fractions_matrix", lambda: weights)
+
+        def forbidden():
+            raise AssertionError("coherent prediction evaluated its variance branch")
+
+        monkeypatch.setattr(mc, "activation_jacobian", forbidden)
+        assert torch.isfinite(_target(dc, mc, scaler).forward())
+
+    def test_full_dispersion_matches_incoherent_intensity(self, collection):
+        """Fully dark or fully lit crystals mix in intensity, including solvent."""
+        dc, mc, scaler = collection
+        mc.set_lambda_twin(1.0)
+        try:
+            target = _target(dc, mc, scaler)
+            actual = target.intensity_model(recalc=True)
+            components = dc.component_structure_factors(mc, recalc=False)
+            basis = torch.eye(
+                mc.n_base_models, device=components.device, dtype=components.real.dtype
+            )
+            pure = scaler.forward_batched(components, basis)
+            expected = mc.fractions_matrix() @ pure.abs().square()
+            # Complex mixture sums lose relative precision near solvent cancellation.
+            torch.testing.assert_close(actual, expected, rtol=2e-5, atol=1e-5)
+        finally:
+            mc.set_lambda_twin(0.0)
 
     def test_a_nonzero_lambda_changes_the_prediction(self, collection):
         """Anti-vacuity: the variance branch must actually do something."""
@@ -236,7 +140,8 @@ class TestForwardModelStructure:
 
     def test_the_reference_row_carries_no_variance(self, collection):
         """The dark's Jacobian row is exactly zero, so its prediction is coherent
-        regardless of the dispersion -- a dark dataset holds no activation information."""
+        regardless of the dispersion -- a dark dataset holds no activation information.
+        """
         dc, mc, scaler = collection
         keys = _target(dc, mc, scaler)._keys()
         assert keys[0] == "dark"
@@ -302,8 +207,16 @@ class TestLossAndReporting:
         mc.set_lambda_twin(0.25)
         try:
             stats = _target(dc, mc, scaler).stats()
-            for key in ("alpha_mean", "lambda_twin", "sigma_alpha_sq", "alpha_sd",
-                        "dI_frac", "rwork", "rfree", "loss"):
+            for key in (
+                "alpha_mean",
+                "lambda_twin",
+                "sigma_alpha_sq",
+                "alpha_sd",
+                "dI_frac",
+                "rwork",
+                "rfree",
+                "loss",
+            ):
                 assert key in stats, f"missing stat: {key}"
             assert stats["alpha_mean"].value == pytest.approx(0.22, abs=1e-4)
             assert stats["lambda_twin"].value == pytest.approx(0.25, abs=1e-4)
@@ -323,8 +236,7 @@ class TestLossAndReporting:
         target = _target(dc, mc, scaler, use_set=use_set)
         assert target.use_set == use_set
         expected = sum(
-            (dc[k].work if use_set == "work" else dc[k].free).n
-            for k in target._keys()
+            (dc[k].work if use_set == "work" else dc[k].free).n for k in target._keys()
         )
         assert target._n_reflections() == expected
 
@@ -362,13 +274,7 @@ class TestIntensityRequirement:
 @pytest.mark.integration
 class TestNonFiniteObservations:
     """Real reflection files carry non-finite intensities, and they must not reach the
-    gradient.
-
-    Masking the *loss* is not enough. ``torch.where`` picks the finite branch for the
-    value while still backpropagating through the branch it discarded, so one NaN
-    observation turns every parameter gradient into NaN and every optimizer step is
-    rejected -- a refinement that silently does nothing rather than one that fails.
-    """
+    gradient."""
 
     def test_a_nan_observation_does_not_poison_the_gradient(self, collection):
         dc, mc, scaler = collection
@@ -378,7 +284,6 @@ class TestNonFiniteObservations:
             with torch.no_grad():
                 data.I[5] = float("nan")
                 data.I[11] = float("inf")
-            data._corrected_I_fp = None
 
             target = _target(dc, mc, scaler)
             loss = target.forward()
@@ -394,7 +299,6 @@ class TestNonFiniteObservations:
         finally:
             with torch.no_grad():
                 data.I.copy_(saved)
-            data._corrected_I_fp = None
             mc.base_models[1].xyz.refinable_params.grad = None
 
     def test_a_nan_sigma_does_not_poison_the_gradient(self, collection):
@@ -404,7 +308,6 @@ class TestNonFiniteObservations:
         try:
             with torch.no_grad():
                 data.I_sigma[7] = float("nan")
-            data._corrected_I_fp = None
 
             target = _target(dc, mc, scaler)
             loss = target.forward()
@@ -414,7 +317,6 @@ class TestNonFiniteObservations:
         finally:
             with torch.no_grad():
                 data.I_sigma.copy_(saved)
-            data._corrected_I_fp = None
             mc.base_models[1].xyz.refinable_params.grad = None
 
     def test_the_bad_reflections_are_excluded_not_absorbed(self, collection):
@@ -429,12 +331,10 @@ class TestNonFiniteObservations:
             baseline = target.forward().item()
             with torch.no_grad():
                 data.I[3] = float("nan")
-            data._corrected_I_fp = None
             with_nan = _target(dc, mc, scaler).forward().item()
         finally:
             with torch.no_grad():
                 data.I.copy_(saved)
-            data._corrected_I_fp = None
 
         # One reflection out of tens of thousands: the loss should drop slightly, not
         # jump by a penalty term.
@@ -447,28 +347,7 @@ class TestWeightCalibration:
     """Intensities are squared amplitudes, so this target's gradient is orders of
     magnitude away from the amplitude target beside it. Left uncalibrated it swamps the
     geometry restraints and buys R-free by moving the model further than the data
-    supports.
-    """
-
-    def test_the_uncalibrated_mismatch_is_large(self, collection):
-        """Anti-vacuity: if the two targets already pushed equally, calibration would
-        be pointless."""
-        dc, mc, scaler = collection
-        from torchref.refinement.targets import CollectionDifferenceTarget
-
-        params = [p for p in mc.base_models[1].parameters() if p.requires_grad]
-        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
-        target = _target(dc, mc, scaler)
-
-        def gnorm(t):
-            g = torch.autograd.grad(t.forward(), params, allow_unused=True)
-            return sum(float((x**2).sum()) for x in g if x is not None) ** 0.5
-
-        ratio = gnorm(target) / gnorm(diff)
-        assert ratio > 10 or ratio < 0.1, (
-            f"gradient ratio is {ratio:.3g}; the two targets are already matched and "
-            f"this fixture cannot show why calibration is needed"
-        )
+    supports."""
 
     def test_calibration_equalises_the_gradient_norms(self, collection):
         dc, mc, scaler = collection

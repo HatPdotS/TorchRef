@@ -213,7 +213,7 @@ def _run_reference_mode(args, model, device) -> int:
     sim.set_fcalc(fcalc_scaled)
 
     noisy = sim.add_noise(reference=ref, seed=args.seed, verbose=bool(args.verbose))
-    _write_output(args, noisy, sim_clean=sim)
+    _write_output(args, noisy)
     return 0
 
 
@@ -244,12 +244,12 @@ def _run_parametric_mode(args, model, device) -> int:
         seed=args.seed,
         verbose=bool(args.verbose),
     )
-    _write_output(args, noisy, sim_clean=dataset)
+    _write_output(args, noisy)
     return 0
 
 
-def _write_output(args, noisy: FcalcDataset, sim_clean: FcalcDataset) -> None:
-    """Write noisy Fcalc/Fobs to MTZ. ``sim_clean`` holds the pre-noise dataset."""
+def _write_output(args, noisy: FcalcDataset) -> None:
+    """Write noisy amplitudes or intensities and their uncertainties to MTZ."""
     hkl_np = noisy.hkl.cpu().numpy()
     columns = {
         "H": hkl_np[:, 0],

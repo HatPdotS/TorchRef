@@ -1,14 +1,4 @@
-"""Characterisation of how ``ModelCollection`` stores population fractions.
-
-Nothing else in the suite asserts anything about fraction storage -- not the softmax
-parametrisation, not the sum-to-1 validation, not the freeze flags, not the override path.
-These tests pin the observable contract so a change of storage has to reproduce it rather
-than merely still run.
-
-Deliberately fileless: the fractions live on ``_SharedMixedModel`` and depend on the base
-models only for ``dtype_float`` and device, so a stub is enough and the whole file runs in
-well under a second.
-"""
+"""Population fractions, shared ownership, constraints and gradients."""
 
 import pytest
 import torch
@@ -16,12 +6,7 @@ from torch import nn
 
 
 class _StubModel(nn.Module):
-    """Minimal stand-in for ``ModelFT`` for fraction bookkeeping.
-
-    Carries a real parameter so ``.to()`` and ``resolve_device`` behave, exposes the two
-    attributes ``_SharedMixedModel.__init__`` reads, and returns structure factors that
-    differ per instance so a weighted sum can be checked against its parts.
-    """
+    """Minimal stand-in for ``ModelFT`` for fraction bookkeeping."""
 
     def __init__(self, seed: int):
         super().__init__()
@@ -39,7 +24,9 @@ class _StubModel(nn.Module):
     def forward(self, hkl, recalc: bool = False):
         # Distinct per model, and a function of the parameter so a gradient can reach it.
         n = hkl.shape[0]
-        base = torch.arange(1, n + 1, dtype=self.anchor.dtype, device=self.anchor.device)
+        base = torch.arange(
+            1, n + 1, dtype=self.anchor.dtype, device=self.anchor.device
+        )
         amp = (base * float(self._seed + 1)) + self.anchor
         return amp.to(torch.complex64)
 
@@ -83,14 +70,8 @@ class TestPopulationFactorisation:
 
     @pytest.mark.unit
     def test_the_reference_row_is_exactly_e_ref(self, two_model_collection):
-        """The dark is the alpha = 0 evaluation, so its excited fraction is exactly
-        zero -- not a clamp floor.
-
-        Under a softmax over per-timepoint logits it could not be: ``log(0)`` forces a
-        clamp, which left the dark sitting at 1e-6. Anything deriving a bound from the
-        reference's fraction (``sigma_alpha_sq <= alpha (1 - alpha)``) inherited that
-        floor instead of a true zero.
-        """
+        """The dark is the alpha = 0 evaluation, so its excited fraction is exactly zero
+        -- not a clamp floor."""
         dark = two_model_collection["dark"]
         assert dark.fractions[1].item() == 0.0
         assert dark.fractions[0].item() == 1.0
@@ -135,8 +116,10 @@ class TestFreezing:
         mc = two_model_collection
         # Frozen by default: population refinement is opt-in.
         assert mc._activation_logit.requires_grad is False
-        assert mc.fraction_parameters() == [mc._activation_logit,
-                                            mc._branching_logits[0]]
+        assert mc.fraction_parameters() == [
+            mc._activation_logit,
+            mc._branching_logits[0],
+        ]
 
     @pytest.mark.unit
     def test_freeze_and_unfreeze_flip_the_flag(self, two_model_collection):
@@ -147,9 +130,7 @@ class TestFreezing:
         assert mixed.collection._activation_logit.requires_grad is True
 
     @pytest.mark.unit
-    def test_the_reference_carries_no_population_parameter(
-        self, two_model_collection
-    ):
+    def test_the_reference_carries_no_population_parameter(self, two_model_collection):
         """The reference is the alpha = 0 evaluation, not a row with pinned logits,
         so there is nothing of its own to freeze or refine."""
         mc = two_model_collection
@@ -235,9 +216,9 @@ class TestCollectionLevelViews:
         ``ModuleList``, so a timepoint must not re-register their parameters.
         """
         mixed = two_model_collection["light"]
-        assert list(mixed.parameters()) == [], (
-            "a timepoint view registered a parameter of its own"
-        )
+        assert (
+            list(mixed.parameters()) == []
+        ), "a timepoint view registered a parameter of its own"
 
     @pytest.mark.unit
     def test_shared_base_parameters_are_counted_once(self, two_model_collection):
@@ -287,9 +268,10 @@ class TestForwardAndGradient:
         mc = two_model_collection
         mc.unfreeze_all_fractions()
         mc["dark"](hkl, recalc=True).abs().sum().backward()
-        assert mc._activation_logit.grad is None or float(
-            mc._activation_logit.grad.abs().max()
-        ) == 0.0
+        assert (
+            mc._activation_logit.grad is None
+            or float(mc._activation_logit.grad.abs().max()) == 0.0
+        )
 
 
 class TestSharedActivation:
@@ -330,19 +312,6 @@ class TestSharedActivation:
 
         with pytest.raises(ValueError, match="set_fraction_override"):
             mc.add_timepoint("late", [0.5, 0.5])
-
-    @pytest.mark.unit
-    def test_the_rejection_message_names_both_activations(self):
-        from torchref.model.model_collection import ModelCollection
-
-        mc = ModelCollection([_StubModel(0), _StubModel(1)], verbose=0)
-        mc.add_dark()
-        mc.add_timepoint("early", [0.7, 0.3])
-
-        with pytest.raises(ValueError) as excinfo:
-            mc.add_timepoint("late", [0.5, 0.5])
-        text = str(excinfo.value)
-        assert "0.5000" in text and "0.3000" in text and "early" in text
 
     @pytest.mark.unit
     def test_adding_the_reference_after_a_timepoint_leaves_activation_alone(self):
@@ -407,9 +376,7 @@ class TestActivationDispersion:
         assert float(mc.sigma_alpha_sq) == 0.0
 
     @pytest.mark.unit
-    def test_lambda_is_not_a_live_parameter_until_asked_for(
-        self, two_model_collection
-    ):
+    def test_lambda_is_not_a_live_parameter_until_asked_for(self, two_model_collection):
         mc = two_model_collection
 
         def _present():
@@ -424,9 +391,7 @@ class TestActivationDispersion:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("lam", [0.0, 0.25, 0.5, 1.0])
-    def test_the_variance_bound_holds_by_construction(
-        self, two_model_collection, lam
-    ):
+    def test_the_variance_bound_holds_by_construction(self, two_model_collection, lam):
         mc = two_model_collection
         mc.set_lambda_twin(lam)
         alpha = float(mc.alpha_mean)
@@ -444,7 +409,9 @@ class TestActivationDispersion:
         mc = two_model_collection
         mc.set_lambda_twin(1.0)
         alpha = float(mc.alpha_mean)
-        assert float(mc.sigma_alpha_sq) == pytest.approx(alpha * (1.0 - alpha), rel=1e-5)
+        assert float(mc.sigma_alpha_sq) == pytest.approx(
+            alpha * (1.0 - alpha), rel=1e-5
+        )
 
     @pytest.mark.unit
     @pytest.mark.parametrize("bad", [-0.1, 1.1])

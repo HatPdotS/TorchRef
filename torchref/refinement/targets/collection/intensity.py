@@ -130,9 +130,6 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
                 f"Supply reflection files with I/SIGI columns."
             )
 
-    # ------------------------------------------------------------------
-    # Forward model
-    # ------------------------------------------------------------------
 
     def _row_indices(self, keys: List[str]) -> List[int]:
         """Rows of the collection's fraction matrix corresponding to ``keys``."""
@@ -217,9 +214,6 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
             residual, torch.zeros_like(residual), var, var_floor=0.0
         )
 
-    # ------------------------------------------------------------------
-    # Weight calibration
-    # ------------------------------------------------------------------
 
     def calibrate_base_weight(
         self, reference, parameters, ratio: float = 1.0, floor: float = 1e-12
@@ -292,9 +286,6 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
             )
         return self.base_weight
 
-    # ------------------------------------------------------------------
-    # Reporting
-    # ------------------------------------------------------------------
 
     def get_rfactor(self) -> Dict[str, object]:
         """Per-dataset R-work / R-free against the two-moment amplitudes.

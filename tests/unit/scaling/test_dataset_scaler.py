@@ -77,17 +77,32 @@ def test_live_access_scales_both_sigmas_and_all_entrypoints(deposited):
     data = dc["0"]
     with torch.no_grad():
         dc.scaler.raw_parameters[0, 0] = 2 * math.log(2)
-    for name, power in [("F", 1), ("F_sigma", 1), ("I", 2), ("I_sigma", 2)]:
-        torch.testing.assert_close(
-            getattr(data, name), getattr(data, name + "_raw") * 2**power
-        )
-    torch.testing.assert_close(data.work.F, data.F[data.work.mask])
-    torch.testing.assert_close(data.work.sigF, data.F_sigma[data.work.mask])
-    torch.testing.assert_close(data.work.sigI, data.I_sigma[data.work.mask])
-    torch.testing.assert_close(data.work.sigI_raw, data.I_sigma_raw[data.work.mask])
-    torch.testing.assert_close(dc.stack_F_obs()[0], data.F)
+        dc.scaler.raw_parameters[0, 1] = 0.1
+    correction = 2 * torch.exp(
+        0.05 * (data.hkl[:, 0] / dc.scaler.hkl_scale[0]).square()
+    )
+    data.generate_validation_set(val_fraction_of_free=0.5, seed=0)
+    for name, power, subset_attr, stack in [
+        ("F", 1, "F", dc.stack_F_obs),
+        ("F_sigma", 1, "sigF", dc.stack_F_sigma),
+        ("I", 2, "I", dc.stack_I_obs),
+        ("I_sigma", 2, "sigI", dc.stack_I_sigma),
+    ]:
+        raw = getattr(data, name + "_raw")
+        actual = getattr(data, name)
+        torch.testing.assert_close(actual, raw * correction**power)
+        torch.testing.assert_close(stack()[0], actual)
+        for kind in ("work", "free", "validation"):
+            subset = getattr(data, kind)
+            torch.testing.assert_close(
+                getattr(subset, subset_attr), actual[subset.mask]
+            )
+            torch.testing.assert_close(
+                getattr(subset, subset_attr + "_raw"), raw[subset.mask]
+            )
     torch.testing.assert_close(dc(mask=False)["0"][1], data.F)
-    torch.testing.assert_close(dc.stack_I_sigma()[0], data.I_sigma)
+    torch.testing.assert_close(data.get_corrected_data(), (data.F, data.F_sigma))
+    torch.testing.assert_close(data.get_corrected_intensities(), (data.I, data.I_sigma))
     dc.scaler.requires_grad_(True)
     for _ in range(2):
         dc.scaler.zero_grad()
@@ -299,3 +314,18 @@ def test_ded_context_consumes_collection_scaled_views(deposited, monkeypatch):
         context["w_dfo"].norm() / dc["dark"].F[context["refl_mask"]].norm()
     )
     assert relative_difference < 1e-5
+
+
+def test_missing_intensity_access(deposited):
+    """Raw and scaled views expose missing columns and reject intensity-only reads."""
+    dc = collection(deposited, (1, 2))
+    dc["0"].I = dc["0"].I_sigma = None
+    raw = dc["0"]
+    dc.scale(nsteps=1)
+    for data in (raw, dc["0"]):
+        with pytest.raises(ValueError, match="No intensities"):
+            data.get_corrected_intensities()
+        for name in ("I", "sigI", "I_raw", "sigI_raw"):
+            assert getattr(data.work, name) is None
+    with pytest.raises(ValueError, match="'0'"):
+        dc.stack_I_obs()

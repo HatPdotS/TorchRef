@@ -334,24 +334,15 @@ def add_dual_model_args(
         type=str,
         help="Dark / reference state model file (PDB or CIF)",
     )
-    if light_model_required:
-        inp.add_argument(
-            "-lm",
-            "--light-model",
-            required=True,
-            type=str,
-            help="Light / triggered state model file (PDB or CIF)",
+    light_help = "Light / triggered state model file (PDB or CIF)"
+    if not light_model_required:
+        light_help += (
+            ". Optional: without it only the weighted difference map is written, "
+            "using the dark state's phases."
         )
-    else:
-        inp.add_argument(
-            "-lm",
-            "--light-model",
-            type=str,
-            default=None,
-            help="Light / triggered state model file (PDB or CIF). Optional: without "
-                 "it only the weighted difference map is written, which needs the dark "
-                 "state's phases and no light-state model at all.",
-        )
+    inp.add_argument(
+        "-lm", "--light-model", required=light_model_required, type=str, help=light_help
+    )
     inp.add_argument(
         "-dsf",
         "--dark-structure-factor",

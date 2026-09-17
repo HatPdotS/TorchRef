@@ -1,27 +1,10 @@
-"""The observable axis: which measured column a row fits.
+"""Select measured intensity observations for Gaussian X-ray targets.
 
-Every X-ray row shares one forward model -- the scaled complex ``F_calc`` -- and differs
-only in what it compares against. Two observables are available:
-
-* **amplitude** (the default), ``F_obs`` against ``|F_calc|``
-* **intensity**, ``I_obs`` against ``|F_calc|**2``
-
-:class:`IntensityObservableMixin` is the whole of the second one. It overrides
-:meth:`XrayTarget.get_data` and nothing else, so the likelihood, the mean, the subset
-selection, the masks and the R-factor are all inherited untouched.
-
-**Why intensities are worth a row at all.** ``F_obs`` on a merged dataset is a
-French-Wilson posterior, not a measurement: the estimator is strictly positive, so it
-reshapes the weak tail and erases negative intensities entirely. Anything whose signal
-lives in the *quadratic* part of the data -- an activation second moment, a population
-variance -- is fitting a distorted version of the quantity it is trying to measure. Rows
-that need that information read ``I_obs`` directly.
-
-**Why there is no intensity Rice.** Rice and the folded normal are distributions *of an
-amplitude*; the intensity analogue is the exponential / chi-square_1 Wilson distribution,
-which is a different primitive rather than a different variance. So the intensity axis
-carries the Gaussian rows only, and that is a property of the statistics rather than a gap
-in the implementation.
+``IntensityObservableMixin`` reads ``I_obs`` and ``sigma(I)`` and predicts
+``|F_calc|**2``, retaining negative intensities that French-Wilson amplitude
+conversion reshapes. Likelihoods, subsets and masks come from the target class;
+reported R-factors remain in amplitude space. Rice targets describe amplitudes
+and therefore have no intensity variant.
 """
 
 from typing import Tuple

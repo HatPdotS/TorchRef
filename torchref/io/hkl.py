@@ -63,7 +63,6 @@ class HKLReader:
         if self.verbose > 1:
             print(f"Reading CrystFEL hkl file: {filepath}")
 
-        # Normalize cell → (6,) np.ndarray
         if hasattr(cell, "data"):  # torchref.symmetry.Cell
             cell = cell.data
         if hasattr(cell, "detach"):  # torch.Tensor
@@ -75,7 +74,6 @@ class HKLReader:
             )
         self.cell = cell_arr
 
-        # Normalize spacegroup → HM-name string
         if isinstance(spacegroup, str):
             self.spacegroup = spacegroup
         elif hasattr(spacegroup, "hm"):  # torchref.symmetry.SpaceGroup
@@ -87,7 +85,6 @@ class HKLReader:
                 f"Cannot normalize spacegroup of type {type(spacegroup)}"
             )
 
-        # Parse reflection rows
         h_list, k_list, l_list, I_list, sig_list, n_list = [], [], [], [], [], []
         in_header = True
         with open(filepath) as f:
@@ -98,7 +95,6 @@ class HKLReader:
                     continue
                 s = line.split()
                 if len(s) < 7 or not s[0].lstrip("-").isdigit():
-                    # Trailing comment lines or blank lines
                     continue
                 h_list.append(int(s[0]))
                 k_list.append(int(s[1]))

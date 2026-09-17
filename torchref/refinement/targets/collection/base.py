@@ -1,37 +1,16 @@
-"""Shared base for collection (multi-dataset) X-ray targets.
+"""Shared observation access, reduction and reporting for collection X-ray targets.
 
-:class:`CollectionXrayTarget` gives them the same subset and R-factor contract as
-the single-dataset
-:class:`~torchref.refinement.targets.xray.base.XrayTarget`: the 3-way ``use_set``
-selector over each member's ``data.work``/``free``/``validation`` accessors, the one
-shared :func:`~torchref.base.metrics.rfactor.rfactor_work_free` computed through the
-same scaling the loss sees, and the standard ``loss``/``n``/``rwork``/``rfree``
-``stats()`` dict.
+Targets declare an amplitude or intensity observable. ``_loss_inputs`` gathers
+observations, predictions, uncertainties and masks on the common HKL grid;
+``_per_refl`` returns unreduced losses used by both ``forward`` and ``residuals``.
+Difference targets intersect member masks so each fitted reflection is present
+in every dataset's selected work, free or validation subset.
 
-Since every member is expanded onto one common HKL grid, per-dataset R-factors form a
-distribution: headline ``rwork``/``rfree`` are its median, with the 10/25/75/90
-percentiles at higher verbosity.
-
-## The seam
-
-Same two-part seam as the single-dataset base, batched. :meth:`_loss_inputs` gathers
-what a row reads -- observations, model, sigma and mask, each ``(N, n_hkl)`` on the
-common grid -- and :meth:`_per_refl` evaluates the likelihood on it *unreduced*.
-:meth:`forward` and :meth:`residuals` differ only in whether they sum, so the two cannot
-drift into different objectives.
-
-Every row shares one forward model and declares its ``observable`` (``"amplitude"`` or
-``"intensity"``), exactly as the single-dataset table does. The base reads the matching
-columns, so no row does its own stacking, masking or sigma flooring -- which is what
-three divergent stacking styles and three different sigma-floor constants used to cost.
-
-Rows that are **cross-dataset coupled** (the difference targets take every dataset
-against the mean of all of them) narrow the mask in :meth:`_loss_inputs` so a reflection
-counts only if it is in the subset of *every* member, then work on the whole stack inside
-:meth:`_per_refl`. That is a mask decision, not a special case in the base.
+R-factors use the same scaled predictions as the loss. Reporting gives the median
+across datasets, with the 10/25/75/90 percentiles at higher verbosity.
 """
 
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional
+from typing import TYPE_CHECKING, Dict, List, NamedTuple
 
 import torch
 
@@ -167,10 +146,6 @@ class CollectionXrayTarget(Target):
         self.use_set = use_set
         self.use_work_set = use_set == "work"
 
-    # ------------------------------------------------------------------
-    # Dataset / model / subset plumbing
-    # ------------------------------------------------------------------
-
     def _keys(self) -> List[str]:
         """Matched dataset keys this target fits: dark + present timepoints. Targets
         fitting only part of the collection override it (a target fitting only the
@@ -209,19 +184,11 @@ class CollectionXrayTarget(Target):
         fcalc = data.structure_factors(model, recalc=recalc)
         return torch.abs(_scale_fcalc(self._scaler, fcalc, model))
 
-    # ------------------------------------------------------------------
-    # The per-reflection seam
-    # ------------------------------------------------------------------
-
     def _stack_observations(self, keys: List[str]):
         """``(obs, sigma)``, each ``(N, n_hkl)``, in this row's observable.
 
-        Routed through the collection's own batched accessors rather than looping over
-        ``data.get_corrected_*()`` here: they already apply the inter-dataset scaling (the
-        intensity factors squared), cache against the ``(log_scale, U_aniso)`` fingerprint,
-        and name the offending dataset when an intensity column is missing. Reading one
-        dataset's raw column and another's scaled one is a silent regression that was live
-        once, when the batched accessors returned raw ``data.F``.
+        Collection accessors read live dataset views and name any member missing
+        an intensity column.
         """
         dc = self._dataset_collection
         if self.observable == "intensity":
@@ -241,12 +208,6 @@ class CollectionXrayTarget(Target):
             [self._scaled_amp_full(dc[k], mc[k], recalc=recalc) for k in keys]
         )
         return amp**2 if self.observable == "intensity" else amp
-
-    def _stack_masks(self, keys: List[str]) -> torch.Tensor:
-        """This row's subset mask per dataset, ``(N, n_hkl)``. Validity and the 3-way
-        work/free/validation selection, with validation carved out of both.
-        """
-        return self._dataset_collection.stack_masks(keys, use_set=self.use_set)
 
     def _sigma_floor(self, sigma: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Floor for ``sigma``, at :data:`SIGMA_FLOOR_FRAC` of its median over ``mask``.
@@ -277,7 +238,7 @@ class CollectionXrayTarget(Target):
         keys = self._keys()
         obs, sigma = self._stack_observations(keys)
         model = self._stack_model(keys, recalc=recalc)
-        mask = self._stack_masks(keys)
+        mask = self._dataset_collection.stack_masks(keys, use_set=self.use_set)
 
         obs = obs.to(model.dtype)
         sigma = sigma.to(model.dtype)
@@ -332,10 +293,6 @@ class CollectionXrayTarget(Target):
             return torch.zeros((0, len(dc.hkl)), device=dc.hkl.device)
         return self._per_refl(self._loss_inputs(recalc=True))
 
-    # ------------------------------------------------------------------
-    # R-factor reporting (shared source of truth)
-    # ------------------------------------------------------------------
-
     def get_rfactor(self) -> Dict[str, object]:
         """Per-dataset R-work / R-free plus percentile summaries.
 
@@ -383,10 +340,6 @@ class CollectionXrayTarget(Target):
         t = torch.tensor(values, dtype=dtype)
         q = torch.quantile(t, torch.tensor(_R_PERCENTILES, dtype=dtype))
         return {lbl: q[i].item() for i, lbl in enumerate(_R_PCT_LABELS)}
-
-    # ------------------------------------------------------------------
-    # Stats
-    # ------------------------------------------------------------------
 
     def _n_reflections(self) -> int:
         """Total reflections in this target's subset across all datasets."""

@@ -34,11 +34,8 @@ from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
-    from torchref.model.mixed_model import MixedModel
 
-#: Activation fractions are clamped away from 0 and 1 before taking a logit, which
-#: would otherwise be infinite. 1e-6 is the same floor the fraction storage has always
-#: applied.
+#: Keep activation logits finite by clamping fractions away from 0 and 1.
 _FRACTION_EPS = 1e-6
 
 
@@ -100,9 +97,6 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         # route kinetic model predictions directly into the F_calc computation.
         self._fraction_override: Optional[torch.Tensor] = None
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def collection(self) -> "ModelCollection":
@@ -163,9 +157,6 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
     def fractional_matrix(self):
         return self.cell.fractional_matrix.to(dtype=self.dtype_float)
 
-    # ------------------------------------------------------------------
-    # Grid / density helpers (delegate to base models)
-    # ------------------------------------------------------------------
 
     def setup_grid(self, max_res=None, gridsize=None):
         for model in self._base_models:
@@ -180,9 +171,6 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
             density = weighted if density is None else density + weighted
         return density
 
-    # ------------------------------------------------------------------
-    # Forward: weighted structure factors
-    # ------------------------------------------------------------------
 
     def forward(self, hkl: torch.Tensor, recalc: bool = False) -> torch.Tensor:
         """
@@ -208,9 +196,6 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
             f_mixed = weighted_f if f_mixed is None else f_mixed + weighted_f
         return f_mixed
 
-    # ------------------------------------------------------------------
-    # Freeze / unfreeze
-    # ------------------------------------------------------------------
 
     def freeze_fractions(self):
         """Freeze the population parameters.
@@ -239,9 +224,6 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         """Remove the fraction override, reverting to the collection's derived row."""
         self._fraction_override = None
 
-    # ------------------------------------------------------------------
-    # Convenience
-    # ------------------------------------------------------------------
 
     def get_vdw_radii(self):
         return self._base_models[0].get_vdw_radii()
@@ -319,16 +301,9 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         device = resolve_device(*base_models)
         dtype = base_models[0].dtype_float
 
-        # --- population parameters -------------------------------------
-        #
-        # Only the *overall* activation varies from crystal to crystal; the branching
-        # among excited components is conserved. So the populations factorise as
-        #
-        #     w(t) = (1 - alpha) * e_ref  +  alpha * q(t)
-        #
-        # with one activation shared across timepoints and a per-timepoint branching
-        # distribution over the K-1 non-reference components. Both are frozen by
-        # default: population refinement is opt-in.
+        # Factor populations as (1 - alpha) * e_ref + alpha * q(t), with one
+        # shared activation and a branching distribution per timepoint. Refining
+        # these parameters is opt-in.
         self._activation_logit = nn.Parameter(
             torch.tensor(_logit(1e-6), dtype=dtype, device=device),
             requires_grad=False,
@@ -350,10 +325,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             print(
                 f"ModelCollection initialized with {len(base_models)} base models"
             )
-
-    # ------------------------------------------------------------------
-    # Add timepoints
-    # ------------------------------------------------------------------
 
     def add_timepoint(
         self,
@@ -488,10 +459,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         # shared parametrisation, so it owns nothing that could be frozen.
         return self.add_timepoint(self._dark_key, fractions)
 
-    # ------------------------------------------------------------------
-    # Class methods
-    # ------------------------------------------------------------------
-
     @classmethod
     def from_kinetics(
         cls,
@@ -534,10 +501,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             collection.add_timepoint(name, fracs)
 
         return collection
-
-    # ------------------------------------------------------------------
-    # IHM I/O
-    # ------------------------------------------------------------------
 
     @classmethod
     def from_ihm(
@@ -599,10 +562,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         )
         writer.write(filepath)
 
-    # ------------------------------------------------------------------
-    # Dict-like access
-    # ------------------------------------------------------------------
-
     def __getitem__(self, name: str) -> "_SharedMixedModel":
         return self._timepoints[name]
 
@@ -627,10 +586,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
 
     def get(self, name: str, default=None):
         return self._timepoints.get(name, default)
-
-    # ------------------------------------------------------------------
-    # Convenience properties
-    # ------------------------------------------------------------------
 
     @property
     def dark_key(self) -> str:
@@ -667,10 +622,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
     def device(self):
         return self._base_models[0].device
 
-    # ------------------------------------------------------------------
-    # Fractions inspection
-    # ------------------------------------------------------------------
-
     def get_all_fractions(self) -> Dict[str, torch.Tensor]:
         """Current fractions for each timepoint (including dark)."""
         return {name: self._timepoints[name].fractions for name in self._order}
@@ -681,10 +632,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         Alias of :meth:`fractions_matrix`, kept because it is the established name.
         """
         return self.fractions_matrix()
-
-    # ------------------------------------------------------------------
-    # Population factorisation
-    # ------------------------------------------------------------------
 
     @property
     def alpha_mean(self) -> torch.Tensor:
@@ -857,10 +804,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             self._lambda_logit.requires_grad_(False)
         return self
 
-    # ------------------------------------------------------------------
-    # Batched structure factors
-    # ------------------------------------------------------------------
-
     def compute_component_fcalcs(
         self, hkl: torch.Tensor, recalc: bool = False
     ) -> torch.Tensor:
@@ -943,10 +886,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             component_fcalcs, self.get_fractions_matrix()
         )
 
-    # ------------------------------------------------------------------
-    # Freeze / unfreeze helpers
-    # ------------------------------------------------------------------
-
     def freeze_all_fractions(self):
         """Exclude the population parameters from optimization.
 
@@ -980,10 +919,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             model.unfreeze("xyz")
             model.unfreeze("b")
 
-    # ------------------------------------------------------------------
-    # I/O
-    # ------------------------------------------------------------------
-
     def write_pdbs(self, outdir: str):
         """
         Write each base model to a PDB file in *outdir*.
@@ -1002,10 +937,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             model.write_pdb(path)
             if self.verbose > 0:
                 print(f"  Wrote {path}")
-
-    # ------------------------------------------------------------------
-    # Repr
-    # ------------------------------------------------------------------
 
     def __repr__(self):
         tp_names = ", ".join(self._order[:4])

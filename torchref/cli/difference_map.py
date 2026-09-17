@@ -76,7 +76,6 @@ Examples:
         """,
     )
 
-    # --- Input files (creates "Input files" and "Column selection" groups) ---
     add_dual_model_args(parser, fraction_required=False, light_model_required=False)
 
     output = parser.add_argument_group("Output")
@@ -92,7 +91,6 @@ Examples:
 
     register_timing()
 
-    # --- The light model gates everything that needs the light state's phases ---
     has_light_model = args.light_model is not None
     if has_light_model:
         if args.fraction is None:
@@ -111,7 +109,6 @@ Examples:
                 "sigmas."
             )
 
-    # --- Validate input files ---
     to_check = [
         (args.dark_model, "dark model"),
         (args.dark_structure_factor, "dark structure factor"),
@@ -125,14 +122,11 @@ Examples:
     if validate_cif_files(args.cif):
         return 1
 
-    # Ensure output directory exists
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # --- Device ---
     device = parse_device_str(args.device)
 
-    # --- Header ---
     if args.verbose > 0:
         print("=" * 72)
         print("TorchRef Difference Map")
@@ -167,11 +161,8 @@ Examples:
         write_results_mtz,
     )
 
-    # --- Resolution ---
     d_min = args.dmin if args.dmin is not None else 1.0
 
-    # --- Load data. dc.scale() puts the two datasets on one scale with no model,
-    #     which is what makes the dark-only path possible at all. ---
     if args.verbose > 0:
         print("Loading reflection data...")
         sys.stdout.flush()
@@ -218,7 +209,6 @@ Examples:
             print()
             sys.stdout.flush()
 
-    # --- Write MTZ ---
     if args.verbose > 0:
         print("Computing map coefficients...")
         sys.stdout.flush()

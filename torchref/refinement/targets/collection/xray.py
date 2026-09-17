@@ -16,16 +16,10 @@ All of them get their observations, model, mask and likelihood seam from
 a ``_per_refl`` and nothing else. The selectable set is
 :data:`~torchref.refinement.targets.collection._specs.COLLECTION_XRAY_TARGETS`.
 
-The retired ``CollectionRiceTarget`` set ``beta = sigma_obs**2``, pairing a measurement
-sigma with a Rice ``Sigma``. That asserts an isotropic *complex* error where ``sigma_obs``
-carries no phase at all; :mod:`torchref.base.targets.xray_likelihoods` records that no
-regime makes it correct, and the single-dataset table deliberately offers no such row.
-:class:`CollectionMLTarget` replaces it.
 """
 
 from typing import TYPE_CHECKING, Dict
 
-import numpy as np
 import torch
 
 from torchref.base.reciprocal import get_scattering_vectors
@@ -37,7 +31,6 @@ from torchref.base.targets.xray_likelihoods import (
 from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator, epsilon_from_hkl
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
-from ._util import _LOG_2PI, _scale_fcalc
 from .base import CollectionSigmaALossInputs, CollectionXrayTarget
 
 if TYPE_CHECKING:

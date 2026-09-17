@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import pandas as pd
 import torch
 
-from torchref.config import get_default_device, get_float_dtype, normalize_device
+from torchref.config import get_float_dtype, normalize_device
 from torchref.symmetry import Cell, SpaceGroup, SpaceGroupLike
 
 from .base import CrystalDataset

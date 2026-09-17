@@ -210,10 +210,8 @@ def compute_rfactors(model, data, scaler):
     with torch.no_grad():
         hkl = data.hkl
         fcalc = model(hkl)
-        # Which scaler this is decides how it is called: a CollectionScaler mixes
-        # components and needs the model's fractions, a single-dataset Scaler takes
-        # the structure factors straight. Asked of the scaler, not inferred from the
-        # caller, so the dark-only path needs no special case.
+        # CollectionScaler needs fractions to mix components; a single-dataset
+        # Scaler consumes structure factors directly.
         if hasattr(scaler, "forward_mixed"):
             fcalc_scaled = scaler.forward_mixed(fcalc, model.fractions)
         else:
@@ -274,10 +272,8 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
         two_moment_target = CollectionTwoMomentIntensityTarget(
             dataset_collection, model_collection, scaler=scaler, verbose=1,
         )
-        # Intensities are squared amplitudes, so this target's gradient is on a
-        # completely different scale from the difference target beside it. Match them
-        # once here; left uncalibrated it swamps the geometry restraints and buys
-        # R-free by moving the model far further than the data supports.
+        # Match intensity and amplitude gradient norms to balance the targets
+        # against the geometry restraints despite their different units.
         two_moment_target.calibrate_base_weight(
             diff_target, list(model_light.parameters())
         )
@@ -311,9 +307,7 @@ def compute_bayes_extrapolated_amplitudes(
         Propagated uncertainty of the extrapolated amplitude. Taken from the caller
         rather than rebuilt here: ``F_ext`` is linear in the observations with
         ``dF_ext/dF_light = 1/f`` and ``dF_ext/dF_dark = 1 - 1/f = -(1-f)/f``, so the
-        dark term carries a ``(1-f)**2`` weight that is easy to drop. This function
-        used to drop it, over-weighting the dark term by ``1/(1-f)**2`` -- 1.64x at
-        f = 0.22 -- which biased τ² low and over-shrank every reflection.
+        dark term carries a ``(1-f)**2`` weight.
     phi_dark, phi_mixed : Tensor (N,)
         Calculated phases (radians) for the dark and mixed models.
     f : float or Tensor
@@ -387,8 +381,7 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     -------
     tuple
         ``(columns, types)`` -- the values, and the MTZ type letter for each. Carrying
-        the type beside the value is what stops a column reaching the file with whatever
-        dtype numpy produced, which is the failure the old parallel name lists invited.
+        the type beside the value preserves the crystallographic column type.
     """
     import numpy as np
 
@@ -435,16 +428,8 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     DDF = DF_corr - diff_Fobs
     sig_DF_corr = np.sqrt(sig_F_corr**2 + sig_dark**2)
 
-    # The phase-AWARE difference, rebuilt with the decontaminated light amplitude.
-    #
-    # It must be the modulus of the complex vector difference
-    # ``|F_corr e^{i phi_light} - F_dark e^{i phi_dark}|``, exactly as the uncorrected
-    # ``Fobs_diff_phased`` is -- NOT ``|F_corr - F_dark|``. The two are different
-    # quantities: the vector form carries the phase rotation between dark and light,
-    # which is the whole point of a phase-aware coefficient, while the scalar form is
-    # phase-blind. Using the scalar one here made the corrected coefficients only 36%
-    # correlated with their uncorrected twins even though the amplitudes behind them
-    # agree to 99.99%.
+    # Use the modulus of the complex vector difference so the corrected
+    # coefficient retains the phase rotation between the dark and light states.
     F_corr_phased = torch.as_tensor(
         F_corr, dtype=F_obs_dark_phased.real.dtype, device=F_obs_dark_phased.device
     ) * torch.exp(1j * phi_mixed)
@@ -594,16 +579,16 @@ def _phasing_columns(mc, scaler, hkl_all, mask, *, fcalc_dark, Fobs_dark_vals,
         Fobs_diff_phased = torch.abs(
             F_obs_light_phased - F_obs_dark_phased
         ).detach().cpu().numpy()
-        columns.update({
-            "2mDFop-DFc": (2 * Fobs_diff_phased - Fcalc_diff_amp) * weights,
-            "mDFop-DFc": (Fobs_diff_phased - Fcalc_diff_amp) * weights,
-            "PHIC_diff": torch.angle(fcalc_diff).detach().rad2deg().cpu().numpy(),
-            "DFc": Fcalc_light - Fcalc_dark,
-            # The modulus of the complex vector difference. Named ``_phased`` rather
-            # than ``_complex``: the column holds a real amplitude, and the old name
-            # said otherwise.
-            "DFc_phased": Fcalc_diff_amp,
-        })
+        columns.update(
+            {
+                "2mDFop-DFc": (2 * Fobs_diff_phased - Fcalc_diff_amp) * weights,
+                "mDFop-DFc": (Fobs_diff_phased - Fcalc_diff_amp) * weights,
+                "PHIC_diff": torch.angle(fcalc_diff).detach().rad2deg().cpu().numpy(),
+                "DFc": Fcalc_light - Fcalc_dark,
+                # This column holds the real modulus of the complex vector difference.
+                "DFc_phased": Fcalc_diff_amp,
+            }
+        )
         types.update({
             "2mDFop-DFc": "F", "mDFop-DFc": "F", "PHIC_diff": "P",
             "DFc": "F", "DFc_phased": "F",
@@ -708,7 +693,6 @@ def _extrapolation_columns(mc, dc, hkl, *, Fobs_dark_vals, Fobs_light_vals,
 
         columns.update({
             "FEXT_PHASED": _np(amp_phased),
-            # Computed all along and never written, though the docs claimed it.
             "SIGFEXT_PHASED": _np(sig_light_extra),
             "2FEXT_PHASED-Fc": _np(2 * amp_phased - amp_calc_phased),
             "FEXT_PHASED-Fc": _np(amp_phased - amp_calc_phased),
@@ -867,10 +851,8 @@ def write_results_mtz(dc, dark_model, scaler, filename, *, mc=None,
         cell=data_dark.cell.data.cpu().tolist(),
         spacegroup=data_dark.spacegroup.hm,
     )
-    # Every layer returns its columns' MTZ types beside the values, so a new column
-    # cannot reach the file with whatever dtype numpy produced -- the failure the old
-    # parallel name lists invited. ``infer_mtz_dtypes`` is then the same safety net the
-    # canonical writer in ``torchref/io/mtz.py`` uses.
+    # Carry MTZ types with the values; infer_mtz_dtypes also checks the
+    # result using the canonical writer's rules.
     missing = set(columns) - set(types)
     if missing:
         raise AssertionError(f"columns with no declared MTZ type: {sorted(missing)}")
@@ -1032,13 +1014,8 @@ Examples:
         )
         return 1
     if (args.lambda_twin > 0.0 or args.refine_lambda_twin) and not args.two_moment:
-        # There is no longer a weighting-only path. Measured on ground truth (inject a
-        # known displacement, refine from the dark model, 8 seeds per regime): putting the
-        # contamination in the VARIANCE lost 8/8 seeds at high contamination, 95% CI
-        # [+0.0066, +0.0102] A, and was null at low. Putting the same quantity in the MEAN
-        # -- which is what --two-moment does -- won 16/16. Structured effects belong in the
-        # mean; only genuine measurement noise belongs in the variance, and down-weighting
-        # by |dF|^2 suppresses exactly the reflections carrying the difference signal.
+        # Activation heterogeneity changes the predicted mean intensity. Treating
+        # it as measurement variance downweights the reflections carrying the signal.
         print(
             "Error: --lambda-twin needs --two-moment. The dispersion enters the predicted "
             "intensity, not a weight: as a variance it down-weights the reflections whose "

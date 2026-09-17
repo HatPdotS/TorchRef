@@ -16,22 +16,8 @@ row                   observable   compares
 ``ml``                amplitude    each dataset absolutely, at a shared Luzzati beta
 ====================  ===========  ==============================================
 
-The two difference rows are both offered rather than one being chosen. Which is better is a
-property of a dataset's signal-to-noise -- amplitudes keep the loss in the same space as the
-output DED coefficients, intensities avoid the French-Wilson posterior reshaping the weak
-tail the signal lives in -- and that is not something to settle once in a library.
-
-``ml`` is the absolute channel, for the scenarios that are not difference refinement: with
-K free base models a purely relative loss leaves the overall level unconstrained. It
-replaces a hand-rolled Rice target that set ``beta = sigma_obs**2``, i.e. exactly the
-sigma_obs-in-a-Rice-Sigma pairing that
-:mod:`torchref.base.targets.xray_likelihoods` documents as never correct and that the
-single-dataset table deliberately does not offer.
-
-There is no intensity ``ml`` row, for the same reason the single-dataset table has none:
-Rice and the folded normal are distributions *of an amplitude*, and the intensity analogue
-is the exponential / chi-square_1 Wilson distribution -- a different primitive rather than a
-different variance.
+The absolute ``ml`` channel constrains the overall level when all component models
+are free. Rice likelihoods describe amplitudes; intensity rows use Gaussian losses.
 """
 
 from dataclasses import dataclass, field

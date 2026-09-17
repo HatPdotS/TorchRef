@@ -375,14 +375,14 @@ class DatasetCollection(CrystalDataset):
     def stack_F_obs(self, keys: Optional[List[str]] = None) -> torch.Tensor:
         """Scaled observed amplitudes, shape ``(n_datasets, n_reflections)``."""
         return torch.stack(
-            [self._datasets[k]._corrected_or_raw()[0] for k in self._keys_or_all(keys)],
+            [self._datasets[k].F for k in self._keys_or_all(keys)],
             dim=0,
         )
 
     def stack_F_sigma(self, keys: Optional[List[str]] = None) -> torch.Tensor:
         """Scaled amplitude sigmas, shape ``(n_datasets, n_reflections)``."""
         return torch.stack(
-            [self._datasets[k]._corrected_or_raw()[1] for k in self._keys_or_all(keys)],
+            [self._datasets[k].F_sigma for k in self._keys_or_all(keys)],
             dim=0,
         )
 
@@ -395,7 +395,7 @@ class DatasetCollection(CrystalDataset):
             If any selected dataset carries no intensities.
         """
         return torch.stack(
-            [self._require_intensities(k)[0] for k in self._keys_or_all(keys)],
+            [self._require_intensities(k).I for k in self._keys_or_all(keys)],
             dim=0,
         )
 
@@ -408,19 +408,19 @@ class DatasetCollection(CrystalDataset):
             If any selected dataset carries no intensities.
         """
         return torch.stack(
-            [self._require_intensities(k)[1] for k in self._keys_or_all(keys)],
+            [self._require_intensities(k).I_sigma for k in self._keys_or_all(keys)],
             dim=0,
         )
 
-    def _require_intensities(self, key: str):
-        """``(I, I_sigma)`` scaled, with the dataset named in the error."""
+    def _require_intensities(self, key: str) -> ReflectionData:
+        """Return a dataset with intensities, naming it if the column is missing."""
         data = self._datasets[key]
-        if data.I is None:
+        if data.I_raw is None:
             raise ValueError(
                 f"Dataset {key!r} carries no intensities; its reflection file had no "
                 f"I/SIGI columns. An intensity-space target needs them on every member."
             )
-        return data._corrected_or_raw_intensities()
+        return data
 
     def stack_masks(
         self, keys: Optional[List[str]] = None, use_set: str = "work"
