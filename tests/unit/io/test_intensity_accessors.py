@@ -1,16 +1,6 @@
-"""Scaled intensities must carry the amplitude scale **squared**.
+"""Scaled amplitude and intensity accessors propagate measurement uncertainties."""
 
-``get_corrected_data`` applies ``corr(s, U) * exp(log_scale)`` to amplitudes. The
-intensity counterpart has to apply the square of that, because the correction is defined
-on amplitudes. Getting it wrong leaves a smooth, resolution-dependent error in the
-intensities that is indistinguishable from a scale or overall-B mismatch -- so it is
-pinned here as an exact ratio rather than checked by eye.
-
-The subset views are also pinned: ``.F``/``.sigF`` are corrected and ``.F_raw``/``.sigF_raw``
-are not, and ``.I``/``.sigI`` now follow the same rule. A view where ``.F`` was scaled and
-``.I`` was not is the shape of bug that makes an amplitude target and an intensity target
-disagree about which dataset they are fitting.
-"""
+import math
 
 import pytest
 import torch
@@ -28,7 +18,11 @@ def with_intensities(mtz_dir):
     data = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz))
     if data.I is None:
         pytest.skip("1DAW loaded without intensities")
-    return data
+    from torchref import ScaledDataset
+    from torchref.scaling import DatasetScaler
+
+    scaler = DatasetScaler({"data": data, "peer": data})
+    return ScaledDataset(data, scaler, "data")
 
 
 @pytest.fixture(scope="module")
@@ -47,25 +41,25 @@ def without_intensities(mtz_dir):
 
 
 def _perturb(data, dlog=0.3):
-    """Give the dataset a non-trivial scale and anisotropy, restored on exit."""
+    """Temporarily change scaler-owned overall and anisotropic corrections."""
+    from contextlib import contextmanager
 
-    class _Ctx:
-        def __enter__(self):
-            self.log_scale = data.log_scale.detach().clone()
-            self.U = data.U_aniso.detach().clone()
+    @contextmanager
+    def changed():
+        parameters = data.scaler.raw_parameters
+        original = parameters.detach().clone()
+        try:
             with torch.no_grad():
-                data.log_scale += dlog
-                data.U_aniso += torch.tensor([0.01, -0.005, 0.008, 0.002, 0.0, 0.0])
-            return data
-
-        def __exit__(self, *exc):
+                parameters[0, 0] += 2 * dlog
+                parameters[0, 1:] += parameters.new_tensor(
+                    [0.02, -0.01, 0.016, 0.004, 0, 0]
+                )
+            yield data
+        finally:
             with torch.no_grad():
-                data.log_scale.copy_(self.log_scale)
-                data.U_aniso.copy_(self.U)
-            data._corrected_fp = None
-            data._corrected_I_fp = None
+                parameters.copy_(original)
 
-    return _Ctx()
+    return changed()
 
 
 @pytest.mark.unit
@@ -86,8 +80,8 @@ class TestSquaredScale:
             keep = data.masks().to(torch.bool) & (data.F.abs() > 1e-6) & (
                 data.I.abs() > 1e-6
             )
-            amp_factor = (F_scaled[keep] / data.F[keep]) ** 2
-            int_factor = I_scaled[keep] / data.I[keep]
+            amp_factor = (F_scaled[keep] / data.F_raw[keep]) ** 2
+            int_factor = I_scaled[keep] / data.I_raw[keep]
 
             rel = ((int_factor - amp_factor).abs() / amp_factor.abs()).max()
             assert rel < 1e-5, (
@@ -103,8 +97,8 @@ class TestSquaredScale:
             I_scaled, sig_scaled = data.get_corrected_intensities()
             keep = (data.I.abs() > 1e-6) & (data.I_sigma.abs() > 1e-6)
 
-            ratio_I = I_scaled[keep] / data.I[keep]
-            ratio_s = sig_scaled[keep] / data.I_sigma[keep]
+            ratio_I = I_scaled[keep] / data.I_raw[keep]
+            ratio_s = sig_scaled[keep] / data.I_sigma_raw[keep]
             assert torch.allclose(ratio_I, ratio_s, rtol=1e-6)
 
     def test_the_perturbation_actually_changes_the_intensities(
@@ -123,16 +117,14 @@ class TestSquaredScale:
         """A doubling of the amplitude scale must quadruple the intensities."""
         data = with_intensities
         base, _ = data.get_corrected_intensities()
-        original = data.log_scale.detach().clone()
+        original = data.scaler.raw_parameters.detach().clone()
         try:
             with torch.no_grad():
-                data.log_scale += float(torch.log(torch.tensor(2.0)))
-            data._corrected_I_fp = None
+                data.scaler.raw_parameters[0, 0] += 2 * math.log(2)
             doubled, _ = data.get_corrected_intensities()
         finally:
             with torch.no_grad():
-                data.log_scale.copy_(original)
-            data._corrected_I_fp = None
+                data.scaler.raw_parameters.copy_(original)
 
         keep = base.abs() > 1e-6
         ratio = (doubled[keep] / base[keep])
@@ -155,8 +147,8 @@ class TestSubsetViews:
         data = with_intensities
         work = data.work
         idx = work.indices
-        assert torch.equal(work.I_raw, data.I.index_select(0, idx))
-        assert torch.equal(work.sigI_raw, data.I_sigma.index_select(0, idx))
+        assert torch.equal(work.I_raw, data.I_raw.index_select(0, idx))
+        assert torch.equal(work.sigI_raw, data.I_sigma_raw.index_select(0, idx))
 
     def test_subset_intensities_match_the_full_size_scaled_array(
         self, with_intensities
@@ -171,18 +163,18 @@ class TestSubsetViews:
                 assert torch.equal(sub.sigI, sig_scaled.index_select(0, idx))
 
     def test_cache_follows_a_scale_change(self, with_intensities):
-        """The fingerprint must invalidate, or a refinement would fit stale data."""
+        """Subset access must read the current shared scale parameters."""
         data = with_intensities
         first = data.work.I.clone()
-        original = data.log_scale.detach().clone()
+        original = data.scaler.raw_parameters.detach().clone()
         try:
             with torch.no_grad():
-                data.log_scale += 0.5
+                data.scaler.raw_parameters[0, 0] += 1.0
             second = data.work.I
             assert not torch.allclose(first, second)
         finally:
             with torch.no_grad():
-                data.log_scale.copy_(original)
+                data.scaler.raw_parameters.copy_(original)
 
 
 @pytest.mark.unit

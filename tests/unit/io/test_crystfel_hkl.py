@@ -122,12 +122,15 @@ class TestSplitHalves:
         a = _load(hkl_dir / "dark_half1.hkl")
         b = _load(hkl_dir / "dark_half2.hkl")
 
+        original_a, original_b = a.hkl.clone(), b.hkl.clone()
         dc = DatasetCollection(verbose=0, device="cpu")
         dc.add_dataset("half1", a, set_as_reference=True)
         dc.add_dataset("half2", b)
 
         assert dc.n_datasets == 2
-        assert len(a.hkl) == len(b.hkl) == len(dc.hkl)
+        assert len(dc["half1"].hkl) == len(dc["half2"].hkl) == len(dc.hkl)
+        assert torch.equal(a.hkl, original_a)
+        assert torch.equal(b.hkl, original_b)
         # Both carry intensities, so an intensity target can run on the pair.
         assert dc["half1"].I is not None and dc["half2"].I is not None
         assert dc.stack_I_obs().shape == (2, len(dc.hkl))

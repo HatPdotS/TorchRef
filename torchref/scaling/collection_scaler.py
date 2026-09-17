@@ -381,10 +381,11 @@ class CollectionScaler(ScalerBase):
             Scaled complex structure factors of shape ``(T, n_reflections)``.
         """
         component_sol_raw = self.compute_component_solvent_raw()
-        f_sol_batch = torch.einsum(
-            "tk,kr->tr",
-            fractions_matrix.to(component_sol_raw.dtype),
-            component_sol_raw,
+        # Keep real fraction multiplication and component accumulation identical
+        # to forward_mixed; complex GEMM changes rounding near solvent cancellation.
+        f_sol_batch = sum(
+            fractions_matrix[:, i, None] * component_sol_raw[i]
+            for i in range(component_sol_raw.shape[0])
         )
         return super().forward(fcalc_batch, f_sol_override=f_sol_batch)
 

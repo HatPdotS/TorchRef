@@ -15,6 +15,9 @@ from .reflection_data import ReflectionData
 __all__ = [
     "CrystalDataset",
     "ReflectionData",
+    "ScaledDataset",
     "FcalcDataset",
     "DatasetCollection",
 ]
+
+from .scaled_dataset import ScaledDataset

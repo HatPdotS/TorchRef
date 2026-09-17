@@ -36,10 +36,11 @@ def collection(pdb_dir, mtz_dir):
     """``(dc, mc, scaler)`` for a dark/light pair with a real difference in both
     the data and the models.
 
-    The light dataset carries its own ``log_scale``, so ``F_obs_light != F_obs_dark``
+    The light dataset carries a shared scale view, so ``F_obs_light != F_obs_dark``
     only through the *corrected* accessor -- which is what makes the raw-vs-scaled
     invariant below bite. The light model is displaced, so ``ΔF_calc != 0`` too.
     """
+
     pdb = pdb_dir / "1DAW.pdb"
     mtz = mtz_dir / "1DAW.mtz"
     if not (pdb.exists() and mtz.exists()):
@@ -66,6 +67,8 @@ def collection(pdb_dir, mtz_dir):
     dc = DatasetCollection(verbose=0, device="cpu")
     dc.add_dataset("dark", data_dark, set_as_reference=True)
     dc.add_dataset("light", data_light)
+
+    dc.scale(nsteps=1)
 
     mc = ModelCollection([model_dark, model_light], dark_key="dark", verbose=0)
     mc.add_dark()
@@ -96,7 +99,7 @@ def _targets(dc, mc, scaler):
 class TestObservedAmplitudesAreScaled:
     """The loss must move when a dataset's own scale moves.
 
-    ``DatasetCollection.scale()`` fits a per-dataset ``log_scale``/``U_aniso`` that
+    ``DatasetCollection.scale()`` fits a per-dataset shared corrections that
     exists only in ``get_corrected_data()``. A target reading raw ``.F`` is completely
     blind to it, so this is a direct test of which accessor is in use.
     """
@@ -108,15 +111,15 @@ class TestObservedAmplitudesAreScaled:
 
         before = target.forward().item()
         light = dc["light"]
-        original = light.log_scale.detach().clone()
+        original = dc.scaler.raw_parameters[1, 0].detach().clone()
         try:
             with torch.no_grad():
-                light.log_scale += 0.25  # ~28% on amplitudes
+                dc.scaler.raw_parameters[1, 0] += 0.25  # ~28% on amplitudes
             target.maintenance() if hasattr(target, "maintenance") else None
             after = target.forward().item()
         finally:
             with torch.no_grad():
-                light.log_scale.copy_(original)
+                dc.scaler.raw_parameters[1, 0].copy_(original)
 
         rel = abs(after - before) / abs(before)
         assert rel > 1e-3, (
@@ -130,11 +133,11 @@ class TestObservedAmplitudesAreScaled:
         dc, _, _ = collection
         light = dc["light"]
         with torch.no_grad():
-            light.log_scale += 0.25
+            dc.scaler.raw_parameters[1, 0] += 0.25
             corrected, _ = light.get_corrected_data()
-            raw = light.F
+            raw = light.F_raw
             differ = not torch.allclose(corrected, raw)
-            light.log_scale -= 0.25
+            dc.scaler.raw_parameters[1, 0] -= 0.25
         assert differ
 
 

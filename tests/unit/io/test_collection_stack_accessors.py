@@ -3,7 +3,7 @@
 Two things they could quietly get wrong, both invisible in the shape:
 
 * returning **raw** ``F``/``I`` instead of the scaled ones, which drops the per-dataset
-  ``log_scale``/``U_aniso`` that ``DatasetCollection.scale()`` fits;
+  joint scale parameters that ``DatasetCollection.scale()`` fits;
 * masking with the 2-way ``rfree_flags`` instead of the 3-way work/free/validation
   subsets, which lets validation reflections into the work set.
 
@@ -32,9 +32,9 @@ def collection(mtz_dir):
     dc = DatasetCollection(verbose=0, device="cpu")
     dc.add_dataset("dark", a, set_as_reference=True)
     dc.add_dataset("light", b)
+    dc.scale(nsteps=1)
     with torch.no_grad():
-        # A real inter-dataset scale difference: the whole point of the corrected path.
-        b.log_scale += 0.4
+        dc.scaler.raw_parameters[1, 0] += 0.8
     return dc
 
 
@@ -61,7 +61,7 @@ class TestScaledNotRaw:
         assertion above could detect the wrong accessor."""
         stacked = collection.stack_F_obs()
         assert not torch.allclose(stacked[0], stacked[1])
-        raw = torch.stack([collection[k].F for k in collection.keys()], dim=0)
+        raw = torch.stack([collection[k].F_raw for k in collection.keys()], dim=0)
         assert torch.allclose(raw[0], raw[1]), "raw amplitudes should be identical here"
         assert not torch.allclose(stacked, raw)
 
@@ -71,8 +71,8 @@ class TestScaledNotRaw:
         """Ties the two stacks together, so they cannot drift apart in scale."""
         F = collection.stack_F_obs()
         I = collection.stack_I_obs()
-        raw_F = torch.stack([collection[k].F for k in collection.keys()], dim=0)
-        raw_I = torch.stack([collection[k].I for k in collection.keys()], dim=0)
+        raw_F = torch.stack([collection[k].F_raw for k in collection.keys()], dim=0)
+        raw_I = torch.stack([collection[k].I_raw for k in collection.keys()], dim=0)
 
         keep = (raw_F.abs() > 1e-6) & (raw_I.abs() > 1e-6)
         amp = (F[keep] / raw_F[keep]) ** 2

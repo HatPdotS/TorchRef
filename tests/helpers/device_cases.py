@@ -151,7 +151,6 @@ def _cell(device):
     return Cell(_CELL, device=device)
 
 
-
 def _ctx(d):
     """A ModelContext whose cell and space group both live on ``d``."""
     from torchref.model.context import ModelContext
@@ -169,33 +168,61 @@ def _sffft_with_grid(d):
     return sf
 
 
+def _dataset_scaler(device):
+    from pathlib import Path
+
+    from torchref.io import ReflectionData
+    from torchref.scaling import DatasetScaler
+
+    data = ReflectionData(device=device, verbose=0).load_mtz(
+        str(Path(__file__).parents[1] / "files" / "mtz" / "1DAW.mtz")
+    )
+    return DatasetScaler({"a": data, "b": data}, device=device)
+
+
+def _scaled_dataset(device):
+    from torchref.io import ScaledDataset
+
+    scaler = _dataset_scaler(device)
+    return ScaledDataset(scaler.datasets["a"], scaler, "a")
+
+
+def _dataset_scaling_target(device):
+    from torchref.refinement.targets import DatasetScalingTarget
+
+    return DatasetScalingTarget(_dataset_scaler(device))
+
+
 CASES: List[DeviceCase] = [
+    DeviceCase("DatasetScaler", _dataset_scaler, "DatasetScaler"),
+    DeviceCase("ScaledDataset", _scaled_dataset, "ScaledDataset"),
+    DeviceCase("DatasetScalingTarget", _dataset_scaling_target, "DatasetScalingTarget"),
     DeviceCase("EdgeBlock", _edge_block, "EdgeBlock"),
     DeviceCase("AtomGraph", _atom_graph, "AtomGraph"),
     DeviceCase("Topology", _topology, "Topology"),
     DeviceCase("Cell", _cell, "Cell"),
     DeviceCase(
         "SpaceGroup",
-        lambda d: __import__(
-            "torchref.symmetry", fromlist=["SpaceGroup"]
-        ).SpaceGroup(_SG, device=d),
+        lambda d: __import__("torchref.symmetry", fromlist=["SpaceGroup"]).SpaceGroup(
+            _SG, device=d
+        ),
         "SpaceGroup",
     ),
     # D4: device implied by the cell; the SpaceGroup used to be built from the
     # raw (None) device argument and land on the process default instead.
     DeviceCase(
         "SfFFT_from_cell",
-        lambda d: __import__(
-            "torchref.model.sf_fft", fromlist=["SfFFT"]
-        ).SfFFT(_ctx(d), max_res=2.0),
+        lambda d: __import__("torchref.model.sf_fft", fromlist=["SfFFT"]).SfFFT(
+            _ctx(d), max_res=2.0
+        ),
         "SfFFT",
     ),
     # D4: explicit device disagreeing with the supplied context.
     DeviceCase(
         "SfFFT_explicit_device",
-        lambda d: __import__(
-            "torchref.model.sf_fft", fromlist=["SfFFT"]
-        ).SfFFT(_ctx("cpu"), max_res=2.0, device=d),
+        lambda d: __import__("torchref.model.sf_fft", fromlist=["SfFFT"]).SfFFT(
+            _ctx("cpu"), max_res=2.0, device=d
+        ),
         "SfFFT",
     ),
     # The grid buffers are derived on first use; this case has them resolved.
@@ -206,17 +233,15 @@ CASES: List[DeviceCase] = [
     ),
     DeviceCase(
         "SfDS_from_cell",
-        lambda d: __import__(
-            "torchref.model.sf_ds", fromlist=["SfDS"]
-        ).SfDS(_ctx(d)),
+        lambda d: __import__("torchref.model.sf_ds", fromlist=["SfDS"]).SfDS(_ctx(d)),
         "SfDS",
     ),
     # D1: tensor-free shells, whose tracker is the only thing to check.
     DeviceCase(
         "ScalerBase_empty",
-        lambda d: __import__(
-            "torchref.scaling", fromlist=["ScalerBase"]
-        ).ScalerBase(device=d),
+        lambda d: __import__("torchref.scaling", fromlist=["ScalerBase"]).ScalerBase(
+            device=d
+        ),
         "ScalerBase",
         tensor_free=True,
     ),
@@ -310,9 +335,9 @@ CASES: List[DeviceCase] = [
     ),
     DeviceCase(
         "SpaceGroup",
-        lambda d: __import__(
-            "torchref.symmetry", fromlist=["SpaceGroup"]
-        ).SpaceGroup(_SG, device=d),
+        lambda d: __import__("torchref.symmetry", fromlist=["SpaceGroup"]).SpaceGroup(
+            _SG, device=d
+        ),
         "SpaceGroup",
     ),
     DeviceCase(
@@ -340,17 +365,17 @@ CASES: List[DeviceCase] = [
     ),
     DeviceCase(
         "TensorMasks",
-        lambda d: __import__(
-            "torchref.utils", fromlist=["TensorMasks"]
-        ).TensorMasks(device=d),
+        lambda d: __import__("torchref.utils", fromlist=["TensorMasks"]).TensorMasks(
+            device=d
+        ),
         "TensorMasks",
         tensor_free=True,
     ),
     DeviceCase(
         "ReflectionData_empty",
-        lambda d: __import__(
-            "torchref.io", fromlist=["ReflectionData"]
-        ).ReflectionData(device=d),
+        lambda d: __import__("torchref.io", fromlist=["ReflectionData"]).ReflectionData(
+            device=d
+        ),
         "ReflectionData",
     ),
     DeviceCase(

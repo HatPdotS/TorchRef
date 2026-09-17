@@ -16,7 +16,7 @@ scale parameters' derivatives as a design matrix ``X``, and project::
 
 Two designs are compared, because they are the two places scale is fitted:
 
-* **per-dataset** -- the ``log_scale`` + ``U_aniso`` that ``DatasetCollection.scale()``
+* **per-dataset** -- the centered log-scale and quadratic corrections that ``DatasetCollection.scale()``
   fits on the light dataset alone. Free to shape the light data however it likes.
 * **shared** -- the ``CollectionScaler`` parameters, which are fitted jointly against dark
   and light. One column per parameter spanning *both* datasets, so a light-only template
@@ -163,7 +163,7 @@ def main():
     #
     # Two different response functions, because the two parameter sets act on opposite
     # sides of the residual. The shared scaler shapes the *model* intensity; the
-    # per-dataset log_scale / U_aniso shape the *observed* one. Using the model response
+    # per-dataset relative corrections shape the *observed* one. Using the model response
     # for both would give the dataset parameters an identically zero column and report
     # no leak at all.
     #

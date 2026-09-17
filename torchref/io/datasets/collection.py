@@ -7,13 +7,16 @@ and time-series crystallography.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 
 import torch
 
 from .base import CrystalDataset
 from .reflection_data import ReflectionData
+from .scaled_dataset import ScaledDataset
 
+if TYPE_CHECKING:
+    from torchref.scaling import DatasetScaler
 
 
 @dataclass
@@ -21,9 +24,9 @@ class DatasetCollection(CrystalDataset):
     """
     Container for multiple related crystal datasets on a common HKL set.
 
-    Members are expanded in place onto the reference dataset's HKL grid
-    (:meth:`ReflectionData.validate_hkl`) and moved to the collection's device,
-    so adding a dataset MUTATES it. Dict-like access via ``[]``, ``keys()``,
+    Members are copied onto the union HKL grid without changing input datasets.
+    The reference supplies cell and space-group metadata, not a fixed scale.
+    ``scale()`` installs ScaledDataset members backed by one shared scaler. Dict-like access via ``[]``, ``keys()``,
     ``values()``, ``items()``, ``get()``, and iteration yields
     ``(name, dataset)`` in insertion order.
 
@@ -56,55 +59,73 @@ class DatasetCollection(CrystalDataset):
     _cell: Optional[torch.Tensor] = field(default=None, repr=False)
     _spacegroup: Optional[str] = field(default=None, repr=False)
     _resolution: Optional[torch.Tensor] = field(default=None, repr=False)
-    _scale_factors: Dict[str, torch.Tensor] = field(default_factory=dict, repr=False)
+    scaler: Optional["DatasetScaler"] = field(default=None, repr=False)
+    scaling_metrics: dict = field(default_factory=dict, repr=False)
 
     def add_dataset(
         self, name: str, dataset: ReflectionData, set_as_reference: bool = False
     ) -> "DatasetCollection":
-        """
-        Add a dataset, expanding it onto the reference HKL grid **in place**.
+        """Add a copied dataset and rebuild the union reflection grid.
 
         Parameters
         ----------
         name : str
-            Identifier for this dataset.
+            Unique member name.
         dataset : ReflectionData
-            The dataset to add.
-        set_as_reference : bool, optional
-            If True, this dataset's HKL becomes the reference. The first dataset
-            added becomes the reference regardless.
+            Raw or scaled observations; scaled inputs contribute their raw values.
+        set_as_reference : bool
+            Use this dataset's cell and symmetry as collection metadata.
 
         Returns
         -------
         DatasetCollection
-            Self, for method chaining.
-
-        Raises
-        ------
-        ValueError
-            If a dataset with the same name already exists.
+            Self. Membership changes discard the fitted joint scaler; call scale()
+            again to fit all members. Existing raw inputs are never mutated.
         """
         if name in self._datasets:
             raise ValueError(f"Dataset '{name}' already exists in collection")
-
-        if len(self._datasets) == 0 or set_as_reference:
+        members = {
+            k: d.raw_data() if isinstance(d, ScaledDataset) else d
+            for k, d in self._datasets.items()
+        }
+        raw = dataset.raw_data() if isinstance(dataset, ScaledDataset) else dataset
+        members[name] = raw.__select__(torch.arange(len(raw), device=raw.device))
+        members[name].source = None
+        members[name].spacegroup = raw.spacegroup.copy()
+        if (
+            len({d.spacegroup.xhm for d in members.values()}) != 1
+            or len({d.friedel_merged for d in members.values()}) != 1
+        ):
+            raise ValueError(
+                "Datasets require compatible symmetry and Friedel conventions"
+            )
+        if not self._dataset_order or set_as_reference:
             self._reference_dataset = name
-            self._common_hkl = dataset.hkl.clone()
-            if dataset.cell is not None:
-                self._cell = dataset.cell.clone()
-            self._spacegroup = dataset.spacegroup
-
-        if self._common_hkl is not None and dataset.hkl is not None:
-            dataset.validate_hkl(self._common_hkl)
-
-        dataset.to(self.device)
-
-        self._datasets[name] = dataset
+            self._cell = raw.cell.clone() if raw.cell is not None else None
+            self._spacegroup = members[name].spacegroup
         self._dataset_order.append(name)
-
-        if self.verbose > 0:
-            print(f"Added dataset '{name}' ({len(dataset)} reflections)")
-
+        union_hkl = torch.unique(
+            torch.cat(
+                [
+                    (d.hkl if d.friedel_merged else d._hkl_for_sf()).to(self.device)
+                    for d in members.values()
+                ]
+            ),
+            dim=0,
+        )
+        identity_hkl = None
+        if raw.friedel_merged:
+            self._common_hkl = union_hkl
+        else:
+            canonical, _, _, order = raw.spacegroup.canonicalize_hkl(union_hkl)
+            self._common_hkl = canonical
+            identity_hkl = union_hkl[order]
+        for data in members.values():
+            data.to(self.device)
+            data.validate_hkl(self._common_hkl, identity_hkl=identity_hkl)
+        self._datasets = members
+        self.scaler = None
+        self.scaling_metrics = {}
         return self
 
     @property
@@ -263,97 +284,73 @@ class DatasetCollection(CrystalDataset):
         """
         return {name: ds(mask=mask, scale=True) for name, ds in self}
 
-    def scale(self):
+    def scale(self, nsteps: int = 10, max_iter: int = 100) -> "DatasetCollection":
+        """Jointly scale observations and expose live ScaledDataset members.
+
+        Parameters
+        ----------
+        nsteps, max_iter : int
+            Outer steps and per-step iteration limit for the dedicated scaler.
+
+        Returns
+        -------
+        DatasetCollection
+            Self. Retrieve scaled observations from this collection; references
+            to original inputs remain raw. Repeated calls reuse the parameter owner.
         """
-        Unit-weight least-squares fit of every non-reference dataset's scale and
-        anisotropy onto the reference, whose own parameters are left untouched.
+        from torchref.scaling.dataset_scaler import DatasetScaler
 
-        **This is the data-to-data fit**, the only one in the library with no model on
-        either side. So there is no model error to account for and nothing for a sigma_A
-        or Rice likelihood to do -- which is why the objective is least squares and there
-        is no way to select another.
+        raw = {
+            k: d.raw_data() if isinstance(d, ScaledDataset) else d
+            for k, d in self._datasets.items()
+        }
+        if self.scaler is None:
+            scaler = DatasetScaler(raw, device=self.device)
+            metrics = scaler.fit(nsteps=nsteps, max_iter=max_iter)
+            self._datasets = {k: ScaledDataset(d, scaler, k) for k, d in raw.items()}
+            self.scaler = scaler
+        else:
+            self.scaler.datasets = raw
+            metrics = self.scaler.fit(nsteps=nsteps, max_iter=max_iter)
+        self.scaling_metrics = metrics
+        return self
 
-        **Sigma weighting is deliberately not offered**, and that is a measured decision
-        rather than an omission. ``sum (F - F_ref)**2 / (sigma**2 + sigma_ref**2)`` is
-        superficially the principled choice -- both sides are measurements, so the
-        denominator is the honest propagated error on the difference being minimised --
-        and on a single dataset pair it does score slightly better on held-out
-        reflections. It is still wrong to use: inverse-variance weighting on a scale fit
-        collapses, because down-weighting the weak shells is exactly what lets the scale
-        run away in them, and the same objective was tried and rejected for the
-        model-to-data fit (whose default likewise came back to unit-weight ``ls``). A
-        small held-out gain on one pair does not outweigh a failure mode found across a
-        panel. Do not re-add it.
+    def _get_state(self) -> dict:
+        raw = {
+            k: (d.raw_data() if isinstance(d, ScaledDataset) else d)._get_state()
+            for k, d in self._datasets.items()
+        }
+        scaler_state = None if self.scaler is None else self.scaler.get_state()
+        if scaler_state is not None:
+            scaler_state.pop("datasets")
+        return {
+            "datasets": raw,
+            "reference": self._reference_dataset,
+            "scaler": scaler_state,
+            "scaling_metrics": self.scaling_metrics,
+        }
 
-        Fitted on the **work set** of both datasets. L-BFGS with strong-Wolfe line
-        search, 10 outer steps of ``max_iter=100``, on an objective normalised to O(1)
-        because those tolerances are absolute. Members' ``log_scale``/``U_aniso`` are
-        mutated, and ``requires_grad`` is turned on and back off around the fit.
+    @classmethod
+    def _from_state(cls, state: dict, device=None) -> "DatasetCollection":
+        from torchref.scaling.dataset_scaler import DatasetScaler
 
-        Raises
-        ------
-        ValueError
-            If no reference dataset is set, or there is nothing else to scale.
-        """
-        if self._reference_dataset is None:
-            raise ValueError("No reference dataset set for scaling")
-
-        ref_ds = self._datasets[self._reference_dataset]
-        to_scale = [ds for name, ds in self if name != self._reference_dataset]
-
-        if not to_scale:
-            raise ValueError("No datasets to scale against reference")
-
-        parameters = [p for data in to_scale for p in data.parameters()]
-        [p.requires_grad_(True) for p in parameters]
-        optimizer = torch.optim.LBFGS(parameters, max_iter=100, line_search_fn='strong_wolfe')
-
-        # Masks once (they do not change during the fit). The WORK subset, not
-        # `masks()`: the latter is validity only -- `TensorMasks.__call__` ANDs the
-        # validity masks and carries no work/free notion at all -- so fitting against it
-        # puts the free reflections into the scale parameters, upstream of every target,
-        # and compromises any free-set number the pipeline later reports. Degrades to
-        # all-valid on a dataset with no R-free flags, which is the pre-existing
-        # behaviour for that case.
-        ref_mask = ref_ds.work.mask
-        combined = [ds.work.mask & ref_mask for ds in to_scale]
-
-        # The normaliser: once, detached, outside the closure. L-BFGS converges on
-        # ABSOLUTE tolerances, so an objective carrying the data's own magnitude leaves
-        # `tolerance_grad`/`tolerance_change` meaningless -- the same hazard
-        # `ScalerBase.refine_lbfgs` documents at length. This fit had no normaliser.
-        with torch.no_grad():
-            ref_F0, _ = ref_ds.get_corrected_data()
-            ssq = sum(float(ref_F0[cm].pow(2).sum()) for cm in combined)
-        norm = 1.0 / max(ssq, 1e-30)
-
-        def closure():
-            optimizer.zero_grad()
-            loss = 0.0
-            # get_corrected_data, not __call__: MaskedTensor has no autograd.
-            ref_F_scaled, _ = ref_ds.get_corrected_data()
-
-            for ds, cm in zip(to_scale, combined):
-                F_scaled, _ = ds.get_corrected_data()
-                loss = loss + torch.sum((F_scaled[cm] - ref_F_scaled[cm]) ** 2)
-            loss = loss * norm
-            loss.backward()
-            return loss
-
-        for i in range(10):
-            optimizer.step(closure)
-        [p.requires_grad_(False) for p in parameters]
-
-
-    # ------------------------------------------------------------------
-    # Batched observation accessors
-    # ------------------------------------------------------------------
-    #
-    # Every member is expanded onto the common HKL grid by ``add_dataset``, so these
-    # stack cleanly on a leading dataset axis. All of them return the **scaled**
-    # observations -- the per-dataset ``log_scale``/``U_aniso`` that ``scale()`` fits
-    # exists only in the corrected accessors, and a target reading the raw tensors
-    # would silently ignore the inter-dataset scaling.
+        result = cls(device=device) if device is not None else cls()
+        for key, raw in state["datasets"].items():
+            result.add_dataset(
+                key,
+                ReflectionData._from_state(dict(raw), device),
+                set_as_reference=key == state["reference"],
+            )
+        if state["scaler"] is not None:
+            result.scaler = DatasetScaler.from_state(
+                {**state["scaler"], "datasets": state["datasets"]}, device
+            )
+            result._datasets = {
+                k: ScaledDataset(d, result.scaler, k)
+                for k, d in result._datasets.items()
+            }
+        result.scaling_metrics = state.get("scaling_metrics", {})
+        return result
 
     def _keys_or_all(self, keys: Optional[List[str]]) -> List[str]:
         if keys is None:
@@ -386,10 +383,7 @@ class DatasetCollection(CrystalDataset):
             If any selected dataset carries no intensities.
         """
         return torch.stack(
-            [
-                self._require_intensities(k)[0]
-                for k in self._keys_or_all(keys)
-            ],
+            [self._require_intensities(k)[0] for k in self._keys_or_all(keys)],
             dim=0,
         )
 
@@ -402,10 +396,7 @@ class DatasetCollection(CrystalDataset):
             If any selected dataset carries no intensities.
         """
         return torch.stack(
-            [
-                self._require_intensities(k)[1]
-                for k in self._keys_or_all(keys)
-            ],
+            [self._require_intensities(k)[1] for k in self._keys_or_all(keys)],
             dim=0,
         )
 
@@ -441,10 +432,7 @@ class DatasetCollection(CrystalDataset):
             )
         attr = {"work": "work", "free": "free", "val": "validation"}[use_set]
         return torch.stack(
-            [
-                getattr(self._datasets[k], attr).mask
-                for k in self._keys_or_all(keys)
-            ],
+            [getattr(self._datasets[k], attr).mask for k in self._keys_or_all(keys)],
             dim=0,
         )
 

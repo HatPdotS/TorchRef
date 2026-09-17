@@ -31,10 +31,10 @@ from pathlib import Path
 import torch
 
 from torchref.cli._common import (
-    add_dual_model_args,
-    add_dmin_arg,
-    add_general_args,
     add_all_columns_arg,
+    add_dmin_arg,
+    add_dual_model_args,
+    add_general_args,
     add_metadata_args,
     add_outdir_arg,
     add_output_format_args,
@@ -43,9 +43,9 @@ from torchref.cli._common import (
     configure_unbuffered_output,
     load_model,
     load_reflection_data,
+    parse_device_str,
     parse_weights,
     register_timing,
-    parse_device_str,
     validate_cif_files,
     validate_files,
 )
@@ -237,11 +237,11 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
         dataset. Default False.
     """
     from torchref.refinement import LossState
+    from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
     from torchref.refinement.targets.collection import (
         CollectionDifferenceTarget,
         CollectionMLTarget,
     )
-    from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
     from torchref.refinement.targets.similarity import CoordinateSimilarityTarget
 
     state = LossState(device=device)
@@ -1399,6 +1399,7 @@ Examples:
 
     if not has_altloc_dark and not has_altloc_light:
         import pandas as pd
+
         from torchref import __version__
         from torchref.io.metadata import RefinementMetadata
 
@@ -1508,6 +1509,7 @@ Examples:
             "cif": args.cif,
             "dmin": args.dmin,
         },
+        "dataset_scaling": dc.scaling_metrics,
         "parameters": {
             "weight_schedule": weight_schedule,
             "n_cycles": args.n_cycles,
@@ -1516,14 +1518,18 @@ Examples:
             "weights": target_weights,
         },
         "results": {
-            "r_factor_dark": dict(zip(
-                ["r_work", "r_free"],
-                compute_rfactors(dark, data_dark, scaler),
-            )),
-            "r_factor_light": dict(zip(
-                ["r_work", "r_free"],
-                compute_rfactors(mixed, data_light, scaler),
-            )),
+            "r_factor_dark": dict(
+                zip(
+                    ["r_work", "r_free"],
+                    compute_rfactors(dark, data_dark, scaler),
+                )
+            ),
+            "r_factor_light": dict(
+                zip(
+                    ["r_work", "r_free"],
+                    compute_rfactors(mixed, data_light, scaler),
+                )
+            ),
             "fractions": mixed.fractions.detach().cpu().tolist(),
             "alpha_mean": float(mc.alpha_mean),
             "lambda_twin": float(mc.lambda_twin),

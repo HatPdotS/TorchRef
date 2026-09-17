@@ -5,8 +5,8 @@ This module provides target (loss) functions for X-ray, geometry, and ADP restra
 """
 
 from .adp import (
-    ADPSigdTarget,
     ADPLocalityTarget,
+    ADPSigdTarget,
     ADPSimilarityTarget,
     ADPTarget,
     RigidBondTarget,
@@ -66,6 +66,7 @@ from .xray import (
 )
 
 __all__ = [
+    "DatasetScalingTarget",
     # Base classes
     "Target",
     "ModelTarget",
@@ -124,3 +125,5 @@ __all__ = [
 ]
 # Force-field, real-space, sampled-ML phase, and occupancy-diagnostic
 # targets are experimental and live in :mod:`torchref.experimental.targets`.
+
+from .dataset_scaling import DatasetScalingTarget

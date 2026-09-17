@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import torch
-from torch.nn import Parameter
 
 from torchref.base import math_torch
 from torchref.base.french_wilson import FrenchWilson
@@ -26,16 +25,6 @@ from torchref.utils.debug_utils import DebugMixin
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
-
-# Suppress PyTorch MaskedTensor prototype warnings globally
-# MaskedTensor is stable enough for our use case (aggregations, element-wise ops)
-warnings.filterwarnings(
-    "ignore", message=".*MaskedTensors is in prototype stage.*", category=UserWarning
-)
-
-if TYPE_CHECKING:
-    from torch.masked import MaskedTensor
-
 
 class _ReflectionSubset:
     """
@@ -95,7 +84,7 @@ class _ReflectionSubset:
     def n(self) -> int:
         return int(self.indices.numel())
 
-    # -- amplitudes (scaled, matching the legacy ``data(scale=True)``) -----
+    # Subset reads dispatch through the parent observation attributes.
     @property
     def F(self) -> torch.Tensor:
         F_corr, _ = self._parent._corrected_or_raw()
@@ -109,11 +98,11 @@ class _ReflectionSubset:
     # -- raw (uncorrected) amplitudes -------------------------------------
     @property
     def F_raw(self) -> torch.Tensor:
-        return self._parent.F.index_select(0, self.indices)
+        return self._parent.F_raw.index_select(0, self.indices)
 
     @property
     def sigF_raw(self) -> torch.Tensor:
-        return self._parent.F_sigma.index_select(0, self.indices)
+        return self._parent.F_sigma_raw.index_select(0, self.indices)
 
     # -- common aliases ---------------------------------------------------
     @property
@@ -144,13 +133,13 @@ class _ReflectionSubset:
     @property
     def I_raw(self):
         """Unscaled intensities, or None."""
-        i = self._parent.I
+        i = self._parent.I_raw
         return i.index_select(0, self.indices) if i is not None else None
 
     @property
     def sigI_raw(self):
         """Unscaled intensity sigmas, or None."""
-        si = self._parent.I_sigma
+        si = self._parent.I_sigma_raw
         return si.index_select(0, self.indices) if si is not None else None
 
     @property
@@ -238,11 +227,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         # Call parent __post_init__ to initialize masks
         super().__post_init__()
-        self.setup_scale()
-        self.setup_anisotropy()
-        # Cached integer index maps for the work/free/validation subsets and
-        # a cache of the scaled (F, F_sigma). Both are invalidated by
-        # fingerprints (see _subset_indices / _corrected_or_raw).
+        # Subset membership is cached independently of observation values.
         self._subset_cache = {
             "work": None,
             "free": None,
@@ -250,10 +235,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             "all": None,
         }
         self._subset_fp = None
-        self._corrected_cache = None
-        self._corrected_fp = None
-        self._corrected_I_cache = None
-        self._corrected_I_fp = None
 
     # ===================== work / free / validation =====================
 
@@ -361,25 +342,28 @@ class ReflectionData(CrystalDataset, DebugMixin):
         return self._subset_cache[kind]
 
     def _corrected_or_raw(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return the scaled (F, F_sigma) (matching ``data(scale=True)``),
-        cached against the (log_scale, U_aniso) fingerprint. Falls back to the
-        raw (F, F_sigma) if scaling is not set up.
-        """
+        """Return the observations exposed by this dataset, without caching."""
+        return self.get_corrected_data()
 
-        def _tv(t):
-            return (t.data_ptr(), t._version) if isinstance(t, torch.Tensor) else None
+    @property
+    def F_raw(self) -> Optional[torch.Tensor]:
+        """Measured amplitudes, shape (N,), in the input amplitude units."""
+        return self.F
 
-        fp = (
-            _tv(getattr(self, "log_scale", None)),
-            _tv(getattr(self, "U_aniso", None)),
-        )
-        if self._corrected_fp != fp or self._corrected_cache is None:
-            try:
-                self._corrected_cache = self.get_corrected_data()
-            except Exception:
-                self._corrected_cache = (self.F, self.F_sigma)
-            self._corrected_fp = fp
-        return self._corrected_cache
+    @property
+    def F_sigma_raw(self) -> Optional[torch.Tensor]:
+        """Measured amplitude uncertainties, shape (N,), in amplitude units."""
+        return self.F_sigma
+
+    @property
+    def I_raw(self) -> Optional[torch.Tensor]:
+        """Measured intensities, shape (N,), in the input intensity units."""
+        return self.I
+
+    @property
+    def I_sigma_raw(self) -> Optional[torch.Tensor]:
+        """Measured intensity uncertainties, shape (N,), in intensity units."""
+        return self.I_sigma
 
     # ===================== per-reflection field reindexing =====================
     #
@@ -399,10 +383,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         "I": 0.0,
         "phase": 0.0,
         "fom": 0.0,
-        "E": 0.0,
-        "E_squared": 0.0,
-        "F_squared_corrected": 0.0,
-        "radial_shell_indices": 0,
         "F_sigma": 1.0,
         "I_sigma": 1.0,
         "rfree_flags": 1,  # missing reflections default to the work set
@@ -416,9 +396,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
     # lazily rebuilt by ``get_bins`` / the ``centric`` property).
     _REINDEX_DERIVED = ("resolution", "bin_indices", "_centric_flags")
 
-    # Tensor dataclass fields that are NOT per-reflection (exempt from the
-    # length invariant): overall anisotropy parameters have shape (6,).
-    _NON_PER_REFLECTION_TENSORS = frozenset({"U_aniso"})
+    # Subclasses may declare non-reflection tensor fields here.
+    _NON_PER_REFLECTION_TENSORS = frozenset()
 
     def _reindex_per_reflection(
         self,
@@ -467,13 +446,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             name = f.name
             if name == "hkl" or name in derived:
                 continue
-            # Declared non-per-reflection fields are exempt by *name*, not by
-            # shape. The shape test below is a heuristic and collides whenever
-            # n_src equals the field's own length -- ``U_aniso`` is (6,), so a
-            # 6-reflection dataset would have it gathered as if it were
-            # per-reflection. ``_assert_per_reflection_consistent`` and
-            # ``reduce_to_spacegroup`` already exempt by name; this keeps all
-            # three routines consistent.
+            # Non-reflection fields must be excluded by name, not tensor length.
             if name in self._NON_PER_REFLECTION_TENSORS:
                 continue
             val = getattr(self, name)
@@ -1885,15 +1858,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         return self
 
-    def get_mask(self):
-        """
-        Placeholder for returning a combined mask from all active filters.
-
-        Not implemented; the body is empty and this returns ``None``. Use
-        :meth:`masks` (the combined-validity callable) to obtain the boolean
-        mask combining all active filter conditions.
-        """
-
     def cut_res(
         self, highres: Optional[float] = None, lowres: Optional[float] = None
     ) -> "ReflectionData":
@@ -1916,104 +1880,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Self, for method chaining.
         """
         return self.filter_by_resolution(d_min=highres, d_max=lowres)
-
-    def get_rfree_masks(self) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """
-        Get boolean masks for work and test (free) sets.
-
-        Returns
-        -------
-        work_mask : torch.Tensor or None
-            Boolean tensor for work set (flag != 0).
-        test_mask : torch.Tensor or None
-            Boolean tensor for test/free set (flag == 0).
-            Both are None if no R-free flags are available.
-
-        .. deprecated::
-            Use ``data.work.mask`` / ``data.free.mask`` (which also apply the
-            validity masks), or ``data.work.indices`` / ``data.free.indices``.
-        """
-        warnings.warn(
-            "ReflectionData.get_rfree_masks() is deprecated; use data.work.mask "
-            "/ data.free.mask (the work/free/validation accessor).",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if self.rfree_flags is None:
-            return None, None
-
-        work_mask = self.rfree_flags != 0
-        test_mask = self.rfree_flags == 0
-
-        return work_mask, test_mask
-
-    def get_work_set(self) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Get structure factors for the work set (R-free flag != 0).
-
-        Returns
-        -------
-        F_work : torch.Tensor
-            Structure factors for work set.
-        sigma_work : torch.Tensor or None
-            Uncertainties for work set, or None if not available.
-
-        With no R-free flags this silently returns the *full* dataset (warning
-        printed), so a caller cannot tell work from all.
-
-        .. deprecated::
-            Use ``data.work.F`` / ``data.work.sigF``, which also apply the
-            validity masks and cache the subset indices.
-        """
-        warnings.warn(
-            "ReflectionData.get_work_set() is deprecated; use data.work.F / "
-            "data.work.sigF (the work/free/validation accessor).",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if self.rfree_flags is None:
-            print("WARNING: No R-free flags available, returning full dataset")
-            return self.F, self.F_sigma
-
-        work_mask = self.rfree_flags != 0
-        F_work = self.F[work_mask] if self.F is not None else None
-        sigma_work = self.F_sigma[work_mask] if self.F_sigma is not None else None
-
-        return F_work, sigma_work
-
-    def get_test_set(self) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Get structure factors for the test set (R-free flag == 0).
-
-        Returns
-        -------
-        F_test : torch.Tensor
-            Structure factors for test/free set.
-        sigma_test : torch.Tensor or None
-            Uncertainties for test set, or None if not available.
-
-        Raises
-        ------
-        ValueError
-            If no R-free flags are available.
-
-        .. deprecated::
-            Use ``data.free.F`` / ``data.free.sigF`` instead.
-        """
-        warnings.warn(
-            "ReflectionData.get_test_set() is deprecated; use data.free.F / "
-            "data.free.sigF (the work/free/validation accessor).",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if self.rfree_flags is None:
-            raise ValueError("No R-free flags available in dataset")
-
-        test_mask = self.rfree_flags == 0
-        F_test = self.F[test_mask] if self.F is not None else None
-        sigma_test = self.F_sigma[test_mask] if self.F_sigma is not None else None
-
-        return F_test, sigma_test
 
     def get_max_res(self) -> Optional[float]:
         """Smallest d-spacing among valid reflections, in Ångströms."""
@@ -2073,7 +1939,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         Return reflection data as compact (valid-only) tensors.
 
-        Note these are the RAW ``F``/``F_sigma``, not the scaled ones.
+        ScaledDataset returns its live corrected observations.
 
         Returns
         -------
@@ -2097,80 +1963,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             else None
         )
 
-        return hkl, F, F_sigma, rfree_flags
-
-    def __call__(
-        self, mask: bool = True, scale: bool = True
-    ) -> Tuple[torch.Tensor, "MaskedTensor", "MaskedTensor", torch.Tensor]:
-        """
-        Return core reflection data with MaskedTensors for F and sigma.
-
-        Everything is full size (N); invalid reflections are marked in the mask
-        rather than removed. With ``mask=True`` the returned ``F``/``F_sigma``
-        are detached clones, so gradients do NOT flow through them (use
-        :meth:`get_corrected_data` when the graph is needed).
-
-        Parameters
-        ----------
-        mask : bool, optional
-            If True, wrap F and sigma as MaskedTensors. Default is True.
-        scale : bool, optional
-            If True, apply the current scale/anisotropy before returning.
-
-        Returns
-        -------
-        hkl : torch.Tensor
-            Miller indices of shape (N, 3), unfiltered.
-        F : MaskedTensor
-            Amplitudes of shape (N,) with invalid reflections masked.
-        F_sigma : MaskedTensor or None
-            Uncertainties of shape (N,) with invalid reflections masked.
-        rfree_flags : torch.Tensor or None
-            Flags of shape (N,), unfiltered. 1=work, 0=free.
-
-        Raises
-        ------
-        RuntimeError
-            If ``mask`` is True and every reflection is masked out.
-
-        .. deprecated::
-            Use the work/free/validation accessor (``data.work.F``,
-            ``data.free.F``, ``.sigF`` / ``.hkl`` / ``.select(...)``), or
-            ``data.get_corrected_data()`` for the full scaled (F, F_sigma).
-        """
-        warnings.warn(
-            "Calling ReflectionData (data()) is deprecated; use the "
-            "data.work / data.free / data.validation accessor, or "
-            "data.get_corrected_data() for the full scaled arrays.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._masked_unpack(mask=mask, scale=scale)
-
-    def _masked_unpack(
-        self, mask: bool = True, scale: bool = True
-    ) -> Tuple[torch.Tensor, "MaskedTensor", "MaskedTensor", torch.Tensor]:
-        """Non-deprecated body of the legacy ``__call__``; see it for the contract.
-
-        Internal only -- external callers should use the work/free/validation
-        accessor.
-        """
-        from torch.masked import MaskedTensor
-
-        hkl, F, F_sigma, rfree_flags = self.hkl, self.F, self.F_sigma, self.rfree_flags
-
-        if scale:
-            F, F_sigma = self.get_corrected_data()
-
-        if mask:
-            to_mask = self.masks()
-            if to_mask.sum() == 0:
-                raise RuntimeError(
-                    "All reflections are masked! Check your filters/masks."
-                )
-            F = MaskedTensor(F.detach().clone(), to_mask)
-            if F_sigma is not None:
-                F_sigma = MaskedTensor(F_sigma.detach().clone(), to_mask)
         return hkl, F, F_sigma, rfree_flags
 
     def data_fill_masked(
@@ -2199,23 +1991,31 @@ class ReflectionData(CrystalDataset, DebugMixin):
             R-free flags of shape (N,); filled-in reflections are assigned to
             the work set (True).
         """
-        hkl, F, F_sigma, rfree = self._masked_unpack()
+        hkl, F, F_sigma = self.hkl, self.F, self.F_sigma
+        if F is None or F_sigma is None:
+            raise ValueError("Amplitude observations and uncertainties are required")
+        mask = self.masks()
+        if not bool(mask.any()):
+            raise ValueError("No valid reflections to fill from")
+        rfree = (
+            self.rfree_flags.clone()
+            if self.rfree_flags is not None
+            else torch.ones_like(mask)
+        )
 
         if mode == "mean":
             mean_F = self.mean_F_per_bin()
             mean_F_sigma = self.mean_sigma_per_bin()
-            F_data = F.get_data().clone()
-            F_sigma_data = F_sigma.get_data().clone()
-            mask = F.get_mask()
+            F_data = F.clone()
+            F_sigma_data = F_sigma.clone()
             F_data[~mask] = mean_F[self.bin_indices[~mask]]
             F_sigma_data[~mask] = mean_F_sigma[self.bin_indices[~mask]]
             rfree[~mask] = True  # set missing to work set
             return hkl, F_data, F_sigma_data, rfree
 
         elif mode == "zero":
-            mask = F.get_mask()
-            F_data = F.get_data().clone()
-            F_sigma_data = F_sigma.get_data().clone()
+            F_data = F.clone()
+            F_sigma_data = F_sigma.clone()
             F_data[~mask] = 0.0
             F_sigma_data[~mask] = 0.0
             rfree[~mask] = True  # set missing to work set
@@ -2283,7 +2083,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 elif val.shape and val.shape[0] == n_refl:
                     setattr(selected, f.name, val[indices])
                 else:
-                    # Non-matching tensor (e.g. U_aniso shape (6,)): copy as-is
+                    # Preserve scalar tensor metadata.
                     setattr(selected, f.name, val.clone())
             elif isinstance(val, Cell):
                 setattr(selected, f.name, val.clone())
@@ -2374,7 +2174,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             else:
                 print(f"{key}: None")
 
-    def validate_hkl(self, hkl_ref: torch.Tensor) -> "ReflectionData":
+    def validate_hkl(
+        self, hkl_ref: torch.Tensor, *, identity_hkl: Optional[torch.Tensor] = None
+    ) -> "ReflectionData":
         """
         Expand this dataset **in place** onto a reference HKL set.
 
@@ -2389,6 +2191,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
         hkl_ref : torch.Tensor
             Reference Miller indices of shape (N, 3), dtype int32; defines the
             canonical ordering for all aligned datasets.
+        identity_hkl : torch.Tensor, optional
+            Signed anomalous indices of shape (N, 3), distinguishing Bijvoet
+            observations that share a canonical HKL. When supplied, match these
+            against the dataset's signed indices and preserve their identities.
 
         Returns
         -------
@@ -2414,11 +2220,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Build lookup from data HKL to index
         # Use a dictionary with tuple keys for fast lookup
-        hkl_data_np = self.hkl.cpu().numpy()
+        source_hkl = self.hkl if identity_hkl is None else self._hkl_for_sf()
+        hkl_data_np = source_hkl.cpu().numpy()
         data_hkl_to_idx = {tuple(hkl): idx for idx, hkl in enumerate(hkl_data_np)}
 
         # For each reference HKL, find the corresponding data index (or -1 if missing)
-        hkl_ref_np = hkl_ref.cpu().numpy()
+        lookup_hkl = hkl_ref if identity_hkl is None else identity_hkl
+        if lookup_hkl.shape != hkl_ref.shape:
+            raise ValueError("identity_hkl must match the reference HKL shape")
+        hkl_ref_np = lookup_hkl.cpu().numpy()
         ref_to_data_idx = np.array(
             [data_hkl_to_idx.get(tuple(hkl), -1) for hkl in hkl_ref_np], dtype=np.int64
         )
@@ -2429,6 +2239,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Reindex EVERY per-reflection field via the shared primitive. Masks are
         # handled separately below because they are not dataclass fields.
         presence_mask = self._reindex_per_reflection(valid_indices, hkl_ref)
+        if identity_hkl is not None:
+            self.hkl_anomalous = identity_hkl.to(self.hkl).clone()
+            self.friedel_flags = (self.hkl_anomalous != self.hkl).any(dim=-1)
 
         # Transfer existing masks to new indexing
         old_masks = dict(self.masks.items())
@@ -3654,437 +3467,29 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         return math_torch.get_scattering_vectors(self.hkl, self.cell.data)
 
-    def get_radial_shells(
-        self,
-        n_shells: int = 20,
-        d_min: Optional[float] = None,
-        d_max: Optional[float] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Create uniform radial shells in 1/d space for normalization.
-
-        Uniform in 1/d, unlike :meth:`get_bins` which makes equal-count bins.
-        Caches the result on ``self.radial_shell_indices``.
-
-        Parameters
-        ----------
-        n_shells : int
-            Number of radial shells. Default is 20.
-        d_min, d_max : float, optional
-            Resolution limits in Angstroms; default to the dataset's own
-            smallest / largest d.
-
-        Returns
-        -------
-        shell_edges : torch.Tensor
-            Shell boundaries in Angstroms^-1, shape (n_shells+1,).
-        shell_centers : torch.Tensor
-            Shell centers in Angstroms^-1, shape (n_shells,).
-        shell_indices : torch.Tensor
-            Shell index for each reflection, shape (N,). Values -1 for out-of-range.
-        """
-        from torchref.base.normalization import (
-            assign_to_shells,
-            compute_radial_shells,
-        )
-
-        if self.resolution is None:
-            self._calculate_resolution()
-
-        # Get resolution limits
-        if d_min is None:
-            d_min = self.get_max_res()
-        if d_max is None:
-            d_max = self.get_min_res()
-
-        # Compute shells
-        shell_edges, shell_centers = compute_radial_shells(
-            d_min, d_max, n_shells, device=self.device
-        )
-
-        # Get s-vectors and magnitudes
-        s_vectors = self.get_scattering_vectors()
-        s_mag = torch.linalg.norm(s_vectors, dim=1)
-
-        # Assign to shells
-        shell_indices = assign_to_shells(s_mag, shell_edges)
-
-        # Cache shell indices
-        self.radial_shell_indices = shell_indices
-
-        return shell_edges, shell_centers, shell_indices
-
-    def fit_anisotropy(
-        self,
-        n_shells: int = 20,
-        d_min: Optional[float] = None,
-        d_max: Optional[float] = None,
-        n_iterations: int = 100,
-        verbose: Optional[bool] = None,
-    ) -> torch.Tensor:
-        """
-        Fit anisotropy correction parameters to minimize CV within shells.
-
-        Optimizes U so that corrected F² values have minimal coefficient of
-        variation within each resolution shell.
-
-        Parameters
-        ----------
-        n_shells : int
-            Number of resolution shells for variance calculation.
-        d_min, d_max : float, optional
-            Resolution limits in Angstroms; default to the dataset's own
-            smallest / largest d.
-        n_iterations : int
-            Optimizer steps; see :func:`fit_anisotropy_correction` -- below 20
-            nothing is optimized.
-        verbose : bool, optional
-            Print progress. If None, uses self.verbose.
-
-        Returns
-        -------
-        U : torch.Tensor
-            Fitted anisotropy parameters [u11, u22, u33, u12, u13, u23], shape (6,).
-            Also stored in self.U_aniso.
-
-        Raises
-        ------
-        ValueError
-            If no amplitude data is available.
-        """
-        from torchref.base import fit_anisotropy_correction
-
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        if verbose is None:
-            verbose = self.verbose > 0
-
-        # Get F² values
-        F_squared = self.F**2
-
-        # Get s-vectors
-        s_vectors = self.get_scattering_vectors()
-
-        # Get resolution limits
-        if d_min is None:
-            d_min = self.get_max_res()
-        if d_max is None:
-            d_max = self.get_min_res()
-
-        # Fit anisotropy
-        U, final_cv = fit_anisotropy_correction(
-            F_squared,
-            s_vectors,
-            n_shells=n_shells,
-            d_min=d_min,
-            d_max=d_max,
-            n_iterations=n_iterations,
-            verbose=verbose,
-        )
-
-        # Store result
-        self.U_aniso = U
-
-        return U
-
-    def setup_anisotropy(
-        self,
-        U_aniso: Optional[torch.Tensor] = None,
-    ) -> None:
-        """
-        Setup anisotropy correction parameters.
-
-        Parameters
-        ----------
-        U_aniso : torch.Tensor, optional
-            Anisotropic parameters [u11, u22, u33, u12, u13, u23], shape (6,).
-            If None, U_aniso is initialized to a zero (6,) tensor.
-
-        Returns
-        -------
-        ReflectionData
-            Self, for method chaining.
-        """
-
-        if U_aniso is None:
-            U_aniso = torch.zeros(
-                6, device=self.device, dtype=dtypes.float, requires_grad=False
-            )
-        else:
-            U_aniso = U_aniso.to(
-                device=self.device, dtype=dtypes.float, requires_grad=False
-            )
-        self.U_aniso = U_aniso
-
-        return self
-
-    def apply_anisotropy_correction(
-        self,
-        U_aniso: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Apply anisotropy correction to F² values.
-
-        Parameters
-        ----------
-        U_aniso : torch.Tensor, optional
-            Anisotropic parameters [u11, u22, u33, u12, u13, u23], shape (6,).
-            If None, uses self.U_aniso (must have called fit_anisotropy first).
-
-        Returns
-        -------
-        F_corrected: torch.Tensor
-            Anisotropy-corrected F values, shape (N,).
-        sigma_F_corrected: torch.Tensor
-            Uncertainties of corrected F values, shape (N,).
-        Raises
-        ------
-        ValueError
-            If no U parameters available and none provided.
-        """
-        from torchref.base import apply_anisotropy_correction
-
-        if U_aniso is None:
-            U_aniso = self.U_aniso
-        if U_aniso is None:
-            raise ValueError(
-                "No anisotropy parameters available. "
-                "Call fit_anisotropy() first or provide U_aniso."
-            )
-
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        # Get s-vectors
-        s_vectors = self.get_scattering_vectors()
-        # Use raw tensors directly to preserve gradient flow
-        # (MaskedTensor doesn't support autograd operations)
-        F = self.F
-        sigma = self.F_sigma
-        # Apply correction
-        F_corrected = apply_anisotropy_correction(F, s_vectors, U_aniso)
-        sigma_F_corrected = (
-            apply_anisotropy_correction(sigma, s_vectors, U_aniso)
-            if sigma is not None
-            else None
-        )
-
-        return F_corrected, sigma_F_corrected
-
-    def compute_e_values(
-        self,
-        n_shells: int = 20,
-        d_min: Optional[float] = None,
-        d_max: Optional[float] = None,
-        apply_anisotropy: bool = True,
-        fit_anisotropy: bool = True,
-        verbose: Optional[bool] = None,
-    ) -> torch.Tensor:
-        """
-        Compute E-values with optional anisotropy correction.
-
-        E-values are normalized structure factors where <E²> = 1 within each
-        resolution shell. Anisotropy correction can be applied first to account
-        for directional variation in diffraction.
-
-        Parameters
-        ----------
-        n_shells : int
-            Number of resolution shells for normalization.
-        d_min, d_max : float, optional
-            Resolution limits in Angstroms; default to the dataset's own
-            smallest / largest d.
-        apply_anisotropy : bool
-            If True, correct for anisotropy before normalizing.
-        fit_anisotropy : bool
-            If True, refit U first; if False, reuse the existing
-            ``self.U_aniso``. Ignored unless ``apply_anisotropy``.
-        verbose : bool, optional
-            Print progress. If None, uses self.verbose.
-
-        Returns
-        -------
-        E : torch.Tensor
-            E-values, shape (N,). Also stores ``self.E``, ``self.E_squared`` and
-            ``self.radial_shell_indices`` as a side effect.
-
-        Raises
-        ------
-        ValueError
-            If no amplitude data is available.
-        """
-        from torchref.base import F_squared_to_E_values
-
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        if verbose is None:
-            verbose = self.verbose > 0
-
-        # Get resolution limits
-        if d_min is None:
-            d_min = self.get_max_res()
-        if d_max is None:
-            d_max = self.get_min_res()
-
-        # Get F² values (possibly with anisotropy correction)
-        if apply_anisotropy:
-            if fit_anisotropy:
-                self.fit_anisotropy(
-                    n_shells=n_shells, d_min=d_min, d_max=d_max, verbose=verbose
-                )
-            F_squared = self.apply_anisotropy_correction()[0] ** 2
-        else:
-            F_squared = self.F**2
-
-        # Get s-vectors
-        s_vectors = self.get_scattering_vectors()
-
-        # Compute E-values
-        E, E_squared, shell_idx = F_squared_to_E_values(
-            F_squared, s_vectors, n_shells=n_shells, d_min=d_min, d_max=d_max
-        )
-
-        # Store results
-        self.E = E
-        self.E_squared = E_squared
-        self.radial_shell_indices = shell_idx
-
-        if verbose:
-            print(f"E-value statistics:")
-            print(f"  E range: [{E.min():.3f}, {E.max():.3f}]")
-            print(f"  E mean: {E.mean():.3f}, std: {E.std():.3f}")
-            print(f"  E² mean: {E_squared.mean():.3f} (should be ~1.0)")
-        return E
-
-    def setup_scale(self, scale: Optional[float] = None) -> float:
-        """
-        Set overall scale factor, parametrized in log space.
-
-        Parameters
-        ----------
-        scale : float, optional
-            If provided, sets the scale factor directly (stored as its log).
-            If None (default), the scale defaults to 1.0 (``log_scale = 0.0``).
-
-        Returns
-        -------
-        ReflectionData
-            Self, for method chaining.
-        """
-        if scale is None:
-            self.log_scale = torch.tensor(
-                0.0, device=self.device, requires_grad=False, dtype=dtypes.float
-            )
-        else:
-            self.log_scale = torch.log(
-                torch.tensor(
-                    scale, device=self.device, requires_grad=False, dtype=dtypes.float
-                )
-            )
-        return self
-
     def get_corrected_data(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return amplitudes and sigmas, shape (N,), in this dataset's units.
+
+        Raw datasets return their measurements; ScaledDataset exposes the live
+        scale correction through the same observation attributes.
         """
-        Get the anisotropy-corrected, scaled (F, F_sigma).
-
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor]
-            Full-size F and F_sigma with ``exp(log_scale)`` and ``U_aniso``
-            applied.
-
-        Raises
-        ------
-        ValueError
-            If ``setup_scale`` / ``setup_anisotropy`` have not run.
-        """
-
-        if not hasattr(self, "log_scale") or self.log_scale is None:
-            raise ValueError("Scale not set up. Call setup_scale() first.")
-        if not hasattr(self, "U_aniso") or self.U_aniso is None:
-            raise ValueError("Anisotropy not set up. Call setup_anisotropy() first.")
-        F_corrected, F_sigma_corrected = self.apply_anisotropy_correction()
-        scale_factor = torch.exp(self.log_scale)
-        F_scaled = F_corrected * scale_factor
-        F_sigma_scaled = F_sigma_corrected * scale_factor
-
-        return F_scaled, F_sigma_scaled
+        return self.F, self.F_sigma
 
     def get_corrected_intensities(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Get the anisotropy-corrected, scaled ``(I, I_sigma)``.
-
-        The intensity counterpart of :meth:`get_corrected_data`. Both the anisotropy
-        factor and the overall scale enter **squared**, because they are defined on
-        amplitudes: an amplitude scaled by ``corr * exp(log_scale)`` corresponds to an
-        intensity scaled by ``(corr * exp(log_scale))**2``. Applying the amplitude
-        factors to intensities instead would leave a resolution-dependent error that
-        looks exactly like a scale or B-factor mismatch.
-
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor]
-            Full-size ``I`` and ``I_sigma`` on the same scale as
-            ``get_corrected_data()`` squared.
+        """Return intensities and sigmas, shape (N,), in this dataset's units.
 
         Raises
         ------
         ValueError
-            If this dataset carries no intensities (the input had no ``I``/``SIGI``
-            columns), or if ``setup_scale`` / ``setup_anisotropy`` have not run.
+            If no intensity observations are available.
         """
-        from torchref.base.alignment.normalization import (
-            compute_anisotropy_correction,
-        )
-
         if self.I is None:
-            raise ValueError(
-                "No intensities on this dataset. The input reflection file had no "
-                "I/SIGI columns, so only amplitudes are available; use "
-                "get_corrected_data() or supply intensity data."
-            )
-        if not hasattr(self, "log_scale") or self.log_scale is None:
-            raise ValueError("Scale not set up. Call setup_scale() first.")
-        if not hasattr(self, "U_aniso") or self.U_aniso is None:
-            raise ValueError(
-                "No anisotropy parameters available. Call fit_anisotropy() first."
-            )
-
-        s_vectors = self.get_scattering_vectors()
-        correction = compute_anisotropy_correction(s_vectors, self.U_aniso)
-        factor = (correction * torch.exp(self.log_scale)) ** 2
-
-        I_scaled = self.I * factor
-        I_sigma_scaled = (
-            self.I_sigma * factor if self.I_sigma is not None else None
-        )
-        return I_scaled, I_sigma_scaled
+            raise ValueError("No intensities on this dataset (I/SIGI required)")
+        return self.I, self.I_sigma
 
     def _corrected_or_raw_intensities(self):
-        """Return the scaled ``(I, I_sigma)``, cached against the
-        ``(log_scale, U_aniso)`` fingerprint. ``(None, None)`` when this dataset
-        carries no intensities, and the raw pair if scaling is not set up.
-        """
-
-        def _tv(t):
-            return (t.data_ptr(), t._version) if isinstance(t, torch.Tensor) else None
-
-        if self.I is None:
-            return (None, None)
-
-        fp = (
-            _tv(getattr(self, "log_scale", None)),
-            _tv(getattr(self, "U_aniso", None)),
-        )
-        if self._corrected_I_fp != fp or self._corrected_I_cache is None:
-            try:
-                self._corrected_I_cache = self.get_corrected_intensities()
-            except Exception:
-                self._corrected_I_cache = (self.I, self.I_sigma)
-            self._corrected_I_fp = fp
-        return self._corrected_I_cache
+        """Return intensity observations, or (None, None) when absent."""
+        return self.I, self.I_sigma
 
     def generate_validation_set(
         self,
@@ -4166,23 +3571,3 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 f"free={n_free} ({100*n_free/total:.1f}%), "
                 f"val={n_val} ({100*n_val/total:.1f}%)"
             )
-
-    def parameters(self) -> List[Parameter]:
-        """
-        The scaling tensors (``log_scale``, ``U_aniso``) to optimize.
-
-        Despite the ``List[Parameter]`` annotation these are plain tensors with
-        ``requires_grad=False``; the caller must call ``requires_grad_(True)``
-        before handing them to an optimizer (see ``DatasetCollection.scale``).
-
-        Returns
-        -------
-        list of torch.Tensor
-            Whichever of the two are set.
-        """
-        params = []
-        if self.log_scale is not None:
-            params.append(self.log_scale)
-        if self.U_aniso is not None:
-            params.append(self.U_aniso)
-        return params

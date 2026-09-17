@@ -82,10 +82,12 @@ class DifferenceMap(Map):
         )
         self._collection.add_dataset("perturbed", data)
         self._collection.scale()
+        self.data_reference = self._collection["reference"]
+        self.data_perturbed = self._collection["perturbed"]
 
         # Use reference dataset for cell, spacegroup, hkl via super().__init__
         super().__init__(
-            data=data_reference,
+            data=self.data_reference,
             model=model,
             gridsize=gridsize,
             map_type="Fcalc",  # placeholder, calculate() is overridden
