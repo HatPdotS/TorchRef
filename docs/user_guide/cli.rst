@@ -41,8 +41,10 @@ and a ``refinement_history.json`` log.
   ``ml_full`` (marginalises the measurement error rather than inflating the
   variance; ~4× the cost), ``nll_beta`` (the Gaussian large-signal limit of
   ``ml`` — diagnostic), ``nll`` (Gaussian weighted by σ_obs only, no model-error
-  term), ``ls`` (unit-weight least squares) or ``ls_wunit_k1`` (Phenix-style, own
-  global scale). ``--help`` lists them from the taxonomy table itself.
+  term), ``nll_i`` (as ``nll`` but on the observed *intensities*, skipping the
+  French–Wilson conversion), ``ls`` (unit-weight least squares) or ``ls_wunit_k1``
+  (Phenix-style, own global scale). ``--help`` lists them from the taxonomy table
+  itself, which is authoritative.
 * ``--sigma-a-max`` upper bound on the per-shell Luzzati σ_A (default 0.99)
 * ``--no-shrink`` disable the per-shell σ_A stability shrinkage
 * ``--adp-mode`` ``isotropic`` (default) or ``anisotropic``, the latter refining
@@ -128,21 +130,39 @@ selection), ``--mask-radius``, ``--n-bins``.
 
 :API: :mod:`torchref.cli.validate_ded`
 
-``torchref.phased-difference-map``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``torchref.difference-map``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Compute phased difference and extrapolated map coefficients without
-refinement.  Uses the same pipeline as ``torchref.difference-refine`` but
-the input models are kept as-is.
+Compute difference and extrapolated map coefficients without refinement.
+Uses the same pipeline as ``torchref.difference-refine`` but the input
+models are kept as-is.
+
+The default output is the weighted difference map ``DELFWT``/``PHDELWT`` --
+the inverse-variance-weighted amplitude difference on the **dark** model's
+phases, which is the construction ``torchref.validate-ded`` correlates
+against.  It needs no light-state model, so ``-lm`` is optional:
 
 .. code-block:: bash
 
-   torchref.phased-difference-map \
+   torchref.difference-map \
+       -dm dark.pdb \
+       -dsf dark.mtz -lsf light.mtz -o results.mtz
+
+Supplying ``-lm`` (with ``--fraction``) adds the light state's amplitude and
+phase and the extrapolated map ``FWT``/``PHWT``:
+
+.. code-block:: bash
+
+   torchref.difference-map \
        -dm dark.pdb -lm light.pdb \
        -dsf dark.mtz -lsf light.mtz \
        --fraction 0.37 -o results.mtz
 
-:API: :mod:`torchref.cli.phased_difference_map`
+**Key options:** ``--all-columns`` writes every alternative map coefficient
+and diagnostic -- the model-phased difference, the two other extrapolations
+and the intensity block -- at the cost of two further scale fits.
+
+:API: :mod:`torchref.cli.difference_map`
 
 Model Utilities
 ---------------

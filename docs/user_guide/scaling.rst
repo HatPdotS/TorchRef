@@ -105,3 +105,47 @@ by a factor of 4 — and :math:`\mathbf{U}` the 6-parameter symmetric tensor
 stored on the scaler. The
 :math:`2\pi^2` is part of the definition, not a unit choice — dropping it makes
 the fitted ``U`` disagree with an ADP-convention ``U`` by that factor.
+
+Relative scaling of observed datasets
+------------------------------------
+
+``DatasetCollection.scale()`` jointly fits the observed datasets with
+``DatasetScaler``. Each member receives an overall log scale and six quadratic
+anisotropy coefficients in a shared normalized HKL basis. Coefficients are
+centered over datasets during every forward evaluation, so no reference dataset
+fixes the amplitude scale. The metadata reference still supplies the collection
+cell and space group.
+
+The target profiles a shared amplitude per reflection using inverse propagated
+variance weights. Both amplitudes and their uncertainties receive the same
+positive correction; intensities and their uncertainties receive its square.
+The consensus, centering and uncertainty propagation all carry gradients.
+The fit uses work reflections shared by at least two datasets, excludes a
+reflection held out in any participating dataset, and rejects disconnected or
+rank-deficient overlap. Anomalous observations retain their signed identities.
+
+After calling ``collection.scale()``, retrieve datasets from the collection::
+
+    collection = DatasetCollection(device="cpu")
+    collection.add_dataset("dark", dark)
+    collection.add_dataset("light", light)
+    collection.scale()
+    scaled_light = collection["light"]
+    amplitudes = scaled_light.F
+    uncertainties = scaled_light.F_sigma
+    original_amplitudes = scaled_light.F_raw
+
+The collection owns one scaler. Its ``ScaledDataset`` members subclass
+``ReflectionData`` and retain a strong reference to that scaler. Their direct
+observation attributes, subset views, stack accessors and exports expose live
+corrections. Copies and selections share the scaler; independent collections
+have independent scalers. Raw input datasets are copied and remain unchanged.
+Adding a dataset invalidates the joint fit; call ``scale()`` again. Repeated
+``scale()`` calls otherwise reuse the parameter owner. Fitted parameters are
+frozen; use ``collection.scaler.requires_grad_(True)`` for custom optimization.
+
+``ReflectionData`` holds raw observations and no optimization parameters.
+Use ``WilsonNormaliser`` for normalized E values. Work, free and validation
+observations are accessed through ``data.work``, ``data.free`` and
+``data.validation``; full observations are available directly as ``data.F`` and
+``data.F_sigma``.

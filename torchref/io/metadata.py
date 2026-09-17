@@ -12,7 +12,7 @@ never assume a populated result.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, fields, asdict
+from dataclasses import asdict, dataclass, field, fields
 from datetime import date
 from typing import Any, Dict, List, Optional
 
@@ -205,6 +205,7 @@ class RefinementMetadata:
         best-effort: anything unavailable is left unset, silently.
         """
         import torch
+
         from torchref import __version__
 
         meta = cls(program_version=__version__)
@@ -230,7 +231,7 @@ class RefinementMetadata:
         try:
             rd = refinement.reflection_data
             with torch.no_grad():
-                hkl, fobs, sigma, rfree_flags = rd()
+                hkl, fobs, sigma, rfree_flags = rd.hkl, rd.F, rd.F_sigma, rd.rfree_flags
             n_all = len(fobs)
             n_test = int(rfree_flags.sum().item()) if rfree_flags.dtype == torch.bool else int((~rfree_flags.bool()).sum().item())
             n_work = n_all - n_test

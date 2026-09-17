@@ -51,8 +51,9 @@ Key parameters:
 
 The refinement script is: `run_difference_refine.sh`
 
-**Stage 2 — Manual real-space refinement** in Coot against the 2Fext-Fc difference
-electron density map (from the `difference_data.mtz` output). This step speeds up
+**Stage 2 — Manual real-space refinement** in Coot against the extrapolated map
+(`FWT`/`PHWT` in the `difference_data.mtz` output; Coot opens it by name). This step
+speeds up
 convergence for the IBL ligand, which requires large conformational changes
 (*trans* to *cis*). The Coot-refined coordinates were saved as `work.pdb` and used
 as the starting model for automated refinement (Stage 1).

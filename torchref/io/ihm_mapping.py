@@ -12,7 +12,7 @@ Concept Mapping
 ---------------
 IHM state  ->  base model (ModelFT) in ModelCollection
 IHM model group  ->  timepoint entry (_SharedMixedModel) in ModelCollection
-IHM population fraction  ->  fraction_params in _SharedMixedModel
+IHM population fraction  ->  activation / branching on ModelCollection
 """
 
 from dataclasses import dataclass, field

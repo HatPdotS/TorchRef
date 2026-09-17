@@ -92,12 +92,16 @@ PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 # Data I/O
 from torchref.io import (
     DatasetCollection,
-    ReflectionData,
     FcalcDataset,
-    read_mtz,
+    ReflectionData,
+    ScaledDataset,
     read_cif,
+    read_mtz,
     read_pdb,
 )
+
+# Maps
+from torchref.maps import DifferenceMap, Map
 
 # Model
 from torchref.model import Model, ModelFT
@@ -106,20 +110,18 @@ from torchref.model.rigid_xyz import RigidXYZTensor
 # Refinement
 from torchref.refinement import LBFGSRefinement, Refinement
 from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
+
+# Scaling
+from torchref.scaling import Scaler, ScalerBase, SolventModel
 from torchref.symmetry import Cell, SpaceGroup, Symmetry
+
+# Device movement mixin (public API for extension code)
+from torchref.utils.device_mixin import DeviceMixin
 
 # Restraints
 # torchref.topology.restraints.Restraints is not imported here: constructing it can
 # trigger a monomer-library download, so it stays lazy.
 
-# Scaling
-from torchref.scaling import Scaler, SolventModel, ScalerBase
-
-# Maps
-from torchref.maps import DifferenceMap, Map
-
-# Device movement mixin (public API for extension code)
-from torchref.utils.device_mixin import DeviceMixin
 
 __all__ = [
     # Version and paths
@@ -133,6 +135,7 @@ __all__ = [
     "sigma_cutoff_ed",
     # Data I/O
     "ReflectionData",
+    "ScaledDataset",
     "DatasetCollection",
     "read_mtz",
     "read_cif",

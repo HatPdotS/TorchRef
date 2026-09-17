@@ -5,8 +5,8 @@ This module provides target (loss) functions for X-ray, geometry, and ADP restra
 """
 
 from .adp import (
-    ADPSigdTarget,
     ADPLocalityTarget,
+    ADPSigdTarget,
     ADPSimilarityTarget,
     ADPTarget,
     RigidBondTarget,
@@ -20,9 +20,11 @@ from .base import (
     von_mises_nll,
 )
 from .collection import (
+    COLLECTION_XRAY_TARGETS,
+    CollectionDifferenceIntensityTarget,
     CollectionDifferenceTarget,
     CollectionMLTarget,
-    CollectionRiceTarget,
+    CollectionTwoMomentIntensityTarget,
     MultiModelADPTarget,
     MultiModelGeometryTarget,
 )
@@ -31,6 +33,7 @@ from .combined import (
     TotalADPTarget,
     TotalGeometryTarget,
 )
+from .dataset_scaling import DatasetScalingTarget
 from .difference import (
     DifferenceXrayTarget,
     PhaseInformedDifferenceTarget,
@@ -64,6 +67,7 @@ from .xray import (
 )
 
 __all__ = [
+    "DatasetScalingTarget",
     # Base classes
     "Target",
     "ModelTarget",
@@ -86,8 +90,10 @@ __all__ = [
     "create_xray_target",
     # Collection (multi-dataset) targets
     "CollectionDifferenceTarget",
-    "CollectionRiceTarget",
+    "CollectionTwoMomentIntensityTarget",
     "CollectionMLTarget",
+    "CollectionDifferenceIntensityTarget",
+    "COLLECTION_XRAY_TARGETS",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
     # Difference targets

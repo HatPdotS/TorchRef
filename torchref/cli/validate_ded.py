@@ -30,17 +30,16 @@ import numpy as np
 import torch
 
 from torchref.cli._common import (
-    add_dual_model_args,
     add_dmin_arg,
+    add_dual_model_args,
     add_general_args,
     add_outdir_arg,
-
     build_dual_column_names,
     configure_unbuffered_output,
     load_model,
     load_reflection_data,
-    register_timing,
     parse_device_str,
+    register_timing,
     validate_cif_files,
     validate_files,
 )
@@ -63,6 +62,8 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
     """
     from torchref.base.coordinates.transforms_torch import (
         get_fractional_matrix,
+    )
+    from torchref.base.coordinates.transforms_torch import (
         get_inv_fractional_matrix_torch as get_inverse_fractional_matrix,
     )
     from torchref.base.electron_density.solvent_mask import add_to_solvent_mask
@@ -227,9 +228,8 @@ def setup_ded_context(
     import gemmi
 
     from torchref import DatasetCollection
-    from torchref.symmetry.reciprocal_symmetry import expand_hkl
-
     from torchref.config import get_float_dtype, normalize_device
+    from torchref.symmetry import Cell, SpaceGroup
 
     device = normalize_device(device)
 
@@ -248,15 +248,10 @@ def setup_ded_context(
     collection.add_dataset("dark", data_dark)
     collection.add_dataset("light", data_light)
     collection.scale()
+    data_dark, data_light = collection["dark"], collection["light"]
 
     if verbose >= 1:
-        print(f"Scale parameters after optimization:")
-        for name, ds in collection:
-            if hasattr(ds, "log_scale") and ds.log_scale is not None:
-                print(
-                    f"  {name}: log_scale={ds.log_scale.item():.6f} "
-                    f"(scale={torch.exp(ds.log_scale).item():.6f})"
-                )
+        print("Inter-dataset scaling:", collection.scaling_metrics)
 
     # Extract matched reflections
     hkl_all = data_dark.hkl
@@ -387,11 +382,11 @@ def compute_ded_maps(
         resolution_bins, reciprocal_cc_overall, reciprocal_cc_work,
         reciprocal_cc_free, w_delta_fcalc_asu.
     """
-    from torchref.model.model_collection import ModelCollection
+    from torchref.base.fourier.grid import get_real_grid
     from torchref.cli.collection_difference_refine import (
         setup_scaler as setup_collection_scaler,
     )
-    from torchref.base.fourier.grid import get_real_grid
+    from torchref.model.model_collection import ModelCollection
 
     device = ctx["device"]
 
@@ -551,11 +546,13 @@ def compute_ded_maps(
 
 def run_validation(args):
     """Run the DED validation pipeline."""
-    from torchref.cli.collection_difference_refine import compute_rfactors
-    from torchref.model.model_collection import ModelCollection
+    from torchref.cli.collection_difference_refine import (
+        compute_rfactors,
+    )
     from torchref.cli.collection_difference_refine import (
         setup_scaler as setup_collection_scaler,
     )
+    from torchref.model.model_collection import ModelCollection
 
     device = parse_device_str(args.device)
     outdir = Path(args.outdir)
@@ -638,6 +635,14 @@ def run_validation(args):
             "light_model": str(args.light_model),
             "fraction": args.fraction,
             "selection": args.selection,
+            # Recorded because it CHANGES THE ANSWER and is easy to leave at a
+            # different value between runs. On the figure-4 ligand, "light" masks 1535
+            # voxels and scores CC 0.869, while "both" masks 1948 and scores 0.851 --
+            # the union adds the volume the ligand vacated, where the density is
+            # negative and the model has to get a depletion right. Two runs differing
+            # only in this looked like a real improvement until the parameter was
+            # recovered by re-running, which is exactly what storing it prevents.
+            "mask_source": args.mask_source,
             "mask_radius": args.mask_radius,
             "dmin": d_min,
         },

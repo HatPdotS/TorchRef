@@ -40,6 +40,42 @@ def _check_ihm_available():
         )
 
 
+def _add_group_with_independent_populations(collection, name, fractions):
+    """Add an IHM model group, keeping its populations exactly as deposited.
+
+    ``ModelCollection`` stores populations as one activation fraction shared across
+    timepoints plus a per-timepoint branching, which is the right model for a kinetic
+    series driven by a single pump. An IHM ensemble is not that: its model groups carry
+    arbitrary, independently deposited populations, and two groups may well disagree
+    about how much of the sample is in the reference state.
+
+    So the group is registered at whatever activation the collection already holds and
+    its deposited fractions are installed as an override, which ``fractions`` returns
+    verbatim and ``write_ihm`` therefore round-trips unchanged.
+    """
+    import torch
+
+    try:
+        collection.add_timepoint(name, fractions=fractions)
+        return
+    except ValueError:
+        pass
+
+    n = len(fractions)
+    placeholder = [0.0] * n
+    placeholder[0] = 1.0 - float(collection.alpha_mean)
+    if n > 1:
+        placeholder[1] = 1.0 - placeholder[0]
+    collection.add_timepoint(name, fractions=placeholder)
+    collection[name].set_fraction_override(
+        torch.tensor(
+            fractions,
+            dtype=collection._activation_logit.dtype,
+            device=collection._activation_logit.device,
+        )
+    )
+
+
 class IHMReader:
     """
     Read IHM mmCIF files into torchref ModelCollection + IHMEnsembleMapping.
@@ -507,7 +543,9 @@ class IHMReader:
             if is_dark:
                 collection.add_dark(fractions=fractions)
             else:
-                collection.add_timepoint(group.name, fractions=fractions)
+                _add_group_with_independent_populations(
+                    collection, group.name, fractions
+                )
 
         return collection
 

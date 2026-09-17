@@ -1,9 +1,26 @@
 """
 Model collection for time-resolved kinetic refinement.
 
-Provides ModelCollection — a named dictionary of MixedModel instances at
-different timepoints that share the same base structural models (ModelFT).
-Keys match DatasetCollection keys so targets can automatically pair them.
+Provides ModelCollection — a named dictionary of mixed models at different timepoints
+that share the same base structural models (ModelFT). Keys match DatasetCollection keys
+so targets can automatically pair them.
+
+Populations are stored **factorised**, not as a free vector per timepoint::
+
+    w(t) = (1 - alpha) * e_ref  +  alpha * q(t)
+
+with one mean activation ``alpha`` shared across every timepoint and a per-timepoint
+branching ``q(t)`` over the non-reference components. This is the statement that only
+the overall degree of activation varies from crystal to crystal, while the branching
+among excited states is conserved -- and it makes the mixture exactly linear in
+``alpha``, so :meth:`ModelCollection.activation_jacobian` is constant and a second
+moment of the activation distribution costs no extra structure-factor evaluation.
+
+``ModelCollection`` owns the population parameters; each timepoint is a view onto one
+row (:class:`_SharedMixedModel`). One consequence worth knowing: freezing or unfreezing
+fractions is collection-wide, because a single activation cannot be frozen for one
+timepoint alone. Timepoints that genuinely need independent populations are driven
+through ``set_fraction_override`` instead.
 """
 
 from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
@@ -13,42 +30,55 @@ from torch import nn
 
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.device_resolution import resolve_device
+from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
     from torchref.model.mixed_model import MixedModel
 
+#: Activation fractions are clamped away from 0 and 1 before taking a logit, which
+#: would otherwise be infinite. 1e-6 is the same floor the fraction storage has always
+#: applied.
+_FRACTION_EPS = 1e-6
+
+
+def _logit(p: float) -> float:
+    """Inverse sigmoid, clamped away from the infinities at 0 and 1."""
+    p = min(max(float(p), _FRACTION_EPS), 1.0 - _FRACTION_EPS)
+    return float(torch.log(torch.tensor(p / (1.0 - p))))
+
 
 class _SharedMixedModel(DeviceMovementMixin, nn.Module):
     """
-    MixedModel variant that references shared base models without re-registering them.
+    One timepoint's view of a :class:`ModelCollection`.
 
-    Standard MixedModel wraps models in nn.ModuleList, which causes
-    double-registration when the same ModelFT objects appear in multiple
-    timepoints.  This class stores the shared models as a plain list
-    (no ownership) and only owns its own fraction parameters.
+    Owns nothing. The shared base models are held as a plain list and the population
+    parameters live on the parent collection, so neither is re-registered here --
+    the same ownership pattern in both cases, and what keeps a base model's
+    parameters from appearing once per timepoint in ``parameters()``.
 
-    An external fraction override (via ``set_fraction_override``) can replace
-    the softmax-derived fractions; while active, ``fractions`` and ``forward``
-    use the override tensor instead of ``softmax(fraction_params)``.
+    An external fraction override (via ``set_fraction_override``) replaces the
+    derived fractions; while active, ``fractions`` and ``forward`` use the override
+    tensor, and gradients flow to whatever produced it.
 
     Parameters
     ----------
     base_models : List[ModelFT]
         Shared structural models (not re-registered as submodules here).
-    initial_fractions : List[float]
-        Initial population fractions (must sum to 1).
-    frozen_fractions : bool
-        If True, fractions are excluded from optimization.
+    collection : ModelCollection
+        Owner of the activation, branching and dispersion parameters. Referenced
+        without registration.
+    index : int
+        This timepoint's row in the collection's insertion order.
     device : torch.device, optional
-        Device for fraction parameters.
+        Device to reconcile the base models onto.
     """
 
     def __init__(
         self,
         base_models: List["ModelFT"],
-        initial_fractions: List[float],
-        frozen_fractions: bool = False,
+        collection: "ModelCollection",
+        index: int,
         device: Optional[torch.device] = None,
     ):
         super().__init__()
@@ -56,33 +86,17 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         # Store as plain list — the parent ModelCollection owns the ModuleList
         self._base_models = base_models
 
-        n = len(base_models)
-        if len(initial_fractions) != n:
-            raise ValueError(
-                f"Number of fractions ({len(initial_fractions)}) must match "
-                f"number of models ({n})."
-            )
-        total = sum(initial_fractions)
-        if abs(total - 1.0) > 1e-3:
-            raise ValueError(f"Initial fractions must sum to 1.0, got {total:.6f}.")
+        # Parent reference, deliberately not a submodule: the population parameters
+        # are the collection's, shared across every timepoint.
+        self._collection_ref = ModuleReference(collection)
+        self._index = index
 
-        # Normalize to handle floating point drift
-        initial_fractions = [f / total for f in initial_fractions]
-
-        # Reconcile across *all* base models, not just the first: otherwise a
-        # mixed-device list stays unreconciled and ``fractions_tensor`` below can
-        # land on a device the later models are not on.
-        device = resolve_device(*base_models, device=device)
-
-        # Match base models' float dtype (consistent under a float64 config).
-        fractions_tensor = torch.tensor(
-            initial_fractions, dtype=base_models[0].dtype_float, device=device
-        )
-        theta = torch.log(fractions_tensor.clamp(min=1e-6))
-        self.fraction_params = nn.Parameter(theta, requires_grad=not frozen_fractions)
+        # Reconcile across *all* base models, not just the first, so a mixed-device
+        # list does not stay unreconciled.
+        resolve_device(*base_models, device=device)
 
         # Optional override: when set, fractions property returns this tensor
-        # instead of softmax(fraction_params). Used by refine_kinetics() to
+        # instead of the collection's derived row. Used by refine_kinetics() to
         # route kinetic model predictions directly into the F_calc computation.
         self._fraction_override: Optional[torch.Tensor] = None
 
@@ -91,13 +105,19 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
     # ------------------------------------------------------------------
 
     @property
+    def collection(self) -> "ModelCollection":
+        """The owning collection."""
+        return self._collection_ref.module
+
+    @property
     def fractions(self) -> torch.Tensor:
         """Normalized population fractions -- the override tensor while one is
-        set (see ``set_fraction_override``), else ``softmax(fraction_params)``.
+        set (see ``set_fraction_override``), else this timepoint's row of the
+        parent's :meth:`ModelCollection.fractions_matrix`.
         """
         if self._fraction_override is not None:
             return self._fraction_override
-        return torch.softmax(self.fraction_params, dim=0)
+        return self.collection.fractions_matrix()[self._index]
 
     @property
     def models(self) -> List["ModelFT"]:
@@ -193,22 +213,30 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
     # ------------------------------------------------------------------
 
     def freeze_fractions(self):
-        self.fraction_params.requires_grad = False
+        """Freeze the population parameters.
+
+        **Collection-wide.** The mean activation is a single parameter shared by every
+        timepoint, so it cannot be frozen for one timepoint alone; this delegates to
+        :meth:`ModelCollection.freeze_all_fractions`.
+        """
+        self.collection.freeze_all_fractions()
 
     def unfreeze_fractions(self):
-        self.fraction_params.requires_grad = True
+        """Unfreeze the population parameters. Collection-wide; see
+        :meth:`freeze_fractions`."""
+        self.collection.unfreeze_all_fractions()
 
     def set_fraction_override(self, fractions: torch.Tensor):
         """Override fractions with an external tensor (e.g. from kinetic model).
 
-        While active, ``self.fractions`` returns this tensor instead of
-        ``softmax(fraction_params)``, allowing gradients to flow through
-        the external source.
+        While active, ``self.fractions`` returns this tensor instead of the
+        collection's derived row, allowing gradients to flow through the external
+        source.
         """
         self._fraction_override = fractions
 
     def clear_fraction_override(self):
-        """Remove fraction override, reverting to softmax(fraction_params)."""
+        """Remove the fraction override, reverting to the collection's derived row."""
         self._fraction_override = None
 
     # ------------------------------------------------------------------
@@ -229,8 +257,12 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
     def __repr__(self):
         fracs = self.fractions.detach().tolist()
         frac_str = ", ".join(f"{f:.3f}" for f in fracs)
-        frozen_str = "frozen" if not self.fraction_params.requires_grad else "learnable"
-        return f"_SharedMixedModel({len(self._base_models)} models, fractions=[{frac_str}], {frozen_str})"
+        learnable = self.collection._activation_logit.requires_grad
+        frozen_str = "learnable" if learnable else "frozen"
+        return (
+            f"_SharedMixedModel({len(self._base_models)} models, "
+            f"fractions=[{frac_str}], {frozen_str})"
+        )
 
 
 class ModelCollection(DeviceMovementMixin, nn.Module):
@@ -280,9 +312,39 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         # Register base models as owned submodules (single source of truth)
         self._base_models = nn.ModuleList(base_models)
 
-        # Per-timepoint mixed models (own only fraction params)
+        # Per-timepoint views (own nothing; see _SharedMixedModel)
         self._timepoints = nn.ModuleDict()
         self._order: List[str] = []
+
+        device = resolve_device(*base_models)
+        dtype = base_models[0].dtype_float
+
+        # --- population parameters -------------------------------------
+        #
+        # Only the *overall* activation varies from crystal to crystal; the branching
+        # among excited components is conserved. So the populations factorise as
+        #
+        #     w(t) = (1 - alpha) * e_ref  +  alpha * q(t)
+        #
+        # with one activation shared across timepoints and a per-timepoint branching
+        # distribution over the K-1 non-reference components. Both are frozen by
+        # default: population refinement is opt-in.
+        self._activation_logit = nn.Parameter(
+            torch.tensor(_logit(1e-6), dtype=dtype, device=device),
+            requires_grad=False,
+        )
+        self._branching_logits = nn.ParameterList()
+        self._branching_rows: Dict[str, int] = {}
+
+        # Dispersion of the activation across crystals, as the fraction of its
+        # maximum: sigma_alpha^2 = alpha (1 - alpha) * lambda, so 0 <= lambda <= 1
+        # holds by construction. Stored as a plain float while fixed, because
+        # sigmoid can never return exactly 0 and lambda = 0 is what reproduces the
+        # single-moment (coherent) model.
+        self._lambda_logit = nn.Parameter(
+            torch.zeros((), dtype=dtype, device=device), requires_grad=False
+        )
+        self._lambda_fixed: Optional[float] = 0.0
 
         if self.verbose > 0:
             print(
@@ -322,20 +384,83 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         n = len(self._base_models)
         if fractions is None:
             fractions = [1.0 / n] * n
+        if len(fractions) != n:
+            raise ValueError(
+                f"Number of fractions ({len(fractions)}) must match "
+                f"number of models ({n})."
+            )
+        total = sum(fractions)
+        if abs(total - 1.0) > 1e-3:
+            raise ValueError(f"Initial fractions must sum to 1.0, got {total:.6f}.")
+        fractions = [f / total for f in fractions]
+
+        index = len(self._order)
+        self._install_populations(name, fractions)
 
         mixed = _SharedMixedModel(
             base_models=list(self._base_models),
-            initial_fractions=fractions,
-            frozen_fractions=frozen_fractions,
+            collection=self,
+            index=index,
         )
         self._timepoints[name] = mixed
         self._order.append(name)
+
+        if frozen_fractions:
+            self.freeze_all_fractions()
 
         if self.verbose > 0:
             frac_str = ", ".join(f"{f:.3f}" for f in fractions)
             print(f"  Added timepoint '{name}': fractions=[{frac_str}]")
 
         return self
+
+    def _install_populations(self, name: str, fractions: List[float]) -> None:
+        """Invert requested fractions into the (activation, branching) factorisation.
+
+        The reference component's weight is ``1 - alpha`` by construction, so a
+        timepoint that is pure reference carries no branching row and leaves the
+        activation alone. Every other timepoint pins the shared activation; a second
+        one asking for a different value cannot be represented and is rejected rather
+        than silently projected.
+
+        Raises
+        ------
+        ValueError
+            If ``fractions`` implies an activation incompatible with one already set
+            by an earlier timepoint.
+        """
+        alpha = 1.0 - fractions[0]
+
+        if alpha <= _FRACTION_EPS:
+            # Pure reference: this is the dark / ground state, i.e. the alpha = 0
+            # evaluation of the same parametrisation. No branching row.
+            return
+
+        current = float(self.alpha_mean)
+        if self._branching_rows:
+            if abs(alpha - current) > 1e-3:
+                established = ", ".join(sorted(self._branching_rows))
+                raise ValueError(
+                    f"Timepoint {name!r} asks for activation {alpha:.4f}, but "
+                    f"{established} already set it to {current:.4f}. One activation "
+                    f"fraction is shared across all timepoints -- only the branching "
+                    f"among excited components varies with time. To drive timepoints "
+                    f"with independent populations, use set_fraction_override() on "
+                    f"each one instead of passing fractions here."
+                )
+        else:
+            with torch.no_grad():
+                self._activation_logit.fill_(_logit(alpha))
+
+        # Branching over the K-1 non-reference components, renormalised within alpha.
+        excited = torch.tensor(
+            [f / alpha for f in fractions[1:]],
+            dtype=self._activation_logit.dtype,
+            device=self._activation_logit.device,
+        )
+        logits = torch.log(excited.clamp(min=_FRACTION_EPS))
+        self._branching_rows[name] = len(self._branching_logits)
+        self._branching_logits.append(nn.Parameter(logits, requires_grad=False))
 
     def add_dark(
         self, fractions: Optional[List[float]] = None
@@ -359,7 +484,9 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             n = len(self._base_models)
             fractions = [0.0] * n
             fractions[0] = 1.0
-        return self.add_timepoint(self._dark_key, fractions, frozen_fractions=True)
+        # No frozen_fractions here: the reference is the alpha = 0 evaluation of the
+        # shared parametrisation, so it owns nothing that could be frozen.
+        return self.add_timepoint(self._dark_key, fractions)
 
     # ------------------------------------------------------------------
     # Class methods
@@ -549,13 +676,271 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         return {name: self._timepoints[name].fractions for name in self._order}
 
     def get_fractions_matrix(self) -> torch.Tensor:
-        """
-        All fractions as a matrix [n_timepoints, n_models].
+        """All fractions as a matrix ``[n_timepoints, n_models]``, in insertion order.
 
-        Rows are ordered by ``self._order`` (i.e. insertion order).
+        Alias of :meth:`fractions_matrix`, kept because it is the established name.
+        """
+        return self.fractions_matrix()
+
+    # ------------------------------------------------------------------
+    # Population factorisation
+    # ------------------------------------------------------------------
+
+    @property
+    def alpha_mean(self) -> torch.Tensor:
+        """Mean activation fraction, shared across all timepoints."""
+        return torch.sigmoid(self._activation_logit)
+
+    @property
+    def lambda_twin(self) -> torch.Tensor:
+        """Activation dispersion as a fraction of its maximum, in ``[0, 1]``.
+
+        Zero is the coherent single-moment model. One means every crystal is either
+        fully activated or fully dark. Exactly representable while fixed; once
+        refinement is enabled it is ``sigmoid`` of a parameter and therefore strictly
+        interior.
+        """
+        if self._lambda_fixed is not None:
+            return torch.tensor(
+                self._lambda_fixed,
+                dtype=self._lambda_logit.dtype,
+                device=self._lambda_logit.device,
+            )
+        return torch.sigmoid(self._lambda_logit)
+
+    @property
+    def sigma_alpha_sq(self) -> torch.Tensor:
+        """Variance of the activation across crystals.
+
+        ``alpha (1 - alpha) * lambda``, so ``0 <= sigma_alpha_sq <= alpha (1 - alpha)``
+        holds by construction -- the upper bound being the Bernoulli case.
+        """
+        alpha = self.alpha_mean
+        return alpha * (1.0 - alpha) * self.lambda_twin
+
+    def branching(self) -> torch.Tensor:
+        """Per-timepoint distribution over the non-reference components.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(n_branching_rows, n_base_models - 1)``, rows summing to 1.
+            Empty when no non-reference timepoint has been added.
+        """
+        if not len(self._branching_logits):
+            return torch.zeros(
+                (0, max(len(self._base_models) - 1, 0)),
+                dtype=self._activation_logit.dtype,
+                device=self._activation_logit.device,
+            )
+        return torch.stack(
+            [torch.softmax(row, dim=0) for row in self._branching_logits], dim=0
+        )
+
+    def activation_jacobian(self) -> torch.Tensor:
+        """``d(fractions) / d(alpha)`` for every timepoint.
+
+        Shape ``(n_timepoints, n_base_models)``. Reference-only rows are exactly zero,
+        so the reference dataset carries no activation gradient. Every other row is
+        ``q(t) - e_ref``, whose entries sum to zero because the fractions stay on the
+        simplex.
+
+        This is what makes a second moment computable through the same machinery as the
+        first: the mixture is exactly linear in ``alpha``, so this Jacobian is constant
+        in ``alpha`` and can be scaled by the same affine scaler as the mixture itself.
+        """
+        n_models = len(self._base_models)
+        dtype = self._activation_logit.dtype
+        device = self._activation_logit.device
+
+        q_all = self.branching()
+        rows = []
+        for name in self._order:
+            row = torch.zeros(n_models, dtype=dtype, device=device)
+            if name in self._branching_rows:
+                q = q_all[self._branching_rows[name]]
+                row = torch.cat(
+                    [torch.full((1,), -1.0, dtype=dtype, device=device), q]
+                )
+            rows.append(row)
+        if not rows:
+            return torch.zeros((0, n_models), dtype=dtype, device=device)
+        return torch.stack(rows, dim=0)
+
+    def fractions_matrix(self) -> torch.Tensor:
+        """Population fractions for every timepoint, ``[n_timepoints, n_models]``.
+
+        ``e_ref + alpha * activation_jacobian``. Reference-only rows come out as exactly
+        ``e_ref`` with no gradient path to the activation.
+        """
+        n_models = len(self._base_models)
+        dtype = self._activation_logit.dtype
+        device = self._activation_logit.device
+
+        e_ref = torch.zeros(n_models, dtype=dtype, device=device)
+        e_ref[0] = 1.0
+        return e_ref.unsqueeze(0) + self.alpha_mean * self.activation_jacobian()
+
+    def fraction_parameters(self) -> List[nn.Parameter]:
+        """The population parameters, for handing to an optimizer.
+
+        The shared activation and every branching row, plus the dispersion when it is
+        refinable. Replaces reaching into a per-timepoint parameter.
+        """
+        params: List[nn.Parameter] = [self._activation_logit]
+        params.extend(self._branching_logits)
+        if self._lambda_fixed is None:
+            params.append(self._lambda_logit)
+        return params
+
+    def set_activation(self, alpha: float) -> "ModelCollection":
+        """Set the shared mean activation fraction, in place and without gradient."""
+        if not 0.0 <= float(alpha) <= 1.0:
+            raise ValueError(f"alpha must lie in [0, 1]; got {alpha}")
+        with torch.no_grad():
+            self._activation_logit.fill_(_logit(alpha))
+        return self
+
+    def set_branching(self, name: str, q: torch.Tensor) -> "ModelCollection":
+        """Set one timepoint's branching distribution, in place and without gradient.
+
+        Parameters
+        ----------
+        name : str
+            Timepoint key. Must be a non-reference timepoint.
+        q : torch.Tensor
+            Weights over the ``n_base_models - 1`` non-reference components. Normalised
+            internally; need not sum to 1.
+        """
+        if name not in self._branching_rows:
+            raise KeyError(
+                f"{name!r} has no branching row -- it is the reference timepoint, "
+                f"whose fractions are fixed at the alpha = 0 evaluation."
+            )
+        q = torch.as_tensor(
+            q, dtype=self._activation_logit.dtype, device=self._activation_logit.device
+        )
+        q = q / q.sum()
+        with torch.no_grad():
+            self._branching_logits[self._branching_rows[name]].copy_(
+                torch.log(q.clamp(min=_FRACTION_EPS))
+            )
+        return self
+
+    def set_lambda_twin(
+        self, value: Optional[float], refinable: bool = False
+    ) -> "ModelCollection":
+        """Set the activation dispersion, fixed or refinable.
+
+        Parameters
+        ----------
+        value : float or None
+            Dispersion in ``[0, 1]``. ``None`` keeps the current value and only changes
+            refinability.
+        refinable : bool, optional
+            If True, ``lambda_twin`` becomes ``sigmoid`` of a live parameter and joins
+            :meth:`fraction_parameters`. Default False, which stores an exact float --
+            the only way ``lambda_twin`` can be exactly 0.
+        """
+        if value is not None:
+            if not 0.0 <= float(value) <= 1.0:
+                raise ValueError(f"lambda_twin must lie in [0, 1]; got {value}")
+            with torch.no_grad():
+                self._lambda_logit.fill_(_logit(value))
+        if refinable:
+            self._lambda_fixed = None
+            self._lambda_logit.requires_grad_(True)
+        else:
+            self._lambda_fixed = (
+                float(value) if value is not None else float(self.lambda_twin)
+            )
+            self._lambda_logit.requires_grad_(False)
+        return self
+
+    # ------------------------------------------------------------------
+    # Batched structure factors
+    # ------------------------------------------------------------------
+
+    def compute_component_fcalcs(
+        self, hkl: torch.Tensor, recalc: bool = False
+    ) -> torch.Tensor:
+        """Per-base-model structure factors, stacked.
+
+        Each base model is evaluated once, so a caller that needs several fraction
+        mixtures of the same models pays for the structure factors once rather than
+        once per mixture.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices of shape (n_reflections, 3). These reach the models
+            unchanged, so pass the *signed* indices when Bijvoet mates must be
+            distinguished -- or go through
+            :meth:`~torchref.io.datasets.collection.DatasetCollection.component_structure_factors`,
+            which handles the convention.
+        recalc : bool, optional
+            Force recomputation rather than reusing each model's cached SF.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex structure factors of shape ``(n_base_models, n_reflections)``.
         """
         return torch.stack(
-            [self._timepoints[n].fractions for n in self._order], dim=0
+            [m(hkl, recalc=recalc) for m in self._base_models], dim=0
+        )
+
+    def mix_component_fcalcs(
+        self, component_fcalcs: torch.Tensor, weights: torch.Tensor
+    ) -> torch.Tensor:
+        """Contract stacked per-component SFs with a weight matrix.
+
+        ``weights [T, K] @ component_fcalcs [K, R] -> [T, R]``. Separated from
+        :meth:`compute_component_fcalcs` because the same component stack is contracted
+        with more than one weight matrix -- the fractions themselves, and any derivative
+        of them with respect to a shared parameter.
+
+        Parameters
+        ----------
+        component_fcalcs : torch.Tensor
+            Complex SFs of shape ``(K, n_reflections)``.
+        weights : torch.Tensor
+            Real weights of shape ``(T, K)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex SFs of shape ``(T, n_reflections)``.
+        """
+        return torch.einsum(
+            "tk,kr->tr", weights.to(component_fcalcs.dtype), component_fcalcs
+        )
+
+    def compute_all_fcalc(
+        self, hkl: torch.Tensor, recalc: bool = False
+    ) -> torch.Tensor:
+        """Mixed ``F_calc`` for every timepoint at once.
+
+        Equivalent to calling each timepoint's ``forward`` in turn, but evaluates each
+        shared base model once instead of once per timepoint. Rows follow
+        :meth:`get_fractions_matrix`, i.e. insertion order.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices of shape (n_reflections, 3); see
+            :meth:`compute_component_fcalcs` on the index convention.
+        recalc : bool, optional
+            Force recomputation rather than reusing each model's cached SF.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex SFs of shape ``(n_timepoints, n_reflections)``.
+        """
+        component_fcalcs = self.compute_component_fcalcs(hkl, recalc=recalc)
+        return self.mix_component_fcalcs(
+            component_fcalcs, self.get_fractions_matrix()
         )
 
     # ------------------------------------------------------------------
@@ -563,15 +948,25 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
     # ------------------------------------------------------------------
 
     def freeze_all_fractions(self):
-        """Freeze fractions at all timepoints."""
-        for _, mixed in self:
-            mixed.freeze_fractions()
+        """Exclude the population parameters from optimization.
+
+        Acts on the shared activation and every branching row. There is nothing
+        per-timepoint to freeze: one activation serves all of them, and the reference
+        timepoint has no parameters at all.
+        """
+        self._activation_logit.requires_grad_(False)
+        for row in self._branching_logits:
+            row.requires_grad_(False)
 
     def unfreeze_all_fractions(self):
-        """Unfreeze fractions at all timepoints (except dark)."""
-        for name, mixed in self:
-            if name != self._dark_key:
-                mixed.unfreeze_fractions()
+        """Include the population parameters in optimization.
+
+        The dispersion ``lambda_twin`` is *not* affected; enable it explicitly with
+        :meth:`set_lambda_twin` so it can never be refined by accident.
+        """
+        self._activation_logit.requires_grad_(True)
+        for row in self._branching_logits:
+            row.requires_grad_(True)
 
     def freeze_structures(self):
         """Freeze xyz and adp on all base models."""

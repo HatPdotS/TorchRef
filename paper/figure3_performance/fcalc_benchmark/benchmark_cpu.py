@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 
 
-import torch
-from torchref import ReflectionData 
-from torchref import ModelFT
+import os
 from time import time
+
+import torch
 from iotbx import pdb
 
+from torchref import ModelFT, ReflectionData
 
-import os
 _data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 mtz_file = os.path.join(_data_dir, '1DAW.mtz')
 pdb_file = os.path.join(_data_dir, '1DAW.pdb')
@@ -22,7 +22,7 @@ print(f"d_min: {d_min}")
 
 M = ModelFT(max_res=d_min, device=device,radius_angstrom=4.0).load_pdb(pdb_file)
 
-hkl, _, _, _ = data()
+hkl = data.hkl
 M(hkl, recalc=True)
 
 t_start = time()
@@ -48,6 +48,4 @@ for _ in range(10):
 t_end = time()
 
 
-
 print(f"Elapsed time for 10 runs of cctbx calculation: {t_end - t_start} seconds")
-
