@@ -80,30 +80,28 @@ LAMBDA_TWIN = 0.2
 @pytest.fixture(scope="module")
 def cli_script(project_root):
     script = project_root / "torchref" / "cli" / "collection_difference_refine.py"
-    if not script.exists():
-        pytest.skip("difference-refine CLI not found")
+    assert script.is_file()
     return script
 
 
 @pytest.fixture(scope="module")
 def intensity_pair(mtz_dir, pdb_dir, tmp_path_factory):
-    """A dark/light pair carrying I/SIGI, from the only fixture that has them."""
+    """Write a dark/light I/SIGI pair from deposited 1DAW observations."""
     import torch
 
     from torchref import ReflectionData
+    from torchref.config import get_int_dtype
 
     mtz = mtz_dir / "1DAW.mtz"
     pdb = pdb_dir / "1DAW.pdb"
-    if not (mtz.exists() and pdb.exists()):
-        pytest.skip("1DAW fixture not present")
+    assert mtz.is_file() and pdb.is_file()
 
     data = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz))
-    if data.I is None:
-        pytest.skip("1DAW loaded without intensities")
+    assert data.I is not None
 
     out = tmp_path_factory.mktemp("two_moment_cli")
     n = len(data)
-    idx = torch.arange(n)
+    idx = torch.arange(n, dtype=get_int_dtype(), device=data.device)
     # Slightly different reflection sets, as a real dark/light pair would be.
     data.__select__(idx < int(n * 0.97)).write_mtz(str(out / "dark.mtz"))
     data.__select__(idx >= int(n * 0.03)).write_mtz(str(out / "light.mtz"))

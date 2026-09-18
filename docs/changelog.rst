@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- Align difference-refinement tests with fixture ownership, integration placement and configured dtype/device conventions; share fresh collection setup and exercise noise statistics on deposited amplitudes.
 - Read scaled observations directly in subset and collection accessors, avoiding unused sigma/amplitude corrections and removing redundant internal forwarding helpers.
 - Remove one-off diagnostic scripts and consolidate difference-refinement regression tests while retaining numerical and output-format coverage.
 - Restore the cell and space-group imports needed by difference-density validation setup.

@@ -11,6 +11,7 @@ Keep a fixture in its test module when only that module needs it.
 | `devices.py` | Configured device, explicit backends, device parametrization | All tests; existing per-fixture scopes |
 | `precision.py` | Comparison tolerances and CPU-double reference context | All tests; reference fixture restores state after each test |
 | `objects.py` | Mutable models, data, scalers and restraints | All tests; fresh per test except explicitly shared bundles |
+| `collections.py` | Paired difference-refinement datasets, models and scalers | All tests; fresh per test |
 | `numerical.py` | Synthetic tensors and factories | Imported only by `unit/conftest.py`; function |
 | `functional.py` | Read-only `shared_model_ft` | Imported only by `functional/conftest.py`; module |
 

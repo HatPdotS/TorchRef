@@ -15,6 +15,7 @@ pytest_plugins = (
     "tests.fixtures.devices",
     "tests.fixtures.precision",
     "tests.fixtures.objects",
+    "tests.fixtures.collections",
 )
 
 _HAS_OPENMM = importlib.util.find_spec("openmm") is not None

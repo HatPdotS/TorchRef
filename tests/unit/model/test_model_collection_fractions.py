@@ -4,13 +4,22 @@ import pytest
 import torch
 from torch import nn
 
+from torchref.config import (
+    get_complex_dtype,
+    get_default_device,
+    get_float_dtype,
+    get_int_dtype,
+)
+
 
 class _StubModel(nn.Module):
     """Minimal stand-in for ``ModelFT`` for fraction bookkeeping."""
 
     def __init__(self, seed: int):
         super().__init__()
-        self.anchor = nn.Parameter(torch.zeros(1))
+        self.anchor = nn.Parameter(
+            torch.zeros(1, device=get_default_device(), dtype=get_float_dtype())
+        )
         self._seed = seed
 
     @property
@@ -28,7 +37,7 @@ class _StubModel(nn.Module):
             1, n + 1, dtype=self.anchor.dtype, device=self.anchor.device
         )
         amp = (base * float(self._seed + 1)) + self.anchor
-        return amp.to(torch.complex64)
+        return amp.to(get_complex_dtype())
 
 
 @pytest.fixture
@@ -44,7 +53,11 @@ def two_model_collection():
 
 @pytest.fixture
 def hkl():
-    return torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 0], [2, 0, 1]])
+    return torch.tensor(
+        [[1, 0, 0], [0, 1, 0], [1, 1, 0], [2, 0, 1]],
+        device=get_default_device(),
+        dtype=get_int_dtype(),
+    )
 
 
 class TestPopulationFactorisation:
@@ -77,10 +90,10 @@ class TestPopulationFactorisation:
         assert dark.fractions[0].item() == 1.0
 
     @pytest.mark.unit
-    def test_fraction_dtype_and_device_follow_the_base_models(self):
+    def test_fraction_dtype_and_device_follow_the_base_models(self, any_device):
         from torchref.model.model_collection import ModelCollection
 
-        models = [_StubModel(0), _StubModel(1)]
+        models = [_StubModel(0).to(any_device), _StubModel(1).to(any_device)]
         mc = ModelCollection(models, verbose=0)
         mc.add_timepoint("t", [0.6, 0.4])
         assert mc._activation_logit.dtype == models[0].dtype_float
@@ -150,7 +163,9 @@ class TestOverride:
     @pytest.mark.unit
     def test_override_replaces_fractions_and_clears_back(self, two_model_collection):
         mixed = two_model_collection["light"]
-        forced = torch.tensor([0.1, 0.9])
+        forced = torch.tensor(
+            [0.1, 0.9], device=get_default_device(), dtype=get_float_dtype()
+        )
 
         mixed.set_fraction_override(forced)
         assert mixed.fractions is forced
@@ -168,7 +183,11 @@ class TestOverride:
         mixed = two_model_collection["light"]
         before = mixed(hkl, recalc=True)
 
-        mixed.set_fraction_override(torch.tensor([0.1, 0.9]))
+        mixed.set_fraction_override(
+            torch.tensor(
+                [0.1, 0.9], device=get_default_device(), dtype=get_float_dtype()
+            )
+        )
         after = mixed(hkl, recalc=True)
 
         assert not torch.allclose(before, after)
@@ -177,7 +196,12 @@ class TestOverride:
     def test_override_carries_gradient(self, two_model_collection, hkl):
         """Gradients must flow through the override to whatever produced it."""
         mixed = two_model_collection["light"]
-        forced = torch.tensor([0.4, 0.6], requires_grad=True)
+        forced = torch.tensor(
+            [0.4, 0.6],
+            requires_grad=True,
+            device=get_default_device(),
+            dtype=get_float_dtype(),
+        )
         mixed.set_fraction_override(forced)
 
         mixed(hkl, recalc=True).abs().sum().backward()
@@ -291,12 +315,16 @@ class TestSharedActivation:
         assert float(mc.alpha_mean) == pytest.approx(0.3, abs=1e-5)
         assert torch.allclose(
             mc["early"].fractions,
-            torch.tensor([0.7, 0.3, 0.0]),
+            torch.tensor(
+                [0.7, 0.3, 0.0], device=get_default_device(), dtype=get_float_dtype()
+            ),
             atol=1e-5,
         )
         assert torch.allclose(
             mc["late"].fractions,
-            torch.tensor([0.7, 0.0, 0.3]),
+            torch.tensor(
+                [0.7, 0.0, 0.3], device=get_default_device(), dtype=get_float_dtype()
+            ),
             atol=1e-5,
         )
 
@@ -335,8 +363,17 @@ class TestActivationJacobian:
         jac = mc.activation_jacobian()
 
         assert jac.shape == (len(mc), mc.n_base_models)
-        assert torch.allclose(jac.sum(dim=1), torch.zeros(len(mc)), atol=1e-6)
-        assert torch.equal(jac[0], torch.zeros(mc.n_base_models))
+        assert torch.allclose(
+            jac.sum(dim=1),
+            torch.zeros(len(mc), device=get_default_device(), dtype=get_float_dtype()),
+            atol=1e-6,
+        )
+        assert torch.equal(
+            jac[0],
+            torch.zeros(
+                mc.n_base_models, device=get_default_device(), dtype=get_float_dtype()
+            ),
+        )
         assert float(jac[1][0]) == pytest.approx(-1.0)
 
     @pytest.mark.unit
@@ -344,7 +381,9 @@ class TestActivationJacobian:
         self, two_model_collection
     ):
         mc = two_model_collection
-        e_ref = torch.zeros(mc.n_base_models)
+        e_ref = torch.zeros(
+            mc.n_base_models, device=get_default_device(), dtype=get_float_dtype()
+        )
         e_ref[0] = 1.0
         expected = e_ref.unsqueeze(0) + mc.alpha_mean * mc.activation_jacobian()
         assert torch.allclose(mc.fractions_matrix(), expected)

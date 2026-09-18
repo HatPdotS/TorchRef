@@ -3,28 +3,28 @@
 import pytest
 import torch
 
+from torchref.config import get_default_device, get_float_dtype, get_int_dtype
+
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
-def fcalc_scene():
-    """A small P1 scene with a deliberately wide dynamic range."""
-    from torchref.io.datasets import FcalcDataset
+def fcalc_scene(loaded_reflection_data):
+    """Use deposited 1DAW amplitudes with deterministic phases for noisy draws."""
+    from torchref.io import FcalcDataset
 
-    dataset = FcalcDataset.from_cell_and_resolution(
-        cell=[30.0, 32.0, 34.0, 90.0, 90.0, 90.0],
-        spacegroup="P 1",
-        d_min=3.0,
-        device=torch.device("cpu"),
+    data = loaded_reflection_data
+    result = FcalcDataset(
+        hkl=data.hkl.clone(),
+        cell=data.cell,
+        spacegroup=data.spacegroup,
+        device=data.device,
     )
-    n = len(dataset.hkl)
-    gen = torch.Generator().manual_seed(17)
-    # Amplitudes spanning three orders of magnitude, so I spans six.
-    amp = 10.0 ** (torch.rand(n, generator=gen) * 3.0 - 1.0)
-    phase = torch.rand(n, generator=gen) * 6.283
-    dataset.set_fcalc((amp * torch.exp(1j * phase)).to(torch.complex64))
-    return dataset
+    phase = torch.linspace(-2.0, 2.0, len(data), dtype=data.F.dtype, device=data.device)
+    result.set_fcalc(data.F * torch.exp(1j * phase))
+    return result
 
 
-@pytest.mark.unit
 class TestNegativesSurvive:
     def test_some_intensities_come_out_negative(self, fcalc_scene):
         noisy = fcalc_scene.add_noise(sigma_mul=0.5, seed=3, verbose=False)
@@ -43,7 +43,7 @@ class TestNegativesSurvive:
         # Where the intensity is negative the amplitude is floored at zero, so the two
         # cannot agree -- which is exactly the information a clamp would have destroyed.
         assert torch.allclose(
-            noisy.fcalc_amp[negative], torch.zeros(int(negative.sum()))
+            noisy.fcalc_amp[negative], torch.zeros_like(noisy.fcalc_amp[negative])
         )
 
     @staticmethod
@@ -70,7 +70,6 @@ class TestNegativesSurvive:
         )
 
 
-@pytest.mark.unit
 class TestSigmaAndHalves:
     def test_sigma_of_the_mean_is_the_single_draw_sigma_over_root_two(
         self, fcalc_scene
@@ -81,9 +80,10 @@ class TestSigmaAndHalves:
         # not of the draw, so it must be identical across seeds.
         assert torch.allclose(a.I_sigma, b.I_sigma)
 
-        expected = torch.sqrt(torch.tensor(0.2) ** 2 * fcalc_scene.fcalc_amp**4) / (
-            2.0**0.5
-        )
+        expected = torch.sqrt(
+            torch.tensor(0.2, device=get_default_device(), dtype=get_float_dtype()) ** 2
+            * fcalc_scene.fcalc_amp**4
+        ) / (2.0**0.5)
         assert torch.allclose(a.I_sigma, expected, rtol=1e-5)
 
     def test_amplitude_sigma_uses_the_true_amplitude(self, fcalc_scene):
@@ -118,43 +118,29 @@ class TestSigmaAndHalves:
         assert fcalc_scene.I is None
 
 
-@pytest.mark.unit
 class TestReferenceDriven:
-    def test_sigmas_are_grafted_from_the_reference(self, fcalc_scene, mtz_dir):
-        """The path that matters for real data: per-reflection sigmas from a measured
-        dataset rather than a parametric model."""
-        from torchref import ReflectionData
-        from torchref.io.datasets import FcalcDataset
-
-        mtz = mtz_dir / "1DAW.mtz"
-        if not mtz.exists():
-            pytest.skip("1DAW fixture not present")
-        ref = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz))
-        if ref.I is None:
-            pytest.skip("1DAW loaded without intensities")
-
-        # Build on the reference's own HKL list, which is what makes grafting 1:1.
-        scene = FcalcDataset(
-            hkl=ref.hkl.clone(),
-            cell=fcalc_scene.cell,
-            spacegroup=fcalc_scene.spacegroup,
-            device=torch.device("cpu"),
+    def test_sigmas_are_grafted_from_the_reference(
+        self, fcalc_scene, loaded_reflection_data
+    ):
+        """Use the reference's measured uncertainties for both independent draws."""
+        noisy = fcalc_scene.add_noise(
+            reference=loaded_reflection_data, seed=1, verbose=False
         )
-        gen = torch.Generator().manual_seed(2)
-        amp = torch.rand(len(ref.hkl), generator=gen) * 100.0
-        scene.set_fcalc((amp + 0j).to(torch.complex64))
+        torch.testing.assert_close(
+            noisy.I_sigma, loaded_reflection_data.I_sigma / (2.0**0.5)
+        )
 
-        noisy = scene.add_noise(reference=ref, seed=1, verbose=False)
-        assert torch.allclose(noisy.I_sigma, ref.I_sigma / (2.0**0.5))
-
-    def test_a_mismatched_reference_is_rejected(self, fcalc_scene, mtz_dir):
-        from torchref import ReflectionData
-
-        mtz = mtz_dir / "1DAW.mtz"
-        if not mtz.exists():
-            pytest.skip("1DAW fixture not present")
-        ref = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz))
-
+    def test_a_mismatched_reference_is_rejected(
+        self, fcalc_scene, loaded_reflection_data
+    ):
+        ref = loaded_reflection_data.__select__(
+            torch.arange(
+                1,
+                len(loaded_reflection_data),
+                device=loaded_reflection_data.device,
+                dtype=get_int_dtype(),
+            )
+        )
         with pytest.raises(ValueError, match="does not match"):
             fcalc_scene.add_noise(reference=ref, verbose=False)
 

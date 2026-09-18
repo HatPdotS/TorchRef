@@ -3,40 +3,16 @@
 import pytest
 import torch
 
+from torchref.config import get_default_device, get_float_dtype
 
-@pytest.fixture(scope="module")
-def pair(pdb_dir, mtz_dir):
-    """A 2-component, 2-timepoint collection on 1DAW with unequal fractions."""
-    pdb = pdb_dir / "1DAW.pdb"
-    mtz = mtz_dir / "1DAW.mtz"
-    if not (pdb.exists() and mtz.exists()):
-        pytest.skip("1DAW fixture not present")
-
-    from torchref import ReflectionData
-    from torchref.cli._common import load_model
-    from torchref.io.datasets.collection import DatasetCollection
-    from torchref.model.model_collection import ModelCollection
-
-    d_min = 2.05
-    data = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz))
-    model_a = load_model(str(pdb), max_res=d_min, device="cpu", verbose=0)
-    model_b = load_model(str(pdb), max_res=d_min, device="cpu", verbose=0)
-    with torch.no_grad():
-        model_b.xyz.refinable_params += 0.2
-
-    dc = DatasetCollection(verbose=0, device="cpu")
-    dc.add_dataset("dark", data, set_as_reference=True)
-
-    mc = ModelCollection([model_a, model_b], dark_key="dark", verbose=0)
-    mc.add_dark()
-    mc.add_timepoint("light", [0.65, 0.35])
-    return dc, mc
+pytestmark = pytest.mark.integration
 
 
-@pytest.mark.integration
 class TestBatchedMatchesTheLoop:
-    def test_component_stack_matches_per_model_structure_factors(self, pair):
-        dc, mc = pair
+    def test_component_stack_matches_per_model_structure_factors(
+        self, difference_models
+    ):
+        dc, mc = difference_models
         data = dc["dark"]
 
         stacked = dc.component_structure_factors(mc, recalc=True)
@@ -48,9 +24,9 @@ class TestBatchedMatchesTheLoop:
                 stacked[k], reference
             ), f"component {k} differs from data.structure_factors"
 
-    def test_mixture_matches_the_per_timepoint_forward(self, pair):
-        """The whole point: one contraction standing in for T mixed forwards."""
-        dc, mc = pair
+    def test_mixture_matches_the_per_timepoint_forward(self, difference_models):
+        """A batched contraction agrees with each mixed-model forward."""
+        dc, mc = difference_models
         data = dc["dark"]
 
         stacked = dc.component_structure_factors(mc, recalc=True)
@@ -63,11 +39,11 @@ class TestBatchedMatchesTheLoop:
                 mixed[row], reference, rtol=1e-6, atol=1e-6
             ), f"timepoint {key!r} differs from its own mixed forward"
 
-    def test_compute_all_fcalc_agrees_on_the_signed_index(self, pair):
+    def test_compute_all_fcalc_agrees_on_the_signed_index(self, difference_models):
         """``compute_all_fcalc`` takes the caller's indices verbatim, so handed the
         signed ones it must reproduce the Friedel-corrected mixture up to the
         conjugation that ``component_structure_factors`` applies."""
-        dc, mc = pair
+        dc, mc = difference_models
         data = dc["dark"]
 
         direct = mc.compute_all_fcalc(data._hkl_for_sf(), recalc=True)
@@ -79,17 +55,17 @@ class TestBatchedMatchesTheLoop:
         assert torch.allclose(corrected, mixed, rtol=1e-6, atol=1e-6)
 
 
-@pytest.fixture(scope="module")
-def flagged_pair(pair):
-    """The same models against data with **manufactured** Friedel-flagged rows."""
+@pytest.fixture
+def flagged_pair(difference_models):
+    """Pair deposited models with both signed Miller-index conventions."""
     from torchref import ReflectionData
     from torchref.io.datasets.collection import DatasetCollection
 
-    dc_ref, mc = pair
+    dc_ref, mc = difference_models
     src = dc_ref["dark"]
 
     hkl = src.hkl.clone()
-    half = torch.zeros(len(hkl), dtype=torch.bool)
+    half = torch.zeros(len(hkl), dtype=torch.bool, device=get_default_device())
     half[::2] = True
     hkl[half] = -hkl[half]
 
@@ -100,17 +76,16 @@ def flagged_pair(pair):
         cell=src.cell,
         spacegroup=src.spacegroup,
         rfree_flags=src.rfree_flags.clone(),
-        device="cpu",
+        device=get_default_device(),
         verbose=0,
     )
 
     assert data.friedel_flags.any() and (~data.friedel_flags).any()
-    dc = DatasetCollection(verbose=0, device="cpu")
+    dc = DatasetCollection(verbose=0, device=get_default_device())
     dc.add_dataset("dark", data, set_as_reference=True)
     return dc, mc
 
 
-@pytest.mark.integration
 class TestConventionIsNotSkipped:
 
     def test_component_stack_is_conjugated_where_flagged(self, flagged_pair):
@@ -119,28 +94,31 @@ class TestConventionIsNotSkipped:
         data = dc["dark"]
 
         stacked = dc.component_structure_factors(mc, recalc=True)
-        naive = mc.compute_component_fcalcs(data.hkl, recalc=False)
-        assert not torch.allclose(stacked, naive)
-        for k, model in enumerate(mc.base_models):
-            reference = data.structure_factors(model, recalc=False)
-            assert torch.equal(stacked[k], reference), f"component {k} phases differ"
+        signed = mc.compute_component_fcalcs(data._hkl_for_sf(), recalc=False)
+        flagged = data.friedel_flags
+        assert torch.equal(stacked[:, flagged], signed[:, flagged].conj())
+        assert torch.equal(stacked[:, ~flagged], signed[:, ~flagged])
+        assert not torch.allclose(stacked[:, flagged], signed[:, flagged])
 
 
-@pytest.mark.integration
 class TestContraction:
-    def test_weights_matrix_is_applied_row_wise(self, pair):
+    def test_weights_matrix_is_applied_row_wise(self, difference_models):
         """A transposed einsum would still return the right shape when T == K."""
-        dc, mc = pair
+        dc, mc = difference_models
         stacked = dc.component_structure_factors(mc, recalc=True)
 
-        w = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        w = torch.tensor(
+            [[1.0, 0.0], [0.0, 1.0]],
+            device=get_default_device(),
+            dtype=get_float_dtype(),
+        )
         mixed = mc.mix_component_fcalcs(stacked, w)
 
         assert torch.equal(mixed[0], stacked[0])
         assert torch.equal(mixed[1], stacked[1])
 
-    def test_gradient_flows_through_the_contraction(self, pair):
-        dc, mc = pair
+    def test_gradient_flows_through_the_contraction(self, difference_models):
+        dc, mc = difference_models
         mc.unfreeze_all_fractions()
         stacked = dc.component_structure_factors(mc, recalc=True)
         w = mc.get_fractions_matrix()

@@ -3,28 +3,22 @@
 import pytest
 import torch
 
-
-@pytest.fixture(scope="module")
-def collection(mtz_dir):
-    """Two 1DAW datasets for selection and partition checks."""
-    mtz = mtz_dir / "1DAW.mtz"
-    if not mtz.exists():
-        pytest.skip("1DAW fixture not present")
-
-    from torchref import ReflectionData
-    from torchref.io.datasets.collection import DatasetCollection
-
-    a = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz))
-    if a.I is None:
-        pytest.skip("1DAW loaded without intensities")
-
-    dc = DatasetCollection(verbose=0, device="cpu")
-    dc.add_dataset("dark", a, set_as_reference=True)
-    dc.add_dataset("light", a)
-    return dc
+pytestmark = pytest.mark.integration
 
 
-@pytest.mark.unit
+@pytest.fixture
+def collection(loaded_reflection_data):
+    """Two independent observation sets for selection and partition checks."""
+    from torchref.io import DatasetCollection
+
+    data = loaded_reflection_data
+    return (
+        DatasetCollection(device=data.device, verbose=0)
+        .add_dataset("dark", data, set_as_reference=True)
+        .add_dataset("light", data)
+    )
+
+
 class TestThreeWayMasks:
     @pytest.mark.parametrize("use_set", ["work", "free", "val"])
     def test_rows_match_the_per_dataset_subset(self, collection, use_set):
@@ -49,27 +43,21 @@ class TestThreeWayMasks:
     def test_a_validation_set_is_carved_out_of_free_not_work(self, collection):
         """The 3-way behaviour a 2-way flag array cannot reproduce."""
         data = collection["dark"]
-        saved = None if data.validation_flags is None else data.validation_flags.clone()
-        try:
-            free_before = int(collection.stack_masks(use_set="free")[0].sum())
-            data.generate_validation_set(val_fraction_of_free=0.5, seed=0)
+        free_before = int(collection.stack_masks(use_set="free")[0].sum())
+        data.generate_validation_set(val_fraction_of_free=0.5, seed=0)
 
-            free_after = int(collection.stack_masks(use_set="free")[0].sum())
-            val_after = int(collection.stack_masks(use_set="val")[0].sum())
+        free_after = int(collection.stack_masks(use_set="free")[0].sum())
+        val_after = int(collection.stack_masks(use_set="val")[0].sum())
 
-            assert val_after > 0
-            assert free_after < free_before
-            assert free_after + val_after == pytest.approx(free_before, abs=1)
-        finally:
-            data.validation_flags = saved
-            data._subset_fp = None
+        assert val_after > 0
+        assert free_after < free_before
+        assert free_after + val_after == pytest.approx(free_before, abs=1)
 
     def test_an_unknown_subset_name_is_rejected(self, collection):
         with pytest.raises(ValueError, match="use_set must be"):
             collection.stack_masks(use_set="test")
 
 
-@pytest.mark.unit
 class TestSelectionAndErrors:
     def test_keys_argument_selects_and_orders_the_rows(self, collection):
         both = collection.stack_F_obs()
