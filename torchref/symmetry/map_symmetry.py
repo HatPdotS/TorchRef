@@ -20,6 +20,7 @@ cell metric never enters.
 from __future__ import annotations
 
 import torch
+from torchref.config import get_int_dtype
 
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -149,7 +150,7 @@ class _MapSymmetryDirect(DeviceMixin):
         transformed = transformed - torch.floor(transformed)
 
         shape_t = torch.tensor([nx, ny, nz], dtype=dtype, device=device)
-        indices = torch.round(transformed * shape_t).to(torch.int64)  # dtype-ok: rounded voxel grid indices; int64 index tensor required
+        indices = torch.round(transformed * shape_t).to(get_int_dtype())
         indices[:, 0] %= nx
         indices[:, 1] %= ny
         indices[:, 2] %= nz

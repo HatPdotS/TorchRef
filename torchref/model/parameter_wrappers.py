@@ -14,7 +14,7 @@ from typing import Optional, Union
 import torch
 from torch import nn
 
-from torchref.config import get_float_dtype, normalize_device
+from torchref.config import get_float_dtype, get_int_dtype, normalize_device
 from torchref.utils.caching import CachedForwardMixin
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -1474,11 +1474,11 @@ class OccupancyTensor(MixedTensor):
         # Use sharing_groups directly as the expansion mask
         if sharing_groups is None:
             # No sharing - each atom maps to its own index
-            expansion_mask = torch.arange(n_atoms, dtype=torch.long, device=device)  # dtype-ok: arange expansion_mask atom indices; index requires long
+            expansion_mask = torch.arange(n_atoms, dtype=torch.long, device=device)  # dtype-ok: expansion_mask is a scatter_add_ index; int64 required on torch < 2.8
             self._collapsed_shape = n_atoms
         else:
             # Use the provided index tensor
-            expansion_mask = sharing_groups.to(device=device, dtype=torch.long)  # dtype-ok: expansion_mask atom/group indices for scatter; requires long
+            expansion_mask = sharing_groups.to(device=device, dtype=torch.long)  # dtype-ok: expansion_mask is a scatter_add_ index; int64 required on torch < 2.8
             self._collapsed_shape = expansion_mask.max().item() + 1
 
         self.register_buffer("expansion_mask", expansion_mask)
@@ -1500,10 +1500,10 @@ class OccupancyTensor(MixedTensor):
                 for conf_atoms in conf_groups:
                     if isinstance(conf_atoms, (list, tuple)):
                         conf_atoms = torch.tensor(
-                            conf_atoms, dtype=torch.long, device=device  # dtype-ok: conf_atoms atom indices; indexing requires long
+                            conf_atoms, dtype=get_int_dtype(), device=device
                         )
                     else:
-                        conf_atoms = conf_atoms.to(device=device, dtype=torch.long)  # dtype-ok: conf_atoms atom indices cast; indexing requires long
+                        conf_atoms = conf_atoms.to(device=device, dtype=get_int_dtype())
 
                     # Get collapsed index for first atom
                     collapsed_idx = expansion_mask[conf_atoms[0]].item()
@@ -1531,7 +1531,7 @@ class OccupancyTensor(MixedTensor):
         # Store as dictionary with keys like 'linked_occ_2', 'linked_occ_3', etc.
         for n_conf, groups in linked_occupancies.items():
             # Shape: (N_groups, n_conf)
-            tensor = torch.tensor(groups, dtype=torch.long, device=device)  # dtype-ok: linked-occupancy group index buffer; indexing requires long
+            tensor = torch.tensor(groups, dtype=get_int_dtype(), device=device)
             self.register_buffer(f"linked_occ_{n_conf}", tensor)
 
         # Store which sizes we have
@@ -1539,7 +1539,7 @@ class OccupancyTensor(MixedTensor):
 
         # Create count buffer for vectorized collapse operations
         # counts[i] = number of atoms that map to collapsed index i
-        counts = torch.zeros(self._collapsed_shape, dtype=torch.long, device=device)  # dtype-ok: count accumulator; scatter_add source is long ones, dtype must match
+        counts = torch.zeros(self._collapsed_shape, dtype=expansion_mask.dtype, device=device)
         counts.scatter_add_(0, expansion_mask, torch.ones_like(expansion_mask))
         self.register_buffer("collapse_counts", counts)
 
@@ -2017,7 +2017,7 @@ class OccupancyTensor(MixedTensor):
         grouped = pdb_dataframe.groupby(["resname", "resseq", "chainid", "altloc"])
 
         n_atoms = len(initial_values)
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)  # dtype-ok: arange atom indices (sharing groups); index requires long
+        sharing_groups_tensor = torch.arange(n_atoms, dtype=get_int_dtype())
         # Singletons keep their arange ids (0..n_atoms-1); start multi-atom
         # group ids past that range so a group id can never collide with a
         # singleton's leftover arange id (the torch.unique compaction below

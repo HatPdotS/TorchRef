@@ -23,6 +23,7 @@ from typing import Iterator, Optional, Union
 
 import numpy as np
 import torch
+from torchref.config import get_int_dtype
 import torch.nn as nn
 from torchref.base.coordinates.local_frame import (
     frame_is_degenerate,
@@ -66,8 +67,8 @@ class _DerivedRowsMixin:
                 raise ValueError(f"{name} must reference stored rows, not riding ones")
 
         long = dict(
-            dtype=torch.int64, device=device
-        )  # dtype-ok: row index buffers; int64 index required
+            dtype=get_int_dtype(), device=device
+        )
         self.register_buffer("base_row", torch.as_tensor(base, **long))
         self.register_buffer("h_row", torch.as_tensor(h, **long))
         self.register_buffer(
@@ -96,25 +97,25 @@ class _DerivedRowsMixin:
         n_full = int(base.numel() + self.h_row.numel())
         self._n_full = n_full
         full_to_base = torch.full(
-            (max(n_full, 1),), -1, dtype=torch.int64, device=device
-        )  # dtype-ok: index map; int64
+            (max(n_full, 1),), -1, dtype=get_int_dtype(), device=device
+        )
         full_to_base[base] = torch.arange(
-            base.numel(), dtype=torch.int64, device=device
-        )  # dtype-ok: index map; int64
+            base.numel(), dtype=get_int_dtype(), device=device
+        )
         self._parent_bidx = full_to_base[self.parent_row.clamp(min=0)].clamp(min=0)
         self._n1_bidx = full_to_base[self.n1_row.clamp(min=0)].clamp(min=0)
         self._n2_bidx = full_to_base[self.n2_row.clamp(min=0)].clamp(min=0)
         # ``cat([base, derived])[gather]`` lays the full table out in one gather.
         order = torch.empty(
-            n_full, dtype=torch.int64, device=device
-        )  # dtype-ok: gather index; int64
+            n_full, dtype=get_int_dtype(), device=device
+        )
         order[base] = torch.arange(
-            base.numel(), dtype=torch.int64, device=device
-        )  # dtype-ok: gather index; int64
+            base.numel(), dtype=get_int_dtype(), device=device
+        )
         order[self.h_row] = base.numel() + torch.arange(
             self.h_row.numel(),
-            dtype=torch.int64,
-            device=device,  # dtype-ok: gather index; int64
+            dtype=get_int_dtype(),
+            device=device,
         )
         self._gather_order = order
 
@@ -226,8 +227,8 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
                 self.register_buffer(
                     buffer,
                     torch.zeros(
-                        0, dtype=torch.int64, device=self.device
-                    ),  # dtype-ok: empty row-index buffer; int64
+                        0, dtype=get_int_dtype(), device=self.device
+                    ),
                 )
             self.register_buffer(
                 "frame_valid", torch.zeros(0, dtype=torch.bool, device=self.device)
@@ -261,8 +262,8 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
         is_riding = np.zeros(n_full, dtype=bool)
         is_riding[np.asarray(frames.h_row, dtype=np.int64)] = True
         base_rows = torch.as_tensor(
-            np.nonzero(~is_riding)[0], dtype=torch.int64, device=device
-        )  # dtype-ok: row index; int64
+            np.nonzero(~is_riding)[0], dtype=get_int_dtype(), device=device
+        )
 
         if refinable_mask is None:
             base_mask = None
@@ -380,8 +381,8 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             parents = getattr(self, "_" + kind + "_parents")
             rows = getattr(self, "_" + kind + "_h")
             groups = getattr(self, "_" + kind + "_inverse")
-            selected = full_mask[parents].to(torch.int32)
-            selected.index_add_(0, groups, full_mask[self.h_row[rows]].to(torch.int32))
+            selected = full_mask[parents].to(get_int_dtype())
+            selected.index_add_(0, groups, full_mask[self.h_row[rows]].to(get_int_dtype()))
             selections.append(selected > 0)
         return selections
 

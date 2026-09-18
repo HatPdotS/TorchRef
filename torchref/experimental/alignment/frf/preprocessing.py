@@ -298,8 +298,8 @@ def fit_relative_wilson_b(
     F2_calc = (F_calc * F_calc).to(real)
     s2_obs = (s_mag * s_mag).to(real)
 
-    counts_obs = torch.zeros(n_shells, dtype=torch.int64, device=s_mag.device)  # dtype-ok: per-shell counts
-    counts_calc = torch.zeros(n_shells, dtype=torch.int64, device=s_mag.device)  # dtype-ok: per-shell counts
+    counts_obs = torch.zeros(n_shells, dtype=shell_idx_obs.dtype, device=s_mag.device)
+    counts_calc = torch.zeros(n_shells, dtype=shell_idx_calc.dtype, device=s_mag.device)
     sum_F2obs = torch.zeros(n_shells, dtype=real, device=s_mag.device)
     sum_F2calc = torch.zeros(n_shells, dtype=real, device=s_mag.device)
     sum_s2 = torch.zeros(n_shells, dtype=real, device=s_mag.device)

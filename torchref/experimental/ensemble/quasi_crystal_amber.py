@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import numpy as np
 import torch
+from torchref.config import get_int_dtype
 
 from torchref.experimental.targets.amber_target import (
     AmberTarget,
@@ -564,19 +565,19 @@ class QuasiCrystalAmberTarget(AmberTarget):
         # Index pairs (long) for the scatter from model atoms into OMM slots.
         self._src_model_idx_torch = torch.from_numpy(self._src_model_idx_np).to(
             device=device,
-            dtype=torch.long,  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
+            dtype=get_int_dtype(),
         )
         self._dst_omm_idx_torch = torch.from_numpy(self._dst_omm_idx_np).to(
             device=device,
-            dtype=torch.long,  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
+            dtype=get_int_dtype(),
         )
 
         # Index of ensemble-model atoms (in the FULL EnsembleModel layout)
         # that survived the special-position filter — used in forward to
         # subset ``xyz_per_member`` before applying the layout transform.
         self._keep_atom_idx_torch = torch.from_numpy(self._keep_atom_idx_np).to(
-            device=device, dtype=torch.long
-        )  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
+            device=device, dtype=get_int_dtype()
+        )
 
         self._omm_to_model = self._omm_to_model.to(device)
         self._buffers_device = device

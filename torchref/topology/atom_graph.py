@@ -16,6 +16,7 @@ from typing import Dict, Optional, Set, Tuple
 
 import numpy as np
 import torch
+from torchref.config import get_int_dtype
 
 from torchref.topology.edges import EdgeBlock
 from torchref.utils.device_mixin import DeviceMixin
@@ -42,8 +43,8 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     device = bonds.device
     if bonds.numel() == 0:
         return (
-            torch.zeros(n_atoms + 1, dtype=torch.int64, device=device),  # dtype-ok: CSR indptr offset array; int64 index required
-            torch.zeros(0, dtype=torch.int64, device=device),  # dtype-ok: empty CSR neighbor index array; int64 index required
+            torch.zeros(n_atoms + 1, dtype=get_int_dtype(), device=device),
+            torch.zeros(0, dtype=get_int_dtype(), device=device),
         )
 
     src = torch.cat([bonds[:, 0], bonds[:, 1]])
@@ -55,9 +56,9 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     src, dst = pairs[:, 0], pairs[:, 1]
 
     counts = torch.bincount(src, minlength=n_atoms)
-    indptr = torch.zeros(n_atoms + 1, dtype=torch.int64, device=device)  # dtype-ok: CSR indptr offset array; int64 index required
+    indptr = torch.zeros(n_atoms + 1, dtype=get_int_dtype(), device=device)
     torch.cumsum(counts, dim=0, out=indptr[1:])
-    return indptr, dst.to(torch.int64)  # dtype-ok: CSR neighbor (dst) index array; int64 index required
+    return indptr, dst.to(get_int_dtype())
 
 
 def _extend_paths(
@@ -81,13 +82,13 @@ def _extend_paths(
     """
     device = paths.device
     if paths.numel() == 0:
-        return torch.zeros((0, paths.shape[1] + 1), dtype=torch.int64, device=device)  # dtype-ok: empty BFS path index array; int64 index required
+        return torch.zeros((0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device)
 
     last, prev = paths[:, -1], paths[:, -2]
     counts = indptr[last + 1] - indptr[last]
     total = int(counts.sum())
     if total == 0:
-        return torch.zeros((0, paths.shape[1] + 1), dtype=torch.int64, device=device)  # dtype-ok: empty BFS path index array; int64 index required
+        return torch.zeros((0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device)
 
     row = torch.repeat_interleave(torch.arange(len(paths), device=device), counts)
     # Offset of each slot within its own neighbour list.
@@ -204,16 +205,16 @@ class AtomGraph(DeviceMixin):
             return None
         is_h = self.is_hydrogen
         bonds = self.bonds.indices
-        present = torch.zeros(self.n_atoms, dtype=torch.int64, device=bonds.device)  # dtype-ok: bincount output; int64
+        present = torch.zeros(self.n_atoms, dtype=get_int_dtype(), device=bonds.device)
         if bonds.numel():
             heavy_of_h = torch.cat(
                 [bonds[is_h[bonds[:, 1]] & ~is_h[bonds[:, 0]], 0],
                  bonds[is_h[bonds[:, 0]] & ~is_h[bonds[:, 1]], 1]]
             )
             if heavy_of_h.numel():
-                present = torch.bincount(heavy_of_h, minlength=self.n_atoms)
+                present = torch.bincount(heavy_of_h, minlength=self.n_atoms).to(present.dtype)
         known = self.template_h_count >= 0
-        missing = self.template_h_count.to(torch.int64) - present
+        missing = self.template_h_count - present
         return torch.where(known, missing.clamp(min=0), torch.zeros_like(missing))
 
     def subset(self, remap: torch.Tensor, residue_remap: torch.Tensor) -> "AtomGraph":

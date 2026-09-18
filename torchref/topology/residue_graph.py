@@ -14,6 +14,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import torch
+from torchref.config import get_int_dtype
 
 #: SG-SG separation below which two cysteines are taken to be disulfide-bonded.
 DISULFIDE_MAX_DISTANCE = 2.5
@@ -272,7 +273,7 @@ def find_disulfide_links(
     rows = list(sg_rows)
     if len(rows) < 2:
         return []
-    idx = torch.as_tensor(rows, dtype=torch.int64, device=xyz.device)  # dtype-ok: residue-atom index tensor; int64 index required
+    idx = torch.as_tensor(rows, dtype=get_int_dtype(), device=xyz.device)
     dist = torch.cdist(xyz[idx], xyz[idx])
     close = (dist > DISULFIDE_MIN_DISTANCE) & (dist < DISULFIDE_MAX_DISTANCE)
 

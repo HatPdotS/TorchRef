@@ -16,6 +16,7 @@ discrepancy, allowing gradients to naturally account for phase uncertainty.
 
 import numpy as np
 import torch
+from torchref.config import get_int_dtype
 from typing import TYPE_CHECKING, Dict, Tuple
 
 from torchref.refinement.targets.base import Target
@@ -129,7 +130,7 @@ class SampledMLPhaseTarget(XrayTarget):
         self.name = "xray_sampled_ml_work" if use_work_set else "xray_sampled_ml_test"
 
         # Register tunable parameters as buffers for state_dict access
-        self.register_buffer("_n_samples", torch.tensor(n_samples, dtype=torch.int64))  # dtype-ok: scalar sample-count buffer; categorical count, not model-precision data
+        self.register_buffer("_n_samples", torch.tensor(n_samples, dtype=get_int_dtype()))
         self.register_buffer("_sigma_model_log", torch.tensor(sigma_model_log))
         self.register_buffer("_use_analytical", torch.tensor(use_analytical))
         self.register_buffer("_use_antithetic", torch.tensor(use_antithetic))
@@ -545,7 +546,7 @@ class SampledMLDifferenceTarget(Target):
         self.add_module("_scaler_dark", scaler_dark)
 
         # Tunable parameters as buffers
-        self.register_buffer("_n_samples", torch.tensor(n_samples, dtype=torch.int64))  # dtype-ok: scalar sample-count buffer; categorical count, not model-precision data
+        self.register_buffer("_n_samples", torch.tensor(n_samples, dtype=get_int_dtype()))
         self.register_buffer("_sigma_model_log", torch.tensor(sigma_model_log))
 
         self.use_work_set = use_work_set

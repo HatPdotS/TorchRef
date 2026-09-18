@@ -39,6 +39,7 @@ import math
 from typing import List, Tuple
 
 import torch
+from torchref.config import get_int_dtype
 
 from ....config import canonical_device
 from ....symmetry.symmetry import find_fft_friendly_size
@@ -98,7 +99,7 @@ def build_dense_map_per_beta(
         (n_beta, fft_size, fft_size), dtype=S.dtype, device=device,
     )
     m_vals = torch.arange(-(L - 1), L, device=device)
-    idx = (m_vals % fft_size).to(torch.int64)  # dtype-ok: index tensor; index_add_/gather need int64
+    idx = (m_vals % fft_size).to(get_int_dtype())
     pad[:, idx.unsqueeze(1), idx.unsqueeze(0)] = S
 
     # 3. Forward 2D FFT — torch convention:
@@ -210,8 +211,8 @@ def build_adaptive_sample_list(
             # original dict scan, but no host sync / Python loop.
             # Hash the two rounded fracs (each in [0, 1e6]) into one int64 so we
             # can use the fast 1-D unique instead of a 2-D row lexsort.
-            a_round = (alpha_frac * 1_000_000).round().to(torch.int64)  # dtype-ok: index tensor; index_add_/gather need int64
-            g_round = (gamma_frac * 1_000_000).round().to(torch.int64)  # dtype-ok: index tensor; index_add_/gather need int64
+            a_round = (alpha_frac * 1_000_000).round().to(torch.int64)  # dtype-ok: a_round*1_000_001+g_round overflows int32
+            g_round = (gamma_frac * 1_000_000).round().to(torch.int64)  # dtype-ok: a_round*1_000_001+g_round overflows int32
             key_hash = a_round * 1_000_001 + g_round
             _, uniq_idx = torch.unique(key_hash, return_inverse=True)
             n = uniq_idx.shape[0]
@@ -234,7 +235,7 @@ def build_adaptive_sample_list(
     alphas = torch.cat(alphas_list).to(device)
     gammas = torch.cat(gammas_list).to(device)
     betas_flat = torch.cat(betas_list).to(device)
-    beta_starts_t = torch.tensor(beta_starts, dtype=torch.int64, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
+    beta_starts_t = torch.tensor(beta_starts, dtype=get_int_dtype(), device=device)
     b = torch.arange(bmax, dtype=torch.float64, device=cpu)  # dtype-ok: sample-list geometry follows the accumulator's width
     betas_rad = (b * grid_sampling_deg * deg2rad).to(device=device, dtype=dtype)
 
@@ -256,8 +257,8 @@ def _bilinear_interp_periodic(
     N = M.shape[-1]
     af = (alpha_frac % 1.0) * N
     gf = (gamma_frac % 1.0) * N
-    a0 = torch.floor(af).to(torch.int64) % N  # dtype-ok: index tensor; index_add_/gather need int64
-    g0 = torch.floor(gf).to(torch.int64) % N  # dtype-ok: index tensor; index_add_/gather need int64
+    a0 = torch.floor(af).to(get_int_dtype()) % N
+    g0 = torch.floor(gf).to(get_int_dtype()) % N
     a1 = (a0 + 1) % N
     g1 = (g0 + 1) % N
     da = (af - torch.floor(af)).to(M.real.dtype)

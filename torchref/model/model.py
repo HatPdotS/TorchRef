@@ -22,6 +22,7 @@ import torch.nn as nn
 
 from torchref.base import math_torch
 from torchref.config import (
+    get_int_dtype,
     canonical_device,
     get_default_device,
     get_float_dtype,
@@ -435,7 +436,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             for elem in self.pdb["element"]
         ]
         self.register_buffer(
-            "_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device)  # dtype-ok: atomic-number Z categorical codes buffer; fixed int32 lookup keys
+            "_Z", torch.tensor(z_values, dtype=get_int_dtype(), device=self.device)
         )
         return self._Z
 
@@ -946,7 +947,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         altloc_groups = []
         refinable_mask = torch.zeros(n_atoms, dtype=torch.bool)
 
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)  # dtype-ok: arange atom indices (sharing groups); index requires long
+        sharing_groups_tensor = torch.arange(n_atoms, dtype=get_int_dtype())
         collapsed_idx = 0
 
         # First pass: altlocs. ALL atoms of one conformation must share a collapsed
@@ -1015,7 +1016,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Compact to contiguous indices 0..n_collapsed-1.
         unique_indices = torch.unique(sharing_groups_tensor, sorted=True)
-        index_map = torch.zeros(n_atoms, dtype=torch.long)  # dtype-ok: index_map atom-index remap; indexing requires long
+        index_map = torch.zeros(n_atoms, dtype=get_int_dtype())
         for new_idx, old_idx in enumerate(unique_indices):
             mask = sharing_groups_tensor == old_idx
             sharing_groups_tensor[mask] = new_idx
@@ -2029,7 +2030,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 for altloc in unique_altlocs:
                     altloc_atoms = group[group["altloc"] == altloc]
                     indices = torch.tensor(
-                        altloc_atoms["index"].tolist(), dtype=torch.long  # dtype-ok: altloc atom indices; indexing requires long
+                        altloc_atoms["index"].tolist(), dtype=get_int_dtype()
                     )
                     conformation_tensors.append(indices)
 
@@ -3000,7 +3001,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.pdb, plan, restraints.topology
         )
         frames = generated.remap(old_rows).fill_planned_rows(new_rows)
-        source = torch.empty(len(augmented), dtype=torch.long, device=self.device)
+        source = torch.empty(len(augmented), dtype=get_int_dtype(), device=self.device)
         old_index = torch.as_tensor(old_rows, device=self.device)
         new_index = torch.as_tensor(new_rows, device=self.device)
         source[old_index] = torch.arange(len(self.pdb), device=self.device)

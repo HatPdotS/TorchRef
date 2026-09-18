@@ -9,6 +9,7 @@ reach only ΔF_calc.
 """
 
 import torch
+from torchref.config import get_int_dtype
 from torch import nn
 from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple
 
@@ -204,10 +205,10 @@ class DifferenceXrayTarget(Target):
 
         device = hkl_light.device
         self._matched_indices_light = torch.tensor(
-            matched_light, dtype=torch.long, device=device  # dtype-ok: matched atom indices used for indexing; PyTorch requires int64
+            matched_light, dtype=get_int_dtype(), device=device
         )
         self._matched_indices_dark = torch.tensor(
-            matched_dark, dtype=torch.long, device=device  # dtype-ok: matched atom indices used for indexing; PyTorch requires int64
+            matched_dark, dtype=get_int_dtype(), device=device
         )
 
         # Store common HKL (using light indices, they should be identical)

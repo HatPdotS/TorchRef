@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import pandas as pd
 import torch
 
-from torchref.config import get_float_dtype, normalize_device
+from torchref.config import get_float_dtype, get_int_dtype, normalize_device
 from torchref.symmetry import Cell, SpaceGroup, SpaceGroupLike
 
 from .base import CrystalDataset
@@ -133,7 +133,7 @@ class FcalcDataset(CrystalDataset):
 
         # make_miller_array returns unique HKL for the asymmetric unit only.
         hkl_list = gemmi.make_miller_array(gemmi_cell, gemmi_sg, d_min)
-        hkl = torch.tensor(hkl_list, dtype=torch.int32, device=device)  # dtype-ok: hkl Miller indices; fixed int32 crystallographic representation, not model-precision data
+        hkl = torch.tensor(hkl_list, dtype=get_int_dtype(), device=device)
 
         resolution = get_d_spacing(hkl.float(), cell_tensor)
 

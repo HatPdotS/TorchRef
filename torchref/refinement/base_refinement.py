@@ -8,7 +8,7 @@ import math
 import torch
 from torch.nn import Module as nnModule
 
-from torchref.config import normalize_device
+from torchref.config import get_int_dtype, normalize_device
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
@@ -441,7 +441,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             return
 
         # 4. freeze xyz of those atoms (same path as freeze_selection)
-        model.xyz_mask[torch.tensor(freeze_idx, dtype=torch.long)] = False  # dtype-ok: freeze index used to index xyz_mask; PyTorch requires int64
+        model.xyz_mask[torch.tensor(freeze_idx, dtype=get_int_dtype())] = False
         model.apply_mask_to_parameter("xyz")
         if self.verbose > 0:
             shown = frozen_res[:20] + (["..."] if len(frozen_res) > 20 else [])

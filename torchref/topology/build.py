@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import torch
+from torchref.config import get_int_dtype
 
 from torchref.topology.builders import (
     InterResidueAngleBuilder,
@@ -711,7 +712,7 @@ def _block_with_values(
         per_origin, arity, edge_type, payload
     )
     block = EdgeBlock(
-        indices=torch.as_tensor(indices, dtype=torch.int64, device=device),  # dtype-ok: atom index tensor for restraint edges; int64 index required
+        indices=torch.as_tensor(indices, dtype=get_int_dtype(), device=device),
         origin_bounds=bounds,
     )
     values = {
@@ -997,7 +998,7 @@ def build_topology_with_values(
                 np.arange(n_res, dtype=np.int64),
                 nodes["atom_end"] - nodes["atom_start"],
             ),
-            dtype=torch.int64,  # dtype-ok: atom index tensor; int64 index required
+            dtype=get_int_dtype(),
             device=device,
         ),
         bonds=bond_block,
@@ -1007,7 +1008,7 @@ def build_topology_with_values(
         planes=plane_blocks,
         energy_type=energy_type,
         template_h_count=torch.as_tensor(
-            template_h_count, dtype=torch.int8, device=device
+            template_h_count, dtype=get_int_dtype(), device=device
         ),
     )
 

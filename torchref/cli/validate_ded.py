@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torchref.config import get_int_dtype
 
 from torchref.cli._common import (
     add_dmin_arg,
@@ -81,7 +82,7 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
         inv_frac_matrix=inv_frac,
     )
 
-    mask = torch.zeros(grid_shape, dtype=torch.int32, device=device)  # dtype-ok: integer solvent-mask accumulator (mask>0); categorical count, not model-precision data
+    mask = torch.zeros(grid_shape, dtype=get_int_dtype(), device=device)
     mask = add_to_solvent_mask(
         surrounding_coords,
         voxel_indices,

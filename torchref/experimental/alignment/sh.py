@@ -28,6 +28,7 @@ import math
 from typing import Optional, Tuple
 
 import torch
+from torchref.config import get_int_dtype
 
 from ...config import get_float_dtype
 
@@ -134,9 +135,9 @@ def _bar_legendre_recurrence(
     if keep_l is None:
         rows = torch.arange(L, device=device)
     else:
-        rows = keep_l.to(device=device, dtype=torch.long)  # dtype-ok: index tensor; index_add_/gather need int64
+        rows = keep_l.to(device=device, dtype=get_int_dtype())
     # l -> its position in the output, or -1 when it is not kept.
-    where = torch.full((L,), -1, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
+    where = torch.full((L,), -1, dtype=get_int_dtype(), device=device)
     where[rows] = torch.arange(rows.numel(), device=device)
     where_list = where.tolist()
 
@@ -338,7 +339,7 @@ def fit_overall_anisotropy(
     F, s, idx, cen = F[ok], s[ok], idx[ok], cen[ok]
 
     I = F * F
-    count = torch.zeros(P, dtype=torch.int64, device=F.device)  # dtype-ok: index tensor; index_add_/gather need int64
+    count = torch.zeros(P, dtype=idx.dtype, device=F.device)
     total = torch.zeros(P, dtype=work, device=F.device)
     count.index_add_(0, idx, torch.ones_like(idx))
     total.index_add_(0, idx, I)
@@ -536,7 +537,7 @@ def compute_patterson_shell_variance(
     valid = shell_idx >= 0
     patt_v = patt[valid]
     idx_v = shell_idx[valid]
-    count = torch.zeros(P, dtype=torch.int64, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
+    count = torch.zeros(P, dtype=idx_v.dtype, device=device)
     count.index_add_(0, idx_v, torch.ones_like(idx_v))
     sum1 = torch.zeros(P, dtype=dtype, device=device)
     sum2 = torch.zeros(P, dtype=dtype, device=device)

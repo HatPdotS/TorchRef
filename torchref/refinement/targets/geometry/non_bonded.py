@@ -7,6 +7,7 @@ deliberately exclude the ``buffer`` onset that ``forward`` penalizes.
 
 import numpy as np
 import torch
+from torchref.config import get_int_dtype
 from typing import TYPE_CHECKING, Dict, Tuple
 
 from torchref.utils.stats import (
@@ -346,7 +347,7 @@ class NonBondedTarget(GeometryTarget):
 
         if "vdw" not in self.restraints.restraints:
             return {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(  # dtype-ok: empty restraint index tensor; PyTorch requires int64 for indexing
+                "indices": torch.tensor([], dtype=get_int_dtype(), device=device).reshape(
                     0, 2
                 ),
                 "violations": torch.tensor([], device=device),
@@ -359,7 +360,7 @@ class NonBondedTarget(GeometryTarget):
 
         if indices is None or len(indices) == 0:
             return {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(  # dtype-ok: empty restraint index tensor; PyTorch requires int64 for indexing
+                "indices": torch.tensor([], dtype=get_int_dtype(), device=device).reshape(
                     0, 2
                 ),
                 "violations": torch.tensor([], device=device),

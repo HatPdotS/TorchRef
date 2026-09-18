@@ -22,7 +22,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 
 
 def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
@@ -263,10 +263,10 @@ def _segment_layout(lengths: Tuple[int, ...], device_str: str):
     ``lengths`` is a tuple so it can be a cache key.
     """
     device = torch.device(device_str)
-    L = torch.tensor(lengths, dtype=torch.long, device=device)  # dtype-ok: segment lengths for cumsum offsets/gather index; PyTorch requires int64
+    L = torch.tensor(lengths, dtype=get_int_dtype(), device=device)
     total = int(L.sum())
     max_len = int(L.max()) if L.numel() else 0
-    zero = torch.zeros(1, dtype=torch.long, device=device)  # dtype-ok: zero offset concatenated into gather index; PyTorch requires int64
+    zero = torch.zeros(1, dtype=get_int_dtype(), device=device)
     starts = torch.cat([zero, L.cumsum(0)[:-1]])
     ar = torch.arange(max_len, device=device).reshape(1, max_len)
     # Clamp keeps the gather in bounds for the padding slots; `mask` zeroes them anyway.

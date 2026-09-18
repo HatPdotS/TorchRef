@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from torchref.config import get_int_dtype
 from typing import TYPE_CHECKING, Dict
 
 from torchref.base.targets.chiral import chiral_math
@@ -82,7 +83,7 @@ class ChiralTarget(GeometryTarget):
 
         if "chiral" not in self.restraints.restraints:
             return {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(  # dtype-ok: empty restraint index tensor; PyTorch requires int64 for indexing
+                "indices": torch.tensor([], dtype=get_int_dtype(), device=device).reshape(
                     0, 4
                 ),
                 "volumes": torch.tensor([], device=device),

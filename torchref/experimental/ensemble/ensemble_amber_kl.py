@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Dict, Optional
 
 import numpy as np
 import torch
+from torchref.config import get_int_dtype
 
 from torchref.experimental.targets.amber_target import AMBER14_STANDARD, AmberTarget
 
@@ -136,7 +137,7 @@ class EnsembleAmberTarget(AmberTarget):
             self.register_buffer(
                 "_member_atom_idx",
                 torch.as_tensor(
-                    atom_idx_np, dtype=torch.long, device=self._model.device  # dtype-ok: atom index tensor for indexing; PyTorch requires int64
+                    atom_idx_np, dtype=get_int_dtype(), device=self._model.device
                 ),
             )
         else:

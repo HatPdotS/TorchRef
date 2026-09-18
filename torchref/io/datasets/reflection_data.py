@@ -17,7 +17,7 @@ import torch
 
 from torchref.base import math_torch
 from torchref.base.french_wilson import FrenchWilson
-from torchref.config import dtypes, normalize_device
+from torchref.config import dtypes, get_int_dtype, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
 from torchref.symmetry import Cell, SpaceGroup
@@ -306,7 +306,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             n = 0 if self.hkl is None else len(self.hkl)
             device = self.device
             if n == 0:
-                empty = torch.empty(0, dtype=torch.long, device=device)  # dtype-ok: empty index tensor; PyTorch requires int64 for indexing
+                empty = torch.empty(0, dtype=get_int_dtype(), device=device)
                 self._subset_cache = {
                     "work": empty,
                     "free": empty,
@@ -428,7 +428,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         n_src = len(self.hkl) if self.hkl is not None else 0
         new_hkl = new_hkl.to(dtype=dtypes.int, device=self.device)
         n_out = len(new_hkl)
-        index_map = index_map.to(device=self.device, dtype=torch.long)  # dtype-ok: index map used for indexing/gather; PyTorch requires int64
+        index_map = index_map.to(device=self.device, dtype=get_int_dtype())
         present = index_map >= 0
         src_idx = index_map[present]
 
@@ -1357,13 +1357,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         mean_resolutions = torch.scatter_add(
             mean_resolutions,
             0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: scatter_add index; int64 required on torch < 2.8
             self.resolution[mask],
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: scatter_add index; int64 required on torch < 2.8
             torch.ones_like(self.resolution[mask], dtype=dtypes.int),
         )
         mean_resolutions = mean_resolutions / count_per_bin.clamp(min=1).float()
@@ -1392,12 +1392,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_F = torch.scatter_add(
-            mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
+            mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]  # dtype-ok: scatter_add index; int64 required on torch < 2.8
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: scatter_add index; int64 required on torch < 2.8
             torch.ones_like(self.F[mask], dtype=dtypes.int),
         )
         mean_F = mean_F / count_per_bin.clamp(min=1).float()
@@ -1426,12 +1426,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_sigma = torch.scatter_add(
-            mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
+            mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]  # dtype-ok: scatter_add index; int64 required on torch < 2.8
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
+            self.bin_indices[mask].to(torch.int64),  # dtype-ok: scatter_add index; int64 required on torch < 2.8
             torch.ones_like(self.F_sigma[mask], dtype=dtypes.int),
         )
         mean_sigma = mean_sigma / count_per_bin.clamp(min=1).float()
@@ -2508,8 +2508,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # The (+) member is the unconjugated row, (-) is the Friedel-flagged row.
         arange = torch.arange(N)
-        plus_idx = torch.full((M,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
-        minus_idx = torch.full((M,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
+        plus_idx = torch.full((M,), -1, dtype=get_int_dtype())
+        minus_idx = torch.full((M,), -1, dtype=get_int_dtype())
         # A Bijvoet mate only counts as present if it is a real, positive
         # observation. Stacked anomalous input (rs.stack_anomalous) carries a
         # row for every *absent* mate with a NaN intensity, which French-Wilson
@@ -2947,7 +2947,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ----------
         new_hkl : torch.Tensor, shape (M, 3)
             New Miller indices.
-        index_mapping : torch.Tensor, shape (M,), dtype int64
+        index_mapping : torch.Tensor, shape (M,), integer dtype
             Maps new indices to original: ``new[i] = old[index_mapping[i]]``
             Values of -1 indicate missing reflections (filled with defaults).
         phase_shifts : torch.Tensor, optional, shape (M,)

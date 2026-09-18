@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Callable, Optional, Sequence
 
 import torch
+from torchref.config import get_int_dtype
 
 from torchref.utils import use_portable
 
@@ -36,7 +37,7 @@ def _sample_probe(
     """Draw one Hutchinson probe vector of length ``numel``."""
     if probe == "rademacher":
         r = torch.randint(
-            0, 2, (numel,), generator=generator, device=device, dtype=torch.int64  # dtype-ok: randint {0,1} bernoulli draw, immediately cast to float dtype; width irrelevant
+            0, 2, (numel,), generator=generator, device=device, dtype=get_int_dtype()
         )
         return r.to(dtype).mul_(2.0).sub_(1.0)  # {0,1} -> {-1,+1}
     if probe == "gaussian":
