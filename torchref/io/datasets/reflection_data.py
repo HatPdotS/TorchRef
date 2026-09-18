@@ -448,7 +448,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 # Present rows keep their signed (anomalous) index; missing rows
                 # fall back to the canonical reference HKL (never a 0,0,0 row).
                 out = new_hkl.clone()
-                out[present] = val[src_idx]
+                out[present] = val[src_idx].to(out.dtype)
             else:
                 fill = self._REINDEX_FILL.get(name, 0)
                 out = torch.full(
