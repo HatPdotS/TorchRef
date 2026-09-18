@@ -4,7 +4,7 @@ Changelog
 
 Unreleased
 ----------
-- Integer and index tensors now take the configured int dtype (``get_int_dtype()``, ``TORCHREF_DTYPE_INT``, int32 by default) throughout the package. A hardcoded ``int64`` remains only where a torch op (``scatter``/``gather`` on torch < 2.8, ``index_copy_``), an int32 overflow, or an external library requires it, and each such site says which.
+- Integer and index tensors now take the configured int dtype (``get_int_dtype()``, ``TORCHREF_DTYPE_INT``, int32 by default) throughout the package. A hardcoded ``int64`` remains only where a torch op (``scatter``/``gather`` on torch < 2.8, ``index_copy_``), a compiled kernel, an int32 overflow, or an external library requires it, and each such site says which.
 - Align difference-refinement tests with fixture ownership, integration placement and configured dtype/device conventions; share fresh collection setup and exercise noise statistics on deposited amplitudes.
 - Read scaled observations directly in subset and collection accessors, avoiding unused sigma/amplitude corrections and removing redundant internal forwarding helpers.
 - Remove one-off diagnostic scripts and consolidate difference-refinement regression tests while retaining numerical and output-format coverage.
