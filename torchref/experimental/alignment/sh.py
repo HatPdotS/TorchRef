@@ -138,7 +138,7 @@ def _bar_legendre_recurrence(
         rows = keep_l.to(device=device, dtype=get_int_dtype())
     # l -> its position in the output, or -1 when it is not kept.
     where = torch.full((L,), -1, dtype=get_int_dtype(), device=device)
-    where[rows] = torch.arange(rows.numel(), device=device)
+    where[rows] = torch.arange(rows.numel(), device=device, dtype=where.dtype)
     where_list = where.tolist()
 
     out = torch.zeros((*batch_shape, rows.numel(), L), dtype=dtype, device=device)

@@ -32,7 +32,6 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 import torch
-from torchref.config import get_int_dtype
 
 from torchref.base.electron_density.kernels.cpu._cpp_build import build_extension
 
@@ -242,12 +241,12 @@ def clear_cache() -> None:
 def shell_offsets(shell: torch.Tensor, n_shells: int) -> torch.Tensor:
     """Start index of each shell in a shell-sorted cluster array, plus the end.
 
-    ``(n_shells + 1,)`` integer offsets. The kernel needs the ranges rather than the
+    ``(n_shells + 1,)`` int64. The kernel needs the ranges rather than the
     per-cluster labels so that a thread can own a set of shells outright and
     write their accumulator rows without atomics.
     """
     counts = torch.bincount(shell, minlength=n_shells)
-    offsets = torch.zeros(n_shells + 1, dtype=get_int_dtype(), device=shell.device)
+    offsets = torch.zeros(n_shells + 1, dtype=torch.int64, device=shell.device)  # dtype-ok: the kernel TORCH_CHECKs int64 offsets
     torch.cumsum(counts, dim=0, out=offsets[1:])
     return offsets
 

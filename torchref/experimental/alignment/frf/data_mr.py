@@ -380,7 +380,7 @@ def bessel_sh_expand(
     # index to meet device values.
     inv_s = inv_s.to(device)
     n_shells = int(uniq_ks.shape[0])
-    shell_of_cluster = torch.zeros(n_clusters, dtype=get_int_dtype(), device=device)
+    shell_of_cluster = torch.zeros(n_clusters, dtype=torch.int64, device=device)  # dtype-ok: the legendre_shell kernel TORCH_CHECKs int64 shell labels
     shell_of_cluster[inverse] = inv_s
     shell_smag = _group_mean(s_mag_all.to(comp_real), inv_s, n_shells)
 

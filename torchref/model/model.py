@@ -3004,8 +3004,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         source = torch.empty(len(augmented), dtype=get_int_dtype(), device=self.device)
         old_index = torch.as_tensor(old_rows, device=self.device)
         new_index = torch.as_tensor(new_rows, device=self.device)
-        source[old_index] = torch.arange(len(self.pdb), device=self.device)
-        source[new_index] = torch.as_tensor(plan.parent, device=self.device)
+        source[old_index] = torch.arange(len(self.pdb), device=self.device, dtype=source.dtype)
+        source[new_index] = torch.as_tensor(plan.parent, device=self.device, dtype=source.dtype)
         xyz = (
             self.xyz.to_mixed_tensor()
             if hasattr(self.xyz, "to_mixed_tensor")

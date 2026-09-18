@@ -439,7 +439,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         # Lookup: flat_cell -> index in unique_cells (-1 if empty)
         n_grid = gx * gyz
         cell_lookup = torch.full((n_grid,), -1, dtype=get_int_dtype())
-        cell_lookup[unique_cells] = torch.arange(n_unique)
+        cell_lookup[unique_cells] = torch.arange(n_unique, dtype=cell_lookup.dtype)
 
         # 14 unique neighbour offsets: self (0,0,0) + 13 forward neighbours.
         # "Forward" = first non-zero component is positive, avoiding double counting.

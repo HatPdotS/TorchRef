@@ -2507,7 +2507,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         uniq = hkl[self._group_representative_rows(inverse, M)]
 
         # The (+) member is the unconjugated row, (-) is the Friedel-flagged row.
-        arange = torch.arange(N)
+        arange = torch.arange(N, dtype=get_int_dtype())
         plus_idx = torch.full((M,), -1, dtype=get_int_dtype())
         minus_idx = torch.full((M,), -1, dtype=get_int_dtype())
         # A Bijvoet mate only counts as present if it is a real, positive
