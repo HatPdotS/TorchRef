@@ -346,6 +346,34 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 return torch.exp(self.iso_log_scale().mean()).item()
         return 1.0
 
+    def multiplicative_scale(self) -> torch.Tensor:
+        """Per-reflection factor taking model amplitudes to the observed scale.
+
+        ``K_overall * b_overall * anisotropy``: every multiplicative component
+        :meth:`forward` applies and none of the additive bulk-solvent term, so dividing
+        observed amplitudes by it returns them to the model's absolute scale, electrons.
+        Components not yet set up contribute ones.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(N,)`` over the scaler's full reflection list, detached, on
+            ``self.device`` in the scale parameters' dtype.
+        """
+        c_iso = getattr(self, "c_iso", None)
+        dtype = c_iso.dtype if c_iso is not None else get_float_dtype()
+        factor = torch.ones(int(self.bins.numel()), device=self.device, dtype=dtype)
+        with torch.no_grad():
+            if hasattr(self, "U"):
+                factor = factor * self.anisotropy_correction().to(factor)
+            if c_iso is not None:
+                factor = factor * torch.exp(self.iso_log_scale(self._iso_design)).to(
+                    factor
+                )
+            if getattr(self, "bin_wise_bfactor", None) is not None:
+                factor = factor * self.bin_wise_bfactor_correction().to(factor)
+        return factor.detach()
+
     def setup_bin_wise_bfactor(self):
         """Initialize bin-wise B-factor correction parameters."""
         self.bin_wise_bfactor = nn.Parameter(

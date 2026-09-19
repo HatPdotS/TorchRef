@@ -88,6 +88,25 @@ class CollectionSigmaALossInputs(NamedTuple):
     epsilon: torch.Tensor = None
 
 
+class CollectionSigmaDLossInputs(NamedTuple):
+    """:class:`CollectionLossInputs` plus the sigma_D difference-error estimate.
+
+    ``alpha`` and ``beta_model`` live on the **common HKL**, shape ``(n_hkl,)``, and
+    broadcast over the dataset axis: the coupling of the model difference to the true
+    one and the difference power the model leaves unexplained, fitted once on the pooled
+    free reflections of the timepoint rows. Detached, so gradients reach the models only
+    through ``model``.
+    """
+
+    obs: torch.Tensor
+    model: torch.Tensor
+    sigma: torch.Tensor
+    mask: torch.Tensor
+    keys: List[str]
+    alpha: torch.Tensor = None
+    beta_model: torch.Tensor = None
+
+
 class CollectionXrayTarget(Target):
     """Base class for multi-dataset X-ray targets.
 

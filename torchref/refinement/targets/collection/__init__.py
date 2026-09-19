@@ -11,12 +11,14 @@ from ._util import _scale_fcalc
 from .base import (
     CollectionLossInputs,
     CollectionSigmaALossInputs,
+    CollectionSigmaDLossInputs,
     CollectionXrayTarget,
 )
 from .intensity import CollectionTwoMomentIntensityTarget
 from .multimodel import MultiModelADPTarget, MultiModelGeometryTarget
 from .xray import (
     CollectionDifferenceIntensityTarget,
+    CollectionDifferenceSigmaDTarget,
     CollectionDifferenceTarget,
     CollectionMLTarget,
 )
@@ -33,9 +35,11 @@ __all__ = [
     "CollectionXrayTarget",
     "CollectionLossInputs",
     "CollectionSigmaALossInputs",
+    "CollectionSigmaDLossInputs",
     "CollectionTwoMomentIntensityTarget",
     "CollectionDifferenceTarget",
     "CollectionDifferenceIntensityTarget",
+    "CollectionDifferenceSigmaDTarget",
     "CollectionMLTarget",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",

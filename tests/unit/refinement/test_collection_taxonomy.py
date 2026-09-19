@@ -14,6 +14,7 @@ def test_each_row_has_its_own_class():
     )
     from torchref.refinement.targets.collection.xray import (
         CollectionDifferenceIntensityTarget,
+        CollectionDifferenceSigmaDTarget,
         CollectionDifferenceTarget,
         CollectionMLTarget,
     )
@@ -21,6 +22,7 @@ def test_each_row_has_its_own_class():
     expected = {
         "difference": CollectionDifferenceTarget,
         "difference_i": CollectionDifferenceIntensityTarget,
+        "difference_sd": CollectionDifferenceSigmaDTarget,
         "two_moment": CollectionTwoMomentIntensityTarget,
         "ml": CollectionMLTarget,
     }
@@ -56,7 +58,7 @@ def test_the_observable_is_declared_not_passed():
         )
 
     assert set(by_obs["intensity"]) == {"difference_i", "two_moment"}
-    assert set(by_obs["amplitude"]) == {"difference", "ml"}
+    assert set(by_obs["amplitude"]) == {"difference", "difference_sd", "ml"}
 
     with pytest.raises(ValueError, match="observable"):
         CollectionXrayTargetSpec(
