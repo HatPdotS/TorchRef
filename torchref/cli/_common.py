@@ -389,6 +389,43 @@ def add_all_columns_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
+    """Add ``--ded-weight`` and ``--sigma-d-gamma`` for the difference-map writers.
+
+    Every registered scheme's weight is written to the difference MTZ regardless; the
+    choice here decides which one the headline products (validate-ded correlations,
+    model-phased difference columns) carry.
+    """
+    from torchref.maps.ded_weights import DEFAULT_SCHEME, SCHEMES
+
+    parser.add_argument(
+        "--ded-weight",
+        choices=list(SCHEMES),
+        default=DEFAULT_SCHEME,
+        help="Per-reflection weight for difference coefficients: 'inverse_variance' "
+        "is 1/sigma^2, 'sigma_d' is the Wiener weight S/(S+sigma^2) from the "
+        "expected difference power (needs calibrated sigmas; check the reported "
+        f"clamped-shell count), 'none' is flat (default: {DEFAULT_SCHEME}). All "
+        "weights are written as columns.",
+    )
+    parser.add_argument(
+        "--sigma-d-gamma",
+        type=float,
+        default=None,
+        metavar="GAMMA",
+        help="Fix the dark-amplitude exponent of the sigma_d power law in [0, 2] "
+        "instead of fitting it (default: fitted).",
+    )
+
+
+def sigma_d_config_from_args(args: argparse.Namespace):
+    """The :class:`~torchref.refinement.model_error_estimation.sigma_d.SigmaDConfig`
+    selected by ``--sigma-d-gamma``."""
+    from torchref.refinement.model_error_estimation.sigma_d import SigmaDConfig
+
+    return SigmaDConfig(gamma=getattr(args, "sigma_d_gamma", None))
+
+
 def add_output_format_args(parser: argparse.ArgumentParser) -> None:
     """Add ``--output-format`` argument for coordinate file format."""
     parser.add_argument(

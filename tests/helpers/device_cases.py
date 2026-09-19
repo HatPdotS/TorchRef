@@ -509,6 +509,7 @@ TARGET_CASES: List[TargetDeviceCase] = [
 # Device-bearing classes deliberately not in CASES. Every entry needs a reason;
 # "hard to build" is a reason, "didn't get to it" is not.
 UNCOVERED: Dict[str, str] = {
+    "CollectionDifferenceSigmaDTarget": "needs a dataset collection",
     # --- abstract / mixin bases: never instantiated directly -----------------
     "Target": "abstract base; covered through its concrete subclasses",
     "ModelTarget": "abstract base; needs a loaded model",

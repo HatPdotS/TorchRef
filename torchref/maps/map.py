@@ -44,6 +44,11 @@ class Map(DeviceMixin):
         Default is ``"2Fo-Fc"``. Note ``"2Fo-Fc"`` is a *plain* 2Fo-Fc map
         (no figure-of-merit ``m`` and no sigma-A coefficient ``D``; i.e.
         ``m=1``, ``D=1``), not a likelihood-weighted 2mFo-DFc map.
+    units : str, optional
+        ``"normalized"`` (default) keeps the FFT's ``1/N`` normalisation;
+        ``"electrons"`` gives ``(1/V) sum_h F(h) exp(-2 pi i h.x)``, electrons per
+        cubic Angstrom, which is meaningful only when the coefficients are on the
+        absolute scale.
 
     Attributes
     ----------
@@ -72,6 +77,7 @@ class Map(DeviceMixin):
     """
 
     VALID_MAP_TYPES = ("2Fo-Fc", "Fcalc")
+    VALID_UNITS = ("normalized", "electrons")
 
     def __init__(
         self,
@@ -80,11 +86,15 @@ class Map(DeviceMixin):
         gridsize: Optional[Tuple[int, int, int]] = None,
         map_type: str = "2Fo-Fc",
         device: Optional[torch.device] = None,
+        units: str = "normalized",
     ):
         if map_type not in self.VALID_MAP_TYPES:
             raise ValueError(
                 f"map_type must be one of {self.VALID_MAP_TYPES}, got '{map_type}'"
             )
+        if units not in self.VALID_UNITS:
+            raise ValueError(f"units must be one of {self.VALID_UNITS}, got '{units}'")
+        self.units = units
         self.device = resolve_device(data, model, device=device)
         self.data = data
         self.model = model
@@ -166,8 +176,16 @@ class Map(DeviceMixin):
         # FFT to real space: ρ(r) = (1/N) * sum_h F(h) * exp(-2πi h·r)
         # (norm="forward" applies the 1/N normalization, N = grid points)
         self._map = torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
+        self._map = self._to_units(self._map)
 
         return self._map
+
+    def _to_units(self, real_map: torch.Tensor) -> torch.Tensor:
+        """Rescale a ``1/N``-normalised FFT map to the configured units."""
+        if self.units == "electrons":
+            volume = self.data.cell.volume.to(real_map.dtype)
+            return real_map * (real_map.numel() / volume)
+        return real_map
 
     def write(self, filepath: str) -> int:
         """Write the map to a CCP4 file.

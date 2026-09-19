@@ -4,7 +4,7 @@ The multi-dataset mirror of :mod:`torchref.refinement.targets.xray._specs`, with
 invariants checked the same way at import: unique names, and **one class per row**, so
 dispatch is ``spec.target_cls(**kwargs)`` with nothing to branch on.
 
-Four rows over two axes -- what the loss compares (a difference from the collection mean,
+Five rows over two axes -- what the loss compares (a difference from the collection mean,
 or each dataset absolutely) and in which observable:
 
 ====================  ===========  ==============================================
@@ -12,6 +12,8 @@ row                   observable   compares
 ====================  ===========  ==============================================
 ``difference``        amplitude    ``F_i - F_mean`` against the model's own spread
 ``difference_i``      intensity    the same, in intensities
+``difference_sd``     amplitude    ``F_i - F_mean`` against ``alpha dF_calc``, variance
+                                   ``beta_model + sigma^2`` from a sigma_D fit
 ``two_moment``        intensity    ``|F(alpha)|^2 + sigma_alpha^2 |dF|^2``
 ``ml``                amplitude    each dataset absolutely, at a shared Luzzati beta
 ====================  ===========  ==============================================
@@ -27,10 +29,10 @@ from .base import CollectionXrayTarget
 from .intensity import CollectionTwoMomentIntensityTarget
 from .xray import (
     CollectionDifferenceIntensityTarget,
+    CollectionDifferenceSigmaDTarget,
     CollectionDifferenceTarget,
     CollectionMLTarget,
 )
-
 
 @dataclass(frozen=True)
 class CollectionXrayTargetSpec:
@@ -134,6 +136,13 @@ COLLECTION_XRAY_TARGETS = CollectionXrayTargetTable(
             observable="intensity",
             doc="As 'difference' but on intensities, skipping the French-Wilson "
             "conversion that reshapes the weak tail.",
+        ),
+        CollectionXrayTargetSpec(
+            name="difference_sd",
+            target_cls=CollectionDifferenceSigmaDTarget,
+            doc="As 'difference', centred on alpha * dF_calc with the unexplained "
+            "difference power beta_model (sigma_D, fitted on the free set) added to "
+            "the measurement variance.",
         ),
         CollectionXrayTargetSpec(
             name="two_moment",

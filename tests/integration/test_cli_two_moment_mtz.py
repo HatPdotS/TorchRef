@@ -19,9 +19,12 @@ DEFAULT_COLUMNS = {
     "SIGFo_light": "Stddev",
     "DF": "SFAmplitude",
     "SIGDF": "Stddev",
-    # The difference map. CCP4/Coot open these by name.
-    "DELFWT": "SFAmplitude",
+    # The difference map: DF on the dark phases, one weight column per registered
+    # scheme, and the observed-to-model scale.
     "PHDELWT": "Phase",
+    "W_IVW": "Weight",
+    "W_SD": "Weight",
+    "KSCALE": "MTZReal",
     "Fc_dark": "SFAmplitude",
     # The mixed model, and the extrapolated map to refine against.
     "FC": "SFAmplitude",
@@ -216,14 +219,14 @@ def test_column_layout_and_types(request, fixture, extra):
 
 class TestDefaultLayout:
 
-    def test_the_difference_map_is_the_weighted_difference_on_dark_phases(
+    def test_the_difference_columns_carry_df_and_the_registered_weights(
         self, baseline_mtz
     ):
-        """``DELFWT`` must be ``(Fo_light - Fo_dark) * w`` with ``w`` the mean-
-        normalised inverse variance -- the construction ``torchref.validate-ded``
-        correlates against. If these two ever diverge, the map in the file stops being
-        the map the validation reports on, which is how the output drifted from the
-        science before."""
+        """``DF`` must be ``Fo_light - Fo_dark``, ``W_IVW`` the mean-normalised inverse
+        variance and ``W_SD`` a mean-one weight -- the constructions
+        ``torchref.validate-ded`` correlates against. If these ever diverge, the map
+        built from the file stops being the map the validation reports on, which is how
+        the output drifted from the science before."""
         import numpy as np
 
         df = _read(baseline_mtz[0])
@@ -234,13 +237,17 @@ class TestDefaultLayout:
             df["SIGFo_dark"].to_numpy().astype(float) ** 2
             + df["SIGFo_light"].to_numpy().astype(float) ** 2
         )
-        w = 1 / sig**2
+        w = 1 / np.maximum(sig, 0.1 * np.median(sig)) ** 2
         w = w / w.mean()
 
-        expected = dfo * w
-        got = df["DELFWT"].to_numpy().astype(float)
-        scale = max(float(np.abs(expected).max()), 1e-30)
-        assert np.abs(got - expected).max() / scale < 1e-5
+        got_df = df["DF"].to_numpy().astype(float)
+        scale = max(float(np.abs(dfo).max()), 1e-30)
+        assert np.abs(got_df - dfo).max() / scale < 1e-5
+        got_w = df["W_IVW"].to_numpy().astype(float)
+        assert np.abs(got_w - w).max() / max(float(np.abs(w).max()), 1e-30) < 1e-4
+        w_sd = df["W_SD"].to_numpy().astype(float)
+        assert np.isfinite(w_sd).all() and abs(w_sd.mean() - 1.0) < 1e-4
+        assert (df["KSCALE"].to_numpy().astype(float) > 0).all()
 
         # And the phase is the dark model's, not the mixed model's.
         assert not np.allclose(
@@ -255,16 +262,12 @@ class TestTwoMomentLayout:
         self, two_moment_mtz
     ):
         """``DELFWT_corr`` is the corrected difference on the *same* dark phases, so it
-        is opened against ``PHDELWT`` and must be built the same way as ``DELFWT``."""
+        is opened against ``PHDELWT`` and carries the selected weight scheme, the
+        inverse-variance weights ``W_IVW`` by default."""
         import numpy as np
 
         df = _read(two_moment_mtz[0])
-        sig = np.sqrt(
-            df["SIGFo_dark"].to_numpy().astype(float) ** 2
-            + df["SIGFo_light"].to_numpy().astype(float) ** 2
-        )
-        w = 1 / sig**2
-        w = w / w.mean()
+        w = df["W_IVW"].to_numpy().astype(float)
 
         expected = df["DF_corr"].to_numpy().astype(float) * w
         got = df["DELFWT_corr"].to_numpy().astype(float)

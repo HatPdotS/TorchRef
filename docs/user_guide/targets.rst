@@ -80,6 +80,16 @@ batched over ``(n_datasets, n_hkl)`` on the collection's common HKL grid.
 - ``difference_i`` — the same on **intensities**. The entire class is one
   ``observable`` declaration: the difference-from-mean algebra does not care what
   the observable is.
+- ``difference_sd`` — the ``difference`` Gaussian centred on
+  :math:`\alpha\,\Delta F_{calc}` with variance
+  :math:`\beta_{model} + \sigma_{\Delta}^2`, where :math:`\alpha` and the unexplained
+  difference power :math:`\beta_{model}` come from a per-shell moment fit of the
+  observed differences on the free set (``sigma_D``,
+  :mod:`torchref.refinement.model_error_estimation.sigma_d`); the expected power
+  carries an :math:`F_{dark}^{\gamma}` dependence with one fitted :math:`\gamma`. A
+  poor light model inflates the variance where it fails instead of pulling the
+  coordinates toward noise. Select it with
+  ``torchref.difference-refine --difference-target difference_sd``.
 - ``two_moment`` — merged **intensities** as
   :math:`|F(\bar\alpha)|^2 + \sigma_\alpha^2 |\Delta F|^2`, accounting for
   crystal-to-crystal spread in activation.

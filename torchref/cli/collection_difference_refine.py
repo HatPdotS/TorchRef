@@ -32,6 +32,7 @@ import torch
 
 from torchref.cli._common import (
     add_all_columns_arg,
+    add_ded_weight_args,
     add_dmin_arg,
     add_dual_model_args,
     add_general_args,
@@ -46,8 +47,15 @@ from torchref.cli._common import (
     parse_device_str,
     parse_weights,
     register_timing,
+    sigma_d_config_from_args,
     validate_cif_files,
     validate_files,
+)
+from torchref.maps.ded_weights import (
+    DEFAULT_SCHEME,
+    WEIGHT_COLUMNS,
+    all_ded_weights,
+    reflection_geometry,
 )
 from torchref.utils.serialization import convert_to_serializable
 
@@ -59,6 +67,8 @@ configure_unbuffered_output()
 
 DEFAULT_TARGET_WEIGHTS = {
     "xray/difference": 1.0,
+    # Selected by --difference-target; the schedule drives whichever row is chosen.
+    "xray/difference_sd": 0.0,
     # The absolute channel. Zero by default: the difference refinement fixes the
     # dark model, so the overall level is already anchored and this term only adds
     # the systematic errors the difference cancels.
@@ -219,9 +229,17 @@ def compute_rfactors(model, data, scaler):
         return rfactor_work_free(data, torch.abs(fcalc_scaled))
 
 
-def setup_loss_state(dataset_collection, model_collection, scaler,
-                     target_weights, device, similarity_alpha=2.0,
-                     two_moment=False):
+def setup_loss_state(
+    dataset_collection,
+    model_collection,
+    scaler,
+    target_weights,
+    device,
+    similarity_alpha=2.0,
+    two_moment=False,
+    difference_target="difference",
+    sigma_d_config=None,
+):
     """Build LossState with collection-aware targets.
 
     Geometry and ADP restraints are applied only to the light base model
@@ -233,10 +251,17 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
         Also register the two-moment intensity target, which fits merged intensities
         under ``|F(alpha)|^2 + sigma_alpha^2 |dF|^2``. Requires I/SIGI on every
         dataset. Default False.
+    difference_target : {"difference", "difference_sd"}, optional
+        Which difference row the weight schedule drives. Both are registered, as
+        ``xray/difference`` and ``xray/difference_sd``; the other keeps the weight in
+        ``target_weights`` (zero by default).
+    sigma_d_config : SigmaDConfig, optional
+        Exponent and shrinkage settings of the ``difference_sd`` row's estimator.
     """
     from torchref.refinement import LossState
     from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
     from torchref.refinement.targets.collection import (
+        CollectionDifferenceSigmaDTarget,
         CollectionDifferenceTarget,
         CollectionMLTarget,
     )
@@ -250,6 +275,15 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     diff_target = CollectionDifferenceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
+    diff_sd_target = CollectionDifferenceSigmaDTarget(
+        dataset_collection,
+        model_collection,
+        scaler=scaler,
+        sigma_d_config=sigma_d_config,
+    )
+    selected_diff = {"difference": diff_target, "difference_sd": diff_sd_target}[
+        difference_target
+    ]
     ml_target = CollectionMLTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
@@ -261,6 +295,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     )
 
     state.register_target("xray/difference", diff_target)
+    state.register_target("xray/difference_sd", diff_sd_target)
     state.register_target("xray/ml", ml_target)
     state.register_target("geometry", geom_target)
     state.register_target("adp", adp_target)
@@ -275,7 +310,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
         # Match intensity and amplitude gradient norms to balance the targets
         # against the geometry restraints despite their different units.
         two_moment_target.calibrate_base_weight(
-            diff_target, list(model_light.parameters())
+            selected_diff, list(model_light.parameters())
         )
         state.register_target("xray/two_moment", two_moment_target)
 
@@ -285,8 +320,16 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
 
 
 def compute_bayes_extrapolated_amplitudes(
-    Fobs_dark, Fobs_light, sig_ext, phi_dark, phi_mixed, f,
-    *, tau_sq_floor=1e-4,
+    Fobs_dark,
+    Fobs_light,
+    sig_ext,
+    phi_dark,
+    phi_mixed,
+    f,
+    *,
+    tau_sq_floor=1e-4,
+    epsilon=None,
+    d_star_sq=None,
 ):
     """Empirical Bayes shrinkage estimator for extrapolated SF amplitudes.
 
@@ -295,9 +338,15 @@ def compute_bayes_extrapolated_amplitudes(
     Fo_dark, regularising noisy high-resolution and weakly-measured reflections::
 
         F_ext     = |F_dark*e^(iφ_d) + ΔF/f|         (phase-aware amplitude)
-        τ²        = max(<(F_ext - Fo_dark)²> - <σ_ext²>, floor)
-        w(h)      = τ² / (τ² + σ_ext²(h))
+        S(h)      = expected power of (F_ext - Fo_dark), per resolution shell
+        w(h)      = S(h) / (S(h) + σ_ext²(h))
         F_extb    = w(h)·F_ext + (1-w(h))·Fo_dark    (amplitude shrinkage)
+
+    With ``d_star_sq`` the signal power comes per resolution shell from
+    :func:`~torchref.refinement.model_error_estimation.sigma_d.estimate_sigma_d`
+    (``<(F_ext - Fo_dark)²> - <σ_ext²>`` per shell, shrunk toward a smooth curve);
+    without it the single global ``τ² = max(<(F_ext - Fo_dark)²> - <σ_ext²>, floor)``
+    is used, which is the one-shell special case.
 
     Parameters
     ----------
@@ -313,14 +362,17 @@ def compute_bayes_extrapolated_amplitudes(
     f : float or Tensor
         Excited-state population fraction.
     tau_sq_floor : float
-        Floor on the estimated signal variance τ².
+        Floor on the estimated signal variance.
+    epsilon, d_star_sq : Tensor (N,), optional
+        Reflection multiplicity and ``1/d**2`` in A^-2. Given ``d_star_sq`` the signal
+        power is estimated per resolution shell.
 
     Returns
     -------
     tuple
         ``(F_ext_bayes, var_ext_bayes, w_shrinkage, tau_sq)`` -- the **shrunk**
         extrapolated amplitude, its posterior variance and the shrinkage weight per
-        reflection, and the global τ² as a float.
+        reflection, and the count-weighted mean signal variance as a float.
     """
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
@@ -332,15 +384,34 @@ def compute_bayes_extrapolated_amplitudes(
     F_ext_complex = F_dark_phased + delta_F / f
     F_ext = torch.abs(F_ext_complex)
 
-    # Estimate signal variance τ²
-    residuals_sq = (F_ext - Fobs_dark) ** 2
-    tau_sq = max((residuals_sq.mean() - sig_sq_ext.mean()).item(), tau_sq_floor)
+    residual = F_ext - Fobs_dark
+    if d_star_sq is None:
+        tau_sq = max(
+            (residual.square().mean() - sig_sq_ext.mean()).item(), tau_sq_floor
+        )
+        S = torch.full_like(F_ext, tau_sq)
+    else:
+        from torchref.refinement.model_error_estimation.sigma_d import (
+            estimate_sigma_d,
+            sigma_d_per_reflection,
+        )
+
+        fit = torch.isfinite(residual) & torch.isfinite(sig_ext)
+        shells = estimate_sigma_d(
+            residual, sig_ext, epsilon, d_star_sq, None, fit, gamma=0.0
+        )
+        est = sigma_d_per_reflection(shells, d_star_sq, epsilon, None, sig_ext)
+        S = est.S.clamp(min=tau_sq_floor)
+        weight = shells.counts.clamp(min=1.0)
+        tau_sq = max(
+            float((shells.Sigma_N * shells.counts).sum() / weight.sum()), tau_sq_floor
+        )
 
     # Per-reflection shrinkage weight (in [0, 1])
-    w = tau_sq / (tau_sq + sig_sq_ext)
+    w = S / (S + sig_sq_ext)
 
     # Posterior variance
-    var_ext_bayes = (tau_sq * sig_sq_ext) / (tau_sq + sig_sq_ext)
+    var_ext_bayes = (S * sig_sq_ext) / (S + sig_sq_ext)
 
     # Shrink the amplitude toward Fo_dark -- scalar, so no phase interference.
     F_ext_bayes = w * F_ext + (1 - w) * Fobs_dark
@@ -485,16 +556,34 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     return columns, types
 
 
-def _difference_columns(data_dark, data_light, mask, hkl_np, *, Fobs_dark, sig_dark,
-                        Fobs_light, sig_light, Fcalc_dark, phases_dark, diff_Fobs,
-                        sig_diff, weights):
-    """The weighted difference map, and the observations behind it.
+def _difference_columns(
+    data_dark,
+    data_light,
+    mask,
+    hkl_np,
+    *,
+    Fobs_dark,
+    sig_dark,
+    Fobs_light,
+    sig_light,
+    Fcalc_dark,
+    phases_dark,
+    diff_Fobs,
+    sig_diff,
+    weight_columns,
+    kscale,
+):
+    """The difference map's amplitudes, phases and weights.
 
-    ``DELFWT``/``PHDELWT`` is the inverse-variance-weighted amplitude difference carried
-    on the **dark** model's phases -- the isomorphous difference Fourier, and the same
-    construction ``torchref.validate-ded`` correlates against, so the map in this file
-    and the map the validation reports are one object. CCP4 and Coot recognise the names
-    and open it as a difference map without being told which columns to use.
+    ``DF``/``SIGDF`` is the signed amplitude difference ``|Fo_light| - |Fo_dark|`` with
+    its propagated uncertainty, ``PHDELWT`` the **dark** model's phase it is carried on:
+    the isomorphous difference Fourier, and the construction ``torchref.validate-ded``
+    correlates against. One weight column per registered scheme (``W_SD``, ``W_IVW``;
+    MTZ type ``W``, mean one) sits beside it, so any weighting is ``DF`` times a column
+    and reproducible from the file: ``torchref.mtz2map -csf DF -cw W_SD -cphi PHDELWT``.
+    ``KSCALE`` (type ``R``) is the scaler's multiplicative factor from model to observed
+    scale, so ``DF / KSCALE`` is in electrons and ``mtz2map --units electrons`` gives
+    e/A^3.
 
     This layer needs no light-state model: the amplitude is ``|Fo_light| - |Fo_dark|``
     and the phase comes from the dark model. Keeping the light state's model out is the
@@ -511,11 +600,18 @@ def _difference_columns(data_dark, data_light, mask, hkl_np, *, Fobs_dark, sig_d
         return data.rfree_flags[mask].cpu().numpy().astype(int)
 
     columns = {
-        "H": hkl_np[:, 0], "K": hkl_np[:, 1], "L": hkl_np[:, 2],
-        "Fo_dark": Fobs_dark, "SIGFo_dark": sig_dark,
-        "Fo_light": Fobs_light, "SIGFo_light": sig_light,
-        "DF": diff_Fobs, "SIGDF": sig_diff,
-        "DELFWT": diff_Fobs * weights, "PHDELWT": phases_dark,
+        "H": hkl_np[:, 0],
+        "K": hkl_np[:, 1],
+        "L": hkl_np[:, 2],
+        "Fo_dark": Fobs_dark,
+        "SIGFo_dark": sig_dark,
+        "Fo_light": Fobs_light,
+        "SIGFo_light": sig_light,
+        "DF": diff_Fobs,
+        "SIGDF": sig_diff,
+        "PHDELWT": phases_dark,
+        **weight_columns,
+        "KSCALE": kscale,
         "Fc_dark": Fcalc_dark,
         # 1 = work, 0 = free. Both are kept: the two datasets can disagree, and
         # picking one would silently report an R-free against the wrong test set.
@@ -523,13 +619,21 @@ def _difference_columns(data_dark, data_light, mask, hkl_np, *, Fobs_dark, sig_d
         "FreeR_flag_light": _flags(data_light),
     }
     types = {
-        "H": "H", "K": "H", "L": "H",
-        "Fo_dark": "F", "SIGFo_dark": "Q",
-        "Fo_light": "F", "SIGFo_light": "Q",
-        "DF": "F", "SIGDF": "Q",
-        "DELFWT": "F", "PHDELWT": "P",
+        "H": "H",
+        "K": "H",
+        "L": "H",
+        "Fo_dark": "F",
+        "SIGFo_dark": "Q",
+        "Fo_light": "F",
+        "SIGFo_light": "Q",
+        "DF": "F",
+        "SIGDF": "Q",
+        "PHDELWT": "P",
+        **{name: "W" for name in weight_columns},
+        "KSCALE": "R",
         "Fc_dark": "F",
-        "FreeR_flag_dark": "I", "FreeR_flag_light": "I",
+        "FreeR_flag_dark": "I",
+        "FreeR_flag_light": "I",
     }
     return columns, types
 
@@ -604,9 +708,22 @@ def _phasing_columns(mc, scaler, hkl_all, mask, *, fcalc_dark, Fobs_dark_vals,
     return columns, types, ctx
 
 
-def _extrapolation_columns(mc, dc, hkl, *, Fobs_dark_vals, Fobs_light_vals,
-                           sig_dark_vals, sig_light_vals, phi_dark, ctx,
-                           rfree_flags_masked, all_columns=False, verbose=1):
+def _extrapolation_columns(
+    mc,
+    dc,
+    hkl,
+    *,
+    Fobs_dark_vals,
+    Fobs_light_vals,
+    sig_dark_vals,
+    sig_light_vals,
+    phi_dark,
+    ctx,
+    rfree_flags_masked,
+    all_columns=False,
+    verbose=1,
+    geometry=None,
+):
     """Extrapolated light-state amplitudes and the map to refine against.
 
     Three constructions of the same quantity, all needing the light model:
@@ -654,10 +771,17 @@ def _extrapolation_columns(mc, dc, hkl, *, Fobs_dark_vals, Fobs_light_vals,
         sig_light_vals**2 + w_dark**2 * sig_dark_vals**2
     ) / w_light
 
+    eps, dss = geometry if geometry is not None else (None, None)
     F_ext_bayes_amp, var_ext_bayes, w_shrinkage, tau_sq = (
         compute_bayes_extrapolated_amplitudes(
-            Fobs_dark_vals, Fobs_light_vals, sig_light_extra,
-            phi_dark, ctx["phi_mixed"], w_light,
+            Fobs_dark_vals,
+            Fobs_light_vals,
+            sig_light_extra,
+            phi_dark,
+            ctx["phi_mixed"],
+            w_light,
+            epsilon=eps,
+            d_star_sq=dss,
         )
     )
     sig_ext_bayes = torch.sqrt(var_ext_bayes)
@@ -724,13 +848,26 @@ def _extrapolation_columns(mc, dc, hkl, *, Fobs_dark_vals, Fobs_light_vals,
     return columns, types, diagnostics
 
 
-def write_results_mtz(dc, dark_model, scaler, filename, *, mc=None,
-                      all_columns=False, verbose=1):
+def write_results_mtz(
+    dc,
+    dark_model,
+    scaler,
+    filename,
+    *,
+    mc=None,
+    all_columns=False,
+    verbose=1,
+    ded_weight=DEFAULT_SCHEME,
+    sigma_d_config=None,
+):
     """Write the difference map, and map coefficients when a light model is given.
 
-    The default output is the **weighted difference map**: ``DELFWT``/``PHDELWT``, the
-    inverse-variance-weighted amplitude difference on the dark model's phases. That needs
-    no light-state model, which is why ``mc`` is optional -- with a dark model alone this
+    The default output is the **difference map**: ``DF``/``SIGDF`` on the dark model's
+    phases ``PHDELWT``, with one mean-one weight column per registered scheme
+    (``W_SD``, ``W_IVW``) and the observed-to-model scale ``KSCALE``; see
+    :func:`_difference_columns`. ``ded_weight`` selects the scheme the model-phased
+    difference columns and the two-moment columns are weighted with. That needs no
+    light-state model, which is why ``mc`` is optional -- with a dark model alone this
     writes a difference map and nothing else, and no scale fit is run beyond the one that
     produced ``scaler``.
 
@@ -752,6 +889,11 @@ def write_results_mtz(dc, dark_model, scaler, filename, *, mc=None,
         The dark+light collection. Absent means difference map only.
     filename : str
         Output MTZ path.
+    ded_weight : str, optional
+        Weight scheme for the model-phased and two-moment difference columns; one of
+        :data:`torchref.maps.ded_weights.SCHEMES`.
+    sigma_d_config : SigmaDConfig, optional
+        Exponent and shrinkage settings of the ``sigma_d`` scheme.
 
     Returns
     -------
@@ -801,20 +943,79 @@ def write_results_mtz(dc, dark_model, scaler, filename, *, mc=None,
     Fcalc_dark = torch.abs(fcalc_dark).detach().cpu().numpy()
     phases_dark = phi_dark.detach().rad2deg().cpu().numpy()
 
-    diff_Fobs = Fobs_light - Fobs_dark
-    sig_diff = (sig_dark**2 + sig_light**2) ** 0.5
-    weights = 1 / sig_diff**2
-    weights = weights / weights.mean()
+    diff_t = Fobs_light_vals - Fobs_dark_vals
+    sig_diff_t = torch.sqrt(sig_dark_vals**2 + sig_light_vals**2)
+    all_w = all_ded_weights(
+        delta_obs=diff_t,
+        sigma_diff=sig_diff_t,
+        hkl=hkl,
+        cell=data_dark.cell,
+        spacegroup=data_dark.spacegroup,
+        f_dark=Fobs_dark_vals,
+        sigma_d_config=sigma_d_config,
+    )
+    selected = all_w[ded_weight]
+    weights = selected.weights.detach().cpu().numpy()
+    diff_Fobs = diff_t.detach().cpu().numpy()
+    sig_diff = sig_diff_t.detach().cpu().numpy()
+    weight_columns = {
+        WEIGHT_COLUMNS[name]: all_w[name].weights.detach().cpu().numpy()
+        for name in WEIGHT_COLUMNS
+    }
+    kscale = scaler.multiplicative_scale()[mask].detach().cpu().numpy()
+    geometry = reflection_geometry(
+        hkl, data_dark.cell, data_dark.spacegroup, diff_t.device, diff_t.dtype
+    )
+    sd_diag = {
+        k: v
+        for k, v in all_w["sigma_d"].diagnostics.items()
+        if k != "weight_sigma_d_raw"
+    }
+    diagnostics = {
+        "ded_weights": {
+            "scheme": ded_weight,
+            "applied": selected.applied,
+            "sigma_d": sd_diag,
+        }
+    }
+    if verbose > 0:
+        print(f"  Difference weights: {ded_weight} (applied: {selected.applied})")
+        print(
+            f"  sigma_D: gamma = {sd_diag['gamma']:.3f} ({sd_diag['gamma_reason']}), "
+            f"tau = {sd_diag['tau']:.3f}, shells = {sd_diag['n_shell']}, "
+            f"shells without difference power = {sd_diag['n_s2_clamped']}"
+        )
+        if "fallback_reason" in sd_diag:
+            print(f"  sigma_D fallback: {sd_diag['fallback_reason']}")
+    if verbose > 1 and not sd_diag["degenerate"]:
+        table = sd_diag["shells"]
+        print("  sigma_D shells: d(A)   n     B        S2       Sigma_N")
+        for dss, n, b, s2, sn in zip(
+            table["d_star_sq"],
+            table["counts"],
+            table["B"],
+            table["S2"],
+            table["Sigma_N"],
+        ):
+            print(f"    {dss ** -0.5:6.2f} {int(n):5d} {b:9.4f} {s2:9.4f} {sn:9.4f}")
 
     columns, types = _difference_columns(
-        data_dark, data_light, mask, hkl_np,
-        Fobs_dark=Fobs_dark, sig_dark=sig_dark,
-        Fobs_light=Fobs_light, sig_light=sig_light,
-        Fcalc_dark=Fcalc_dark, phases_dark=phases_dark,
-        diff_Fobs=diff_Fobs, sig_diff=sig_diff, weights=weights,
+        data_dark,
+        data_light,
+        mask,
+        hkl_np,
+        Fobs_dark=Fobs_dark,
+        sig_dark=sig_dark,
+        Fobs_light=Fobs_light,
+        sig_light=sig_light,
+        Fcalc_dark=Fcalc_dark,
+        phases_dark=phases_dark,
+        diff_Fobs=diff_Fobs,
+        sig_diff=sig_diff,
+        weight_columns=weight_columns,
+        kscale=kscale,
     )
 
-    diagnostics = {}
     if mc is not None:
         phase_cols, phase_types, ctx = _phasing_columns(
             mc, scaler, hkl_all, mask,
@@ -825,13 +1026,22 @@ def write_results_mtz(dc, dark_model, scaler, filename, *, mc=None,
         columns.update(phase_cols)
         types.update(phase_types)
 
-        ext_cols, ext_types, diagnostics = _extrapolation_columns(
-            mc, dc, hkl,
-            Fobs_dark_vals=Fobs_dark_vals, Fobs_light_vals=Fobs_light_vals,
-            sig_dark_vals=sig_dark_vals, sig_light_vals=sig_light_vals,
-            phi_dark=phi_dark, ctx=ctx, rfree_flags_masked=rfree_flags_masked,
-            all_columns=all_columns, verbose=verbose,
+        ext_cols, ext_types, ext_diagnostics = _extrapolation_columns(
+            mc,
+            dc,
+            hkl,
+            Fobs_dark_vals=Fobs_dark_vals,
+            Fobs_light_vals=Fobs_light_vals,
+            sig_dark_vals=sig_dark_vals,
+            sig_light_vals=sig_light_vals,
+            phi_dark=phi_dark,
+            ctx=ctx,
+            rfree_flags_masked=rfree_flags_masked,
+            all_columns=all_columns,
+            verbose=verbose,
+            geometry=geometry,
         )
+        diagnostics.update(ext_diagnostics)
         columns.update(ext_cols)
         types.update(ext_types)
 
@@ -931,8 +1141,18 @@ Examples:
     add_output_format_args(output)
     add_metadata_args(output)
     add_all_columns_arg(output)
+    add_ded_weight_args(output)
 
     refine = parser.add_argument_group("Refinement")
+    refine.add_argument(
+        "--difference-target",
+        choices=("difference", "difference_sd"),
+        default="difference",
+        help="Difference row the weight schedule drives: 'difference' is the Gaussian "
+        "under the measurement variance, 'difference_sd' centres on "
+        "alpha*dF_calc with the sigma_D unexplained power added to the variance "
+        "(default: difference).",
+    )
     refine.add_argument(
         "--weight-schedule", type=str, default="5,3,2",
         help="Comma-separated difference-target weights applied in "
@@ -1037,7 +1257,10 @@ Examples:
 
     # --- Parse and merge target weights ---
     target_weights = dict(DEFAULT_TARGET_WEIGHTS)
-    target_weights["xray/difference"] = weight_schedule[0]
+    difference_key = f"xray/{args.difference_target}"
+    target_weights["xray/difference"] = 0.0
+    target_weights["xray/difference_sd"] = 0.0
+    target_weights[difference_key] = weight_schedule[0]
     target_weights["similarity"] = args.similarity_weight
     target_weights, err = parse_weights(args.weights, defaults=target_weights)
     if err:
@@ -1175,9 +1398,17 @@ Examples:
     # per-reflection weighting, which needs no intensity data.
     mc.set_lambda_twin(args.lambda_twin, refinable=args.refine_lambda_twin)
 
-    state = setup_loss_state(dc, mc, scaler, target_weights, device,
-                             similarity_alpha=args.similarity_alpha,
-                             two_moment=args.two_moment)
+    state = setup_loss_state(
+        dc,
+        mc,
+        scaler,
+        target_weights,
+        device,
+        similarity_alpha=args.similarity_alpha,
+        two_moment=args.two_moment,
+        difference_target=args.difference_target,
+        sigma_d_config=sigma_d_config_from_args(args),
+    )
 
     if args.verbose > 0:
         print("Initial loss breakdown:")
@@ -1217,7 +1448,7 @@ Examples:
                 )
                 sys.stdout.flush()
 
-            state.set_weights({"xray/difference": t_weight})
+            state.set_weights({difference_key: t_weight})
             optimize_lbfgs(
                 state, params,
                 max_iter=args.max_iter,
@@ -1471,8 +1702,15 @@ Examples:
         print(f"  Light SF written to {light_sf_mtz}, {light_sf_cif}")
 
     map_diagnostics = write_results_mtz(
-        dc, mc.dark_model, scaler, diff_mtz_out,
-        mc=mc, all_columns=args.all_columns, verbose=args.verbose,
+        dc,
+        mc.dark_model,
+        scaler,
+        diff_mtz_out,
+        mc=mc,
+        all_columns=args.all_columns,
+        verbose=args.verbose,
+        ded_weight=args.ded_weight,
+        sigma_d_config=sigma_d_config_from_args(args),
     )
 
     # --- JSON summary ---

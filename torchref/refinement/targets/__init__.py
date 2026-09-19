@@ -22,6 +22,7 @@ from .base import (
 from .collection import (
     COLLECTION_XRAY_TARGETS,
     CollectionDifferenceIntensityTarget,
+    CollectionDifferenceSigmaDTarget,
     CollectionDifferenceTarget,
     CollectionMLTarget,
     CollectionTwoMomentIntensityTarget,
@@ -93,6 +94,7 @@ __all__ = [
     "CollectionTwoMomentIntensityTarget",
     "CollectionMLTarget",
     "CollectionDifferenceIntensityTarget",
+    "CollectionDifferenceSigmaDTarget",
     "COLLECTION_XRAY_TARGETS",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
