@@ -12,7 +12,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 
 # Global cache for the loaded table
 _TABLE_CACHE: Optional[dict] = None
@@ -167,8 +167,7 @@ def get_scattering_params_by_z(
 
     table = load_scattering_table(device=device, dtype=dtype)
 
-    # Long, not the caller's int32: torch indexing requires it.
-    z_idx = z_tensor.to(device=device, dtype=torch.long)  # dtype-ok: z cast to long for scattering-table index lookup; indexing requires long
+    z_idx = z_tensor.to(device=device, dtype=get_int_dtype())
 
     A = table["A"][z_idx]
     B = table["B"][z_idx]
@@ -254,4 +253,4 @@ def elements_to_z(elements: list, normalize: bool = True) -> torch.Tensor:
         z = element_to_z.get(elem, 0)
         z_values.append(z)
 
-    return torch.tensor(z_values, dtype=torch.int32)  # dtype-ok: atomic-number Z categorical codes; fixed int32 lookup keys
+    return torch.tensor(z_values, dtype=get_int_dtype())

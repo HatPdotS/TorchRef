@@ -22,7 +22,7 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
-from torchref.config import dtypes, normalize_device
+from torchref.config import dtypes, get_int_dtype, normalize_device
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -431,17 +431,19 @@ def build_hydrogen_topology(
     fdtype = dtypes.float
 
     if n_h_total == 0:
-        topo.h_parent_idx = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: parent atom-index tensor (empty); int64 required
+        topo.h_parent_idx = torch.zeros(0, dtype=get_int_dtype(), device=device)
         topo.h_bond_length = torch.zeros(0, dtype=fdtype, device=device)
         topo.h_vdw_radius = torch.zeros(0, dtype=fdtype, device=device)
-        topo.h_placement_type = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: categorical H placement-type code (empty)
-        topo.h_slot_in_parent = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: slot index into parent (empty); int64
+        topo.h_placement_type = torch.zeros(0, dtype=get_int_dtype(), device=device)
+        topo.h_slot_in_parent = torch.zeros(0, dtype=get_int_dtype(), device=device)
         topo.parent_neighbor_idx = torch.zeros(
-            0, MAX_HEAVY_NB, dtype=torch.long, device=device  # dtype-ok: parent neighbor atom-index tensor (empty); int64 required
+            0, MAX_HEAVY_NB, dtype=get_int_dtype(), device=device
         )
-        topo.parent_neighbor_count = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: per-parent neighbor count (empty); structural int
-        topo.h_chainid_enc = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: categorical chain-id encoding (empty)
-        topo.h_resseq = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: residue sequence id (empty); categorical
+        topo.parent_neighbor_count = torch.zeros(
+            0, dtype=get_int_dtype(), device=device
+        )
+        topo.h_chainid_enc = torch.zeros(0, dtype=get_int_dtype(), device=device)
+        topo.h_resseq = torch.zeros(0, dtype=get_int_dtype(), device=device)
         return topo
 
     # Sort all topology arrays by placement type for contiguous slicing
@@ -466,22 +468,26 @@ def build_hydrogen_topology(
             idxs = np.where(mask)[0]
             type_bounds[t] = (int(idxs[0]), int(idxs[-1]) + 1)
 
-    topo.h_parent_idx = torch.tensor(acc_parent_idx, dtype=torch.long, device=device)  # dtype-ok: parent atom-index tensor; torch indexing requires int64
+    topo.h_parent_idx = torch.tensor(
+        acc_parent_idx, dtype=get_int_dtype(), device=device
+    )
     topo.h_bond_length = torch.tensor(acc_bond_length, dtype=fdtype, device=device)
     topo.h_vdw_radius = torch.full((n_h_total,), 1.20, dtype=fdtype, device=device)
     topo.h_placement_type = torch.tensor(
-        acc_placement_type, dtype=torch.long, device=device  # dtype-ok: categorical H placement-type code; used for sort/slice
+        acc_placement_type, dtype=get_int_dtype(), device=device
     )
-    topo.h_slot_in_parent = torch.tensor(acc_slot, dtype=torch.long, device=device)  # dtype-ok: slot index into parent neighbor slots; int64
+    topo.h_slot_in_parent = torch.tensor(acc_slot, dtype=get_int_dtype(), device=device)
     topo.parent_neighbor_idx = torch.tensor(
-        np.stack(acc_nb_idx), dtype=torch.long, device=device  # dtype-ok: parent neighbor atom-index tensor; int64 required
+        np.stack(acc_nb_idx), dtype=get_int_dtype(), device=device
     )
     topo.parent_neighbor_count = torch.tensor(
-        acc_nb_count, dtype=torch.long, device=device  # dtype-ok: per-parent neighbor count; structural int metadata
+        acc_nb_count, dtype=get_int_dtype(), device=device
     )
     topo.type_bounds = type_bounds  # dict: type_code -> (start, end)
-    topo.h_chainid_enc = torch.tensor(acc_chainid_enc, dtype=torch.long, device=device)  # dtype-ok: categorical chain-id encoding
-    topo.h_resseq = torch.tensor(acc_resseq, dtype=torch.long, device=device)  # dtype-ok: residue sequence id; categorical
+    topo.h_chainid_enc = torch.tensor(
+        acc_chainid_enc, dtype=get_int_dtype(), device=device
+    )
+    topo.h_resseq = torch.tensor(acc_resseq, dtype=get_int_dtype(), device=device)
 
     if verbose > 0:
         print(f"  Hydrogen topology: {n_h_total} riding H atoms")
@@ -736,8 +742,10 @@ def build_h_candidate_pairs(
 
     if n_h == 0:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
-            setattr(h_topo, name, torch.zeros(0, dtype=torch.long, device=device))  # dtype-ok: candidate atom/symop index tensors (empty); int64 required
-        h_topo.cand_cell_offset = torch.zeros(0, 3, dtype=torch.long, device=device)  # dtype-ok: integer cell-offset lattice vectors (empty); symmetry metadata
+            setattr(h_topo, name, torch.zeros(0, dtype=get_int_dtype(), device=device))
+        h_topo.cand_cell_offset = torch.zeros(
+            0, 3, dtype=get_int_dtype(), device=device
+        )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
@@ -836,15 +844,17 @@ def build_h_candidate_pairs(
 
     if not acc_idx_i:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
-            setattr(h_topo, name, torch.zeros(0, dtype=torch.long, device=device))  # dtype-ok: candidate atom/symop index tensors (empty); int64 required
-        h_topo.cand_cell_offset = torch.zeros(0, 3, dtype=torch.long, device=device)  # dtype-ok: integer cell-offset lattice vectors (empty); symmetry metadata
+            setattr(h_topo, name, torch.zeros(0, dtype=get_int_dtype(), device=device))
+        h_topo.cand_cell_offset = torch.zeros(
+            0, 3, dtype=get_int_dtype(), device=device
+        )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
-    cand_i = torch.tensor(acc_idx_i, dtype=torch.long, device=device)  # dtype-ok: combined atom-index tensor; torch indexing requires int64
-    cand_j = torch.tensor(acc_idx_j, dtype=torch.long, device=device)  # dtype-ok: combined atom-index tensor; torch indexing requires int64
-    cand_sym = torch.tensor(acc_symop, dtype=torch.long, device=device)  # dtype-ok: symmetry-operator index; int64
-    cand_off = torch.tensor(np.stack(acc_offset), dtype=torch.long, device=device)  # dtype-ok: integer cell-offset lattice vectors; symmetry-image metadata
+    cand_i = torch.tensor(acc_idx_i, dtype=get_int_dtype(), device=device)
+    cand_j = torch.tensor(acc_idx_j, dtype=get_int_dtype(), device=device)
+    cand_sym = torch.tensor(acc_symop, dtype=get_int_dtype(), device=device)
+    cand_off = torch.tensor(np.stack(acc_offset), dtype=get_int_dtype(), device=device)
 
     # Apply 1-2 / 1-3 exclusions for intra-ASU candidates
     if h_excl_hash is not None and len(h_excl_hash) > 0:
@@ -853,7 +863,8 @@ def build_h_candidate_pairs(
             max_idx = n_heavy + n_h
             norm_i = torch.minimum(cand_i, cand_j)
             norm_j = torch.maximum(cand_i, cand_j)
-            pair_hash = norm_i * max_idx + norm_j
+            # dtype-ok: packed pair key overflows int32; searchsorted needs int64 like the table
+            pair_hash = norm_i.to(torch.int64) * max_idx + norm_j.to(torch.int64)
             ins = torch.searchsorted(h_excl_hash, pair_hash).clamp(
                 max=len(h_excl_hash) - 1
             )

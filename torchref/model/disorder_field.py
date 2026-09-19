@@ -88,7 +88,7 @@ def farthest_point_anchors(xyz: torch.Tensor, n_nodes: int) -> torch.Tensor:
         chosen.append(nxt)
         d2_nearest = torch.minimum(d2_nearest, ((xyz - xyz[nxt]) ** 2).sum(-1))
 
-    anchors = torch.tensor(chosen, dtype=torch.int64, device=xyz.device)  # dtype-ok: anchor atom indices; torch indexing requires int64
+    anchors = torch.tensor(chosen, dtype=get_int_dtype(), device=xyz.device)
 
     # Lloyd relaxation, snapping to real atoms so an anchor is always an atom index.
     for _ in range(10):
@@ -126,7 +126,7 @@ def density_anchor_rows(xyz: torch.Tensor, n_nodes: int):
     """
     seeds = farthest_point_anchors(xyz, n_nodes)
     assign = torch.cdist(xyz, xyz[seeds]).argmin(dim=1)
-    atom_idx = torch.arange(xyz.shape[0], dtype=torch.int64, device=xyz.device)  # dtype-ok: arange atom indices; index requires int64
+    atom_idx = torch.arange(xyz.shape[0], dtype=get_int_dtype(), device=xyz.device)
 
     # A seed whose cluster somehow came out empty still needs a position.
     present = torch.bincount(assign, minlength=seeds.shape[0]) > 0
@@ -715,12 +715,12 @@ class DisorderFieldTensor(MixedTensor):
         if anchor_rows is None:
             anchor_atom = farthest_point_anchors(xyz, n_nodes)
             anchor_node = torch.arange(
-                anchor_atom.shape[0], dtype=torch.int64, device=device  # dtype-ok: arange anchor indices; index requires int64
+                anchor_atom.shape[0], dtype=get_int_dtype(), device=device
             )
         else:
             anchor_atom, anchor_node = anchor_rows
-            anchor_atom = anchor_atom.to(device=device, dtype=torch.int64)  # dtype-ok: anchor_atom indices cast; index requires int64
-            anchor_node = anchor_node.to(device=device, dtype=torch.int64)  # dtype-ok: anchor_node indices cast; index requires int64
+            anchor_atom = anchor_atom.to(device=device, dtype=get_int_dtype())
+            anchor_node = anchor_node.to(device=device, dtype=get_int_dtype())
 
         n_k = int(anchor_node.max()) + 1
         node_pos = self._segment_mean(xyz, anchor_atom, anchor_node, n_k)

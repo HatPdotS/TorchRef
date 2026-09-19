@@ -51,6 +51,12 @@ Practically:
 - **Never hardcode a dtype.** Take it from the config: `torchref.config.get_float_dtype()`,
   `get_int_dtype()`, `get_complex_dtype()`, or from an input tensor. Roughly 200 call sites
   already do this; follow them.
+- Integer and index tensors take `get_int_dtype()` too (int32 by default). Plain indexing,
+  `index_select` and `index_add_` accept it. A literal int dtype survives only where torch or
+  the arithmetic forces it, with a `# dtype-ok:` marker naming the constraint: `scatter`/`gather`
+  indices (int64 on torch < 2.8), `index_copy_`/`index_fill_`/`one_hot` (int64 always), packed
+  keys such as `i * n + j` that overflow int32, compiled kernels that `TORCH_CHECK` a dtype
+  (the Legendre shell kernel), and external-library contracts (TorchMD-Net).
 - `torch.float64` *is* a supported configuration (`TORCHREF_DTYPE_FLOAT=float64`) used as an
   eager numerical reference and in gradient checks. Code must **work** in float64, must not
   **require** it, and must not silently downcast (see `tests/integration/test_dtype_config_float64.py`).

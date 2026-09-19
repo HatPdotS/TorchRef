@@ -8,6 +8,8 @@ import math
 
 import torch
 
+from torchref.config import get_int_dtype
+
 
 def place_on_grid(
     hkls, structure_factor, grid_size, enforce_hermitian: bool = True
@@ -47,14 +49,14 @@ def place_on_grid(
     dtype = structure_factor.dtype
     Nx, Ny, Nz = [int(x) for x in grid_size]
     hkls = hkls.to(device=device)
-    h = hkls[:, 0].to(torch.int64)  # dtype-ok: hkl component cast to int64 for flat grid-index arithmetic; indexing requires long
-    k = hkls[:, 1].to(torch.int64)  # dtype-ok: hkl component cast to int64 for flat grid-index arithmetic; indexing requires long
-    l = hkls[:, 2].to(torch.int64)  # dtype-ok: hkl component cast to int64 for flat grid-index arithmetic; indexing requires long
+    h = hkls[:, 0].to(get_int_dtype())
+    k = hkls[:, 1].to(get_int_dtype())
+    l = hkls[:, 2].to(get_int_dtype())
 
     hi = torch.remainder(h, Nx)
     ki = torch.remainder(k, Ny)
     li = torch.remainder(l, Nz)
-    lin = (hi * (Ny * Nz) + ki * Nz + li).to(torch.int64)  # (N,)  # dtype-ok: flat grid index (lin) for scatter/gather; requires int64
+    lin = (hi * (Ny * Nz) + ki * Nz + li).to(get_int_dtype())  # (N,)
     grid = torch.zeros((B, Nx * Ny * Nz), dtype=dtype, device=device)
     grid = grid.index_add(1, lin, structure_factor)  # (B, Nx*Ny*Nz)
 
@@ -62,7 +64,7 @@ def place_on_grid(
         hi_sym = torch.remainder(-h, Nx)
         ki_sym = torch.remainder(-k, Ny)
         li_sym = torch.remainder(-l, Nz)
-        lin_sym = (hi_sym * (Ny * Nz) + ki_sym * Nz + li_sym).to(torch.int64)  # dtype-ok: symmetry flat grid index (lin_sym) for scatter/gather; requires int64
+        lin_sym = (hi_sym * (Ny * Nz) + ki_sym * Nz + li_sym).to(get_int_dtype())
         vals_conj = torch.conj(structure_factor)
         grid = grid.index_add(1, lin_sym, vals_conj)
 
@@ -101,9 +103,9 @@ def extract_structure_factor_from_grid(reciprocal_grid, hkls) -> torch.Tensor:
 
     # Same wrapping convention as place_on_grid.
     hkls = hkls.to(device=device)
-    h = hkls[:, 0].to(torch.int64)  # dtype-ok: hkl component cast to int64 for flat grid-index arithmetic; indexing requires long
-    k = hkls[:, 1].to(torch.int64)  # dtype-ok: hkl component cast to int64 for flat grid-index arithmetic; indexing requires long
-    l = hkls[:, 2].to(torch.int64)  # dtype-ok: hkl component cast to int64 for flat grid-index arithmetic; indexing requires long
+    h = hkls[:, 0].to(get_int_dtype())
+    k = hkls[:, 1].to(get_int_dtype())
+    l = hkls[:, 2].to(get_int_dtype())
 
     hi = torch.remainder(h, Nx)
     ki = torch.remainder(k, Ny)

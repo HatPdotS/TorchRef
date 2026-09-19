@@ -28,7 +28,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from torchref.config import get_float_dtype
+
+from torchref.config import get_float_dtype, get_int_dtype
 
 #: Standard heavy-atom valences, one of the two budgets that cap how many hydrogens a
 #: parent may take. Elements not listed fall back to 4 and are then bounded only by the
@@ -1145,18 +1146,16 @@ class HydrogenFrames:
     def to_tensors(self, device=None) -> Dict[str, torch.Tensor]:
         """Return frame and orientation arrays as tensors, keyed by field name."""
         return {
-            "h_row": torch.as_tensor(
-                self.h_row, dtype=torch.int64, device=device
-            ),  # dtype-ok: row index; int64 required
+            "h_row": torch.as_tensor(self.h_row, dtype=get_int_dtype(), device=device),
             "parent_row": torch.as_tensor(
-                self.parent_row, dtype=torch.int64, device=device
-            ),  # dtype-ok: row index; int64 required
+                self.parent_row, dtype=get_int_dtype(), device=device
+            ),
             "n1_row": torch.as_tensor(
-                self.n1_row, dtype=torch.int64, device=device
-            ),  # dtype-ok: row index; int64 required
+                self.n1_row, dtype=get_int_dtype(), device=device
+            ),
             "n2_row": torch.as_tensor(
-                self.n2_row, dtype=torch.int64, device=device
-            ),  # dtype-ok: row index; int64 required
+                self.n2_row, dtype=get_int_dtype(), device=device
+            ),
             "frame_valid": torch.as_tensor(
                 self.frame_valid, dtype=torch.bool, device=device
             ),

@@ -17,7 +17,7 @@ from typing import Dict, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 
 #: Origins making up each edge type's ``all`` group -- what the geometry targets read.
 #: ``None`` means every origin present. ``phi`` and ``psi`` are conformationally free
@@ -41,7 +41,7 @@ def to_tensor(values, prop: str, device=None) -> torch.Tensor:
     if isinstance(values, torch.Tensor):
         return values.to(device=device) if device is not None else values
     if prop in _INTEGER_PROPERTIES:
-        dtype = torch.int64  # dtype-ok: dtype var for index tensors; int64 index required
+        dtype = get_int_dtype()
     elif prop in _BOOL_PROPERTIES:
         dtype = torch.bool
     else:

@@ -1194,7 +1194,7 @@ def estimate_mean_intensity_by_resolution(
 
     # Use scatter_add to compute sum of intensities per bin
     bin_sums = torch.zeros(actual_n_bins, dtype=I.dtype, device=I.device)
-    bin_counts = torch.zeros(actual_n_bins, dtype=torch.long, device=I.device)  # dtype-ok: count accumulator; scatter_add source is long ones, dtype must match
+    bin_counts = torch.zeros(actual_n_bins, dtype=bin_indices.dtype, device=I.device)
     bin_sums.scatter_add_(0, bin_indices, I_sorted)
     bin_counts.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 

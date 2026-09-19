@@ -8,7 +8,7 @@ in crystallographic unit cells.
 import numpy as np
 import torch
 
-from torchref.config import dtypes
+from torchref.config import dtypes, get_int_dtype
 from torchref.base.coordinates.periodic_boundary import smallest_diff
 from .map_building import scatter_add_nd
 
@@ -113,7 +113,7 @@ def add_to_phenix_mask(
     )  # (N_atoms, N_voxels)
 
     # Flatten for scatter operations
-    voxel_indices_flat = voxel_indices.reshape(-1, 3).to(torch.long)  # dtype-ok: voxel indices for grid indexing; requires long
+    voxel_indices_flat = voxel_indices.reshape(-1, 3).to(get_int_dtype())
 
     # Create protein core mask using scatter_add
     int_dtype = dtypes.int

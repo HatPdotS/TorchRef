@@ -29,6 +29,8 @@ from typing import List, Optional
 
 import torch
 
+from torchref.config import get_int_dtype
+
 from ....base.alignment.rotation import rotation_matrix_euler_zyz
 from .types import AdaptiveRotationFunction, RotationPeak
 
@@ -55,7 +57,7 @@ def _so3_greedy_nms(
     """
     n = values.shape[0]
     if n == 0:
-        return torch.empty(0, dtype=torch.int64, device=values.device)  # dtype-ok: index tensor; index_add_/gather need int64
+        return torch.empty(0, dtype=get_int_dtype(), device=values.device)
     # The greedy walk is inherently sequential and latency-bound; on GPU a
     # per-iteration `.item()` sync would dominate. Move the (tiny) candidate
     # rotations to CPU once and run the loop there with no device syncs, a
@@ -97,7 +99,7 @@ def _so3_greedy_nms(
         count += 1
         if count >= keep_at_most:
             break
-    return torch.tensor(kept_idx, dtype=torch.int64, device=values.device)  # dtype-ok: index tensor; index_add_/gather need int64
+    return torch.tensor(kept_idx, dtype=get_int_dtype(), device=values.device)
 
 
 def find_rotation_peaks(

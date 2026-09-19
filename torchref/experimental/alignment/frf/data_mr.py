@@ -19,6 +19,8 @@ import time
 
 import torch
 
+from torchref.config import get_int_dtype
+
 _PROFILE = bool(os.environ.get("FRF_PROFILE"))
 
 #: Byte budget for the per-chunk transients in :func:`bessel_sh_expand`.
@@ -143,7 +145,7 @@ def spherical_bessel_table(
     inv_threshold = 1.0 / threshold
     # Rescales applied so far, per element. Every element's ladder sits in the
     # single frame 2**(-_BESSEL_RESCALE_EXP * n_rescales).
-    n_rescales = torch.zeros_like(x64, dtype=torch.int32)  # dtype-ok: small integer counter
+    n_rescales = torch.zeros_like(x64, dtype=get_int_dtype())
 
     for n in range(n_start, 0, -1):
         j_low = (2.0 * n + 1.0) * inv_x * j_mid - j_high
@@ -162,7 +164,7 @@ def spherical_bessel_table(
             j_high = j_high * factor
             if n - 1 <= u_max:
                 j_table[n - 1:] = j_table[n - 1:] * factor
-            n_rescales = n_rescales + over.to(torch.int32)  # dtype-ok: small integer counter
+            n_rescales = n_rescales + over.to(get_int_dtype())
 
     true_j0 = torch.sin(x64) * inv_x
     true_j0 = torch.where(x64 < 1e-30, torch.ones_like(x64), true_j0)
@@ -301,15 +303,15 @@ def bessel_sh_expand(
             n_list.append(n)
             u_list.append(u)
             w_list.append(math.sqrt(float(2 * u + 1)))
-    l_idx = torch.tensor(l_list, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
-    n_idx = torch.tensor(n_list, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
-    u_idx = torch.tensor(u_list, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
+    l_idx = torch.tensor(l_list, dtype=get_int_dtype(), device=device)
+    n_idx = torch.tensor(n_list, dtype=get_int_dtype(), device=device)
+    u_idx = torch.tensor(u_list, dtype=get_int_dtype(), device=device)
     w_vec = torch.tensor(w_list, dtype=comp_real, device=device)
     # Only even degrees l ∈ [2, lmax_even] carry signal (odd-l and l=0 are zeroed
     # by Patterson centrosymmetry). Compute / contract Y_lm on these rows only —
     # the assembly + einsum are the bottleneck, so this ~halves them. The full
     # c_nlm keeps the (L, ...) shape with odd/zero rows left at zero.
-    even_l_idx = torch.tensor(even_ls, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
+    even_l_idx = torch.tensor(even_ls, dtype=get_int_dtype(), device=device)
 
     M = s_vectors.shape[0]
     einsum_dtype = complex_dtype
@@ -347,8 +349,10 @@ def bessel_sh_expand(
     s_key = s_vectors.detach().cpu().to(torch.float64)  # dtype-ok: exact clustering key on the host; the device never sees it
     s_mag_key = s_key.norm(dim=-1).clamp(min=1e-30)
     cos_key = (s_key[..., 2] / s_mag_key).clamp(min=-1.0, max=1.0)
-    k_s = (s_mag_key * _GROUP_SCALE_S).round().to(torch.int64)  # dtype-ok: exact clustering key
-    k_c = (cos_key * _GROUP_SCALE_COS).round().to(torch.int64) + _GROUP_SCALE_COS  # dtype-ok: exact clustering key
+    # dtype-ok: clustering key k_s*(2e7+1)+k_c overflows int32
+    k_s = (s_mag_key * _GROUP_SCALE_S).round().to(torch.int64)
+    # dtype-ok: clustering key k_s*(2e7+1)+k_c overflows int32
+    k_c = (cos_key * _GROUP_SCALE_COS).round().to(torch.int64) + _GROUP_SCALE_COS
     key = (k_s * (2 * _GROUP_SCALE_COS + 1) + k_c).to(s_vectors.device)
     uniq_key, inverse = torch.unique(key, return_inverse=True)
     n_clusters = int(uniq_key.shape[0])
@@ -379,7 +383,8 @@ def bessel_sh_expand(
     # index to meet device values.
     inv_s = inv_s.to(device)
     n_shells = int(uniq_ks.shape[0])
-    shell_of_cluster = torch.zeros(n_clusters, dtype=torch.long, device=device)  # dtype-ok: index tensor; index_add_/gather need int64
+    # dtype-ok: the legendre_shell kernel TORCH_CHECKs int64 shell labels
+    shell_of_cluster = torch.zeros(n_clusters, dtype=torch.int64, device=device)
     shell_of_cluster[inverse] = inv_s
     shell_smag = _group_mean(s_mag_all.to(comp_real), inv_s, n_shells)
 
