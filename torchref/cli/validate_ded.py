@@ -24,12 +24,14 @@ Or programmatically::
 import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from torchref.cli._common import (
+    add_ded_weight_args,
     add_dmin_arg,
     add_dual_model_args,
     add_general_args,
@@ -40,8 +42,14 @@ from torchref.cli._common import (
     load_reflection_data,
     parse_device_str,
     register_timing,
+    sigma_d_config_from_args,
     validate_cif_files,
     validate_files,
+)
+from torchref.maps.ded_weights import (
+    DEFAULT_SCHEME,
+    DedWeightFallbackWarning,
+    all_ded_weights,
 )
 from torchref.utils.serialization import convert_to_serializable
 
@@ -196,6 +204,8 @@ def setup_ded_context(
     col_light=None,
     n_bins=20,
     verbose=0,
+    ded_weight=DEFAULT_SCHEME,
+    sigma_d_config=None,
 ):
     """Load reflection data and prepare shared state for DED validation.
 
@@ -280,11 +290,20 @@ def setup_ded_context(
     else:
         free_mask = work_mask = None
 
-    # Weighted difference Fo
+    # Difference Fo and the registered weights; the selected scheme is the headline.
     dfo = F_light - F_dark
-    sig_diff = (sig_dark**2 + sig_light**2) ** 0.5
-    weights = 1 / sig_diff**2
-    weights = weights / weights.mean()
+    sig_diff = torch.sqrt(sig_dark**2 + sig_light**2)
+    all_w = all_ded_weights(
+        delta_obs=dfo,
+        sigma_diff=sig_diff,
+        hkl=hkl,
+        cell=data_dark.cell,
+        spacegroup=data_dark.spacegroup,
+        f_dark=F_dark,
+        sigma_d_config=sigma_d_config,
+    )
+    selected = all_w[ded_weight]
+    weights = selected.weights
     w_dfo = dfo * weights
 
     # Cell, spacegroup, d-spacings
@@ -309,6 +328,9 @@ def setup_ded_context(
     )
     w_dfo_p1 = w_dfo[orig_idx]
     weights_p1 = weights[orig_idx]
+    weights_by_scheme = {
+        name: (w.weights, w.weights[orig_idx]) for name, w in all_w.items()
+    }
 
     if verbose >= 1:
         print(f"Matched reflections: {len(hkl)}")
@@ -326,6 +348,16 @@ def setup_ded_context(
         "refl_mask": refl_mask,
         "w_dfo": w_dfo,
         "weights": weights,
+        "dfo": dfo,
+        "dfo_p1": dfo[orig_idx],
+        "weights_by_scheme": weights_by_scheme,
+        "ded_weight": ded_weight,
+        "ded_weight_applied": selected.applied,
+        "ded_weight_diagnostics": {
+            k: v
+            for k, v in all_w["sigma_d"].diagnostics.items()
+            if k not in ("weight_sigma_d_raw", "shells")
+        },
         "d_spacing": d_spacing,
         "cell_t": cell_t,
         "cell_np": cell_np,
@@ -526,10 +558,48 @@ def compute_ded_maps(
         if cc_work is not None:
             print(f"  Work CC = {cc_work:.4f}, Free CC = {cc_free:.4f}")
 
+    # Every registered scheme on the same coefficients, for side-by-side reporting.
+    by_weight = {}
+    for name, (w_asu, w_p1) in ctx.get("weights_by_scheme", {}).items():
+        with torch.no_grad():
+            m_o = compute_map_from_coefficients(
+                ctx["dfo_p1"] * w_p1, phi_dark_p1, ctx["hkl_p1"], ctx["gridsize"]
+            )
+            m_c = compute_map_from_coefficients(
+                delta_fcalc * w_p1, phi_dark_p1, ctx["hkl_p1"], ctx["gridsize"]
+            )
+        entry = {
+            "realspace_correlation": {
+                mname: round(float(compute_correlation(m_o, m_c, mm)), 4)
+                for mname, mm in mask_dict.items()
+            }
+        }
+        wo, wc = ctx["dfo"] * w_asu, delta_fcalc_asu * w_asu
+        entry["reciprocal_cc_overall"] = round(
+            torch.corrcoef(torch.stack([wo, wc]))[0, 1].item(), 4
+        )
+        if free_mask is not None and free_mask.sum() > 10:
+            entry["reciprocal_cc_work"] = round(
+                torch.corrcoef(torch.stack([wo[work_mask], wc[work_mask]]))[
+                    0, 1
+                ].item(),
+                4,
+            )
+            entry["reciprocal_cc_free"] = round(
+                torch.corrcoef(torch.stack([wo[free_mask], wc[free_mask]]))[
+                    0, 1
+                ].item(),
+                4,
+            )
+        else:
+            entry["reciprocal_cc_work"] = entry["reciprocal_cc_free"] = None
+        by_weight[name] = entry
+
     return {
         "map_dfo": map_dfo,
         "map_dfc": map_dfc,
         "mask_dict": mask_dict,
+        "by_weight": by_weight,
         "realspace_correlation": rs_corr,
         "resolution_bins": bin_results,
         "reciprocal_cc_overall": round(cc_overall, 4),
@@ -567,16 +637,27 @@ def run_validation(args):
         print(f"  Light SF:  {args.light_structure_factor}")
 
     col_dark, col_light = build_dual_column_names(args)
-    ctx = setup_ded_context(
-        args.dark_structure_factor,
-        args.light_structure_factor,
-        dmin=args.dmin,
-        device=device,
-        col_dark=col_dark,
-        col_light=col_light,
-        n_bins=args.n_bins,
-        verbose=args.verbose,
-    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DedWeightFallbackWarning)
+        ctx = setup_ded_context(
+            args.dark_structure_factor,
+            args.light_structure_factor,
+            dmin=args.dmin,
+            device=device,
+            col_dark=col_dark,
+            col_light=col_light,
+            n_bins=args.n_bins,
+            verbose=args.verbose,
+            ded_weight=args.ded_weight,
+            sigma_d_config=sigma_d_config_from_args(args),
+        )
+    fallback_messages = [
+        str(w.message)
+        for w in caught
+        if issubclass(w.category, DedWeightFallbackWarning)
+    ]
+    for message in fallback_messages:
+        print(f"WARNING: {message}")
     d_min = ctx["d_min"]
 
     # Load models
@@ -641,6 +722,23 @@ def run_validation(args):
             "mask_radius": args.mask_radius,
             "dmin": d_min,
         },
+        "weights": {
+            "requested": ctx["ded_weight"],
+            "applied": ctx["ded_weight_applied"],
+            **{
+                k: ctx["ded_weight_diagnostics"].get(k)
+                for k in (
+                    "gamma",
+                    "gamma_fitted",
+                    "gamma_reason",
+                    "tau",
+                    "n_shell",
+                    "n_s2_clamped",
+                    "fallback_reason",
+                )
+            },
+        },
+        "by_weight": result["by_weight"],
         "realspace_correlation": result["realspace_correlation"],
         "reciprocal_cc_overall": result["reciprocal_cc_overall"],
         "reciprocal_cc_work": result["reciprocal_cc_work"],
@@ -689,10 +787,25 @@ def run_validation(args):
     # Summary
     if args.verbose >= 1:
         print(f"\n{'=' * 70}")
-        print("Summary:")
+        print(
+            f"Summary (headline weights: {ctx['ded_weight']}, "
+            f"applied: {ctx['ded_weight_applied']}):"
+        )
         for name, corr in result["realspace_correlation"].items():
             print(f"  {name}: CC = {corr['cc']:.4f}")
         print(f"  Reciprocal-space CC (overall): {result['reciprocal_cc_overall']}")
+        masks = list(result["realspace_correlation"])
+        header = "  {:<17s}".format("weights") + "".join(
+            f"{m[:12]:>13s}" for m in masks
+        )
+        print(header + f"{'recip. CC':>13s}")
+        for name, entry in result["by_weight"].items():
+            row = f"  {name:<17s}" + "".join(
+                f"{entry['realspace_correlation'][m]:13.4f}" for m in masks
+            )
+            print(row + f"{entry['reciprocal_cc_overall']:13.4f}")
+        for message in fallback_messages:
+            print(f"  WARNING: {message}")
         print(f"{'=' * 70}")
 
     return 0
@@ -784,6 +897,7 @@ Examples:
         action="store_true",
         help="Write CCP4 map files for WDFo and WDFcalc",
     )
+    add_ded_weight_args(analysis)
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)

@@ -65,8 +65,16 @@ class DifferenceMap(Map):
     (see :mod:`torchref.maps.map`).
     """
 
-    def __init__(self, data, data_reference, model, gridsize=None,
-                 device: Optional[torch.device] = None):
+    def __init__(
+        self,
+        data,
+        data_reference,
+        model,
+        gridsize=None,
+        device: Optional[torch.device] = None,
+        units: str = "normalized",
+        scale: Optional[torch.Tensor] = None,
+    ):
         # Pin all three inputs onto one device before constructing the
         # DatasetCollection / super().__init__ — both consume tensors
         # from data.hkl / model and would otherwise inherit whichever
@@ -92,7 +100,11 @@ class DifferenceMap(Map):
             gridsize=gridsize,
             map_type="Fcalc",  # placeholder, calculate() is overridden
             device=resolved,
+            units=units,
         )
+        # Per-reflection observed-to-model scale over the reference dataset's full
+        # reflection list; dividing by it puts the differences in electrons.
+        self.scale = scale
 
     def calculate(self) -> torch.Tensor:
         """Compute the isomorphous difference map.
@@ -122,9 +134,10 @@ class DifferenceMap(Map):
         )
 
         # Map scaled amplitudes to P1 (amplitudes are invariant under symmetry)
-        fobs_ref_p1 = fobs_ref[orig_idx]
-        fobs_pert_p1 = fobs_pert[orig_idx]
-        delta_f_p1 = fobs_pert_p1 - fobs_ref_p1
+        delta_f = fobs_pert - fobs_ref
+        if self.scale is not None:
+            delta_f = delta_f / self.scale.to(delta_f)[mask_combined]
+        delta_f_p1 = delta_f[orig_idx]
 
         # Compute Fcalc for P1 hkl (for phases)
         fcalc_p1 = self.model.get_structure_factor(hkl_p1)
@@ -143,6 +156,8 @@ class DifferenceMap(Map):
         grid = place_on_grid(
             hkl_p1, coefficients_p1, gridsize, enforce_hermitian=True
         )
-        self._map = torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
+        self._map = self._to_units(
+            torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
+        )
 
         return self._map

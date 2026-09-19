@@ -5,12 +5,15 @@
 Uses the ``torchref.difference-refine`` pipeline but performs **no refinement**: the input
 models are used as-is.
 
-The default output is the weighted difference map -- the inverse-variance-weighted
-amplitude difference ``|Fo_light| - |Fo_dark|`` carried on the **dark** model's phases,
-written as ``DELFWT``/``PHDELWT``. That needs no light-state model, so ``-lm`` is
-optional. It is also deliberately not a *phased* difference map: putting the light
-state's model phases into the observed amplitude biases the map toward the very model
-the experiment is testing.
+The default output is the difference map: the amplitude difference
+``|Fo_light| - |Fo_dark|`` as ``DF``/``SIGDF`` carried on the **dark** model's phases
+``PHDELWT``, with the per-reflection weights of every registered scheme beside it as
+``W_IVW`` (inverse variance, the default) and ``W_SD`` (sigma_D Wiener weight), and the
+observed-to-model scale ``KSCALE``. Build the map with
+``torchref.mtz2map -csf DF -cw W_IVW -cphi PHDELWT`` (``--units electrons`` for e/A^3).
+That needs no light-state model, so ``-lm`` is optional. It is also deliberately not a
+*phased* difference map: putting the light state's model phases into the observed
+amplitude biases the map toward the very model the experiment is testing.
 
 Given ``-lm``, the light state's amplitude and phase and the extrapolated map follow.
 ``--all-columns`` adds the alternative constructions of both.
@@ -36,6 +39,7 @@ import torch
 
 from torchref.cli._common import (
     add_all_columns_arg,
+    add_ded_weight_args,
     add_dual_model_args,
     add_dmin_arg,
     add_general_args,
@@ -44,6 +48,7 @@ from torchref.cli._common import (
     configure_unbuffered_output,
     register_timing,
     parse_device_str,
+    sigma_d_config_from_args,
     validate_cif_files,
     validate_files,
 )
@@ -81,6 +86,7 @@ Examples:
     output = parser.add_argument_group("Output")
     add_output_arg(output, help="Output MTZ file path (e.g. results.mtz)")
     add_all_columns_arg(output)
+    add_ded_weight_args(output)
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -215,8 +221,15 @@ Examples:
 
     with torch.no_grad():
         write_results_mtz(
-            dc, dark_model, scaler, str(out_path),
-            mc=mc, all_columns=args.all_columns, verbose=args.verbose,
+            dc,
+            dark_model,
+            scaler,
+            str(out_path),
+            mc=mc,
+            all_columns=args.all_columns,
+            verbose=args.verbose,
+            ded_weight=args.ded_weight,
+            sigma_d_config=sigma_d_config_from_args(args),
         )
 
     if args.verbose > 0:

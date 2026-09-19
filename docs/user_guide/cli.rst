@@ -91,7 +91,9 @@ restraints.
 ``-dsf``/``--dark-structure-factor``, ``-lsf``/``--light-structure-factor``,
 ``--fraction`` (light-state population fraction, singular),
 ``--weight-schedule`` annealing schedule (default ``5,3,2``),
-``-n``/``--n-cycles`` macro-cycles.
+``-n``/``--n-cycles`` macro-cycles, ``--difference-target {difference,difference_sd}``
+(the difference row the schedule drives; default ``difference``), ``--ded-weight`` and
+``--sigma-d-gamma`` for the difference MTZ (see ``torchref.difference-map``).
 
 :API: :mod:`torchref.cli.collection_difference_refine`
 
@@ -106,10 +108,17 @@ columns, expands to P1, and computes a real-space map via FFT.
 
 .. code-block:: bash
 
-   torchref.mtz2map -f refined.mtz -F 2FOFCWT -P PH2FOFCWT -o map.ccp4
+   torchref.mtz2map -sf refined.mtz -csf 2FOFCWT -cphi PH2FOFCWT -o map.ccp4
+   torchref.mtz2map -sf diff.mtz -csf DF -cw W_IVW -cphi PHDELWT -o diff.ccp4
+   torchref.mtz2map -sf diff.mtz -csf DF -cw W_SD -cphi PHDELWT --units electrons -o diff_e.ccp4
 
-**Key options:** ``--high-res``, ``--low-res`` resolution limits,
-``--gridsize`` override, ``-n`` normalize to sigma units.
+**Key options:** ``--dmin``/``--dmax`` resolution limits, ``--gridsize`` override,
+``-cw``/``--column-weight`` multiplies the amplitudes by a weight column before the
+FFT, ``--units {sigma,electrons,raw}`` (``sigma``, the default, gives zero mean and
+unit standard deviation; ``electrons`` gives e/A^3 as
+``(1/V) sum_h F(h) exp(-2 pi i h.x)`` with the amplitudes divided by the
+``-ck``/``--column-scale`` factor, ``KSCALE`` by default). ``-n`` is the deprecated
+alias of ``--units sigma``/``raw``.
 
 :API: :mod:`torchref.cli.mtz2map`
 
@@ -126,7 +135,11 @@ Computes real-space correlations and resolution-binned reciprocal-space CC.
        -dm dark.pdb -lm light.pdb
 
 **Key options:** ``--fraction``, ``--selection`` (Phenix-style atom
-selection), ``--mask-radius``, ``--n-bins``.
+selection), ``--mask-radius``, ``--n-bins``, ``--ded-weight`` (the headline weight
+scheme; every scheme is also reported side by side, real-space in each mask and
+reciprocal-space overall, as the ``by_weight`` block of the JSON and a table in the
+summary, and a ``sigma_d`` fallback to inverse variance is recorded under
+``weights``).
 
 :API: :mod:`torchref.cli.validate_ded`
 
@@ -137,10 +150,14 @@ Compute difference and extrapolated map coefficients without refinement.
 Uses the same pipeline as ``torchref.difference-refine`` but the input
 models are kept as-is.
 
-The default output is the weighted difference map ``DELFWT``/``PHDELWT`` --
-the inverse-variance-weighted amplitude difference on the **dark** model's
-phases, which is the construction ``torchref.validate-ded`` correlates
-against.  It needs no light-state model, so ``-lm`` is optional:
+The default output is the difference map: the amplitude difference ``DF``/``SIGDF``
+on the **dark** model's phases ``PHDELWT``, with one mean-one weight column per
+registered scheme beside it -- ``W_IVW``, the inverse variance ``1/sigma^2`` (the
+default), and ``W_SD``, the sigma_D Wiener weight ``S/(S + sigma^2)`` built from the
+expected difference power -- and ``KSCALE``, the scaler's factor from model to observed
+scale. This is the construction ``torchref.validate-ded`` correlates against. Build the
+map with ``torchref.mtz2map -csf DF -cw W_IVW -cphi PHDELWT``, adding
+``--units electrons`` for e/A^3. It needs no light-state model, so ``-lm`` is optional:
 
 .. code-block:: bash
 
@@ -158,9 +175,15 @@ phase and the extrapolated map ``FWT``/``PHWT``:
        -dsf dark.mtz -lsf light.mtz \
        --fraction 0.37 -o results.mtz
 
-**Key options:** ``--all-columns`` writes every alternative map coefficient
-and diagnostic -- the model-phased difference, the two other extrapolations
-and the intensity block -- at the cost of two further scale fits.
+**Key options:** ``--ded-weight {inverse_variance,sigma_d,none}`` selects the
+scheme the model-phased and two-moment difference columns carry (default
+``inverse_variance``; ``sigma_d`` needs calibrated sigmas, reports how many shells
+it found without difference power, and falls back to inverse variance with a warning
+when that is every shell); ``--sigma-d-gamma`` fixes the
+dark-amplitude exponent of the sigma_D power law instead of fitting it;
+``--all-columns`` writes every alternative map coefficient and diagnostic -- the
+model-phased difference, the two other extrapolations and the intensity block -- at
+the cost of two further scale fits.
 
 :API: :mod:`torchref.cli.difference_map`
 

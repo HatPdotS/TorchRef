@@ -59,6 +59,25 @@ def main():
         metavar="COL",
         help="Column name for phases in degrees (e.g. PHWT, PHDELWT, PH2FOFCWT).",
     )
+    inp.add_argument(
+        "-cw",
+        "--column-weight",
+        default=None,
+        type=str,
+        metavar="COL",
+        help="Weight column multiplied into the amplitudes before the FFT "
+        "(e.g. W_SD, W_IVW from torchref.difference-map). Default: none.",
+    )
+    inp.add_argument(
+        "-ck",
+        "--column-scale",
+        default=None,
+        type=str,
+        metavar="COL",
+        help="Per-reflection observed-to-model scale factor the amplitudes are divided "
+        "by for --units electrons (e.g. KSCALE from torchref.difference-map). "
+        "Default: KSCALE when the file has it.",
+    )
 
     output = parser.add_argument_group("Output")
     output.add_argument(
@@ -75,14 +94,23 @@ def main():
         help="Override grid dimensions. Default: auto from cell and resolution.",
     )
     mapopts.add_argument(
+        "--units",
+        type=str,
+        choices=["sigma", "electrons", "raw"],
+        default=None,
+        help="Map units. 'sigma': zero mean and unit standard deviation (default). "
+        "'electrons': electrons per cubic Angstrom, sum_h F(h) exp(-2 pi i h.x) / V "
+        "with F divided by the --column-scale factor. 'raw': the plain FFT with the "
+        "1/N normalisation, no rescaling.",
+    )
+    mapopts.add_argument(
         "-n",
         "--normalize",
         type=str,
-        choices=['True', 'False'],
-        default='True',
-        help="Normalize amplitudes to unit variance. Accepts only the literal "
-        "strings 'True' or 'False' (case-sensitive); pass '-n False' to disable. "
-        "Default: True.",
+        choices=["True", "False"],
+        default=None,
+        help="Deprecated alias: '-n True' is '--units sigma', '-n False' is "
+        "'--units raw'.",
     )
 
     res = parser.add_argument_group("Resolution")
@@ -106,7 +134,24 @@ def main():
     mtz = rs.read_mtz(args.structure_factor)
     available = list(mtz.columns)
 
-    normalize = args.normalize == 'True'
+    if args.units is not None and args.normalize is not None:
+        print("Error: --units and --normalize cannot both be given", file=sys.stderr)
+        sys.exit(1)
+    if args.units is not None:
+        units = args.units
+    elif args.normalize is not None:
+        units = "sigma" if args.normalize == "True" else "raw"
+    else:
+        units = "sigma"
+    scale_column = args.column_scale
+    if scale_column is None and units == "electrons" and "KSCALE" in available:
+        scale_column = "KSCALE"
+    if units == "electrons" and scale_column is None:
+        print(
+            "Error: --units electrons needs --column-scale (no KSCALE column found).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if args.column_structure_factor not in available:
         print(
@@ -122,6 +167,14 @@ def main():
             file=sys.stderr,
         )
         sys.exit(1)
+    for label, col in (("weight", args.column_weight), ("scale", scale_column)):
+        if col is not None and col not in available:
+            print(
+                f"Error: {label} column '{col}' not found.\n"
+                f"Available columns: {available}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Extract cell and spacegroup
     cell = np.array(
@@ -141,9 +194,23 @@ def main():
     hkl = df[["H", "K", "L"]].to_numpy().astype(np.int32)
     amplitudes = df[args.column_structure_factor].to_numpy().astype(np.float32)
     phases_deg = df[args.column_phase].to_numpy().astype(np.float32)
+    valid = np.isfinite(amplitudes) & np.isfinite(phases_deg)
+    if args.column_weight is not None:
+        weights = df[args.column_weight].to_numpy().astype(np.float32)
+        valid &= np.isfinite(weights)
+        amplitudes = amplitudes * weights
+        if args.verbose >= 1:
+            print(f"  Weights: {args.column_weight} (mean {np.nanmean(weights):.3f})")
+    if units == "electrons":
+        kscale = df[scale_column].to_numpy().astype(np.float32)
+        valid &= np.isfinite(kscale) & (kscale > 0)
+        # Observed amplitudes carry the scaler's overall scale, B and anisotropy;
+        # dividing by that factor returns them to electrons.
+        amplitudes = amplitudes / np.where(valid, kscale, 1.0)
+        if args.verbose >= 1:
+            print(f"  Absolute scale: dividing by {scale_column}")
 
     # Drop NaN reflections
-    valid = np.isfinite(amplitudes) & np.isfinite(phases_deg)
     if not valid.all():
         n_drop = (~valid).sum()
         if args.verbose >= 1:
@@ -215,12 +282,17 @@ def main():
 
     grid = place_on_grid(hkl_p1, coefficients, gridsize, enforce_hermitian=True)
 
-    # FFT to real space: rho(r) = sum_h F(h) * exp(-2*pi*i * h.r)
+    # FFT to real space with the 1/N normalisation: rho_raw(r) = (1/N) sum_h F(h) exp(-2 pi i h.r)
     real_map = torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
 
-    if normalize:
+    if units == "sigma":
         real_map = (real_map - real_map.mean()) / real_map.std()
-        
+    elif units == "electrons":
+        # rho(r) = (1/V) sum_h F(h) exp(-2 pi i h.r): undo the 1/N and divide by the
+        # cell volume, so the map is in electrons per cubic Angstrom.
+        volume = Cell(cell, device=device).volume.to(real_map.dtype)
+        real_map = real_map * (real_map.numel() / volume)
+
     # --- Write output ---
     from torchref.io.cif import write_map
 
@@ -229,6 +301,7 @@ def main():
     if args.verbose >= 1:
         print(f"  Written: {args.output}")
         sigma = float(real_map.std())
+        print(f"  Units: {units}")
         print(f"  Map sigma: {sigma:.4f}")
 
 
