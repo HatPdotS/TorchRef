@@ -192,7 +192,8 @@ class CollectionScaler(ScalerBase):
                 pos_mask = torch.ones_like(fobs, dtype=torch.bool)
             mask = (work_mask & pos_mask).to(torch.bool)
 
-            bins = self.bins[mask].to(torch.int64)  # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            bins = self.bins[mask].to(torch.int64)
             log_ratios = (
                 torch.log(fobs_clamped[mask]) - torch.log(fcalc_amp[mask])
             ).to(self.device)

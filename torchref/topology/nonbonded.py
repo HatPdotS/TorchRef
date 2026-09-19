@@ -191,9 +191,7 @@ def build_cell_list(
     starts = torch.zeros(len(unique_cells) + 1, dtype=get_int_dtype(), device=device)
     starts[1:] = counts.cumsum(0)
 
-    cell_lookup = torch.full(
-        (n_grid_total,), -1, dtype=get_int_dtype(), device=device
-    )
+    cell_lookup = torch.full((n_grid_total,), -1, dtype=get_int_dtype(), device=device)
     cell_lookup[unique_cells] = torch.arange(
         len(unique_cells), dtype=get_int_dtype(), device=device
     )
@@ -517,11 +515,13 @@ def exclusion_set_to_hash(
     Hash: min(i,j) * max_idx + max(i,j), sorted for searchsorted.
     """
     if not exclusion_set:
-        return torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+        # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+        return torch.tensor([], dtype=torch.long, device=device)
     arr = np.array(list(exclusion_set), dtype=np.int64)
     hashes = arr[:, 0] * max_idx + arr[:, 1]  # already (min, max)
     hashes.sort()
-    return torch.tensor(hashes, dtype=torch.long, device=device)  # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+    # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+    return torch.tensor(hashes, dtype=torch.long, device=device)
 
 
 def filter_pairs(
@@ -654,12 +654,15 @@ def build_vdw_restraints_gpu(
     identity_indices = is_identity.nonzero(as_tuple=True)[0]
     if len(identity_indices) == 0:
         # Identity not in valid combos — should not happen, but add it
-        op_indices = torch.cat([
-            torch.zeros(1, dtype=get_int_dtype(), device=device), op_indices
-        ])
-        cell_offsets_valid = torch.cat([
-            torch.zeros(1, 3, dtype=get_int_dtype(), device=device), cell_offsets_valid
-        ])
+        op_indices = torch.cat(
+            [torch.zeros(1, dtype=get_int_dtype(), device=device), op_indices]
+        )
+        cell_offsets_valid = torch.cat(
+            [
+                torch.zeros(1, 3, dtype=get_int_dtype(), device=device),
+                cell_offsets_valid,
+            ]
+        )
         identity_combo = 0
         M = len(op_indices)
     else:
@@ -774,7 +777,9 @@ def build_vdw_restraints_gpu(
         "valid_op_indices": op_indices,
         "valid_cell_offsets": cell_offsets_valid,
         "grid_dims": grid_dims,
-        "identity_combo": torch.tensor(identity_combo, dtype=get_int_dtype(), device=device),
+        "identity_combo": torch.tensor(
+            identity_combo, dtype=get_int_dtype(), device=device
+        ),
     }
 
     if verbose > 0:

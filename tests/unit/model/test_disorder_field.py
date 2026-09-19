@@ -15,7 +15,6 @@ import pytest
 import torch
 
 from torchref.config import get_int_dtype
-
 from torchref.model.disorder_field import (
     DisorderFieldTensor,
     build_neighbor_list,

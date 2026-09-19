@@ -178,7 +178,8 @@ class ForceFieldTarget(ModelTarget):
         Z = self.model.Z        # Shape: (n_atoms,)
 
         # Ensure Z is long tensor
-        if Z.dtype != torch.long:  # dtype-ok: TorchMD-Net expects a LongTensor Z; external library contract
+        # dtype-ok: TorchMD-Net expects a LongTensor Z; external library contract
+        if Z.dtype != torch.long:
             Z = Z.long()
 
         # Create batch tensor (single structure = all zeros)

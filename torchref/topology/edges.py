@@ -16,8 +16,8 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
-from torchref.config import get_int_dtype
 
+from torchref.config import get_int_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
 #: Origin order per edge type. Fixes the block layout so a rebuild on the same

@@ -59,8 +59,8 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import numpy as np
 import torch
-from torchref.config import get_int_dtype
 
+from torchref.config import get_int_dtype
 from torchref.experimental.targets.amber_target import (
     AmberTarget,
     _OpenMMAMBERFunction,
@@ -610,7 +610,6 @@ class QuasiCrystalAmberTarget(AmberTarget):
                 "[QuasiCrystalAmberTarget] Atom layout changed; rebuild the target."
             )
         return supercell_xyz_nm.index_select(1, self._omm_to_model).reshape(-1, 3)
-
 
     # ------------------------------------------------------------------
     # Forward

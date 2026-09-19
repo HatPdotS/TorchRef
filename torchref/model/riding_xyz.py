@@ -23,7 +23,6 @@ from typing import Iterator, Optional, Union
 
 import numpy as np
 import torch
-from torchref.config import get_int_dtype
 import torch.nn as nn
 from torchref.base.coordinates.local_frame import (
     frame_is_degenerate,
@@ -31,6 +30,7 @@ from torchref.base.coordinates.local_frame import (
     place_local_frame,
     rotate_vectors,
 )
+from torchref.config import get_int_dtype
 from torchref.model.parameter_wrappers import MixedTensor
 from torchref.topology.hydrogens import HydrogenFrames
 
@@ -66,9 +66,7 @@ class _DerivedRowsMixin:
             if len(rows) and is_riding[rows[rows >= 0]].any():
                 raise ValueError(f"{name} must reference stored rows, not riding ones")
 
-        long = dict(
-            dtype=get_int_dtype(), device=device
-        )
+        long = dict(dtype=get_int_dtype(), device=device)
         self.register_buffer("base_row", torch.as_tensor(base, **long))
         self.register_buffer("h_row", torch.as_tensor(h, **long))
         self.register_buffer(
@@ -106,12 +104,8 @@ class _DerivedRowsMixin:
         self._n1_bidx = full_to_base[self.n1_row.clamp(min=0)].clamp(min=0)
         self._n2_bidx = full_to_base[self.n2_row.clamp(min=0)].clamp(min=0)
         # ``cat([base, derived])[gather]`` lays the full table out in one gather.
-        order = torch.empty(
-            n_full, dtype=get_int_dtype(), device=device
-        )
-        order[base] = torch.arange(
-            base.numel(), dtype=get_int_dtype(), device=device
-        )
+        order = torch.empty(n_full, dtype=get_int_dtype(), device=device)
+        order[base] = torch.arange(base.numel(), dtype=get_int_dtype(), device=device)
         order[self.h_row] = base.numel() + torch.arange(
             self.h_row.numel(),
             dtype=get_int_dtype(),
@@ -226,9 +220,7 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             for buffer in ("base_row", "h_row", "parent_row", "n1_row", "n2_row"):
                 self.register_buffer(
                     buffer,
-                    torch.zeros(
-                        0, dtype=get_int_dtype(), device=self.device
-                    ),
+                    torch.zeros(0, dtype=get_int_dtype(), device=self.device),
                 )
             self.register_buffer(
                 "frame_valid", torch.zeros(0, dtype=torch.bool, device=self.device)
@@ -382,7 +374,9 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             rows = getattr(self, "_" + kind + "_h")
             groups = getattr(self, "_" + kind + "_inverse")
             selected = full_mask[parents].to(get_int_dtype())
-            selected.index_add_(0, groups, full_mask[self.h_row[rows]].to(get_int_dtype()))
+            selected.index_add_(
+                0, groups, full_mask[self.h_row[rows]].to(get_int_dtype())
+            )
             selections.append(selected > 0)
         return selections
 

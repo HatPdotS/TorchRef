@@ -22,10 +22,10 @@ import torch.nn as nn
 
 from torchref.base import math_torch
 from torchref.config import (
-    get_int_dtype,
     canonical_device,
     get_default_device,
     get_float_dtype,
+    get_int_dtype,
     normalize_device,
 )
 from torchref.io import cif, pdb
@@ -334,7 +334,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     @property
     def _aniso_is_empty(self) -> bool:
         return self._sf_partition()[3]
-
 
     # =========================================================================
     # Cell, SpaceGroup, and Symmetry properties
@@ -2071,7 +2070,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             new_adp, refinable_mask=self.adp.refinable_mask, name="adp"
         )
 
-
     def _new_model_from_df(self, df, *, strip_H=None, add_hydrogens=False):
         """Build a fresh model of the same class from a DataFrame.
 
@@ -2221,7 +2219,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             print(f"Adding {plan.n_hydrogens} hydrogens")
         augmented = augment_atom_table(self.pdb, plan, restraints.topology)
         return self._new_model_from_df(augmented, strip_H=False)
-
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         """
@@ -3004,8 +3001,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         source = torch.empty(len(augmented), dtype=get_int_dtype(), device=self.device)
         old_index = torch.as_tensor(old_rows, device=self.device)
         new_index = torch.as_tensor(new_rows, device=self.device)
-        source[old_index] = torch.arange(len(self.pdb), device=self.device, dtype=source.dtype)
-        source[new_index] = torch.as_tensor(plan.parent, device=self.device, dtype=source.dtype)
+        source[old_index] = torch.arange(
+            len(self.pdb), device=self.device, dtype=source.dtype
+        )
+        source[new_index] = torch.as_tensor(
+            plan.parent, device=self.device, dtype=source.dtype
+        )
         xyz = (
             self.xyz.to_mixed_tensor()
             if hasattr(self.xyz, "to_mixed_tensor")

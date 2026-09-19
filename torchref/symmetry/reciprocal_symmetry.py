@@ -27,7 +27,6 @@ import torch
 from torchref.config import get_float_dtype, get_int_dtype
 
 
-
 def _expand_hkl(
     sym,
     hkl: torch.Tensor,
@@ -549,11 +548,9 @@ def _canonicalize_hkl(
     # Lexicographic sort by (h, k, l) via composite key
     h_max = int(canonical_hkl.abs().max().item()) + 1
     base = 2 * h_max + 1
-    sort_key = (
-        canonical_hkl[:, 0].to(torch.int64) * base * base  # dtype-ok: composite sort key h*base^2+k*base+l overflows int32 for large Miller indices
-        + canonical_hkl[:, 1].to(torch.int64) * base  # dtype-ok: composite sort key h*base^2+k*base+l overflows int32 for large Miller indices
-        + canonical_hkl[:, 2].to(torch.int64)  # dtype-ok: composite sort key h*base^2+k*base+l overflows int32 for large Miller indices
-    )
+    # dtype-ok: composite sort key h*base^2+k*base+l overflows int32 for large Miller indices
+    hkl64 = canonical_hkl.to(torch.int64)
+    sort_key = hkl64[:, 0] * base * base + hkl64[:, 1] * base + hkl64[:, 2]
     sort_indices = torch.argsort(sort_key)
 
     return (

@@ -1474,11 +1474,13 @@ class OccupancyTensor(MixedTensor):
         # Use sharing_groups directly as the expansion mask
         if sharing_groups is None:
             # No sharing - each atom maps to its own index
-            expansion_mask = torch.arange(n_atoms, dtype=torch.long, device=device)  # dtype-ok: expansion_mask is a scatter_add_ index; int64 required on torch < 2.8
+            # dtype-ok: expansion_mask is a scatter_add_ index; int64 required on torch < 2.8
+            expansion_mask = torch.arange(n_atoms, dtype=torch.long, device=device)
             self._collapsed_shape = n_atoms
         else:
             # Use the provided index tensor
-            expansion_mask = sharing_groups.to(device=device, dtype=torch.long)  # dtype-ok: expansion_mask is a scatter_add_ index; int64 required on torch < 2.8
+            # dtype-ok: expansion_mask is a scatter_add_ index; int64 required on torch < 2.8
+            expansion_mask = sharing_groups.to(device=device, dtype=torch.long)
             self._collapsed_shape = expansion_mask.max().item() + 1
 
         self.register_buffer("expansion_mask", expansion_mask)
@@ -1539,7 +1541,9 @@ class OccupancyTensor(MixedTensor):
 
         # Create count buffer for vectorized collapse operations
         # counts[i] = number of atoms that map to collapsed index i
-        counts = torch.zeros(self._collapsed_shape, dtype=expansion_mask.dtype, device=device)
+        counts = torch.zeros(
+            self._collapsed_shape, dtype=expansion_mask.dtype, device=device
+        )
         counts.scatter_add_(0, expansion_mask, torch.ones_like(expansion_mask))
         self.register_buffer("collapse_counts", counts)
 

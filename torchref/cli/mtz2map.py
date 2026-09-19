@@ -18,13 +18,13 @@ import sys
 import numpy as np
 import torch
 
-from torchref.config import get_float_dtype, get_int_dtype
 from torchref.cli._common import (
     add_general_args,
     add_resolution_args,
     register_timing,
     parse_device_str,
 )
+from torchref.config import get_float_dtype, get_int_dtype
 
 
 def main():

@@ -439,7 +439,9 @@ def build_hydrogen_topology(
         topo.parent_neighbor_idx = torch.zeros(
             0, MAX_HEAVY_NB, dtype=get_int_dtype(), device=device
         )
-        topo.parent_neighbor_count = torch.zeros(0, dtype=get_int_dtype(), device=device)
+        topo.parent_neighbor_count = torch.zeros(
+            0, dtype=get_int_dtype(), device=device
+        )
         topo.h_chainid_enc = torch.zeros(0, dtype=get_int_dtype(), device=device)
         topo.h_resseq = torch.zeros(0, dtype=get_int_dtype(), device=device)
         return topo
@@ -466,7 +468,9 @@ def build_hydrogen_topology(
             idxs = np.where(mask)[0]
             type_bounds[t] = (int(idxs[0]), int(idxs[-1]) + 1)
 
-    topo.h_parent_idx = torch.tensor(acc_parent_idx, dtype=get_int_dtype(), device=device)
+    topo.h_parent_idx = torch.tensor(
+        acc_parent_idx, dtype=get_int_dtype(), device=device
+    )
     topo.h_bond_length = torch.tensor(acc_bond_length, dtype=fdtype, device=device)
     topo.h_vdw_radius = torch.full((n_h_total,), 1.20, dtype=fdtype, device=device)
     topo.h_placement_type = torch.tensor(
@@ -480,7 +484,9 @@ def build_hydrogen_topology(
         acc_nb_count, dtype=get_int_dtype(), device=device
     )
     topo.type_bounds = type_bounds  # dict: type_code -> (start, end)
-    topo.h_chainid_enc = torch.tensor(acc_chainid_enc, dtype=get_int_dtype(), device=device)
+    topo.h_chainid_enc = torch.tensor(
+        acc_chainid_enc, dtype=get_int_dtype(), device=device
+    )
     topo.h_resseq = torch.tensor(acc_resseq, dtype=get_int_dtype(), device=device)
 
     if verbose > 0:
@@ -737,7 +743,9 @@ def build_h_candidate_pairs(
     if n_h == 0:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
             setattr(h_topo, name, torch.zeros(0, dtype=get_int_dtype(), device=device))
-        h_topo.cand_cell_offset = torch.zeros(0, 3, dtype=get_int_dtype(), device=device)
+        h_topo.cand_cell_offset = torch.zeros(
+            0, 3, dtype=get_int_dtype(), device=device
+        )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
@@ -837,7 +845,9 @@ def build_h_candidate_pairs(
     if not acc_idx_i:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
             setattr(h_topo, name, torch.zeros(0, dtype=get_int_dtype(), device=device))
-        h_topo.cand_cell_offset = torch.zeros(0, 3, dtype=get_int_dtype(), device=device)
+        h_topo.cand_cell_offset = torch.zeros(
+            0, 3, dtype=get_int_dtype(), device=device
+        )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
@@ -853,7 +863,8 @@ def build_h_candidate_pairs(
             max_idx = n_heavy + n_h
             norm_i = torch.minimum(cand_i, cand_j)
             norm_j = torch.maximum(cand_i, cand_j)
-            pair_hash = norm_i.to(torch.int64) * max_idx + norm_j.to(torch.int64)  # dtype-ok: packed pair key overflows int32; searchsorted needs int64 like the table
+            # dtype-ok: packed pair key overflows int32; searchsorted needs int64 like the table
+            pair_hash = norm_i.to(torch.int64) * max_idx + norm_j.to(torch.int64)
             ins = torch.searchsorted(h_excl_hash, pair_hash).clamp(
                 max=len(h_excl_hash) - 1
             )

@@ -38,7 +38,12 @@ import numpy as np
 import torch
 
 from torchref.base.targets.xray_likelihoods import rice_per_refl
-from torchref.config import get_complex_dtype, get_default_device, get_float_dtype, get_int_dtype
+from torchref.config import (
+    get_complex_dtype,
+    get_default_device,
+    get_float_dtype,
+    get_int_dtype,
+)
 from torchref.scaling import WilsonNormaliser
 from torchref.scaling.weighting import (inverse_variance_weight,
                                         normalise_weight, snr_from_amplitude)

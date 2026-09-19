@@ -28,7 +28,8 @@ def scatter_add_nd(source, index, map):
     """Vectorized n-dimensional scatter-add: ``source`` ``(N,)`` into ``map``
     ``(d1..dn)`` at ``index`` ``(N, ndim)``, returning the modified map.
     """
-    map_shape = torch.tensor(map.shape, device=index.device, dtype=torch.int64)  # dtype-ok: int64 shape/strides make the flat index int64; scatter_add_ requires int64 on torch < 2.8
+    # dtype-ok: int64 shape/strides make the flat index int64; scatter_add_ requires int64 on torch < 2.8
+    map_shape = torch.tensor(map.shape, device=index.device, dtype=torch.int64)
 
     # Convert n-dimensional indices to flat indices
     # For shape (d1, d2, d3, ..., dn), flat_index = i0 * (d1*d2*...*dn) + i1 * (d2*d3*...*dn) + ... + in

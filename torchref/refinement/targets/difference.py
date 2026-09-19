@@ -9,11 +9,11 @@ reach only ΔF_calc.
 """
 
 import torch
-from torchref.config import get_int_dtype
 from torch import nn
 from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple
 
 from .base import Target
+from torchref.config import get_int_dtype
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,

@@ -1357,13 +1357,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
         mean_resolutions = torch.scatter_add(
             mean_resolutions,
             0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            self.bin_indices[mask].to(torch.int64),
             self.resolution[mask],
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            self.bin_indices[mask].to(torch.int64),
             torch.ones_like(self.resolution[mask], dtype=dtypes.int),
         )
         mean_resolutions = mean_resolutions / count_per_bin.clamp(min=1).float()
@@ -1392,12 +1394,17 @@ class ReflectionData(CrystalDataset, DebugMixin):
         count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_F = torch.scatter_add(
-            mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]  # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            mean_F,
+            0,
+            # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            self.bin_indices[mask].to(torch.int64),
+            self.F[mask],
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            self.bin_indices[mask].to(torch.int64),
             torch.ones_like(self.F[mask], dtype=dtypes.int),
         )
         mean_F = mean_F / count_per_bin.clamp(min=1).float()
@@ -1426,12 +1433,17 @@ class ReflectionData(CrystalDataset, DebugMixin):
         count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_sigma = torch.scatter_add(
-            mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]  # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            mean_sigma,
+            0,
+            # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            self.bin_indices[mask].to(torch.int64),
+            self.F_sigma[mask],
         )
         count_per_bin = torch.scatter_add(
             count_per_bin,
             0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            self.bin_indices[mask].to(torch.int64),
             torch.ones_like(self.F_sigma[mask], dtype=dtypes.int),
         )
         mean_sigma = mean_sigma / count_per_bin.clamp(min=1).float()

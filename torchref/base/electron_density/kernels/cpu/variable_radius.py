@@ -28,9 +28,9 @@ from __future__ import annotations
 import math
 
 import torch
-from torchref.config import get_int_dtype
 
 from torchref.base.electron_density.radius_policy import _u6_to_u3
+from torchref.config import get_int_dtype
 
 _PI = math.pi
 _PI_SQ = _PI * _PI
@@ -52,8 +52,11 @@ def _bucket_by_radius(radius: torch.Tensor, center_1d: torch.Tensor):
         order_parts.append(idx)
         spans.append((float(r), cursor, cursor + idx.numel()))
         cursor += idx.numel()
-    order = (torch.cat(order_parts) if order_parts
-             else torch.zeros(0, dtype=get_int_dtype(), device=radius.device))
+    order = (
+        torch.cat(order_parts)
+        if order_parts
+        else torch.zeros(0, dtype=get_int_dtype(), device=radius.device)
+    )
     return order, spans
 
 
@@ -112,7 +115,8 @@ def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)
     grid_dims = (nx, ny, nz)
-    strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)  # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
+    # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
+    strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
     grid_shape = torch.tensor(grid_dims, device=device, dtype=get_int_dtype())
 
     order, spans, center_idx, w0 = _canonical_setup(
@@ -152,7 +156,8 @@ def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)
     grid_dims = (nx, ny, nz)
-    strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)  # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
+    # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
+    strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
     grid_shape = torch.tensor(grid_dims, device=device, dtype=get_int_dtype())
 
     order, spans, center_idx, w0 = _canonical_setup(

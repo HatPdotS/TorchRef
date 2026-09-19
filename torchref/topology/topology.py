@@ -13,8 +13,8 @@ from typing import Dict, Set, Tuple
 
 import numpy as np
 import torch
-from torchref.config import get_int_dtype
 
+from torchref.config import get_int_dtype
 from torchref.topology.atom_graph import AtomGraph
 from torchref.topology.residue_graph import ResidueGraph
 from torchref.utils.device_mixin import DeviceMixin
@@ -98,7 +98,9 @@ class Topology(DeviceMixin):
             raise ValueError("subset would keep no atoms")
 
         n_kept = int(mask.sum())
-        remap = torch.full((self.n_atoms,), -1, dtype=get_int_dtype(), device=mask.device)
+        remap = torch.full(
+            (self.n_atoms,), -1, dtype=get_int_dtype(), device=mask.device
+        )
         remap[mask] = torch.arange(n_kept, dtype=get_int_dtype(), device=mask.device)
 
         # A residue survives if any of its atoms does. Counting per residue also

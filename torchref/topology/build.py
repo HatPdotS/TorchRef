@@ -11,8 +11,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import torch
-from torchref.config import get_int_dtype
 
+from torchref.config import get_int_dtype
 from torchref.topology.builders import (
     InterResidueAngleBuilder,
     InterResidueBondBuilder,

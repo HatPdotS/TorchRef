@@ -135,9 +135,8 @@ class _CpuDensityKernel(torch.nn.Module):
         # Scatter add to density map
         ny: int = density_map.shape[1]
         nz: int = density_map.shape[2]
-        strides = torch.tensor(
-            [ny * nz, nz, 1], device=voxel_indices.device, dtype=torch.long  # dtype-ok: int64 strides make the flat voxel index int64; scatter_add_ requires int64 on torch < 2.8
-        )
+        # dtype-ok: int64 strides make the flat voxel index int64; scatter_add_ requires int64 on torch < 2.8
+        strides = voxel_indices.new_tensor([ny * nz, nz, 1], dtype=torch.long)
         index_flat = torch.sum(voxel_indices.to(torch.long) * strides, dim=-1).view(-1)  # dtype-ok: voxel indices flattened for scatter; indexing requires long
 
         density_map.view(-1).scatter_add_(0, index_flat, density.reshape(-1))

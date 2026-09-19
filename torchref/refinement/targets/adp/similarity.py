@@ -1,9 +1,9 @@
 import numpy as np
 import torch
-from torchref.config import get_int_dtype
 from typing import TYPE_CHECKING, Dict
 
 from torchref.base.targets.adp import adp_simu_math, adp_simu_aniso_math
+from torchref.config import get_int_dtype
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -95,8 +95,9 @@ class ADPSimilarityTarget(ADPTarget):
         if chunks:
             cached = torch.cat(chunks, dim=0).contiguous()
         else:
-            cached = torch.empty(0, 2, dtype=get_int_dtype(),
-                                 device=self.model.xyz().device)
+            cached = torch.empty(
+                0, 2, dtype=get_int_dtype(), device=self.model.xyz().device
+            )
         self._simu_pair_indices_cache = cached
         return cached
 

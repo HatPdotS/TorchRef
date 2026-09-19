@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+
 from torchref.config import get_float_dtype, get_int_dtype
 
 #: Standard heavy-atom valences, one of the two budgets that cap how many hydrogens a
@@ -1145,9 +1146,7 @@ class HydrogenFrames:
     def to_tensors(self, device=None) -> Dict[str, torch.Tensor]:
         """Return frame and orientation arrays as tensors, keyed by field name."""
         return {
-            "h_row": torch.as_tensor(
-                self.h_row, dtype=get_int_dtype(), device=device
-            ),
+            "h_row": torch.as_tensor(self.h_row, dtype=get_int_dtype(), device=device),
             "parent_row": torch.as_tensor(
                 self.parent_row, dtype=get_int_dtype(), device=device
             ),

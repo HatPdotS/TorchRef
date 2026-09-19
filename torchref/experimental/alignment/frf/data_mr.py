@@ -18,6 +18,7 @@ import os
 import time
 
 import torch
+
 from torchref.config import get_int_dtype
 
 _PROFILE = bool(os.environ.get("FRF_PROFILE"))
@@ -348,8 +349,10 @@ def bessel_sh_expand(
     s_key = s_vectors.detach().cpu().to(torch.float64)  # dtype-ok: exact clustering key on the host; the device never sees it
     s_mag_key = s_key.norm(dim=-1).clamp(min=1e-30)
     cos_key = (s_key[..., 2] / s_mag_key).clamp(min=-1.0, max=1.0)
-    k_s = (s_mag_key * _GROUP_SCALE_S).round().to(torch.int64)  # dtype-ok: clustering key k_s*(2e7+1)+k_c overflows int32
-    k_c = (cos_key * _GROUP_SCALE_COS).round().to(torch.int64) + _GROUP_SCALE_COS  # dtype-ok: clustering key k_s*(2e7+1)+k_c overflows int32
+    # dtype-ok: clustering key k_s*(2e7+1)+k_c overflows int32
+    k_s = (s_mag_key * _GROUP_SCALE_S).round().to(torch.int64)
+    # dtype-ok: clustering key k_s*(2e7+1)+k_c overflows int32
+    k_c = (cos_key * _GROUP_SCALE_COS).round().to(torch.int64) + _GROUP_SCALE_COS
     key = (k_s * (2 * _GROUP_SCALE_COS + 1) + k_c).to(s_vectors.device)
     uniq_key, inverse = torch.unique(key, return_inverse=True)
     n_clusters = int(uniq_key.shape[0])
@@ -380,7 +383,8 @@ def bessel_sh_expand(
     # index to meet device values.
     inv_s = inv_s.to(device)
     n_shells = int(uniq_ks.shape[0])
-    shell_of_cluster = torch.zeros(n_clusters, dtype=torch.int64, device=device)  # dtype-ok: the legendre_shell kernel TORCH_CHECKs int64 shell labels
+    # dtype-ok: the legendre_shell kernel TORCH_CHECKs int64 shell labels
+    shell_of_cluster = torch.zeros(n_clusters, dtype=torch.int64, device=device)
     shell_of_cluster[inverse] = inv_s
     shell_smag = _group_mean(s_mag_all.to(comp_real), inv_s, n_shells)
 

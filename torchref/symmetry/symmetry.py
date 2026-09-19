@@ -352,8 +352,8 @@ class Symmetry(DeviceMixin):
         Returns
         -------
         torch.Tensor
-            Shape ``(n_ops, N, 3)``, rounded to the configured int dtype. Rounding is exact for valid
-            operations on integer indices and only mops up float error.
+            Shape ``(n_ops, N, 3)``, rounded to the configured int dtype. Rounding is
+            exact for valid operations on integer indices and only mops up float error.
         """
         equivalents = self.reciprocal.apply_rotations(hkl)
         return torch.round(equivalents).to(get_int_dtype())

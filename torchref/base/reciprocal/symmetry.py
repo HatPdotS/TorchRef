@@ -45,7 +45,8 @@ def _equiv_hkls_to_flat_indices(
     Returns
     -------
     torch.Tensor
-        Flat indices, shape ``(n_ops * N,)``, in the configured int dtype, wrapped modulo the grid.
+        Flat indices, shape ``(n_ops * N,)``, in the configured int dtype, wrapped
+        modulo the grid.
     """
     all_hkl = equiv_hkls.reshape(-1, 3)
     hi = torch.remainder(all_hkl[:, 0], Nx)

@@ -14,6 +14,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import torch
+
 from torchref.config import get_int_dtype
 
 #: SG-SG separation below which two cysteines are taken to be disulfide-bonded.

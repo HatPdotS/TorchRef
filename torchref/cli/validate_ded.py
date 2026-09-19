@@ -29,7 +29,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torchref.config import get_int_dtype
 
 from torchref.cli._common import (
     add_ded_weight_args,
@@ -47,6 +46,7 @@ from torchref.cli._common import (
     validate_cif_files,
     validate_files,
 )
+from torchref.config import get_int_dtype
 from torchref.maps.ded_weights import (
     DEFAULT_SCHEME,
     DedWeightFallbackWarning,

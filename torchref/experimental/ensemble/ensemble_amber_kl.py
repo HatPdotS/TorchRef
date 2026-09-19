@@ -52,8 +52,8 @@ from typing import TYPE_CHECKING, Dict, Optional
 
 import numpy as np
 import torch
-from torchref.config import get_int_dtype
 
+from torchref.config import get_int_dtype
 from torchref.experimental.targets.amber_target import AMBER14_STANDARD, AmberTarget
 
 if TYPE_CHECKING:

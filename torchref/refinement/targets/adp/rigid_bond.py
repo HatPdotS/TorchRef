@@ -2,10 +2,10 @@
 
 import numpy as np
 import torch
-from torchref.config import get_int_dtype
 from typing import TYPE_CHECKING, Dict
 
 from torchref.base.targets.adp import adp_rigid_bond_aniso_math
+from torchref.config import get_int_dtype
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,

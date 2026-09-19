@@ -20,8 +20,8 @@ cell metric never enters.
 from __future__ import annotations
 
 import torch
-from torchref.config import get_int_dtype
 
+from torchref.config import get_int_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
 

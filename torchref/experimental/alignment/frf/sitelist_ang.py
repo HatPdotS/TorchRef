@@ -39,6 +39,7 @@ import math
 from typing import List, Tuple
 
 import torch
+
 from torchref.config import get_int_dtype
 
 from ....config import canonical_device
@@ -211,8 +212,10 @@ def build_adaptive_sample_list(
             # original dict scan, but no host sync / Python loop.
             # Hash the two rounded fracs (each in [0, 1e6]) into one int64 so we
             # can use the fast 1-D unique instead of a 2-D row lexsort.
-            a_round = (alpha_frac * 1_000_000).round().to(torch.int64)  # dtype-ok: a_round*1_000_001+g_round overflows int32
-            g_round = (gamma_frac * 1_000_000).round().to(torch.int64)  # dtype-ok: a_round*1_000_001+g_round overflows int32
+            # dtype-ok: a_round*1_000_001+g_round overflows int32
+            a_round = (alpha_frac * 1_000_000).round().to(torch.int64)
+            # dtype-ok: a_round*1_000_001+g_round overflows int32
+            g_round = (gamma_frac * 1_000_000).round().to(torch.int64)
             key_hash = a_round * 1_000_001 + g_round
             _, uniq_idx = torch.unique(key_hash, return_inverse=True)
             n = uniq_idx.shape[0]

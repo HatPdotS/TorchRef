@@ -16,8 +16,8 @@ from typing import Dict, Optional, Set, Tuple
 
 import numpy as np
 import torch
-from torchref.config import get_int_dtype
 
+from torchref.config import get_int_dtype
 from torchref.topology.edges import EdgeBlock
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -82,13 +82,17 @@ def _extend_paths(
     """
     device = paths.device
     if paths.numel() == 0:
-        return torch.zeros((0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device)
+        return torch.zeros(
+            (0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device
+        )
 
     last, prev = paths[:, -1], paths[:, -2]
     counts = indptr[last + 1] - indptr[last]
     total = int(counts.sum())
     if total == 0:
-        return torch.zeros((0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device)
+        return torch.zeros(
+            (0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device
+        )
 
     row = torch.repeat_interleave(torch.arange(len(paths), device=device), counts)
     # Offset of each slot within its own neighbour list.
@@ -212,7 +216,9 @@ class AtomGraph(DeviceMixin):
                  bonds[is_h[bonds[:, 0]] & ~is_h[bonds[:, 1]], 1]]
             )
             if heavy_of_h.numel():
-                present = torch.bincount(heavy_of_h, minlength=self.n_atoms).to(present.dtype)
+                present = torch.bincount(heavy_of_h, minlength=self.n_atoms).to(
+                    present.dtype
+                )
         known = self.template_h_count >= 0
         missing = self.template_h_count - present
         return torch.where(known, missing.clamp(min=0), torch.zeros_like(missing))

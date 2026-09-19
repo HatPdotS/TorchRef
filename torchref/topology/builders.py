@@ -614,7 +614,9 @@ class BondRestraintBuilder(RestraintBuilder):
 
         return {
             "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -721,7 +723,9 @@ class AngleRestraintBuilder(RestraintBuilder):
 
         return {
             "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -842,7 +846,9 @@ class TorsionRestraintBuilder(RestraintBuilder):
 
         return {
             "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
         }
@@ -1310,7 +1316,9 @@ class InterResidueBondBuilder:
 
         return {
             "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -1413,7 +1421,9 @@ class InterResidueBondBuilder:
 
         return {
             "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -1535,7 +1545,9 @@ class InterResidueAngleBuilder:
 
         return {
             "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -1649,7 +1661,9 @@ class InterResidueAngleBuilder:
 
         return {
             "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -1786,7 +1800,9 @@ class InterResidueTorsionBuilder:
 
         return {
             "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
         }
@@ -2077,34 +2093,34 @@ class InterResiduePlaneBuilder:
         planes_by_size: Dict[int, List[Tuple[np.ndarray, np.ndarray]]] = {}
 
         for res_i_idx, res_next_idx in pairs:
-          for map_i in conf_maps[res_i_idx]:
-            for map_next in conf_maps[res_next_idx]:
+            for map_i in conf_maps[res_i_idx]:
+                for map_next in conf_maps[res_next_idx]:
 
-              for plane_data in link_data.planes:
-                comp_ids = plane_data["comp_ids"]
-                atom_names = plane_data["atoms"]
-                sigmas = plane_data["sigmas"]
+                    for plane_data in link_data.planes:
+                        comp_ids = plane_data["comp_ids"]
+                        atom_names = plane_data["atoms"]
+                        sigmas = plane_data["sigmas"]
 
-                plane_indices = []
-                plane_sigmas = []
-                all_found = True
+                        plane_indices = []
+                        plane_sigmas = []
+                        all_found = True
 
-                for i, (comp_id, atom_name, sigma) in enumerate(
+                        for i, (comp_id, atom_name, sigma) in enumerate(
                     zip(comp_ids, atom_names, sigmas)
                 ):
-                    atom_map = map_i if comp_id == "1" else map_next
-                    if atom_name in atom_map:
-                        plane_indices.append(atom_map[atom_name])
-                        plane_sigmas.append(sigma)
-                    else:
-                        all_found = False
-                        break
+                            atom_map = map_i if comp_id == "1" else map_next
+                            if atom_name in atom_map:
+                                plane_indices.append(atom_map[atom_name])
+                                plane_sigmas.append(sigma)
+                            else:
+                                all_found = False
+                                break
 
-                if all_found and len(plane_indices) >= 3:
-                    n_atoms = len(plane_indices)
-                    if n_atoms not in planes_by_size:
-                        planes_by_size[n_atoms] = []
-                    planes_by_size[n_atoms].append(
+                        if all_found and len(plane_indices) >= 3:
+                            n_atoms = len(plane_indices)
+                            if n_atoms not in planes_by_size:
+                                planes_by_size[n_atoms] = []
+                            planes_by_size[n_atoms].append(
                         (
                             np.array(plane_indices, dtype=np.int64),
                             np.array(plane_sigmas, dtype=np.float64),

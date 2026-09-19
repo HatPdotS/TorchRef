@@ -7,6 +7,7 @@ index convention (hkl taken mod the grid dimensions), so they round-trip.
 import math
 
 import torch
+
 from torchref.config import get_int_dtype
 
 

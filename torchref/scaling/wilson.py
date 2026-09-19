@@ -267,7 +267,6 @@ class WilsonNormaliser:
         out[0] = out[0] + torch.log(ratio)
         return out
 
-
     def _irls(
         self,
         X: torch.Tensor,

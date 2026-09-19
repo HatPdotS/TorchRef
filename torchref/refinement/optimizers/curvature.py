@@ -22,8 +22,8 @@ from __future__ import annotations
 from typing import Callable, Optional, Sequence
 
 import torch
-from torchref.config import get_int_dtype
 
+from torchref.config import get_int_dtype
 from torchref.utils import use_portable
 
 

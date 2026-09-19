@@ -6,10 +6,10 @@ Per-atom coordinate uncertainty comes from the B-factors, ``sigma = sqrt(B/8π²
 """
 
 import torch
-from torchref.config import get_int_dtype
 from typing import TYPE_CHECKING, Dict
 
 from .base import Target
+from torchref.config import get_int_dtype
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
