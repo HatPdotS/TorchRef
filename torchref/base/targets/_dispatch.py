@@ -54,7 +54,7 @@ TARGET_BACKENDS = BackendTable(
             name="triton",
             kernel=None,  # gate-only; see the module docstring
             device="cuda",
-            dtypes=(torch.float32,),
+            dtypes=(torch.float32,),  # dtype-ok: backend capability declaration, not an allocation
             probe=(_THIS, "why_unavailable"),
             expect_available="cuda",
             # The probe handles availability, so this governs only a kernel that

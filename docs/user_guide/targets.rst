@@ -20,10 +20,17 @@ grouped into composite targets for geometry and ADP restraints.
 X-ray Targets
 -------------
 
-Seven modes, selected by name. ``XRAY_TARGETS`` (in
+Selected by name. ``XRAY_TARGETS`` (in
 ``torchref.refinement.targets.xray._specs``) is the single table behind both
 :func:`~torchref.refinement.targets.create_xray_target` and
-``torchref.refine --help``, so the list below cannot drift from the CLI:
+``torchref.refine --help``. The authoritative list is ``torchref.refine --help``,
+which is generated from that table; the notes below describe the rows but are
+maintained by hand, so run ``--help`` if the two disagree.
+
+Every row shares one forward model — the scaled complex :math:`F_{calc}` — and
+declares which measured column it compares against (``spec.observable``).
+
+**Amplitude rows** compare :math:`F_{obs}` against :math:`|F_{calc}|`:
 
 - ``ml`` — **default**. Read MLF: variance :math:`\epsilon\beta`, conditional
   mean :math:`\alpha|F_{calc}|`, with a cross-validated per-shell Luzzati
@@ -39,6 +46,62 @@ Seven modes, selected by name. ``XRAY_TARGETS`` (in
 - ``ls`` — least squares, unit weights; the scaler owns the overall scale.
 - ``ls_wunit_k1`` — Phenix-style least squares: unit weights and a single global
   scale recomputed every gradient call, bypassing the scaler.
+
+**Intensity rows** compare :math:`I_{obs}` against :math:`|F_{calc}|^2`:
+
+- ``nll_i`` — Gaussian NLL on the observed intensities, weighted by
+  :math:`\sigma(I)`. As ``nll``, but skips the French–Wilson conversion.
+
+Use an intensity row when the signal lives in the *quadratic* part of the data —
+a population variance, an activation second moment. :math:`F_{obs}` on a merged
+dataset is a French–Wilson posterior rather than a measurement: it is strictly
+positive, so it reshapes the weak tail and erases negative intensities, which is
+precisely the information such a signal is carried by.
+
+The axis is deliberately not square. There is no intensity Rice row, because Rice
+and the folded normal are distributions *of an amplitude* — the intensity
+analogue is the exponential / :math:`\chi^2_1` Wilson distribution, a different
+primitive rather than a different variance. R-factors are reported on amplitudes
+for every row regardless, so they stay comparable across the whole table. Intensity
+rows are not admissible as ``--scale-target``, which fails closed on them.
+
+Collection X-ray Targets
+------------------------
+
+The multi-dataset analogues, for time-resolved and difference refinement. Same
+taxonomy shape as above — ``COLLECTION_XRAY_TARGETS`` in
+``torchref.refinement.targets.collection._specs``, one class per row, the
+observable declared per row — and the same ``_loss_inputs`` / ``_per_refl`` seam,
+batched over ``(n_datasets, n_hkl)`` on the collection's common HKL grid.
+
+- ``difference`` — Gaussian on each dataset's **amplitude** difference from the
+  collection mean, with the dataset/mean covariance propagated. The primary
+  optimization driver for difference refinement.
+- ``difference_i`` — the same on **intensities**. The entire class is one
+  ``observable`` declaration: the difference-from-mean algebra does not care what
+  the observable is.
+- ``difference_sd`` — the ``difference`` Gaussian centred on
+  :math:`\alpha\,\Delta F_{calc}` with variance
+  :math:`\beta_{model} + \sigma_{\Delta}^2`, where :math:`\alpha` and the unexplained
+  difference power :math:`\beta_{model}` come from a per-shell moment fit of the
+  observed differences on the free set (``sigma_D``,
+  :mod:`torchref.refinement.model_error_estimation.sigma_d`); the expected power
+  carries an :math:`F_{dark}^{\gamma}` dependence with one fitted :math:`\gamma`. A
+  poor light model inflates the variance where it fails instead of pulling the
+  coordinates toward noise. Select it with
+  ``torchref.difference-refine --difference-target difference_sd``.
+- ``two_moment`` — merged **intensities** as
+  :math:`|F(\bar\alpha)|^2 + \sigma_\alpha^2 |\Delta F|^2`, accounting for
+  crystal-to-crystal spread in activation.
+- ``ml`` — Read MLF per dataset at one shared Luzzati :math:`\beta`, fitted on
+  the pooled free reflections of every data–model pair. The **absolute** channel:
+  with K free base models a purely relative loss leaves the overall level
+  unconstrained.
+
+Both difference rows are offered rather than one being chosen. Amplitudes keep the
+loss in the same space as the output DED map coefficients; intensities avoid the
+French–Wilson posterior reshaping the weak tail a small difference lives in. Which
+wins is a property of a dataset's signal-to-noise.
 
 Geometry Targets
 ----------------
@@ -143,3 +206,13 @@ evaluations, and tracks what needs recomputing between line-search steps.
     state = refinement.complete_loss_state()
     optimizer = LBFGS(refinement.model.parameters(), lr=1.0, max_iter=100)
     state.run(optimizer, n_steps=1)      # equivalent to state.step(optimizer)
+
+Observed-dataset scaling target
+-------------------------------
+
+``DatasetScalingTarget`` profiles a shared amplitude consensus over the work
+observations prepared by ``DatasetScaler``. Each residual is weighted by its
+propagated measurement variance, with gradients through log-scale centering,
+anisotropy, uncertainty propagation and the consensus. ``DatasetCollection.scale``
+uses this target through ``LossState``; it is independent of structural-model and
+model-to-data scaling targets. See :doc:`scaling` for ownership and data access.

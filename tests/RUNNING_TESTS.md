@@ -92,7 +92,7 @@ pytest tests/unit/refinement/ -v
 pytest tests/unit/refinement/test_loss_weighting.py -v
 
 # Target/loss functions
-pytest tests/unit/refinement/test_targets.py -v
+pytest tests/unit/base/test_target_values.py tests/unit/base/test_loss.py -v
 ```
 
 ### Scaling
@@ -176,17 +176,17 @@ pytest tests/unit/model/test_parameter_wrappers.py::TestMixedTensorOperations -v
 
 #### Refinement Classes
 ```bash
-# Fixed weighting
-pytest tests/unit/refinement/test_loss_weighting.py::TestFixedWeighting -v
+# Weight handling
+pytest tests/unit/refinement/test_loss_state.py::TestWeightManagement -v
 
-# Resolution-dependent weighting
-pytest tests/unit/refinement/test_loss_weighting.py::TestResolutionDependentWeighting -v
+# Default group weights
+pytest tests/unit/refinement/test_loss_weighting.py::TestDefaultGroupWeights -v
 
 # Gaussian NLL loss
-pytest tests/unit/refinement/test_targets.py::TestGaussianNLL -v
+pytest tests/unit/base/test_loss.py -v
 
 # Least squares target
-pytest tests/unit/refinement/test_targets.py::TestLeastSquaresTarget -v
+pytest tests/unit/base/test_target_values.py -k least_squares -v
 ```
 
 #### Symmetry Classes
@@ -361,13 +361,14 @@ pytest tests/unit --lf -v
 | `math_functions/test_math_numpy.py` | `TestCoordinateTransformations`, `TestScatteringVectors`, `TestRFactorCalculations`, `TestRotation` |
 | `model/test_model.py` | `TestModelInitialization`, `TestModelDeviceHandling` |
 | `model/test_parameter_wrappers.py` | `TestMixedTensorInitialization`, `TestMixedTensorOperations`, `TestMixedTensorDeviceHandling`, `TestOccupancyTensor`, `TestPositiveMixedTensor` |
-| `refinement/test_loss_weighting.py` | `TestFixedWeighting`, `TestResolutionDependentWeighting`, `TestLossWeightingModule` |
-| `refinement/test_targets.py` | `TestTargetBase`, `TestGaussianNLL`, `TestLeastSquaresTarget`, `TestRiceNLL`, `TestTargetDeviceHandling`, `TestNumericStability` |
+| `refinement/test_loss_weighting.py` | `TestDefaultGroupWeights` |
+| `base/test_target_values.py` | Deposited-coordinate restraint values and least-squares weighting |
+| `base/test_loss.py` | Gaussian NLL values and reductions |
 | `scaling/test_scaler.py` | `TestScalerInitialization`, `TestScalerDeviceHandling`, `TestScalingCalculations`, `TestBFactorScaling`, `TestAnisotropicScaling` |
 | `symmetrie/test_symmetrie.py` | `TestSymmetryInitialization`, `TestSymmetryMatrices`, `TestSymmetryApplication`, `TestSymmetryDeviceHandling`, `TestSpaceGroupMapping` |
 | `io/test_data.py` | `TestReflectionDataInitialization`, `TestReflectionDataDeviceMovement`, `TestReflectionDataAttributes`, `TestReflectionDataProperties`, `TestMockReflectionData` |
 | `restraints/test_restraints.py` | `TestRestraintsInitialization`, `TestBondRestraintCalculations`, `TestAngleRestraintCalculations`, `TestTorsionRestraintCalculations`, `TestRestraintDeviceHandling`, `TestRestraintNumericStability` |
-| `utils/test_gradnorm.py` | `TestGradNorm` |
+| `utils/test_gradnorm.py` | RMS norms for single/multiple parameters and zero gradients |
 | `utils/test_utils.py` | `TestModuleReference`, `TestCIFReader` |
 
 ### Integration Tests (`tests/integration/`)

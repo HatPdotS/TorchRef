@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import torch
 from torch import nn
 
-from torchref.config import canonical_device, get_default_device
+from torchref.config import canonical_device, get_default_device, get_float_dtype
 from torchref.utils.autograd_introspection import collect_loss_leaves, _iter_roots
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.loss_validation import validate_loss
@@ -349,7 +349,7 @@ class LossState(DeviceMovementMixin):
         device = self.device
 
         def _compiled_fn():
-            total = torch.tensor(0.0, device=device)
+            total = torch.tensor(0.0, dtype=get_float_dtype(), device=device)
             for fn, w in zip(fns, weights):
                 total = total + w * fn()
             return total
@@ -407,7 +407,7 @@ class LossState(DeviceMovementMixin):
             self.new_entry()
 
         self._losses.clear()
-        total = torch.tensor(0.0, device=self.device)
+        total = torch.tensor(0.0, dtype=get_float_dtype(), device=self.device)
 
         # --- compiled group ---
         # Skipped when log_values=True: the fused closure does not expose

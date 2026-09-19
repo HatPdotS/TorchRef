@@ -143,6 +143,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         verbose=1,
         float_type=None,
         device=None,
+        ignore_hydrogens=True,
     ):
         """
         Initialize SolventModel.
@@ -171,6 +172,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             Initial phase offset in radians.
         verbose : int, default 1
             Verbosity level.
+        ignore_hydrogens : bool, default True
+            Build the mask from heavy atoms only, whatever the model carries.
         float_type : torch.dtype, optional
             Float dtype. ``None`` (default) resolves at runtime to
             ``get_float_dtype()``, not a hard-wired ``torch.float32``.
@@ -190,6 +193,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         self.solvent_radius = radius
         self.erosion_radius = erosion_radius
         self.optimize_phase = optimize_phase
+        # Heavy-atom radii already stand in for the hydrogens they carry, so a mask
+        # built over hydrogen rows too would exclude solvent twice.
+        self.ignore_hydrogens = bool(ignore_hydrogens)
         self._cache = TensorDict()
 
         # Empty initialization
@@ -220,8 +226,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         self.model = ModuleReference(model)  # Store reference to model
         self.model.get_vdw_radii()  # Ensure VdW radii are available
         assert self.model, "Model is not initialized"
-        if model.real_space_grid == None:
-            model.setup_grid()
 
         # Phenix-style parameters
         self.solvent_radius = radius  # For dilation (accessible surface)
@@ -353,14 +357,23 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
 
         xyz = self.model.xyz()  # (N_atoms, 3)
         vdw_radii = self.model.get_vdw_radii()  # (N_atoms,)
-        self.real_space_grid = self.model.real_space_grid
+        if self.ignore_hydrogens:
+            # Heavy-atom radii are calibrated for masks built without hydrogens, so
+            # adding hydrogen spheres on top would exclude solvent twice.
+            heavy = torch.as_tensor(
+                (self.model.pdb["element"].str.strip().str.upper() != "H").values,
+                device=xyz.device,
+            )
+            if not bool(heavy.all()):
+                xyz = xyz[heavy]
+                vdw_radii = vdw_radii[heavy]
         inv_frac = self.model.inv_fractional_matrix
         frac = self.model.fractional_matrix
 
         with torch.no_grad():
             spacegroup = self.model.fft.spacegroup
             n_ops = spacegroup.n_ops
-            grid_shape = self.real_space_grid.shape[:-1]
+            grid_shape = self.model.grid_shape
             device = self.model.device
             n_atoms = xyz.shape[0]
 
@@ -374,7 +387,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             # grids, where the SF code's 1024 would OOM (denser intermediates).
             ATOM_CHUNK = 256
 
-            grid_dims = torch.tensor(grid_shape, dtype=torch.long, device=device)
+            grid_dims = torch.tensor(grid_shape, dtype=torch.long, device=device)  # dtype-ok: grid dims for voxel index arithmetic; PyTorch requires int64
             grid_shape_float = grid_dims.float()
             inv_grid = 1.0 / grid_shape_float
             G = frac.T @ frac  # metric tensor: r²_cart = diff_frac · G · diff_frac
@@ -451,12 +464,12 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             protein_voxels = (
                 torch.cat(protein_chunks, dim=0)
                 if protein_chunks
-                else torch.empty((0, 3), dtype=torch.long, device=device)
+                else torch.empty((0, 3), dtype=torch.long, device=device)  # dtype-ok: empty (0,3) voxel index tensor; PyTorch requires int64 for indexing
             )
             boundary_voxels = (
                 torch.cat(boundary_chunks, dim=0)
                 if boundary_chunks
-                else torch.empty((0, 3), dtype=torch.long, device=device)
+                else torch.empty((0, 3), dtype=torch.long, device=device)  # dtype-ok: empty (0,3) voxel index tensor; PyTorch requires int64 for indexing
             )
             del protein_chunks, boundary_chunks
 

@@ -1,83 +1,35 @@
-"""Crystallographic symmetry: space groups, unit cells, map and HKL symmetry.
+"""Crystallographic symmetry: symmetry groups, space groups and unit cells.
 
-:class:`SpaceGroup` (``nn.Module`` holding the operations as buffers) is the entry
-point, with ``Symmetry`` a bare alias for it. :func:`MapSymmetry` handles real-space
-density and :func:`ReciprocalSymmetry` structure-factor grids; all three accept a
-space group as a string, an int 1-230, or a gemmi object. :class:`Cell` is separate
--- it wraps the six cell parameters, not a space group.
+:class:`Symmetry` holds a group as rotation matrices and fractional translations and
+owns every verb derivable from the operations alone -- expansion of positions and
+Miller indices, translation phases, the reflection predicates, symmetry-compatible grid
+sizes, and map symmetrization. Nothing in it is crystallographic, so a group built from
+a raw operation list serves non-crystallographic symmetry too.
 
-The grid utilities re-exported here come from ``grid_utils``, which delegates to
-``spacegroup``. ``spacegroup`` also defines its own same-named copies, which are
-the source of truth and are *not* re-exported.
+:class:`SpaceGroup` specialises it with the crystallographic identity (Hermann-Mauguin
+naming, number, point group, crystal system) and the CCP4 asymmetric-unit verbs
+(``expand_hkl``, ``reduce_hkl``, ``complete_hkl``, ``canonicalize_hkl``). It accepts a
+name, a number 1-230, a ``gemmi.SpaceGroup``, another instance, or None for P1.
+
+:class:`Cell` is separate: it wraps the six cell parameters, not a symmetry group.
+
+Map and reciprocal-grid operators are reached through :class:`Symmetry`
+(:meth:`~Symmetry.symmetrize_map`, :meth:`~Symmetry.reciprocal_extractor`), which owns
+their caching -- the operator classes themselves are private.
 """
 
-from .cell import Cell, CellTensor
-from .grid_utils import (
-    calculate_optimal_grid_size,
-    check_grid_compatibility,
-    find_fft_friendly_size,
-    get_symmetry_grid_requirements,
-    is_fft_friendly,
-    recommend_grid_size,
-)
-from .map_symmetry import MapSymmetry, MapSymmetryDirect
-from .reciprocal_symmetry import (
-    ReciprocalSymmetry,
-    ReciprocalSymmetryGrid,
-    canonicalize_hkl,
-    complete_hkl,
-    expand_hkl,
-    expand_reciprocal_grid,
-    expand_reflections,
-    reduce_hkl,
-)
-from .spacegroup import (
-    SpaceGroup,
-    SpaceGroupLike,
-    get_crystal_system,
-    get_operations_as_tensors,
-    get_point_group,
-    get_symmetry_operations,
-    is_centrosymmetric,
-    is_same_spacegroup,
-    n_operations,
-    spacegroup_to_str,
-)
-from .symmetry import Symmetry
+from .cell import Cell
+from .spacegroup import SpaceGroup, SpaceGroupLike
+from .symmetry import Symmetry, find_fft_friendly_size, is_fft_friendly
 
 __all__ = [
     # Unit cell
     "Cell",
-    # Space group utilities
+    # Symmetry groups
+    "Symmetry",
     "SpaceGroup",
     "SpaceGroupLike",
-    "spacegroup_to_str",
-    "get_symmetry_operations",
-    "get_operations_as_tensors",
-    "is_same_spacegroup",
-    "get_point_group",
-    "get_crystal_system",
-    "is_centrosymmetric",
-    "n_operations",
-    # Base symmetry
-    "Symmetry",
-    # Real space map symmetry
-    "MapSymmetry",
-    "MapSymmetryDirect",
-    # Reciprocal space symmetry
-    "ReciprocalSymmetry",
-    "ReciprocalSymmetryGrid",
-    "expand_hkl",
-    "complete_hkl",
-    "reduce_hkl",
-    "canonicalize_hkl",
-    "expand_reflections",
-    "expand_reciprocal_grid",
-    # Grid utilities
-    "get_symmetry_grid_requirements",
-    "check_grid_compatibility",
-    "recommend_grid_size",
-    "find_fft_friendly_size",
+    # Grid sizing helpers (group-independent)
     "is_fft_friendly",
-    "calculate_optimal_grid_size",
+    "find_fft_friendly_size",
 ]

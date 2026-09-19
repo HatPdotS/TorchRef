@@ -39,6 +39,9 @@ def interpolate_structure_factor_from_grid(
     device = reciprocal_grid.device
     Nx, Ny, Nz = reciprocal_grid.shape
 
+    # dtype-ok: grid-index interpolation only. hkl are small integers, so floor
+    # and fractional weights are exact in float32; the weights are recast to the
+    # grid's dtype below, so nothing here mixes with config-dtype tensors.
     hkl_float = hkl_float.to(device=device, dtype=torch.float32)
 
     # Get the 8 corner indices for trilinear interpolation
@@ -149,6 +152,9 @@ def interpolate_complex_from_grid(
     device = reciprocal_grid.device
     Nx, Ny, Nz = reciprocal_grid.shape
 
+    # dtype-ok: grid-index interpolation only. hkl are small integers, so floor
+    # and fractional weights are exact in float32; the weights are recast to the
+    # grid's dtype below, so nothing here mixes with config-dtype tensors.
     hkl_float = hkl_float.to(device=device, dtype=torch.float32)
 
     # Get the 8 corner indices for trilinear interpolation
@@ -314,7 +320,9 @@ def interpolate_for_rotation(hkl, R, cell, reciprocal_space_grid):
         batched = False
     rotation_in_s = torch.einsum('ij, bjk -> bik', cell.reciprocal_basis_matrix, R.permute(0,2,1))
     rotation_in_hkl = torch.einsum('bij, jk -> bik', rotation_in_s, cell.reciprocal_basis_matrix.inverse())
-    reoriented_hkl = torch.einsum('aj, bji -> bai', hkl.to(torch.float32), rotation_in_hkl)
+    # Match the reciprocal-basis math's dtype (config float): a hardcoded float32
+    # here mixes with a float64 rotation under a float64 config and raises.
+    reoriented_hkl = torch.einsum('aj, bji -> bai', hkl.to(rotation_in_hkl.dtype), rotation_in_hkl)
     shape = reoriented_hkl.shape
     reoriented_hkl = reoriented_hkl.reshape(-1, 3)
     interpolated = interpolate_structure_factor_from_grid(reciprocal_space_grid, reoriented_hkl).reshape(shape[0], shape[1])

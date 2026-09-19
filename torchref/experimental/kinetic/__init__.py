@@ -30,7 +30,7 @@ from torchref.model.model_collection import ModelCollection
 from torchref.experimental.kinetic.refinement import KineticRefinement
 from torchref.experimental.kinetic.targets import (
     CollectionDifferenceTarget,
-    CollectionRiceTarget,
+    CollectionMLTarget,
     MultiModelGeometryTarget,
     MultiModelADPTarget,
     KineticPriorTarget,
@@ -44,7 +44,7 @@ __all__ = [
     "ModelCollection",
     "KineticRefinement",
     "CollectionDifferenceTarget",
-    "CollectionRiceTarget",
+    "CollectionMLTarget",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
     "KineticPriorTarget",

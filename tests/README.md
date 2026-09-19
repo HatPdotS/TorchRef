@@ -6,7 +6,8 @@ This directory contains the complete test suite for torchref.
 
 ```
 tests/
-├── conftest.py              # Root fixtures (paths, devices, skip decorators)
+├── conftest.py              # Fixture registration and test-selection hooks
+├── fixtures/                # Shared setup, grouped by responsibility (see fixtures/README.md)
 ├── pytest.ini               # Pytest configuration
 ├── __init__.py
 ├── files/                   # Test data files (CIF, PDB, MTZ)
@@ -15,7 +16,7 @@ tests/
 │   ├── mtz/                 # Reflection MTZ files
 │   └── cif_sf/              # Structure factor CIF files
 ├── unit/                    # Unit tests (fast, no I/O)
-│   ├── conftest.py          # Unit test fixtures (mock data)
+│   ├── conftest.py          # Imports scoped numerical fixtures
 │   ├── math_functions/      # Math module tests
 │   ├── model/               # Model module tests
 │   ├── refinement/          # Refinement module tests
@@ -37,6 +38,34 @@ tests/
 ```
 
 ## Running Tests
+
+### Coverage ownership
+
+| Contract | Owner |
+|---|---|
+| Loss weights, aggregation, cached loss reads | `unit/refinement/test_loss_state.py` |
+| Refinement's default group weights | `unit/refinement/test_loss_weighting.py` |
+| Gaussian amplitude-metric values and reductions | `unit/base/test_loss.py` |
+| Restraint kernel values on deposited coordinates | `unit/base/test_target_values.py` |
+| Gradient RMS norm | `unit/utils/test_gradnorm.py` |
+| CIF atomic fields and crystal metadata | `integration/test_io_cif.py` |
+| MTZ fields, resolution bins and model/data crystal agreement | `integration/test_io_reflections.py` |
+| ModelFT forward cache and grid integration | `functional/test_model_ft_functional.py` |
+| Extra deposited files and input inventory | `integration/test_structure_compatibility.py`, `helpers/structure_cases.py` |
+| Numerical derivatives and backend parity | `unit/test_gradient_correctness.py`, `unit/structure_factor/` |
+
+A production call must participate in the assertion: computing a formula only in
+the test does not check its implementation. Kernel values, target registration,
+device transitions, and default configuration are separate contracts even when
+they exercise the same class. Keep mutation tests on fresh objects.
+
+The quick reader contracts use 1DAW. Extended reader compatibility runs with
+`pytest tests/integration/test_structure_compatibility.py --run-slow`; each file
+is a separate case and must succeed. The manifest covers the bundled CIF, MTZ
+and SF-CIF inputs, including the IHM fixture and reflection-only depositions.
+Adding a data file requires an explicit coverage assignment in the manifest.
+Extended scaler and restraint cases use 2DQ6 (trigonal) and 3A5V (body-centred
+tetragonal), with fresh objects per case and `--run-slow` required.
 
 ### Quick Local Run (on login node, for small tests only)
 

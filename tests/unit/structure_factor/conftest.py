@@ -13,12 +13,10 @@ import pytest
 import torch
 
 import torchref
-from torchref.config import device as device_cfg, dtypes
-
-from tests.conftest import _accelerator
+from tests.fixtures.devices import _accelerator
+from tests.fixtures.precision import cpu_double_precision
 
 from . import helpers as H
-
 
 # ---------------------------------------------------------------------------
 # Device axis
@@ -86,7 +84,9 @@ def ds_device_dtype_kernels():
             for name in H.ds_kernels_for(device, dtype):
                 out.append(
                     pytest.param(
-                        device, dtype, name,
+                        device,
+                        dtype,
+                        name,
                         id=f"{device.type}-{str(dtype).replace('torch.float', 'f')}-{name}",
                         marks=dev_param.marks,
                     )
@@ -103,30 +103,9 @@ DS_DEVICE_DTYPE_KERNELS = ds_device_dtype_kernels()
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="package", autouse=True)
 def _float64_cpu():
-    """float64/complex128 on CPU for this package; restore afterwards.
-
-    Required, not cosmetic: ``iso_structure_factor_torched`` casts ``hkl`` to the
-    *global* ``dtypes.float`` (``torchref/base/direct_summation/isotropic.py:121``), so
-    under the default float32 config a float64 leaf produces a dtype-mismatched matmul.
-    That is why the pre-existing tests wrapped every eager-SF call in a ``double_cpu``
-    fixture.
-
-    ``sigma_cutoff_ed`` is restored here too -- the three copies of ``double_cpu`` this
-    replaces did not, so a test that changed the cutoff leaked it into everything that
-    ran after it.
-    """
-    f0, c0, d0 = dtypes.float, dtypes.complex, device_cfg.current
-    s0 = torchref.sigma_cutoff_ed.value
-    dtypes.float = torch.float64
-    dtypes.complex = torch.complex128
-    device_cfg.current = torch.device("cpu")
-    try:
+    """Scope the package's CPU double-precision reference configuration."""
+    with cpu_double_precision():
         yield
-    finally:
-        dtypes.float = f0
-        dtypes.complex = c0
-        device_cfg.current = d0
-        torchref.sigma_cutoff_ed.value = s0
 
 
 @pytest.fixture

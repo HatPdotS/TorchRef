@@ -7,25 +7,18 @@ Uses ModelCollection / DatasetCollection / CollectionScaler so ONE set of scale
 parameters (overall scale, anisotropy, bulk solvent k_sol/B_sol) is shared across the
 dark and light datasets.
 
-Writes refined dark and light models (PDB/CIF), a JSON summary, and a difference MTZ:
-
-Observed        ``Fo_dark``, ``SIGFo_dark``, ``Fo_light``, ``SIGFo_light``
-Differences     ``DF`` = F_light - F_dark, ``SIGDF`` (propagated), ``WDF`` (sigma-weighted)
-Calculated      ``Fc_dark``, ``Fc_light`` (mixed model), ``DFc`` (scalar), ``DFc_complex``
-DED map coeffs  ``2mDFop-DFc``, ``mDFop-DFc`` (phase-aware, figure-of-merit weighted)
-Phases          ``PHIC_dark``, ``PHIC_mixed``, ``PHIC_diff``, ``PHIC_light``
-Extrapolations  ``Fextp`` (phase-aware), ``Fextc`` (amplitude-only, no phases),
-                ``Fextb`` (empirical-Bayes shrinkage toward Fo_dark -- see
-                :func:`compute_bayes_extrapolated_amplitudes`), each with its sigma
-                and ``2F-Fc`` / ``F-Fc`` map coefficients
+Writes refined dark and light models (PDB/CIF), a JSON summary, and a difference MTZ.
+See :func:`write_results_mtz` for the columns and why each is where it is -- the table
+used to live here, four hundred lines from the function that writes it, which is part of
+how the output drifted from its own documentation.
 
 Examples
 --------
 ::
 
-    torchref.difference-refine \\
-        -dm dark.pdb -lm light.pdb \\
-        -dsf dark.mtz -lsf light.mtz \\
+    torchref.difference-refine \
+        -dm dark.pdb -lm light.pdb \
+        -dsf dark.mtz -lsf light.mtz \
         --fraction 0.37 -o output/
 """
 
@@ -38,8 +31,10 @@ from pathlib import Path
 import torch
 
 from torchref.cli._common import (
-    add_dual_model_args,
+    add_all_columns_arg,
+    add_ded_weight_args,
     add_dmin_arg,
+    add_dual_model_args,
     add_general_args,
     add_metadata_args,
     add_outdir_arg,
@@ -49,11 +44,18 @@ from torchref.cli._common import (
     configure_unbuffered_output,
     load_model,
     load_reflection_data,
+    parse_device_str,
     parse_weights,
     register_timing,
-    parse_device_str,
+    sigma_d_config_from_args,
     validate_cif_files,
     validate_files,
+)
+from torchref.maps.ded_weights import (
+    DEFAULT_SCHEME,
+    WEIGHT_COLUMNS,
+    all_ded_weights,
+    reflection_geometry,
 )
 from torchref.utils.serialization import convert_to_serializable
 
@@ -65,7 +67,14 @@ configure_unbuffered_output()
 
 DEFAULT_TARGET_WEIGHTS = {
     "xray/difference": 1.0,
-    "xray/rice": 0.0,
+    # Selected by --difference-target; the schedule drives whichever row is chosen.
+    "xray/difference_sd": 0.0,
+    # The absolute channel. Zero by default: the difference refinement fixes the
+    # dark model, so the overall level is already anchored and this term only adds
+    # the systematic errors the difference cancels.
+    "xray/ml": 0.0,
+    # Registered only under --two-moment; harmless in the dict either way.
+    "xray/two_moment": 1.0,
     # "geometry/bond": 1.0, # geometry restraint should never require tuning, so leave at 1.0
     # "geometry/angle": 1.0,
     # "geometry/torsion": 1.0,
@@ -111,8 +120,8 @@ def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min,
             sys.stdout.flush()
         model_dark = model_dark.hydrogenate(verbose=max(0, verbose - 1))
         model_light = model_light.hydrogenate(verbose=max(0, verbose - 1))
-        model_dark.exclude_H_from_sf = True
-        model_light.exclude_H_from_sf = True
+        model_dark.hydrogens_in_xray = False
+        model_light.hydrogens_in_xray = False
 
     mc = ModelCollection([model_dark, model_light], dark_key="dark")
     mc.add_dark()
@@ -158,35 +167,104 @@ def setup_scaler(dataset_collection, model_collection, device, verbose=1):
     return scaler
 
 
+def setup_dark_only(pdb_dark, dc, cif, d_min, device, verbose, hydrogenate=False):
+    """Load the dark model alone and scale it against the dark data.
+
+    This is everything a weighted difference map needs. The amplitude is
+    ``|Fo_light| - |Fo_dark|``, which :meth:`DatasetCollection.scale` has already put on
+    one scale without reference to any model, and the phase comes from the dark state.
+    So there is no mixed model, no occupancy fraction, and no joint model-to-data fit --
+    the joint fit exists to share scale parameters between two models, and here there is
+    only one.
+
+    A fitted scaler rather than a bare ``angle(model(hkl))`` because bulk solvent
+    contributes a phase at low resolution, which is exactly where difference density is
+    largest.
+
+    Returns
+    -------
+    tuple
+        ``(model_dark, scaler)`` -- ready to hand to :func:`write_results_mtz` with
+        ``mc=None``.
+    """
+    from torchref import Scaler
+
+    model_dark = load_model(
+        pdb_dark, max_res=d_min, device=device, verbose=verbose, cif=cif,
+    )
+    if hydrogenate:
+        if verbose > 0:
+            print("Adding hydrogens...")
+            sys.stdout.flush()
+        model_dark = model_dark.hydrogenate(verbose=max(0, verbose - 1))
+        model_dark.hydrogens_in_xray = False
+
+    scaler = Scaler(
+        model_dark, dc["dark"], device=device, verbose=max(-1, verbose - 1),
+    )
+    scaler.initialize().refine_lbfgs()
+    return model_dark, scaler
+
+
 def compute_rfactors(model, data, scaler):
-    """Compute R-work/R-free using forward_mixed for proper solvent.
+    """Compute R-work/R-free with the scaler's own solvent model applied.
 
     Routes through ``rfactor_work_free`` — the shared source of truth used by the
     refinement targets — so the validity mask is applied and the validation set is
     excluded from both work and free, matching every other reported R-factor.
+
+    Takes either scaler kind; see the branch below.
     """
     from torchref.base.metrics.rfactor import rfactor_work_free
 
     with torch.no_grad():
         hkl = data.hkl
         fcalc = model(hkl)
-        fcalc_scaled = scaler.forward_mixed(fcalc, model.fractions)
+        # CollectionScaler needs fractions to mix components; a single-dataset
+        # Scaler consumes structure factors directly.
+        if hasattr(scaler, "forward_mixed"):
+            fcalc_scaled = scaler.forward_mixed(fcalc, model.fractions)
+        else:
+            fcalc_scaled = scaler(fcalc)
         return rfactor_work_free(data, torch.abs(fcalc_scaled))
 
 
-def setup_loss_state(dataset_collection, model_collection, scaler,
-                     target_weights, device, similarity_alpha=2.0):
+def setup_loss_state(
+    dataset_collection,
+    model_collection,
+    scaler,
+    target_weights,
+    device,
+    similarity_alpha=2.0,
+    two_moment=False,
+    difference_target="difference",
+    sigma_d_config=None,
+):
     """Build LossState with collection-aware targets.
 
     Geometry and ADP restraints are applied only to the light base model
     (the dark model is a frozen reference).
+
+    Parameters
+    ----------
+    two_moment : bool, optional
+        Also register the two-moment intensity target, which fits merged intensities
+        under ``|F(alpha)|^2 + sigma_alpha^2 |dF|^2``. Requires I/SIGI on every
+        dataset. Default False.
+    difference_target : {"difference", "difference_sd"}, optional
+        Which difference row the weight schedule drives. Both are registered, as
+        ``xray/difference`` and ``xray/difference_sd``; the other keeps the weight in
+        ``target_weights`` (zero by default).
+    sigma_d_config : SigmaDConfig, optional
+        Exponent and shrinkage settings of the ``difference_sd`` row's estimator.
     """
     from torchref.refinement import LossState
-    from torchref.experimental.kinetic.targets import (
-        CollectionDifferenceTarget,
-        CollectionRiceTarget,
-    )
     from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
+    from torchref.refinement.targets.collection import (
+        CollectionDifferenceSigmaDTarget,
+        CollectionDifferenceTarget,
+        CollectionMLTarget,
+    )
     from torchref.refinement.targets.similarity import CoordinateSimilarityTarget
 
     state = LossState(device=device)
@@ -197,7 +275,16 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     diff_target = CollectionDifferenceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
-    rice_target = CollectionRiceTarget(
+    diff_sd_target = CollectionDifferenceSigmaDTarget(
+        dataset_collection,
+        model_collection,
+        scaler=scaler,
+        sigma_d_config=sigma_d_config,
+    )
+    selected_diff = {"difference": diff_target, "difference_sd": diff_sd_target}[
+        difference_target
+    ]
+    ml_target = CollectionMLTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
     geom_target = TotalGeometryTarget(model_light)
@@ -208,10 +295,24 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     )
 
     state.register_target("xray/difference", diff_target)
-    state.register_target("xray/rice", rice_target)
+    state.register_target("xray/difference_sd", diff_sd_target)
+    state.register_target("xray/ml", ml_target)
     state.register_target("geometry", geom_target)
     state.register_target("adp", adp_target)
     state.register_target("similarity", similarity_target)
+
+    if two_moment:
+        from torchref.refinement.targets import CollectionTwoMomentIntensityTarget
+
+        two_moment_target = CollectionTwoMomentIntensityTarget(
+            dataset_collection, model_collection, scaler=scaler, verbose=1,
+        )
+        # Match intensity and amplitude gradient norms to balance the targets
+        # against the geometry restraints despite their different units.
+        two_moment_target.calibrate_base_weight(
+            selected_diff, list(model_light.parameters())
+        )
+        state.register_target("xray/two_moment", two_moment_target)
 
     state.set_weights(target_weights)
 
@@ -219,8 +320,16 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
 
 
 def compute_bayes_extrapolated_amplitudes(
-    Fobs_dark, Fobs_light, sig_dark, sig_light, phi_dark, phi_mixed, f,
-    *, tau_sq_floor=1e-4,
+    Fobs_dark,
+    Fobs_light,
+    sig_ext,
+    phi_dark,
+    phi_mixed,
+    f,
+    *,
+    tau_sq_floor=1e-4,
+    epsilon=None,
+    d_star_sq=None,
 ):
     """Empirical Bayes shrinkage estimator for extrapolated SF amplitudes.
 
@@ -229,76 +338,574 @@ def compute_bayes_extrapolated_amplitudes(
     Fo_dark, regularising noisy high-resolution and weakly-measured reflections::
 
         F_ext     = |F_dark*e^(iφ_d) + ΔF/f|         (phase-aware amplitude)
-        σ_ext²    = (σ_light² + σ_dark²) / f²
-        τ²        = max(<(F_ext - Fo_dark)²> - <σ_ext²>, floor)
-        w(h)      = τ² / (τ² + σ_ext²(h))
+        S(h)      = expected power of (F_ext - Fo_dark), per resolution shell
+        w(h)      = S(h) / (S(h) + σ_ext²(h))
         F_extb    = w(h)·F_ext + (1-w(h))·Fo_dark    (amplitude shrinkage)
+
+    With ``d_star_sq`` the signal power comes per resolution shell from
+    :func:`~torchref.refinement.model_error_estimation.sigma_d.estimate_sigma_d`
+    (``<(F_ext - Fo_dark)²> - <σ_ext²>`` per shell, shrunk toward a smooth curve);
+    without it the single global ``τ² = max(<(F_ext - Fo_dark)²> - <σ_ext²>, floor)``
+    is used, which is the one-shell special case.
 
     Parameters
     ----------
     Fobs_dark, Fobs_light : Tensor (N,)
         Observed amplitudes.
-    sig_dark, sig_light : Tensor (N,)
-        Measurement uncertainties.
+    sig_ext : Tensor (N,)
+        Propagated uncertainty of the extrapolated amplitude. Taken from the caller
+        rather than rebuilt here: ``F_ext`` is linear in the observations with
+        ``dF_ext/dF_light = 1/f`` and ``dF_ext/dF_dark = 1 - 1/f = -(1-f)/f``, so the
+        dark term carries a ``(1-f)**2`` weight.
     phi_dark, phi_mixed : Tensor (N,)
         Calculated phases (radians) for the dark and mixed models.
     f : float or Tensor
         Excited-state population fraction.
     tau_sq_floor : float
-        Floor on the estimated signal variance τ².
+        Floor on the estimated signal variance.
+    epsilon, d_star_sq : Tensor (N,), optional
+        Reflection multiplicity and ``1/d**2`` in A^-2. Given ``d_star_sq`` the signal
+        power is estimated per resolution shell.
 
     Returns
     -------
     tuple
-        ``(F_ext_bayes, var_ext_bayes, w_shrinkage, tau_sq)`` -- extrapolated
-        amplitudes **before** shrinkage, posterior variance and shrinkage weight per
-        reflection, and the global τ² as a float.
+        ``(F_ext_bayes, var_ext_bayes, w_shrinkage, tau_sq)`` -- the **shrunk**
+        extrapolated amplitude, its posterior variance and the shrinkage weight per
+        reflection, and the count-weighted mean signal variance as a float.
     """
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
     delta_F = F_light_phased - F_dark_phased
 
-    # Propagated variance
-    sig_sq_dF = sig_light**2 + sig_dark**2
-    sig_sq_ext = sig_sq_dF / f**2
+    sig_sq_ext = sig_ext**2
 
     # Phase-aware extrapolated amplitude
     F_ext_complex = F_dark_phased + delta_F / f
     F_ext = torch.abs(F_ext_complex)
 
-    # Estimate signal variance τ²
-    residuals_sq = (F_ext - Fobs_dark) ** 2
-    tau_sq = max((residuals_sq.mean() - sig_sq_ext.mean()).item(), tau_sq_floor)
+    residual = F_ext - Fobs_dark
+    if d_star_sq is None:
+        tau_sq = max(
+            (residual.square().mean() - sig_sq_ext.mean()).item(), tau_sq_floor
+        )
+        S = torch.full_like(F_ext, tau_sq)
+    else:
+        from torchref.refinement.model_error_estimation.sigma_d import (
+            estimate_sigma_d,
+            sigma_d_per_reflection,
+        )
+
+        fit = torch.isfinite(residual) & torch.isfinite(sig_ext)
+        shells = estimate_sigma_d(
+            residual, sig_ext, epsilon, d_star_sq, None, fit, gamma=0.0
+        )
+        est = sigma_d_per_reflection(shells, d_star_sq, epsilon, None, sig_ext)
+        S = est.S.clamp(min=tau_sq_floor)
+        weight = shells.counts.clamp(min=1.0)
+        tau_sq = max(
+            float((shells.Sigma_N * shells.counts).sum() / weight.sum()), tau_sq_floor
+        )
 
     # Per-reflection shrinkage weight (in [0, 1])
-    w = tau_sq / (tau_sq + sig_sq_ext)
+    w = S / (S + sig_sq_ext)
 
     # Posterior variance
-    var_ext_bayes = (tau_sq * sig_sq_ext) / (tau_sq + sig_sq_ext)
+    var_ext_bayes = (S * sig_sq_ext) / (S + sig_sq_ext)
 
-    return F_ext, var_ext_bayes, w, tau_sq
+    # Shrink the amplitude toward Fo_dark -- scalar, so no phase interference.
+    F_ext_bayes = w * F_ext + (1 - w) * Fobs_dark
+
+    return F_ext_bayes, var_ext_bayes, w, tau_sq
 
 
-def write_results_mtz(dc, mc, scaler, filename):
-    """Write difference / extrapolated map coefficients to an MTZ file.
+def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
+                        *, weights, diff_Fobs, Fcalc_diff_amp, Fobs_dark,
+                        sig_dark, phi_mixed, F_obs_dark_phased, all_columns=False):
+    """Two-moment diagnostic columns, or empty dicts when the model is off.
+
+    The observed light intensity carries a positive, phase-blind contamination
+    ``sigma_alpha^2 |dF|^2`` from the spread of activation across crystals. Subtracting
+    the model's estimate of it and converting back to an amplitude gives a difference
+    amplitude that is comparable across datasets, which the raw one is not.
+
+    ``DDF`` is the diagnostic that matters: smooth and featureless against resolution
+    means the correction is collinear with a scale or overall-B error and should be
+    distrusted; structure in it is the signal.
+
+    The decontaminated amplitude goes through the dataset's own French-Wilson estimator,
+    on the **full** reflection list, because subtracting the variance term pushes weak
+    reflections negative and that is exactly where a naive ``sqrt(clamp(I, 0))`` is worst.
+
+    Parameters
+    ----------
+    mask : torch.Tensor
+        The dark-and-light validity intersection the writer uses; the returned columns
+        are already reduced to it.
+    fcalc_dark_full, fcalc_mixed_full : torch.Tensor
+        Scaled complex structure factors on the **full** HKL list.
+    weights, diff_Fobs, Fcalc_diff_amp, Fobs_dark, sig_dark : numpy.ndarray
+        Masked quantities the writer has already computed, reused so the corrected
+        columns are constructed exactly like their uncorrected counterparts.
+
+    Returns
+    -------
+    tuple
+        ``(columns, types)`` -- the values, and the MTZ type letter for each. Carrying
+        the type beside the value preserves the crystallographic column type.
+    """
+    import numpy as np
+
+    empty = ({}, {})
+    if float(mc.sigma_alpha_sq) == 0.0:
+        return empty
+
+    data_light = dc["light"]
+    if data_light.I is None:
+        return empty
+
+    with torch.no_grad():
+        # Full-size, so French-Wilson sees the reflection list it was fitted on.
+        delta_F_full = fcalc_mixed_full - fcalc_dark_full
+        variance_full = mc.sigma_alpha_sq * delta_F_full.abs() ** 2
+
+        I_light_full, sig_I_full = data_light.get_corrected_intensities()
+        I_corrected_full = I_light_full - variance_full
+
+        # The retained estimator is fitted on the dataset's HKL list *as loaded*;
+        # joining a collection expands the dataset onto the common grid, so it can be
+        # the wrong length by then. Rebuild against the current list when that happens.
+        fw = data_light._FrenchWilson
+        if fw is None or len(fw.d_spacings) != len(I_corrected_full):
+            from torchref.base.french_wilson import FrenchWilson
+
+            fw = FrenchWilson(
+                data_light.hkl, data_light.cell, data_light.spacegroup, verbose=0
+            )
+        F_corr_full, sig_F_corr_full = fw(I_corrected_full, sig_I_full)
+
+        def _np(t):
+            return t[mask].detach().cpu().numpy()
+
+        variance = _np(variance_full)
+        I_light = _np(I_light_full)
+        sig_I_light = _np(sig_I_full)
+        I_coherent = _np(fcalc_mixed_full.abs() ** 2)
+        F_corr = _np(F_corr_full)
+        sig_F_corr = _np(sig_F_corr_full)
+
+    I_two_moment = I_coherent + variance
+    DF_corr = F_corr - Fobs_dark
+    DDF = DF_corr - diff_Fobs
+    sig_DF_corr = np.sqrt(sig_F_corr**2 + sig_dark**2)
+
+    # Use the modulus of the complex vector difference so the corrected
+    # coefficient retains the phase rotation between the dark and light states.
+    F_corr_phased = torch.as_tensor(
+        F_corr, dtype=F_obs_dark_phased.real.dtype, device=F_obs_dark_phased.device
+    ) * torch.exp(1j * phi_mixed)
+    Fobs_diff_phased_corr = (
+        torch.abs(F_corr_phased - F_obs_dark_phased).detach().cpu().numpy()
+    )
+
+    amp_2_corr = (2 * Fobs_diff_phased_corr - Fcalc_diff_amp) * weights
+    amp_1_corr = (Fobs_diff_phased_corr - Fcalc_diff_amp) * weights
+
+    # The sigma_alpha^2-aware weight, on the same normalisation as the inverse-variance
+    # weight the existing DED coefficients carry, so the two are directly comparable.
+    w_two_moment = sig_I_light**2 / np.maximum(sig_I_light**2 + variance, 1e-12)
+
+    columns = {
+        # The corrected difference map, on the same dark phases as DELFWT.
+        "DELFWT_corr": DF_corr * weights,
+        "Fo_light_corr": F_corr,
+        "SIGFo_light_corr": sig_F_corr,
+        "DF_corr": DF_corr,
+        "SIGDF_corr": sig_DF_corr,
+        "DDF": DDF,
+    }
+    types = {
+        "DELFWT_corr": "F",
+        "Fo_light_corr": "F",
+        "SIGFo_light_corr": "Q",
+        "DF_corr": "F",
+        "SIGDF_corr": "Q",
+        "DDF": "F",
+    }
+    if all_columns:
+        columns.update({
+            "Io_light": I_light,
+            "SIGIo_light": sig_I_light,
+            "Ic_light_coh": I_coherent,
+            "Ic_light_2mom": I_two_moment,
+            "IVAR_ALPHA": variance,
+            "W_2MOM": w_two_moment,
+            "2mDFop-DFc_corr": amp_2_corr,
+            "mDFop-DFc_corr": amp_1_corr,
+        })
+        types.update({
+            "Io_light": "J",
+            "SIGIo_light": "Q",
+            "Ic_light_coh": "J",
+            "Ic_light_2mom": "J",
+            "IVAR_ALPHA": "J",
+            "W_2MOM": "W",
+            "2mDFop-DFc_corr": "F",
+            "mDFop-DFc_corr": "F",
+        })
+    return columns, types
+
+
+def _difference_columns(
+    data_dark,
+    data_light,
+    mask,
+    hkl_np,
+    *,
+    Fobs_dark,
+    sig_dark,
+    Fobs_light,
+    sig_light,
+    Fcalc_dark,
+    phases_dark,
+    diff_Fobs,
+    sig_diff,
+    weight_columns,
+    kscale,
+):
+    """The difference map's amplitudes, phases and weights.
+
+    ``DF``/``SIGDF`` is the signed amplitude difference ``|Fo_light| - |Fo_dark|`` with
+    its propagated uncertainty, ``PHDELWT`` the **dark** model's phase it is carried on:
+    the isomorphous difference Fourier, and the construction ``torchref.validate-ded``
+    correlates against. One weight column per registered scheme (``W_SD``, ``W_IVW``;
+    MTZ type ``W``, mean one) sits beside it, so any weighting is ``DF`` times a column
+    and reproducible from the file: ``torchref.mtz2map -csf DF -cw W_SD -cphi PHDELWT``.
+    ``KSCALE`` (type ``R``) is the scaler's multiplicative factor from model to observed
+    scale, so ``DF / KSCALE`` is in electrons and ``mtz2map --units electrons`` gives
+    e/A^3.
+
+    This layer needs no light-state model: the amplitude is ``|Fo_light| - |Fo_dark|``
+    and the phase comes from the dark model. Keeping the light state's model out is the
+    point -- a phased construction puts its phases into the observed amplitude, biasing
+    the map toward the very model the experiment is testing.
+    """
+    import numpy as np
+
+    n = len(hkl_np)
+
+    def _flags(data):
+        if data.rfree_flags is None:
+            return np.ones(n, dtype=int)
+        return data.rfree_flags[mask].cpu().numpy().astype(int)
+
+    columns = {
+        "H": hkl_np[:, 0],
+        "K": hkl_np[:, 1],
+        "L": hkl_np[:, 2],
+        "Fo_dark": Fobs_dark,
+        "SIGFo_dark": sig_dark,
+        "Fo_light": Fobs_light,
+        "SIGFo_light": sig_light,
+        "DF": diff_Fobs,
+        "SIGDF": sig_diff,
+        "PHDELWT": phases_dark,
+        **weight_columns,
+        "KSCALE": kscale,
+        "Fc_dark": Fcalc_dark,
+        # 1 = work, 0 = free. Both are kept: the two datasets can disagree, and
+        # picking one would silently report an R-free against the wrong test set.
+        "FreeR_flag_dark": _flags(data_dark),
+        "FreeR_flag_light": _flags(data_light),
+    }
+    types = {
+        "H": "H",
+        "K": "H",
+        "L": "H",
+        "Fo_dark": "F",
+        "SIGFo_dark": "Q",
+        "Fo_light": "F",
+        "SIGFo_light": "Q",
+        "DF": "F",
+        "SIGDF": "Q",
+        "PHDELWT": "P",
+        **{name: "W" for name in weight_columns},
+        "KSCALE": "R",
+        "Fc_dark": "F",
+        "FreeR_flag_dark": "I",
+        "FreeR_flag_light": "I",
+    }
+    return columns, types
+
+
+def _phasing_columns(mc, scaler, hkl_all, mask, *, fcalc_dark, Fobs_dark_vals,
+                     Fobs_light_vals, phi_dark, Fcalc_dark, weights,
+                     all_columns=False):
+    """Mixed-model amplitude and phase, and the phased difference residuals.
+
+    Everything here needs the light state's model. ``FC``/``PHIC`` are the mixed model's
+    scaled amplitude and phase.
+
+    Under ``all_columns`` the phased difference residual coefficients come too --
+    ``(|Fo_light e^{i phi_mixed} - Fo_dark e^{i phi_dark}| - |dFc|) * w`` on
+    ``PHIC_diff``. These are a *different object* from the plain difference Fourier in
+    ``DELFWT``, not a refinement of it: the light state's model phases enter the observed
+    amplitude, so they are model-biased where ``DELFWT`` is not. They are kept because
+    they are informative once that is understood, and gated because the name alone does
+    not say it.
+
+    Returns ``(columns, types, ctx)``. ``ctx`` carries the intermediates the
+    extrapolation and two-moment layers need, so nothing is computed twice.
+    """
+    mixed_model = mc["light"]
+
+    with torch.no_grad():
+        fcalc_mixed_full = scaler.forward_mixed(
+            mixed_model(hkl_all), mixed_model.fractions
+        )
+        fcalc_mixed = fcalc_mixed_full[mask]
+    fcalc_diff = fcalc_mixed - fcalc_dark
+
+    phi_mixed = torch.angle(fcalc_mixed)
+    F_obs_dark_phased = Fobs_dark_vals * torch.exp(1j * phi_dark)
+    F_obs_light_phased = Fobs_light_vals * torch.exp(1j * phi_mixed)
+
+    Fcalc_light = torch.abs(fcalc_mixed).detach().cpu().numpy()
+    Fcalc_diff_amp = torch.abs(fcalc_diff).detach().cpu().numpy()
+
+    columns = {
+        "FC": Fcalc_light,
+        "PHIC": phi_mixed.detach().rad2deg().cpu().numpy(),
+    }
+    types = {"FC": "F", "PHIC": "P"}
+
+    if all_columns:
+        Fobs_diff_phased = torch.abs(
+            F_obs_light_phased - F_obs_dark_phased
+        ).detach().cpu().numpy()
+        columns.update(
+            {
+                "2mDFop-DFc": (2 * Fobs_diff_phased - Fcalc_diff_amp) * weights,
+                "mDFop-DFc": (Fobs_diff_phased - Fcalc_diff_amp) * weights,
+                "PHIC_diff": torch.angle(fcalc_diff).detach().rad2deg().cpu().numpy(),
+                "DFc": Fcalc_light - Fcalc_dark,
+                # This column holds the real modulus of the complex vector difference.
+                "DFc_phased": Fcalc_diff_amp,
+            }
+        )
+        types.update({
+            "2mDFop-DFc": "F", "mDFop-DFc": "F", "PHIC_diff": "P",
+            "DFc": "F", "DFc_phased": "F",
+        })
+
+    ctx = {
+        "fcalc_mixed_full": fcalc_mixed_full,
+        "phi_mixed": phi_mixed,
+        "F_obs_dark_phased": F_obs_dark_phased,
+        "F_obs_light_phased": F_obs_light_phased,
+        "Fcalc_diff_amp": Fcalc_diff_amp,
+    }
+    return columns, types, ctx
+
+
+def _extrapolation_columns(
+    mc,
+    dc,
+    hkl,
+    *,
+    Fobs_dark_vals,
+    Fobs_light_vals,
+    sig_dark_vals,
+    sig_light_vals,
+    phi_dark,
+    ctx,
+    rfree_flags_masked,
+    all_columns=False,
+    verbose=1,
+    geometry=None,
+):
+    """Extrapolated light-state amplitudes and the map to refine against.
+
+    Three constructions of the same quantity, all needing the light model:
+
+    ``FEXT`` (default, Bayes-shrunk)
+        The phase-aware amplitude shrunk toward ``Fo_dark`` by a per-reflection weight
+        ``w(h) = tau^2 / (tau^2 + sigma_ext^2(h))``, which quiets the weak and
+        high-resolution reflections where the extrapolation is noisiest.
+    ``FEXT_PHASED`` (``all_columns``)
+        The unshrunk phase-aware amplitude.
+    ``FEXT_SCALAR`` (``all_columns``)
+        ``(Fo_light - w_dark * Fo_dark) / w_light`` on amplitudes only.
+
+    Each needs ``F_calc`` rescaled against *its own* amplitudes -- the three sets differ
+    in overall scale -- so each costs one LBFGS scale fit. Only the default one runs
+    unless ``all_columns`` is set.
+
+    ``FWT``/``PHWT`` is ``2 * FEXT - Fc`` with the phase from the Bayes fit. The phase
+    matters: the scaler contributes one through ``f_sol``, so the three fits do not agree
+    and pairing these coefficients with another fit's phase would be wrong.
+    """
+    from torchref import ReflectionData, Scaler
+    from torchref.base.metrics.rfactor import rfactor_work_free
+
+    data_light = dc["light"]
+    fractions = mc["light"].fractions.detach()
+    w_dark, w_light = fractions[0], fractions[1]
+
+    def _fit(amp, sig):
+        """Rescale the light model against one set of extrapolated amplitudes."""
+        data = ReflectionData.from_tensors(
+            hkl=hkl, F=amp, F_sigma=sig,
+            cell=data_light.cell, spacegroup=data_light.spacegroup,
+            rfree_flags=rfree_flags_masked, device=str(hkl.device), verbose=0,
+        )
+        sc = Scaler(mc.base_models[1], data, device=hkl.device, verbose=-1)
+        sc.initialize().refine_lbfgs()
+        return data, sc(mc.base_models[1](hkl))
+
+    # The phase-aware amplitude, and the one propagated sigma for this extrapolation.
+    F_light_extra = (
+        ctx["F_obs_light_phased"] - w_dark * ctx["F_obs_dark_phased"]
+    ) / w_light
+    sig_light_extra = torch.sqrt(
+        sig_light_vals**2 + w_dark**2 * sig_dark_vals**2
+    ) / w_light
+
+    eps, dss = geometry if geometry is not None else (None, None)
+    F_ext_bayes_amp, var_ext_bayes, w_shrinkage, tau_sq = (
+        compute_bayes_extrapolated_amplitudes(
+            Fobs_dark_vals,
+            Fobs_light_vals,
+            sig_light_extra,
+            phi_dark,
+            ctx["phi_mixed"],
+            w_light,
+            epsilon=eps,
+            d_star_sq=dss,
+        )
+    )
+    sig_ext_bayes = torch.sqrt(var_ext_bayes)
+
+    data_bayes, F_calc_bayes = _fit(F_ext_bayes_amp, sig_ext_bayes)
+    amp_calc_bayes = torch.abs(F_calc_bayes)
+
+    def _np(t):
+        return t.detach().cpu().numpy()
+
+    columns = {
+        "FEXT": _np(F_ext_bayes_amp),
+        "SIGFEXT": _np(sig_ext_bayes),
+        "FWT": _np(2 * F_ext_bayes_amp - amp_calc_bayes),
+        "PHWT": _np(torch.angle(F_calc_bayes).rad2deg()),
+    }
+    types = {"FEXT": "F", "SIGFEXT": "Q", "FWT": "F", "PHWT": "P"}
+
+    if verbose > 0:
+        print("  Bayes extrapolation rfactors:",
+              rfactor_work_free(data_bayes, amp_calc_bayes))
+        print(f"  Bayes: tau^2 = {tau_sq:.4f}, "
+              f"mean w(h) = {w_shrinkage.mean().item():.3f}")
+
+    if all_columns:
+        amp_phased = torch.abs(F_light_extra)
+        data_phased, F_calc_phased = _fit(amp_phased, sig_light_extra)
+        amp_calc_phased = torch.abs(F_calc_phased)
+
+        amp_scalar = (Fobs_light_vals - w_dark * Fobs_dark_vals) / w_light
+        data_scalar, F_calc_scalar = _fit(amp_scalar, sig_light_extra)
+        amp_calc_scalar = torch.abs(F_calc_scalar)
+
+        columns.update({
+            "FEXT_PHASED": _np(amp_phased),
+            "SIGFEXT_PHASED": _np(sig_light_extra),
+            "2FEXT_PHASED-Fc": _np(2 * amp_phased - amp_calc_phased),
+            "FEXT_PHASED-Fc": _np(amp_phased - amp_calc_phased),
+            "PHFEXT_PHASED": _np(torch.angle(F_calc_phased).rad2deg()),
+            "FEXT_SCALAR": _np(amp_scalar),
+            "SIGFEXT_SCALAR": _np(sig_light_extra),
+            "2FEXT_SCALAR-Fc": _np(2 * amp_scalar - amp_calc_scalar),
+            "FEXT_SCALAR-Fc": _np(amp_scalar - amp_calc_scalar),
+            "PHFEXT_SCALAR": _np(torch.angle(F_calc_scalar).rad2deg()),
+        })
+        types.update({
+            "FEXT_PHASED": "F", "SIGFEXT_PHASED": "Q",
+            "2FEXT_PHASED-Fc": "F", "FEXT_PHASED-Fc": "F",
+            "PHFEXT_PHASED": "P",
+            "FEXT_SCALAR": "F", "SIGFEXT_SCALAR": "Q",
+            "2FEXT_SCALAR-Fc": "F", "FEXT_SCALAR-Fc": "F",
+            "PHFEXT_SCALAR": "P",
+        })
+        if verbose > 0:
+            print("  Phase-aware extrapolation rfactors:",
+                  rfactor_work_free(data_phased, amp_calc_phased))
+            print("  Scalar extrapolation rfactors:",
+                  rfactor_work_free(data_scalar, amp_calc_scalar))
+
+    diagnostics = {
+        "tau_sq": float(tau_sq),
+        "w_shrinkage_mean": float(w_shrinkage.mean().item()),
+    }
+    return columns, types, diagnostics
+
+
+def write_results_mtz(
+    dc,
+    dark_model,
+    scaler,
+    filename,
+    *,
+    mc=None,
+    all_columns=False,
+    verbose=1,
+    ded_weight=DEFAULT_SCHEME,
+    sigma_d_config=None,
+):
+    """Write the difference map, and map coefficients when a light model is given.
+
+    The default output is the **difference map**: ``DF``/``SIGDF`` on the dark model's
+    phases ``PHDELWT``, with one mean-one weight column per registered scheme
+    (``W_SD``, ``W_IVW``) and the observed-to-model scale ``KSCALE``; see
+    :func:`_difference_columns`. ``ded_weight`` selects the scheme the model-phased
+    difference columns and the two-moment columns are weighted with. That needs no
+    light-state model, which is why ``mc`` is optional -- with a dark model alone this
+    writes a difference map and nothing else, and no scale fit is run beyond the one that
+    produced ``scaler``.
+
+    Given ``mc``, the layers that need the light state follow: its amplitude and phase,
+    the extrapolated amplitudes, and the two-moment correction. ``all_columns`` adds the
+    alternatives within each layer -- see :func:`_phasing_columns` and
+    :func:`_extrapolation_columns` for what each contains and why it is gated.
 
     Parameters
     ----------
     dc : DatasetCollection
-    mc : ModelCollection
-    scaler : CollectionScaler
+        Dark and light data, already inter-scaled by :meth:`DatasetCollection.scale`.
+    dark_model : Model or _SharedMixedModel
+        Supplies ``Fc_dark`` and the phases the difference map is carried on.
+    scaler : Scaler or CollectionScaler
+        Scales ``dark_model`` against the dark data. A ``CollectionScaler`` when ``mc``
+        is given, a single-dataset ``Scaler`` otherwise.
+    mc : ModelCollection, optional
+        The dark+light collection. Absent means difference map only.
     filename : str
         Output MTZ path.
-    """
-    import numpy as np
-    import reciprocalspaceship as rs
-    from torchref import ReflectionData, Scaler
+    ded_weight : str, optional
+        Weight scheme for the model-phased and two-moment difference columns; one of
+        :data:`torchref.maps.ded_weights.SCHEMES`.
+    sigma_d_config : SigmaDConfig, optional
+        Exponent and shrinkage settings of the ``sigma_d`` scheme.
 
-    data_dark = dc[mc.dark_key]
+    Returns
+    -------
+    dict
+        Diagnostics worth recording outside the file -- currently the Bayes shrinkage's
+        ``tau_sq`` and mean ``w(h)``, which say whether the default extrapolated map is
+        over-shrunk. Empty when no light model was given.
+    """
+    import reciprocalspaceship as rs
+
+    data_dark = dc[mc.dark_key] if mc is not None else dc["dark"]
     data_light = dc["light"]
-    dark_model = mc.dark_model
-    mixed_model = mc["light"]
-    model_light = mc.base_models[1]
 
     hkl_all = data_dark.hkl
     Fobs_dark_full, sig_dark_full = data_dark.get_corrected_data()
@@ -314,195 +921,165 @@ def write_results_mtz(dc, mc, scaler, filename):
         data_light.rfree_flags[mask] if data_light.rfree_flags is not None else None
     )
 
-    fractions = mixed_model.fractions.detach()
-    w_dark = fractions[0]
-    w_light = fractions[1]
-
-    # Compute Fcalc on full HKL then mask (scalers fitted on full datasets)
+    # Fcalc on the full HKL list then masked, because the scalers were fitted on the
+    # full datasets. ``forward_mixed`` exists only on CollectionScaler; the dark-only
+    # path carries a single-dataset Scaler, whose ``forward`` is the plain call.
     with torch.no_grad():
-        fcalc_dark = scaler.forward_mixed(dark_model(hkl_all), dark_model.fractions)[mask]
-        fcalc_mixed = scaler.forward_mixed(mixed_model(hkl_all), mixed_model.fractions)[mask]
-    fcalc_diff = fcalc_mixed - fcalc_dark
+        if hasattr(scaler, "forward_mixed"):
+            fcalc_dark_full = scaler.forward_mixed(
+                dark_model(hkl_all), dark_model.fractions
+            )
+        else:
+            fcalc_dark_full = scaler(dark_model(hkl_all))
+        fcalc_dark = fcalc_dark_full[mask]
 
     phi_dark = torch.angle(fcalc_dark)
-    phi_mixed = torch.angle(fcalc_mixed)
 
-    F_obs_dark_phased = Fobs_dark_vals * torch.exp(1j * phi_dark)
-    F_obs_light_phased = Fobs_light_vals * torch.exp(1j * phi_mixed)
-
-    # --- Phase-aware extrapolation ---
-    F_light_extra = (F_obs_light_phased - w_dark * F_obs_dark_phased) / w_light
-    amp_light_extra = torch.abs(F_light_extra)
-    sig_light_extra = torch.sqrt(sig_light_vals**2 + w_dark**2 * sig_dark_vals**2) / w_light
-
-    data_light_extra = ReflectionData.from_tensors(
-        hkl=hkl, F=amp_light_extra, F_sigma=sig_light_extra,
-        cell=data_light.cell, spacegroup=data_light.spacegroup,
-        rfree_flags=rfree_flags_masked, device=str(hkl.device), verbose=0,
-    )
-    scaler_extra = Scaler(model_light, data_light_extra, device=hkl.device, verbose=-1)
-    scaler_extra.initialize().refine_lbfgs()
-    F_calc_extra = scaler_extra(model_light(hkl))
-
-    amp_extra = torch.abs(F_light_extra)
-    amp_light_calc = torch.abs(F_calc_extra)
-    phi_light_calc = torch.angle(F_calc_extra)
-    amp_2fofc_light = 2 * amp_extra - amp_light_calc
-    amp_fextfc = amp_extra - amp_light_calc
-
-    # --- Classic (amplitude-only) extrapolation ---
-    amp_extra_classic = (Fobs_light_vals - w_dark * Fobs_dark_vals) / w_light
-    sig_extra_classic = sig_light_extra
-
-    data_extra_classic = ReflectionData.from_tensors(
-        hkl=hkl, F=amp_extra_classic, F_sigma=sig_extra_classic,
-        cell=data_light.cell, spacegroup=data_light.spacegroup,
-        rfree_flags=rfree_flags_masked, device=str(hkl.device), verbose=0,
-    )
-    scaler_classic = Scaler(model_light, data_extra_classic, device=hkl.device, verbose=-1)
-    scaler_classic.initialize().refine_lbfgs()
-    F_calc_classic = scaler_classic(model_light(hkl))
-
-    amp_light_calc_classic = torch.abs(F_calc_classic)
-    amp_2fofc_classic = 2 * amp_extra_classic - amp_light_calc_classic
-    amp_fofc_classic = amp_extra_classic - amp_light_calc_classic
-
-    # --- Empirical Bayes extrapolation (amplitude-only shrinkage) ---
-    F_ext_bayes, var_ext_bayes, w_shrinkage, tau_sq = (
-        compute_bayes_extrapolated_amplitudes(
-            Fobs_dark_vals, Fobs_light_vals,
-            sig_dark_vals, sig_light_vals,
-            phi_dark, phi_mixed, w_light,
-        )
-    )
-    sig_ext_bayes = torch.sqrt(var_ext_bayes)
-
-    # Shrink |F_ext| towards |Fo_dark| — scalar operation, no phase interference
-    F_ext_amp_only = torch.abs(F_light_extra)
-    F_ext_bayes_amp = w_shrinkage * F_ext_amp_only + (1 - w_shrinkage) * Fobs_dark_vals
-
-    data_extra_bayes = ReflectionData.from_tensors(
-        hkl=hkl, F=F_ext_bayes_amp, F_sigma=sig_ext_bayes,
-        cell=data_light.cell, spacegroup=data_light.spacegroup,
-        rfree_flags=rfree_flags_masked, device=str(hkl.device), verbose=0,
-    )
-    scaler_bayes = Scaler(model_light, data_extra_bayes, device=hkl.device, verbose=-1)
-    scaler_bayes.initialize().refine_lbfgs()
-    F_calc_bayes = scaler_bayes(model_light(hkl))
-
-    amp_calc_bayes = torch.abs(F_calc_bayes)
-    amp_2fofc_bayes = 2 * F_ext_bayes_amp - amp_calc_bayes
-    amp_fofc_bayes = F_ext_bayes_amp - amp_calc_bayes
-
-    from torchref.base.metrics.rfactor import rfactor_work_free
-
-    def _extrapolation_rfactors(data, fcalc_scaled):
-        return rfactor_work_free(data, torch.abs(fcalc_scaled))
-
-    print("Phase-aware extrapolation rfactors:",
-          _extrapolation_rfactors(data_light_extra, F_calc_extra))
-    print("Classic extrapolation rfactors:",
-          _extrapolation_rfactors(data_extra_classic, F_calc_classic))
-    print("Bayes extrapolation rfactors:",
-          _extrapolation_rfactors(data_extra_bayes, F_calc_bayes))
-    print(f"  Bayes: tau^2 = {tau_sq:.4f}, mean w(h) = {w_shrinkage.mean().item():.3f}")
-
-    # --- Build MTZ ---
     hkl_np = hkl.cpu().numpy()
     Fobs_dark = Fobs_dark_vals.cpu().numpy()
     Fobs_light = Fobs_light_vals.cpu().numpy()
     sig_dark = sig_dark_vals.cpu().numpy()
     sig_light = sig_light_vals.cpu().numpy()
-
     Fcalc_dark = torch.abs(fcalc_dark).detach().cpu().numpy()
-    Fcalc_light = torch.abs(fcalc_mixed).detach().cpu().numpy()
-    phases_dark = torch.angle(fcalc_dark).detach().rad2deg().cpu().numpy()
-    phases_mixed = torch.angle(fcalc_mixed).detach().rad2deg().cpu().numpy()
+    phases_dark = phi_dark.detach().rad2deg().cpu().numpy()
 
-    Fcalc_diff_amp = torch.abs(fcalc_diff).detach().cpu().numpy()
-    Fcalc_diff_scalar = Fcalc_light - Fcalc_dark
-    phases_diff = torch.angle(fcalc_diff).detach().rad2deg().cpu().numpy()
+    diff_t = Fobs_light_vals - Fobs_dark_vals
+    sig_diff_t = torch.sqrt(sig_dark_vals**2 + sig_light_vals**2)
+    all_w = all_ded_weights(
+        delta_obs=diff_t,
+        sigma_diff=sig_diff_t,
+        hkl=hkl,
+        cell=data_dark.cell,
+        spacegroup=data_dark.spacegroup,
+        f_dark=Fobs_dark_vals,
+        sigma_d_config=sigma_d_config,
+    )
+    selected = all_w[ded_weight]
+    weights = selected.weights.detach().cpu().numpy()
+    diff_Fobs = diff_t.detach().cpu().numpy()
+    sig_diff = sig_diff_t.detach().cpu().numpy()
+    weight_columns = {
+        WEIGHT_COLUMNS[name]: all_w[name].weights.detach().cpu().numpy()
+        for name in WEIGHT_COLUMNS
+    }
+    kscale = scaler.multiplicative_scale()[mask].detach().cpu().numpy()
+    geometry = reflection_geometry(
+        hkl, data_dark.cell, data_dark.spacegroup, diff_t.device, diff_t.dtype
+    )
+    sd_diag = {
+        k: v
+        for k, v in all_w["sigma_d"].diagnostics.items()
+        if k != "weight_sigma_d_raw"
+    }
+    diagnostics = {
+        "ded_weights": {
+            "scheme": ded_weight,
+            "applied": selected.applied,
+            "sigma_d": sd_diag,
+        }
+    }
+    if verbose > 0:
+        print(f"  Difference weights: {ded_weight} (applied: {selected.applied})")
+        print(
+            f"  sigma_D: gamma = {sd_diag['gamma']:.3f} ({sd_diag['gamma_reason']}), "
+            f"tau = {sd_diag['tau']:.3f}, shells = {sd_diag['n_shell']}, "
+            f"shells without difference power = {sd_diag['n_s2_clamped']}"
+        )
+        if "fallback_reason" in sd_diag:
+            print(f"  sigma_D fallback: {sd_diag['fallback_reason']}")
+    if verbose > 1 and not sd_diag["degenerate"]:
+        table = sd_diag["shells"]
+        print("  sigma_D shells: d(A)   n     B        S2       Sigma_N")
+        for dss, n, b, s2, sn in zip(
+            table["d_star_sq"],
+            table["counts"],
+            table["B"],
+            table["S2"],
+            table["Sigma_N"],
+        ):
+            print(f"    {dss ** -0.5:6.2f} {int(n):5d} {b:9.4f} {s2:9.4f} {sn:9.4f}")
 
-    Fobs_diff_phased = torch.abs(
-        F_obs_light_phased - F_obs_dark_phased
-    ).detach().cpu().numpy()
+    columns, types = _difference_columns(
+        data_dark,
+        data_light,
+        mask,
+        hkl_np,
+        Fobs_dark=Fobs_dark,
+        sig_dark=sig_dark,
+        Fobs_light=Fobs_light,
+        sig_light=sig_light,
+        Fcalc_dark=Fcalc_dark,
+        phases_dark=phases_dark,
+        diff_Fobs=diff_Fobs,
+        sig_diff=sig_diff,
+        weight_columns=weight_columns,
+        kscale=kscale,
+    )
 
-    diff_Fobs = Fobs_light - Fobs_dark
-    sig_diff = (sig_dark**2 + sig_light**2) ** 0.5
-    weights = 1 / sig_diff**2
-    weights = weights / weights.mean()
-    weighted_diff_Fobs = diff_Fobs * weights
+    if mc is not None:
+        phase_cols, phase_types, ctx = _phasing_columns(
+            mc, scaler, hkl_all, mask,
+            fcalc_dark=fcalc_dark, Fobs_dark_vals=Fobs_dark_vals,
+            Fobs_light_vals=Fobs_light_vals, phi_dark=phi_dark,
+            Fcalc_dark=Fcalc_dark, weights=weights, all_columns=all_columns,
+        )
+        columns.update(phase_cols)
+        types.update(phase_types)
 
-    amp_2DFoDFc = (2 * Fobs_diff_phased - Fcalc_diff_amp) * weights
-    amp_DFoDFc = (Fobs_diff_phased - Fcalc_diff_amp) * weights
+        ext_cols, ext_types, ext_diagnostics = _extrapolation_columns(
+            mc,
+            dc,
+            hkl,
+            Fobs_dark_vals=Fobs_dark_vals,
+            Fobs_light_vals=Fobs_light_vals,
+            sig_dark_vals=sig_dark_vals,
+            sig_light_vals=sig_light_vals,
+            phi_dark=phi_dark,
+            ctx=ctx,
+            rfree_flags_masked=rfree_flags_masked,
+            all_columns=all_columns,
+            verbose=verbose,
+            geometry=geometry,
+        )
+        diagnostics.update(ext_diagnostics)
+        columns.update(ext_cols)
+        types.update(ext_types)
+
+        tm_cols, tm_types = _two_moment_columns(
+            mc, dc, mask, fcalc_dark_full, ctx["fcalc_mixed_full"],
+            weights=weights, diff_Fobs=diff_Fobs,
+            Fcalc_diff_amp=ctx["Fcalc_diff_amp"], Fobs_dark=Fobs_dark,
+            sig_dark=sig_dark, phi_mixed=ctx["phi_mixed"],
+            F_obs_dark_phased=ctx["F_obs_dark_phased"],
+            all_columns=all_columns,
+        )
+        columns.update(tm_cols)
+        types.update(tm_types)
 
     df = rs.DataSet(
-        {
-            "H": hkl_np[:, 0], "K": hkl_np[:, 1], "L": hkl_np[:, 2],
-            # Observed
-            "Fo_dark": Fobs_dark, "SIGFo_dark": sig_dark,
-            "Fo_light": Fobs_light, "SIGFo_light": sig_light,
-            # Differences
-            "DF": diff_Fobs, "SIGDF": sig_diff, "WDF": weighted_diff_Fobs,
-            # Calculated
-            "Fc_dark": Fcalc_dark, "Fc_light": Fcalc_light,
-            "DFc": Fcalc_diff_scalar, "DFc_complex": Fcalc_diff_amp,
-            # DED map coefficients (phase-aware)
-            "2mDFop-DFc": amp_2DFoDFc, "mDFop-DFc": amp_DFoDFc,
-            # Phases
-            "PHIC_dark": phases_dark, "PHIC_mixed": phases_mixed,
-            "PHIC_diff": phases_diff,
-            "PHIC_light": phi_light_calc.detach().rad2deg().cpu().numpy(),
-            # Phase-aware extrapolation
-            "Fextp": amp_extra.detach().cpu().numpy(),
-            "2Fextp-Fc": amp_2fofc_light.detach().cpu().numpy(),
-            "Fextp-Fc": amp_fextfc.detach().cpu().numpy(),
-            # Classic extrapolation
-            "Fextc": amp_extra_classic.detach().cpu().numpy(),
-            "SIGFextc": sig_extra_classic.detach().cpu().numpy(),
-            "2Fextc-Fc": amp_2fofc_classic.detach().cpu().numpy(),
-            "Fextc-Fc": amp_fofc_classic.detach().cpu().numpy(),
-            # Bayes extrapolation (amplitude-only shrinkage)
-            "Fextb": F_ext_bayes_amp.detach().cpu().numpy(),
-            "SIGFextb": sig_ext_bayes.detach().cpu().numpy(),
-            "2Fextb-Fc": amp_2fofc_bayes.detach().cpu().numpy(),
-            "Fextb-Fc": amp_fofc_bayes.detach().cpu().numpy(),
-            # R-free flags (1=work, 0=free)
-            "FreeR_flag_dark": (
-                data_dark.rfree_flags[mask].cpu().numpy().astype(int)
-                if data_dark.rfree_flags is not None
-                else np.ones(len(hkl_np), dtype=int)
-            ),
-            "FreeR_flag_light": (
-                data_light.rfree_flags[mask].cpu().numpy().astype(int)
-                if data_light.rfree_flags is not None
-                else np.ones(len(hkl_np), dtype=int)
-            ),
-        },
+        columns,
         cell=data_dark.cell.data.cpu().tolist(),
         spacegroup=data_dark.spacegroup.hm,
     )
-
-    df[["H", "K", "L"]] = df[["H", "K", "L"]].astype("H")
-    f_cols = [
-        "Fo_dark", "Fo_light", "DF", "WDF",
-        "Fc_dark", "Fc_light", "DFc", "DFc_complex",
-        "2mDFop-DFc", "mDFop-DFc",
-        "Fextp", "2Fextp-Fc", "Fextp-Fc",
-        "Fextc", "2Fextc-Fc", "Fextc-Fc",
-        "Fextb", "2Fextb-Fc", "Fextb-Fc",
-    ]
-    df[f_cols] = df[f_cols].astype("F")
-    sig_cols = ["SIGFo_dark", "SIGFo_light", "SIGDF", "SIGFextc", "SIGFextb"]
-    df[sig_cols] = df[sig_cols].astype("Q")
-    phase_cols = ["PHIC_dark", "PHIC_mixed", "PHIC_diff", "PHIC_light"]
-    df[phase_cols] = df[phase_cols].astype("P")
-    df["FreeR_flag_dark"] = df["FreeR_flag_dark"].astype("I")
-    df["FreeR_flag_light"] = df["FreeR_flag_light"].astype("I")
+    # Carry MTZ types with the values; infer_mtz_dtypes also checks the
+    # result using the canonical writer's rules.
+    missing = set(columns) - set(types)
+    if missing:
+        raise AssertionError(f"columns with no declared MTZ type: {sorted(missing)}")
+    for name, letter in types.items():
+        df[name] = df[name].astype(letter)
+    df = df.infer_mtz_dtypes()
     df.set_index(["H", "K", "L"], inplace=True)
     df.write_mtz(filename)
-    print(f"  Results MTZ written to {filename}")
-    print(f"  w_dark={w_dark.item():.3f}, w_light={w_light.item():.3f}")
+
+    if verbose > 0:
+        print(f"  Results MTZ written to {filename} ({len(columns)} columns)")
+        if mc is not None:
+            fractions = mc["light"].fractions.detach()
+            print(f"  w_dark={fractions[0].item():.3f}, "
+                  f"w_light={fractions[1].item():.3f}")
+
+    return diagnostics
 
 
 def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
@@ -563,8 +1140,19 @@ Examples:
     add_outdir_arg(output, help="Output directory for refined structures and maps")
     add_output_format_args(output)
     add_metadata_args(output)
+    add_all_columns_arg(output)
+    add_ded_weight_args(output)
 
     refine = parser.add_argument_group("Refinement")
+    refine.add_argument(
+        "--difference-target",
+        choices=("difference", "difference_sd"),
+        default="difference",
+        help="Difference row the weight schedule drives: 'difference' is the Gaussian "
+        "under the measurement variance, 'difference_sd' centres on "
+        "alpha*dF_calc with the sigma_D unexplained power added to the variance "
+        "(default: difference).",
+    )
     refine.add_argument(
         "--weight-schedule", type=str, default="5,3,2",
         help="Comma-separated difference-target weights applied in "
@@ -596,6 +1184,28 @@ Examples:
         help="Weight for dark/light coordinate similarity restraint "
              "(0 to disable, default: 1.0)",
     )
+    two_moment = parser.add_argument_group("Activation heterogeneity (two-moment model)")
+    two_moment.add_argument(
+        "--two-moment", action="store_true", default=False,
+        help="Fit merged intensities with |F(alpha)|^2 + sigma_alpha^2 |dF|^2, "
+             "which accounts for crystal-to-crystal spread in activation. "
+             "Requires I/SIGI columns in both reflection files.",
+    )
+    two_moment.add_argument(
+        "--lambda-twin", type=float, default=0.0,
+        help="Activation dispersion as a fraction of its maximum, in [0, 1]: "
+             "sigma_alpha^2 = alpha (1 - alpha) * lambda. 0 (default) is the "
+             "coherent model and reproduces the amplitude-only result. Needs "
+             "--two-moment: the dispersion belongs in the predicted intensity, not "
+             "in a weight.",
+    )
+    two_moment.add_argument(
+        "--refine-lambda-twin", action="store_true", default=False,
+        help="Refine --lambda-twin instead of holding it fixed. Off by default: "
+             "the sigma_alpha^2 term is smooth and positive, so it is collinear "
+             "with a scale or overall-B error and can absorb one.",
+    )
+
     refine.add_argument(
         "--similarity-alpha", type=float, default=2.0,
         help="Log prior odds for spike-and-slab similarity restraint. "
@@ -617,6 +1227,24 @@ Examples:
         return 1
     fractions = [1.0 - args.fraction, args.fraction]
 
+    if not (0.0 <= args.lambda_twin <= 1.0):
+        print(
+            f"Error: --lambda-twin must lie in [0, 1] (got {args.lambda_twin})",
+            file=sys.stderr,
+        )
+        return 1
+    if (args.lambda_twin > 0.0 or args.refine_lambda_twin) and not args.two_moment:
+        # Activation heterogeneity changes the predicted mean intensity. Treating
+        # it as measurement variance downweights the reflections carrying the signal.
+        print(
+            "Error: --lambda-twin needs --two-moment. The dispersion enters the predicted "
+            "intensity, not a weight: as a variance it down-weights the reflections whose "
+            "difference signal is largest, which measurably worsens the recovered "
+            "displacement.",
+            file=sys.stderr,
+        )
+        return 1
+
     # --- Parse weight schedule ---
     try:
         weight_schedule = [float(x) for x in args.weight_schedule.split(",")]
@@ -629,7 +1257,10 @@ Examples:
 
     # --- Parse and merge target weights ---
     target_weights = dict(DEFAULT_TARGET_WEIGHTS)
-    target_weights["xray/difference"] = weight_schedule[0]
+    difference_key = f"xray/{args.difference_target}"
+    target_weights["xray/difference"] = 0.0
+    target_weights["xray/difference_sd"] = 0.0
+    target_weights[difference_key] = weight_schedule[0]
     target_weights["similarity"] = args.similarity_weight
     target_weights, err = parse_weights(args.weights, defaults=target_weights)
     if err:
@@ -666,6 +1297,11 @@ Examples:
         print(f"Light data:        {args.light_structure_factor}")
         frac_mode = "refinable" if args.refine_fractions else "frozen"
         print(f"Fractions:         dark={fractions[0]}, light={fractions[1]} ({frac_mode})")
+        if args.two_moment:
+            lam_mode = "refinable" if args.refine_lambda_twin else "fixed"
+            print(
+                f"Activation spread: lambda_twin={args.lambda_twin} ({lam_mode})"
+            )
         print(f"Output:            {outdir}")
         print(f"Device:            {device}")
         if args.dmin:
@@ -747,8 +1383,32 @@ Examples:
         sys.stdout.flush()
 
     # --- Setup targets ---
-    state = setup_loss_state(dc, mc, scaler, target_weights, device,
-                             similarity_alpha=args.similarity_alpha)
+    if args.two_moment:
+        missing = [k for k in dc.keys() if dc[k].I is None]
+        if missing:
+            print(
+                f"Error: --two-moment needs I/SIGI columns, but {missing} carry "
+                f"only amplitudes. Converting back with F**2 would reintroduce the "
+                f"French-Wilson distortion the intensity model exists to avoid.",
+                file=sys.stderr,
+            )
+            return 1
+
+    # Set unconditionally: a non-zero dispersion also drives the difference target's
+    # per-reflection weighting, which needs no intensity data.
+    mc.set_lambda_twin(args.lambda_twin, refinable=args.refine_lambda_twin)
+
+    state = setup_loss_state(
+        dc,
+        mc,
+        scaler,
+        target_weights,
+        device,
+        similarity_alpha=args.similarity_alpha,
+        two_moment=args.two_moment,
+        difference_target=args.difference_target,
+        sigma_d_config=sigma_d_config_from_args(args),
+    )
 
     if args.verbose > 0:
         print("Initial loss breakdown:")
@@ -761,10 +1421,14 @@ Examples:
 
     if args.refine_fractions:
         params = list(itertools.chain(
-            model_light.parameters(), [mixed.fraction_params]
+            model_light.parameters(), mc.fraction_parameters()
         ))
     else:
         params = list(model_light.parameters())
+        if args.refine_lambda_twin:
+            # fraction_parameters() carries lambda once it is refinable; take only
+            # that, since the fractions themselves stay frozen here.
+            params.append(mc._lambda_logit)
 
     fraction_history = []
     if args.refine_fractions:
@@ -784,7 +1448,7 @@ Examples:
                 )
                 sys.stdout.flush()
 
-            state.set_weights({"xray/difference": t_weight})
+            state.set_weights({difference_key: t_weight})
             optimize_lbfgs(
                 state, params,
                 max_iter=args.max_iter,
@@ -816,14 +1480,17 @@ Examples:
                 sys.stdout.flush()
 
     # --- Final statistics ---
+    # Computed unconditionally: the deposition metadata and the results MTZ both carry
+    # these, so they are not a reporting-only quantity.
+    r_work_d, r_free_d = compute_rfactors(dark, data_dark, scaler)
+    r_work_l, r_free_l = compute_rfactors(mixed, data_light, scaler)
+    r_work_dl, r_free_dl = compute_rfactors(dark, data_light, scaler)
+
     if args.verbose > 0:
         print()
         print("=" * 72)
         print("Refinement complete")
         print("=" * 72)
-        r_work_d, r_free_d = compute_rfactors(dark, data_dark, scaler)
-        r_work_l, r_free_l = compute_rfactors(mixed, data_light, scaler)
-        r_work_dl, r_free_dl = compute_rfactors(dark, data_light, scaler)
         print(f"  Final R-factor (dark  vs dark data):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
         print(f"  Final R-factor (mixed vs light data): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
         print(f"  Final R-factor (dark  vs light data): R_work={r_work_dl:.4f}  R_free={r_free_dl:.4f}")
@@ -892,7 +1559,7 @@ Examples:
             meta.n_atoms_solvent = int((pdb["ATOM"] == "HETATM").sum())
 
             # Geometry deviations
-            if model.initialized and model._restraints is not None:
+            if model.ctx.initialized and model._restraints is not None:
                 restraints = model.restraints
                 with torch.no_grad():
                     if hasattr(restraints, "bond_deviations"):
@@ -940,6 +1607,7 @@ Examples:
 
     if not has_altloc_dark and not has_altloc_light:
         import pandas as pd
+
         from torchref import __version__
         from torchref.io.metadata import RefinementMetadata
 
@@ -1033,7 +1701,17 @@ Examples:
         print(f"  Dark SF written to {dark_sf_mtz}, {dark_sf_cif}")
         print(f"  Light SF written to {light_sf_mtz}, {light_sf_cif}")
 
-    write_results_mtz(dc, mc, scaler, diff_mtz_out)
+    map_diagnostics = write_results_mtz(
+        dc,
+        mc.dark_model,
+        scaler,
+        diff_mtz_out,
+        mc=mc,
+        all_columns=args.all_columns,
+        verbose=args.verbose,
+        ded_weight=args.ded_weight,
+        sigma_d_config=sigma_d_config_from_args(args),
+    )
 
     # --- JSON summary ---
     summary = {
@@ -1046,6 +1724,7 @@ Examples:
             "cif": args.cif,
             "dmin": args.dmin,
         },
+        "dataset_scaling": dc.scaling_metrics,
         "parameters": {
             "weight_schedule": weight_schedule,
             "n_cycles": args.n_cycles,
@@ -1054,15 +1733,23 @@ Examples:
             "weights": target_weights,
         },
         "results": {
-            "r_factor_dark": dict(zip(
-                ["r_work", "r_free"],
-                compute_rfactors(dark, data_dark, scaler),
-            )),
-            "r_factor_light": dict(zip(
-                ["r_work", "r_free"],
-                compute_rfactors(mixed, data_light, scaler),
-            )),
+            "r_factor_dark": dict(
+                zip(
+                    ["r_work", "r_free"],
+                    compute_rfactors(dark, data_dark, scaler),
+                )
+            ),
+            "r_factor_light": dict(
+                zip(
+                    ["r_work", "r_free"],
+                    compute_rfactors(mixed, data_light, scaler),
+                )
+            ),
             "fractions": mixed.fractions.detach().cpu().tolist(),
+            "alpha_mean": float(mc.alpha_mean),
+            "lambda_twin": float(mc.lambda_twin),
+            "sigma_alpha_sq": float(mc.sigma_alpha_sq),
+            **map_diagnostics,
         },
         "output_files": {
             "dark_pdb": dark_pdb_out,

@@ -116,7 +116,7 @@ AC_ZJ = torch.tensor(
         2.906,
         3.004,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 AC_ZJ_SD = torch.tensor(
@@ -193,7 +193,7 @@ AC_ZJ_SD = torch.tensor(
         0.994,
         0.996,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 AC_ZF = torch.tensor(
@@ -270,7 +270,7 @@ AC_ZF = torch.tensor(
         1.676,
         1.706,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 AC_ZF_SD = torch.tensor(
@@ -347,7 +347,7 @@ AC_ZF_SD = torch.tensor(
         0.310,
         0.304,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 # Centric lookup tables from French-Wilson supplement (1978)
@@ -435,7 +435,7 @@ C_ZJ = torch.tensor(
         3.753,
         3.962,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 C_ZJ_SD = torch.tensor(
@@ -522,7 +522,7 @@ C_ZJ_SD = torch.tensor(
         1.029,
         1.028,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 C_ZF = torch.tensor(
@@ -609,7 +609,7 @@ C_ZF = torch.tensor(
         1.917,
         1.945,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 C_ZF_SD = torch.tensor(
@@ -696,7 +696,7 @@ C_ZF_SD = torch.tensor(
         0.278,
         0.272,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 
@@ -1146,135 +1146,6 @@ def french_wilson(
     return F, sigma_F, valid_mask
 
 
-def is_centric_from_hkl(
-    hkl: torch.Tensor, space_group: SpaceGroupLike = "P1"
-) -> torch.Tensor:
-    """
-    Determine if reflections are centric based on Miller indices and space group.
-
-    Uses symmetry operations to check if reflections are invariant under
-    inversion through the origin (Friedel mates). A reflection is centric
-    if -h,-k,-l is symmetry equivalent to h,k,l.
-
-    Parameters
-    ----------
-    hkl : torch.Tensor
-        Miller indices of shape (..., 3).
-    space_group : str, int, or gemmi.SpaceGroup, optional
-        Space group specification. Default is "P1".
-
-    Returns
-    -------
-    torch.Tensor
-        Boolean mask of shape (...), True for centric reflections.
-    """
-    original_shape = hkl.shape[:-1]
-    hkl_flat = hkl.reshape(-1, 3)
-    n_reflections = hkl_flat.shape[0]
-
-    # Get symmetry operations from the SpaceGroup class
-    float_dtype = get_float_dtype()
-    spacegroup = SpaceGroup(space_group, dtype=float_dtype, device=hkl.device)
-
-    # Convert HKL to the configured float dtype for symmetry operations
-    hkl_float = hkl_flat.to(float_dtype)  # Shape: (n_reflections, 3)
-
-    # Apply all spacegroup operations to all reflections at once
-    # For reciprocal space (Miller indices), only rotation applies, not translation
-    # hkl_float shape: (n_reflections, 3)
-    # spacegroup.apply_to_hkl returns shape: (n_reflections, 3, n_ops)
-    hkl_sym = spacegroup.apply_to_hkl(hkl_float)
-
-    # Compute Friedel mates: -h, -k, -l
-    # Shape: (n_reflections, 3, 1) to broadcast against (n_reflections, 3, n_ops)
-    friedel_hkl = -hkl_float.unsqueeze(-1)  # Shape: (n_reflections, 3, 1)
-
-    # Check if any spacegroup operation produces the Friedel mate
-    # Round to nearest integer (Miller indices should be integers)
-    hkl_sym_rounded = torch.round(hkl_sym)
-
-    # Compute difference for all reflections and all spacegroup operations
-    # Shape: (n_reflections, 3, n_ops)
-    diff = torch.abs(hkl_sym_rounded - friedel_hkl)
-
-    # A reflection is centric if ANY spacegroup operation maps it to its Friedel mate
-    # Check if all 3 components (h,k,l) match (diff < 0.5) for any operation
-    # Shape: (n_reflections, n_ops) after checking all 3 components match
-    matches = torch.all(diff < 0.5, dim=1)  # Check all 3 Miller indices match
-
-    # A reflection is centric if it matches for ANY spacegroup operation
-    # Shape: (n_reflections,)
-    is_centric = torch.any(matches, dim=1)
-
-    return is_centric.reshape(original_shape)
-
-
-def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
-    """Per-reflection epsilon: number of rotation symops mapping h -> +/-h.
-
-    Mirrors ``ReciprocalSymmetry.get_epsilon`` (Friedel-aware) but works directly
-    on the scattered HKL list. Returns ones if ``spacegroup`` is None or lacks
-    ``apply_to_hkl``.
-
-    Unlike :func:`is_centric_from_hkl` this takes a constructed space group rather
-    than a specification, because its callers already hold one.
-
-    Always returns on ``hkl.device``, whatever device the space group's symmetry
-    matrices live on: the caller multiplies this against per-reflection data
-    sitting beside ``hkl``.
-    """
-    n = hkl.shape[0]
-    float_dtype = get_float_dtype()
-    if spacegroup is None or not hasattr(spacegroup, "apply_to_hkl"):
-        return torch.ones(n, device=hkl.device, dtype=float_dtype)
-
-    with torch.no_grad():
-        # Configured float dtype, not float64: MPS has no float64 and casting
-        # there raises. Symmetry arithmetic on Miller indices is exact in
-        # float32 (integer-valued rotation matrices, small indices), so the
-        # exact `==` comparisons below remain valid.
-        #
-        # ``apply_to_hkl`` moves its input onto the matrices' device, so build
-        # ``h`` there too -- otherwise ``Hs`` and ``h0`` land on different
-        # devices and the comparisons below raise. The space group wins for the
-        # arithmetic; the result is handed back on the caller's device.
-        sym_device = getattr(spacegroup, "matrices", hkl).device
-        h = hkl.to(device=sym_device, dtype=float_dtype)
-        Hs = spacegroup.apply_to_hkl(h)  # (N,3,ops)
-        h0 = h.unsqueeze(-1)  # (N,3,1)
-        same = (Hs == h0).all(dim=1)
-        friedel = (Hs == -h0).all(dim=1)
-        eps = (same | friedel).sum(dim=1).clamp(min=1).to(float_dtype)
-    return eps.to(hkl.device)
-
-
-def get_centric_acentric_masks(
-    hkl: torch.Tensor, space_group: SpaceGroupLike = "P1"
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Get both centric and acentric masks for reflections.
-
-    Convenience function that returns both masks explicitly.
-
-    Parameters
-    ----------
-    hkl : torch.Tensor
-        Miller indices of shape (..., 3).
-    space_group : str, int, or gemmi.SpaceGroup, optional
-        Space group specification. Default is "P1".
-
-    Returns
-    -------
-    centric_mask : torch.Tensor
-        Boolean mask of shape (...), True for centric reflections.
-    acentric_mask : torch.Tensor
-        Boolean mask of shape (...), True for acentric reflections.
-    """
-    centric_mask = is_centric_from_hkl(hkl, space_group)
-    acentric_mask = ~centric_mask
-    return centric_mask, acentric_mask
-
-
 def estimate_mean_intensity_by_resolution(
     I: torch.Tensor, d_spacings: torch.Tensor, n_bins: int = 60, min_per_bin: int = 40
 ) -> torch.Tensor:
@@ -1323,7 +1194,7 @@ def estimate_mean_intensity_by_resolution(
 
     # Use scatter_add to compute sum of intensities per bin
     bin_sums = torch.zeros(actual_n_bins, dtype=I.dtype, device=I.device)
-    bin_counts = torch.zeros(actual_n_bins, dtype=torch.long, device=I.device)
+    bin_counts = torch.zeros(actual_n_bins, dtype=torch.long, device=I.device)  # dtype-ok: count accumulator; scatter_add source is long ones, dtype must match
     bin_sums.scatter_add_(0, bin_indices, I_sorted)
     bin_counts.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 
@@ -1460,7 +1331,7 @@ def french_wilson_auto(
     )
 
     # Step 2: Determine centric reflections from Miller indices
-    is_centric = is_centric_from_hkl(hkl, space_group=space_group)
+    is_centric = SpaceGroup(space_group, device=hkl.device).is_centric(hkl)
 
     # Step 3: Apply French-Wilson conversion
     F, sigma_F, valid_mask = french_wilson(
@@ -1546,7 +1417,7 @@ class FrenchWilson(DeviceMixin, nn.Module):
         self.register_buffer("d_spacings", d_spacings)
 
         # Determine centric reflections
-        is_centric = is_centric_from_hkl(hkl, space_group)
+        is_centric = SpaceGroup(space_group, device=hkl.device).is_centric(hkl)
         self.register_buffer("is_centric", is_centric)
 
         # Set by forward(); None until the first conversion. Not a buffer -- it

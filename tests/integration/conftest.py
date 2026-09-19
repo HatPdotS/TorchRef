@@ -1,7 +1,6 @@
-"""
-Integration test specific fixtures.
-Integration tests use real file I/O and test the full pipeline.
+"""Use shared fixtures registered by the root conftest for integration tests.
 
-All shared fixtures (sample files, path fixtures, monomer library, etc.)
-are defined in the root tests/conftest.py and are automatically available here.
+Pipeline-specific fixtures belong in their consuming modules. Mutable loaded
+objects from ``tests.fixtures.objects`` are function-scoped unless documented
+as explicitly shared.
 """

@@ -1,0 +1,360 @@
+"""Observed-side preprocessing chain.
+
+Mirrors the chain in Phaser ``DataMR::dataMR_FRF`` (DataMR.cc:863-1133) and the
+auxiliary helpers in ``lib/math_RiceLLG.cc``, and carries the Phaser source
+citations for each piece.
+
+Normalisation is deliberately **not** here. Turning amplitudes into E values is
+:class:`~torchref.scaling.WilsonNormaliser`'s job, shared with the translation
+search and with everything else in the repo that asks what the mean intensity at
+a resolution is. What lives here is the LERF1 intensity built from those E
+values, the multiplicity handling, and the symmetry detection.
+"""
+from __future__ import annotations
+
+import math
+from typing import Optional
+
+import torch
+
+from ....config import get_float_dtype
+
+from ..sh import (
+    get_high_order_axis,                              # phaser's highOrderAxis()
+    compute_patterson_shell_variance,
+    equal_count_shell_edges,
+    assign_shells,
+)
+
+
+def eterm_sigma_a(s_mag: torch.Tensor, delta_vrms_A: float) -> torch.Tensor:
+    """Phaser's σA Eterm, literal port of ``Ensemble.cc:42``:
+
+        Eterm(s) = exp(-(2π²/3) · s² · ΔVRMS_var)
+
+    where ``ΔVRMS_var`` is the *coordinate variance* in Å². We accept the
+    RMS coordinate error ``delta_vrms_A`` (Å) per the standard σA
+    convention and square it internally: ``ΔVRMS_var = delta_vrms_A²``.
+    """
+    s2 = s_mag * s_mag
+    return torch.exp(-(2.0 / 3.0) * (math.pi ** 2) * s2 * (delta_vrms_A ** 2))
+
+__all__ = [
+    "eterm_sigma_a",
+    "get_high_order_axis",
+    "build_lerf1_intensity",
+    "apply_shell_variance_weights",
+    "detect_zsymm",
+    "bulk_solvent_factor",
+    "oeffner_vrms",
+    "fit_relative_wilson_b",
+]
+
+
+def build_lerf1_intensity(
+    eEobs: torch.Tensor,
+    centric_obs: torch.Tensor,
+    weight: Optional[torch.Tensor] = None,
+    use_centric_weight: bool = True,
+) -> torch.Tensor:
+    """LERF1 observed intensity: ``cweight · (eEobs² − 1) · weight``.
+
+    Phaser source: ``DataMR::m_LETF1`` (DataMR.cc:1326-1431) — the
+    intensity that gets fed into the Bessel-SH expansion. cweight is
+    ε(h) · (1 for centric, 2 for acentric); we use the centric/acentric
+    factor only (the ε(h) multiplicity is implicit in the symmetry
+    reduction of the input reflection set).
+
+    ``weight`` is the per-reflection information weight that travels with
+    ``eEobs`` -- ``DFAC**2`` for the French-Wilson convention, ones for a
+    convention that does not model measurement error. It arrives already
+    squared because it is the E convention that decides what the weight *is*;
+    this function's job is to apply one, not to know it came from a D factor.
+
+    Note the ``- 1``: the LERF1 intensity is CENTRED, which is what makes
+    ``<eEobs**2> = 1`` load-bearing rather than cosmetic. A convention whose
+    mean square is not one puts a constant offset into every shell.
+    """
+    if use_centric_weight:
+        cw = torch.where(
+            centric_obs.bool(),
+            torch.ones_like(eEobs),
+            2.0 * torch.ones_like(eEobs),
+        )
+    else:
+        cw = torch.ones_like(eEobs)
+    if weight is None:
+        weight = torch.ones_like(eEobs)
+    return cw * (eEobs * eEobs - 1.0) * weight
+
+
+def apply_shell_variance_weights(
+    intensity: torch.Tensor,
+    s_mag: torch.Tensor,
+    n_var_shells: int = 20,
+    shell_idx: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Per-shell empirical variance reweight.
+
+    Downweights shells whose observed Patterson intensity is dominated
+    by noise. Mean-normalised so total scale doesn't shift. Closest
+    Phaser analog is per-shell BINS + ``best(r)`` in ``Ensemble.cc``.
+
+    ``shell_idx`` reuses an assignment the caller already made. Worth passing:
+    binning here independently of the Wilson normalisation puts the two on
+    edges that disagree for the reflections sitting on a boundary.
+    """
+    if shell_idx is None:
+        edges, _ = equal_count_shell_edges(s_mag, n_var_shells)
+        shell_idx = assign_shells(s_mag, edges)
+    valid = shell_idx >= 0
+    var_p = compute_patterson_shell_variance(
+        intensity[valid],
+        shell_idx[valid],
+        P=n_var_shells,
+    )
+    inv_sqrt_var = 1.0 / var_p.sqrt().clamp(min=1e-30)
+    inv_sqrt_var = inv_sqrt_var * (
+        n_var_shells / inv_sqrt_var.sum().clamp(min=1e-30)
+    )
+    weights = torch.ones_like(intensity)
+    weights[valid] = inv_sqrt_var[shell_idx[valid]].to(intensity.dtype)
+    return intensity * weights
+
+
+def detect_zsymm(sym_mats: Optional[torch.Tensor]) -> int:
+    """Detect ``ZSYMM`` for the **z-axis** m-symmetry filter.
+
+    Phaser source: ``highOrderAxis()`` in ``rotationgroup.h``. The m-filter
+    zeroes obs SH coefficients with ``|m| mod ZSYMM != 0`` — but ``m`` is the
+    azimuthal order **about the z axis of the SH basis**, so the filter is only
+    valid when the crystal's high-order rotation axis is actually along z
+    (cubic / tetragonal / hexagonal: principal axis = c ∥ z).
+
+    For spacegroups whose high-order axis is x or y — e.g. monoclinic C2 / P2₁
+    with the 2-fold along b ∥ y — applying a z-axis filter is WRONG (it filters
+    about the wrong axis and corrupts the obs coefficients). Phaser rotates the
+    high-order axis to z before the expansion (DataMR.cc:962-979); we do not, so
+    here we conservatively return ``ZSYMM=1`` (no filter) when the axis is not z,
+    rather than apply a wrong filter. Verified: for all benchmark cubic/tetra/hex
+    cases the axis is z (filter unchanged); only monoclinic 1DAW/3E98/3VRJ change
+    (they already rank 0-3, and a 2-fold m-filter is a weak constraint anyway).
+    """
+    if sym_mats is None:
+        return 1
+    # No cast and no copy: `get_axis_order` works at the operators' own width
+    # and batches its one readback. Widening them here was also a crash on a
+    # backend with no float64, since these arrive on the compute device.
+    axis, zsymm = get_high_order_axis(sym_mats)
+    if axis != 2:  # high-order axis not along z → don't apply a wrong filter
+        return 1
+    return int(zsymm)
+
+
+def bulk_solvent_factor(
+    s_mag: torch.Tensor,
+    fsol: float = 0.95,
+    bsol: float = 300.0,
+    sigA_min: float = 0.01,
+) -> torch.Tensor:
+    """Phaser's Babinet bulk-solvent term — ``solTerm.h:9``::
+
+        solTerm(s²) = max(SIGA_MIN, 1 − fsol · exp(−bsol · s²/4))
+
+    Models the bulk solvent's contribution to the structure factor via Babinet's
+    principle. At low resolution (s→0) the term → ``1 − fsol`` ≈ 0.05 (with the
+    default ``fsol=0.95``), aggressively suppressing the calc — physically, the
+    model represents only the macromolecule, but the diffraction data sees
+    macromolecule + bulk solvent, and at low resolution the solvent's flat
+    average density partially cancels the macromolecule's contribution. At high
+    resolution (s→∞) the term → 1 (no effect).
+
+    Phaser folds this into the effective σ_A via
+    ``σ_A_eff(s) = solTerm(s²) · DLuzzati(s², vrms)`` (EnsemblePDB.cc:96-100).
+    For callers that work in σ_A space (the rescore, the FRF eterm), multiplying
+    by this factor reproduces that behaviour.
+
+    Defaults match Phaser (``DEF_SOLPAR_BULK_FSOL=0.95``,
+    ``DEF_SOLPAR_BULK_BSOL=300``, ``DEF_SOLPAR_SIGA_MIN=0.01``).
+
+    Parameters
+    ----------
+    s_mag : tensor
+        Per-reflection reciprocal-space magnitude |s| (Å^-1).
+    fsol, bsol, sigA_min : float
+        Babinet parameters. Defaults match Phaser.
+
+    Returns
+    -------
+    torch.Tensor
+        Per-reflection solvent multiplier, same shape as ``s_mag``. Always in
+        ``[sigA_min, 1]``.
+    """
+    s2 = s_mag * s_mag
+    babinet = 1.0 - float(fsol) * torch.exp(-float(bsol) * s2 / 4.0)
+    return babinet.clamp(min=float(sigA_min))
+
+
+def oeffner_vrms(n_residues: int, identity: float = 1.0) -> float:
+    """Phaser's Oeffner empirical vrms estimate — ``rms_estimate.cc:37``::
+
+        vrms = A · (B + clamp(n_residues, 125, 1500))^(1/3) · exp(C · (1 − ident))
+
+    with ``A = 0.0569``, ``B = 173``, ``C = 1.52``. The clamp avoids extrapolating
+    beyond the well-populated range of Oeffner et al.'s training set
+    (Acta Cryst. (2013) D69:2209-2215). For a perfect model (``identity=1``) and
+    a typical protein (~300 residues), this gives vrms ≈ 0.47 Å; large
+    assemblies (clamped at 1500) give vrms ≈ 0.67 Å. Phaser uses this as the
+    Luzzati ``vrms`` for the σ_A computation.
+
+    Parameters
+    ----------
+    n_residues : int
+        Sequence length of the search model. Internally clamped to [125, 1500].
+    identity : float, optional
+        Sequence identity to expected target on [0, 1]. Default 1.0 (perfect).
+
+    Returns
+    -------
+    float
+        Coordinate RMS estimate in Å, suitable as ``delta_vrms_A`` for
+        :func:`compute_sigma_a_luzzati` / :func:`eterm_sigma_a`.
+    """
+    A, B, C = 0.0569, 173.0, 1.52
+    n_clamped = max(125, min(int(n_residues), 1500))
+    return A * (B + n_clamped) ** (1.0 / 3.0) * math.exp(C * (1.0 - float(identity)))
+
+
+def fit_relative_wilson_b(
+    F_obs: torch.Tensor,
+    F_calc: torch.Tensor,
+    s_mag: torch.Tensor,
+    n_shells: int = 20,
+    clamp_b: float = 50.0,
+    s_mag_calc: Optional[torch.Tensor] = None,
+) -> float:
+    """Phaser's relative Wilson-B fit — ``EnsemblePDB.cc:793-851``.
+
+    Estimates the per-model relative Wilson B-factor that brings the calc's
+    per-shell <|F_calc|²> into agreement with the data's per-shell <|F_obs|²>.
+    Implemented as a weighted linear regression of
+    ``log(<F_obs²>_shell / <F_calc²>_shell)`` against ``s²`` over equal-count
+    shells; returns ``WilsonB = -2 · slope``.
+
+    Per-shell weighting mirrors Phaser (EnsemblePDB.cc:830-835):
+      - ``s² < 0.009`` (d > 10.5 Å): weight = 0 (no reliable BEST curve).
+      - ``s² < 0.04`` (d > 5 Å): weight = ``(s²/0.04)²`` (down-weighted).
+      - ``s² ≥ 0.04``: weight = 1.
+
+    Apply at call sites as ``F_calc · exp(-WilsonB · s² / 4)``.
+
+    Parameters
+    ----------
+    F_obs : (N_obs,) tensor
+    F_calc : (N_calc,) tensor
+        Calc amplitudes. May be on a different reciprocal grid than obs (e.g.
+        the dense P1-box from ``dense_calc_via_box``); per-shell means handle
+        the binning independently.
+    s_mag : (N_obs,) tensor
+        Reciprocal-space magnitudes for OBS. Used to derive shell edges by
+        equal-count binning on the obs distribution.
+    s_mag_calc : (N_calc,) tensor, optional
+        Reciprocal-space magnitudes for CALC. Defaults to ``s_mag`` (when obs
+        and calc share a grid). When given, obs and calc are binned into the
+        SAME edges (derived from obs ``s_mag``) but with independent counts.
+    n_shells : int
+        Number of equal-count resolution shells (on obs).
+    clamp_b : float
+        Clamps the fitted B to ``[-clamp_b, +clamp_b]``.
+
+    Returns
+    -------
+    float
+        Relative Wilson B-factor (Å²). ``0`` if too few shells contribute.
+    """
+    if s_mag_calc is None:
+        s_mag_calc = s_mag
+    if F_obs.shape[0] != s_mag.shape[0]:
+        raise ValueError(
+            f"F_obs / s_mag length mismatch: {F_obs.shape[0]} vs {s_mag.shape[0]}"
+        )
+    if F_calc.shape[0] != s_mag_calc.shape[0]:
+        raise ValueError(
+            f"F_calc / s_mag_calc length mismatch: "
+            f"{F_calc.shape[0]} vs {s_mag_calc.shape[0]}"
+        )
+
+    edges, _ = equal_count_shell_edges(s_mag, n_shells)
+    # Bin obs and calc into the SAME edges (independently — different N's).
+    shell_idx_obs = assign_shells(s_mag, edges)
+    shell_idx_calc = assign_shells(s_mag_calc, edges)
+    valid_obs = shell_idx_obs >= 0
+    valid_calc = shell_idx_calc >= 0
+    if not valid_obs.any() or not valid_calc.any():
+        return 0.0
+
+    real = get_float_dtype()
+    F2_obs = (F_obs * F_obs).to(real)
+    F2_calc = (F_calc * F_calc).to(real)
+    s2_obs = (s_mag * s_mag).to(real)
+
+    counts_obs = torch.zeros(n_shells, dtype=torch.int64, device=s_mag.device)  # dtype-ok: per-shell counts
+    counts_calc = torch.zeros(n_shells, dtype=torch.int64, device=s_mag.device)  # dtype-ok: per-shell counts
+    sum_F2obs = torch.zeros(n_shells, dtype=real, device=s_mag.device)
+    sum_F2calc = torch.zeros(n_shells, dtype=real, device=s_mag.device)
+    sum_s2 = torch.zeros(n_shells, dtype=real, device=s_mag.device)
+    idx_v_obs = shell_idx_obs[valid_obs]
+    idx_v_calc = shell_idx_calc[valid_calc]
+    counts_obs.index_add_(0, idx_v_obs, torch.ones_like(idx_v_obs))
+    counts_calc.index_add_(0, idx_v_calc, torch.ones_like(idx_v_calc))
+    sum_F2obs.index_add_(0, idx_v_obs, F2_obs[valid_obs])
+    sum_F2calc.index_add_(0, idx_v_calc, F2_calc[valid_calc])
+    sum_s2.index_add_(0, idx_v_obs, s2_obs[valid_obs])  # obs-side s² for the regression abscissa
+
+    # Drop shells empty on either side.
+    keep = (counts_obs > 0) & (counts_calc > 0)
+    mean_F2obs = sum_F2obs[keep] / counts_obs[keep].to(real)
+    mean_F2calc = sum_F2calc[keep] / counts_calc[keep].to(real)
+    mean_s2 = sum_s2[keep] / counts_obs[keep].to(real)
+
+    # log(Σ_N / Σ_P) per shell.
+    eps = 1e-30
+    log_ratio = (mean_F2obs.clamp(min=eps) / mean_F2calc.clamp(min=eps)).log()
+
+    # Phaser per-shell weights (EnsemblePDB.cc:830-835).
+    weights = torch.ones_like(mean_s2)
+    low_mask = mean_s2 < 0.04
+    weights[low_mask] = (mean_s2[low_mask] / 0.04) ** 2
+    weights[mean_s2 < 0.009] = 0.0
+    if (weights > 0).sum().item() < 2:
+        return 0.0
+
+    # Weighted linear fit y = slope · x (no intercept), per the Phaser source.
+    w = weights
+    x = mean_s2
+    y = log_ratio
+    sw = w.sum()
+    swx = (w * x).sum()
+    swy = (w * y).sum()
+    swx2 = (w * x * x).sum()
+    swxy = (w * x * y).sum()
+    denom = (sw * swx2 - swx * swx).item()
+    if abs(denom) < 1e-30:
+        return 0.0
+    slope = (sw * swxy - swx * swy).item() / denom
+    # Phaser: WilsonB_intensity = -4·slope, then halved → WilsonB = -2·slope.
+    wilson_b = -2.0 * slope
+    return float(max(-clamp_b, min(wilson_b, clamp_b)))
+
+
+# Note: a naive OLS-on-log-F² fit of anisotropic Wilson U was attempted on
+# 2026-05-28 and didn't work. The Wilson left tail (small F values produce huge
+# negative log F²) dominates the regression, returning U components of order
+# 10²–10³ Å² on real data — three orders of magnitude beyond physical, on both
+# easy (1DAW) and hard (2DQ6) cases. Robustifying via |F|-weighting + ridge
+# only made the fit saturate any sensible clamp. Phaser's ``scaleANIS``
+# (``DataB.cc``, ~500 LoC) is an iterative ML fit on ``logSigmaEsq``; that's
+# the right approach if obs-side aniso ever becomes the next lever. The 2DQ6
+# benchmark failure we were chasing turned out to be tNCS
+# (``<(E²−1)²>_acentric = 5.5`` vs Wilson = 1.0), not anisotropy, so this
+# branch is not in the immediate critical path.

@@ -18,8 +18,8 @@ import pandas as pd
 import pytest
 
 from torchref.io.cif_readers import RestraintCIFReader
-from torchref.restraints.library import get_library_manager
-from torchref.restraints.restraints_helper import (
+from torchref.topology.monomer.library import get_library_manager
+from torchref.topology.monomer.cif import (
     split_data_blocks,
     validate_restraint_data,
 )
@@ -230,7 +230,7 @@ class TestChiralitySpellings:
     """The CCP4 library writes both ``positive`` and the truncated ``positiv``."""
 
     def test_short_spellings_are_not_dropped(self):
-        from torchref.restraints.builders_fast import PreprocessedCIF
+        from torchref.topology.builders import PreprocessedCIF
 
         chirals = pd.DataFrame(
             {

@@ -115,6 +115,20 @@ Loss weights:
     refine_group = parser.add_argument_group("Refinement")
     add_n_cycles_arg(refine_group)
     refine_group.add_argument(
+        "--add-hydrogens",
+        action="store_true",
+        help="Generate missing hydrogens when loading the model (default: off). "
+        "Hydrogens already present in the input are retained either way.",
+    )
+    refine_group.add_argument(
+        "--hydrogens-in-xray",
+        dest="hydrogens_in_xray",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include hydrogen atoms in the structure-factor calculation (default: on). "
+        "--no-hydrogens-in-xray keeps them in the restraints only.",
+    )
+    refine_group.add_argument(
         "--mode",
         type=str,
         default="separate",
@@ -248,12 +262,23 @@ Loss weights:
         print(f"Refinement mode:   {args.mode}")
         print(f"X-ray target:      {args.xray_mode}")
         print(f"Refinement cycles: {args.n_cycles}")
+        print(f"Add hydrogens:     {'on' if args.add_hydrogens else 'off'}")
+        print(f"Hydrogens in Fcalc: {'on' if args.hydrogens_in_xray else 'off'}")
         if args.with_rigid_body:
             print(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
         print(f"Device:            {args.device}")
         if args.dmin:
             print(f"Resolution cutoff: {args.dmin:.2f} A")
         adp_line = f"ADP mode:          {args.adp_mode}"
+        if args.adp_mode == "field_aniso" and args.adp_mode_set:
+            adp_line += f" ({args.adp_mode_set})"
+        if args.adp_mode in ("field", "field_aniso"):
+            adp_line += (
+                f", {args.adp_nodes} nodes"
+                if args.adp_nodes
+                else f", sized at {args.reflections_per_adp_parameter:g} "
+                "work reflections per parameter"
+            )
         if args.adp_mode == "anisotropic":
             adp_line += (
                 "  (selection: "
@@ -290,8 +315,13 @@ Loss weights:
         scale_target=args.scale_target,
         **_sigma_a_kwargs(args),
         adp_mode=args.adp_mode,
+        adp_mode_set=args.adp_mode_set,
+        n_nodes=args.adp_nodes,
+        reflections_per_adp_parameter=args.reflections_per_adp_parameter,
         aniso_selection=args.anisotropic_selection,
         wavelength=args.wavelength,
+        add_hydrogens=args.add_hydrogens,
+        hydrogens_in_xray=args.hydrogens_in_xray,
     )
 
     # Merge onto DEFAULT_GROUP_WEIGHTS so unspecified groups keep their defaults;
@@ -381,6 +411,9 @@ Loss weights:
             "n_cycles": args.n_cycles,
             "mode": args.mode,
             "adp_mode": args.adp_mode,
+            "adp_mode_set": args.adp_mode_set,
+            "adp_nodes": args.adp_nodes,
+            "reflections_per_adp_parameter": args.reflections_per_adp_parameter,
             "anisotropic_selection": (
                 args.anisotropic_selection if args.adp_mode == "anisotropic" else None
             ),

@@ -56,51 +56,224 @@ class DeviceCase:
     ignore: tuple = field(default_factory=tuple)
 
 
+def _riding_xyz(device):
+    """A bonded torsion group and a water exercise both orientation buffers."""
+    import numpy as np
+
+    from torchref.model.riding_xyz import RidingXYZTensor
+    from torchref.topology.hydrogens import HydrogenFrames
+
+    xyz = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.5, 0.0, 0.0],
+            [1.5, 1.5, 0.0],
+            [-0.6, 0.8, 0.0],
+            [-0.6, -0.8, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.8, 0.0, 0.0],
+            [2.8, 0.8, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    frames = HydrogenFrames(
+        h_row=np.array([3, 4, 6, 7]),
+        parent_row=np.array([0, 0, 5, 5]),
+        n1_row=np.array([1, 1, -1, -1]),
+        n2_row=np.array([2, 2, -1, -1]),
+        frame_valid=np.array([True, True, False, False]),
+        torsion_group=np.array([0, 0, -1, -1]),
+        rotation_group=np.array([-1, -1, 0, 0]),
+    )
+    return RidingXYZTensor(xyz, frames, device=device)
+
+
+def _symmetry(device):
+    """A bare Symmetry from an explicit operation list (no space group involved)."""
+    import torch as _torch
+
+    from torchref.config import get_float_dtype
+    from torchref.symmetry import Symmetry
+
+    dtype = get_float_dtype()
+    matrices = _torch.eye(3, dtype=dtype, device=device).unsqueeze(0).repeat(2, 1, 1)
+    matrices[1] = -matrices[1]
+    translations = _torch.zeros(2, 3, dtype=dtype, device=device)
+    return Symmetry(matrices=matrices, translations=translations)
+
+
+def _map_symmetry_interpolation(device):
+    """The interpolating map operator, on a grid that forbids direct indexing.
+
+    P212121 requires even dimensions, so an odd grid forces the interpolating
+    variant rather than the streaming one.
+    """
+    from torchref.symmetry import SpaceGroup
+    from torchref.symmetry.map_symmetry_interpolation import (
+        _MapSymmetryInterpolation,
+    )
+
+    return _MapSymmetryInterpolation(SpaceGroup(_SG, device=device), (15, 15, 15))
+
+
+def _edge_block(device):
+    """A small bond block, origin-sorted, built straight from index arrays."""
+    import numpy as np
+
+    from torchref.topology import EdgeBlock
+
+    return EdgeBlock.from_origins(
+        {"intra": np.array([[0, 1], [1, 2], [2, 3]], dtype=np.int64)},
+        2,
+        "bond",
+        device=device,
+    )
+
+
+def _atom_graph(device):
+    """A four-atom chain: enough to exercise the edge blocks and the CSR adjacency."""
+    import numpy as np
+
+    from torchref.topology import EdgeBlock
+    from torchref.topology.atom_graph import AtomGraph
+
+    def block(rows, arity, edge_type):
+        return EdgeBlock.from_origins(
+            {"intra": np.asarray(rows, dtype=np.int64).reshape(-1, arity)},
+            arity,
+            edge_type,
+            device=device,
+        )
+
+    return AtomGraph(
+        name=np.array(["N", "CA", "C", "O"]),
+        element=np.array(["N", "C", "C", "O"]),
+        altloc=np.array([" ", " ", " ", " "]),
+        residue_of=torch.zeros(4, dtype=torch.int64, device=device),
+        bonds=block([[0, 1], [1, 2], [2, 3]], 2, "bond"),
+        angles=block([[0, 1, 2], [1, 2, 3]], 3, "angle"),
+        torsions=block([[0, 1, 2, 3]], 4, "torsion"),
+        chirals=block([[1, 0, 2, 3]], 4, "chiral"),
+        planes={3: block([[1, 2, 3]], 3, "plane")},
+    )
+
+
+def _topology(device):
+    """The atom graph above under a one-residue sequence."""
+    import numpy as np
+
+    from torchref.topology.residue_graph import ResidueGraph
+    from torchref.topology.topology import Topology
+
+    residues = ResidueGraph(
+        chain=np.array(["A"]),
+        resseq=np.array([1], dtype=np.int64),
+        icode=np.array([""]),
+        resname=np.array(["GLY"]),
+        template_key=np.array(["GLY"], dtype=object),
+        atom_start=np.array([0], dtype=np.int64),
+        atom_end=np.array([4], dtype=np.int64),
+    )
+    return Topology(residues=residues, atoms=_atom_graph(device))
+
+
 def _cell(device):
     from torchref.symmetry import Cell
 
     return Cell(_CELL, device=device)
 
 
+def _ctx(d):
+    """A ModelContext whose cell and space group both live on ``d``."""
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
+    return ModelContext(cell=_cell(d), spacegroup=SpaceGroup(_SG, device=d))
+
+
+def _sffft_with_grid(d):
+    """An SfFFT whose grid buffers exist, so the tensor walk reaches them."""
+    from torchref.model.sf_fft import SfFFT
+
+    sf = SfFFT(_ctx(d), max_res=2.0)
+    sf.ensure_grid()
+    return sf
+
+
+def _dataset_scaler(device):
+    from pathlib import Path
+
+    from torchref.io import ReflectionData
+    from torchref.scaling import DatasetScaler
+
+    data = ReflectionData(device=device, verbose=0).load_mtz(
+        str(Path(__file__).parents[1] / "files" / "mtz" / "1DAW.mtz")
+    )
+    return DatasetScaler({"a": data, "b": data}, device=device)
+
+
+def _scaled_dataset(device):
+    from torchref.io import ScaledDataset
+
+    scaler = _dataset_scaler(device)
+    return ScaledDataset(scaler.datasets["a"], scaler, "a")
+
+
+def _dataset_scaling_target(device):
+    from torchref.refinement.targets import DatasetScalingTarget
+
+    return DatasetScalingTarget(_dataset_scaler(device))
+
+
 CASES: List[DeviceCase] = [
+    DeviceCase("DatasetScaler", _dataset_scaler, "DatasetScaler"),
+    DeviceCase("ScaledDataset", _scaled_dataset, "ScaledDataset"),
+    DeviceCase("DatasetScalingTarget", _dataset_scaling_target, "DatasetScalingTarget"),
+    DeviceCase("EdgeBlock", _edge_block, "EdgeBlock"),
+    DeviceCase("AtomGraph", _atom_graph, "AtomGraph"),
+    DeviceCase("Topology", _topology, "Topology"),
     DeviceCase("Cell", _cell, "Cell"),
     DeviceCase(
         "SpaceGroup",
-        lambda d: __import__(
-            "torchref.symmetry", fromlist=["SpaceGroup"]
-        ).SpaceGroup(_SG, device=d),
+        lambda d: __import__("torchref.symmetry", fromlist=["SpaceGroup"]).SpaceGroup(
+            _SG, device=d
+        ),
         "SpaceGroup",
     ),
     # D4: device implied by the cell; the SpaceGroup used to be built from the
     # raw (None) device argument and land on the process default instead.
     DeviceCase(
         "SfFFT_from_cell",
-        lambda d: __import__(
-            "torchref.model.sf_fft", fromlist=["SfFFT"]
-        ).SfFFT(cell=_cell(d), spacegroup=_SG, max_res=2.0),
+        lambda d: __import__("torchref.model.sf_fft", fromlist=["SfFFT"]).SfFFT(
+            _ctx(d), max_res=2.0
+        ),
         "SfFFT",
     ),
-    # D4: explicit device disagreeing with the supplied cell.
+    # D4: explicit device disagreeing with the supplied context.
     DeviceCase(
         "SfFFT_explicit_device",
-        lambda d: __import__(
-            "torchref.model.sf_fft", fromlist=["SfFFT"]
-        ).SfFFT(cell=_cell("cpu"), spacegroup=_SG, max_res=2.0, device=d),
+        lambda d: __import__("torchref.model.sf_fft", fromlist=["SfFFT"]).SfFFT(
+            _ctx("cpu"), max_res=2.0, device=d
+        ),
+        "SfFFT",
+    ),
+    # The grid buffers are derived on first use; this case has them resolved.
+    DeviceCase(
+        "SfFFT_with_grid",
+        _sffft_with_grid,
         "SfFFT",
     ),
     DeviceCase(
         "SfDS_from_cell",
-        lambda d: __import__(
-            "torchref.model.sf_ds", fromlist=["SfDS"]
-        ).SfDS(cell=_cell(d), spacegroup=_SG),
+        lambda d: __import__("torchref.model.sf_ds", fromlist=["SfDS"]).SfDS(_ctx(d)),
         "SfDS",
     ),
     # D1: tensor-free shells, whose tracker is the only thing to check.
     DeviceCase(
         "ScalerBase_empty",
-        lambda d: __import__(
-            "torchref.scaling", fromlist=["ScalerBase"]
-        ).ScalerBase(device=d),
+        lambda d: __import__("torchref.scaling", fromlist=["ScalerBase"]).ScalerBase(
+            device=d
+        ),
         "ScalerBase",
         tensor_free=True,
     ),
@@ -140,6 +313,18 @@ CASES: List[DeviceCase] = [
         "MixedTensor",
     ),
     DeviceCase(
+        "RidingXYZTensor_empty",
+        lambda d: __import__(
+            "torchref.model.riding_xyz", fromlist=["RidingXYZTensor"]
+        ).RidingXYZTensor(device=d),
+        "RidingXYZTensor",
+    ),
+    DeviceCase(
+        "RidingXYZTensor_populated",
+        _riding_xyz,
+        "RidingXYZTensor",
+    ),
+    DeviceCase(
         "PositiveMixedTensor",
         lambda d: __import__(
             "torchref.model.parameter_wrappers", fromlist=["PositiveMixedTensor"]
@@ -158,6 +343,34 @@ CASES: List[DeviceCase] = [
         "OccupancyTensor",
     ),
     DeviceCase(
+        "DisorderFieldTensor_empty",
+        lambda d: __import__(
+            "torchref.model.disorder_field", fromlist=["DisorderFieldTensor"]
+        ).DisorderFieldTensor(device=d),
+        "DisorderFieldTensor",
+    ),
+    DeviceCase(
+        "DisorderFieldTensor_populated",
+        lambda d: __import__(
+            "torchref.model.disorder_field", fromlist=["DisorderFieldTensor"]
+        ).DisorderFieldTensor(
+            initial_values=torch.full((8,), 20.0),
+            xyz_fn=__import__(
+                "torchref.model.parameter_wrappers", fromlist=["MixedTensor"]
+            ).MixedTensor(
+                torch.arange(24, dtype=torch.float32).reshape(8, 3), device=d
+            ),
+            n_nodes=3,
+            k_neighbors=2,
+            device=d,
+        ),
+        "DisorderFieldTensor",
+        # The coordinate accessor is borrowed: a ModuleReference is absent from ``.to()``
+        # by design, so in isolation nobody moves the referent alongside the field.
+        # ``Model`` owns both and moves them together.
+        ignore=("->ref",),
+    ),
+    DeviceCase(
         "RigidXYZTensor_empty",
         lambda d: __import__(
             "torchref.model.rigid_xyz", fromlist=["RigidXYZTensor"]
@@ -165,34 +378,48 @@ CASES: List[DeviceCase] = [
         "RigidXYZTensor",
     ),
     DeviceCase(
-        "ReciprocalSymmetryGrid",
-        lambda d: __import__(
-            "torchref.symmetry", fromlist=["ReciprocalSymmetryGrid"]
-        ).ReciprocalSymmetryGrid(_SG, grid_shape=(16, 16, 16), device=d),
-        "ReciprocalSymmetryGrid",
+        "SpaceGroup",
+        lambda d: __import__("torchref.symmetry", fromlist=["SpaceGroup"]).SpaceGroup(
+            _SG, device=d
+        ),
+        "SpaceGroup",
     ),
     DeviceCase(
-        "MapSymmetryDirect",
+        "Symmetry",
+        _symmetry,
+        "Symmetry",
+    ),
+    DeviceCase(
+        "HydrogenTopology_empty",
         lambda d: __import__(
-            "torchref.symmetry", fromlist=["MapSymmetryDirect"]
-        ).MapSymmetryDirect(
-            _SG, map_shape=(16, 16, 16), cell_params=_CELL, device=d
-        ),
-        "MapSymmetryDirect",
+            "torchref.topology.riding",
+            fromlist=["HydrogenTopology"],
+        ).HydrogenTopology(device=d),
+        "HydrogenTopology",
+        # The builders attach every tensor later, so a fresh topology is a bare shell
+        # and only its tracker can be checked.
+        tensor_free=True,
+    ),
+    DeviceCase(
+        "_MapSymmetryInterpolation",
+        _map_symmetry_interpolation,
+        "_MapSymmetryInterpolation",
+        # ``symmetry`` is the group this operator was built from, not state it owns.
+        ignore=("symmetry",),
     ),
     DeviceCase(
         "TensorMasks",
-        lambda d: __import__(
-            "torchref.utils", fromlist=["TensorMasks"]
-        ).TensorMasks(device=d),
+        lambda d: __import__("torchref.utils", fromlist=["TensorMasks"]).TensorMasks(
+            device=d
+        ),
         "TensorMasks",
         tensor_free=True,
     ),
     DeviceCase(
         "ReflectionData_empty",
-        lambda d: __import__(
-            "torchref.io", fromlist=["ReflectionData"]
-        ).ReflectionData(device=d),
+        lambda d: __import__("torchref.io", fromlist=["ReflectionData"]).ReflectionData(
+            device=d
+        ),
         "ReflectionData",
     ),
     DeviceCase(
@@ -250,6 +477,23 @@ TARGET_CASES: List[TargetDeviceCase] = [
         ).ADPLocalityTarget(b["model"]),
         "ADPLocalityTarget",
     ),
+    # Registered unconditionally and inert off field mode, so the plain bundle
+    # model is enough to exercise their device handling.
+    TargetDeviceCase(
+        "NodeLoadTarget",
+        lambda b, d: __import__(
+            "torchref.refinement.targets.adp.node_load", fromlist=["NodeLoadTarget"]
+        ).NodeLoadTarget(b["model"]),
+        "NodeLoadTarget",
+    ),
+    TargetDeviceCase(
+        "NodeSmoothnessTarget",
+        lambda b, d: __import__(
+            "torchref.refinement.targets.adp.node_smoothness",
+            fromlist=["NodeSmoothnessTarget"],
+        ).NodeSmoothnessTarget(b["model"]),
+        "NodeSmoothnessTarget",
+    ),
     # Owns no tensors at all -- the case that exercises the request-driven
     # tracker path rather than the owned-tensor path.
     TargetDeviceCase(
@@ -265,6 +509,7 @@ TARGET_CASES: List[TargetDeviceCase] = [
 # Device-bearing classes deliberately not in CASES. Every entry needs a reason;
 # "hard to build" is a reason, "didn't get to it" is not.
 UNCOVERED: Dict[str, str] = {
+    "CollectionDifferenceSigmaDTarget": "needs a dataset collection",
     # --- abstract / mixin bases: never instantiated directly -----------------
     "Target": "abstract base; covered through its concrete subclasses",
     "ModelTarget": "abstract base; needs a loaded model",
@@ -286,20 +531,23 @@ UNCOVERED: Dict[str, str] = {
     "ModelCollection": "needs several loaded models",
     "_SharedMixedModel": "internal view owned by ModelCollection",
     "Scaler": "needs a loaded model + data; covered in integration",
-    "RestraintsNew": "needs a model + monomer library",
-    "HydrogenTopology": "needs a built restraint topology",
+    "Restraints": "needs a model + monomer library",
     "FrenchWilson": "needs loaded intensities",
     "DatasetCollection": "needs several loaded datasets",
     "FcalcDataset": "needs computed structure factors",
     "Map": "needs data + model",
     "DifferenceMap": "needs two datasets + a model",
     "LBFGSRefinement": "full pipeline; covered in integration",
-    "MapSymmetry": "interpolation variant; needs a real map grid",
+    "ModelContext": "needs a loaded structure to hold a cell and space group; "
+    "covered through Model in tests/unit/model/test_model_state_dict_device.py",
+    "_MapSymmetryDirect": "stateless view over its Symmetry: recomputes index grids "
+    "per operation to keep peak memory O(grid), so it owns no tensors to move",
     "CholeskyMixedTensor": "needs a valid ADP tensor; shares MixedTensor's paths",
     "CollectionScaler": "needs a dataset collection",
     "CollectionDifferenceTarget": "needs a dataset collection",
+    "CollectionTwoMomentIntensityTarget": "needs a dataset collection",
     "CollectionMLTarget": "needs a dataset collection",
-    "CollectionRiceTarget": "needs a dataset collection",
+    "CollectionDifferenceIntensityTarget": "needs a dataset collection",
     "ADPSigdTarget": "needs a model with ADPs",
     "AngleTarget": "needs a model with restraints",
     "ChiralTarget": "needs a model with restraints",
@@ -319,6 +567,7 @@ UNCOVERED: Dict[str, str] = {
     "ScalerLogScaleTrendTarget": "needs a scaler",
     "ScalerURegularizationTarget": "needs a scaler",
     "NLLXrayTarget": "needs model + data + scaler",
+    "NLLIntensityXrayTarget": "needs model + data + scaler with intensities",
     "LeastSquaresXrayTarget": "needs model + data + scaler",
     "UnitWeightK1XrayTarget": "needs model + data + scaler",
     "SigmaAXrayTarget": "abstract base; needs model + data + scaler",
@@ -331,8 +580,6 @@ UNCOVERED: Dict[str, str] = {
     "PhaseInformedDifferenceTarget": "needs two datasets + phases",
     "RiceDifferenceTarget": "needs two datasets",
     "TaylorCorrectedDifferenceTarget": "needs two datasets",
-    "RigidTransform": "alignment helper; needs a coordinate set",
-    "RigidBodyRefinement": "experimental; needs model + data",
 }
 
 # Everything under torchref/experimental is out of scope for the conformance

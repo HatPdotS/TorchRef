@@ -127,7 +127,7 @@ class DensityDerivedSolvent(nn.Module):
         Not detached: ``F_sol`` follows the moving atoms so gradients reach
         ``xyz``/``adp``. The scaler applies the contrast and falloff on top.
         """
-        return self.density(hkl.to(torch.long))
+        return self.density(hkl.to(torch.long))  # dtype-ok: hkl cast to long for density lookup indexing; PyTorch requires int64
 
     def update_solvent(self):
         """No-op: the density mask is rebuilt live on every scaler forward."""

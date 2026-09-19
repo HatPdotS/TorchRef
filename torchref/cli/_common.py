@@ -144,12 +144,43 @@ def add_adp_mode_arg(parser: argparse.ArgumentParser) -> None:
         "--adp-mode",
         type=str,
         default="isotropic",
-        choices=["isotropic", "anisotropic"],
+        choices=["isotropic", "anisotropic", "field", "field_aniso", "preserve"],
         help="ADP parametrization: 'isotropic' (default) refines a per-atom "
         "B-factor; 'anisotropic' refines a 6-component U tensor for the atoms "
         "given by --anisotropic-selection. The model is converted between "
         "representations and the output PDB/mmCIF follows the convention "
-        "(ANISOU only for anisotropic atoms).",
+        "(ANISOU only for anisotropic atoms). 'field' and 'field_aniso' replace "
+        "the per-atom parameters with a node field, whose size is set from the "
+        "data rather than the atom count (--reflections-per-adp-parameter). "
+        "'preserve' leaves the input file's own ADPs untouched.",
+    )
+    parser.add_argument(
+        "--adp-mode-set",
+        type=str,
+        default=None,
+        choices=["constant", "rigid", "rigid_dilation", "affine"],
+        help="Displacement-mode set for --adp-mode field_aniso. Each node carries "
+        "the covariance of these modes, so its ADP varies across the region it "
+        "serves: 'constant' is one U per node, 'rigid' is TLS, 'rigid_dilation' "
+        "adds uniform breathing, 'affine' adds shear and extension.",
+    )
+    parser.add_argument(
+        "--reflections-per-adp-parameter",
+        type=float,
+        default=7.0,
+        metavar="R",
+        help="Work reflections per ADP parameter a node field is sized to hold "
+        "(--adp-mode field/field_aniso). Default 7. Node count follows from the "
+        "data rather than the atom count, and both directions from 7 measured "
+        "worse. Ignored by the per-atom modes.",
+    )
+    parser.add_argument(
+        "--adp-nodes",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Explicit node count for a field ADP mode, bypassing "
+        "--reflections-per-adp-parameter.",
     )
     parser.add_argument(
         "--anisotropic-selection",
@@ -282,6 +313,7 @@ def add_dual_model_args(
     parser: argparse.ArgumentParser,
     fraction_required: bool = True,
     fraction_default: Optional[float] = None,
+    light_model_required: bool = True,
 ) -> None:
     """Add the standard dual-model (dark/light) input arguments.
 
@@ -289,6 +321,10 @@ def add_dual_model_args(
     ``-lm``/``--light-model``, ``-dsf``/``--dark-structure-factor``,
     ``-lsf``/``--light-structure-factor``, ``--fraction``, ``--cif``
     and a *Column selection* group with per-side column flags.
+
+    ``light_model_required=False`` makes ``-lm`` optional, for tools that can do
+    something useful with the dark model alone -- a weighted difference map needs only
+    the dark state's phases. Refinement cannot: it refines the light model.
     """
     inp = parser.add_argument_group("Input files")
     inp.add_argument(
@@ -298,12 +334,14 @@ def add_dual_model_args(
         type=str,
         help="Dark / reference state model file (PDB or CIF)",
     )
+    light_help = "Light / triggered state model file (PDB or CIF)"
+    if not light_model_required:
+        light_help += (
+            ". Optional: without it only the weighted difference map is written, "
+            "using the dark state's phases."
+        )
     inp.add_argument(
-        "-lm",
-        "--light-model",
-        required=True,
-        type=str,
-        help="Light / triggered state model file (PDB or CIF)",
+        "-lm", "--light-model", required=light_model_required, type=str, help=light_help
     )
     inp.add_argument(
         "-dsf",
@@ -335,6 +373,59 @@ def add_dual_model_args(
     add_dual_column_args(col)
 
 
+def add_all_columns_arg(parser: argparse.ArgumentParser) -> None:
+    """Add ``--all-columns`` for the difference MTZ writer.
+
+    Off by default so the output file holds the map a reader wants and can identify.
+    The gated columns are alternative constructions of the same quantities -- a
+    model-phased difference, two more extrapolations, the intensity block -- which are
+    useful once you know which is which and misleading before then.
+    """
+    parser.add_argument(
+        "--all-columns", action="store_true", default=False,
+        help="Write every alternative map coefficient and diagnostic column, not just "
+             "the default difference and extrapolated maps. Costs two further scale "
+             "fits for the extra extrapolations.",
+    )
+
+
+def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
+    """Add ``--ded-weight`` and ``--sigma-d-gamma`` for the difference-map writers.
+
+    Every registered scheme's weight is written to the difference MTZ regardless; the
+    choice here decides which one the headline products (validate-ded correlations,
+    model-phased difference columns) carry.
+    """
+    from torchref.maps.ded_weights import DEFAULT_SCHEME, SCHEMES
+
+    parser.add_argument(
+        "--ded-weight",
+        choices=list(SCHEMES),
+        default=DEFAULT_SCHEME,
+        help="Per-reflection weight for difference coefficients: 'inverse_variance' "
+        "is 1/sigma^2, 'sigma_d' is the Wiener weight S/(S+sigma^2) from the "
+        "expected difference power (needs calibrated sigmas; check the reported "
+        f"clamped-shell count), 'none' is flat (default: {DEFAULT_SCHEME}). All "
+        "weights are written as columns.",
+    )
+    parser.add_argument(
+        "--sigma-d-gamma",
+        type=float,
+        default=None,
+        metavar="GAMMA",
+        help="Fix the dark-amplitude exponent of the sigma_d power law in [0, 2] "
+        "instead of fitting it (default: fitted).",
+    )
+
+
+def sigma_d_config_from_args(args: argparse.Namespace):
+    """The :class:`~torchref.refinement.model_error_estimation.sigma_d.SigmaDConfig`
+    selected by ``--sigma-d-gamma``."""
+    from torchref.refinement.model_error_estimation.sigma_d import SigmaDConfig
+
+    return SigmaDConfig(gamma=getattr(args, "sigma_d_gamma", None))
+
+
 def add_output_format_args(parser: argparse.ArgumentParser) -> None:
     """Add ``--output-format`` argument for coordinate file format."""
     parser.add_argument(
@@ -360,6 +451,14 @@ def add_metadata_args(parser: argparse.ArgumentParser) -> None:
         nargs="+",
         default=None,
         help="Author names for the output file header",
+    )
+    parser.add_argument(
+        "--output-remarks",
+        type=str,
+        default=None,
+        help="Free-text note for the output header (REMARK 3 OTHER REFINEMENT "
+        "REMARKS / _refine.details). Nothing is written here unless you ask "
+        "for it",
     )
     parser.add_argument(
         "--no-header",
@@ -612,6 +711,8 @@ def load_model(
     device: Union[str, "torch.device", None] = None,
     verbose: int = 0,
     cif: Optional[Union[str, List[str]]] = None,
+    add_hydrogens: bool = False,
+    hydrogens_in_xray: bool = True,
 ) -> "ModelFT":
     """Load a model from PDB or CIF, auto-detected by file extension.
 
@@ -626,7 +727,12 @@ def load_model(
     verbose : int
         Verbosity passed to ModelFT.
     cif : str or list of str, optional
-        CIF restraint file(s) to load after the model.
+        CIF restraint file(s), registered on the model before it loads so that hydrogen
+        generation and the restraints read the same dictionary.
+    add_hydrogens : bool, optional
+        Generate missing hydrogens on load. Default False.
+    hydrogens_in_xray : bool, optional
+        Whether hydrogens contribute to the structure factors. Default True.
 
     Returns
     -------
@@ -636,16 +742,19 @@ def load_model(
     from torchref.config import normalize_device
 
     device = normalize_device(device)
-    model = ModelFT(max_res=max_res, device=device, verbose=verbose)
+    model = ModelFT(
+        max_res=max_res,
+        device=device,
+        verbose=verbose,
+        cif_path=cif,
+        add_hydrogens=add_hydrogens,
+        hydrogens_in_xray=hydrogens_in_xray,
+    )
     suffix = Path(path).suffix.lower()
     if suffix in (".cif", ".mmcif"):
         model.load_cif(path)
     else:
         model.load_pdb(path)
-
-    if cif is not None:
-        model.set_restraints_cif(cif)
-
     return model
 
 
@@ -740,6 +849,45 @@ def write_refinement_outputs(
             metadata.title = args.title
         if getattr(args, "authors", None):
             metadata.authors = args.authors
+        if getattr(args, "output_remarks", None):
+            metadata.output_remarks = args.output_remarks
+
+        # What was minimised and how. These live on the CLI namespace rather
+        # than on the refinement, which is why from_refinement cannot fill them
+        # and why the header carried no method line at all until now.
+        xray_mode = getattr(args, "xray_mode", None)
+        if xray_mode:
+            # Name the family as well as the registry key. "ML" alone is
+            # cryptic in a deposited header, and the family follows from the
+            # key's prefix, so there is no lookup table here to drift out of
+            # step with XRAY_TARGETS.
+            key = str(xray_mode).upper()
+            if key.startswith(("ML", "NLL")):
+                metadata.target_function = f"MAXIMUM LIKELIHOOD ({key})"
+            elif key.startswith("LS"):
+                metadata.target_function = f"LEAST SQUARES ({key})"
+            else:
+                metadata.target_function = key
+        optimizer_parts = []
+        n_cycles = getattr(args, "n_cycles", None)
+        if n_cycles:
+            optimizer_parts.append(
+                f"{n_cycles} MACROCYCLE" + ("S" if n_cycles != 1 else "")
+            )
+        mode = getattr(args, "mode", None)
+        if mode:
+            optimizer_parts.append(str(mode).upper())
+        adp_mode = getattr(args, "adp_mode", None)
+        if adp_mode:
+            optimizer_parts.append(f"{str(adp_mode).upper()} ADP")
+        # The scale target changes the R-factors this very header reports, so a
+        # run cannot be attributed without it (see the note beside it in the
+        # refinement_history.json parameters block).
+        scale_target = getattr(args, "scale_target", None)
+        if scale_target:
+            optimizer_parts.append(f"SCALE TARGET {str(scale_target).upper()}")
+        if optimizer_parts:
+            metadata.optimizer = ", ".join(optimizer_parts)
 
     outputs = {"pdb": None, "cif": None}
 

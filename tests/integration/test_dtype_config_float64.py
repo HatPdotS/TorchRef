@@ -11,18 +11,18 @@ import pytest
 import torch
 
 
-
 @pytest.mark.unit
 def test_translation_phases_complex_dtype_float64(double_cpu):
-    """compute_translation_phases must honor the configured complex dtype."""
-    from torchref.base.reciprocal.symmetry import compute_translation_phases
+    """Symmetry.phase_factors must honor the configured complex dtype."""
+    from torchref.symmetry import SpaceGroup
 
-    hkl = torch.tensor([[1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [0.0, 0.0, 3.0]])
-    translations = torch.tensor([[0.0, 0.0, 0.0], [0.5, 0.5, 0.0]])
+    # P21 gives two operations, one carrying a half translation.
+    sym = SpaceGroup("P 21")
+    hkl = torch.tensor([[1, 0, 0], [2, 1, 0], [0, 0, 3]])
 
-    phases = compute_translation_phases(hkl, translations)
+    phases = sym.phase_factors(hkl)
 
-    # Was complex64 (float32 hardcode); under float64 config must be complex128.
+    # Must not narrow to complex64 under a float64 configuration.
     assert phases.dtype == torch.complex128
     assert phases.shape == (2, 3)
     assert torch.isfinite(phases.real).all()
@@ -43,7 +43,7 @@ def test_scaler_binwise_mean_intensity_float64(double_cpu, sample_structure_pair
 
     scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
 
-    hkl = data()[0]
+    hkl = data.hkl
     fcalc = model(hkl)
     assert fcalc.dtype == torch.complex128
 
@@ -58,11 +58,11 @@ def test_scaler_binwise_mean_intensity_float64(double_cpu, sample_structure_pair
 @pytest.mark.integration
 def test_occupancy_floor_density_matmul_float64(double_cpu, sample_structure_pair):
     """compute_density_at_positions hardcoded hkl.T.float(); matmul raised under float64."""
-    from torchref.io import ReflectionData
-    from torchref.model.model_ft import ModelFT
     from torchref.experimental.targets.occupancy_floor_diagnostic import (
         OccupancyFloorDiagnostic,
     )
+    from torchref.io import ReflectionData
+    from torchref.model.model_ft import ModelFT
 
     model = ModelFT()
     model.load_cif(str(sample_structure_pair["model"]))
@@ -74,7 +74,7 @@ def test_occupancy_floor_density_matmul_float64(double_cpu, sample_structure_pai
     positions = model.cell.cartesian_to_fractional(model.xyz())
     assert positions.dtype == torch.float64
 
-    hkl = data()[0]
+    hkl = data.hkl
 
     diagnostic = OccupancyFloorDiagnostic(model_dark=model, model_light=model)
     # Pre-fix this raised: float64 positions @ float32 hkl.T.

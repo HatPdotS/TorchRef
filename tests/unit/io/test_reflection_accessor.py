@@ -58,14 +58,12 @@ class TestReflectionSubset:
             (work_before | free_before) - val
         )  # nothing new appears
 
-    def test_F_matches_legacy_masking(self, data_1daw):
+    def test_F_matches_valid_partition_masking(self, data_1daw):
+        """Subset amplitudes apply both validity and work/free partition masks."""
         d = data_1daw
         valid = d.masks().to(torch.bool)
-        _, F, _, rfree = d()  # legacy call
-        F_data = F.get_data() if hasattr(F, "get_data") else F
-        vmask = F.get_mask() if hasattr(F, "get_mask") else valid
-        assert torch.allclose(d.work.F, F_data[vmask & rfree.bool()])
-        assert torch.allclose(d.free.F, F_data[vmask & ~rfree.bool()])
+        assert torch.allclose(d.work.F, d.F[valid & d.rfree_flags.bool()])
+        assert torch.allclose(d.free.F, d.F[valid & ~d.rfree_flags.bool()])
 
     def test_select_aligns_full_array(self, data_1daw):
         d = data_1daw

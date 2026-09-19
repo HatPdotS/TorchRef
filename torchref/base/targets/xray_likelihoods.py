@@ -22,6 +22,15 @@ large-signal Rice limit. Getting that factor wrong rescales the whole x-ray grad
 indistinguishable from a change of x-ray weight. ``sigma_obs**2`` needs **no** conversion:
 it is already an amplitude variance, a 1-DOF error on a measured amplitude.
 
+**The observable is a third axis, and it is only the variance and the mean that carry it.**
+:func:`gaussian_per_refl` is a Gaussian on any real observable; :func:`nll_per_refl` is that
+same function on amplitudes, and the intensity rows are it on intensities. Only the variance
+builder has to know which: :func:`amplitude_var_from_sigma_obs` vs
+:func:`intensity_var_from_sigma_obs`, and confusing them is wrong by ``2|F|`` -- which is
+resolution-dependent, so it presents as a scale or B error rather than as a bug. Rice has no
+intensity twin: Rice and the folded normal are distributions *of an amplitude*, and the
+intensity analogue is the exponential / chi-square_1 Wilson distribution.
+
 Do not pair ``sigma_obs`` with a Rice ``Sigma``: that asserts an isotropic *complex* error
 where ``sigma_obs`` carries no phase at all, and no regime makes it correct (it was tried,
 and was the worst of every target). Model error -- ``beta`` -- is what belongs in a Rice
@@ -39,10 +48,57 @@ HALF_LOG_2PI = 0.5 * math.log(2.0 * math.pi)
 #: Floor on any variance before it reaches a division or a log.
 VAR_FLOOR = 1e-10
 
+#: Floor on a *measured* sigma, as a fraction of its median over the fitted subset.
+#: Data-dependent rather than absolute, because the scale of a sigma is the scale of the
+#: data. Merged intensities in particular are reported with ``sigma == 0`` rows.
+SIGMA_FLOOR_FRAC = 1e-1
+
+#: Backstop under :data:`SIGMA_FLOOR_FRAC` for the intensity builder, for the pathological
+#: case of a median that is itself ~0. The amplitude builder deliberately has none -- see
+#: :func:`floor_sigma_obs`.
+SIGMA_FLOOR_ABS = 1e-12
+
 
 # =====================================================================
 # Variance builders -- the axis that distinguishes the five targets
 # =====================================================================
+
+
+def floor_sigma_obs(
+    sigma: torch.Tensor,
+    mask: torch.Tensor = None,
+    abs_floor: float = 0.0,
+    floor=None,
+) -> torch.Tensor:
+    """Clamp a measured sigma at :data:`SIGMA_FLOOR_FRAC` of its median.
+
+    ``mask`` restricts the median to the fitted subset -- which matters when the unfitted
+    rows carry filler sigmas, as reindexed collection members do. ``mask=None`` takes the
+    median over everything.
+
+    ``abs_floor`` is a backstop under the fractional floor. It defaults to **off** because
+    the amplitude builder shipped without one and has a Triton counterpart to stay
+    bit-identical to; the intensity builder passes :data:`SIGMA_FLOOR_ABS`.
+
+    **Pass ``floor`` explicitly to make the result independent of which reflections are in
+    ``sigma``.** A median computed from the argument makes every per-reflection value
+    depend on the whole array, so the same reflection scores differently in a subset sum
+    than in a full-size residual -- measured at 0.09% on a work set and 1.8% on a free set
+    for intensities, whose sigmas span orders of magnitude. Callers that need the two to
+    agree (any target with both a ``forward`` and a ``residuals``) compute the floor once
+    from their own fitted subset and pass it here.
+    """
+    if floor is None:
+        selected = sigma if mask is None else sigma[mask]
+        if selected.numel() == 0:
+            # No fitted reflections to take a median over. Any positive floor is arbitrary
+            # here; what matters is that it is finite, so a later log or division cannot
+            # produce a NaN that would poison the whole gradient.
+            return sigma.clamp(min=1e-6)
+        floor = torch.median(selected) * SIGMA_FLOOR_FRAC
+    if abs_floor > 0.0:
+        floor = torch.clamp(torch.as_tensor(floor), min=abs_floor)
+    return sigma.clamp(min=floor)
 
 
 def amplitude_var_from_sigma_obs(sigma: torch.Tensor) -> torch.Tensor:
@@ -53,8 +109,25 @@ def amplitude_var_from_sigma_obs(sigma: torch.Tensor) -> torch.Tensor:
     beta-derived builders below floor only at :data:`VAR_FLOOR`; the two
     conventions are deliberately not reconciled.
     """
-    floor = torch.median(sigma) * 1e-1
-    return torch.clamp(sigma, min=floor) ** 2
+    return floor_sigma_obs(sigma) ** 2
+
+
+def intensity_var_from_sigma_obs(
+    sigma: torch.Tensor, mask: torch.Tensor = None, floor=None
+) -> torch.Tensor:
+    """Intensity variance from the experimental ``sigma(I)``: ``clamp(sigma)**2``.
+
+    The intensity twin of :func:`amplitude_var_from_sigma_obs`, and **not** interchangeable
+    with it: applying an amplitude sigma to an intensity residual is wrong by a factor of
+    ``2|F|``, which is resolution-dependent and so looks like a scale or B error rather
+    than like a mistake.
+
+    Differs from the amplitude builder in taking a ``mask`` (merged collection members are
+    reindexed onto a common list, so the unfitted rows carry filler), an absolute backstop
+    at :data:`SIGMA_FLOOR_ABS`, and an explicit ``floor`` -- see :func:`floor_sigma_obs` on
+    why a caller with both a ``forward`` and a ``residuals`` must pass one.
+    """
+    return floor_sigma_obs(sigma, mask, abs_floor=SIGMA_FLOOR_ABS, floor=floor) ** 2
 
 
 def amplitude_var_from_complex(
@@ -133,6 +206,36 @@ def _masked_sum(loss: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
     return (loss * mask).sum()
 
 
+def gaussian_per_refl(
+    obs: torch.Tensor,
+    model: torch.Tensor,
+    var: torch.Tensor,
+    var_floor: float = VAR_FLOOR,
+) -> torch.Tensor:
+    """Per-reflection Gaussian NLL on **any** real observable (NOT masked or summed).
+
+        0.5 * (obs - model)**2 / var + 0.5 * log(var) + 0.5 * log(2*pi)
+
+    Observable-agnostic on purpose: ``var`` just has to be the variance of whatever
+    ``obs`` is. :func:`nll_per_refl` is this on amplitudes; the intensity rows are this on
+    intensities. Keeping one implementation is what stops the two drifting -- they were
+    separately written once, and the copies differed only in spelling ``log(sigma)``
+    instead of ``0.5 * log(var)``.
+
+    ``var_floor`` defaults to :data:`VAR_FLOOR` because the amplitude path has always
+    applied it. **Pass 0.0 when the variance builder has already floored the sigma**, as
+    :func:`intensity_var_from_sigma_obs` does. An absolute floor on a variance is
+    dimensionally arbitrary -- 1e-10 is a distortion, not a safeguard, on any dataset whose
+    sigmas are smaller than ~1e-5, and it silently reweights the whole objective by up to
+    the ratio of the two floors. Positivity is the builder's job; this is a backstop for
+    builders that do not do it.
+    """
+    diff = obs - model
+    if var_floor > 0.0:
+        var = torch.clamp(var, min=var_floor)
+    return 0.5 * diff**2 / var + 0.5 * torch.log(var) + HALF_LOG_2PI
+
+
 def nll_per_refl(
     F_obs: torch.Tensor, F_calc: torch.Tensor, var: torch.Tensor
 ) -> torch.Tensor:
@@ -143,10 +246,11 @@ def nll_per_refl(
     ``var`` is the **amplitude** variance. Build it with
     :func:`amplitude_var_from_sigma_obs` (``nll``) or :func:`amplitude_var_from_complex`
     (``nll_beta``) -- see the module docstring on why those are not interchangeable.
+
+    The ``torch.abs`` is what makes this the amplitude entry point: callers pass a complex
+    or signed ``F_calc``. Everything else is :func:`gaussian_per_refl`.
     """
-    diff = F_obs - torch.abs(F_calc)
-    var = torch.clamp(var, min=VAR_FLOOR)
-    return 0.5 * diff**2 / var + 0.5 * torch.log(var) + HALF_LOG_2PI
+    return gaussian_per_refl(F_obs, torch.abs(F_calc), var)
 
 
 def nll_math(

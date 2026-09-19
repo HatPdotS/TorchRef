@@ -14,7 +14,7 @@ import torch
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.datasets.collection import DatasetCollection
 from torchref.maps.map import Map
-from torchref.symmetry.reciprocal_symmetry import expand_hkl
+from torchref.symmetry import SpaceGroup
 from torchref.utils.device_resolution import resolve_device
 
 
@@ -65,8 +65,16 @@ class DifferenceMap(Map):
     (see :mod:`torchref.maps.map`).
     """
 
-    def __init__(self, data, data_reference, model, gridsize=None,
-                 device: Optional[torch.device] = None):
+    def __init__(
+        self,
+        data,
+        data_reference,
+        model,
+        gridsize=None,
+        device: Optional[torch.device] = None,
+        units: str = "normalized",
+        scale: Optional[torch.Tensor] = None,
+    ):
         # Pin all three inputs onto one device before constructing the
         # DatasetCollection / super().__init__ — both consume tensors
         # from data.hkl / model and would otherwise inherit whichever
@@ -82,15 +90,21 @@ class DifferenceMap(Map):
         )
         self._collection.add_dataset("perturbed", data)
         self._collection.scale()
+        self.data_reference = self._collection["reference"]
+        self.data_perturbed = self._collection["perturbed"]
 
         # Use reference dataset for cell, spacegroup, hkl via super().__init__
         super().__init__(
-            data=data_reference,
+            data=self.data_reference,
             model=model,
             gridsize=gridsize,
             map_type="Fcalc",  # placeholder, calculate() is overridden
             device=resolved,
+            units=units,
         )
+        # Per-reflection observed-to-model scale over the reference dataset's full
+        # reflection list; dividing by it puts the differences in electrons.
+        self.scale = scale
 
     def calculate(self) -> torch.Tensor:
         """Compute the isomorphous difference map.
@@ -112,17 +126,18 @@ class DifferenceMap(Map):
 
         # Expand to P1 without Friedel mates (expand_to_p1() would reset
         # scaling, so expand manually via expand_hkl)
-        sg = self.data_reference.spacegroup or "P1"
-        hkl_p1, orig_idx, _ = expand_hkl(
-            hkl_asu, sg,
+        sg = self.data_reference.spacegroup or SpaceGroup("P1", device=hkl_asu.device)
+        hkl_p1, orig_idx, _ = sg.expand_hkl(
+            hkl_asu,
             include_friedel=False, remove_absences=True,
             device=hkl_asu.device,
         )
 
         # Map scaled amplitudes to P1 (amplitudes are invariant under symmetry)
-        fobs_ref_p1 = fobs_ref[orig_idx]
-        fobs_pert_p1 = fobs_pert[orig_idx]
-        delta_f_p1 = fobs_pert_p1 - fobs_ref_p1
+        delta_f = fobs_pert - fobs_ref
+        if self.scale is not None:
+            delta_f = delta_f / self.scale.to(delta_f)[mask_combined]
+        delta_f_p1 = delta_f[orig_idx]
 
         # Compute Fcalc for P1 hkl (for phases)
         fcalc_p1 = self.model.get_structure_factor(hkl_p1)
@@ -141,6 +156,8 @@ class DifferenceMap(Map):
         grid = place_on_grid(
             hkl_p1, coefficients_p1, gridsize, enforce_hermitian=True
         )
-        self._map = torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
+        self._map = self._to_units(
+            torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
+        )
 
         return self._map
