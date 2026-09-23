@@ -175,6 +175,13 @@ phase and the extrapolated map ``FWT``/``PHWT``:
        -dsf dark.mtz -lsf light.mtz \
        --fraction 0.37 -o results.mtz
 
+``FWT``/``PHWT`` keep the standard labels so Coot auto-opens the map, but here they
+are the extrapolated light-state map ``2*FEXT - Fc``, not a ``2mFo-DFc``. The file
+records this: the columns sit in named MTZ datasets -- ``observed``, ``difference``,
+``light_model``, ``extrapolated_light`` and, when written, ``two_moment`` -- so Coot's
+column chooser shows ``/torchref/extrapolated_light/FWT``, and ``gemmi mtz`` prints a
+history line per dataset. ``torchref.difference-refine`` writes the same file.
+
 **Key options:** ``--ded-weight {inverse_variance,sigma_d,none}`` selects the
 scheme the model-phased and two-moment difference columns carry (default
 ``inverse_variance``; ``sigma_d`` needs calibrated sigmas, reports how many shells

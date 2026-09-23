@@ -848,6 +848,73 @@ def _extrapolation_columns(
     return columns, types, diagnostics
 
 
+_DIFFERENCE_DATASET_COLUMNS = (
+    "DF", "SIGDF", "PHDELWT", "KSCALE", *WEIGHT_COLUMNS.values()
+)
+
+# One history line per MTZ dataset, in the order they are written. MTZ history lines
+# are at most 80 characters.
+_MTZ_DATASET_HISTORY = {
+    "observed": "observed: Fo_dark, Fo_light and flags on the shared scale; Fc_dark",
+    "difference": "difference: DF/SIGDF on dark phases PHDELWT; weights W_SD, W_IVW",
+    "light_model": (
+        "light_model: FC/PHIC, amplitude and phase of the mixed dark+light model"
+    ),
+    "extrapolated_light": (
+        "extrapolated_light: FWT/PHWT = 2*FEXT - Fc, the extrapolated light map"
+    ),
+    "two_moment": "two_moment: difference columns with the two-moment correction",
+}
+
+
+def _annotate_mtz(filename, datasets):
+    """Group the columns of a written MTZ into named datasets and describe them.
+
+    The column labels are left alone -- Coot's auto-open looks for ``FWT``/``PHWT`` by
+    label and ignores the dataset -- so the grouping is what tells a reader which map a
+    standard label belongs to: the column chooser shows ``/torchref/<dataset>/FWT``,
+    and ``gemmi mtz`` or ``mtzdump`` print the history lines.
+
+    Parameters
+    ----------
+    filename : str
+        MTZ written by reciprocalspaceship, with all columns in one dataset. Rewritten
+        in place.
+    datasets : dict[str, str]
+        Column label to dataset name. Unlisted columns, Miller indices included, stay
+        in ``observed``.
+    """
+    import gemmi
+
+    mtz = gemmi.read_mtz_file(filename)
+    base = mtz.datasets[0]
+    base.project_name = "torchref"
+    base.crystal_name = "torchref"
+    base.dataset_name = "observed"
+
+    for name in dict.fromkeys(datasets.values()):
+        mtz.add_dataset(name)
+    # Filled in afterwards: ``add_dataset`` returns a reference into a vector that the
+    # next call may reallocate, so writes through it can be lost.
+    base = mtz.datasets[0]
+    ids = {}
+    for ds in mtz.datasets:
+        ds.project_name = base.project_name
+        ds.crystal_name = base.crystal_name
+        ds.cell = base.cell
+        ds.wavelength = base.wavelength
+        ids[ds.dataset_name] = ds.id
+    for col in mtz.columns:
+        if col.label in datasets:
+            col.dataset_id = ids[datasets[col.label]]
+
+    mtz.history = [
+        "torchref difference-refine map coefficients, grouped by dataset:",
+        *(_MTZ_DATASET_HISTORY[name] for name in ids),
+    ]
+    mtz.write_to_file(filename)
+
+
 def write_results_mtz(
     dc,
     dark_model,
@@ -875,6 +942,12 @@ def write_results_mtz(
     the extrapolated amplitudes, and the two-moment correction. ``all_columns`` adds the
     alternatives within each layer -- see :func:`_phasing_columns` and
     :func:`_extrapolation_columns` for what each contains and why it is gated.
+
+    Column labels are the standard CCP4 ones, so Coot auto-opens ``FWT``/``PHWT`` --
+    here the *extrapolated light-state* map, not a ``2mFo-DFc``. What each label means
+    is recorded in the file: the columns are grouped into MTZ datasets (``observed``,
+    ``difference``, ``light_model``, ``extrapolated_light``, ``two_moment``) with one
+    history line describing each.
 
     Parameters
     ----------
@@ -1015,6 +1088,7 @@ def write_results_mtz(
         weight_columns=weight_columns,
         kscale=kscale,
     )
+    datasets = {name: "difference" for name in _DIFFERENCE_DATASET_COLUMNS}
 
     if mc is not None:
         phase_cols, phase_types, ctx = _phasing_columns(
@@ -1024,6 +1098,7 @@ def write_results_mtz(
             Fcalc_dark=Fcalc_dark, weights=weights, all_columns=all_columns,
         )
         columns.update(phase_cols)
+        datasets.update(dict.fromkeys(phase_cols, "light_model"))
         types.update(phase_types)
 
         ext_cols, ext_types, ext_diagnostics = _extrapolation_columns(
@@ -1043,6 +1118,7 @@ def write_results_mtz(
         )
         diagnostics.update(ext_diagnostics)
         columns.update(ext_cols)
+        datasets.update(dict.fromkeys(ext_cols, "extrapolated_light"))
         types.update(ext_types)
 
         tm_cols, tm_types = _two_moment_columns(
@@ -1054,6 +1130,7 @@ def write_results_mtz(
             all_columns=all_columns,
         )
         columns.update(tm_cols)
+        datasets.update(dict.fromkeys(tm_cols, "two_moment"))
         types.update(tm_types)
 
     df = rs.DataSet(
@@ -1071,9 +1148,12 @@ def write_results_mtz(
     df = df.infer_mtz_dtypes()
     df.set_index(["H", "K", "L"], inplace=True)
     df.write_mtz(filename)
+    _annotate_mtz(filename, datasets)
 
     if verbose > 0:
         print(f"  Results MTZ written to {filename} ({len(columns)} columns)")
+        for name in dict.fromkeys(["observed", *datasets.values()]):
+            print(f"    {_MTZ_DATASET_HISTORY[name]}")
         if mc is not None:
             fractions = mc["light"].fractions.detach()
             print(f"  w_dark={fractions[0].item():.3f}, "
