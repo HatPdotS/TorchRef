@@ -217,6 +217,29 @@ def test_column_layout_and_types(request, fixture, extra):
     assert all(hasattr(dtype, "mtztype") for dtype in frame.dtypes)
 
 
+def test_map_coefficients_are_grouped_into_described_datasets(two_moment_all_mtz):
+    """``FWT``/``PHWT`` keep the label Coot auto-opens but sit in the
+    ``extrapolated_light`` dataset, and every dataset has a history line saying what it
+    holds -- the file, not the label, says which map a standard name is."""
+    import gemmi
+
+    mtz = gemmi.read_mtz_file(str(two_moment_all_mtz[0]))
+    names = {ds.id: ds.dataset_name for ds in mtz.datasets}
+    where = {col.label: names[col.dataset_id] for col in mtz.columns}
+
+    assert where["FWT"] == where["PHWT"] == where["FEXT"] == "extrapolated_light"
+    assert where["FEXT_PHASED"] == where["FEXT_SCALAR"] == "extrapolated_light"
+    assert where["DF"] == where["PHDELWT"] == where["W_SD"] == "difference"
+    assert where["FC"] == where["PHIC"] == "light_model"
+    assert where["DF_corr"] == "two_moment"
+    assert where["H"] == where["Fo_dark"] == where["FreeR_flag_dark"] == "observed"
+    assert all(ds.crystal_name == "torchref" for ds in mtz.datasets)
+
+    assert all(len(line) <= 80 for line in mtz.history)
+    for name in set(names.values()):
+        assert any(line.startswith(f"{name}:") for line in mtz.history), name
+
+
 class TestDefaultLayout:
 
     def test_the_difference_columns_carry_df_and_the_registered_weights(
