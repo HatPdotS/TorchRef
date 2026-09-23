@@ -422,6 +422,8 @@ class SpaceGroup(Symmetry):
         hkl: torch.Tensor,
         include_friedel: bool = True,
         device: Optional[torch.device] = None,
+        *,
+        sort: bool = True,
     ):
         """Map Miller indices onto their canonical CCP4 ASU representatives.
 
@@ -436,17 +438,24 @@ class SpaceGroup(Symmetry):
         device : torch.device, optional
             Output device. Defaults to ``hkl``'s. The lookup itself runs on CPU
             whatever device this group is on, because the ASU tables are numpy-backed.
+        sort : bool, default True
+            Sort the rows lexicographically by canonical ``(h, k, l)``. ``False``
+            keeps the input row order and skips the sort, which callers that only
+            need the per-row mapping should prefer on large inputs.
 
         Returns
         -------
         canonical_hkl : torch.Tensor
-            Remapped indices sorted lexicographically, shape ``(N, 3)``.
+            Remapped indices, shape ``(N, 3)``; sorted lexicographically when
+            ``sort``.
         phase_shifts : torch.Tensor
-            Additive phase correction in radians, shape ``(N,)``.
+            Additive phase correction in radians, shape ``(N,)``, same row order.
         friedel_flags : torch.Tensor
-            Boolean, shape ``(N,)``, True where Friedel conjugation was applied.
-        sort_indices : torch.Tensor
-            Permutation from original to sorted order, shape ``(N,)``.
+            Boolean, shape ``(N,)``, True where Friedel conjugation was applied,
+            same row order.
+        sort_indices : torch.Tensor or None
+            Permutation from original to sorted order, shape ``(N,)``; ``None``
+            when ``sort=False``.
 
         Notes
         -----
@@ -456,7 +465,7 @@ class SpaceGroup(Symmetry):
         from torchref.symmetry.reciprocal_symmetry import _canonicalize_hkl
 
         return _canonicalize_hkl(
-            self, hkl, include_friedel=include_friedel, device=device
+            self, hkl, include_friedel=include_friedel, device=device, sort=sort
         )
 
     # =========================================================================
