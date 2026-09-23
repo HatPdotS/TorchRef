@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
-from torchref.config import canonical_device, get_int_dtype
+from torchref.config import canonical_device
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -45,14 +45,14 @@ def _equiv_hkls_to_flat_indices(
     Returns
     -------
     torch.Tensor
-        Flat indices, shape ``(n_ops * N,)``, in the configured int dtype, wrapped
-        modulo the grid.
+        Flat indices, shape ``(n_ops * N,)``, dtype ``int64``, wrapped modulo the grid.
     """
-    all_hkl = equiv_hkls.reshape(-1, 3)
+    # dtype-ok: the flat index h*Ny*Nz + k*Nz + l overflows int32 above 2**31 voxels
+    all_hkl = equiv_hkls.reshape(-1, 3).to(torch.int64)
     hi = torch.remainder(all_hkl[:, 0], Nx)
     ki = torch.remainder(all_hkl[:, 1], Ny)
     li = torch.remainder(all_hkl[:, 2], Nz)
-    return (hi * (Ny * Nz) + ki * Nz + li).to(get_int_dtype())
+    return hi * (Ny * Nz) + ki * Nz + li
 
 
 class ReciprocalSymmetryExtractor(DeviceMixin):

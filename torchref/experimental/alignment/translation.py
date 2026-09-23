@@ -400,7 +400,8 @@ def fast_translation_function(
     G = cand.G.to(device=device, dtype=cplx)
     S, N = G.shape
     coeff = obs.coeff.to(device=device, dtype=cplx)
-    h_R_int = cand.h_R.round().to(get_int_dtype())
+    # dtype-ok: the flat translation-grid index overflows int32 above 2**31 grid points
+    h_R_int = cand.h_R.round().to(torch.int64)
 
     # The pair (j, i) is the conjugate of (i, j) at -dh, so the map is twice
     # the real part of the upper triangle's transform plus the diagonal, which

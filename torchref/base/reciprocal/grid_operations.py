@@ -48,15 +48,16 @@ def place_on_grid(
     device = structure_factor.device
     dtype = structure_factor.dtype
     Nx, Ny, Nz = [int(x) for x in grid_size]
-    hkls = hkls.to(device=device)
-    h = hkls[:, 0].to(get_int_dtype())
-    k = hkls[:, 1].to(get_int_dtype())
-    l = hkls[:, 2].to(get_int_dtype())
+    # dtype-ok: the flat index h*Ny*Nz + k*Nz + l overflows int32 above 2**31 voxels
+    hkls = hkls.to(device=device, dtype=torch.int64)
+    h = hkls[:, 0]
+    k = hkls[:, 1]
+    l = hkls[:, 2]
 
     hi = torch.remainder(h, Nx)
     ki = torch.remainder(k, Ny)
     li = torch.remainder(l, Nz)
-    lin = (hi * (Ny * Nz) + ki * Nz + li).to(get_int_dtype())  # (N,)
+    lin = hi * (Ny * Nz) + ki * Nz + li  # (N,)
     grid = torch.zeros((B, Nx * Ny * Nz), dtype=dtype, device=device)
     grid = grid.index_add(1, lin, structure_factor)  # (B, Nx*Ny*Nz)
 
@@ -64,7 +65,7 @@ def place_on_grid(
         hi_sym = torch.remainder(-h, Nx)
         ki_sym = torch.remainder(-k, Ny)
         li_sym = torch.remainder(-l, Nz)
-        lin_sym = (hi_sym * (Ny * Nz) + ki_sym * Nz + li_sym).to(get_int_dtype())
+        lin_sym = hi_sym * (Ny * Nz) + ki_sym * Nz + li_sym
         vals_conj = torch.conj(structure_factor)
         grid = grid.index_add(1, lin_sym, vals_conj)
 

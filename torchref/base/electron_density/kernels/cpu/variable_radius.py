@@ -96,8 +96,9 @@ def _canonical_setup(xyz, inv_frac, frac, grid_dims, radius_per_atom, dtype):
     # w0: atom position relative to its anchor node, in Cartesian. This is what
     # centres the sphere on the atom rather than on the node.
     w0 = (xyz_frac - center_idx.to(dtype) / grid_f) @ frac.T
-    center_1d = ((center_idx[:, 0] % nx) * (ny * nz)
-                 + (center_idx[:, 1] % ny) * nz + (center_idx[:, 2] % nz))
+    # dtype-ok: the flat voxel index overflows int32 above 2**31 voxels
+    c = center_idx.to(torch.int64)
+    center_1d = (c[:, 0] % nx) * (ny * nz) + (c[:, 1] % ny) * nz + (c[:, 2] % nz)
     order, spans = _bucket_by_radius(radius_per_atom, center_1d)
     return order, spans, center_idx[order], w0[order]
 
