@@ -1146,17 +1146,21 @@ class HydrogenFrames:
         """Return frame and orientation arrays as tensors, keyed by field name."""
         return {
             "h_row": torch.as_tensor(
+                # dtype-ok: row index; int64 required
                 self.h_row, dtype=torch.int64, device=device
-            ),  # dtype-ok: row index; int64 required
+            ),
             "parent_row": torch.as_tensor(
+                # dtype-ok: row index; int64 required
                 self.parent_row, dtype=torch.int64, device=device
-            ),  # dtype-ok: row index; int64 required
+            ),
             "n1_row": torch.as_tensor(
+                # dtype-ok: row index; int64 required
                 self.n1_row, dtype=torch.int64, device=device
-            ),  # dtype-ok: row index; int64 required
+            ),
             "n2_row": torch.as_tensor(
+                # dtype-ok: row index; int64 required
                 self.n2_row, dtype=torch.int64, device=device
-            ),  # dtype-ok: row index; int64 required
+            ),
             "frame_valid": torch.as_tensor(
                 self.frame_valid, dtype=torch.bool, device=device
             ),

@@ -3011,6 +3011,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.pdb, plan, restraints.topology
         )
         frames = generated.remap(old_rows).fill_planned_rows(new_rows)
+        # dtype-ok: row index map into the augmented table; torch indexing needs int64
         source = torch.empty(len(augmented), dtype=torch.long, device=self.device)
         old_index = torch.as_tensor(old_rows, device=self.device)
         new_index = torch.as_tensor(new_rows, device=self.device)

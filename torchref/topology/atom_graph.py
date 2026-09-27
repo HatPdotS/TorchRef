@@ -224,7 +224,7 @@ class AtomGraph(DeviceMixin):
             if heavy_of_h.numel():
                 present = torch.bincount(heavy_of_h, minlength=self.n_atoms)
         known = self.template_h_count >= 0
-        missing = self.template_h_count.to(torch.int64) - present
+        missing = self.template_h_count.to(present.dtype) - present
         return torch.where(known, missing.clamp(min=0), torch.zeros_like(missing))
 
     def subset(self, remap: torch.Tensor, residue_remap: torch.Tensor) -> "AtomGraph":
