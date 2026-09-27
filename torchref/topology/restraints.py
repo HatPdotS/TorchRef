@@ -68,6 +68,10 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         between the two named atoms.
     verbose : int, default 1
         Verbosity level (0=silent, 1=normal, 2=detailed).
+    nonbonded : bool, default True
+        Build the non-bonded pair list. ``False`` gives connectivity and ideal values
+        only, for a caller that needs the topology and nothing else, such as hydrogen
+        planning; the pair search is the largest part of a build.
 
     Attributes
     ----------
@@ -98,12 +102,14 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         spacegroup=None,
         links: pd.DataFrame = None,
         verbose: int = 1,
+        nonbonded: bool = True,
     ):
         """Initialize the Restraints handler."""
         super().__init__()
         self.cif_path = cif_path
         self.verbose = verbose
         self.links = links
+        self._nonbonded = bool(nonbonded)
 
         # Store callable functions for coordinate/ADP access
         self._xyz_fn = xyz_fn
@@ -350,7 +356,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
     def build_restraints(self):
         """Build the topology, the values over it, and the non-bonded pair list.
 
-        Builds on CPU and moves the result to the ``xyz()`` device at the end.
+        The pair list is skipped when constructed with ``nonbonded=False``. Builds on
+        CPU and moves the result to the ``xyz()`` device at the end.
         """
         try:
             target_device = self.xyz().device
@@ -380,9 +387,10 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             # cutoff sits ~1 Å beyond the largest heavy-atom VDW sum (~3.6 Å) plus
             # expected drift, so a displacement-triggered rebuild stays inside the
             # margin and cannot miss a newly-formed contact.
-            self._build_vdw_restraints(
-                cutoff=6.0, sigma=0.05, inter_residue_only=False, use_spatial_hash=True
-            )
+            if self._nonbonded:
+                self._build_vdw_restraints(
+                    cutoff=6.0, sigma=0.05, inter_residue_only=False, use_spatial_hash=True
+                )
 
             if target_device.type != "cpu":
                 self.to(target_device)
