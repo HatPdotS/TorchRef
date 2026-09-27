@@ -9,16 +9,17 @@ TorchRef refinement is not reproducible run to run, so a deviation from the refe
 means nothing on its own. Each structure therefore carries its **own** tolerance,
 measured over :data:`SPREAD_RUNS` independent runs when the reference was written, and
 committed alongside it. Sizing the tolerance from a couple of runs at test time does
-not work: 6JZA is bimodal at this cycle count -- its trajectories land in one of two
-basins about 0.0074 apart -- and two runs that happen to pick the same basin report a
-spread 140 times too small.
+not work: 6JZA, in an earlier version of this set, was bimodal at this cycle count --
+its trajectories landed in one of two basins about 0.0074 apart -- and two runs that
+happened to pick the same basin reported a spread 140 times too small.
 
-R-work and R-free are held to different bounds. R-work is reproducible to a few parts in
-ten thousand, so it keeps the measured tolerance and is what catches a change that
-actually moves the refinement. R-free is computed on the small free set and has a rare
-second basin of its own, a few thousandths wide, that a handful of runs will usually
-miss; it therefore carries :data:`RFREE_TOLERANCE_FLOOR`, wide enough to sit outside
-that basin and still far inside the descent the trajectory shows.
+R-work and R-free are held to different bounds. R-work is reproducible to a few
+thousandths, run to run and across machines, so it has the tighter bound
+(:data:`TOLERANCE_FLOOR` unless its measured spread is wider) and is what catches a
+change that actually moves the refinement. R-free is computed on the free set and has a
+rare second basin of its own, a few thousandths wide, that a handful of runs will
+usually miss; it therefore carries :data:`RFREE_TOLERANCE_FLOOR`, wide enough to sit
+outside that basin and still far inside the descent the trajectory shows.
 
 Regenerate deliberately, after a change meant to move these numbers::
 
@@ -32,12 +33,20 @@ import numpy as np
 import pytest
 import torch
 
-#: AlphaFold-start structures, chosen so all five actually descend under refinement and
-#: the space groups span centred tetragonal, centred monoclinic, hexagonal and trigonal.
-CODES = ["1VER", "6VHI", "1BYW", "6JZA", "6SXW"]
+#: AlphaFold-start structures that actually refine in two cycles: R-work and R-free both
+#: fall and the run ends with R-work below R-free (see ``test_af_starts_refine``). The
+#: space groups span cubic, centred monoclinic, hexagonal and centred tetragonal. The
+#: earlier set (6VHI, 1BYW, 6JZA, 6SXW) had free sets of 40-80 reflections, too few to
+#: tell R-free from noise: R-free rose mid-trajectory or ended below R-work.
+CODES = ["1AK5", "1DAW", "3GR5", "1VER"]
+
+#: What "refines" means for a reference trajectory: how far R-work and R-free must fall
+#: from first to last stage.
+MIN_RWORK_DESCENT = 0.02
+MIN_RFREE_DESCENT = 0.01
 
 #: Macro-cycles per trajectory. Two is enough for the descent to be visible while
-#: keeping the whole test at a few seconds per structure.
+#: keeping the whole test at well under a minute per structure.
 CYCLES = 2
 
 #: Independent runs used to size each structure's tolerance at regeneration time. Enough
@@ -48,8 +57,12 @@ SPREAD_RUNS = 5
 SPREAD_MULTIPLE = 3.0
 
 #: Tolerance floor for R-work, so a structure whose runs agree very closely is not held
-#: to an unreasonably tight bound.
-TOLERANCE_FLOOR = 0.002
+#: to an unreasonably tight bound. Five runs underestimate the spread: 1VER measured
+#: 0.00045 yet deviated 0.0021 from its mean on the machine that wrote the reference,
+#: and GitHub runners sat up to 0.0016 from a reference written elsewhere. 0.005 covers
+#: both together and stays under a quarter of every structure's descent. Applied at test
+#: time as well, so raising it does not need a regeneration.
+TOLERANCE_FLOOR = 0.005
 
 #: Tolerance floor for R-free, which moves in discrete basins rather than jitter. Set
 #: above the widest basin separation seen on this set and kept well inside every
@@ -100,6 +113,24 @@ def _deviations(a, b):
     )
 
 
+def _refinement_problems(series):
+    """Why a trajectory does not count as refining, or an empty list if it does."""
+    (work0, free0), (work1, free1) = series[0], series[-1]
+    problems = []
+    if work1 > work0 - MIN_RWORK_DESCENT:
+        problems.append(f"R-work only moves from {work0:.4f} to {work1:.4f}")
+    if free1 > free0 - MIN_RFREE_DESCENT:
+        problems.append(f"R-free only moves from {free0:.4f} to {free1:.4f}")
+    if work1 >= free1:
+        problems.append(f"it ends with R-work {work1:.4f} not below R-free {free1:.4f}")
+    return problems
+
+
+def _rwork_tolerance(entry):
+    """The R-work bound: this structure's measured tolerance, floored."""
+    return max(float(entry["tolerance"]), TOLERANCE_FLOOR)
+
+
 def _rfree_tolerance(entry):
     """The R-free bound: this structure's measured tolerance, floored."""
     return max(float(entry["tolerance"]), RFREE_TOLERANCE_FLOOR)
@@ -131,13 +162,15 @@ def test_af_trajectory_matches_reference(code, reference, test_files_dir):
 
     entry = reference["structures"][code]
     expected = [tuple(point) for point in entry["trajectory"]]
-    rwork_tolerance = float(entry["tolerance"])
+    rwork_tolerance = _rwork_tolerance(entry)
     rfree_tolerance = _rfree_tolerance(entry)
 
     observed = trajectory(pdb_path, mtz_path)
     assert len(observed) == len(
         expected
     ), f"{code}: trajectory has {len(observed)} stages, reference has {len(expected)}"
+    problems = _refinement_problems(observed)
+    assert not problems, f"{code} does not refine: {'; '.join(problems)}\n{observed}"
 
     dev_work, dev_free = _deviations(observed, expected)
     for label, deviation, tolerance in (
@@ -152,19 +185,17 @@ def test_af_trajectory_matches_reference(code, reference, test_files_dir):
 
 
 @pytest.mark.integration
-def test_af_starts_actually_descend(reference):
-    """Each reference trajectory improves R-work, so a regression has signal to lose.
+def test_af_starts_refine(reference):
+    """Each reference trajectory refines, so a regression has signal to lose.
 
-    A structure that barely moves under refinement cannot show a trajectory regression,
-    so the set is only useful while every member descends.
+    R-work and R-free both have to fall, and the run has to end with R-work below
+    R-free. A structure that barely moves cannot show a trajectory regression, and one
+    whose R-free rises or ends below R-work is tracking noise, not refinement.
     """
+    assert set(reference["structures"]) == set(CODES)
     for code in CODES:
-        series = reference["structures"][code]["trajectory"]
-        first, last = series[0][0], series[-1][0]
-        assert last < first - 0.02, (
-            f"{code} only moves R-work from {first:.4f} to {last:.4f}; it is too flat "
-            f"to serve as a trajectory probe"
-        )
+        problems = _refinement_problems(reference["structures"][code]["trajectory"])
+        assert not problems, f"{code} is not a refinement probe: {'; '.join(problems)}"
 
 
 @pytest.mark.integration
@@ -181,7 +212,7 @@ def test_tolerances_are_tight_enough_to_detect_something(reference):
         descent = series[0][0] - series[-1][0]
         # Checks the widest bound actually applied, not the stored one: flooring R-free
         # would otherwise widen the real bound without this guard seeing it.
-        widest = max(float(entry["tolerance"]), _rfree_tolerance(entry))
+        widest = max(_rwork_tolerance(entry), _rfree_tolerance(entry))
         assert widest < descent / 4.0, (
             f"{code}: tolerance {widest:.4f} is not small against its "
             f"own R-work descent of {descent:.4f}"
@@ -203,13 +234,21 @@ def _write_reference():
         ]
         spread = max(_max_deviation(run, mean) for run in runs)
         tolerance = max(TOLERANCE_FLOOR, SPREAD_MULTIPLE * spread)
+        problems = _refinement_problems(mean)
+        if problems:
+            raise SystemExit(f"{code} does not refine: {'; '.join(problems)}")
 
         structures[code] = {
             "trajectory": [[round(w, 6), round(f, 6)] for w, f in mean],
             "spread": round(spread, 6),
             "tolerance": round(tolerance, 6),
         }
-        print(f"{code}: spread={spread:.6f} tolerance={tolerance:.6f}", flush=True)
+        print(
+            f"{code}: R-work/R-free {mean[0][0]:.4f}/{mean[0][1]:.4f} -> "
+            f"{mean[-1][0]:.4f}/{mean[-1][1]:.4f}, spread={spread:.6f} "
+            f"tolerance={tolerance:.6f}",
+            flush=True,
+        )
 
     REFERENCE.write_text(
         json.dumps(

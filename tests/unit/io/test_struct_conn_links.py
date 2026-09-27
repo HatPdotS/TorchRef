@@ -72,3 +72,29 @@ ATOM 2 C CA . ALA A 1 ? 1.5 0.0 0.0 1.0 20.0 1 A
     links = ModelCIFReader(str(path)).links
     assert len(links) == 0
     assert list(links.columns) == list(LINK_COLUMNS)
+
+
+@pytest.mark.unit
+def test_single_connection_written_as_key_value_pairs(cif_dir, tmp_path):
+    """One ``_struct_conn`` entry is written without ``loop_`` and parses as a dict."""
+    source = cif_dir / "3GR5.cif"
+    # 3GR5's only connection is a disulfide, which is left to distance detection.
+    links = ModelCIFReader(str(source)).links
+    assert len(links) == 0
+    assert list(links.columns) == list(LINK_COLUMNS)
+
+    # The same single entry as a covalent connection comes through as one link.
+    text = source.read_text()
+    covalent = text.replace(
+        "_struct_conn.conn_type_id                  disulf ",
+        "_struct_conn.conn_type_id                  covale ",
+    )
+    assert covalent != text
+    path = tmp_path / "3GR5_covale.cif"
+    path.write_text(covalent)
+    links = ModelCIFReader(str(path)).links
+    assert len(links) == 1
+    row = links.iloc[0]
+    assert (row["name1"], row["resname1"], row["resseq1"]) == ("SG", "CYS", 136)
+    assert (row["name2"], row["resname2"], row["resseq2"]) == ("SG", "CYS", 155)
+    assert abs(row["length"] - 2.062) < 1e-6

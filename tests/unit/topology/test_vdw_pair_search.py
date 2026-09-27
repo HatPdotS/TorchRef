@@ -24,8 +24,12 @@ CUTOFF = 6.0
 
 
 def _image_table(path):
-    """Steps 1-2 of ``build_vdw_restraints_gpu`` for one model."""
-    model = Model(verbose=0)
+    """Steps 1-2 of ``build_vdw_restraints_gpu`` for one model, on CPU.
+
+    Pinned to CPU, not ``TORCHREF_DEVICE``: the k-d tree is the CPU search, and the
+    accelerator runners would otherwise put the cell on the GPU next to CPU tensors.
+    """
+    model = Model(verbose=0, device=torch.device("cpu"))
     model.load_pdb(str(path))
     cell, sg = model.ctx.cell, model.ctx.spacegroup
     xyz_frac = cell.cartesian_to_fractional(model.xyz().detach().to(dtypes.float))

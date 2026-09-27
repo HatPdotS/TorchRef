@@ -575,8 +575,9 @@ class QuasiCrystalAmberTarget(AmberTarget):
         # that survived the special-position filter — used in forward to
         # subset ``xyz_per_member`` before applying the layout transform.
         self._keep_atom_idx_torch = torch.from_numpy(self._keep_atom_idx_np).to(
+            # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
             device=device, dtype=torch.long
-        )  # dtype-ok: atom/copy index tensor for indexing; PyTorch requires int64
+        )
 
         self._omm_to_model = self._omm_to_model.to(device)
         self._buffers_device = device

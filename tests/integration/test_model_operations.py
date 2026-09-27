@@ -309,7 +309,11 @@ class TestModelMultipleStructures:
         """Test loading different CIF files."""
         from torchref.model.model import Model
         
-        cif_files = list(cif_dir.glob("*.cif"))[:3]  # Load first 3
+        # All of them, in a fixed order: "the first three" of an unsorted glob depended on
+        # the filesystem, and on some runners never reached a file (3GR5) whose single
+        # _struct_conn entry is written as key-value pairs rather than a loop.
+        cif_files = sorted(cif_dir.glob("*.cif"))
+        assert cif_files
         
         for cif_file in cif_files:
             model = Model()
