@@ -373,10 +373,9 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             parents = getattr(self, "_" + kind + "_parents")
             rows = getattr(self, "_" + kind + "_h")
             groups = getattr(self, "_" + kind + "_inverse")
-            selected = full_mask[parents].to(get_int_dtype())
-            selected.index_add_(
-                0, groups, full_mask[self.h_row[rows]].to(get_int_dtype())
-            )
+            int_dtype = get_int_dtype()
+            selected = full_mask[parents].to(int_dtype)
+            selected.index_add_(0, groups, full_mask[self.h_row[rows]].to(int_dtype))
             selections.append(selected > 0)
         return selections
 

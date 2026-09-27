@@ -1008,7 +1008,8 @@ def build_topology_with_values(
         planes=plane_blocks,
         energy_type=energy_type,
         template_h_count=torch.as_tensor(
-            template_h_count, dtype=get_int_dtype(), device=device
+            # dtype-ok: small per-atom count; int8 is AtomGraph's documented storage
+            template_h_count, dtype=torch.int8, device=device
         ),
     )
 

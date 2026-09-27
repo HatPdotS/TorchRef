@@ -231,7 +231,7 @@ class AtomGraph(DeviceMixin):
                     present.dtype
                 )
         known = self.template_h_count >= 0
-        missing = self.template_h_count - present
+        missing = self.template_h_count.to(present.dtype) - present
         return torch.where(known, missing.clamp(min=0), torch.zeros_like(missing))
 
     def subset(self, remap: torch.Tensor, residue_remap: torch.Tensor) -> "AtomGraph":
