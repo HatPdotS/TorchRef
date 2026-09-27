@@ -152,6 +152,8 @@ class AtomGraph(DeviceMixin):
 
     _adj_indptr: Optional[torch.Tensor] = field(default=None, repr=False)
     _adj_indices: Optional[torch.Tensor] = field(default=None, repr=False)
+    # (element array it was parsed from, hydrogen flags); see is_hydrogen.
+    _is_h_cache: Optional[Tuple[np.ndarray, np.ndarray]] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self._adj_indptr is None:
@@ -169,9 +171,18 @@ class AtomGraph(DeviceMixin):
 
     @property
     def is_hydrogen(self) -> torch.Tensor:
-        """Boolean mask of hydrogen atoms, shape ``(N,)``."""
-        flags = np.char.upper(np.char.strip(self.element.astype(str))) == "H"
-        return torch.as_tensor(flags, device=self.bonds.indices.device)
+        """Boolean mask of hydrogen atoms, shape ``(N,)``.
+
+        The element strings are parsed once and cached against the ``element`` array
+        they came from, so replacing that array invalidates the cache. Hydrogen
+        placement and the riding frames read this once per atom, and re-parsing every
+        time made them O(N^2). Each call returns a fresh tensor, so callers may modify it.
+        """
+        cache = self._is_h_cache
+        if cache is None or cache[0] is not self.element:
+            flags = np.char.upper(np.char.strip(self.element.astype(str))) == "H"
+            cache = self._is_h_cache = (self.element, flags)
+        return torch.tensor(cache[1], device=self.bonds.indices.device)
 
     def copy(self) -> "AtomGraph":
         """An independent copy sharing no storage with this one."""
