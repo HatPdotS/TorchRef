@@ -177,8 +177,8 @@ CI
 --
 
 ``tox.ini`` defines the environments: ``py310``–``py313`` against current
-dependencies, plus boundary environments pinning NumPy, Numba, PyTorch, Pandas
-and Gemmi versions and a ``lowerbounds`` pair at the declared minimums. Refer to
+dependencies, plus boundary environments pinning NumPy, PyTorch, Pandas and
+Gemmi versions and a ``lowerbounds`` pair at the declared minimums. Refer to
 the file itself for the authoritative list.
 
 .. code-block:: bash

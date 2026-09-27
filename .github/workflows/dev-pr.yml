@@ -18,7 +18,6 @@ jobs:
     timeout-minutes: 90
     env:
       TORCHREF_DEVICE: cpu
-      NUMBA_CACHE_DIR: /tmp/numba_cache
 
     steps:
       - uses: actions/checkout@v7

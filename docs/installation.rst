@@ -5,7 +5,7 @@ Requirements
 ------------
 
 Python ≥ 3.10, PyTorch ≥ 2.4, NumPy ≥ 2.0, Pandas ≥ 2.0, SciPy ≥ 1.10,
-Gemmi ≥ 0.5, reciprocalspaceship ≥ 0.9.18, Numba ≥ 0.59, Matplotlib ≥ 3.7.
+Gemmi ≥ 0.5, reciprocalspaceship ≥ 0.9.18, Matplotlib ≥ 3.7.
 
 ``pyproject.toml`` carries the authoritative pinned ranges. Upper bounds are set
 one minor version above the tested maximum, so an untested dependency version

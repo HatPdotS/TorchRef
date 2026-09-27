@@ -21,12 +21,12 @@ import torch
 
 from torchref.config import get_float_dtype, get_int_dtype
 
-# Import the Numba-accelerated matching functions
-from torchref.topology.builders_numba import (
-    match_angles_numba,
-    match_bonds_numba,
-    match_chirals_numba,
-    match_torsions_numba,
+# Intra-residue restraint matchers
+from torchref.topology.matchers import (
+    match_angles,
+    match_bonds,
+    match_chirals,
+    match_torsions,
 )
 
 
@@ -349,7 +349,7 @@ class PreprocessedCIF:
         """Convert chirals DataFrame to NumPy arrays."""
         # Convert volume_sign strings to floats. The CCP4 library writes both the
         # full and the truncated spelling ("positiv", "negativ"); an unrecognised
-        # sign becomes NaN and the restraint is then dropped in builders_numba,
+        # sign becomes NaN and the restraint is then dropped by match_chirals,
         # so the short forms have to be matched here or those chirals vanish.
         volume_signs = []
         for sign in chirals_df["volume_sign"].values:
@@ -572,8 +572,7 @@ class BondRestraintBuilder(RestraintBuilder):
 
             # Iterate over altloc conformations (yields once if no altlocs)
             for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-                # Use Numba-accelerated matching
-                count = match_bonds_numba(
+                count = match_bonds(
                     atom_names,
                     atom_indices,
                     cif_bonds["atom1"],
@@ -676,7 +675,7 @@ class AngleRestraintBuilder(RestraintBuilder):
 
             # Iterate over altloc conformations (yields once if no altlocs)
             for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-                count = match_angles_numba(
+                count = match_angles(
                     atom_names,
                     atom_indices,
                     cif_angles["atom1"],
@@ -789,7 +788,7 @@ class TorsionRestraintBuilder(RestraintBuilder):
 
             # Iterate over altloc conformations (yields once if no altlocs)
             for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-                count = match_torsions_numba(
+                count = match_torsions(
                     atom_names,
                     atom_indices,
                     cif_torsions["atom1"],
@@ -999,7 +998,7 @@ class ChiralRestraintBuilder(RestraintBuilder):
 
             # Iterate over altloc conformations (yields once if no altlocs)
             for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-                count = match_chirals_numba(
+                count = match_chirals(
                     atom_names,
                     atom_indices,
                     cif_chirals["center"],
@@ -1034,7 +1033,7 @@ class ChiralRestraintBuilder(RestraintBuilder):
                     # restrains |volume| toward 2.5 (not toward a target of 0).
                     # Note: chirals with an unknown sign were mapped to NaN by
                     # PreprocessedCIF._preprocess_chirals and dropped upstream
-                    # by match_chirals_numba, so they never reach here.
+                    # by match_chirals, so they never reach here.
                     all_ideal_volumes.append(work_signs[:count].copy() * 2.5)
                     all_sigmas.append(work_sigmas[:count].copy())
 

@@ -73,7 +73,7 @@ the checkout are fetched on demand, so add paths later with `git sparse-checkout
 
 ### Dependencies
 
-Python ≥ 3.10, PyTorch ≥ 2.4, NumPy ≥ 2.0, Pandas ≥ 2.0, SciPy ≥ 1.10, Gemmi ≥ 0.5, reciprocalspaceship ≥ 0.9.18, Numba ≥ 0.59, Matplotlib ≥ 3.7. `pyproject.toml` carries the authoritative pinned ranges; upper bounds are set one minor version above the tested maximum, so a newer dependency will refuse to install rather than fail at runtime.
+Python ≥ 3.10, PyTorch ≥ 2.4, NumPy ≥ 2.0, Pandas ≥ 2.0, SciPy ≥ 1.10, Gemmi ≥ 0.5, reciprocalspaceship ≥ 0.9.18, Matplotlib ≥ 3.7. `pyproject.toml` carries the authoritative pinned ranges; upper bounds are set one minor version above the tested maximum, so a newer dependency will refuse to install rather than fail at runtime.
 
 ### Testing
 
