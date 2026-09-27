@@ -572,12 +572,20 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 "Load data first with load_pdb() or load_cif()."
             )
 
-        from torchref.topology.restraints import Restraints
-
         if self.ctx.verbose > 0:
             print("Building restraints...")
 
-        self._restraints = Restraints(
+        self._restraints = self._new_restraints()
+
+        return self._restraints
+
+    def _new_restraints(self, nonbonded: bool = True, verbose: Optional[int] = None):
+        """An uncached ``Restraints`` over this model's DataFrame, wired to the live
+        ``xyz`` / ``adp`` / ``vdw_radii`` callables; see :meth:`_build_restraints`.
+        """
+        from torchref.topology.restraints import Restraints
+
+        return Restraints(
             pdb=self.pdb,
             cif_path=self.ctx.cif_path,
             xyz_fn=self.xyz,
@@ -586,10 +594,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             cell=self.ctx.cell,
             spacegroup=self.ctx.spacegroup,
             links=self.ctx.links,
-            verbose=self.ctx.verbose,
+            verbose=self.ctx.verbose if verbose is None else verbose,
+            nonbonded=nonbonded,
         )
-
-        return self._restraints
 
     @property
     def restraints(self):
@@ -790,8 +797,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         fixed point.
 
         Costs a restraint build that is then discarded, because the plan needs the
-        topology and the topology is built over the atoms as loaded. Loading invokes
-        this only when ``add_hydrogens=True`` is requested.
+        topology and the topology is built over the atoms as loaded. It skips the
+        non-bonded pair search, which the plan does not use and which was the largest
+        part of that build, and it is silent: the build over the augmented table reports.
+        Loading invokes this only when ``add_hydrogens=True`` is requested.
         """
         from torchref.topology.hydrogens import (
             augment_atom_table,
@@ -799,7 +808,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             plan_hydrogens,
         )
 
-        restraints = self.restraints
+        restraints = self._restraints
+        if restraints is None:
+            restraints = self._new_restraints(nonbonded=False, verbose=0)
         xyz = self.xyz().detach()
         plan = plan_hydrogens(
             restraints.topology, restraints.cif_dict, xyz, verbose=self.ctx.verbose

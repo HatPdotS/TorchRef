@@ -4,7 +4,8 @@ GPU-native periodic neighbor search for VDW restraints.
 Works in fractional space with periodic boundary conditions.
 Avoids explicit symmetry expansion by assigning (atom, symop+offset)
 entries to grid cells and using padded batched ``torch.cdist``
-for distance computation.
+for distance computation. On CPU the pair search itself is a
+k-d tree instead (:func:`find_pairs_kdtree`), with the same output.
 
 All operations run under ``torch.no_grad()`` on whatever device
 the input coordinates live on (CPU or GPU).
@@ -501,6 +502,63 @@ def find_pairs_periodic_grid_v2(
     )
 
 
+def find_pairs_kdtree(
+    cart_pos: torch.Tensor,
+    atom_idx: torch.Tensor,
+    combo_idx: torch.Tensor,
+    cutoff: float,
+    identity_combo: int,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """CPU counterpart of :func:`find_pairs_periodic_grid_v2`, on a k-d tree.
+
+    Returns the same pairs under the same convention: every ASU atom ``i`` and image
+    ``(j, combo_j)`` closer than ``cutoff``, intra-ASU pairs once with ``i < j``, no
+    self-pairs. Sorted by ``(i, j, combo_j)``.
+
+    The grid search pads every cell to the fullest one and takes dense distance tiles
+    between neighbouring cells, so its cost goes with the square of the peak cell
+    occupancy -- about 4x for the same volume once hydrogens are added. Here the cost
+    goes with the pairs actually within the cutoff. A tree also has no cell width to
+    fall short of the cutoff, which a fractional grid cell can do in an oblique cell.
+
+    Parameters
+    ----------
+    cart_pos : (E, 3) float
+        Cartesian image positions from :func:`assign_to_grid`, unsorted.
+    atom_idx, combo_idx : (E,) long
+        ASU atom index and (symop, offset) combo index per entry.
+    cutoff : float
+        Cartesian distance cutoff in Angstrom.
+    identity_combo : int
+        Combo index corresponding to the identity (op=0, offset=0).
+    """
+    from scipy.spatial import cKDTree
+
+    device = cart_pos.device
+    pos = cart_pos.detach().cpu().numpy()
+    atoms = atom_idx.cpu().numpy()
+    combos = combo_idx.cpu().numpy()
+
+    asu = np.nonzero(combos == identity_combo)[0]
+    found = cKDTree(pos[asu]).sparse_distance_matrix(
+        cKDTree(pos), cutoff, output_type="ndarray"
+    )
+    # sparse_distance_matrix keeps d <= cutoff; the grid search keeps d < cutoff.
+    found = found[found["v"] < cutoff]
+    ai = atoms[asu[found["i"]]]
+    aj = atoms[found["j"]]
+    cj = combos[found["j"]]
+    # Intra-ASU contacts come back from both ends; keep i < j, which also drops self.
+    keep = (cj != identity_combo) | (ai < aj)
+    ai, aj, cj = ai[keep], aj[keep], cj[keep]
+
+    order = np.lexsort((cj, aj, ai))
+    return tuple(
+        torch.from_numpy(np.ascontiguousarray(a[order], dtype=np.int64)).to(device)
+        for a in (ai, aj, cj)
+    )
+
+
 # ------------------------------------------------------------------ #
 # Step 5 – filtering
 # ------------------------------------------------------------------ #
@@ -681,31 +739,40 @@ def build_vdw_restraints_gpu(
         xyz_frac, cell, sg, op_indices, cell_offsets_valid, grid_dims
     )
 
-    n_grid_total = grid_dims[0].item() * grid_dims[1].item() * grid_dims[2].item()
+    if device.type == "cpu":
+        # Steps 3-4 on CPU: a k-d tree, whose cost follows the pairs found rather
+        # than the padded cell tiles of the grid search below.
+        if verbose > 0:
+            print(f"  Pair search: k-d tree over {cart_pos.shape[0]} images")
+        pair_atom_i, pair_atom_j, pair_combo_j = find_pairs_kdtree(
+            cart_pos, atom_idx, combo_idx, cutoff, identity_combo
+        )
+    else:
+        n_grid_total = grid_dims[0].item() * grid_dims[1].item() * grid_dims[2].item()
 
-    # Step 3: sort into cell list
-    sort_order, unique_cells, starts, cell_lookup = build_cell_list(
-        flat_cell, n_grid_total
-    )
-    cart_sorted = cart_pos[sort_order]
-    atom_idx_sorted = atom_idx[sort_order]
-    combo_idx_sorted = combo_idx[sort_order]
+        # Step 3: sort into cell list
+        sort_order, unique_cells, starts, cell_lookup = build_cell_list(
+            flat_cell, n_grid_total
+        )
+        cart_sorted = cart_pos[sort_order]
+        atom_idx_sorted = atom_idx[sort_order]
+        combo_idx_sorted = combo_idx[sort_order]
 
-    if verbose > 0:
-        n_occupied = len(unique_cells)
-        counts = starts[1:] - starts[:-1]
-        print(f"  Grid: {grid_dims.tolist()}, "
-              f"{n_occupied}/{n_grid_total} cells occupied, "
-              f"max {counts.max().item()} entries/cell")
+        if verbose > 0:
+            n_occupied = len(unique_cells)
+            counts = starts[1:] - starts[:-1]
+            print(f"  Grid: {grid_dims.tolist()}, "
+                  f"{n_occupied}/{n_grid_total} cells occupied, "
+                  f"max {counts.max().item()} entries/cell")
 
-    # Step 4: find pairs via periodic grid + batched cdist. Nearly dedup-free by
-    # construction, but the hash dedup below still catches intra-cell
-    # swap-canonicalisation collisions.
-    pair_atom_i, pair_atom_j, pair_combo_j = find_pairs_periodic_grid_v2(
-        cart_sorted, atom_idx_sorted, combo_idx_sorted,
-        unique_cells, starts, cell_lookup, grid_dims,
-        cutoff, identity_combo,
-    )
+        # Step 4: find pairs via periodic grid + batched cdist. Nearly dedup-free by
+        # construction, but the hash dedup below still catches intra-cell
+        # swap-canonicalisation collisions.
+        pair_atom_i, pair_atom_j, pair_combo_j = find_pairs_periodic_grid_v2(
+            cart_sorted, atom_idx_sorted, combo_idx_sorted,
+            unique_cells, starts, cell_lookup, grid_dims,
+            cutoff, identity_combo,
+        )
 
     if len(pair_atom_i) == 0:
         if verbose > 0:
