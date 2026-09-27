@@ -20,13 +20,11 @@ on:
   # Lets publish.yml gate a PyPI release on this passing.
   workflow_call:
 
-env:
-  NUMBA_CACHE_DIR: /tmp/numba_cache
-  # PYTORCH_ENABLE_MPS_FALLBACK is left alone on purpose. torchref/__init__.py
-  # setdefault()s it to 1, so CI runs with the same fallback behaviour users
-  # get. Setting it to 0 here would make an op with no Metal kernel a CI
-  # failure while it stays a silent CPU round-trip in production -- a stricter
-  # policy than the package's, and not one to introduce from a workflow file.
+# PYTORCH_ENABLE_MPS_FALLBACK is left alone on purpose. torchref/__init__.py
+# setdefault()s it to 1, so CI runs with the same fallback behaviour users
+# get. Setting it to 0 here would make an op with no Metal kernel a CI
+# failure while it stays a silent CPU round-trip in production -- a stricter
+# policy than the package's, and not one to introduce from a workflow file.
 
 jobs:
   mps:

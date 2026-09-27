@@ -1,7 +1,7 @@
 """Assemble a :class:`~torchref.topology.topology.Topology` from an atom table.
 
-Intra-residue edges are matched here, template by template, through the Numba matchers
-in :mod:`torchref.topology.builders_numba`. Inter-residue edges come from the
+Intra-residue edges are matched here, template by template, through the matchers
+in :mod:`torchref.topology.matchers`. Inter-residue edges come from the
 ``InterResidue*Builder`` classes, which already encode the link geometry and are reused
 rather than reimplemented.
 """
@@ -20,11 +20,11 @@ from torchref.topology.builders import (
     InterResidueTorsionBuilder,
     PreprocessedCIF,
 )
-from torchref.topology.builders_numba import (
-    match_angles_numba,
-    match_bonds_numba,
-    match_chirals_numba,
-    match_torsions_numba,
+from torchref.topology.matchers import (
+    match_angles,
+    match_bonds,
+    match_chirals,
+    match_torsions,
 )
 from torchref.topology.atom_graph import AtomGraph
 from torchref.topology.edges import EdgeBlock, assemble_origins
@@ -206,7 +206,7 @@ def _match_intra(
         for names, indices in _conformers(cols, start, end):
             if key in pp_cif.bonds:
                 b = pp_cif.bonds[key]
-                n = match_bonds_numba(
+                n = match_bonds(
                     names,
                     indices,
                     b["atom1"],
@@ -226,7 +226,7 @@ def _match_intra(
                     val["bonds"]["sigmas"].append(work["f2"][:n].copy())
             if key in pp_cif.angles:
                 a = pp_cif.angles[key]
-                n = match_angles_numba(
+                n = match_angles(
                     names,
                     indices,
                     a["atom1"],
@@ -254,7 +254,7 @@ def _match_intra(
                     val["angles"]["sigmas"].append(work["f2"][:n].copy())
             if key in pp_cif.torsions:
                 t = pp_cif.torsions[key]
-                n = match_torsions_numba(
+                n = match_torsions(
                     names,
                     indices,
                     t["atom1"],
@@ -288,7 +288,7 @@ def _match_intra(
                     val["torsions"]["periods"].append(work["per"][:n].copy())
             if key in pp_cif.chirals:
                 c = pp_cif.chirals[key]
-                n = match_chirals_numba(
+                n = match_chirals(
                     names,
                     indices,
                     c["center"],

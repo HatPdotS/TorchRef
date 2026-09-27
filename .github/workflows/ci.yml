@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [main, master, develop]
 
-env:
-  NUMBA_CACHE_DIR: /tmp/numba_cache
-
 jobs:
   test:
     name: Test - Python ${{ matrix.python-version }}
@@ -45,7 +42,6 @@ jobs:
           python --version
           python -c "import numpy; print(f'numpy: {numpy.__version__}')"
           python -c "import torch; print(f'torch: {torch.__version__}')"
-          python -c "import numba; print(f'numba: {numba.__version__}')"
 
       - name: Run tests
         run: |
