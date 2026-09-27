@@ -1355,6 +1355,11 @@ class ModelCIFReader:
         conn = self.cif.data.get("struct_conn")
         if conn is None or len(conn) == 0:
             return empty
+        if isinstance(conn, dict):
+            # A file with a single connection writes it as key-value pairs rather than
+            # a loop, which the parser keeps as {attribute: value}; loops come back as a
+            # DataFrame of full tag names.
+            conn = pd.DataFrame([{f"_struct_conn.{k}": v for k, v in conn.items()}])
 
         def column(names, default=""):
             for name in names:
