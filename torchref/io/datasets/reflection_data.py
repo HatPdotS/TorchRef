@@ -7,7 +7,7 @@ intensities, and R-free flags.
 """
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Tuple, Union
 
@@ -22,6 +22,7 @@ from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
+from torchref.utils.utils import TensorMasks
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
@@ -383,6 +384,47 @@ class ReflectionData(CrystalDataset, DebugMixin):
     # the ``centric`` property).
     _REINDEX_DERIVED = ("resolution", "_centric_flags")
 
+    def _per_row_fields(self):
+        """Yield ``(name, tensor)`` for each per-reflection dataclass field.
+
+        Enumerated generically (``shape[0] == len(hkl)``) so a new per-reflection
+        field is carried by every reindexing operation without being listed.
+        """
+        n = len(self.hkl) if self.hkl is not None else 0
+        for f in fields(self):
+            val = getattr(self, f.name)
+            if isinstance(val, torch.Tensor) and val.shape and val.shape[0] == n:
+                yield f.name, val
+
+    @staticmethod
+    def _gather_rows(val: torch.Tensor, index: torch.Tensor, fill) -> torch.Tensor:
+        """``val[index]``, with rows where ``index == -1`` set to ``fill``."""
+        present = index >= 0
+        if bool(present.all()):
+            return val[index]
+        shape = (len(index),) + tuple(val.shape[1:])
+        out = torch.full(shape, fill, dtype=val.dtype, device=val.device)
+        out[present] = val[index[present]]
+        return out
+
+    def _gathered_masks(self, index: torch.Tensor) -> TensorMasks:
+        """Every mask gathered by ``index``; rows with ``index == -1`` are masked out.
+
+        Call before ``hkl`` changes length: masks of any other length are dropped.
+        """
+        n = len(self.hkl) if self.hkl is not None else 0
+        out = TensorMasks(device=self.device)
+        for name, mask in self.masks.items():
+            if mask is not None and len(mask) == n:
+                out[name] = self._gather_rows(mask, index, False)
+        return out
+
+    def _replace_masks(self, new: TensorMasks) -> None:
+        """Swap in ``new``'s masks, keeping the existing ``TensorMasks`` object."""
+        self.masks.clear()
+        for name, mask in new.items():
+            self.masks[name] = mask
+
     def _reindex_per_reflection(
         self,
         index_map: torch.Tensor,
@@ -413,45 +455,26 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Boolean presence mask (``index_map >= 0``), for building the
             caller's ``hkl_present`` / ``missing`` masks.
         """
-        from dataclasses import fields as dc_fields
-
         if target is None:
             target = self
 
-        n_src = len(self.hkl) if self.hkl is not None else 0
         new_hkl = new_hkl.to(dtype=dtypes.int, device=self.device)
-        n_out = len(new_hkl)
         index_map = index_map.to(device=self.device, dtype=torch.long)  # dtype-ok: index map used for indexing/gather; PyTorch requires int64
         present = index_map >= 0
-        src_idx = index_map[present]
 
-        derived = set(self._REINDEX_DERIVED)
-        for f in dc_fields(self):
-            name = f.name
-            if name == "hkl" or name in derived:
-                continue
-            val = getattr(self, name)
-            if not isinstance(val, torch.Tensor):
-                continue
-            if not (val.shape and val.shape[0] == n_src):
-                # Non-per-reflection tensor: leave target's own value untouched
-                # (a fresh default when target is a new instance).
-                continue
-            if name == "hkl_anomalous":
-                # Present rows keep their signed (anomalous) index; missing rows
-                # fall back to the canonical reference HKL (never a 0,0,0 row).
-                out = new_hkl.clone()
-                out[present] = val[src_idx]
-            else:
-                fill = self._REINDEX_FILL.get(name, 0)
-                out = torch.full(
-                    (n_out,) + tuple(val.shape[1:]),
-                    fill,
-                    dtype=val.dtype,
-                    device=self.device,
-                )
-                out[present] = val[src_idx]
-            setattr(target, name, out)
+        skip = {"hkl", *self._REINDEX_DERIVED}
+        # Collected first: writing into self (the in-place case) changes the
+        # row count _per_row_fields keys on.
+        gathered = {
+            name: self._gather_rows(val, index_map, self._REINDEX_FILL.get(name, 0))
+            for name, val in self._per_row_fields()
+            if name not in skip
+        }
+        if "hkl_anomalous" in gathered:
+            # Missing rows fall back to the reference HKL, never a 0,0,0 row.
+            gathered["hkl_anomalous"][~present] = new_hkl[~present]
+        for name, val in gathered.items():
+            setattr(target, name, val)
 
         # Install the new HKL and recompute / invalidate derived-from-HKL fields.
         target.hkl = new_hkl
@@ -468,11 +491,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Post-condition for the reindex routines; raises rather than letting a
         stale-length field surface as a downstream shape mismatch.
         """
-        from dataclasses import fields as dc_fields
-
         n = len(self.hkl) if self.hkl is not None else 0
         bad = []
-        for f in dc_fields(self):
+        for f in fields(self):
             val = getattr(self, f.name)
             if isinstance(val, torch.Tensor) and val.ndim >= 1 and val.shape[0] != n:
                 bad.append((f.name, tuple(val.shape)))
@@ -483,8 +504,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     def _canonicalize_in_place(self) -> None:
         """Remap HKL to canonical CCP4 ASU form and reorder all data in-place."""
-        from dataclasses import fields as dc_fields
-
         if self.hkl is None or self.spacegroup is None:
             return
 
@@ -494,13 +513,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
         )
 
-        n_refl = len(self.hkl)
-
-        for f in dc_fields(self):
-            val = getattr(self, f.name)
-            if isinstance(val, torch.Tensor) and val.shape and val.shape[0] == n_refl:
-                setattr(self, f.name, val[sort_indices])
-
+        masks = self._gathered_masks(sort_indices)
+        for name, val in list(self._per_row_fields()):
+            setattr(self, name, val[sort_indices])
+        self._replace_masks(masks)
         self.hkl = canonical_hkl
 
         if self.phase is not None:
@@ -510,14 +526,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         if self.cell is not None:
             self._calculate_resolution()
-
-        if hasattr(self, "masks") and self.masks is not None:
-            for name in list(self.masks.keys()):
-                mask_tensor = self.masks[name]
-                if mask_tensor is not None:
-                    # Bypass __setitem__ validation (reordering preserves True count)
-                    dict.__setitem__(self.masks, name, mask_tensor[sort_indices])
-            self.masks._updated = True
 
         # friedel_flags comes back already in sorted (canonical) order, matching
         # self.hkl. hkl_anomalous carries the SIGNED index used for
@@ -1751,38 +1759,20 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             New ReflectionData object with selected reflections.
         """
-        from dataclasses import fields as dc_fields
-
-        from torchref.utils.utils import TensorMasks
-
-        n_refl = len(self.hkl) if self.hkl is not None else 0
-
-        # Create new instance with same device
+        if indices.dtype == torch.bool:
+            indices = torch.nonzero(indices).squeeze(-1)
         selected = ReflectionData(verbose=self.verbose, device=self.device)
 
-        for f in dc_fields(self):
+        per_row = dict(self._per_row_fields())
+        for f in fields(self):
             val = getattr(self, f.name)
-            if val is None:
-                continue
-            if isinstance(val, torch.Tensor):
-                if val.shape and val.shape[0] == n_refl:
-                    setattr(selected, f.name, val[indices])
-                else:
-                    # Preserve scalar tensor metadata.
-                    setattr(selected, f.name, val.clone())
-            elif isinstance(val, Cell):
+            if f.name in per_row:
+                setattr(selected, f.name, val[indices])
+            elif isinstance(val, (torch.Tensor, Cell)):
                 setattr(selected, f.name, val.clone())
-            else:
-                # Scalars, strings, None, gemmi objects, etc.
+            elif val is not None:
                 setattr(selected, f.name, val)
-
-        # Handle masks (not a dataclass field)
-        if hasattr(self, "masks") and self.masks is not None and len(self.masks) > 0:
-            new_masks = TensorMasks(device=self.device)
-            for name, mask_tensor in self.masks.items():
-                if mask_tensor is not None:
-                    new_masks[name] = mask_tensor[indices]
-            selected.masks = new_masks
+        selected.masks = self._gathered_masks(indices)
 
         selected.source = self
         selected.last_op = op
@@ -1904,26 +1894,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Reindex EVERY per-reflection field via the shared primitive. Masks are
         # handled separately below because they are not dataclass fields.
+        masks = self._gathered_masks(valid_indices)
         presence_mask = self._reindex_per_reflection(valid_indices, hkl_ref)
         if identity_hkl is not None:
             self.hkl_anomalous = identity_hkl.to(self.hkl).clone()
             self.friedel_flags = (self.hkl_anomalous != self.hkl).any(dim=-1)
-
-        # Transfer existing masks to new indexing
-        old_masks = dict(self.masks.items())
-        # Clear existing masks
-        self.masks.clear()
-        self.masks._updated = True
-
-        for name, old_mask in old_masks.items():
-            if old_mask is not None and len(old_mask) == n_data:
-                # Expand mask: missing reflections are masked out (False)
-                new_mask = torch.zeros(n_ref, dtype=torch.bool, device=self.device)
-                mask = valid_indices >= 0
-                new_mask[mask] = old_mask[valid_indices[mask]]
-                self.masks[name] = new_mask
-
-        # Add presence mask - this is the key mask that marks real vs placeholder data
+        self._replace_masks(masks)
+        # The mask that tells real reflections from placeholder rows.
         self.masks["hkl_present"] = presence_mask
 
         n_present = presence_mask.sum().item()
@@ -2509,21 +2486,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         from torchref.symmetry.spacegroup import SpaceGroup
 
-        # Mask remapper. Masks are not dataclass fields, so the shared
-        # per-reflection reindexer below does not touch them.
-        def _remap_mask(tensor, fill_value):
-            if tensor is None:
-                return None
-            valid_mask = index_mapping >= 0
-            result = torch.full(
-                (len(new_hkl),) + tensor.shape[1:],
-                fill_value,
-                dtype=tensor.dtype,
-                device=self.device,
-            )
-            result[valid_mask] = tensor[index_mapping[valid_mask]]
-            return result
-
         # Create new ReflectionData; set cell/spacegroup first so the shared
         # reindexer can recompute resolution on the new grid.
         remapped = ReflectionData(verbose=self.verbose, device=self.device)
@@ -2545,9 +2507,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Carry forward prior combined mask if available.
         prior_mask = self.masks()
         if prior_mask is not None:
-            remapped.masks["prior_flagged"] = _remap_mask(
-                prior_mask.to(dtype=dtypes.int), fill_value=0
-            ).to(torch.bool)
+            remapped.masks["prior_flagged"] = self._gather_rows(
+                prior_mask, index_mapping.to(self.device), False
+            )
 
         # Copy metadata sources
         remapped.amplitude_source = self.amplitude_source
