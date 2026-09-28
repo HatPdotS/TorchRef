@@ -275,17 +275,6 @@ def test_french_wilson_guard_refuses_an_all_false_mask():
 
 
 @pytest.mark.unit
-def test_suspicious_sigma_is_no_longer_run_at_load():
-    hkl, F, F_sigma = _wilson_grid(half_width=8)
-    data = _synthetic(F, F_sigma, hkl=hkl)
-    assert "flagged_sigma" not in data.masks
-
-    # Still available for diagnostics, and still writes its own key.
-    data.flag_suspicious_sigma()
-    assert "flagged_sigma" in data.masks
-
-
-@pytest.mark.unit
 def test_too_few_reflections_are_left_alone():
     """Wilson statistics cannot be estimated from a handful of reflections, and
     guessing at them would reject real data."""

@@ -2163,44 +2163,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             device=self.device, dtype=torch.bool
         )
 
-    def flag_suspicious_sigma(self, z_threshold: float = 5.0) -> None:
-        """
-        Flag sigma values that deviate significantly from expected distribution.
-
-        Sigma values from a detector should follow a log-normal distribution.
-        Values with z-scores beyond threshold are flagged as suspicious.
-
-        .. note::
-           No longer run during loading -- :meth:`flag_wilson_outliers`
-           supersedes it. The z-score here is taken against a *global* mean and
-           std of ``log sigma``, but that distribution is a mixture across
-           resolution shells (sigma tracks the intensity fall-off), so the
-           global std is inflated by the resolution trend and the test is
-           correspondingly blunt. It also never looks at ``F`` beside its sigma.
-           Kept for diagnostics and backwards compatibility.
-
-        Parameters
-        ----------
-        z_threshold : float, optional
-            Z-score threshold, on ``log(sigma)``, for flagging a sigma as suspicious.
-            Default is 5.0.
-        """
-        sigmas = self.F_sigma
-        log_sigmas = torch.log(sigmas)
-        flagged_initial = torch.isnan(log_sigmas) | torch.isinf(log_sigmas)
-        mean_log_sigma = torch.mean(log_sigmas[~flagged_initial])
-        std_log_sigma = torch.std(log_sigmas[~flagged_initial]) + 1e-5 * mean_log_sigma
-        z_scores = (log_sigmas - mean_log_sigma) / std_log_sigma
-        flagged = torch.abs(z_scores) > z_threshold
-        flagged = flagged | flagged_initial
-        if self.verbose > 0:
-            n_flagged = flagged.sum().item()
-            n_total = len(sigmas)
-            print(
-                f"Suspicious sigma detection: {n_flagged}/{n_total} ({100*n_flagged/n_total:.2f}%) reflections flagged"
-            )
-        self.masks["flagged_sigma"] = ~flagged
-
     def _build_anomalous_dataframe(
         self, fcalc: Optional[torch.Tensor] = None
     ) -> pd.DataFrame:
@@ -2738,61 +2700,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             spacegroup="P1",
             op_name=f"expand_to_p1(include_friedel={include_friedel})",
         )
-
-    def canonicalize(self, include_friedel: bool = True) -> "ReflectionData":
-        """Return new ReflectionData with HKL in standard CCP4 ASU form.
-
-        Remaps all Miller indices to the canonical CCP4 asymmetric unit
-        representative using ``gemmi.ReciprocalAsu``, adjusts phases
-        accordingly, and sorts reflections lexicographically by (h, k, l).
-
-        Parameters
-        ----------
-        include_friedel : bool, default True
-            Whether Friedel mates are considered equivalent.
-
-        Returns
-        -------
-        ReflectionData
-            New object with canonicalized, sorted Miller indices.
-        """
-        if self.hkl is None:
-            raise ValueError("ReflectionData has no Miller indices loaded")
-
-        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
-        canonical_hkl, phase_shifts, friedel_flags, sort_indices = sg.canonicalize_hkl(
-            self.hkl, include_friedel, device=self.device
-        )
-
-        # Reorder all fields using __select__
-        result = self.__select__(
-            sort_indices, op=f"canonicalize(include_friedel={include_friedel})"
-        )
-
-        # Overwrite HKL with canonical form (already sorted)
-        result.hkl = canonical_hkl
-
-        # Fix phases: phi_new = where(friedel, -phi_old, phi_old) + phase_shift
-        if result.phase is not None:
-            result.phase = (
-                torch.where(friedel_flags, -result.phase, result.phase) + phase_shifts
-            )
-
-        # Record anomalous bookkeeping for the canonical result (the stale values
-        # carried over by __select__ are recomputed here). See _hkl_for_sf.
-        result.friedel_flags = friedel_flags
-        result.hkl_anomalous = torch.where(
-            friedel_flags.unsqueeze(-1), -canonical_hkl, canonical_hkl
-        )
-
-        # Recalculate resolution from canonical HKL + cell
-        if result.cell is not None:
-            result._calculate_resolution()
-
-        # Invalidate bin_indices
-        result.bin_indices = None
-
-        return result
 
     # ========== E-VALUE AND ANISOTROPY CORRECTION METHODS ==========
 
