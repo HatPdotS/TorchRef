@@ -258,10 +258,13 @@ def test_derived_models_keep_the_restraint_cif(pdb_dir, renamed_glu_cif):
 
 
 @pytest.mark.unit
-def test_state_dict_round_trips_the_restraint_cif(pdb_dir, renamed_glu_cif):
-    model = Model(verbose=0, cif_path=renamed_glu_cif)
+@pytest.mark.parametrize("model_class", [Model, ModelFT])
+def test_state_dict_round_trips_the_restraint_cif(
+    pdb_dir, renamed_glu_cif, model_class
+):
+    model = model_class(verbose=0, cif_path=renamed_glu_cif)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
-    restored = Model.create_from_state_dict(model.state_dict(), verbose=0)
+    restored = model_class.create_from_state_dict(model.state_dict(), verbose=0)
     assert restored.ctx.cif_path == renamed_glu_cif
 
 

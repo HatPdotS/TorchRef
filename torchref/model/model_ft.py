@@ -920,6 +920,7 @@ class ModelFT(CachedForwardMixin, Model):
         saved_dtype = state_dict.pop("dtype_float", dtype_float)
         state_dict.pop("device", None)  # Remove but don't use (use provided device)
         strip_H = state_dict.pop("strip_H", True)
+        cif_path = state_dict.pop("cif_path", None)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
         hydrogens_in_xray = state_dict.pop("hydrogens_in_xray", True)
         hydrogen_mode = state_dict.pop("hydrogen_mode", None)
@@ -938,6 +939,7 @@ class ModelFT(CachedForwardMixin, Model):
             verbose=verbose,
             device=device,
             strip_H=strip_H,
+            cif_path=cif_path,
             max_res=max_res,
             gridsize=explicit_gridsize,
             wavelength=wavelength,

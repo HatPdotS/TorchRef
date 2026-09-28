@@ -1218,9 +1218,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         The recommended restore path: it rebuilds reflection data, model and scaler
         through their own factories before calling ``load_state_dict``, which
-        :meth:`load_state` cannot do. Restraints are normally lazy via
-        ``model.restraints``; the standalone handling here is a legacy state-dict
-        path and does not make them a first-class persisted submodule.
+        :meth:`load_state` cannot do. Restraints are not persisted; the
+        restored model rebuilds them on first access to ``model.restraints``.
 
         Parameters
         ----------
@@ -1253,13 +1252,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         model_state = extract_submodule_state(state_dict, "model")
         reflection_data_state = extract_submodule_state(state_dict, "reflection_data")
         scaler_state = extract_submodule_state(state_dict, "scaler")
-        restraints_state = extract_submodule_state(state_dict, "restraints")
         weighter_state = extract_submodule_state(state_dict, "weighter")
 
         if verbose > 0:
             print(
                 f"Extracted state dict sizes: model={len(model_state)}, data={len(reflection_data_state)}, "
-                f"scaler={len(scaler_state)}, restraints={len(restraints_state)}"
+                f"scaler={len(scaler_state)}"
             )
 
         # Create submodules using their factory methods
@@ -1275,11 +1273,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         # Create Scaler with model and data (required for proper setup)
         scaler = Scaler(model, reflection_data, verbose=verbose, device=device)
-
-        # Create Restraints with model (required for proper setup)
-        from torchref.topology.restraints import Restraints
-
-        restraints = Restraints(model, verbose=verbose)
 
         # Create empty instance
         instance = cls.__new__(cls)
@@ -1301,7 +1294,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         instance.reflection_data = reflection_data
         instance.model = model
         instance.scaler = scaler
-        instance.restraints = restraints
         instance.weighter = None
 
         # Now load the state dict - PyTorch's default will fill in values
