@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- Removed unused ``ReflectionData`` methods: ``data_fill_masked``, ``mean_F_per_bin``, ``mean_sigma_per_bin``, ``calc_patterson``, ``fill``, ``possible_hkl``, ``get_structure_factors``, ``get_structure_factors_with_sigma``, ``get_hkl``, ``list_cif_data_blocks``, ``dump``, ``check_all_data_types``, ``unpack_one`` and ``get_min_res``, and the never-populated ``dataset`` and ``reader`` fields
 - Added ``merge_to_spacegroup(data, spacegroup)``, which merges a dataset into another space group via P1 and returns the merged ``ReflectionData`` with per-shell Rmerge, Rmeas and CC_sym (``MergeStats``); a symmetry test when the target is higher than the source. It replaces ``ReflectionData.reduce_to_spacegroup``, which is removed
 - ``ReflectionData.from_tensors`` accepts ``I``, ``I_sigma`` and ``validation_flags``, reordered with the other rows during canonicalization
 - Removed the ``FrenchWilson`` module and ``ReflectionData._FrenchWilson``; use ``french_wilson_auto(I, sigma_I, hkl, d_spacings, space_group)``, which returns ``(F, sigma_F, valid_mask)``

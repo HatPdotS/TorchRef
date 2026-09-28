@@ -126,7 +126,7 @@ class CrystalDataset(DeviceMovementMixin):
 
         state = {}
         for f in fields(self):
-            if f.name in {"source", "reader", "dataset"}:
+            if f.name == "source":
                 # Loading provenance is not observation state.
                 state[f.name] = None
                 continue

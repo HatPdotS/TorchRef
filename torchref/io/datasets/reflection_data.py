@@ -9,7 +9,7 @@ intensities, and R-free flags.
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -207,14 +207,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
     # Note: Most fields are inherited from CrystalDataset dataclass
 
     # Cached properties (not serialized)
-    _centric: Optional[torch.Tensor] = field(default=None, repr=False)
     _n_bins: Optional[int] = field(default=None, repr=False)
 
-    # Dynamic fields used by various methods
+    # Provenance: the dataset this one was derived from, and the operation.
     source: Optional["ReflectionData"] = field(default=None, repr=False)
-    dataset: Optional[pd.DataFrame] = field(default=None, repr=False)
     last_op: Optional[str] = field(default=None, repr=False)
-    reader: Optional[Any] = field(default=None, repr=False)
 
     def __post_init__(self):
         """
@@ -525,9 +522,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     # Bypass __setitem__ validation (reordering preserves True count)
                     dict.__setitem__(self.masks, name, mask_tensor[sort_indices])
             self.masks._updated = True
-
-        if hasattr(self, "dataset") and self.dataset is not None:
-            self.dataset = self.dataset.iloc[sort_indices.cpu().numpy()].copy()
 
         # friedel_flags comes back already in sorted (canonical) order, matching
         # self.hkl. hkl_anomalous carries the SIGNED index used for
@@ -1111,31 +1105,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             Self, for method chaining.
         """
-        self.reader = cif.ReflectionCIFReader(
+        reader = cif.ReflectionCIFReader(
             str(path), verbose=self.verbose, data_block=data_block, anomalous=anomalous
         )
-        return self.load(self.reader)
-
-    @staticmethod
-    def list_cif_data_blocks(path: str) -> List[str]:
-        """
-        List all data blocks available in a CIF file without loading data.
-
-        Useful for multi-dataset CIF files to inspect available blocks
-        before loading a specific one.
-
-        Parameters
-        ----------
-        path : str
-            Path to CIF file.
-
-        Returns
-        -------
-        list of str
-            Names of all data blocks in the CIF file, in file order; pass one to
-            ``load_cif(data_block=...)``.
-        """
-        return cif.list_data_blocks(path)
+        return self.load(reader)
 
     def _generate_rfree_flags(
         self,
@@ -1388,74 +1361,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         )
         mean_resolutions = mean_resolutions / count_per_bin.clamp(min=1).float()
         return mean_resolutions
-
-    def mean_F_per_bin(self) -> torch.Tensor:
-        """
-        Calculate mean structure factor amplitude per resolution bin.
-
-        Returns
-        -------
-        torch.Tensor
-            Mean F per bin of shape (n_bins,).
-
-        Raises
-        ------
-        ValueError
-            If bins have not been created yet.
-        """
-        if self.bin_indices is None:
-            self.get_bins()
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        mean_F = torch.zeros(self._n_bins, dtype=dtypes.float, device=self.device)
-        count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
-        mask = self.masks()
-        mean_F = torch.scatter_add(
-            mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
-        )
-        count_per_bin = torch.scatter_add(
-            count_per_bin,
-            0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
-            torch.ones_like(self.F[mask], dtype=dtypes.int),
-        )
-        mean_F = mean_F / count_per_bin.clamp(min=1).float()
-        return mean_F
-
-    def mean_sigma_per_bin(self) -> Optional[torch.Tensor]:
-        """
-        Calculate mean structure factor uncertainty per resolution bin.
-
-        Returns
-        -------
-        torch.Tensor or None
-            Mean sigma_F per bin of shape (n_bins,), or None if no uncertainties.
-
-        Raises
-        ------
-        ValueError
-            If bins have not been created yet.
-        """
-        if self.bin_indices is None:
-            self.get_bins()
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        mean_sigma = torch.zeros(self._n_bins, dtype=dtypes.float, device=self.device)
-        count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
-        mask = self.masks()
-        mean_sigma = torch.scatter_add(
-            mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
-        )
-        count_per_bin = torch.scatter_add(
-            count_per_bin,
-            0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
-            torch.ones_like(self.F_sigma[mask], dtype=dtypes.int),
-        )
-        mean_sigma = mean_sigma / count_per_bin.clamp(min=1).float()
-        return mean_sigma
 
     def regenerate_rfree_flags(
         self,
@@ -1754,75 +1659,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         return B_struct.item(), B_sol.item(), k.item()
 
-    def get_structure_factors(self, as_complex: bool = False) -> torch.Tensor:
-        """
-        Get structure factors, optionally as complex numbers.
-
-        Parameters
-        ----------
-        as_complex : bool, optional
-            If True and phases available, return F*exp(i*phi). Default is False.
-
-        Returns
-        -------
-        torch.Tensor
-            Structure factor amplitudes or complex structure factors.
-
-        Raises
-        ------
-        ValueError
-            If no amplitude data is loaded.
-        """
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        if as_complex and self.phase is not None:
-            return self.F * torch.exp(1j * self.phase)
-        else:
-            return self.F
-
-    def get_structure_factors_with_sigma(
-        self,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Get structure factor amplitudes and their uncertainties.
-
-        Returns
-        -------
-        F : torch.Tensor
-            Structure factor amplitudes of shape (N,).
-        F_sigma : torch.Tensor or None
-            Uncertainties of shape (N,), or None if not available.
-
-        Raises
-        ------
-        ValueError
-            If no amplitude data is loaded.
-        """
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        return self.F, self.F_sigma
-
-    def get_hkl(self):
-        """
-        Return Miller indices for valid reflections.
-
-        Returns
-        -------
-        torch.Tensor
-            Miller indices of the valid subset, shape (M, 3) with M <= N
-            (M = number of valid reflections), dtype int32.
-
-        Raises
-        ------
-        ValueError
-            If no Miller indices are loaded.
-        """
-        if self.hkl is None:
-            raise ValueError("No Miller indices loaded")
-        return self.hkl[self.masks()]
-
     def filter_by_resolution(
         self, d_min: Optional[float] = None, d_max: Optional[float] = None
     ) -> "ReflectionData":
@@ -1894,13 +1730,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         mask = self.masks()
         return float(self.resolution[mask].min().item())
 
-    def get_min_res(self) -> Optional[float]:
-        """Largest d-spacing among valid reflections, in Ångströms."""
-        if self.resolution is None:
-            self._calculate_resolution()
-        mask = self.masks()
-        return float(self.resolution[mask].max().item())
-
     def __len__(self) -> int:
         """Number of reflections (full array, ignoring masks)."""
         return len(self.hkl) if self.hkl is not None else 0
@@ -1970,65 +1799,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         )
 
         return hkl, F, F_sigma, rfree_flags
-
-    def data_fill_masked(
-        self, mode="mean"
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Return data tensors with missing or flagged reflections filled in.
-
-        Parameters
-        ----------
-        mode : str, optional
-            Fill strategy for missing/flagged reflections. Default is 'mean'.
-
-            - 'mean' : fill with the per-bin mean of the present data.
-            - 'zero' : fill with zero.
-
-        Returns
-        -------
-        hkl : torch.Tensor
-            Miller indices of shape (N, 3).
-        F : torch.Tensor
-            Structure factor amplitudes of shape (N,) with gaps filled.
-        F_sigma : torch.Tensor
-            Amplitude uncertainties of shape (N,) with gaps filled.
-        rfree : torch.Tensor
-            R-free flags of shape (N,); filled-in reflections are assigned to
-            the work set (True).
-        """
-        hkl, F, F_sigma = self.hkl, self.F, self.F_sigma
-        if F is None or F_sigma is None:
-            raise ValueError("Amplitude observations and uncertainties are required")
-        mask = self.masks()
-        if not bool(mask.any()):
-            raise ValueError("No valid reflections to fill from")
-        rfree = (
-            self.rfree_flags.clone()
-            if self.rfree_flags is not None
-            else torch.ones_like(mask)
-        )
-
-        if mode == "mean":
-            mean_F = self.mean_F_per_bin()
-            mean_F_sigma = self.mean_sigma_per_bin()
-            F_data = F.clone()
-            F_sigma_data = F_sigma.clone()
-            F_data[~mask] = mean_F[self.bin_indices[~mask]]
-            F_sigma_data[~mask] = mean_F_sigma[self.bin_indices[~mask]]
-            rfree[~mask] = True  # set missing to work set
-            return hkl, F_data, F_sigma_data, rfree
-
-        elif mode == "zero":
-            F_data = F.clone()
-            F_sigma_data = F_sigma.clone()
-            F_data[~mask] = 0.0
-            F_sigma_data[~mask] = 0.0
-            rfree[~mask] = True  # set missing to work set
-            return hkl, F_data, F_sigma_data, rfree
-
-        else:
-            raise ValueError(f"Unknown fill mode: {mode}")
 
     def __getitem__(self, key):
         """
@@ -2100,11 +1870,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     new_masks[name] = mask_tensor[indices]
             selected.masks = new_masks
 
-        # Handle DataFrame
-        if hasattr(self, "dataset") and self.dataset is not None:
-            idx_np = indices.cpu().numpy()
-            selected.dataset = self.dataset.iloc[idx_np].copy()
-
         selected.source = self
         selected.last_op = op
         return selected
@@ -2160,20 +1925,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             if self.F_sigma is not None:
                 self.F_sigma[mask] = 0.0
         return self
-
-    def check_all_data_types(self):
-        """Print dtype/shape (or type/value) of every attribute, for debugging."""
-        for key in self.__dict__:
-            if self.__dict__[key] is not None and isinstance(
-                self.__dict__[key], torch.Tensor
-            ):
-                print(
-                    f"{key}: {self.__dict__[key].dtype}, shape: {self.__dict__[key].shape}"
-                )
-            elif self.__dict__[key] is not None:
-                print(f"{key}: {type(self.__dict__[key])}, value: {self.__dict__[key]}")
-            else:
-                print(f"{key}: None")
 
     def validate_hkl(
         self, hkl_ref: torch.Tensor, *, identity_hkl: Optional[torch.Tensor] = None
@@ -2272,21 +2023,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             print(f"  Missing (masked): {n_missing} ({100*n_missing/n_ref:.1f}%)")
 
         self._assert_per_reflection_consistent()
-        return self
-
-    def unpack_one(self):
-        """
-        Unpack one level of source.
-
-        Does not recurse fully and does not flag.
-
-        Returns
-        -------
-        ReflectionData
-            Parent source or self if no source.
-        """
-        if self.source is not None:
-            return self.source
         return self
 
     WILSON_MASK_KEY = "wilson_valid"
@@ -2464,22 +2200,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 f"Suspicious sigma detection: {n_flagged}/{n_total} ({100*n_flagged/n_total:.2f}%) reflections flagged"
             )
         self.masks["flagged_sigma"] = ~flagged
-
-    def dump(self):
-        """
-        Dump all reflection data to console for debugging.
-
-        Prints type, shape, and device information for all attributes.
-        """
-        print("ReflectionData dump:")
-        for key in self.__dict__:
-            value = self.__dict__[key]
-            if isinstance(value, torch.Tensor):
-                print(
-                    f"  {key}: dtype={value.dtype}, shape={value.shape}, device={value.device}"
-                )
-            else:
-                print(f"  {key}: type={type(value)}, value={value}")
 
     def _build_anomalous_dataframe(
         self, fcalc: Optional[torch.Tensor] = None
@@ -2874,80 +2594,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         return self._centric_flags
 
-    def calc_patterson(
-        self,
-        grid_size: Optional[Tuple[int, int, int]] = None,
-        grid_sampling: Optional[float] = 1,
-    ) -> torch.Tensor:
-        """
-        Calculate Patterson map of the dataset.
-
-        The Patterson function P(u,v,w) = Σ|F(hkl)|² exp(-2πi(hu+kv+lw))
-        is computed via inverse FFT of F². Data is expanded to P1 symmetry
-        using only observed reflections (no filling of missing data).
-
-        Parameters
-        ----------
-        grid_size : tuple of int, optional
-            Grid dimensions (Nx, Ny, Nz). If None, automatically determined
-            from unit cell and resolution.
-        grid_sampling : float, optional
-            Sampling interval for the grid. Default is 1.
-            This sets the grid so that we sample twice as much as normal for a given resolution
-
-        Returns
-        -------
-        torch.Tensor
-            Real-valued Patterson map of shape (Nx, Ny, Nz).
-            Origin is at grid position [0, 0, 0].
-        """
-        from torchref.base.fourier import find_grid_size
-        from torchref.base.reciprocal import place_on_grid
-
-        # Expand to P1 symmetry (don't fill missing reflections - use only observed data)
-        data = self.expand_to_p1()
-
-        max_res = data.resolution.min() * grid_sampling
-
-        if grid_size is None:
-            grid_size = find_grid_size(data.cell, max_res)
-
-        # Use data_indexed to get only valid (observed) reflections
-        hkl, F, _, _ = data.data_indexed()
-
-        F_2 = F**2
-
-        # Place F² on reciprocal grid (don't enforce Hermitian since we have P1 expansion)
-        grid = place_on_grid(hkl, F_2, grid_size, enforce_hermitian=False)
-
-        patterson = torch.fft.ifftn(grid, dim=(0, 1, 2), norm="forward").real
-
-        return patterson
-
-    def possible_hkl(self) -> torch.Tensor:
-        """
-        Generate all possible HKL indices within the resolution limit.
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (M, 3) containing all possible Miller indices
-            within the resolution limit defined by self.resolution.
-        """
-        from torchref.base.reciprocal import generate_possible_hkl
-
-        if self.cell is None or self.resolution is None:
-            raise ValueError(
-                "Cell and resolution must be defined to generate possible HKL"
-            )
-
-        max_res = self.resolution.min().item()
-        possible_hkl = generate_possible_hkl(
-            self.cell.data, max_res, device=self.device
-        )
-
-        return possible_hkl
-
     def remap(
         self,
         new_hkl: torch.Tensor,
@@ -3017,12 +2663,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         self._reindex_per_reflection(index_mapping, new_hkl, target=remapped)
 
         # Apply optional phase shifts (e.g. from symmetry translations).
-        if remapped.phase is not None:
-            if phase_shifts is not None:
-                remapped.phase = remapped.phase + phase_shifts.to(device=self.device)
-        elif phase_shifts is not None:
-            # No original phases: store the shifts for later phase reconstruction.
-            remapped._expansion_phase_shifts = phase_shifts.to(device=self.device)
+        if remapped.phase is not None and phase_shifts is not None:
+            remapped.phase = remapped.phase + phase_shifts.to(device=self.device)
 
         # Carry forward prior combined mask if available.
         prior_mask = self.masks()
@@ -3047,54 +2689,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             remapped.masks["missing"] = ~missing_mask.to(device=self.device)
 
         remapped._assert_per_reflection_consistent()
-        return remapped
-
-    def fill(self, d_min: Optional[float] = None) -> "ReflectionData":
-        """
-        Fill missing reflections within resolution limit.
-
-        Generates all possible reflections for the current spacegroup within
-        the resolution limit, identifies which are missing, and creates a
-        complete dataset. Missing reflections are filled with default values.
-
-        Parameters
-        ----------
-        d_min : float, optional
-            High resolution limit in Angstroms. If None, uses the minimum
-            resolution from the current dataset.
-
-        Returns
-        -------
-        ReflectionData
-            New ReflectionData with complete set of reflections.
-            Missing reflections have F/I/phase/fom = 0.0,
-            F_sigma/I_sigma = 1.0 and ``masks['missing'] = True``.
-        """
-        if self.hkl is None:
-            raise ValueError("ReflectionData has no Miller indices loaded")
-        if self.cell is None:
-            raise ValueError("ReflectionData has no unit cell defined")
-
-        # Use current resolution limit if not specified
-        if d_min is None:
-            if self.resolution is None:
-                raise ValueError("Resolution not available - specify d_min")
-            d_min = self.resolution.min().item()
-
-        # Get complete HKL set with index mapping
-        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
-        filled_hkl, indices, missing = sg.complete_hkl(
-            self.hkl, self.cell.data, d_min, device=self.device
-        )
-
-        # Use remap to create the new dataset
-        remapped = self.remap(
-            new_hkl=filled_hkl,
-            index_mapping=indices,
-            spacegroup=self.spacegroup,  # Keep same spacegroup
-            op_name=f"fill(d_min={d_min:.2f})",
-        )
-
         return remapped
 
     def expand_to_p1(
