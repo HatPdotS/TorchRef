@@ -64,8 +64,11 @@ class TestCoherentLimit:
         mc.set_lambda_twin(0.0)
         coherent = _target(dc, mc, scaler).intensity_model(recalc=True)
 
+        # Reuse the cached components: lambda enters only downstream of them, and
+        # a second structure-factor pass is not bit-reproducible on accelerators
+        # (atomic splatting), which would swamp the 1e-6 comparison below.
         mc.set_lambda_twin(0.5)
-        dispersed = _target(dc, mc, scaler).intensity_model(recalc=True)
+        dispersed = _target(dc, mc, scaler).intensity_model(recalc=False)
 
         assert not torch.allclose(coherent, dispersed)
         # Strictly positive: |dF|^2 has no sign.
@@ -105,8 +108,9 @@ class TestForwardModelStructure:
 
         mc.set_lambda_twin(0.0)
         coherent = _target(dc, mc, scaler).intensity_model(recalc=True)[0]
+        # Same components for both: see test_a_nonzero_lambda_changes_the_prediction.
         mc.set_lambda_twin(0.9)
-        dispersed = _target(dc, mc, scaler).intensity_model(recalc=True)[0]
+        dispersed = _target(dc, mc, scaler).intensity_model(recalc=False)[0]
 
         assert torch.allclose(coherent, dispersed, rtol=1e-6)
 
