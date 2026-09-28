@@ -125,15 +125,6 @@ class TestReflectionDataProperties:
     """Tests for ReflectionData computed properties."""
 
     @pytest.mark.unit
-    def test_wilson_b_default_none(self):
-        """Wilson B should be None initially."""
-        from torchref.io import ReflectionData
-
-        data = ReflectionData()
-
-        assert data.wilson_b is None
-
-    @pytest.mark.unit
     def test_spacegroup_default_none(self):
         """Space group should be None initially."""
         from torchref.io import ReflectionData

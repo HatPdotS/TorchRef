@@ -25,7 +25,6 @@ TEST_PDB = os.path.join(
 def setup_target():
     data = ReflectionData(verbose=0)
     data.load_mtz(TEST_MTZ)
-    data._calculate_wilson_b()
     ens = EnsembleModel.from_single(
         TEST_PDB, n_members=4, perturb_sigma=0.0, b_const=5.0,
         seed=42, verbose=0, max_res=data.d_min,

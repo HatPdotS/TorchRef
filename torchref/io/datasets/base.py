@@ -80,12 +80,6 @@ class CrystalDataset(DeviceMovementMixin):
     intensity_source: Optional[str] = None
     phase_source: Optional[str] = None
 
-    # === Wilson B-factors ===
-    wilson_b: Optional[float] = None
-    wilson_b_structure: Optional[float] = None
-    wilson_b_solvent: Optional[float] = None
-    wilson_k_sol: Optional[float] = None
-
     # === Masks (initialized in __post_init__) ===
     # Note: masks is not a dataclass field to avoid serialization issues
     # It's initialized in __post_init__ and handled specially

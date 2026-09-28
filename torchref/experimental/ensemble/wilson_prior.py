@@ -26,8 +26,7 @@ Loss form
     loss = mean_bin( ( log<|F_calc|^2>_bin - log Wilson_expected(s_bin) )^2 )
 
 The reference curve is fit once from the observed data:
-``B_W = data.wilson_b`` (already computed by
-``ReflectionData._calculate_wilson_b``) and ``K`` from a single
+``B_W`` from :func:`torchref.scaling.wilson.fit_wilson_b` and ``K`` from a single
 least-squares fit at first ``forward()`` call.
 
 Used as ``'regularization/wilson'`` in the ensemble refinement LossState.
@@ -92,8 +91,7 @@ class WilsonPriorTarget(DataTarget):
     Parameters
     ----------
     data : ReflectionData
-        Reflection data. Must have ``wilson_b`` populated (the loader
-        already does this).
+        Reflection data; its Wilson B is fitted from ``F`` and ``resolution``.
     model : ModelFT
         Atomic model used to compute F_calc.
     scaler : Scaler
@@ -194,10 +192,11 @@ class WilsonPriorTarget(DataTarget):
         Fit the prefactor ``K`` of the Wilson curve from observed binned
         intensities so the prior is centered on the observed scale.
         """
-        wilson_b = getattr(self._data, "wilson_b", None)
+        from torchref.scaling.wilson import fit_wilson_b
+
+        wilson_b = fit_wilson_b(self._data.F, self._data.resolution)
         if wilson_b is None:
-            self._data._calculate_wilson_b()
-            wilson_b = self._data.wilson_b
+            raise ValueError("Too few reflections to fit a Wilson B for the prior.")
         device = self._data.device
         self._B_W = torch.tensor(float(wilson_b), device=device)
 

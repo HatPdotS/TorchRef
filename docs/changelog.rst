@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- The Wilson B fit moved out of ``ReflectionData`` into ``torchref.scaling.wilson.fit_wilson_b(F, d)``, which returns the structure B (same values as before). Removed the ``wilson_b``, ``wilson_b_structure``, ``wilson_b_solvent`` and ``wilson_k_sol`` dataset fields; nothing but the ensemble Wilson prior read them
 - ``ReflectionData.regenerate_rfree_flags`` is renamed ``generate_rfree_flags`` (same arguments; with existing flags and ``force=False`` it now warns instead of printing), and it prints only when ``verbose > 0``. Seeded draws are unchanged
 - ``ReflectionData.get_bins`` no longer stores ``bin_indices`` on the dataset, and ``mean_res_per_bin`` takes the bins it should average over, so a later ``get_bins`` call with other settings (R-free or validation-set generation, a least-squares target) can no longer shift the shells a scaler's per-bin solvent scale was set up on. The ``bin_indices`` field is removed
 - Removed the ``ReflectionData`` aliases ``get_max_res`` (use ``d_min``), ``get_valid_mask`` (use ``masks()``) and ``cut_res`` (use ``filter_by_resolution(d_min=, d_max=)``, which now prints only when ``verbose > 0``)

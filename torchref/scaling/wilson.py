@@ -10,7 +10,7 @@ objective.
 **Why this exists as one shared class.** The repo grew at least five private
 answers to the same question -- ``base/wilson_outliers.robust_mean_intensity``,
 ``base/french_wilson.estimate_mean_intensity_by_resolution``,
-``ReflectionData._calculate_wilson_b``, the ``Sigma_N`` estimator in
+:func:`fit_wilson_b` below, the ``Sigma_N`` estimator in
 ``refinement/model_error_estimation/sigma_a``, and a per-shell one inside the
 alignment package -- differing in whether they use means or medians, whether
 they divide out ``epsilon``, whether they separate centrics, and where they put
@@ -24,6 +24,9 @@ error, no solvent. Those belong to a weight, and mixing them in here is what
 made the previous convention object impossible to reason about: it returned a
 normalisation and a weight together, so sweeping it moved a gauge quantity and a
 real one at the same time.
+
+:func:`fit_wilson_b` is the one-number summary: an overall Wilson B for priors
+and reports, not a curve to normalise by.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ import torch
 from torchref.config import get_float_dtype
 from torchref.scaling.basis import chebyshev_design
 
-__all__ = ["WilsonNormaliser"]
+__all__ = ["WilsonNormaliser", "fit_wilson_b"]
 
 #: Chebyshev terms. Enough to follow a Wilson plot's curvature and the
 #: low-resolution solvent deficit without chasing shell-to-shell noise.
@@ -479,3 +482,204 @@ class WilsonNormaliser:
             f"n_coeff={self.n_coeff}, n_fitted={self.n_fitted}, "
             f"iters={self.n_iter})"
         )
+
+
+#: Fallback structure B (Å²) when the high-resolution fit has fewer than three
+#: usable shells. This is the value the fit has always returned there.
+_FALLBACK_B = 200.0
+
+
+def fit_wilson_b(
+    F: torch.Tensor,
+    d: torch.Tensor,
+    n_bins: int = 30,
+    verbose: int = 0,
+) -> Optional[float]:
+    """Fit an overall Wilson B from amplitudes and resolution.
+
+    Bins ``F^2`` in ``s^2 = 1/(4 d^2)``, seeds a structure B from the shells
+    below 3.5 Å and a solvent B from those above 6 Å, then refines the
+    two-component curve ``<F^2> = A [(1-k) exp(-2 B s^2) + k exp(-2 B_sol s^2)]``
+    and returns its structure B -- what "the Wilson B" usually means. This is a
+    single number for priors and reports; for normalising intensities use
+    :class:`WilsonNormaliser`.
+
+    Parameters
+    ----------
+    F : torch.Tensor
+        Amplitudes of shape (N,). Non-finite and non-positive values are ignored.
+    d : torch.Tensor
+        Resolution of each reflection in Å, shape (N,).
+    n_bins : int, optional
+        Number of equal-width ``s^2`` bins. Default 30.
+    verbose : int, optional
+        Print the result when > 0.
+
+    Returns
+    -------
+    float or None
+        Structure B in Å², within 1-200. ``None`` with fewer than 100 usable
+        reflections or fewer than 5 bins holding more than 5 each.
+    """
+    device = F.device
+    valid = torch.isfinite(F) & (F > 0) & torch.isfinite(d)
+    if valid.sum() < 100:
+        if verbose > 0:
+            print(f"  Wilson B: too few reflections ({int(valid.sum())}), skipping")
+        return None
+
+    s_sq = 1.0 / (4.0 * d[valid] ** 2)
+    F_sq = F[valid] ** 2
+
+    bin_edges = torch.linspace(s_sq.min(), s_sq.max(), n_bins + 1, device=device)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    bin_idx = torch.bucketize(s_sq, bin_edges[1:-1])
+    bin_sums = torch.zeros(n_bins, device=device, dtype=F_sq.dtype)
+    bin_counts = torch.zeros(n_bins, device=device, dtype=F_sq.dtype)
+    bin_sums.scatter_add_(0, bin_idx, F_sq)
+    bin_counts.scatter_add_(0, bin_idx, torch.ones_like(F_sq))
+
+    valid_bins = bin_counts > 5
+    if valid_bins.sum() < 5:
+        if verbose > 0:
+            print(f"  Wilson B: insufficient bins ({valid_bins.sum()}), skipping")
+        return None
+
+    mean_F_sq = bin_sums[valid_bins] / bin_counts[valid_bins]
+    s_sq_bins = bin_centers[valid_bins]
+    d_bins = 1.0 / (2.0 * torch.sqrt(s_sq_bins))
+
+    B_struct = _fit_single_wilson(s_sq_bins, mean_F_sq, d_bins < 3.5)
+    B_sol = _fit_single_wilson(s_sq_bins, mean_F_sq, d_bins > 6.0)
+    B, _, _ = _fit_two_component_wilson(s_sq_bins, mean_F_sq, B_struct, B_sol)
+
+    if verbose > 0:
+        print(f"  Wilson B-factor (structure): {B:.1f} Å²")
+    return B
+
+
+def _fit_single_wilson(
+    s_sq: torch.Tensor, mean_F_sq: torch.Tensor, mask: torch.Tensor
+) -> float:
+    """Fit ``ln(F^2) = c - 2 B s^2`` over the masked shells, clamped to 0-300 Å²."""
+    if mask.sum() < 3:
+        return _FALLBACK_B
+    x = s_sq[mask]
+    y = torch.log(mean_F_sq[mask])
+    x_c, y_c = x - x.mean(), y - y.mean()
+    denominator = (x_c**2).sum()
+    if denominator < 1e-12:
+        return _FALLBACK_B
+    B = -((x_c * y_c).sum() / denominator).item() / 2.0
+    return max(0.0, min(B, 300.0))
+
+
+def _fit_two_component_wilson(
+    s_sq: torch.Tensor,
+    mean_F_sq: torch.Tensor,
+    B_struct_init: float,
+    B_sol_init: float,
+    n_iter: int = 50,
+) -> Tuple[float, float, float]:
+    """Refine ``F^2 = A [(1-k) exp(-2 B_s s^2) + k exp(-2 B_sol s^2)]``.
+
+    Finite-difference gradient descent from the single-component estimates.
+
+    Returns ``(B_struct, B_sol, k_sol)``, constrained to B_s in 1-200, B_sol in
+    50-500 with ``B_sol >= B_struct + 20``, and k in 0.01-0.9 -- a value on a
+    bound means the fit hit the clamp.
+    """
+    device = s_sq.device
+    F_sq_max = mean_F_sq.max()
+    y = mean_F_sq / F_sq_max
+    x = s_sq
+
+    # Initialize parameters
+    B_struct = torch.tensor(B_struct_init, device=device, dtype=x.dtype)
+    B_sol = torch.tensor(B_sol_init, device=device, dtype=x.dtype)
+
+    # Estimate initial k from ratio of low-res to high-res decay
+    # At low resolution, solvent contributes more
+    d_from_s = 1.0 / (2.0 * torch.sqrt(x))
+    low_res_val = y[d_from_s > 5.0].mean() if (d_from_s > 5.0).any() else y[0]
+    high_res_val = y[d_from_s < 3.0].mean() if (d_from_s < 3.0).any() else y[-1]
+
+    # k estimates solvent fraction - if low res is much higher than expected
+    # from structure alone, there's solvent contribution
+    struct_decay = torch.exp(-2 * B_struct * x)
+    expected_low = (
+        struct_decay[d_from_s > 5.0].mean()
+        if (d_from_s > 5.0).any()
+        else struct_decay[0]
+    )
+
+    if expected_low > 1e-6 and low_res_val > expected_low:
+        k_init = min(0.5, (low_res_val - expected_low).item() / low_res_val.item())
+    else:
+        k_init = 0.1
+
+    k = torch.tensor(max(0.01, min(0.5, k_init)), device=device, dtype=x.dtype)
+
+    # Simple gradient descent refinement
+    lr = 0.1
+
+    for _ in range(n_iter):
+        # Compute model
+        struct_term = (1 - k) * torch.exp(-2 * B_struct * x)
+        sol_term = k * torch.exp(-2 * B_sol * x)
+        model = struct_term + sol_term
+
+        # Compute scale factor analytically
+        A = (y * model).sum() / (model * model).sum()
+        model_scaled = A * model
+
+        # Compute gradients (simplified, using finite differences for robustness)
+        eps = 0.1
+
+        # B_struct gradient
+        model_plus = A * ((1 - k) * torch.exp(-2 * (B_struct + eps) * x) + sol_term)
+        model_minus = A * (
+            (1 - k) * torch.exp(-2 * (B_struct - eps) * x) + sol_term
+        )
+        loss_plus = ((y - model_plus) ** 2).sum()
+        loss_minus = ((y - model_minus) ** 2).sum()
+        grad_B_struct = (loss_plus - loss_minus) / (2 * eps)
+
+        # B_sol gradient
+        model_plus = A * (struct_term + k * torch.exp(-2 * (B_sol + eps) * x))
+        model_minus = A * (struct_term + k * torch.exp(-2 * (B_sol - eps) * x))
+        loss_plus = ((y - model_plus) ** 2).sum()
+        loss_minus = ((y - model_minus) ** 2).sum()
+        grad_B_sol = (loss_plus - loss_minus) / (2 * eps)
+
+        # k gradient
+        eps_k = 0.01
+        k_plus = min(0.9, k + eps_k)
+        k_minus = max(0.01, k - eps_k)
+        model_plus = A * (
+            (1 - k_plus) * torch.exp(-2 * B_struct * x)
+            + k_plus * torch.exp(-2 * B_sol * x)
+        )
+        model_minus = A * (
+            (1 - k_minus) * torch.exp(-2 * B_struct * x)
+            + k_minus * torch.exp(-2 * B_sol * x)
+        )
+        loss_plus = ((y - model_plus) ** 2).sum()
+        loss_minus = ((y - model_minus) ** 2).sum()
+        grad_k = (loss_plus - loss_minus) / (2 * eps_k)
+
+        # Update parameters
+        B_struct = B_struct - lr * grad_B_struct
+        B_sol = B_sol - lr * grad_B_sol
+        k = k - lr * 0.1 * grad_k  # Slower learning rate for k
+
+        # Enforce constraints
+        B_struct = torch.clamp(B_struct, 1.0, 200.0)
+        B_sol = torch.clamp(B_sol, 50.0, 500.0)
+        k = torch.clamp(k, 0.01, 0.9)
+
+        # Ensure B_sol > B_struct (solvent is more disordered)
+        if B_sol < B_struct + 20:
+            B_sol = B_struct + 20
+
+    return B_struct.item(), B_sol.item(), k.item()
