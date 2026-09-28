@@ -60,7 +60,7 @@ def inserted(pdb_dir, tmp_path_factory):
     path = tmp_path_factory.mktemp("icode") / f"{BASE}_icode.pdb"
     expected = _rewrite_with_insertion_codes(pdb_dir / f"{BASE}.pdb", path)
 
-    model = Model(verbose=0, strip_H=True, add_hydrogens=False)
+    model = Model(verbose=0, hydrogens="strip")
     model.load_pdb(str(path))
     model.ctx.set_cif_path(None)
     restraints = model.restraints

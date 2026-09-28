@@ -233,7 +233,7 @@ def _built(pdb_path, strip_H=True):
     """
     from torchref import Model
 
-    model = Model(verbose=0, strip_H=strip_H, add_hydrogens=False)
+    model = Model(verbose=0, hydrogens="strip" if strip_H else "keep")
     model.load_pdb(str(pdb_path))
     return model, model.restraints.restraints
 

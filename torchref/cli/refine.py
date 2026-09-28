@@ -115,10 +115,19 @@ Loss weights:
     refine_group = parser.add_argument_group("Refinement")
     add_n_cycles_arg(refine_group)
     refine_group.add_argument(
-        "--add-hydrogens",
-        action="store_true",
-        help="Generate missing hydrogens when loading the model (default: off). "
-        "Hydrogens already present in the input are retained either way.",
+        "--hydrogens",
+        choices=["keep", "add", "strip"],
+        default="keep",
+        help="What to do with the model's hydrogens on load: keep the ones the file "
+        "has (default), also generate the missing ones, or strip them all.",
+    )
+    refine_group.add_argument(
+        "--hydrogen-mode",
+        dest="hydrogen_mode",
+        choices=["atoms", "riding"],
+        default="atoms",
+        help="Refine hydrogens as ordinary atoms (default) or let them ride on their "
+        "parent heavy atoms. 'riding' cannot be combined with --hydrogens strip.",
     )
     refine_group.add_argument(
         "--hydrogens-in-xray",
@@ -262,7 +271,7 @@ Loss weights:
         print(f"Refinement mode:   {args.mode}")
         print(f"X-ray target:      {args.xray_mode}")
         print(f"Refinement cycles: {args.n_cycles}")
-        print(f"Add hydrogens:     {'on' if args.add_hydrogens else 'off'}")
+        print(f"Hydrogens:         {args.hydrogens} ({args.hydrogen_mode})")
         print(f"Hydrogens in Fcalc: {'on' if args.hydrogens_in_xray else 'off'}")
         if args.with_rigid_body:
             print(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
@@ -320,7 +329,8 @@ Loss weights:
         reflections_per_adp_parameter=args.reflections_per_adp_parameter,
         aniso_selection=args.anisotropic_selection,
         wavelength=args.wavelength,
-        add_hydrogens=args.add_hydrogens,
+        hydrogens=args.hydrogens,
+        hydrogen_mode=args.hydrogen_mode,
         hydrogens_in_xray=args.hydrogens_in_xray,
     )
 

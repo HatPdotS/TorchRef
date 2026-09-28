@@ -711,7 +711,8 @@ def load_model(
     device: Union[str, "torch.device", None] = None,
     verbose: int = 0,
     cif: Optional[Union[str, List[str]]] = None,
-    add_hydrogens: bool = False,
+    hydrogens: str = "keep",
+    hydrogen_mode: str = "atoms",
     hydrogens_in_xray: bool = True,
 ) -> "ModelFT":
     """Load a model from PDB or CIF, auto-detected by file extension.
@@ -729,8 +730,10 @@ def load_model(
     cif : str or list of str, optional
         CIF restraint file(s), registered on the model before it loads so that hydrogen
         generation and the restraints read the same dictionary.
-    add_hydrogens : bool, optional
-        Generate missing hydrogens on load. Default False.
+    hydrogens : {"keep", "add", "strip"}, optional
+        What loading does with the file's hydrogens. Default ``"keep"``.
+    hydrogen_mode : {"atoms", "riding"}, optional
+        Hydrogens as refinable atoms or riding on their parents. Default ``"atoms"``.
     hydrogens_in_xray : bool, optional
         Whether hydrogens contribute to the structure factors. Default True.
 
@@ -747,7 +750,8 @@ def load_model(
         device=device,
         verbose=verbose,
         cif_path=cif,
-        add_hydrogens=add_hydrogens,
+        hydrogens=hydrogens,
+        hydrogen_mode=hydrogen_mode,
         hydrogens_in_xray=hydrogens_in_xray,
     )
     suffix = Path(path).suffix.lower()

@@ -731,7 +731,7 @@ class IHMWriter:
 
         if mc.n_base_models > 0:
             model0 = mc.base_models[0]
-            for chain_id, seq_str in model0.chain_sequences:
+            for chain_id, seq_str in model0.ctx.chain_sequences:
                 seq = []
                 for char in seq_str:
                     if char == "?":

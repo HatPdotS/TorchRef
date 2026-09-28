@@ -291,7 +291,7 @@ def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
     df = ensemble._pdb_single
     if atom_idx is not None:
         df = df.iloc[np.asarray(atom_idx)]
-    chem = Model(verbose=verbose, strip_H=False, device=ensemble.device)
+    chem = Model(verbose=verbose, hydrogens="keep", device=ensemble.device)
     chem.load(
         _SyntheticPDBReader(
             df.reset_index(drop=True).copy(),
@@ -322,8 +322,10 @@ class EnsembleModel(ModelFT):
         Verbosity.
     device : torch.device
         Computation device.
-    strip_H : bool
-        Whether to strip hydrogens (inherited).
+    hydrogens : {"keep", "strip"}
+        Hydrogen policy on load (inherited). ``"add"`` is refused: the atom set is
+        the replicated single copy the factories build, and ``_finalize_ensemble``
+        reshapes by ``n_atoms_per_member``, which generated hydrogens would break.
     max_res : float
         FFT grid target resolution (inherited).
 
@@ -339,18 +341,20 @@ class EnsembleModel(ModelFT):
         dtype_float=None,
         verbose: int = 1,
         device=None,
-        strip_H: bool = True,
-        # An ensemble's atom set is the replicated single copy its factories build, and
-        # _finalize_ensemble reshapes by n_atoms_per_member, so generating hydrogens on
-        # load would invalidate that. Off by default here, unlike on the base class.
-        add_hydrogens: bool = False,
+        hydrogens: str = "keep",
         max_res: float = 1.0,
         gridsize: Optional[Tuple[int, int, int]] = None,
         wavelength: float = 1.0,
         anomalous_threshold: float = 0.5,
+        apply_bijvoet: bool = False,
         cif_path=None,
         hydrogens_in_xray: bool = True,
     ):
+        if hydrogens == "add":
+            raise ValueError(
+                "EnsembleModel cannot generate hydrogens: its atom set is the "
+                "replicated single copy; hydrogenate the input first."
+            )
         if dtype_float is None:
             dtype_float = get_float_dtype()
         if device is None:
@@ -359,12 +363,12 @@ class EnsembleModel(ModelFT):
             dtype_float=dtype_float,
             verbose=verbose,
             device=device,
-            strip_H=strip_H,
-            add_hydrogens=add_hydrogens,
+            hydrogens=hydrogens,
             max_res=max_res,
             gridsize=gridsize,
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
+            apply_bijvoet=apply_bijvoet,
             cif_path=cif_path,
             hydrogens_in_xray=hydrogens_in_xray,
         )
@@ -397,7 +401,7 @@ class EnsembleModel(ModelFT):
         seed: Optional[int] = None,
         verbose: int = 1,
         device=None,
-        strip_H: bool = True,
+        hydrogens: str = "strip",
         max_res: float = 1.0,
         n_max: Optional[int] = None,
         **modelft_kwargs,
@@ -430,8 +434,8 @@ class EnsembleModel(ModelFT):
             Verbosity.
         device : torch.device, optional
             Computation device.
-        strip_H : bool
-            Strip hydrogens before replication (default True).
+        hydrogens : {"strip", "keep"}
+            Strip hydrogens before replication (default) or keep the file's.
         max_res : float
             FFT grid target resolution (Å), forwarded to ``ModelFT``.
         n_max : int, optional
@@ -444,7 +448,7 @@ class EnsembleModel(ModelFT):
         """
         reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
         df, cell, spacegroup = reader()
-        if strip_H:
+        if hydrogens == "strip":
             df = df.loc[df["element"].astype(str).str.strip() != "H"].reset_index(drop=True)
         # Strip alternate conformations: the ensemble IS the disorder model,
         # so per-residue altlocs would double-count atoms in OpenMM topology,
@@ -460,10 +464,9 @@ class EnsembleModel(ModelFT):
         )
 
         model = cls(
-            verbose=verbose, device=device, strip_H=False,  # already stripped
-            # The replicated table is the atom set; _finalize_ensemble reshapes by
-            # n_atoms_per_member, so generating hydrogens here would invalidate it.
-            add_hydrogens=False,
+            verbose=verbose,
+            device=device,
+            hydrogens="keep",  # already stripped, if asked
             max_res=max_res,
             **modelft_kwargs,
         )
@@ -485,7 +488,7 @@ class EnsembleModel(ModelFT):
         seed: Optional[int] = None,
         verbose: int = 1,
         device=None,
-        strip_H: bool = True,
+        hydrogens: str = "strip",
         max_res: float = 1.0,
         n_max: Optional[int] = None,
         **modelft_kwargs,
@@ -504,7 +507,7 @@ class EnsembleModel(ModelFT):
         ready for bifurcation to reactivate). Default ``n_max = n_members``
         (no spare slots; bifurcation can only reuse slots freed by deaths).
         """
-        models = _parse_multi_model_pdb(pdb_path, strip_H=strip_H)
+        models = _parse_multi_model_pdb(pdb_path, strip_H=hydrogens == "strip")
         if len(models) == 0:
             raise ValueError(f"No usable atomic models parsed from {pdb_path}")
         if n_members is None:
@@ -549,10 +552,9 @@ class EnsembleModel(ModelFT):
         replicated = pd.concat(pieces, ignore_index=True)
 
         model = cls(
-            verbose=verbose, device=device, strip_H=False,
-            # See from_single: the replicated table is the atom set, and
-            # _finalize_ensemble reshapes by n_atoms_per_member.
-            add_hydrogens=False,
+            verbose=verbose,
+            device=device,
+            hydrogens="keep",  # already stripped, if asked
             max_res=max_res,
             **modelft_kwargs,
         )

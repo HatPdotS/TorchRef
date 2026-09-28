@@ -55,7 +55,7 @@ def test_off_matches_a_stripped_model(pdb_dir):
     """Excluding hydrogens from Fcalc equals computing Fcalc without them."""
     full = ModelFT(verbose=0, max_res=2.5, hydrogens_in_xray=False)
     full.load_pdb(str(pdb_dir / "7L84.pdb"))
-    heavy = ModelFT(verbose=0, max_res=2.5, strip_H=True)
+    heavy = ModelFT(verbose=0, max_res=2.5, hydrogens="strip")
     heavy.load_pdb(str(pdb_dir / "7L84.pdb"))
     grid = torch.arange(-3, 4)
     hkl = torch.cartesian_prod(grid, grid, grid)
@@ -90,23 +90,13 @@ def test_setting_round_trips_through_state_dict(pdb_dir, model_class):
 
 
 @pytest.mark.unit
-def test_deprecated_alias_is_inverted_and_warns():
-    model = Model(verbose=0)
-    with pytest.warns(DeprecationWarning):
-        model.exclude_H_from_sf = True
-    assert model.hydrogens_in_xray is False
-    with pytest.warns(DeprecationWarning):
-        assert model.exclude_H_from_sf is True
-
-
-@pytest.mark.unit
 def test_solvent_mask_ignores_hydrogens(pdb_dir):
     """The bulk-solvent mask is the same with and without hydrogen rows."""
     from torchref.scaling.solvent import SolventModel
 
     full = ModelFT(verbose=0, max_res=2.5)
     full.load_pdb(str(pdb_dir / "7L84.pdb"))
-    heavy = ModelFT(verbose=0, max_res=2.5, strip_H=True)
+    heavy = ModelFT(verbose=0, max_res=2.5, hydrogens="strip")
     heavy.load_pdb(str(pdb_dir / "7L84.pdb"))
     assert _n_h(full) > 0 and _n_h(heavy) == 0
     mask_full = SolventModel(full, verbose=0).get_solvent_mask()

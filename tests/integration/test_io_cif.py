@@ -63,7 +63,7 @@ class TestCIFSaving:
         # legitimately differ, because ``write_pdb`` does not emit LINK records -- so a
         # metal-coordinated nitrogen comes back with a free valence and takes a hydrogen
         # it did not have before.
-        model2 = Model(add_hydrogens=False)
+        model2 = Model()
         model2.load_pdb(str(output_path))
         n_atoms2 = model2.xyz().shape[0]
 

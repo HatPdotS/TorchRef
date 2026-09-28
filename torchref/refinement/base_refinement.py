@@ -137,7 +137,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         shrink: bool = SHRINK_ENABLED,
         scale_target: str = DEFAULT_SCALE_TARGET,
         aniso_selection: Optional[str] = None,
-        add_hydrogens: bool = False,
+        hydrogens: str = "keep",
+        hydrogen_mode: str = "atoms",
         hydrogens_in_xray: bool = True,
     ):
         """Initialize Refinement, fully if ``data_file`` and ``pdb`` are given.
@@ -207,9 +208,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         aniso_selection : str, optional
             Phenix-style selection of atoms refined anisotropically when
             ``adp_mode="anisotropic"``. Defaults to all non-water heavy atoms.
-        add_hydrogens : bool, optional
-            Generate missing hydrogens when loading the model. Default False.
-            Hydrogens already present in the input are retained either way.
+        hydrogens : {"keep", "add", "strip"}, optional
+            What loading the model does with its hydrogens: keep the file's (default),
+            also generate the missing ones, or remove them all.
+        hydrogen_mode : {"atoms", "riding"}, optional
+            Hydrogens as refinable atoms (default) or riding on their parents.
         hydrogens_in_xray : bool, optional
             Whether hydrogens contribute to the structure factors. Default True. They
             take part in the restraints either way.
@@ -283,7 +286,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 device=self.device,
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
-                add_hydrogens=add_hydrogens,
+                hydrogens=hydrogens,
+                hydrogen_mode=hydrogen_mode,
                 cif_path=cif,
                 hydrogens_in_xray=hydrogens_in_xray,
             )
@@ -332,7 +336,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 device=self.device,
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
-                add_hydrogens=add_hydrogens,
+                hydrogens=hydrogens,
+                hydrogen_mode=hydrogen_mode,
                 hydrogens_in_xray=hydrogens_in_xray,
                 # Before load, not after: generation on load reads this dictionary.
                 cif_path=cif,
@@ -758,8 +763,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         Parameters
         ----------
-        mode : str
-            ``"riding"`` or ``"free"``; see :meth:`Model.set_hydrogen_mode`.
+        mode : {"atoms", "riding"}
+            See :meth:`Model.set_hydrogen_mode`.
 
         Returns
         -------
@@ -772,13 +777,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         ``LossState`` are dropped and rebuilt on the next step. Call between macro
         cycles, never inside one.
         """
-        n_atoms = len(self.model.pdb)
         self.model.set_hydrogen_mode(mode)
-        if (
-            len(self.model.pdb) != n_atoms
-            and getattr(self, "adp_target", None) is not None
-        ):
-            self._init_targets()
         persistent = getattr(self, "_persistent_optimizers", None)
         if persistent is not None:
             persistent.clear()
