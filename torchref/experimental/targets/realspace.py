@@ -128,14 +128,16 @@ class RealSpaceTarget(DataTarget):
         if self._hkl_p1 is not None:
             return
         sg = self._data.spacegroup or SpaceGroup("P1")
+        # One row per reflection; anomalous F_obs is Bijvoet-averaged below.
+        rows = self._data.bijvoet_representatives()
         hkl_p1, indices, phase_shifts = sg.expand_hkl(
-            self._data.hkl,
+            self._data.hkl[rows],
             include_friedel=True,
             remove_absences=True,
             device=self._data.hkl.device,
         )
         self._hkl_p1 = hkl_p1
-        self._p1_indices = indices
+        self._p1_indices = rows[indices]
         self._p1_phase_shifts = phase_shifts
 
     def _expand_to_p1(self, fcalc: torch.Tensor) -> torch.Tensor:
@@ -172,7 +174,7 @@ class RealSpaceTarget(DataTarget):
 
         # Expand Fobs to P1 using the same index mapping as Fcalc
         # (amplitudes are invariant under symmetry, no phase shift needed)
-        fobs_p1 = self._data.F[self._p1_indices]
+        fobs_p1 = self._data.bijvoet_mean(self._data.F)[self._p1_indices]
 
         # Compute and scale Fcalc at ASU level, then expand to P1
         fcalc_asu = self.get_fcalc_scaled()
@@ -591,6 +593,12 @@ class RealSpaceExtrapolatedTarget(RealSpaceTarget):
         if valid_dark is not None:
             valid_mask = valid_mask & valid_dark
 
+        F_light = self._data_light.bijvoet_mean(F_light, valid_mask)
+        F_dark = self._data_light.bijvoet_mean(F_dark, valid_mask)
+        # A Bijvoet pair is measured if either mate is (no-op for merged data).
+        as_float = valid_mask.to(F_light.dtype)
+        valid_mask = self._data_light.bijvoet_mean(as_float, valid_mask) > 0
+
         # Zero invalid values to prevent NaN propagation
         F_light = torch.where(valid_mask, F_light, torch.zeros_like(F_light))
         F_dark = torch.where(valid_mask, F_dark, torch.zeros_like(F_dark))
@@ -606,14 +614,16 @@ class RealSpaceExtrapolatedTarget(RealSpaceTarget):
             return
 
         spacegroup = self._data_light.spacegroup
+        # One row per reflection; F_obs was Bijvoet-averaged in _setup_data.
+        rows = self._data_light.bijvoet_representatives()
         hkl_p1, indices, phase_shifts = spacegroup.expand_hkl(
-            self._hkl,
+            self._hkl[rows],
             include_friedel=True,
             remove_absences=True,
             device=self._hkl.device,
         )
         self._hkl_p1 = hkl_p1
-        self._p1_indices = indices
+        self._p1_indices = rows[indices]
         self._p1_phase_shifts = phase_shifts
 
     def _compute_observed_map(self) -> torch.Tensor:

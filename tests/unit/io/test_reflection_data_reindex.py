@@ -25,6 +25,14 @@ def _base_grid(h=10, k=10, lmax=10):
     )
 
 
+def _asu_unique(hkl, sg="P 21 21 21"):
+    """One row per unique reflection of ``sg``: expansion refuses equivalent rows."""
+    from torchref.symmetry import SpaceGroup
+
+    canon, *_ = SpaceGroup(sg).canonicalize_hkl(hkl, include_friedel=True)
+    return torch.unique(canon, dim=0)
+
+
 def _synthetic(hkl, seed=0, device="cpu"):
     n = hkl.shape[0]
     g = torch.Generator().manual_seed(seed)
@@ -79,7 +87,7 @@ class TestP1RoundTripReindex:
     field at the new length."""
 
     def test_expand_to_p1_carries_validation_flags(self):
-        grid = _base_grid(6, 6, 6)
+        grid = _asu_unique(_base_grid(6, 6, 6))
         d = _synthetic(grid, seed=3)
         d.generate_validation_set(val_fraction_of_free=0.5, seed=0)
         assert d.validation_flags is not None
@@ -93,7 +101,7 @@ class TestP1RoundTripReindex:
     def test_merge_to_spacegroup_consistent(self):
         from torchref.io import merge_to_spacegroup
 
-        grid = _base_grid(6, 6, 6)
+        grid = _asu_unique(_base_grid(6, 6, 6))
         d = _synthetic(grid, seed=4)
         d.generate_validation_set(val_fraction_of_free=0.5, seed=0)
         p1 = d.expand_to_p1()

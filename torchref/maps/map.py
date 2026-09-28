@@ -154,8 +154,18 @@ class Map(DeviceMixin):
         """
         # Expand to P1 without Friedel mates (place_on_grid handles
         # Hermitian symmetry via enforce_hermitian=True)
-        data_p1 = self.data.expand_to_p1(include_friedel=False)
-        hkl_p1, fobs_p1, _, _ = data_p1.data_indexed()
+        if self.data.friedel_merged:
+            data_p1 = self.data.expand_to_p1(include_friedel=False)
+            hkl_p1, fobs_p1, _, _ = data_p1.data_indexed()
+        else:
+            # One amplitude per reflection: the Hermitian placement would
+            # otherwise count every measured Bijvoet pair twice.
+            valid = self.data.masks()
+            rows = self.data.bijvoet_representatives(valid)
+            fobs_rows = self.data.bijvoet_mean(self.data.F, valid)[rows]
+            sg = self.data.spacegroup
+            hkl_p1, idx, _ = sg.expand_hkl(self.data.hkl[rows], include_friedel=False)
+            fobs_p1 = fobs_rows[idx]
 
         # Compute Fcalc for P1-expanded hkl
         fcalc_p1 = self.model.get_structure_factor(hkl_p1)

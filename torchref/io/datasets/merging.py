@@ -198,9 +198,7 @@ def merge_to_spacegroup(
     hkl_src = hkl_src.detach().cpu()[rows]
     n_src = len(rows)
 
-    rotated = source.reciprocal.apply_rotations(hkl_src)
-    cand = torch.round(rotated).to(hkl_src.dtype).reshape(-1, 3)
-    cand_src = torch.arange(n_src).repeat(source.n_ops)
+    cand, cand_src, _, _ = source.equivalent_hkl(hkl_src, include_friedel=False)
 
     canon, _, friedel, sort_idx = target.canonicalize_hkl(cand, include_friedel=True)
     # canonicalize_hkl returns its outputs sorted; the source row must follow.

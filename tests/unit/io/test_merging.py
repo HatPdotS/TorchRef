@@ -223,3 +223,32 @@ def test_from_tensors_keeps_intensities_and_validation_row_aligned():
     torch.testing.assert_close(d.I, _invariant(d.hkl))
     expected = (_invariant(d.hkl).round().to(torch.int64) % 2) == 0
     assert torch.equal(d.validation_flags, expected)
+
+
+@pytest.mark.unit
+def test_expand_to_p1_keeps_both_bijvoet_mates():
+    hkl = _asu_grid()
+    hkl = hkl[~SpaceGroup(SG).is_centric(hkl)]
+    both = torch.cat([hkl, -hkl])
+    I = torch.cat([_invariant(hkl), _invariant(hkl) * 1.1])
+    d = _data(both, I, torch.ones_like(I), friedel_merged=False)
+
+    for include_friedel in (True, False):
+        p1 = d.expand_to_p1(include_friedel=include_friedel)
+        p1._assert_per_reflection_consistent()
+        values = _by_hkl(p1, p1.I)
+        # Every measurement lands on its own P1 index: none is dropped, and
+        # F(-) is never replaced by a Friedel copy of F(+).
+        assert len(values) == len(p1.hkl)
+        assert torch.equal(p1._hkl_for_sf(), p1.hkl)
+        for h, v in zip(hkl.tolist(), _invariant(hkl).tolist()):
+            assert values[tuple(h)] == pytest.approx(v)
+            assert values[tuple(-x for x in h)] == pytest.approx(1.1 * v)
+
+
+@pytest.mark.unit
+def test_expansion_refuses_symmetry_equivalent_rows():
+    hkl = _asu_grid()
+    dup = torch.cat([hkl, hkl[:5] * torch.tensor([-1, -1, 1], dtype=hkl.dtype)])
+    with pytest.raises(ValueError, match="symmetry-equivalent"):
+        SpaceGroup(SG).expand_hkl(dup)

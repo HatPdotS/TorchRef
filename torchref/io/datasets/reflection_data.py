@@ -680,6 +680,72 @@ class ReflectionData(CrystalDataset, DebugMixin):
         uniq, inverse = torch.unique(self.hkl.cpu(), dim=0, return_inverse=True)
         return inverse.to(self.device), int(uniq.shape[0])
 
+    def bijvoet_mean(
+        self, values: torch.Tensor, valid: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Replace each row's value by the mean over the valid rows of its Bijvoet pair.
+
+        For consumers that want one value per reflection -- a Hermitian map
+        puts each amplitude at ``h`` and its conjugate at ``-h``, so feeding it
+        both mates would count every measured pair twice. Merged data are
+        returned unchanged.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            Per-row real values of shape (N,), e.g. amplitudes or differences.
+        valid : torch.Tensor, optional
+            Boolean (N,), rows allowed to contribute. Defaults to ``masks()``.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape (N,). Rows of a pair with no valid member keep their own value.
+        """
+        if self.friedel_merged:
+            return values
+        if valid is None:
+            valid = self.masks()
+        if valid is None:
+            valid = torch.ones_like(values, dtype=torch.bool)
+        group_id, n_groups = self.asu_group_indices()
+        w = valid.to(values.dtype)
+        total = torch.zeros(n_groups, dtype=values.dtype, device=values.device)
+        total = total.index_add(0, group_id, torch.where(valid, values, 0.0))
+        count = torch.zeros_like(total).index_add(0, group_id, w)
+        mean = (total / count.clamp(min=1))[group_id]
+        return torch.where(count[group_id] > 0, mean, values)
+
+    def bijvoet_representatives(
+        self, valid: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """One row index per unique reflection, in row order.
+
+        Pairs with :meth:`bijvoet_mean` to build a Friedel-averaged reflection
+        list from anomalous data. For merged data every row is its own
+        representative.
+
+        Parameters
+        ----------
+        valid : torch.Tensor, optional
+            Boolean (N,). If given, only reflections with at least one valid row
+            are represented.
+
+        Returns
+        -------
+        torch.Tensor
+            Row indices, int64, ascending.
+        """
+        if self.friedel_merged:
+            if valid is None:
+                return torch.arange(len(self.hkl), device=self.device)
+            return torch.nonzero(valid).squeeze(-1)
+        group_id, n_groups = self.asu_group_indices()
+        rows = self._group_representative_rows(group_id, n_groups)
+        if valid is not None:
+            rows = rows[self._group_any(valid, group_id, n_groups)]
+        return torch.sort(rows).values
+
     @staticmethod
     def _group_any(
         mask: torch.Tensor, group_id: torch.Tensor, n_groups: int
@@ -2303,6 +2369,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         all symmetry-equivalent reflections. Returns a NEW ReflectionData object
         with expanded reflections; does not modify self.
 
+        Anomalous data (``friedel_merged`` False) expand from their signed
+        indices, so ``F(+)`` and ``F(-)`` each keep their own P1 reflections
+        (``h`` and ``-h``) and the result holds both halves of reciprocal space
+        whatever ``include_friedel`` says; with it, a Friedel copy fills in only
+        where a mate was not measured. Consumers that want one value per
+        reflection pair (a Hermitian map) must merge the mates first, e.g. with
+        ``merge_to_spacegroup(data, data.spacegroup, anomalous=False)``.
+
         Parameters
         ----------
         include_friedel : bool, default True
@@ -2315,31 +2389,46 @@ class ReflectionData(CrystalDataset, DebugMixin):
         -------
         ReflectionData
             New object at ``spacegroup="P1"`` holding every symmetry-equivalent
-            reflection (duplicates removed). Per-reflection fields are indexed
-            from the original, ``phase`` additionally gets the translation phase
-            shift, and ``resolution`` is recomputed.
-            ``source``/``last_op`` record the provenance.
+            reflection. Per-reflection fields are indexed from the original,
+            ``phase`` additionally gets the translation phase shift, and
+            ``resolution`` is recomputed. ``hkl_anomalous`` equals ``hkl``: each
+            P1 row is its own index. ``source``/``last_op`` record the provenance.
+
+        Raises
+        ------
+        ValueError
+            If the data hold symmetry-equivalent rows (unmerged observations),
+            which expansion would otherwise silently drop.
         """
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
 
-        # Get expanded HKL set with index mapping and phase shifts
+        anomalous = not self.friedel_merged and self.hkl_anomalous is not None
         sg = self.spacegroup or SpaceGroup("P1", device=self.device)
         hkl_p1, indices, phase_shifts = sg.expand_hkl(
-            self.hkl,
+            self.hkl_anomalous if anomalous else self.hkl,
             include_friedel=include_friedel,
             remove_absences=remove_absences,
             device=self.device,
         )
 
-        # Use remap to create the new dataset
-        return self.remap(
+        p1 = self.remap(
             new_hkl=hkl_p1,
             index_mapping=indices,
-            phase_shifts=phase_shifts,
             spacegroup="P1",
             op_name=f"expand_to_p1(include_friedel={include_friedel})",
         )
+        if p1.phase is not None:
+            phase = p1.phase
+            if anomalous:
+                # A conjugated mate stores the phase of its canonical index, the
+                # negative of the phase at its own signed index.
+                phase = torch.where(self.friedel_flags[indices], -phase, phase)
+            p1.phase = phase + phase_shifts
+        p1.hkl_anomalous = p1.hkl.clone()
+        p1.friedel_flags = torch.zeros_like(p1.hkl[:, 0], dtype=torch.bool)
+        p1.friedel_merged = self.friedel_merged
+        return p1
 
     # ========== E-VALUE AND ANISOTROPY CORRECTION METHODS ==========
 
