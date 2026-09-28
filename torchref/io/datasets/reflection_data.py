@@ -9,7 +9,7 @@ intensities, and R-free flags.
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Callable, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -206,9 +206,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
     # Additional fields specific to ReflectionData (beyond CrystalDataset)
     # Note: Most fields are inherited from CrystalDataset dataclass
 
-    # Cached properties (not serialized)
-    _n_bins: Optional[int] = field(default=None, repr=False)
-
     # Provenance: the dataset this one was derived from, and the operation.
     source: Optional["ReflectionData"] = field(default=None, repr=False)
     last_op: Optional[str] = field(default=None, repr=False)
@@ -382,9 +379,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     # Per-reflection fields that are pure functions of (hkl, cell, spacegroup):
     # never gathered/aggregated, always recomputed or invalidated after an HKL
-    # change (``resolution`` recomputed; ``bin_indices`` / ``_centric_flags``
-    # lazily rebuilt by ``get_bins`` / the ``centric`` property).
-    _REINDEX_DERIVED = ("resolution", "bin_indices", "_centric_flags")
+    # change (``resolution`` recomputed; ``_centric_flags`` lazily rebuilt by
+    # the ``centric`` property).
+    _REINDEX_DERIVED = ("resolution", "_centric_flags")
 
     def _reindex_per_reflection(
         self,
@@ -458,7 +455,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Install the new HKL and recompute / invalidate derived-from-HKL fields.
         target.hkl = new_hkl
-        target.bin_indices = None
         target._centric_flags = None
         if target.cell is not None:
             target._calculate_resolution()
@@ -863,9 +859,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Generate only after canonicalization: the free set must be drawn on
         # unique ASU reflections, and the Bijvoet grouping that requires does
         # not exist until _canonicalize_in_place has run. See
-        # asu_group_indices / _generate_rfree_flags.
+        # asu_group_indices / generate_rfree_flags.
         if self.rfree_flags is None:
-            self._generate_rfree_flags()
+            self.generate_rfree_flags()
 
         return self
 
@@ -1002,7 +998,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # As in load(): generate after canonicalization so the draw can group
         # Bijvoet mates onto a shared canonical index.
         if data.rfree_flags is None:
-            data._generate_rfree_flags()
+            data.generate_rfree_flags()
 
         return data
 
@@ -1110,18 +1106,20 @@ class ReflectionData(CrystalDataset, DebugMixin):
         )
         return self.load(reader)
 
-    def _generate_rfree_flags(
+    def generate_rfree_flags(
         self,
         free_fraction: float = 0.02,
         n_bins: int = 10,
         min_per_bin: int = 1000,
         min_free_per_bin: int = 50,
         seed: Optional[int] = None,
+        force: bool = False,
     ) -> None:
         """
         Generate R-free flags with resolution-stratified sampling.
 
         Sets ``rfree_flags`` (int32, 1=work/0=free) and ``rfree_source``.
+        ``load`` and ``from_tensors`` call this when the input carries no flags.
 
         The draw is over *unique ASU reflections*, not rows: the two members of
         a Bijvoet pair share a canonical index (see :meth:`asu_group_indices`)
@@ -1132,8 +1130,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Only reflections passing the validity masks are drawn from, so the
         counts below describe usable reflections rather than raw rows.
-
-        Must be called *after* canonicalization -- see :meth:`load`.
 
         Parameters
         ----------
@@ -1150,7 +1146,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Minimum free unique reflections per bin, clamped to the number the
             bin holds.
         seed : int, optional
-            Random seed for reproducibility. Default is None.
+            Seeds the **global** torch and numpy RNGs before the draw, so the
+            same seed on the same data reproduces the same set.
+        force : bool, optional
+            Overwrite existing flags. Default False: existing flags are kept and
+            the call only warns.
 
         Raises
         ------
@@ -1160,38 +1160,35 @@ class ReflectionData(CrystalDataset, DebugMixin):
             If the data have not been canonicalized (via
             :meth:`asu_group_indices`).
         """
+        if self.rfree_flags is not None and not force:
+            warnings.warn(
+                f"R-free flags already exist ({self.rfree_source}); "
+                "pass force=True to overwrite them."
+            )
+            return
         if self.resolution is None:
             raise ValueError("Resolution information required to generate R-free flags")
+        if self.verbose > 0:
+            if self.rfree_flags is not None:
+                print(f"Overwriting existing R-free flags ({self.rfree_source})")
+            print(
+                f"Generating R-free flags: {free_fraction*100:.1f}% free, "
+                f"{n_bins} bins of >= {min_per_bin}, >= {min_free_per_bin} free per bin"
+            )
 
-        print("Generating R-free flags:")
-        print(f"  Target free fraction: {free_fraction*100:.1f}%")
-        print(f"  Target bins: {n_bins}")
-        print(f"  Minimum per bin: {min_per_bin} reflections")
-        print(f"  Minimum free per bin: {min_free_per_bin} reflections")
-
-        # Set random seed for reproducibility
         if seed is not None:
             np.random.seed(seed)
             torch.manual_seed(seed)
 
-        n_refl = len(self.resolution)
-
-        # Create resolution bins
         bin_indices, actual_n_bins = self.get_bins(
             n_bins=n_bins, min_per_bin=min_per_bin
         )
-
-        print(f"  Created {actual_n_bins} resolution bins")
-
-        # Draw on unique ASU reflections rather than rows, so Bijvoet mates
-        # (which share a canonical index) cannot be split across work/free.
         group_id, n_groups = self.asu_group_indices()
 
         # A group is eligible if any of its rows survives the validity masks;
         # spending the free quota on masked-out rows would silently shrink the
         # usable free set below min_free_per_bin.
-        valid = self.masks().to(torch.bool)
-        group_valid = self._group_any(valid, group_id, n_groups)
+        group_valid = self._group_any(self.masks().to(torch.bool), group_id, n_groups)
         if not bool(group_valid.any()):
             warnings.warn(
                 "No reflections pass the validity masks; drawing R-free flags "
@@ -1199,31 +1196,16 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
             group_valid = torch.ones_like(group_valid)
 
-        # One bin per group, from a representative row.
         group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
-
-        group_free = torch.zeros(n_groups, dtype=torch.bool, device=self.device)
-        for bin_idx in range(actual_n_bins):
-            eligible = torch.where((group_bin == bin_idx) & group_valid)[0]
-            n_bin_groups = int(eligible.numel())
-            if n_bin_groups == 0:
-                continue
-
-            # At least min_free_per_bin unique reflections, otherwise
-            # free_fraction of the bin; never more than the bin holds.
-            n_free_in_bin = min(
-                n_bin_groups,
-                max(min_free_per_bin, int(n_bin_groups * free_fraction)),
-            )
-            perm = torch.randperm(n_bin_groups, device=eligible.device)[:n_free_in_bin]
-            group_free[eligible[perm]] = True
-
-        # Broadcast each group's decision to every row sharing its ASU index.
-        flags = torch.ones(
-            n_refl, dtype=dtypes.int, device=self.device, requires_grad=False
+        group_free = self._stratified_group_draw(
+            group_valid,
+            group_bin,
+            actual_n_bins,
+            lambda n: min(n, max(min_free_per_bin, int(n * free_fraction))),
         )
-        flags[group_free[group_id]] = 0
 
+        flags = torch.ones(len(self.resolution), dtype=dtypes.int, device=self.device)
+        flags[group_free[group_id]] = 0
         self.rfree_flags = flags
         # The seed belongs in the provenance string: without it "generated"
         # names a draw nobody can reproduce.
@@ -1233,23 +1215,50 @@ class ReflectionData(CrystalDataset, DebugMixin):
             + ")"
         )
 
-        n_free = (flags == 0).sum().item()
-        n_work = (flags != 0).sum().item()
-        free_pct = 100.0 * n_free / n_refl
+        if self.verbose > 0:
+            n_free = int((flags == 0).sum())
+            print(
+                f"  {n_free} free ({100.0 * n_free / len(flags):.1f}%) in "
+                f"{actual_n_bins} bins, drawn over {int(group_valid.sum())} unique "
+                "ASU reflections; Bijvoet mates share a flag"
+            )
 
-        print(
-            f"  ✓ Generated flags: {n_free} free ({free_pct:.1f}%), {n_work} work ({100-free_pct:.1f}%)"
-        )
-        print(
-            f"  Drawn over {int(group_valid.sum())} unique ASU reflections "
-            f"({n_groups} groups total); Bijvoet mates share a flag"
-        )
+    @staticmethod
+    def _stratified_group_draw(
+        eligible: torch.Tensor,
+        group_bin: torch.Tensor,
+        n_bins: int,
+        n_to_draw: Callable[[int], int],
+    ) -> torch.Tensor:
+        """Draw ``n_to_draw(n)`` of the ``n`` eligible groups in each resolution bin.
+
+        Shared by R-free and validation-set generation so both split whole ASU
+        groups the same way. Uses the global torch RNG, one ``randperm`` per
+        non-empty bin in bin order, so a seeded caller is reproducible.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean mask of shape ``(n_groups,)``, True for drawn groups.
+        """
+        drawn = torch.zeros_like(eligible, dtype=torch.bool)
+        for b in range(n_bins):
+            members = torch.where((group_bin == b) & eligible)[0]
+            n = int(members.numel())
+            if n == 0:
+                continue
+            perm = torch.randperm(n, device=members.device)[: n_to_draw(n)]
+            drawn[members[perm]] = True
+        return drawn
 
     def get_bins(
         self, n_bins: int = 20, min_per_bin: int = 100
     ) -> Tuple[torch.Tensor, int]:
         """
-        Create resolution bins with approximately equal reflection counts.
+        Create resolution bins with approximately equal counts of valid reflections.
+
+        Pure: nothing is stored on the dataset, so callers that need the same
+        bins later (e.g. :meth:`mean_res_per_bin`) must keep the returned tensor.
 
         Parameters
         ----------
@@ -1321,92 +1330,35 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     )
             if actual_n_bins > 20:
                 print(f"    ... ({actual_n_bins - 20} more bins)")
-        self.bin_indices = bin_indices
-        self._n_bins = actual_n_bins
         return bin_indices, actual_n_bins
 
-    def mean_res_per_bin(self) -> torch.Tensor:
+    def mean_res_per_bin(self, bin_indices: torch.Tensor, n_bins: int) -> torch.Tensor:
         """
-        Calculate mean resolution for each bin.
+        Mean resolution of the valid reflections in each bin.
+
+        Parameters
+        ----------
+        bin_indices : torch.Tensor
+            Bin of each reflection, shape (N,), as returned by :meth:`get_bins`.
+        n_bins : int
+            Number of bins, as returned by :meth:`get_bins`.
 
         Returns
         -------
         torch.Tensor
-            Mean resolution for each bin in Ångströms.
-
-        Raises
-        ------
-        ValueError
-            If bins have not been created yet.
+            Mean resolution per bin in Ångströms, shape (n_bins,); 0 for an
+            empty bin.
         """
-        if self.bin_indices is None or self.resolution is None:
-            raise ValueError("Bins have not been created yet")
-
-        mean_resolutions = torch.zeros(
-            self._n_bins, dtype=dtypes.float, device=self.device
-        )
-        count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
+        if self.resolution is None:
+            self._calculate_resolution()
         mask = self.masks()
-        mean_resolutions = torch.scatter_add(
-            mean_resolutions,
-            0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
-            self.resolution[mask],
+        idx = bin_indices[mask].to(torch.int64)  # dtype-ok: index_add_ requires int64 indices
+        res = self.resolution[mask]
+        total = torch.zeros(n_bins, dtype=res.dtype, device=res.device).index_add_(
+            0, idx, res
         )
-        count_per_bin = torch.scatter_add(
-            count_per_bin,
-            0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
-            torch.ones_like(self.resolution[mask], dtype=dtypes.int),
-        )
-        mean_resolutions = mean_resolutions / count_per_bin.clamp(min=1).float()
-        return mean_resolutions
-
-    def regenerate_rfree_flags(
-        self,
-        free_fraction: float = 0.02,
-        n_bins: int = 10,
-        min_per_bin: int = 1000,
-        min_free_per_bin: int = 50,
-        seed: Optional[int] = None,
-        force: bool = False,
-    ) -> None:
-        """
-        Regenerate R-free flags with resolution-stratified sampling.
-
-        Parameters
-        ----------
-        free_fraction : float, optional
-            Fraction of reflections to mark as free. Default is 0.02 (2%).
-        n_bins : int, optional
-            Target number of resolution bins. Default is 10.
-        min_per_bin : int, optional
-            Minimum reflections per resolution bin. Default is 1000.
-        min_free_per_bin : int, optional
-            Minimum free reflections per resolution bin. Default is 50.
-        seed : int, optional
-            Random seed for reproducibility. Default is None.
-        force : bool, optional
-            If True, overwrite existing flags. Default False, in which case an
-            existing set is kept and the call is a no-op (warning only).
-        """
-        if self.rfree_flags is not None and not force:
-            print("⚠️  WARNING: R-free flags already exist!")
-            print(f"   Current source: {self.rfree_source}")
-            print("   Use force=True to overwrite existing flags")
-            return
-
-        if self.rfree_flags is not None and force:
-            print("⚠️  WARNING: Overwriting existing R-free flags")
-            print(f"   Old source: {self.rfree_source}")
-
-        self._generate_rfree_flags(
-            free_fraction=free_fraction,
-            n_bins=n_bins,
-            min_per_bin=min_per_bin,
-            min_free_per_bin=min_free_per_bin,
-            seed=seed,
-        )
+        count = torch.zeros_like(total).index_add_(0, idx, torch.ones_like(res))
+        return total / count.clamp(min=1)
 
     def _calculate_resolution(self) -> None:
         """Set ``self.resolution`` to per-reflection d-spacing in Ångströms.
@@ -1691,44 +1643,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         self.masks["resolution"] = mask
 
-        valid = self.masks().sum().item()
-        print(
-            f"Filtering: {mask.sum()}/{len(mask)} reflections in range "
-            f"[{d_max if d_max else 'inf'} - {d_min if d_min else 'inf'}] "
-            f"\u00c5 ({valid} valid after all masks)"
-        )
+        if self.verbose > 0:
+            valid = self.masks().sum().item()
+            print(
+                f"Filtering: {mask.sum()}/{len(mask)} reflections in range "
+                f"[{d_max if d_max else 'inf'} - {d_min if d_min else 'inf'}] "
+                f"\u00c5 ({valid} valid after all masks)"
+            )
 
         return self
-
-    def cut_res(
-        self, highres: Optional[float] = None, lowres: Optional[float] = None
-    ) -> "ReflectionData":
-        """
-        Filter reflections by resolution range (alias for filter_by_resolution).
-
-        Masks rather than deletes: reflections outside the range stay in the
-        arrays but are excluded by ``masks()``.
-
-        Parameters
-        ----------
-        highres : float, optional
-            High-resolution cutoff (small d, e.g. 1.5 Å); keeps d >= highres.
-        lowres : float, optional
-            Low-resolution cutoff (large d, e.g. 50.0 Å); keeps d <= lowres.
-
-        Returns
-        -------
-        ReflectionData
-            Self, for method chaining.
-        """
-        return self.filter_by_resolution(d_min=highres, d_max=lowres)
-
-    def get_max_res(self) -> Optional[float]:
-        """Smallest d-spacing among valid reflections, in Ångströms."""
-        if self.resolution is None:
-            self._calculate_resolution()
-        mask = self.masks()
-        return float(self.resolution[mask].min().item())
 
     def __len__(self) -> int:
         """Number of reflections (full array, ignoring masks)."""
@@ -1736,8 +1659,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     @property
     def d_min(self) -> Optional[float]:
-        """High-resolution limit: the smallest d-spacing, in Ångströms."""
-        return self.get_max_res()
+        """High-resolution limit: smallest d-spacing of the valid reflections, in Å."""
+        if self.resolution is None:
+            self._calculate_resolution()
+        return float(self.resolution[self.masks()].min().item())
 
     def __repr__(self) -> str:
         """Count, data sources, resolution range and space group."""
@@ -1754,17 +1679,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         parts.append(f"sg={self.spacegroup}")
 
         return ", ".join(parts) + ")"
-
-    def get_valid_mask(self) -> torch.Tensor:
-        """
-        Return the combined validity mask over all active filters.
-
-        Returns
-        -------
-        torch.Tensor
-            Boolean mask of shape (N,); True = valid/included.
-        """
-        return self.masks()
 
     def data_indexed(
         self,
@@ -2620,7 +2534,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             remapped.spacegroup = self.spacegroup
 
         # Reindex ALL per-reflection dataclass fields onto new_hkl: sets hkl /
-        # resolution, invalidates bin_indices and _centric_flags, and fills
+        # resolution, invalidates _centric_flags, and fills
         # missing rows (index -1) per _REINDEX_FILL.
         self._reindex_per_reflection(index_mapping, new_hkl, target=remapped)
 
@@ -2677,7 +2591,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             New object at ``spacegroup="P1"`` holding every symmetry-equivalent
             reflection (duplicates removed). Per-reflection fields are indexed
             from the original, ``phase`` additionally gets the translation phase
-            shift, ``resolution`` is recomputed and ``bin_indices`` is cleared.
+            shift, and ``resolution`` is recomputed.
             ``source``/``last_op`` record the provenance.
         """
         if self.hkl is None:
@@ -2764,7 +2678,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         :attr:`rfree_flags` untouched. The work/free/validation subsets are
         disjoint (validation is carved out of free) -- see
         :meth:`_subset_indices` and the ``work``/``free``/``validation``
-        accessors. Like :meth:`_generate_rfree_flags`, the split is over whole
+        accessors. Like :meth:`generate_rfree_flags`, the split is over whole
         ASU groups so Bijvoet mates stay together (see
         :meth:`asu_group_indices`).
 
@@ -2790,26 +2704,21 @@ class ReflectionData(CrystalDataset, DebugMixin):
         rwork = self.rfree_flags.to(torch.bool)
         free_mask = ~rwork
 
-        # Split whole ASU groups, exactly as _generate_rfree_flags does -- a
+        # Split whole ASU groups, exactly as generate_rfree_flags does -- a
         # per-row draw here would re-open the Friedel leak at the free/validation
         # boundary. The free set is already group-consistent, so a group is
         # wholly free or wholly work.
         group_id, n_groups = self.asu_group_indices()
         group_free = self._group_any(free_mask, group_id, n_groups)
 
-        # Reuse get_bins for resolution-stratified sampling.
         bin_indices, n_bins = self.get_bins(n_bins=20, min_per_bin=20)
         group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
-
-        group_val = torch.zeros(n_groups, dtype=torch.bool, device=self.device)
-        for b in range(n_bins):
-            bin_free_groups = torch.where((group_bin == b) & group_free)[0]
-            n_bin_free = int(bin_free_groups.numel())
-            if n_bin_free == 0:
-                continue
-            n_val = max(1, int(n_bin_free * val_fraction_of_free))
-            perm = torch.randperm(n_bin_free, device=bin_free_groups.device)[:n_val]
-            group_val[bin_free_groups[perm]] = True
+        group_val = self._stratified_group_draw(
+            group_free,
+            group_bin,
+            n_bins,
+            lambda n: max(1, int(n * val_fraction_of_free)),
+        )
 
         # Broadcast to rows, staying within the free set.
         val_flags = group_val[group_id] & free_mask

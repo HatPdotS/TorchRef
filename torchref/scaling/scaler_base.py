@@ -320,7 +320,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Once this exists, :meth:`forward` uses it *instead of* the solvent model's global
         ``k_sol``/``B_sol``, which then stop affecting the result.
         """
-        mean_res = self._data.mean_res_per_bin()
+        mean_res = self._data.mean_res_per_bin(self.bins, self.nbins)
 
         # Seeded from k_sol * exp(-B s^2) with Phenix-like k=0.35, B=46.
         s_per_bin = 1.0 / (2.0 * mean_res + 1e-6)  # sin(theta)/lambda

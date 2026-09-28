@@ -142,8 +142,8 @@ def setup_dataset_collection(sf_dark, sf_light, d_min, device,
         sf_light, device=device, column_names=column_names_light,
     )
     if d_min is not None:
-        data_dark.cut_res(highres=d_min)
-        data_light.cut_res(highres=d_min)
+        data_dark.filter_by_resolution(d_min=d_min)
+        data_light.filter_by_resolution(d_min=d_min)
 
     dc = DatasetCollection(device=device)
     dc.add_dataset("dark", data_dark)

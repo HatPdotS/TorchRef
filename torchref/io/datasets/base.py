@@ -51,7 +51,6 @@ class CrystalDataset(DeviceMovementMixin):
     # reflections are carved out of BOTH the work and free sets (disjoint).
     validation_flags: Optional[torch.Tensor] = None  # (N,), bool
     resolution: Optional[torch.Tensor] = None  # Resolution per reflection (N,)
-    bin_indices: Optional[torch.Tensor] = None  # Resolution bin assignments (N,), int32
     phase: Optional[torch.Tensor] = None  # Phases in radians (N,)
     fom: Optional[torch.Tensor] = None  # Figure of merit (N,)
     _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool

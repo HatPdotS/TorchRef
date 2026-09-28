@@ -28,11 +28,11 @@ def setup_target():
     data._calculate_wilson_b()
     ens = EnsembleModel.from_single(
         TEST_PDB, n_members=4, perturb_sigma=0.0, b_const=5.0,
-        seed=42, verbose=0, max_res=data.get_max_res(),
+        seed=42, verbose=0, max_res=data.d_min,
     )
     ens.cell = data.cell
     ens.spacegroup = data.spacegroup
-    ens.max_res = data.get_max_res()
+    ens.max_res = data.d_min
 
     scaler = Scaler(model=ens, data=data, nbins=10, verbose=0)
     fcalc0 = ens(data.hkl)

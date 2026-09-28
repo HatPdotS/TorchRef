@@ -4,6 +4,9 @@ Changelog
 
 Unreleased
 ----------
+- ``ReflectionData.regenerate_rfree_flags`` is renamed ``generate_rfree_flags`` (same arguments; with existing flags and ``force=False`` it now warns instead of printing), and it prints only when ``verbose > 0``. Seeded draws are unchanged
+- ``ReflectionData.get_bins`` no longer stores ``bin_indices`` on the dataset, and ``mean_res_per_bin`` takes the bins it should average over, so a later ``get_bins`` call with other settings (R-free or validation-set generation, a least-squares target) can no longer shift the shells a scaler's per-bin solvent scale was set up on. The ``bin_indices`` field is removed
+- Removed the ``ReflectionData`` aliases ``get_max_res`` (use ``d_min``), ``get_valid_mask`` (use ``masks()``) and ``cut_res`` (use ``filter_by_resolution(d_min=, d_max=)``, which now prints only when ``verbose > 0``)
 - Removed unused ``ReflectionData`` methods: ``data_fill_masked``, ``mean_F_per_bin``, ``mean_sigma_per_bin``, ``calc_patterson``, ``fill``, ``possible_hkl``, ``get_structure_factors``, ``get_structure_factors_with_sigma``, ``get_hkl``, ``list_cif_data_blocks``, ``dump``, ``check_all_data_types``, ``unpack_one`` and ``get_min_res``, and the never-populated ``dataset`` and ``reader`` fields. Also removed ``ReflectionData.canonicalize`` (loading already canonicalizes in place; ``SpaceGroup.canonicalize_hkl`` remains) and ``flag_suspicious_sigma`` (superseded by the Wilson outlier mask)
 - Added ``merge_to_spacegroup(data, spacegroup)``, which merges a dataset into another space group via P1 and returns the merged ``ReflectionData`` with per-shell Rmerge, Rmeas and CC_sym (``MergeStats``); a symmetry test when the target is higher than the source. It replaces ``ReflectionData.reduce_to_spacegroup``, which is removed
 - ``ReflectionData.from_tensors`` accepts ``I``, ``I_sigma`` and ``validation_flags``, reordered with the other rows during canonicalization
