@@ -461,10 +461,10 @@ def _canonicalize_hkl(
     asu = gemmi.ReciprocalAsu(sym._gemmi)
     condition_key = asu.condition_str()
     # Reciprocal-space rotation matrices are always integer-valued (0, ±1).
-    recip_ops = torch.round(sym.reciprocal.matrices.detach().cpu()).to(torch.int32)
+    recip_ops = torch.round(sym.reciprocal.matrices.detach().cpu()).to(get_int_dtype())
     translations = sym.translations.detach().cpu()  # (n_ops, 3)
     n_ops = len(recip_ops)
-    hkl_cpu = hkl.detach().to(device="cpu", dtype=torch.int32)  # (N, 3)
+    hkl_cpu = hkl.detach().to(device="cpu", dtype=get_int_dtype())  # (N, 3)
 
     def in_asu(h, k, l):
         try:
@@ -492,7 +492,7 @@ def _canonicalize_hkl(
     # most reflections are resolved by the first few operators. ``todo`` holds the
     # still-unmapped rows in increasing order (``None`` while that is all of them).
     canonical = torch.empty_like(hkl_cpu)
-    op_idx = torch.empty(n_refl, dtype=torch.int16)
+    op_idx = torch.empty(n_refl, dtype=get_int_dtype())
     friedel = torch.zeros(n_refl, dtype=torch.bool)
     todo = None
 
@@ -545,17 +545,17 @@ def _canonicalize_hkl(
     # A single uniform sign is wrong for one half and invisible in P21/P212121/C2,
     # where every shift is 0 or π. tests/unit/symmetry/test_phase_convention.py.
     # h·t is summed left to right so the value does not depend on a backend's
-    # reduction order; the shift is rounded to float32 like the rest of the output.
+    # reduction order.
     if bool(translations.any()):
-        t_sel = translations.index_select(0, op_idx.long())
-        hf = hkl_cpu.to(torch.float32)
+        t_sel = translations.index_select(0, op_idx)
+        hf = hkl_cpu.to(get_float_dtype())
         h_dot_t = (
             hf[:, 0] * t_sel[:, 0] + hf[:, 1] * t_sel[:, 1] + hf[:, 2] * t_sel[:, 2]
         )
-        friedel_sign = torch.where(friedel, 1.0, -1.0).to(torch.float32)
-        phase = (friedel_sign * 2.0 * math.pi * h_dot_t).to(torch.float32)
+        friedel_sign = torch.where(friedel, 1.0, -1.0).to(get_float_dtype())
+        phase = friedel_sign * 2.0 * math.pi * h_dot_t
     else:
-        phase = torch.zeros(n_refl, dtype=torch.float32)
+        phase = torch.zeros(n_refl, dtype=get_float_dtype())
 
     canonical_hkl = canonical.to(dtype=hkl_dtype, device=device)
     phase_shifts = phase.to(dtype=get_float_dtype(), device=device)
