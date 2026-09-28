@@ -46,7 +46,7 @@ class BondTarget(GeometryTarget):
 
     def stats(self) -> Dict[str, StatEntry]:
         """Get bond restraint statistics."""
-        deviations, sigmas = self.restraints.bond_deviations()
+        deviations, sigmas = self.restraints.bond_deviations(self.model.xyz())
         if len(deviations) == 0:
             return {}
 

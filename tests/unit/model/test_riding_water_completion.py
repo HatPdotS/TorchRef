@@ -52,7 +52,7 @@ def test_riding_completes_only_waters_and_preserves_live_atoms(
     assert not model.occupancy.get_refinable_atoms().any()
     assert model.ctx.links is links
     assert model.xyz.rotations.shape[0] == int(is_h.sum()) // 2
-    assert model.restraints.xyz().shape == model.xyz.shape
+    assert model.restraints.topology.n_atoms == model.xyz.shape[0]
     if isinstance(model, ModelFT):
         assert torch.isfinite(model(hkl)).all()
     restored = model_class.create_from_state_dict(model.state_dict(), device="cpu")

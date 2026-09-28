@@ -139,7 +139,9 @@ class TorsionTarget(GeometryTarget):
                     tdata["sigmas"], tdata["periods"],
                 )
         else:
-            deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas()
+            deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas(
+                xyz
+            )
             if len(deviations_rad) > 0:
                 total = total + _von_mises_nll(deviations_rad, sigmas_deg).sum()
 
@@ -163,7 +165,9 @@ class TorsionTarget(GeometryTarget):
         result = {}
 
         # --- Intra-residue + disulfide stats ---
-        deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas()
+        deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas(
+            self.model.xyz()
+        )
         if len(deviations_rad) > 0:
             deviations_deg = deviations_rad * (180.0 / np.pi)
             sigmas_rad = sigmas_deg * (np.pi / 180.0)
@@ -184,7 +188,7 @@ class TorsionTarget(GeometryTarget):
             with torch.no_grad():
                 indices = omega_data["indices"]
                 is_proline = omega_data["is_proline"]
-                omega_deg = self.restraints.torsions(indices)
+                omega_deg = self.restraints.torsions(indices, self.model.xyz())
 
                 is_cis = torch.abs(omega_deg) < 90.0
                 n_cis = int(is_cis.sum().item())

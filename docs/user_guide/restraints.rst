@@ -2,26 +2,28 @@ Geometry Restraints
 ===================
 
 Geometry restraints keep the model chemically reasonable during refinement.
-:class:`~torchref.restraints.Restraints` (the exported alias of
-``RestraintsNew``) builds and holds bond, angle, torsion, planarity, chirality,
-and non-bonded (VDW) restraints.
+:class:`~torchref.topology.Restraints` builds and holds bond, angle, torsion,
+planarity, chirality, and non-bonded (VDW) restraints.
 
 Restraint Setup
 ---------------
 
-You do not normally construct ``Restraints`` yourself. ``model.restraints`` is a
-lazy property that builds them from the monomer library — fetched per monomer on
-demand — on first access. Point it at extra CIF definitions *before* that first
-access:
+You do not normally construct ``Restraints`` yourself. They live on the model's
+context, ``model.ctx.restraints``, and ``model.restraints`` builds them from the
+monomer library -- fetched per monomer on demand -- on first access. Point it at
+extra CIF definitions *before* that first access:
 
 .. code-block:: python
 
-   model.set_restraints_cif("ligand.cif")     # or a list of paths; chainable
+   model.ctx.set_cif_path("ligand.cif")       # or a list of paths
    restraints = model.restraints              # built here, on first access
+   deviations, sigmas = restraints.bond_deviations(model.xyz())
 
-``Restraints.__init__`` takes a PDB DataFrame plus accessor callables
-(``pdb, cif_path, xyz_fn, adp_fn, vdw_radii_fn, cell, spacegroup, links,
-verbose``), not a model — that is what the lazy property assembles for you.
+Restraints hold no reference to the model: every evaluation takes the
+coordinates (or B-factors) it scores, and the non-bonded pair list is rebuilt
+from the coordinates the non-bonded target passes in. ``Restraints.__init__``
+takes an atom table and the coordinates to build over (``pdb, cif_path, xyz,
+cell, spacegroup, links, verbose, nonbonded``).
 
 Residues for which no restraints could be built are frozen in ``xyz`` rather
 than refined unrestrained, so a missing ligand definition shows up as an

@@ -8,7 +8,8 @@ for distance computation. On CPU the pair search itself is a
 k-d tree instead (:func:`find_pairs_kdtree`), with the same output.
 
 All operations run under ``torch.no_grad()`` on whatever device
-the input coordinates live on (CPU or GPU).
+the input coordinates live on (CPU or GPU). :func:`vdw_radii_for_elements`
+gives the per-atom radii the contact distances are summed from.
 """
 
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
@@ -19,8 +20,48 @@ import torch
 from torchref.config import dtypes, get_float_dtype
 
 if TYPE_CHECKING:
+    import pandas
+
     from torchref.symmetry.cell import Cell
     from torchref.symmetry.spacegroup import SpaceGroup
+
+#: Radius in Å for an element missing from ``atomic_vdw_radii.csv``.
+_DEFAULT_VDW_RADIUS = 1.9
+
+
+def vdw_radii_for_elements(elements: "pandas.Series") -> np.ndarray:
+    """Van der Waals radius of each atom, looked up by element.
+
+    Parameters
+    ----------
+    elements : pandas.Series
+        Element symbols, one per atom; case and surrounding whitespace are ignored.
+
+    Returns
+    -------
+    numpy.ndarray
+        Radii in Å, shape ``(n_atoms,)``, float64. Elements the table does not list
+        get 1.9 Å.
+    """
+    import os
+
+    import pandas as pd
+
+    from torchref import PATH_TORCHREF_DATA
+
+    table = pd.read_csv(
+        os.path.join(PATH_TORCHREF_DATA, "atomic_vdw_radii.csv"), comment="#"
+    )
+    radius = dict(
+        zip(
+            table["element"].str.strip().str.capitalize(),
+            table["vdW_Radius_Angstrom"],
+        )
+    )
+    symbols = elements.astype(str).str.strip().str.capitalize()
+    return np.array(
+        [radius.get(e, _DEFAULT_VDW_RADIUS) for e in symbols], dtype=np.float64
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -644,8 +685,8 @@ def filter_pairs(
 
 @torch.no_grad()
 def build_vdw_restraints_gpu(
-    xyz_fn,
-    vdw_radii_fn,
+    xyz: torch.Tensor,
+    vdw_radii: torch.Tensor,
     cell: "Cell",
     sg: "SpaceGroup",
     pdb,
@@ -659,8 +700,10 @@ def build_vdw_restraints_gpu(
 
     Parameters
     ----------
-    xyz_fn : callable  returns (N, 3) Cartesian coordinates
-    vdw_radii_fn : callable  returns (N,) VDW radii
+    xyz : torch.Tensor
+        ``(N, 3)`` Cartesian ASU coordinates in Å.
+    vdw_radii : torch.Tensor
+        ``(N,)`` van der Waals radii in Å.
     cell : Cell
     sg : SpaceGroup
     pdb : DataFrame
@@ -678,7 +721,6 @@ def build_vdw_restraints_gpu(
     """
     from torchref.symmetry.spacegroup import SpaceGroup as SG
 
-    xyz = xyz_fn()
     device = xyz.device
     fdtype = dtypes.float
     n_asu = xyz.shape[0]
@@ -822,8 +864,6 @@ def build_vdw_restraints_gpu(
     symop_indices = op_indices[pair_combo_j]
     pair_cell_offsets = cell_offsets_valid[pair_combo_j]
 
-    # VDW radii
-    vdw_radii = vdw_radii_fn()
     min_distances = vdw_radii[pair_atom_i] + vdw_radii[pair_atom_j]
 
     # Build output

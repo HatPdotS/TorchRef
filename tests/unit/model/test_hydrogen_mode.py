@@ -49,14 +49,16 @@ def test_switch_back_to_free_restores_per_atom_wrapper(free_model):
 
 
 @pytest.mark.unit
-def test_restraints_read_the_installed_wrapper(free_model):
+def test_restraints_survive_the_switch(free_model):
+    """The atom table is unchanged, so the restraints are too; they score whatever
+    coordinates they are handed, including the riding wrapper's."""
     model = free_model
     restraints = model.restraints
     model.set_hydrogen_mode("riding")
-    assert restraints._xyz_fn is model.xyz
-    with torch.no_grad():
-        model.xyz.refinable_params.add_(0.1)
-    assert torch.equal(restraints.xyz(), model.xyz())
+    assert model.restraints is restraints
+    deviations, _ = restraints.bond_deviations(model.xyz())
+    deviations.sum().backward()
+    assert model.xyz.refinable_params.grad is not None
 
 
 @pytest.mark.unit

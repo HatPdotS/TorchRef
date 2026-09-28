@@ -3,7 +3,8 @@
 :class:`ModelContext` holds what a model *is loaded from* and *sits in* -- the unit
 cell, the space group, the atom table, the link records and the provenance -- as
 opposed to what is being refined, which stays on the model as parameter wrappers and
-per-atom buffers.
+per-atom buffers. The geometry restraints belong here too: they are fixed by the atom
+set and the dictionaries, and are evaluated against coordinates the caller passes in.
 
 Splitting it out means the crystallographic context can be passed to code that needs
 only that (structure-factor engines, scalers, most targets) without handing over the
@@ -21,8 +22,10 @@ from torchref.utils.device_mixin import DeviceMixin
 
 if TYPE_CHECKING:
     import pandas
+    import torch
 
     from torchref.symmetry import Cell, SpaceGroup
+    from torchref.topology.restraints import Restraints
 
 
 @dataclass(eq=False, repr=False)
@@ -63,6 +66,10 @@ class ModelContext(DeviceMixin):
         atoms) or ``"none"`` (the table holds no hydrogens).
     initialized : bool, default False
         Whether a structure has been loaded. ``if model:`` tests this.
+    restraints : Restraints or None
+        Geometry restraints over ``pdb``, or None until :meth:`build_restraints` runs.
+        Reset to None whenever the atom table or ``cif_path`` changes; read them
+        through ``Model.restraints``, which builds on first access.
 
     Notes
     -----
@@ -88,12 +95,60 @@ class ModelContext(DeviceMixin):
     add_hydrogens: bool = False
     hydrogen_mode: str = "free"
     initialized: bool = False
+    restraints: Optional["Restraints"] = None
+
+    def set_cif_path(self, cif_path) -> None:
+        """Replace the restraint dictionary path and drop restraints built over the old one.
+
+        Parameters
+        ----------
+        cif_path : str or list of str or None
+            Restraint dictionary file(s).
+        """
+        self.cif_path = cif_path
+        self.restraints = None
+
+    def build_restraints(
+        self, xyz: "torch.Tensor", *, nonbonded: bool = True, verbose=None
+    ) -> "Restraints":
+        """Build restraints over the atom table and store them on :attr:`restraints`.
+
+        Parameters
+        ----------
+        xyz : torch.Tensor
+            Current Cartesian coordinates in Å, shape ``(n_atoms, 3)``; the atom table's
+            own columns are stale during refinement. The restraints land on its device.
+        nonbonded : bool, default True
+            Build the non-bonded pair list. False is for a throwaway build that needs
+            only the topology, and is then **not** stored.
+        verbose : int, optional
+            Defaults to :attr:`verbose`.
+
+        Returns
+        -------
+        Restraints
+        """
+        from torchref.topology.restraints import Restraints
+
+        restraints = Restraints(
+            pdb=self.pdb,
+            cif_path=self.cif_path,
+            xyz=xyz.detach(),
+            cell=self.cell,
+            spacegroup=self.spacegroup,
+            links=self.links,
+            verbose=self.verbose if verbose is None else verbose,
+            nonbonded=nonbonded,
+        )
+        if nonbonded:
+            self.restraints = restraints
+        return restraints
 
     def copy(self) -> "ModelContext":
         """An independent copy.
 
-        The atom table is deep-copied and the cell and space group are cloned, so
-        nothing is shared with the original. Cloning the space group matters now that
+        The atom table is deep-copied, the cell and space group are cloned and built
+        restraints are copied, so nothing is shared with the original. Cloning the space group matters now that
         it is a mutable dataclass: sharing the reference would let an edit through one
         model's context reach every model that was copied from it.
 
@@ -102,7 +157,7 @@ class ModelContext(DeviceMixin):
         ModelContext
             New context sharing no mutable state with this one.
         """
-        return ModelContext(
+        duplicate = ModelContext(
             cell=self.cell.clone() if self.cell is not None else None,
             spacegroup=(
                 self.spacegroup.copy() if self.spacegroup is not None else None
@@ -121,6 +176,15 @@ class ModelContext(DeviceMixin):
             hydrogen_mode=self.hydrogen_mode,
             initialized=self.initialized,
         )
+        if self.restraints is not None:
+            restraints = self.restraints.copy()
+            # Point at the copied table and crystal rather than the deep-copied
+            # duplicates, so the new context is the single owner of both.
+            restraints.pdb = duplicate.pdb
+            restraints._cell = duplicate.cell
+            restraints._spacegroup = duplicate.spacegroup
+            duplicate.restraints = restraints
+        return duplicate
 
     @property
     def crystal_key(self):

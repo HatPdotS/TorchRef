@@ -68,7 +68,7 @@ def built(request, pdb_dir):
                 pytest.skip(f"{code}.pdb not bundled")
             model = Model(verbose=0)
             model.load_pdb(str(path))
-            model.set_restraints_cif(None)
+            model.ctx.set_cif_path(None)
             restraints = model.restraints
             topology = build_topology(
                 model.pdb,
@@ -200,7 +200,7 @@ def test_layout_is_reproducible(built, pdb_dir):
 
     model = Model(verbose=0)
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
-    model.set_restraints_cif(None)
+    model.ctx.set_cif_path(None)
     restraints = model.restraints
     topology_b = build_topology(
         model.pdb,

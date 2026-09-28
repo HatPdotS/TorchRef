@@ -62,7 +62,7 @@ def inserted(pdb_dir, tmp_path_factory):
 
     model = Model(verbose=0, strip_H=True, add_hydrogens=False)
     model.load_pdb(str(path))
-    model.set_restraints_cif(None)
+    model.ctx.set_cif_path(None)
     restraints = model.restraints
 
     topology = build_topology(

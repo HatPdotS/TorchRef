@@ -363,7 +363,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             )
             self.setup_scaler()
             # The CIF path went in at construction; build the restraints over it now.
-            self.model._build_restraints()
+            self.model.restraints
             self._freeze_unrestrained_residues()
 
             # Initialize target functions (instantiated once, evaluated each iteration)
@@ -387,7 +387,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         model = self.model
         pdb = getattr(model, "pdb", None)
-        acc = getattr(getattr(model, "_restraints", None), "restraints", None)
+        restraints = getattr(getattr(model, "ctx", None), "restraints", None)
+        acc = None if restraints is None else restraints.restraints
         if pdb is None or acc is None:
             return
         n = len(pdb)

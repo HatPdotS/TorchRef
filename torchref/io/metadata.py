@@ -263,17 +263,17 @@ class RefinementMetadata:
         # --- Geometry deviations (silently skip if no restraints) ---
         try:
             model = refinement.model
-            if model.ctx.initialized and model._restraints is not None:
+            if model.ctx.initialized and model.ctx.restraints is not None:
                 restraints = model.restraints
                 if hasattr(restraints, "bond_deviations"):
                     with torch.no_grad():
-                        bond_devs, _ = restraints.bond_deviations()
+                        bond_devs, _ = restraints.bond_deviations(model.xyz())
                         meta.rmsd_bond_lengths = float(
                             torch.sqrt((bond_devs**2).mean())
                         )
                 if hasattr(restraints, "angle_deviations"):
                     with torch.no_grad():
-                        angle_devs, _ = restraints.angle_deviations()
+                        angle_devs, _ = restraints.angle_deviations(model.xyz())
                         meta.rmsd_bond_angles = float(
                             torch.sqrt((angle_devs**2).mean())
                         )

@@ -154,8 +154,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         # ---- CIF restraints on base models ----
         if cif_paths:
             for model in mc.base_models:
-                if hasattr(model, "set_restraints_cif"):
-                    model.set_restraints_cif(cif_paths)
+                model.ctx.set_cif_path(cif_paths)
 
         # ---- Scalers ----
         self._setup_scalers()

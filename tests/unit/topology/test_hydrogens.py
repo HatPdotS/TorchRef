@@ -34,7 +34,7 @@ def built(pdb_dir):
             # has to arrive without the hydrogens the loader would otherwise add.
             model = Model(verbose=0, add_hydrogens=False, strip_H=True)
             model.load_pdb(str(pdb_dir / f"{code}.pdb"))
-            model.set_restraints_cif(None)
+            model.ctx.set_cif_path(None)
             restraints = model.restraints
             plan = plan_hydrogens(
                 restraints.topology, restraints.cif_dict, model.xyz().detach()
@@ -276,7 +276,7 @@ def test_hydrogenate_returns_a_consistent_model(pdb_dir):
     """The end-to-end path yields a model whose tensors, table and restraints agree."""
     model = Model(verbose=0, add_hydrogens=False, strip_H=True)
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
-    model.set_restraints_cif(None)
+    model.ctx.set_cif_path(None)
     n_heavy = len(model.pdb)
 
     hydrogenated = model.hydrogenate(verbose=0)
@@ -387,7 +387,7 @@ def test_acetyl_cap_carbon_gets_no_hydrogen(tmp_path):
     path.write_text(_ACE_MET)
     model = Model(verbose=0, add_hydrogens=False, strip_H=True)
     model.load_pdb(str(path))
-    model.set_restraints_cif(None)
+    model.ctx.set_cif_path(None)
     restraints = model.restraints
     plan = plan_hydrogens(
         restraints.topology, restraints.cif_dict, model.xyz().detach()

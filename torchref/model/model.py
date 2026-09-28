@@ -161,9 +161,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Generate missing hydrogens on load when True. Default False;
             ignored when ``strip_H`` is set.
         cif_path : str or list of str, optional
-            Restraint dictionary file(s); see the class docstring. :meth:`set_restraints_cif`
-            can still change it after loading, but generation on load only sees the value
-            given here.
+            Restraint dictionary file(s); see the class docstring.
+            :meth:`ModelContext.set_cif_path` can still change it after loading, but
+            generation on load only sees the value given here.
         hydrogens_in_xray : bool, optional
             Whether hydrogens contribute to the structure factors. Default True. They
             stay in the restraints either way; see :attr:`hydrogens_in_xray`.
@@ -198,9 +198,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Scattering factor parametrization (built lazily on first access)
         self._parametrization = None
-
-        # Restraints (built lazily on first access)
-        self._restraints = None
 
     def __bool__(self):
         """Return the initialization status when used in boolean context.
@@ -540,113 +537,24 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     # Restraints (Geometry Restraints)
     # =========================================================================
 
-    def set_restraints_cif(self, cif_path):
-        """
-        Set CIF path for lazy restraint building.
-
-        Parameters
-        ----------
-        cif_path : str or list of str
-            Path(s) to CIF restraints dictionary file(s).
-
-        Returns
-        -------
-        Model
-            Self, for method chaining.
-        """
-        self.ctx.cif_path = cif_path
-        # Reset restraints so they will be rebuilt on next access
-        self._restraints = None
-        return self
-
-    def _build_restraints(self):
-        """Build and cache ``Restraints`` over this model's DataFrame, wiring in
-        the live ``xyz`` / ``adp`` / ``vdw_radii`` callables.
-        """
-        if self._restraints is not None:
-            return self._restraints
-
-        if not self.ctx.initialized:
-            raise RuntimeError(
-                "Cannot build restraints: model not initialized. "
-                "Load data first with load_pdb() or load_cif()."
-            )
-
-        if self.ctx.verbose > 0:
-            print("Building restraints...")
-
-        self._restraints = self._new_restraints()
-
-        return self._restraints
-
-    def _new_restraints(self, nonbonded: bool = True, verbose: Optional[int] = None):
-        """An uncached ``Restraints`` over this model's DataFrame, wired to the live
-        ``xyz`` / ``adp`` / ``vdw_radii`` callables; see :meth:`_build_restraints`.
-        """
-        from torchref.topology.restraints import Restraints
-
-        return Restraints(
-            pdb=self.pdb,
-            cif_path=self.ctx.cif_path,
-            xyz_fn=self.xyz,
-            adp_fn=self.adp,
-            vdw_radii_fn=self.get_vdw_radii,
-            cell=self.ctx.cell,
-            spacegroup=self.ctx.spacegroup,
-            links=self.ctx.links,
-            verbose=self.ctx.verbose if verbose is None else verbose,
-            nonbonded=nonbonded,
-        )
-
     @property
     def restraints(self):
-        """Bond/angle/torsion/... restraints, built on first access from the
-        DataFrame and the CIF path given to :meth:`set_restraints_cif`.
-        """
-        return self._build_restraints()
+        """Geometry restraints over the atom table, on :attr:`ctx`.
 
-    # =========================================================================
-    # Restraint Evaluation Wrappers
-    # =========================================================================
-
-    def bond_deviations(self):
+        Built on first access over the current coordinates and cached on the context
+        until the atom table or ``ctx.cif_path`` changes. Evaluations take the
+        coordinates as an argument, e.g. ``model.restraints.bond_deviations(model.xyz())``.
         """
-        Compute bond length deviations using current xyz coordinates.
-
-        Returns
-        -------
-        deviations : torch.Tensor
-            Calculated minus expected bond lengths in Angstroms.
-        sigmas : torch.Tensor
-            Standard deviations from CIF library in Angstroms.
-        """
-        return self.restraints.bond_deviations(self.xyz())
-
-    def angle_deviations(self):
-        """
-        Compute angle deviations using current xyz coordinates.
-
-        Returns
-        -------
-        deviations : torch.Tensor
-            Calculated minus expected angles in radians.
-        sigmas : torch.Tensor
-            Standard deviations in radians.
-        """
-        return self.restraints.angle_deviations(self.xyz())
-
-    def torsion_deviations_with_sigmas(self):
-        """
-        Compute torsion deviations (wrapped for periodicity) and sigmas.
-
-        Returns
-        -------
-        deviations_rad : torch.Tensor
-            Wrapped deviations in radians.
-        sigmas_deg : torch.Tensor
-            Standard deviations in degrees (for von Mises NLL).
-        """
-        return self.restraints.torsion_deviations_with_sigmas(self.xyz())
+        if self.ctx.restraints is None:
+            if not self.ctx.initialized:
+                raise RuntimeError(
+                    "Cannot build restraints: model not initialized. "
+                    "Load data first with load_pdb() or load_cif()."
+                )
+            if self.ctx.verbose > 0:
+                print("Building restraints...")
+            self.ctx.build_restraints(self.xyz())
+        return self.ctx.restraints
 
     #: Per-atom buffers built lazily on first use and cached. Each is sized to the atom
     #: table, so all of them go stale the moment the atom set changes.
@@ -672,6 +580,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             if hasattr(self, name):
                 delattr(self, name)
         self._parametrization = None
+        self.ctx.restraints = None
 
     def load(self, reader, add_hydrogens: bool = None):
         """
@@ -808,10 +717,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             plan_hydrogens,
         )
 
-        restraints = self._restraints
-        if restraints is None:
-            restraints = self._new_restraints(nonbonded=False, verbose=0)
         xyz = self.xyz().detach()
+        restraints = self.ctx.restraints
+        if restraints is None:
+            restraints = self.ctx.build_restraints(xyz, nonbonded=False, verbose=0)
         plan = plan_hydrogens(
             restraints.topology, restraints.cif_dict, xyz, verbose=self.ctx.verbose
         )
@@ -829,8 +738,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if self.ctx.verbose > 0:
             print(f"Generated {plan.n_hydrogens} hydrogens")
 
-        # The topology and every per-atom tensor are sized for the old atom set.
-        self._restraints = None
         cell, spacegroup = self.cell, self.spacegroup
         links = self.ctx.links
 
@@ -1103,35 +1010,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         torch.Tensor
             Van der Waals radii for each atom with shape (n_atoms,).
         """
-        import os
-
-        import pandas as pd
-
-        from torchref import PATH_TORCHREF_DATA
+        from torchref.topology.nonbonded import vdw_radii_for_elements
 
         if hasattr(self, "vdw_radii"):
             return self.vdw_radii
-        elements = self.pdb.loc[:, "element"]
-        path = os.path.join(
-            PATH_TORCHREF_DATA,
-            "atomic_vdw_radii.csv",
-        )
-        vdw_df = pd.read_csv(path, comment="#")
-        vdw_df["element"] = vdw_df["element"].str.strip().str.capitalize()
-        elements = elements.str.strip().str.capitalize()
-        elements_not_in = elements[~elements.isin(vdw_df["element"])]
-        if len(elements_not_in) > 0:
-            # Add missing elements with default vdW radius 1.9 Å
-            missing = sorted(set(e.strip().capitalize() for e in elements_not_in))
-            if missing:
-                add_df = pd.DataFrame(
-                    {"element": missing, "vdW_Radius_Angstrom": [1.9] * len(missing)}
-                )
-                vdw_df = pd.concat([vdw_df, add_df], ignore_index=True)
-
-        vdw_radii = (
-            vdw_df.set_index("element").loc[elements]["vdW_Radius_Angstrom"].values
-        )
+        vdw_radii = vdw_radii_for_elements(self.pdb["element"])
         self.register_buffer(
             "vdw_radii",
             torch.tensor(vdw_radii, dtype=self.dtype_float, device=self.device),
@@ -2952,15 +2835,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def _repoint_coordinate_accessors(self) -> None:
         """Make every borrowed coordinate accessor read the current ``xyz`` wrapper.
 
-        The restraints keep ``xyz_fn`` for pair-list maintenance and the ADP node
-        field borrows the coordinates through ``set_xyz_fn``; after the wrapper slot
-        is replaced both would otherwise keep reading a dead module.
+        The ADP node field borrows the coordinates through ``set_xyz_fn``; after the
+        wrapper slot is replaced it would otherwise keep reading a dead module.
         """
-        restraints = self._restraints
-        if restraints is not None:
-            restraints._xyz_fn = self.xyz
-            restraints._adp_fn = self.adp
-            restraints._vdw_radii_fn = self.get_vdw_radii
         for module in self._modules.values():
             if module is not None and hasattr(module, "set_xyz_fn"):
                 module.set_xyz_fn(self.xyz)
@@ -3049,7 +2926,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         reader.links = links
         strip_h = self.ctx.strip_H
         self.ctx.strip_H = False
-        self._restraints = None
         try:
             self.load(reader, add_hydrogens=False)
         finally:

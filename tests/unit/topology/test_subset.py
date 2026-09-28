@@ -22,7 +22,7 @@ def topology(pdb_dir):
     """A topology with altlocs, disulfides, peptide links and hydrogens."""
     model = Model(verbose=0, add_hydrogens=False, strip_H=True)
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
-    model.set_restraints_cif(None)
+    model.ctx.set_cif_path(None)
     return model.restraints.topology
 
 

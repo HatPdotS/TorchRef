@@ -52,7 +52,7 @@ def _row(model, chain, resseq, name, altloc=""):
 def _load(path):
     model = Model(verbose=0, add_hydrogens=False, strip_H=True)
     model.load_pdb(str(path)) if str(path).endswith(".pdb") else model.load_cif(str(path))
-    model.set_restraints_cif(None)
+    model.ctx.set_cif_path(None)
     return model
 
 

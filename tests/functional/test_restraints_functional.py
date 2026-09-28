@@ -21,9 +21,8 @@ class TestRestraintsBuildingFunctional:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
-        restraints.build_restraints()
 
         # Should have built some restraints
         assert restraints.restraints is not None
@@ -39,9 +38,8 @@ class TestRestraintsBuildingFunctional:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
-        restraints.build_restraints()
 
         # Check bond restraints exist
         assert "bond" in restraints.restraints
@@ -77,9 +75,8 @@ class TestRestraintsBuildingFunctional:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
-        restraints.build_restraints()
 
         # Check angle restraints exist
         assert "angle" in restraints.restraints
@@ -108,9 +105,8 @@ class TestRestraintsBuildingFunctional:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
-        restraints.build_restraints()
 
         # Check torsion restraints exist
         assert "torsion" in restraints.restraints
@@ -137,9 +133,8 @@ class TestRestraintsBuildingFunctional:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
-        restraints.build_restraints()
 
         # Check plane restraints exist
         assert "plane" in restraints.restraints
@@ -169,13 +164,12 @@ class TestRestraintsDeviationsFunctional:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
-        restraints.build_restraints()
 
         # Compute bond deviations
         if hasattr(restraints, "bond_deviations"):
-            deviations, sigmas = restraints.bond_deviations()
+            deviations, sigmas = restraints.bond_deviations(model.xyz())
 
             assert torch.all(torch.isfinite(deviations))
             assert torch.all(sigmas > 0)
@@ -193,13 +187,12 @@ class TestRestraintsDeviationsFunctional:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
-        restraints.build_restraints()
 
         # Compute angle deviations
         if hasattr(restraints, "angle_deviations"):
-            deviations, sigmas = restraints.angle_deviations()
+            deviations, sigmas = restraints.angle_deviations(model.xyz())
 
             assert torch.all(torch.isfinite(deviations))
             assert torch.all(sigmas > 0)
@@ -217,11 +210,9 @@ class TestRestraintsMultipleStructures:
         model = compatibility_model
         restraints = Restraints(
             pdb=model.pdb,
-            xyz_fn=model.xyz,
-            vdw_radii_fn=model.get_vdw_radii,
+            xyz=model.xyz(),
             verbose=0,
         )
-        restraints.build_restraints()
         assert "bond" in restraints.restraints
         assert "angle" in restraints.restraints
 
@@ -239,9 +230,8 @@ class TestRestraintsDeviceHandling:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
-        restraints.build_restraints()
 
         # Check that tensors are on the correct device
         if "bond" in restraints.restraints and "intra" in restraints.restraints["bond"]:
@@ -262,7 +252,7 @@ class TestRestraintsCIFParsing:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
 
         # CIF dict should be populated with residue restraints
@@ -288,7 +278,7 @@ class TestRestraintsCIFParsing:
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii, verbose=0
+            pdb=model.pdb, xyz=model.xyz(), verbose=0
         )
 
         # Should have detected unique residues
