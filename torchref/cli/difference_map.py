@@ -6,11 +6,11 @@ Uses the ``torchref.difference-refine`` pipeline but performs **no refinement**:
 models are used as-is.
 
 The default output is the difference map: the amplitude difference
-``|Fo_light| - |Fo_dark|`` as ``DF``/``SIGDF`` carried on the **dark** model's phases
+``|Fo_light| - |Fo_dark|`` as ``dF``/``SIGdF`` carried on the **dark** model's phases
 ``PHDELWT``, with the per-reflection weights of every registered scheme beside it as
-``W_IVW`` (inverse variance, the default) and ``W_SD`` (sigma_D Wiener weight), and the
+``W_InVa`` (inverse variance, the default) and ``W_SD`` (sigma_D Wiener weight), and the
 observed-to-model scale ``KSCALE``. Build the map with
-``torchref.mtz2map -csf DF -cw W_IVW -cphi PHDELWT`` (``--units electrons`` for e/A^3).
+``torchref.mtz2map -csf dF -cw W_InVa -cphi PHDELWT`` (``--units electrons`` for e/A^3).
 That needs no light-state model, so ``-lm`` is optional. It is also deliberately not a
 *phased* difference map: putting the light state's model phases into the observed
 amplitude biases the map toward the very model the experiment is testing.

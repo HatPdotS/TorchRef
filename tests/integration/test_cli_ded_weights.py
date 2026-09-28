@@ -1,6 +1,6 @@
 """The registered difference weights through the CLIs.
 
-Pinned: ``torchref.difference-map`` writes ``DF`` with one mean-one weight column per
+Pinned: ``torchref.difference-map`` writes ``dF`` with one mean-one weight column per
 scheme and ``KSCALE``; ``torchref.mtz2map`` builds the weighted map from those columns
 and the electrons map is the volume-normalised synthesis on the absolute scale;
 ``torchref.validate-ded`` reports every scheme side by side and records a fallback;
@@ -22,10 +22,10 @@ DIFF_COLUMNS = {
     "SIGFo_dark": "Stddev",
     "Fo_light": "SFAmplitude",
     "SIGFo_light": "Stddev",
-    "DF": "SFAmplitude",
-    "SIGDF": "Stddev",
+    "dF": "SFAmplitude",
+    "SIGdF": "Stddev",
     "PHDELWT": "Phase",
-    "W_IVW": "Weight",
+    "W_InVa": "Weight",
     "W_SD": "Weight",
     "KSCALE": "MTZReal",
     "Fc_dark": "SFAmplitude",
@@ -138,7 +138,7 @@ def _read(path):
 def test_difference_map_writes_df_weights_and_scale(diff_mtz):
     df = _read(diff_mtz)
     assert {c: str(df.dtypes[c]) for c in df.columns} == DIFF_COLUMNS
-    for col in ("W_IVW", "W_SD"):
+    for col in ("W_InVa", "W_SD"):
         w = df[col].to_numpy().astype(float)
         assert np.isfinite(w).all() and (w >= 0).all()
         assert abs(w.mean() - 1.0) < 1e-4
@@ -160,7 +160,7 @@ def test_mtz2map_builds_the_weighted_and_electron_maps(project_root, pair, diff_
         "-sf",
         diff_mtz,
         "-csf",
-        "DF",
+        "dF",
         "-cw",
         "W_SD",
         "-cphi",
@@ -176,7 +176,7 @@ def test_mtz2map_builds_the_weighted_and_electron_maps(project_root, pair, diff_
         "-sf",
         diff_mtz,
         "-csf",
-        "DF",
+        "dF",
         "-cw",
         "W_SD",
         "-cphi",
@@ -194,7 +194,7 @@ def test_mtz2map_builds_the_weighted_and_electron_maps(project_root, pair, diff_
         "-sf",
         diff_mtz,
         "-csf",
-        "DF",
+        "dF",
         "-cw",
         "W_SD",
         "-cphi",

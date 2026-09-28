@@ -429,7 +429,7 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     the model's estimate of it and converting back to an amplitude gives a difference
     amplitude that is comparable across datasets, which the raw one is not.
 
-    ``DDF`` is the diagnostic that matters: smooth and featureless against resolution
+    ``ddF`` is the diagnostic that matters: smooth and featureless against resolution
     means the correction is collinear with a scale or overall-B error and should be
     distrusted; structure in it is the signal.
 
@@ -495,9 +495,9 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
         sig_F_corr = _np(sig_F_corr_full)
 
     I_two_moment = I_coherent + variance
-    DF_corr = F_corr - Fobs_dark
-    DDF = DF_corr - diff_Fobs
-    sig_DF_corr = np.sqrt(sig_F_corr**2 + sig_dark**2)
+    dF_corr = F_corr - Fobs_dark
+    ddF = dF_corr - diff_Fobs
+    sig_dF_corr = np.sqrt(sig_F_corr**2 + sig_dark**2)
 
     # Use the modulus of the complex vector difference so the corrected
     # coefficient retains the phase rotation between the dark and light states.
@@ -517,20 +517,20 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
 
     columns = {
         # The corrected difference map, on the same dark phases as DELFWT.
-        "DELFWT_corr": DF_corr * weights,
+        "DELFWT_corr": dF_corr * weights,
         "Fo_light_corr": F_corr,
         "SIGFo_light_corr": sig_F_corr,
-        "DF_corr": DF_corr,
-        "SIGDF_corr": sig_DF_corr,
-        "DDF": DDF,
+        "dF_corr": dF_corr,
+        "SIGdF_corr": sig_dF_corr,
+        "ddF": ddF,
     }
     types = {
         "DELFWT_corr": "F",
         "Fo_light_corr": "F",
         "SIGFo_light_corr": "Q",
-        "DF_corr": "F",
-        "SIGDF_corr": "Q",
-        "DDF": "F",
+        "dF_corr": "F",
+        "SIGdF_corr": "Q",
+        "ddF": "F",
     }
     if all_columns:
         columns.update({
@@ -575,14 +575,14 @@ def _difference_columns(
 ):
     """The difference map's amplitudes, phases and weights.
 
-    ``DF``/``SIGDF`` is the signed amplitude difference ``|Fo_light| - |Fo_dark|`` with
+    ``dF``/``SIGdF`` is the signed amplitude difference ``|Fo_light| - |Fo_dark|`` with
     its propagated uncertainty, ``PHDELWT`` the **dark** model's phase it is carried on:
     the isomorphous difference Fourier, and the construction ``torchref.validate-ded``
-    correlates against. One weight column per registered scheme (``W_SD``, ``W_IVW``;
-    MTZ type ``W``, mean one) sits beside it, so any weighting is ``DF`` times a column
-    and reproducible from the file: ``torchref.mtz2map -csf DF -cw W_SD -cphi PHDELWT``.
+    correlates against. One weight column per registered scheme (``W_SD``, ``W_InVa``;
+    MTZ type ``W``, mean one) sits beside it, so any weighting is ``dF`` times a column
+    and reproducible from the file: ``torchref.mtz2map -csf dF -cw W_SD -cphi PHDELWT``.
     ``KSCALE`` (type ``R``) is the scaler's multiplicative factor from model to observed
-    scale, so ``DF / KSCALE`` is in electrons and ``mtz2map --units electrons`` gives
+    scale, so ``dF / KSCALE`` is in electrons and ``mtz2map --units electrons`` gives
     e/A^3.
 
     This layer needs no light-state model: the amplitude is ``|Fo_light| - |Fo_dark|``
@@ -607,8 +607,8 @@ def _difference_columns(
         "SIGFo_dark": sig_dark,
         "Fo_light": Fobs_light,
         "SIGFo_light": sig_light,
-        "DF": diff_Fobs,
-        "SIGDF": sig_diff,
+        "dF": diff_Fobs,
+        "SIGdF": sig_diff,
         "PHDELWT": phases_dark,
         **weight_columns,
         "KSCALE": kscale,
@@ -626,8 +626,8 @@ def _difference_columns(
         "SIGFo_dark": "Q",
         "Fo_light": "F",
         "SIGFo_light": "Q",
-        "DF": "F",
-        "SIGDF": "Q",
+        "dF": "F",
+        "SIGdF": "Q",
         "PHDELWT": "P",
         **{name: "W" for name in weight_columns},
         "KSCALE": "R",
@@ -688,14 +688,14 @@ def _phasing_columns(mc, scaler, hkl_all, mask, *, fcalc_dark, Fobs_dark_vals,
                 "2mDFop-DFc": (2 * Fobs_diff_phased - Fcalc_diff_amp) * weights,
                 "mDFop-DFc": (Fobs_diff_phased - Fcalc_diff_amp) * weights,
                 "PHIC_diff": torch.angle(fcalc_diff).detach().rad2deg().cpu().numpy(),
-                "DFc": Fcalc_light - Fcalc_dark,
+                "dFc": Fcalc_light - Fcalc_dark,
                 # This column holds the real modulus of the complex vector difference.
-                "DFc_phased": Fcalc_diff_amp,
+                "dFc_phased": Fcalc_diff_amp,
             }
         )
         types.update({
             "2mDFop-DFc": "F", "mDFop-DFc": "F", "PHIC_diff": "P",
-            "DFc": "F", "DFc_phased": "F",
+            "dFc": "F", "dFc_phased": "F",
         })
 
     ctx = {
@@ -849,14 +849,14 @@ def _extrapolation_columns(
 
 
 _DIFFERENCE_DATASET_COLUMNS = (
-    "DF", "SIGDF", "PHDELWT", "KSCALE", *WEIGHT_COLUMNS.values()
+    "dF", "SIGdF", "PHDELWT", "KSCALE", *WEIGHT_COLUMNS.values()
 )
 
 # One history line per MTZ dataset, in the order they are written. MTZ history lines
 # are at most 80 characters.
 _MTZ_DATASET_HISTORY = {
     "observed": "observed: Fo_dark, Fo_light and flags on the shared scale; Fc_dark",
-    "difference": "difference: DF/SIGDF on dark phases PHDELWT; weights W_SD, W_IVW",
+    "difference": "difference: dF/SIGdF on dark phases PHDELWT; weights W_SD, W_InVa",
     "light_model": (
         "light_model: FC/PHIC, amplitude and phase of the mixed dark+light model"
     ),
@@ -929,9 +929,9 @@ def write_results_mtz(
 ):
     """Write the difference map, and map coefficients when a light model is given.
 
-    The default output is the **difference map**: ``DF``/``SIGDF`` on the dark model's
+    The default output is the **difference map**: ``dF``/``SIGdF`` on the dark model's
     phases ``PHDELWT``, with one mean-one weight column per registered scheme
-    (``W_SD``, ``W_IVW``) and the observed-to-model scale ``KSCALE``; see
+    (``W_SD``, ``W_InVa``) and the observed-to-model scale ``KSCALE``; see
     :func:`_difference_columns`. ``ded_weight`` selects the scheme the model-phased
     difference columns and the two-moment columns are weighted with. That needs no
     light-state model, which is why ``mc`` is optional -- with a dark model alone this

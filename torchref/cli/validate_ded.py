@@ -1,8 +1,8 @@
 #!/usr/bin/env python3 -u
-"""Validate difference electron density (DED) by correlating DFo and DFc maps.
+"""Validate difference electron density (DED) by correlating dFo and dFc maps.
 
 Takes separate dark and light MTZ files, computes weighted difference amplitudes
-internally, then compares the weighted DFo and DFcalc maps using dark-state phases.
+internally, then compares the weighted dFo and dFcalc maps using dark-state phases.
 Phenix-style atom selections give regional correlations, e.g. around a ligand site.
 
 Examples
@@ -209,7 +209,7 @@ def setup_ded_context(
 ):
     """Load reflection data and prepare shared state for DED validation.
 
-    This sets up the observation side (weighted DFo, P1 expansion, resolution
+    This sets up the observation side (weighted dFo, P1 expansion, resolution
     bins, free/work masks) that is independent of any particular model.
 
     Parameters
@@ -451,12 +451,12 @@ def compute_ded_maps(
     w_delta_fcalc = delta_fcalc * ctx["weights_p1"]
     phi_dark_p1 = torch.angle(fcalc_dark_p1)
 
-    # ASU-level weighted DFcalc
+    # ASU-level weighted dFcalc
     delta_fcalc_asu = fcalc_mixed_asu.abs() - fcalc_dark_asu.abs()
     w_delta_fcalc_asu = delta_fcalc_asu * ctx["weights"]
 
     if verbose >= 1:
-        print(f"  |DFcalc| mean: {delta_fcalc.abs().mean():.3f}")
+        print(f"  |dFcalc| mean: {delta_fcalc.abs().mean():.3f}")
         print(f"  |WDFcalc| mean: {w_delta_fcalc.abs().mean():.3f}")
 
     # Compute maps
@@ -820,7 +820,7 @@ def main():
     """Entry point for ``torchref.validate-ded``; returns the exit code."""
     parser = argparse.ArgumentParser(
         description="Validate difference electron density by correlating "
-        "weighted DFo and DFcalc maps.",
+        "weighted dFo and dFcalc maps.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

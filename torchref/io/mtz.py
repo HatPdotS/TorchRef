@@ -118,7 +118,7 @@ class MTZReader:
         column_names : dict, optional
             Explicit column name mapping to override automatic detection.
             Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
-            Example: ``{"F": "DFo", "SIGF": "sig_DFo"}``.
+            Example: ``{"F": "dFo", "SIGF": "sig_dFo"}``.
         anomalous : bool, optional
             None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into explicit
             Friedel pairs when such columns exist; True forces that (warning if

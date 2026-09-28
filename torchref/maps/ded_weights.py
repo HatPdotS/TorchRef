@@ -44,7 +44,7 @@ SCHEMES = ("none", "inverse_variance", "sigma_d")
 #: rose in the bulk solvent as much as in the region of interest.
 DEFAULT_SCHEME = "inverse_variance"
 #: MTZ column carrying each scheme's weight (type ``W``); ``none`` writes no column.
-WEIGHT_COLUMNS = {"inverse_variance": "W_IVW", "sigma_d": "W_SD"}
+WEIGHT_COLUMNS = {"inverse_variance": "W_InVa", "sigma_d": "W_SD"}
 
 
 class DedWeightFallbackWarning(UserWarning):
