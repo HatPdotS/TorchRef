@@ -19,6 +19,7 @@ wrong one is invisible in P21/P212121/C2 -- see :func:`_expand_hkl` and
 ``tests/unit/symmetry/test_phase_convention.py``.
 """
 
+import math
 from typing import Optional, Tuple
 
 import numpy as np
@@ -398,7 +399,8 @@ def _canonicalize_hkl(
     hkl: torch.Tensor,
     include_friedel: bool = True,
     device: Optional[torch.device] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    sort: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Map Miller indices to canonical CCP4 ASU representatives.
 
     Selects one representative per reflection under the standard CCP4 asymmetric
@@ -417,17 +419,20 @@ def _canonicalize_hkl(
         Whether Friedel mates are considered equivalent.
     device : torch.device, optional
         Computation device. If None, uses hkl's device.
+    sort : bool, default True
+        Return the rows sorted lexicographically by canonical (h, k, l). With
+        ``False`` the rows stay in input order and no permutation is formed.
 
     Returns
     -------
     canonical_hkl : torch.Tensor, shape (N, 3), dtype int32
-        Remapped indices, sorted lexicographically by (h, k, l).
+        Remapped indices, sorted lexicographically by (h, k, l) when ``sort``.
     phase_shifts : torch.Tensor, shape (N,), dtype float32
-        Additive phase correction in radians.
+        Additive phase correction in radians, in the same row order.
     friedel_flags : torch.Tensor, shape (N,), dtype bool
-        True where Friedel conjugation was applied.
-    sort_indices : torch.Tensor, shape (N,), dtype int64
-        Permutation from original to sorted order.
+        True where Friedel conjugation was applied, in the same row order.
+    sort_indices : torch.Tensor or None, shape (N,), dtype int64
+        Permutation from original to sorted order; ``None`` when ``sort=False``.
 
     Notes
     -----
@@ -445,82 +450,90 @@ def _canonicalize_hkl(
         empty_hkl = torch.empty((0, 3), dtype=hkl_dtype, device=device)
         empty_f = torch.empty(0, dtype=get_float_dtype(), device=device)
         empty_b = torch.empty(0, dtype=torch.bool, device=device)
-        empty_i = torch.empty(0, dtype=get_int_dtype(), device=device)
+        # dtype-ok: the int64 permutation torch.argsort returns for non-empty input
+        empty_i = torch.empty(0, dtype=torch.int64, device=device) if sort else None
         return empty_hkl, empty_f, empty_b, empty_i
 
-    # The ASU lookup tables are numpy-backed, so the operations come across to CPU
-    # regardless of where ``sym`` lives; only the returned tensors honour ``device``.
+    # The mapping runs on CPU whatever device ``sym`` or ``hkl`` live on (gemmi's
+    # scalar ASU test is the fallback); only the returned tensors honour ``device``.
+    # Torch rather than numpy for the per-row arithmetic: the work is a handful of
+    # elementwise passes over every reflection, which torch spreads over threads.
     asu = gemmi.ReciprocalAsu(sym._gemmi)
     condition_key = asu.condition_str()
-    recip_mats = sym.reciprocal.matrices.detach().cpu().numpy()  # (n_ops, 3, 3)
-    translations_np = sym.translations.detach().cpu().numpy()  # (n_ops, 3)
-    n_ops = len(recip_mats)
-
-    hkl_np = hkl.cpu().numpy().astype(np.int32)  # (N, 3)
     # Reciprocal-space rotation matrices are always integer-valued (0, ±1).
-    recip_mats_i = np.round(recip_mats).astype(np.int32)
+    recip_ops = torch.round(sym.reciprocal.matrices.detach().cpu()).to(torch.int32)
+    translations = sym.translations.detach().cpu()  # (n_ops, 3)
+    n_ops = len(recip_ops)
+    hkl_cpu = hkl.detach().to(device="cpu", dtype=torch.int32)  # (N, 3)
 
-    # One op (+ its Friedel mate) at a time, so high-symmetry groups exit early:
-    # most reflections are resolved by the first few operators.
-    canonical_np = np.empty_like(hkl_np)
-    op_idx = np.empty(n_refl, dtype=np.int32)
-    friedel_np = np.zeros(n_refl, dtype=bool)
-    remaining = np.ones(n_refl, dtype=bool)
-
-    for i_op in range(n_ops):
-        if not remaining.any():
-            break
-        idx = np.where(remaining)[0]
-        hkl_sub = hkl_np[idx]  # (M, 3)
-        R = recip_mats_i[i_op]  # (3, 3)
-        equiv_sub = hkl_sub @ R.T  # (M, 3), int32 matmul — no rounding needed
-
-        # Check non-Friedel
-        h, k, l = equiv_sub[:, 0], equiv_sub[:, 1], equiv_sub[:, 2]
+    def in_asu(h, k, l):
         try:
-            in_asu_pos = _asu_condition_vectorized(h, k, l, condition_key)
+            return _asu_condition_vectorized(h, k, l, condition_key)
         except ValueError:
-            in_asu_pos = np.array(
-                [asu.is_in(row.tolist()) for row in equiv_sub], dtype=bool
+            return torch.tensor(
+                [
+                    asu.is_in([a, b, c])
+                    for a, b, c in zip(h.tolist(), k.tolist(), l.tolist())
+                ],
+                dtype=torch.bool,
             )
 
-        hit_pos = np.where(in_asu_pos)[0]
-        if len(hit_pos) > 0:
-            global_idx = idx[hit_pos]
-            canonical_np[global_idx] = equiv_sub[hit_pos]
-            op_idx[global_idx] = i_op
-            remaining[global_idx] = False
+    def rotate(row, h, k, l):
+        """``row . (h, k, l)`` for one row of an integer (0, ±1) rotation."""
+        out = None
+        for coef, col in zip(row, (h, k, l)):
+            if coef == 0:
+                continue
+            term = col if coef == 1 else -col if coef == -1 else col * coef
+            out = term if out is None else out + term
+        return torch.zeros_like(h) if out is None else out
 
-        # Check Friedel mate
-        if include_friedel and remaining.any():
-            # Recompute idx for remaining after non-Friedel hits
-            idx_f = np.where(remaining)[0]
-            hkl_sub_f = hkl_np[idx_f]
-            equiv_neg = -(hkl_sub_f @ R.T)
+    # One op (+ its Friedel mate) at a time, so high-symmetry groups exit early:
+    # most reflections are resolved by the first few operators. ``todo`` holds the
+    # still-unmapped rows in increasing order (``None`` while that is all of them).
+    canonical = torch.empty_like(hkl_cpu)
+    op_idx = torch.empty(n_refl, dtype=torch.int16)
+    friedel = torch.zeros(n_refl, dtype=torch.bool)
+    todo = None
 
-            h_n, k_n, l_n = equiv_neg[:, 0], equiv_neg[:, 1], equiv_neg[:, 2]
-            try:
-                in_asu_neg = _asu_condition_vectorized(h_n, k_n, l_n, condition_key)
-            except ValueError:
-                in_asu_neg = np.array(
-                    [asu.is_in(row.tolist()) for row in equiv_neg], dtype=bool
+    for i_op in range(n_ops):
+        if todo is not None and todo.numel() == 0:
+            break
+        R = recip_ops[i_op].tolist()
+        sub = hkl_cpu if todo is None else hkl_cpu.index_select(0, todo)
+        h, k, l = sub.unbind(1)
+        eh, ek, el = (rotate(R[i], h, k, l) for i in range(3))
+
+        hit = in_asu(eh, ek, el)
+        miss = ~hit
+        rows = hit.nonzero().squeeze(1)
+        left = miss.nonzero().squeeze(1)
+        if todo is not None:
+            rows, left = todo[rows], todo[left]
+        if rows.numel():
+            canonical.index_copy_(0, rows, torch.stack((eh[hit], ek[hit], el[hit]), 1))
+            op_idx.index_fill_(0, rows, i_op)
+        todo = left
+
+        # The Friedel mate of R h is -(R h): reuse the rotated indices.
+        if include_friedel and todo.numel():
+            nh, nk, nl = -eh[miss], -ek[miss], -el[miss]
+            hit_f = in_asu(nh, nk, nl)
+            rows = todo[hit_f]
+            if rows.numel():
+                canonical.index_copy_(
+                    0, rows, torch.stack((nh[hit_f], nk[hit_f], nl[hit_f]), 1)
                 )
+                op_idx.index_fill_(0, rows, i_op)
+                friedel.index_fill_(0, rows, True)
+            todo = todo[~hit_f]
 
-            hit_neg = np.where(in_asu_neg)[0]
-            if len(hit_neg) > 0:
-                global_idx_f = idx_f[hit_neg]
-                canonical_np[global_idx_f] = equiv_neg[hit_neg]
-                op_idx[global_idx_f] = i_op
-                friedel_np[global_idx_f] = True
-                remaining[global_idx_f] = False
-
-    # ``canonical_np``/``op_idx`` are uninitialized ``np.empty`` buffers, so an
+    # ``canonical``/``op_idx`` are uninitialized ``torch.empty`` buffers, so an
     # unmapped row would propagate garbage indices and phases. Fail loudly instead.
-    if remaining.any():
-        n_unmapped = int(remaining.sum())
-        example = hkl_np[np.where(remaining)[0][0]].tolist()
+    if todo is not None and todo.numel():
+        example = hkl_cpu[todo[0]].tolist()
         raise ValueError(
-            f"canonicalize_hkl could not map {n_unmapped} reflection(s) to the "
+            f"canonicalize_hkl could not map {todo.numel()} reflection(s) to the "
             f"reciprocal ASU of space group {sym} "
             f"(include_friedel={include_friedel}); e.g. hkl={example}. With "
             f"include_friedel=False the Friedel half of reciprocal space has no "
@@ -531,19 +544,24 @@ def _canonicalize_hkl(
     # already negated phi for those rows: -2π h·t normally, +2π h·t for Friedel.
     # A single uniform sign is wrong for one half and invisible in P21/P212121/C2,
     # where every shift is 0 or π. tests/unit/symmetry/test_phase_convention.py.
-    t_selected = translations_np[op_idx]  # (N, 3)
-    friedel_sign = np.where(friedel_np, 1.0, -1.0).astype(np.float32)
-    phase_shifts_np = (
-        friedel_sign
-        * 2.0
-        * np.pi
-        * np.sum(hkl_np.astype(np.float32) * t_selected, axis=1)
-    ).astype(np.float32)
+    # h·t is summed left to right so the value does not depend on a backend's
+    # reduction order; the shift is rounded to float32 like the rest of the output.
+    if bool(translations.any()):
+        t_sel = translations.index_select(0, op_idx.long())
+        hf = hkl_cpu.to(torch.float32)
+        h_dot_t = (
+            hf[:, 0] * t_sel[:, 0] + hf[:, 1] * t_sel[:, 1] + hf[:, 2] * t_sel[:, 2]
+        )
+        friedel_sign = torch.where(friedel, 1.0, -1.0).to(torch.float32)
+        phase = (friedel_sign * 2.0 * math.pi * h_dot_t).to(torch.float32)
+    else:
+        phase = torch.zeros(n_refl, dtype=torch.float32)
 
-    # --- Convert to tensors and sort ---
-    canonical_hkl = torch.tensor(canonical_np, dtype=hkl_dtype, device=device)
-    phase_shifts = torch.tensor(phase_shifts_np, dtype=get_float_dtype(), device=device)
-    friedel_flags = torch.tensor(friedel_np, dtype=torch.bool, device=device)
+    canonical_hkl = canonical.to(dtype=hkl_dtype, device=device)
+    phase_shifts = phase.to(dtype=get_float_dtype(), device=device)
+    friedel_flags = friedel.to(device=device)
+    if not sort:
+        return canonical_hkl, phase_shifts, friedel_flags, None
 
     # Lexicographic sort by (h, k, l) via composite key
     h_max = int(canonical_hkl.abs().max().item()) + 1
