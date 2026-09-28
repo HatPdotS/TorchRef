@@ -74,9 +74,9 @@ from . import (
 )
 
 # =============================================================================
-# Main classes
+# French-Wilson
 # =============================================================================
-from .french_wilson import FrenchWilson
+from .french_wilson import french_wilson_auto
 
 # =============================================================================
 # Coordinate transformations (from coordinates submodule)
@@ -248,7 +248,7 @@ __all__ = [
     # -------------------------------------------------------------------------
     # Classes
     # -------------------------------------------------------------------------
-    "FrenchWilson",
+    "french_wilson_auto",
     "ReciprocalSymmetryExtractor",
     # -------------------------------------------------------------------------
     # Coordinate transforms

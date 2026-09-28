@@ -16,7 +16,7 @@ import pandas as pd
 import torch
 
 from torchref.base import math_torch
-from torchref.base.french_wilson import FrenchWilson
+from torchref.base.french_wilson import french_wilson_auto
 from torchref.config import dtypes, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
@@ -209,7 +209,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
     # Cached properties (not serialized)
     _centric: Optional[torch.Tensor] = field(default=None, repr=False)
     _n_bins: Optional[int] = field(default=None, repr=False)
-    _FrenchWilson: Optional[FrenchWilson] = field(default=None, repr=False)
 
     # Dynamic fields used by various methods
     source: Optional["ReflectionData"] = field(default=None, repr=False)
@@ -796,12 +795,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     requires_grad=False,
                 )
             self.intensity_source = data_dict.get("I_col", "Unknown")
-            self._FrenchWilson = FrenchWilson(
-                self.hkl, self.cell.data, self.spacegroup, verbose=self.verbose
+            self.F, self.F_sigma, fw_keep = french_wilson_auto(
+                self.I,
+                self.I_sigma,
+                self.hkl,
+                self.resolution,
+                self.spacegroup or "P1",
             )
-            F, F_sigma = self._FrenchWilson(self.I, self.I_sigma)
-            self.F = F
-            self.F_sigma = F_sigma
             # Record French-Wilson's own input criterion, evaluated on the true
             # intensities. This is strictly better than anything reconstructible
             # from the amplitudes afterwards: F is a positive posterior mean, so
@@ -812,7 +812,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             # outlier mask -- this one guards the posterior integral against
             # unphysical input, which is a different question from whether an
             # observation is an outlier.
-            self._set_french_wilson_mask(self._FrenchWilson.valid_mask)
+            self._set_french_wilson_mask(fw_keep)
         elif "F" in data_dict:
             self.F = torch.tensor(
                 data_dict["F"],

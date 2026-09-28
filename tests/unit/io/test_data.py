@@ -224,7 +224,7 @@ class TestFrenchWilsonToggle:
         # F should be exactly the sentinel amplitude column, untouched.
         assert torch.allclose(data.F, torch.full_like(data.F, 7.0))
         # French-Wilson must not have run.
-        assert data._FrenchWilson is None
+        assert data.FRENCH_WILSON_MASK_KEY not in data.masks
 
     @pytest.mark.unit
     def test_french_wilson_on_derives_from_intensities(self):
@@ -236,7 +236,7 @@ class TestFrenchWilsonToggle:
 
         # F is computed from I, so it differs from the sentinel 7.0 column.
         assert not torch.allclose(data.F, torch.full_like(data.F, 7.0))
-        assert data._FrenchWilson is not None
+        assert data.FRENCH_WILSON_MASK_KEY in data.masks
 
     @pytest.mark.unit
     def test_french_wilson_off_falls_back_when_no_amplitudes(self):
@@ -252,4 +252,4 @@ class TestFrenchWilsonToggle:
 
         # No amplitude columns => French-Wilson runs regardless of the flag.
         assert data.F is not None
-        assert data._FrenchWilson is not None
+        assert data.FRENCH_WILSON_MASK_KEY in data.masks

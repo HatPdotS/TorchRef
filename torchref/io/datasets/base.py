@@ -121,13 +121,13 @@ class CrystalDataset(DeviceMovementMixin):
         """Return observation fields and masks with tensors on CPU.
 
         Cell/device/space group are flattened to tensors or strings. Loading
-        provenance and French-Wilson conversion caches are omitted.
+        provenance is omitted.
         """
 
         state = {}
         for f in fields(self):
-            if f.name in {"source", "reader", "dataset", "_FrenchWilson"}:
-                # Loading provenance and conversion caches are not observation state.
+            if f.name in {"source", "reader", "dataset"}:
+                # Loading provenance is not observation state.
                 state[f.name] = None
                 continue
             val = getattr(self, f.name)

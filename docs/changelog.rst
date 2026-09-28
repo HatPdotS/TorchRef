@@ -4,6 +4,8 @@ Changelog
 
 Unreleased
 ----------
+- Removed the ``FrenchWilson`` module and ``ReflectionData._FrenchWilson``; use ``french_wilson_auto(I, sigma_I, hkl, d_spacings, space_group)``, which returns ``(F, sigma_F, valid_mask)``
+- Fixed ``torchref.difference-refine`` reusing the French-Wilson estimator built at load time, whose d-spacings and centric flags were in the pre-canonicalization row order; on files stored off the CCP4 ASU order (e.g. 6G9X) the corrected light amplitudes were computed against the wrong reflections
 - The difference MTZ groups its columns into named datasets -- ``observed``, ``difference``, ``light_model``, ``extrapolated_light``, ``two_moment`` -- with one history line describing each, so ``FWT``/``PHWT`` reads as ``/torchref/extrapolated_light/FWT`` (the extrapolated light-state map ``2*FEXT - Fc``). Labels are unchanged and Coot still auto-opens it
 - ``SpaceGroup.canonicalize_hkl`` gains ``sort=False``, which keeps the input row order and returns ``None`` for ``sort_indices``; the ASU mapping runs as threaded torch operations and reuses the rotated indices for the Friedel mate, so large reflection lists map faster with unchanged outputs
 - ``torchref.difference-map``, ``torchref.difference-refine`` and ``torchref.validate-ded`` gain ``--ded-weight {sigma_d,inverse_variance,none}`` and ``--sigma-d-gamma``. The difference MTZ now carries the unweighted ``DF``/``SIGDF`` on ``PHDELWT`` with one mean-one weight column per scheme, ``W_SD`` and ``W_IVW`` (MTZ type W), and the observed-to-model scale ``KSCALE``; ``DELFWT`` is no longer written, build the map with ``torchref.mtz2map -csf DF -cw W_IVW -cphi PHDELWT``. Registered in ``torchref.maps.ded_weights``
