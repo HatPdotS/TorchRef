@@ -425,177 +425,41 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
     return pdb
 
 
-def _parse_with_parentheses(
-    selection_string: str, pdb_df: pd.DataFrame
-) -> torch.Tensor:
-    """
-    Helper function to handle parentheses in selection strings.
-    Recursively evaluates innermost parentheses first.
-    """
-    import re
-
-    # Find innermost parentheses
-    while True:
-        match = re.search(r"\(([^()]+)\)", selection_string)
-        if not match:
-            break
-
-        # Evaluate the innermost parenthesized expression
-        inner = match.group(1)
-        inner_mask = _parse_without_parentheses(inner, pdb_df)
-
-        # Replace with a placeholder that we'll substitute back
-        # Use a unique placeholder that won't appear in normal selection
-        placeholder = f"__MASK_{id(inner_mask)}__"
-        selection_string = (
-            selection_string[: match.start()]
-            + placeholder
-            + selection_string[match.end() :]
-        )
-
-        # Store the mask result in a temporary global dict
-        # (not ideal but works for this recursive evaluation)
-        if not hasattr(_parse_with_parentheses, "_mask_cache"):
-            _parse_with_parentheses._mask_cache = {}
-        _parse_with_parentheses._mask_cache[placeholder] = inner_mask
-
-    # Now parse the expression without parentheses, substituting cached masks
-    return _parse_without_parentheses(selection_string, pdb_df)
-
-
-def _parse_without_parentheses(
-    selection_string: str, pdb_df: pd.DataFrame
-) -> torch.Tensor:
-    """
-    Parse selection string without parentheses.
-    Handles logical operators and basic keywords.
-    """
-    import re
-
-    selection_string = selection_string.strip()
-
-    if not selection_string:
-        raise ValueError("Selection string cannot be empty")
-
-    if selection_string.startswith("__MASK_") and selection_string.endswith("__"):
-        if hasattr(_parse_with_parentheses, "_mask_cache"):
-            return _parse_with_parentheses._mask_cache.get(
-                selection_string, torch.ones(len(pdb_df), dtype=torch.bool)
-            )
-        return torch.ones(len(pdb_df), dtype=torch.bool)
-
-    if selection_string.lower() == "all":
-        return torch.ones(len(pdb_df), dtype=torch.bool)
-
-    # Priority: not > and > or
-
-    if " or " in selection_string.lower():
-        parts = re.split(r"\s+or\s+", selection_string, flags=re.IGNORECASE)
-        masks = [_parse_without_parentheses(part.strip(), pdb_df) for part in parts]
-        result = masks[0]
-        for mask in masks[1:]:
-            result = result | mask
-        return result
-
-    if " and " in selection_string.lower():
-        parts = re.split(r"\s+and\s+", selection_string, flags=re.IGNORECASE)
-        masks = [_parse_without_parentheses(part.strip(), pdb_df) for part in parts]
-        result = masks[0]
-        for mask in masks[1:]:
-            result = result & mask
-        return result
-
-    if selection_string.lower().startswith("not "):
-        inner_selection = selection_string[4:].strip()
-        return ~_parse_without_parentheses(inner_selection, pdb_df)
-
-    parts = selection_string.split(None, 1)
-    if len(parts) < 2:
-        raise ValueError(f"Invalid selection syntax: '{selection_string}'")
-
-    keyword, value = parts[0].lower(), parts[1]
-
-    mask = torch.zeros(len(pdb_df), dtype=torch.bool)
-
-    if keyword == "chain":
-        chain_id = value.strip()
-        selected = pdb_df["chainid"] == chain_id
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "resseq":
-        if ":" in value:
-            start, end = value.split(":")
-            start, end = int(start.strip()), int(end.strip())
-            selected = (pdb_df["resseq"] >= start) & (pdb_df["resseq"] <= end)
-        else:
-            resseq_num = int(value.strip())
-            selected = pdb_df["resseq"] == resseq_num
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "resname":
-        resname = value.strip().upper()
-        selected = pdb_df["resname"].str.upper() == resname
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "name":
-        atom_name = value.strip().upper()
-        selected = pdb_df["name"].str.upper() == atom_name
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "element":
-        element = value.strip().capitalize()
-        selected = pdb_df["element"].str.capitalize() == element
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "altloc":
-        altloc = value.strip()
-        selected = pdb_df["altloc"] == altloc
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    else:
-        raise ValueError(f"Unknown selection keyword: '{keyword}'")
-
-    return mask
-
-
 def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
-    """
-    Parse Phenix-style atom selection syntax and return a boolean mask.
+    """Evaluate a Phenix-style selection against an atom table.
 
-    The grammar is the contract, so it is spelled out. Terms:
-    ``chain <id>``, ``resseq <num>``, ``resseq <start>:<end>`` (inclusive),
-    ``resname <name>``, ``name <atom>``, ``element <elem>``, ``altloc <id>``, ``all``.
-    Combined with ``not``, ``and``, ``or`` (that precedence) and ``(...)`` for grouping,
-    e.g. ``"chain A and (name CA or name CB)"``. ``resname``/``name`` match
-    case-insensitively, ``chain``/``altloc`` do not.
+    The grammar is documented in :mod:`torchref.utils.selection`; a model's own atoms
+    are selected with ``model.ctx.topology.select``.
 
     Parameters
     ----------
     selection_string : str
         Phenix-style selection string.
     pdb_df : pandas.DataFrame
-        Atomic data with columns 'chainid', 'resseq', 'resname', 'name', 'element',
-        'altloc'.
+        Atom table with ``chainid``, ``resseq``, ``resname``, ``name``, ``element`` and
+        ``altloc`` columns.
 
     Returns
     -------
     torch.Tensor
-        Boolean tensor of shape (n_atoms,), on the CPU regardless of where ``pdb_df``'s
-        consumers live.
+        Boolean tensor of shape (n_atoms,), on the CPU.
 
     Raises
     ------
     ValueError
         On an unknown keyword, an empty selection, or a bare term with no value.
     """
-    # Clear any cached masks from previous calls
-    if hasattr(_parse_with_parentheses, "_mask_cache"):
-        _parse_with_parentheses._mask_cache.clear()
+    from torchref.utils.selection import select_atoms
 
-    if "(" in selection_string:
-        return _parse_with_parentheses(selection_string, pdb_df)
-    else:
-        return _parse_without_parentheses(selection_string, pdb_df)
+    columns = {
+        "chain": pdb_df["chainid"].values.astype(str),
+        "resseq": pdb_df["resseq"].values,
+        "resname": pdb_df["resname"].values.astype(str),
+        "name": pdb_df["name"].values.astype(str),
+        "element": pdb_df["element"].values.astype(str),
+        "altloc": pdb_df["altloc"].values.astype(str),
+    }
+    return select_atoms(columns, selection_string)
 
 
 def create_selection_mask(

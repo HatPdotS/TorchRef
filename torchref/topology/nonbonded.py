@@ -20,8 +20,6 @@ import torch
 from torchref.config import dtypes, get_float_dtype
 
 if TYPE_CHECKING:
-    import pandas
-
     from torchref.symmetry.cell import Cell
     from torchref.symmetry.spacegroup import SpaceGroup
 
@@ -29,12 +27,12 @@ if TYPE_CHECKING:
 _DEFAULT_VDW_RADIUS = 1.9
 
 
-def vdw_radii_for_elements(elements: "pandas.Series") -> np.ndarray:
+def vdw_radii_for_elements(elements) -> np.ndarray:
     """Van der Waals radius of each atom, looked up by element.
 
     Parameters
     ----------
-    elements : pandas.Series
+    elements : array-like of str
         Element symbols, one per atom; case and surrounding whitespace are ignored.
 
     Returns
@@ -58,7 +56,7 @@ def vdw_radii_for_elements(elements: "pandas.Series") -> np.ndarray:
             table["vdW_Radius_Angstrom"],
         )
     )
-    symbols = elements.astype(str).str.strip().str.capitalize()
+    symbols = np.char.capitalize(np.char.strip(np.asarray(elements).astype(str)))
     return np.array(
         [radius.get(e, _DEFAULT_VDW_RADIUS) for e in symbols], dtype=np.float64
     )

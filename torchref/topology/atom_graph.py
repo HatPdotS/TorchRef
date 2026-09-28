@@ -9,6 +9,10 @@ restrain every path the bond graph implies.
 Every indexing structure here is a tensor, so it moves with ``.to(device)``
 alongside the edge blocks. Only the per-atom identifiers are NumPy, because they are
 strings.
+
+The identity (names, elements, altlocs, record type, charge, residue membership) exists
+from the moment an atom table is read; the edge blocks stay empty until the graph is
+connected against the monomer dictionaries.
 """
 
 from dataclasses import dataclass, field
@@ -110,11 +114,16 @@ class AtomGraph(DeviceMixin):
     name, element, altloc : numpy.ndarray
         Per-atom identifiers, shape ``(N,)``. Strings, so NumPy rather than tensors;
         residue-level identity is reached through ``residue_of`` rather than duplicated
-        here.
+        here. ``altloc`` is ``' '`` for atoms in no alternative conformation.
     residue_of : torch.Tensor
         Residue index per atom, shape ``(N,)``, dtype ``int64``.
-    bonds, angles, torsions, chirals : EdgeBlock
-        Typed edge blocks. ``bonds`` also backs the adjacency.
+    is_hetatm : numpy.ndarray, optional
+        True for HETATM records, shape ``(N,)``. Defaults to all False.
+    charge : numpy.ndarray, optional
+        Formal charge per atom, shape ``(N,)``, integer. Defaults to zeros.
+    bonds, angles, torsions, chirals : EdgeBlock, optional
+        Typed edge blocks, empty until the graph is connected. ``bonds`` also backs the
+        adjacency.
     planes : dict
         ``{n_atoms_in_plane: EdgeBlock}`` -- planes are ragged, so they are grouped by
         atom count the way the plane restraints already are.
@@ -141,10 +150,12 @@ class AtomGraph(DeviceMixin):
     element: np.ndarray
     altloc: np.ndarray
     residue_of: torch.Tensor
-    bonds: EdgeBlock
-    angles: EdgeBlock
-    torsions: EdgeBlock
-    chirals: EdgeBlock
+    is_hetatm: Optional[np.ndarray] = None
+    charge: Optional[np.ndarray] = None
+    bonds: Optional[EdgeBlock] = None
+    angles: Optional[EdgeBlock] = None
+    torsions: Optional[EdgeBlock] = None
+    chirals: Optional[EdgeBlock] = None
     planes: Dict[int, EdgeBlock] = field(default_factory=dict)
     energy_type: Optional[np.ndarray] = None
     template_h_count: Optional[torch.Tensor] = None
@@ -154,8 +165,19 @@ class AtomGraph(DeviceMixin):
     _adj_indices: Optional[torch.Tensor] = field(default=None, repr=False)
     # (element array it was parsed from, hydrogen flags); see is_hydrogen.
     _is_h_cache: Optional[Tuple[np.ndarray, np.ndarray]] = field(default=None, repr=False)
+    # (element array, symbols, atomic numbers, van der Waals radii); see _element_table.
+    _element_cache: Optional[Tuple[np.ndarray, ...]] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        n = len(self.name)
+        device = self.residue_of.device
+        if self.is_hetatm is None:
+            self.is_hetatm = np.zeros(n, dtype=bool)
+        if self.charge is None:
+            self.charge = np.zeros(n, dtype=np.int64)
+        for edge, arity in (("bonds", 2), ("angles", 3), ("torsions", 4), ("chirals", 4)):
+            if getattr(self, edge) is None:
+                setattr(self, edge, EdgeBlock.empty(arity, device=device))
         if self._adj_indptr is None:
             self.rebuild_adjacency()
 
@@ -184,6 +206,39 @@ class AtomGraph(DeviceMixin):
             cache = self._is_h_cache = (self.element, flags)
         return torch.tensor(cache[1], device=self.bonds.indices.device)
 
+    def _element_table(self) -> Tuple[np.ndarray, ...]:
+        """``(symbols, atomic numbers, vdW radii)``, parsed once per ``element`` array."""
+        cache = self._element_cache
+        if cache is None or cache[0] is not self.element:
+            import gemmi
+
+            from torchref.topology.nonbonded import vdw_radii_for_elements
+
+            symbols = np.char.capitalize(np.char.strip(self.element.astype(str)))
+            numbers = np.array([gemmi.Element(s).atomic_number for s in symbols])
+            cache = self._element_cache = (
+                self.element,
+                symbols,
+                numbers.astype(np.int64),
+                vdw_radii_for_elements(symbols),
+            )
+        return cache[1:]
+
+    @property
+    def symbols(self) -> np.ndarray:
+        """Element symbols normalised to ``'C'``, ``'Fe'``, ..., shape ``(N,)``."""
+        return self._element_table()[0]
+
+    @property
+    def atomic_number(self) -> np.ndarray:
+        """Atomic number per atom, shape ``(N,)``, int64; 0 for an unknown element."""
+        return self._element_table()[1]
+
+    @property
+    def vdw_radii(self) -> np.ndarray:
+        """Van der Waals radius per atom in Å, shape ``(N,)``, float64."""
+        return self._element_table()[2]
+
     def copy(self) -> "AtomGraph":
         """An independent copy sharing no storage with this one."""
         return AtomGraph(
@@ -191,6 +246,8 @@ class AtomGraph(DeviceMixin):
             element=self.element.copy(),
             altloc=self.altloc.copy(),
             residue_of=self.residue_of.clone(),
+            is_hetatm=self.is_hetatm.copy(),
+            charge=self.charge.copy(),
             bonds=self.bonds.copy(),
             angles=self.angles.copy(),
             torsions=self.torsions.copy(),
@@ -256,6 +313,8 @@ class AtomGraph(DeviceMixin):
             element=self.element[keep],
             altloc=self.altloc[keep],
             residue_of=residue_remap[self.residue_of[keep_t]],
+            is_hetatm=self.is_hetatm[keep],
+            charge=self.charge[keep],
             bonds=self.bonds.subset(remap),
             angles=self.angles.subset(remap),
             torsions=self.torsions.subset(remap),

@@ -1020,7 +1020,7 @@ def build_topology_with_values(
         "chiral": chiral_values.get("intra", {}),
         "plane": plane_values,
     }
-    return Topology(residues=residues, atoms=atoms), values, extras
+    return Topology(residues=residues, atoms=atoms, connected=True), values, extras
 
 
 __all__ = ["build_topology", "build_topology_with_values"]
