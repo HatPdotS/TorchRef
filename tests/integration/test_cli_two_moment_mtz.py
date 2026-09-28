@@ -23,7 +23,7 @@ DEFAULT_COLUMNS = {
     # scheme, and the observed-to-model scale.
     "PHDELWT": "Phase",
     "W_InVa": "Weight",
-    "W_SD": "Weight",
+    "W_Q": "Weight",
     "KSCALE": "MTZReal",
     "Fc_dark": "SFAmplitude",
     # The mixed model, and the extrapolated map to refine against.
@@ -229,7 +229,7 @@ def test_map_coefficients_are_grouped_into_described_datasets(two_moment_all_mtz
 
     assert where["FWT"] == where["PHWT"] == where["FEXT"] == "extrapolated_light"
     assert where["FEXT_PHASED"] == where["FEXT_SCALAR"] == "extrapolated_light"
-    assert where["dF"] == where["PHDELWT"] == where["W_SD"] == "difference"
+    assert where["dF"] == where["PHDELWT"] == where["W_Q"] == "difference"
     assert where["FC"] == where["PHIC"] == "light_model"
     assert where["dF_corr"] == "two_moment"
     assert where["H"] == where["Fo_dark"] == where["FreeR_flag_dark"] == "observed"
@@ -246,7 +246,7 @@ class TestDefaultLayout:
         self, baseline_mtz
     ):
         """``dF`` must be ``Fo_light - Fo_dark``, ``W_InVa`` the mean-normalised inverse
-        variance and ``W_SD`` a mean-one weight -- the constructions
+        variance and ``W_Q`` a mean-one weight -- the constructions
         ``torchref.validate-ded`` correlates against. If these ever diverge, the map
         built from the file stops being the map the validation reports on, which is how
         the output drifted from the science before."""
@@ -268,8 +268,8 @@ class TestDefaultLayout:
         assert np.abs(got_df - dfo).max() / scale < 1e-5
         got_w = df["W_InVa"].to_numpy().astype(float)
         assert np.abs(got_w - w).max() / max(float(np.abs(w).max()), 1e-30) < 1e-4
-        w_sd = df["W_SD"].to_numpy().astype(float)
-        assert np.isfinite(w_sd).all() and abs(w_sd.mean() - 1.0) < 1e-4
+        w_q = df["W_Q"].to_numpy().astype(float)
+        assert np.isfinite(w_q).all() and abs(w_q.mean() - 1.0) < 1e-4
         assert (df["KSCALE"].to_numpy().astype(float) > 0).all()
 
         # And the phase is the dark model's, not the mixed model's.
@@ -286,11 +286,11 @@ class TestTwoMomentLayout:
     ):
         """``DELFWT_corr`` is the corrected difference on the *same* dark phases, so it
         is opened against ``PHDELWT`` and carries the selected weight scheme, the
-        inverse-variance weights ``W_InVa`` by default."""
+        q-weights ``W_Q`` by default."""
         import numpy as np
 
         df = _read(two_moment_mtz[0])
-        w = df["W_InVa"].to_numpy().astype(float)
+        w = df["W_Q"].to_numpy().astype(float)
 
         expected = df["dF_corr"].to_numpy().astype(float) * w
         got = df["DELFWT_corr"].to_numpy().astype(float)

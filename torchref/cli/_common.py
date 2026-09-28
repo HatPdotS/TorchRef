@@ -402,19 +402,20 @@ def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
         "--ded-weight",
         choices=list(SCHEMES),
         default=DEFAULT_SCHEME,
-        help="Per-reflection weight for difference coefficients: 'inverse_variance' "
-        "is 1/sigma^2, 'sigma_d' is the Wiener weight S/(S+sigma^2) from the "
-        "expected difference power (needs calibrated sigmas; check the reported "
-        f"clamped-shell count), 'none' is flat (default: {DEFAULT_SCHEME}). All "
-        "weights are written as columns.",
+        help="Per-reflection weight for difference coefficients: 'q' is the "
+        "q-weight, a Wiener weight from a shell-free fit of the expected difference "
+        "power that down-weights noisy reflections to no less than a third, "
+        "'inverse_variance' is 1/sigma^2, 'none' is flat (default: "
+        f"{DEFAULT_SCHEME}). All weights are written as columns.",
     )
     parser.add_argument(
         "--sigma-d-gamma",
         type=float,
         default=None,
         metavar="GAMMA",
-        help="Fix the dark-amplitude exponent of the sigma_d power law in [0, 2] "
-        "instead of fitting it (default: fitted).",
+        help="Fix the dark-amplitude exponent of the difference power law in [0, 2] "
+        "instead of fitting it; used by the q-weight and the sigma_D difference "
+        "target (default: fitted).",
     )
 
 

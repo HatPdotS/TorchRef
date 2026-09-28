@@ -300,7 +300,7 @@ def setup_ded_context(
         cell=data_dark.cell,
         spacegroup=data_dark.spacegroup,
         f_dark=F_dark,
-        sigma_d_config=sigma_d_config,
+        gamma=sigma_d_config.gamma if sigma_d_config is not None else None,
     )
     selected = all_w[ded_weight]
     weights = selected.weights
@@ -355,8 +355,7 @@ def setup_ded_context(
         "ded_weight_applied": selected.applied,
         "ded_weight_diagnostics": {
             k: v
-            for k, v in all_w["sigma_d"].diagnostics.items()
-            if k not in ("weight_sigma_d_raw", "shells")
+            for k, v in all_w["q"].diagnostics.items()
         },
         "d_spacing": d_spacing,
         "cell_t": cell_t,
@@ -730,10 +729,9 @@ def run_validation(args):
                 for k in (
                     "gamma",
                     "gamma_fitted",
-                    "gamma_reason",
-                    "tau",
-                    "n_shell",
-                    "n_s2_clamped",
+                    "sigma_scale",
+                    "centric_factor",
+                    "snr_floor",
                     "fallback_reason",
                 )
             },

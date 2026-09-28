@@ -1,9 +1,10 @@
 """The registered difference-coefficient weight schemes.
 
 Pinned: the three schemes exist with their MTZ column names; ``none`` is flat;
-``inverse_variance`` has mean one and floors a zero sigma; ``sigma_d`` gives strong
-reflections more weight than weak ones within a shell where inverse variance cannot;
-and an all-noise input falls back to inverse variance with a warning that names why.
+``inverse_variance`` has mean one and floors a zero sigma; ``q`` gives strong
+reflections more weight than weak ones where inverse variance cannot, keeps every
+reflection at or above its floor when noise dominates, and falls back to inverse
+variance with a warning that names why when too few reflections exist to fit.
 """
 
 import pytest
@@ -84,7 +85,7 @@ def test_none_and_inverse_variance(any_device):
 
 
 @pytest.mark.unit
-def test_sigma_d_favours_strong_reflections_where_inverse_variance_cannot(any_device):
+def test_q_favours_strong_reflections_where_inverse_variance_cannot(any_device):
     d, hkl, cell, sg = _inputs(device=any_device)
     kw = {
         "delta_obs": d["delta_obs"],
@@ -96,33 +97,52 @@ def test_sigma_d_favours_strong_reflections_where_inverse_variance_cannot(any_de
     }
     every = all_ded_weights(**kw)
     assert set(every) == set(SCHEMES)
-    sd = every["sigma_d"]
-    assert sd.applied == "sigma_d" and abs(float(sd.weights.mean()) - 1.0) < 1e-4
-    assert 0.8 < sd.diagnostics["gamma"] < 1.2
-    assert sd.diagnostics["n_shell"] > 10 and "shells" in sd.diagnostics
-    # Within the highest-resolution tenth, the strongest reflections carry more weight.
-    order = torch.argsort(d["d_star_sq"])[-2000:]
-    f, w = d["f_dark"][order], sd.weights[order]
+    q = every["q"]
+    assert q.applied == "q" and abs(float(q.weights.mean()) - 1.0) < 1e-4
+    assert 0.8 < q.diagnostics["gamma"] < 1.2
+    assert q.diagnostics["converged"]
+    # The strong half carries more weight; inverse variance cannot tell the halves apart
+    # because the sigmas are constant. The floor compresses the weights into at most a
+    # factor three, so the margin is smaller than an unbounded Wiener weight would give.
+    f, w = d["f_dark"], q.weights
     strong, weak = f > f.median(), f <= f.median()
-    assert float(w[strong].mean()) > 1.5 * float(w[weak].mean())
-    ivw = every["inverse_variance"].weights[order]
+    assert float(w[strong].mean()) > 1.2 * float(w[weak].mean())
+    ivw = every["inverse_variance"].weights
     assert abs(float(ivw[strong].mean()) - float(ivw[weak].mean())) < 1e-4
 
 
 @pytest.mark.unit
-def test_all_noise_falls_back_to_inverse_variance_with_a_warning():
+def test_q_never_removes_a_reflection_when_noise_dominates():
     d, hkl, cell, sg = _inputs(n=5000, sig_frac=50.0)
+    q = compute_ded_weights(
+        "q",
+        delta_obs=d["delta_obs"],
+        sigma_diff=d["sigma_diff"] * 1.2,
+        hkl=hkl,
+        cell=cell,
+        spacegroup=sg,
+        f_dark=d["f_dark"],
+    )
+    assert q.applied == "q"
+    floor = q.diagnostics["snr_floor"] / (1.0 + q.diagnostics["snr_floor"])
+    assert q.diagnostics["weight_min"] >= floor - 1e-6
+    assert bool((q.weights > 0).all())
+
+
+@pytest.mark.unit
+def test_too_few_reflections_fall_back_to_inverse_variance_with_a_warning():
+    d, hkl, cell, sg = _inputs(n=5)
     kw = {
         "delta_obs": d["delta_obs"],
-        "sigma_diff": d["sigma_diff"] * 1.2,
+        "sigma_diff": d["sigma_diff"],
         "hkl": hkl,
         "cell": cell,
         "spacegroup": sg,
         "f_dark": d["f_dark"],
     }
     with pytest.warns(DedWeightFallbackWarning, match="inverse-variance"):
-        sd = compute_ded_weights("sigma_d", **kw)
-    assert sd.scheme == "sigma_d" and sd.applied == "inverse_variance"
-    assert "fallback_reason" in sd.diagnostics
+        q = compute_ded_weights("q", **kw)
+    assert q.scheme == "q" and q.applied == "inverse_variance"
+    assert "fallback_reason" in q.diagnostics
     ivw = compute_ded_weights("inverse_variance", **kw)
-    assert torch.allclose(sd.weights, ivw.weights)
+    assert torch.allclose(q.weights, ivw.weights)

@@ -109,8 +109,8 @@ columns, expands to P1, and computes a real-space map via FFT.
 .. code-block:: bash
 
    torchref.mtz2map -sf refined.mtz -csf 2FOFCWT -cphi PH2FOFCWT -o map.ccp4
-   torchref.mtz2map -sf diff.mtz -csf dF -cw W_InVa -cphi PHDELWT -o diff.ccp4
-   torchref.mtz2map -sf diff.mtz -csf dF -cw W_SD -cphi PHDELWT --units electrons -o diff_e.ccp4
+   torchref.mtz2map -sf diff.mtz -csf dF -cw W_Q -cphi PHDELWT -o diff.ccp4
+   torchref.mtz2map -sf diff.mtz -csf dF -cw W_Q -cphi PHDELWT --units electrons -o diff_e.ccp4
 
 **Key options:** ``--dmin``/``--dmax`` resolution limits, ``--gridsize`` override,
 ``-cw``/``--column-weight`` multiplies the amplitudes by a weight column before the
@@ -152,11 +152,10 @@ models are kept as-is.
 
 The default output is the difference map: the amplitude difference ``dF``/``SIGdF``
 on the **dark** model's phases ``PHDELWT``, with one mean-one weight column per
-registered scheme beside it -- ``W_InVa``, the inverse variance ``1/sigma^2`` (the
-default), and ``W_SD``, the sigma_D Wiener weight ``S/(S + sigma^2)`` built from the
-expected difference power -- and ``KSCALE``, the scaler's factor from model to observed
+registered scheme beside it -- ``W_Q``, the q-weight (the default), and ``W_InVa``,
+the inverse variance ``1/sigma^2`` -- and ``KSCALE``, the scaler's factor from model to observed
 scale. This is the construction ``torchref.validate-ded`` correlates against. Build the
-map with ``torchref.mtz2map -csf dF -cw W_InVa -cphi PHDELWT``, adding
+map with ``torchref.mtz2map -csf dF -cw W_Q -cphi PHDELWT``, adding
 ``--units electrons`` for e/A^3. It needs no light-state model, so ``-lm`` is optional:
 
 .. code-block:: bash

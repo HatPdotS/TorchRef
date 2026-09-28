@@ -1,0 +1,92 @@
+"""Properties of the shell-free difference-power fit.
+
+Pinned on seeded synthetic differences with a known power law: the power, the
+dark-amplitude exponent and the sigma scale are recovered from one dataset, including
+when the reported sigmas are uniformly inflated; a fixed exponent stays fixed; the
+bounded Wiener weight never falls below its floor, so no reflection or resolution range
+is removed even when the data hold no signal; the fit runs under ``torch.no_grad()`` and
+on every available device.
+"""
+
+import pytest
+import torch
+
+from torchref.refinement.model_error_estimation.difference_power import (
+    bounded_wiener_weight,
+    fit_difference_power,
+)
+
+#: Median absolute log error of the recovered power. The fit has seven parameters
+#: against 40 000 reflections; 0.15 is several times the scatter observed across seeds.
+LOG_POWER_ATOL = 0.15
+#: Tolerance on the exponent and on the relative sigma scale.
+GAMMA_ATOL = 0.1
+K_RTOL = 0.05
+
+
+def synth(n=40000, sigma_inflation=1.0, signal=1.0, seed=0, device="cpu"):
+    """Differences with power ``4 exp(-8 d*^2) (F / <F>)``; reported sigmas vary
+    many-fold within a resolution, so the sigma scale is identifiable."""
+    g = torch.Generator().manual_seed(seed)
+    dss = torch.rand(n, generator=g) / 1.6**2
+    f = torch.exp(torch.randn(n, generator=g) * 0.6) * 100 * torch.exp(-10 * dss)
+    s_true = signal * 4.0 * torch.exp(-8.0 * dss) * (f / f.mean())
+    sig = 0.5 + 6 * dss / dss.max() * torch.exp(torch.randn(n, generator=g) * 0.4)
+    d = torch.randn(n, generator=g) * s_true.sqrt() + torch.randn(n, generator=g) * sig
+    out = dict(delta=d, sigma=sig * sigma_inflation, dss=dss, f=f, s_true=s_true)
+    return {k: v.to(device) for k, v in out.items()}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("inflation", [1.0, 1.5])
+def test_recovers_power_exponent_and_sigma_scale(inflation):
+    s = synth(sigma_inflation=inflation)
+    fit = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"])
+    assert fit.converged
+    assert fit.gamma == pytest.approx(1.0, abs=GAMMA_ATOL)
+    assert fit.sigma_scale == pytest.approx(1.0 / inflation, rel=K_RTOL)
+    power = fit.signal_power(s["dss"], f_dark=s["f"])
+    err = (power / s["s_true"]).log().abs().median()
+    assert float(err) < LOG_POWER_ATOL
+    assert torch.isfinite(fit.stderr[: len(fit.coeffs)]).all()
+
+
+@pytest.mark.unit
+def test_fixed_gamma_is_kept():
+    s = synth()
+    fit = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"], gamma=0.0)
+    assert fit.gamma == 0.0
+    fit = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"], gamma=2.0)
+    assert fit.gamma == 2.0
+
+
+@pytest.mark.unit
+def test_weight_never_removes_a_reflection_without_signal():
+    s = synth(signal=0.0)
+    fit = fit_difference_power(
+        s["delta"], s["sigma"], s["dss"], f_dark=s["f"], fit_sigma_scale=False
+    )
+    snr = fit.snr(s["sigma"], d_star_sq=s["dss"], f_dark=s["f"])
+    w = bounded_wiener_weight(snr, 0.5)
+    assert float(w.min()) >= 1.0 / 3.0 - 1e-6
+    assert float(w.max()) < 1.0
+    assert float(bounded_wiener_weight(torch.zeros(1), 0.0)) == 0.0
+    with pytest.raises(ValueError):
+        bounded_wiener_weight(snr, -0.1)
+
+
+@pytest.mark.unit
+def test_runs_on_device(any_device):
+    s = synth(n=5000, device=any_device)
+    fit = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"])
+    power = fit.signal_power(s["dss"], f_dark=s["f"])
+    assert power.device.type == any_device.type
+    assert torch.isfinite(power).all() and bool((power > 0).all())
+
+
+@pytest.mark.unit
+def test_fits_under_no_grad():
+    s = synth(n=5000)
+    with torch.no_grad():
+        fit = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"])
+    assert fit.converged

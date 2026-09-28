@@ -578,9 +578,9 @@ def _difference_columns(
     ``dF``/``SIGdF`` is the signed amplitude difference ``|Fo_light| - |Fo_dark|`` with
     its propagated uncertainty, ``PHDELWT`` the **dark** model's phase it is carried on:
     the isomorphous difference Fourier, and the construction ``torchref.validate-ded``
-    correlates against. One weight column per registered scheme (``W_SD``, ``W_InVa``;
+    correlates against. One weight column per registered scheme (``W_Q``, ``W_InVa``;
     MTZ type ``W``, mean one) sits beside it, so any weighting is ``dF`` times a column
-    and reproducible from the file: ``torchref.mtz2map -csf dF -cw W_SD -cphi PHDELWT``.
+    and reproducible from the file: ``torchref.mtz2map -csf dF -cw W_Q -cphi PHDELWT``.
     ``KSCALE`` (type ``R``) is the scaler's multiplicative factor from model to observed
     scale, so ``dF / KSCALE`` is in electrons and ``mtz2map --units electrons`` gives
     e/A^3.
@@ -856,7 +856,7 @@ _DIFFERENCE_DATASET_COLUMNS = (
 # are at most 80 characters.
 _MTZ_DATASET_HISTORY = {
     "observed": "observed: Fo_dark, Fo_light and flags on the shared scale; Fc_dark",
-    "difference": "difference: dF/SIGdF on dark phases PHDELWT; weights W_SD, W_InVa",
+    "difference": "difference: dF/SIGdF on dark phases PHDELWT; weights W_Q, W_InVa",
     "light_model": (
         "light_model: FC/PHIC, amplitude and phase of the mixed dark+light model"
     ),
@@ -931,7 +931,7 @@ def write_results_mtz(
 
     The default output is the **difference map**: ``dF``/``SIGdF`` on the dark model's
     phases ``PHDELWT``, with one mean-one weight column per registered scheme
-    (``W_SD``, ``W_InVa``) and the observed-to-model scale ``KSCALE``; see
+    (``W_Q``, ``W_InVa``) and the observed-to-model scale ``KSCALE``; see
     :func:`_difference_columns`. ``ded_weight`` selects the scheme the model-phased
     difference columns and the two-moment columns are weighted with. That needs no
     light-state model, which is why ``mc`` is optional -- with a dark model alone this
@@ -966,7 +966,7 @@ def write_results_mtz(
         Weight scheme for the model-phased and two-moment difference columns; one of
         :data:`torchref.maps.ded_weights.SCHEMES`.
     sigma_d_config : SigmaDConfig, optional
-        Exponent and shrinkage settings of the ``sigma_d`` scheme.
+        Its ``gamma`` fixes the ``F_dark`` exponent of the ``q`` scheme.
 
     Returns
     -------
@@ -1025,7 +1025,7 @@ def write_results_mtz(
         cell=data_dark.cell,
         spacegroup=data_dark.spacegroup,
         f_dark=Fobs_dark_vals,
-        sigma_d_config=sigma_d_config,
+        gamma=sigma_d_config.gamma if sigma_d_config is not None else None,
     )
     selected = all_w[ded_weight]
     weights = selected.weights.detach().cpu().numpy()
@@ -1039,38 +1039,26 @@ def write_results_mtz(
     geometry = reflection_geometry(
         hkl, data_dark.cell, data_dark.spacegroup, diff_t.device, diff_t.dtype
     )
-    sd_diag = {
-        k: v
-        for k, v in all_w["sigma_d"].diagnostics.items()
-        if k != "weight_sigma_d_raw"
-    }
+    q_diag = all_w["q"].diagnostics
     diagnostics = {
         "ded_weights": {
             "scheme": ded_weight,
             "applied": selected.applied,
-            "sigma_d": sd_diag,
+            "q": q_diag,
         }
     }
     if verbose > 0:
         print(f"  Difference weights: {ded_weight} (applied: {selected.applied})")
-        print(
-            f"  sigma_D: gamma = {sd_diag['gamma']:.3f} ({sd_diag['gamma_reason']}), "
-            f"tau = {sd_diag['tau']:.3f}, shells = {sd_diag['n_shell']}, "
-            f"shells without difference power = {sd_diag['n_s2_clamped']}"
-        )
-        if "fallback_reason" in sd_diag:
-            print(f"  sigma_D fallback: {sd_diag['fallback_reason']}")
-    if verbose > 1 and not sd_diag["degenerate"]:
-        table = sd_diag["shells"]
-        print("  sigma_D shells: d(A)   n     B        S2       Sigma_N")
-        for dss, n, b, s2, sn in zip(
-            table["d_star_sq"],
-            table["counts"],
-            table["B"],
-            table["S2"],
-            table["Sigma_N"],
-        ):
-            print(f"    {dss ** -0.5:6.2f} {int(n):5d} {b:9.4f} {s2:9.4f} {sn:9.4f}")
+        if "fallback_reason" in q_diag:
+            print(f"  q-weight fallback: {q_diag['fallback_reason']}")
+        else:
+            print(
+                f"  q-weight fit: gamma = {q_diag['gamma']:.3f}, "
+                f"sigma scale k = {q_diag['sigma_scale']:.3f}, "
+                f"centric factor = {q_diag['centric_factor']:.3f}, "
+                f"weights {q_diag['weight_min']:.3f}-{q_diag['weight_max']:.3f} "
+                f"before normalisation"
+            )
 
     columns, types = _difference_columns(
         data_dark,
