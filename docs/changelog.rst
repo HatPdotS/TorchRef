@@ -4,6 +4,8 @@ Changelog
 
 Unreleased
 ----------
+- Added ``merge_to_spacegroup(data, spacegroup)``, which merges a dataset into another space group via P1 and returns the merged ``ReflectionData`` with per-shell Rmerge, Rmeas and CC_sym (``MergeStats``); a symmetry test when the target is higher than the source. It replaces ``ReflectionData.reduce_to_spacegroup``, which is removed
+- ``ReflectionData.from_tensors`` accepts ``I``, ``I_sigma`` and ``validation_flags``, reordered with the other rows during canonicalization
 - Removed the ``FrenchWilson`` module and ``ReflectionData._FrenchWilson``; use ``french_wilson_auto(I, sigma_I, hkl, d_spacings, space_group)``, which returns ``(F, sigma_F, valid_mask)``
 - Fixed ``torchref.difference-refine`` reusing the French-Wilson estimator built at load time, whose d-spacings and centric flags were in the pre-canonicalization row order; on files stored off the CCP4 ASU order (e.g. 6G9X) the corrected light amplitudes were computed against the wrong reflections
 - The difference MTZ groups its columns into named datasets -- ``observed``, ``difference``, ``light_model``, ``extrapolated_light``, ``two_moment`` -- with one history line describing each, so ``FWT``/``PHWT`` reads as ``/torchref/extrapolated_light/FWT`` (the extrapolated light-state map ``2*FEXT - Fc``). Labels are unchanged and Coot still auto-opens it

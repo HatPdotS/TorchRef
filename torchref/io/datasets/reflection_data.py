@@ -908,9 +908,16 @@ class ReflectionData(CrystalDataset, DebugMixin):
         verbose: int = 1,
         friedel_merged: Optional[bool] = None,
         detach: bool = True,
+        I: Optional[torch.Tensor] = None,
+        I_sigma: Optional[torch.Tensor] = None,
+        validation_flags: Optional[torch.Tensor] = None,
     ) -> "ReflectionData":
         """
         Construct ReflectionData directly from tensors.
+
+        Every per-reflection tensor must be row-aligned with ``hkl`` as passed.
+        Canonicalization then reorders all of them together, so pass them here
+        rather than assigning them to the returned object.
 
         Parameters
         ----------
@@ -941,6 +948,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
             True (default) stores constant observations, dropping the caller's
             autograd graph; False keeps it so gradients reach whatever produced
             ``F``/``F_sigma``.
+        I, I_sigma : torch.Tensor, optional
+            Intensities and their uncertainties of shape (N,). Stored as given;
+            ``F`` is not derived from them.
+        validation_flags : torch.Tensor, optional
+            Boolean validation-set flags of shape (N,).
 
         Returns
         -------
@@ -976,6 +988,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         if rfree_flags is not None:
             data.rfree_flags = _prep(rfree_flags).to(
+                device=data.device, dtype=torch.bool
+            )
+        if I is not None:
+            data.I = _prep(I).to(device=data.device)
+        if I_sigma is not None:
+            data.I_sigma = _prep(I_sigma).to(device=data.device)
+        if validation_flags is not None:
+            data.validation_flags = _prep(validation_flags).to(
                 device=data.device, dtype=torch.bool
             )
 
@@ -3124,245 +3144,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             spacegroup="P1",
             op_name=f"expand_to_p1(include_friedel={include_friedel})",
         )
-
-    def reduce_to_spacegroup(
-        self, spacegroup, include_friedel: bool = True, aggregation: str = "mean"
-    ) -> "ReflectionData":
-        """
-        Reduce P1 reflection data to asymmetric unit of a target spacegroup.
-
-        This is the inverse of expand_to_p1(). Takes reflection data in P1 and
-        merges symmetry-equivalent reflections into single ASU reflections using
-        the specified aggregation function.
-
-        Parameters
-        ----------
-        spacegroup : str, int, or gemmi.SpaceGroup
-            Target space group specification.
-        include_friedel : bool, default True
-            If True, also merge Friedel mates when reducing.
-        aggregation : str, default 'mean'
-            Aggregation function for merging equivalent reflections:
-            - 'mean': Average values (default, good for amplitudes)
-            - 'sum': Sum values
-            - 'first': Take first valid value (no averaging)
-
-        Returns
-        -------
-        ReflectionData
-            New ReflectionData with merged reflections in the target spacegroup.
-
-        Notes
-        -----
-        Per-field handling: F/I by ``aggregation``; sigmas propagated as
-        ``sqrt(sum(sigma²))/n`` for ``'mean'`` and ``sqrt(sum(sigma²))`` for
-        ``'sum'`` (first valid value for ``'first'``); ``phase`` by
-        amplitude-weighted complex averaging (so it wraps correctly) with
-        ``fom`` from the resultant
-        length; ``rfree_flags`` free if any equivalent is free, and
-        ``validation_flags`` set if any equivalent is set. Any other
-        per-reflection field takes its first valid equivalent.
-        """
-        from torchref.symmetry.spacegroup import SpaceGroup
-
-        if self.hkl is None:
-            raise ValueError("ReflectionData has no Miller indices loaded")
-
-        # Get reduction mapping
-        hkl_asu, reduction_indices, phase_shifts = SpaceGroup(
-            spacegroup, device=self.device
-        ).reduce_hkl(self.hkl, include_friedel=include_friedel, device=self.device)
-
-        n_asu = len(hkl_asu)
-        n_equiv = reduction_indices.shape[1]
-        valid_mask = reduction_indices >= 0  # (n_asu, n_equiv)
-        count_valid = valid_mask.sum(dim=1).clamp(min=1).float()  # (n_asu,)
-
-        # Helper function for aggregating 1D tensors
-        def _aggregate_tensor(tensor, agg_func="mean", fill_value=0.0):
-            if tensor is None:
-                return None
-
-            # Gather values: (n_asu, n_equiv)
-            # Use clamp(min=0) to avoid indexing errors, then mask invalid
-            gathered = tensor[reduction_indices.clamp(min=0)]
-            gathered = torch.where(valid_mask, gathered, torch.zeros_like(gathered))
-
-            if agg_func == "mean":
-                return gathered.sum(dim=1) / count_valid
-            elif agg_func == "sum":
-                return gathered.sum(dim=1)
-            elif agg_func == "first":
-                # Take first valid value
-                first_valid_idx = valid_mask.to(dtype=dtypes.int).argmax(dim=1)
-                return gathered[
-                    torch.arange(n_asu, device=self.device), first_valid_idx
-                ]
-            else:
-                raise ValueError(f"Unknown aggregation: {agg_func}")
-
-        def _aggregate_sigma(tensor, agg_func="mean"):
-            """Propagate uncertainty correctly for averaging."""
-            if tensor is None:
-                return None
-
-            # Gather values
-            gathered = tensor[reduction_indices.clamp(min=0)]
-            gathered = torch.where(valid_mask, gathered, torch.zeros_like(gathered))
-
-            if agg_func == "mean":
-                # For averaging: sigma_mean = sqrt(sum(sigma^2)) / n
-                variance_sum = (gathered**2).sum(dim=1)
-                return torch.sqrt(variance_sum) / count_valid
-            elif agg_func == "sum":
-                # For summing: sigma_sum = sqrt(sum(sigma^2))
-                variance_sum = (gathered**2).sum(dim=1)
-                return torch.sqrt(variance_sum)
-            elif agg_func == "first":
-                first_valid_idx = valid_mask.to(dtype=dtypes.int).argmax(dim=1)
-                return gathered[
-                    torch.arange(n_asu, device=self.device), first_valid_idx
-                ]
-            else:
-                raise ValueError(f"Unknown aggregation: {agg_func}")
-
-        # Create new ReflectionData
-        reduced = ReflectionData(verbose=self.verbose, device=self.device)
-
-        # Set HKL
-        reduced.hkl = hkl_asu.to(device=self.device)
-
-        # Aggregate amplitude and intensity fields
-        reduced.F = _aggregate_tensor(self.F, aggregation)
-        reduced.F_sigma = _aggregate_sigma(self.F_sigma, aggregation)
-        reduced.I = _aggregate_tensor(self.I, aggregation)
-        reduced.I_sigma = _aggregate_sigma(self.I_sigma, aggregation)
-
-        # Handle phases via complex averaging
-        if self.phase is not None:
-            # Gather phases and apply phase shifts for proper averaging
-            phases_gathered = self.phase[reduction_indices.clamp(min=0)]
-            phases_gathered = phases_gathered + phase_shifts
-            phases_gathered = torch.where(
-                valid_mask, phases_gathered, torch.zeros_like(phases_gathered)
-            )
-
-            # Get weights (amplitudes or FOM)
-            if self.fom is not None:
-                weights = self.fom[reduction_indices.clamp(min=0)]
-            elif self.F is not None:
-                weights = self.F[reduction_indices.clamp(min=0)]
-            else:
-                weights = torch.ones_like(phases_gathered)
-            weights = torch.where(valid_mask, weights, torch.zeros_like(weights))
-
-            # Complex averaging: mean of F*exp(i*phi) then extract angle
-            complex_sf = weights * torch.exp(1j * phases_gathered)
-            complex_mean = complex_sf.sum(dim=1) / count_valid
-            reduced.phase = torch.angle(complex_mean).float()
-
-            # FOM as magnitude of normalized mean complex vector
-            if self.fom is not None:
-                norm_weights = weights / weights.sum(dim=1, keepdim=True).clamp(
-                    min=1e-10
-                )
-                unit_vectors = torch.exp(1j * phases_gathered)
-                mean_vector = (norm_weights * unit_vectors).sum(dim=1)
-                reduced.fom = torch.abs(mean_vector).float()
-        else:
-            reduced.phase = None
-            reduced.fom = (
-                _aggregate_tensor(self.fom, aggregation)
-                if self.fom is not None
-                else None
-            )
-
-        # Handle rfree_flags: OR operation (free if any equivalent is free)
-        if self.rfree_flags is not None:
-            rfree_gathered = self.rfree_flags[reduction_indices.clamp(min=0)].to(
-                dtypes.int
-            )
-            rfree_gathered = torch.where(
-                valid_mask,
-                rfree_gathered,
-                torch.ones_like(rfree_gathered),  # Default to work set
-            )
-            # 0 = free, non-zero = work. Take min to get free if any is free.
-            reduced.rfree_flags = rfree_gathered.min(dim=1).values != 0
-
-        # Boolean per-reflection flags: an equivalent's flag propagates to the
-        # merged reflection if ANY contributor has it set (validation is a
-        # conservative "exclude if any").
-        def _aggregate_any(tensor):
-            if tensor is None:
-                return None
-            gathered = tensor[reduction_indices.clamp(min=0)].to(torch.bool)
-            gathered = gathered & valid_mask
-            return gathered.any(dim=1)
-
-        if self.validation_flags is not None:
-            reduced.validation_flags = _aggregate_any(self.validation_flags)
-
-        # Completeness pass: carry any remaining per-reflection dataclass tensor
-        # field not handled above so the merge never silently drops data.
-        # Derived-from-HKL fields are recomputed/invalidated below, not
-        # aggregated; 'first' is a safe representative for the rest.
-        from dataclasses import fields as dc_fields
-
-        _already_set = {
-            "hkl",
-            "F",
-            "F_sigma",
-            "I",
-            "I_sigma",
-            "phase",
-            "fom",
-            "rfree_flags",
-            "validation_flags",
-        }
-        _recomputed = set(self._REINDEX_DERIVED) | {"hkl_anomalous", "friedel_flags"}
-        n_src = len(self.hkl)
-        for f in dc_fields(self):
-            name = f.name
-            if name in _already_set or name in _recomputed:
-                continue
-            val = getattr(self, name)
-            if not isinstance(val, torch.Tensor):
-                continue
-            if not (val.shape and val.shape[0] == n_src):
-                continue
-            setattr(reduced, name, _aggregate_tensor(val, "first"))
-
-        # Clone cell
-        reduced.cell = self.cell.clone() if self.cell is not None else None
-
-        # Set spacegroup (on the reduced dataset's device, not the global default)
-        reduced.spacegroup = SpaceGroup(spacegroup, device=reduced.device)
-
-        # Recalculate resolution
-        if reduced.cell is not None and reduced.hkl is not None:
-            reduced._calculate_resolution()
-
-        # Invalidate derived-from-HKL fields (recomputed lazily for the new ASU).
-        # hkl_anomalous / friedel_flags are left unset: the merged ASU is
-        # Friedel-merged, so _hkl_for_sf() correctly falls back to hkl.
-        reduced.bin_indices = None
-        reduced._centric_flags = None
-
-        # Copy metadata sources
-        reduced.amplitude_source = self.amplitude_source
-        reduced.intensity_source = self.intensity_source
-        reduced.phase_source = self.phase_source
-        reduced.rfree_source = self.rfree_source
-
-        # Track provenance
-        reduced.source = self
-        reduced.last_op = (
-            f"reduce_to_spacegroup({spacegroup}, aggregation={aggregation})"
-        )
-
-        reduced._assert_per_reflection_consistent()
-        return reduced
 
     def canonicalize(self, include_friedel: bool = True) -> "ReflectionData":
         """Return new ReflectionData with HKL in standard CCP4 ASU form.

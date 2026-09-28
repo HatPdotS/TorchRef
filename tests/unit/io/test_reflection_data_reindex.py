@@ -1,6 +1,6 @@
 """Regression tests for per-reflection field reindexing.
 
-``validate_hkl`` / ``remap`` / ``reduce_to_spacegroup`` must carry EVERY
+``validate_hkl`` / ``remap`` / ``merge_to_spacegroup`` must carry EVERY
 per-reflection field onto the new HKL grid, not a hand-maintained subset. The
 historical bug left ``hkl_anomalous`` (read by ``_hkl_for_sf``) at the
 pre-alignment length, which crashed difference refinement whenever the dark and
@@ -75,8 +75,8 @@ class TestValidateHklReindex:
 
 
 class TestP1RoundTripReindex:
-    """The same class of bug lived latently in remap/expand_to_p1 and
-    reduce_to_spacegroup (silent data loss rather than a crash)."""
+    """remap/expand_to_p1 and merge_to_spacegroup keep every per-reflection
+    field at the new length."""
 
     def test_expand_to_p1_carries_validation_flags(self):
         grid = _base_grid(6, 6, 6)
@@ -90,11 +90,16 @@ class TestP1RoundTripReindex:
         assert p1.validation_flags.shape[0] == len(p1.hkl)
         p1._assert_per_reflection_consistent()
 
-    def test_reduce_to_spacegroup_consistent(self):
+    def test_merge_to_spacegroup_consistent(self):
+        from torchref.io import merge_to_spacegroup
+
         grid = _base_grid(6, 6, 6)
         d = _synthetic(grid, seed=4)
+        d.generate_validation_set(val_fraction_of_free=0.5, seed=0)
         p1 = d.expand_to_p1()
-        back = p1.reduce_to_spacegroup("P 21 21 21")
+        p1.verbose = 0
+        back, _ = merge_to_spacegroup(p1, "P 21 21 21")
+        assert back.validation_flags is not None
         back._assert_per_reflection_consistent()
 
 
