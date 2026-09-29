@@ -4,7 +4,9 @@ Pinned: the three schemes exist with their MTZ column names; ``none`` is flat;
 ``inverse_variance`` has mean one and floors a zero sigma; ``q`` gives strong
 reflections more weight than weak ones where inverse variance cannot, keeps every
 reflection at or above its floor when noise dominates, and falls back to inverse
-variance with a warning that names why when too few reflections exist to fit.
+variance with a warning that names why when too few reflections exist to fit. The
+SNR prefers intensity differences and calibrates their sigmas; the extrapolated
+shrinkage keeps every reflection and its weight does not depend on the occupancy.
 """
 
 import pytest
@@ -18,6 +20,7 @@ from torchref.maps.ded_weights import (
     DedWeightFallbackWarning,
     all_ded_weights,
     compute_ded_weights,
+    difference_snr,
     normalise_mean_one,
 )
 from torchref.symmetry import SpaceGroup
@@ -146,3 +149,71 @@ def test_too_few_reflections_fall_back_to_inverse_variance_with_a_warning():
     assert "fallback_reason" in q.diagnostics
     ivw = compute_ded_weights("inverse_variance", **kw)
     assert torch.allclose(q.weights, ivw.weights)
+
+
+def _intensity_inputs(n=20000, inflation=1.0, seed=3):
+    """Dark/light intensities with known measurement noise, and crude amplitudes."""
+    g = torch.Generator().manual_seed(seed)
+    f_dark = (torch.randn(n, generator=g) ** 2 + torch.randn(n, generator=g) ** 2).sqrt()
+    f_dark = 100.0 * f_dark
+    f_light = f_dark + torch.randn(n, generator=g) * 5.0
+    sig_i = 200.0 + 0.05 * f_dark**2 * torch.exp(0.3 * torch.randn(n, generator=g))
+    i_dark = f_dark**2 + torch.randn(n, generator=g) * sig_i
+    i_light = f_light**2 + torch.randn(n, generator=g) * sig_i
+    f_d_obs, f_l_obs = i_dark.clamp(min=1.0).sqrt(), i_light.clamp(min=1.0).sqrt()
+    hkl = torch.randint(-20, 21, (n, 3), generator=g)
+    return dict(
+        delta_obs=f_l_obs - f_d_obs,
+        sigma_diff=torch.full((n,), 5.0),
+        hkl=hkl,
+        cell=torch.tensor([40.0, 50.0, 60.0, 90.0, 90.0, 90.0]),
+        spacegroup=SpaceGroup("P 1"),
+        f_dark=f_d_obs,
+        delta_intensity=i_light - i_dark,
+        sigma_delta_intensity=inflation * sig_i * 2**0.5,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("inflation", [1.0, 1.5])
+def test_snr_prefers_intensities_and_calibrates_their_sigmas(inflation):
+    est = difference_snr(**_intensity_inputs(inflation=inflation))
+    assert est.source == "intensity"
+    assert est.fit.gamma == 0.0
+    assert est.fit.sigma_scale == pytest.approx(1.0 / inflation, rel=0.1)
+    assert bool((est.snr > 0).all()) and bool(torch.isfinite(est.snr).all())
+    kw = _intensity_inputs(inflation=inflation)
+    q = compute_ded_weights("q", **kw)
+    assert q.diagnostics["source"] == "intensity"
+    del kw["delta_intensity"], kw["sigma_delta_intensity"]
+    assert difference_snr(**kw).source == "amplitude"
+
+
+@pytest.mark.unit
+def test_extrapolated_shrinkage_keeps_every_reflection_and_ignores_occupancy():
+    from torchref.cli.collection_difference_refine import (
+        compute_bayes_extrapolated_amplitudes,
+    )
+
+    g = torch.Generator().manual_seed(0)
+    n = 1000
+    f_dark = 50 + 10 * torch.rand(n, generator=g)
+    f_light = f_dark + torch.randn(n, generator=g)
+    phi = torch.zeros(n)
+    snr = torch.logspace(-3, 3, n)
+    noise = torch.ones(n)
+    sig_dark = torch.full((n,), 0.5)
+    out = {
+        f: compute_bayes_extrapolated_amplitudes(
+            f_dark, f_light, sig_dark, phi, phi, f, snr=snr, noise=noise
+        )
+        for f in (0.2, 0.5)
+    }
+    for f, (f_ext_b, var, w) in out.items():
+        f_ext = f_dark + (f_light - f_dark) / f
+        assert bool((w > 0).all()) and bool((w < 1).all())
+        lo, hi = torch.minimum(f_dark, f_ext), torch.maximum(f_dark, f_ext)
+        assert bool((f_ext_b >= lo - 1e-4).all()) and bool((f_ext_b <= hi + 1e-4).all())
+        assert torch.allclose(var, sig_dark**2 + w * (noise / f) ** 2)
+        assert bool((var > 0).all())
+    assert torch.equal(out[0.2][2], out[0.5][2])

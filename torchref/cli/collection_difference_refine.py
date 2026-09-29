@@ -47,6 +47,7 @@ from torchref.cli._common import (
     parse_device_str,
     parse_weights,
     register_timing,
+    intensity_difference,
     sigma_d_config_from_args,
     validate_cif_files,
     validate_files,
@@ -55,7 +56,7 @@ from torchref.maps.ded_weights import (
     DEFAULT_SCHEME,
     WEIGHT_COLUMNS,
     all_ded_weights,
-    reflection_geometry,
+    difference_snr,
 )
 from torchref.utils.serialization import convert_to_serializable
 
@@ -322,101 +323,62 @@ def setup_loss_state(
 def compute_bayes_extrapolated_amplitudes(
     Fobs_dark,
     Fobs_light,
-    sig_ext,
+    sig_dark,
     phi_dark,
     phi_mixed,
     f,
     *,
-    tau_sq_floor=1e-4,
-    epsilon=None,
-    d_star_sq=None,
+    snr,
+    noise,
 ):
-    """Empirical Bayes shrinkage estimator for extrapolated SF amplitudes.
+    """Shrink the extrapolated amplitudes toward ``Fo_dark`` by their signal fraction.
 
-    Estimates per-reflection shrinkage weights from the propagated variance of the
-    extrapolation, then shrinks the phase-aware extrapolated amplitude toward
-    Fo_dark, regularising noisy high-resolution and weakly-measured reflections::
+    The posterior mean of the extrapolated deviation under a Gaussian prior of the
+    fitted difference power::
 
-        F_ext     = |F_dark*e^(iφ_d) + ΔF/f|         (phase-aware amplitude)
-        S(h)      = expected power of (F_ext - Fo_dark), per resolution shell
-        w(h)      = S(h) / (S(h) + σ_ext²(h))
-        F_extb    = w(h)·F_ext + (1-w(h))·Fo_dark    (amplitude shrinkage)
+        F_ext  = |F_dark e^(i phi_d) + dF / f|          (phase-aware amplitude)
+        r      = F_ext - Fo_dark                       (~ dF / f)
+        w      = snr / (1 + snr)
+        F_extb = Fo_dark + w r
 
-    With ``d_star_sq`` the signal power comes per resolution shell from
-    :func:`~torchref.refinement.model_error_estimation.sigma_d.estimate_sigma_d`
-    (``<(F_ext - Fo_dark)²> - <σ_ext²>`` per shell, shrunk toward a smooth curve);
-    without it the single global ``τ² = max(<(F_ext - Fo_dark)²> - <σ_ext²>, floor)``
-    is used, which is the one-shell special case.
+    ``r`` is the observed difference scaled by ``1/f``, signal and noise alike, so its
+    signal-to-noise ratio is the difference's and the occupancy does not enter ``w``.
+    ``w`` is positive wherever the fitted power is, so no reflection is removed; a noisy
+    one keeps a small share of its deviation. The result is for viewing: it is biased
+    toward the dark state by construction and is not a refinement target.
 
     Parameters
     ----------
     Fobs_dark, Fobs_light : Tensor (N,)
         Observed amplitudes.
-    sig_ext : Tensor (N,)
-        Propagated uncertainty of the extrapolated amplitude. Taken from the caller
-        rather than rebuilt here: ``F_ext`` is linear in the observations with
-        ``dF_ext/dF_light = 1/f`` and ``dF_ext/dF_dark = 1 - 1/f = -(1-f)/f``, so the
-        dark term carries a ``(1-f)**2`` weight.
+    sig_dark : Tensor (N,)
+        Sigma of ``Fobs_dark``, which the shrunk amplitude sits on.
     phi_dark, phi_mixed : Tensor (N,)
         Calculated phases (radians) for the dark and mixed models.
     f : float or Tensor
         Excited-state population fraction.
-    tau_sq_floor : float
-        Floor on the estimated signal variance.
-    epsilon, d_star_sq : Tensor (N,), optional
-        Reflection multiplicity and ``1/d**2`` in A^-2. Given ``d_star_sq`` the signal
-        power is estimated per resolution shell.
+    snr : Tensor (N,)
+        Per-reflection signal-to-noise ratio of the difference, from
+        :func:`torchref.maps.ded_weights.difference_snr`.
+    noise : Tensor (N,)
+        Calibrated noise of the amplitude difference, from the same call.
 
     Returns
     -------
     tuple
-        ``(F_ext_bayes, var_ext_bayes, w_shrinkage, tau_sq)`` -- the **shrunk**
-        extrapolated amplitude, its posterior variance and the shrinkage weight per
-        reflection, and the count-weighted mean signal variance as a float.
+        ``(F_ext_bayes, var_ext_bayes, w_shrinkage)`` -- the shrunk extrapolated
+        amplitude, its variance ``sig_dark**2 + w (noise / f)**2`` (the dark
+        measurement plus the posterior variance of the deviation) and the weight per
+        reflection.
     """
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
-    delta_F = F_light_phased - F_dark_phased
-
-    sig_sq_ext = sig_ext**2
-
-    # Phase-aware extrapolated amplitude
-    F_ext_complex = F_dark_phased + delta_F / f
-    F_ext = torch.abs(F_ext_complex)
-
-    residual = F_ext - Fobs_dark
-    if d_star_sq is None:
-        tau_sq = max(
-            (residual.square().mean() - sig_sq_ext.mean()).item(), tau_sq_floor
-        )
-        S = torch.full_like(F_ext, tau_sq)
-    else:
-        from torchref.refinement.model_error_estimation.sigma_d import (
-            estimate_sigma_d,
-            sigma_d_per_reflection,
-        )
-
-        fit = torch.isfinite(residual) & torch.isfinite(sig_ext)
-        shells = estimate_sigma_d(
-            residual, sig_ext, epsilon, d_star_sq, None, fit, gamma=0.0
-        )
-        est = sigma_d_per_reflection(shells, d_star_sq, epsilon, None, sig_ext)
-        S = est.S.clamp(min=tau_sq_floor)
-        weight = shells.counts.clamp(min=1.0)
-        tau_sq = max(
-            float((shells.Sigma_N * shells.counts).sum() / weight.sum()), tau_sq_floor
-        )
-
-    # Per-reflection shrinkage weight (in [0, 1])
-    w = S / (S + sig_sq_ext)
-
-    # Posterior variance
-    var_ext_bayes = (S * sig_sq_ext) / (S + sig_sq_ext)
-
+    F_ext = torch.abs(F_dark_phased + (F_light_phased - F_dark_phased) / f)
+    w = snr / (1.0 + snr)
+    var_ext_bayes = sig_dark**2 + w * (noise / f) ** 2
     # Shrink the amplitude toward Fo_dark -- scalar, so no phase interference.
-    F_ext_bayes = w * F_ext + (1 - w) * Fobs_dark
-
-    return F_ext_bayes, var_ext_bayes, w, tau_sq
+    F_ext_bayes = Fobs_dark + w * (F_ext - Fobs_dark)
+    return F_ext_bayes, var_ext_bayes, w
 
 
 def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
@@ -720,18 +682,21 @@ def _extrapolation_columns(
     phi_dark,
     ctx,
     rfree_flags_masked,
+    snr_est,
     all_columns=False,
     verbose=1,
-    geometry=None,
 ):
-    """Extrapolated light-state amplitudes and the map to refine against.
+    """Extrapolated light-state amplitudes and the map to view them in.
+
+    ``snr_est`` is the :class:`~torchref.maps.ded_weights.DifferenceSNR` of the
+    light-minus-dark differences on the same reflections.
 
     Three constructions of the same quantity, all needing the light model:
 
-    ``FEXT`` (default, Bayes-shrunk)
-        The phase-aware amplitude shrunk toward ``Fo_dark`` by a per-reflection weight
-        ``w(h) = tau^2 / (tau^2 + sigma_ext^2(h))``, which quiets the weak and
-        high-resolution reflections where the extrapolation is noisiest.
+    ``FEXT`` (default, shrunk)
+        The phase-aware amplitude shrunk toward ``Fo_dark`` by the signal fraction of
+        each reflection's difference (:func:`compute_bayes_extrapolated_amplitudes`),
+        which quiets the reflections where the extrapolation is noisiest.
     ``FEXT_PHASED`` (``all_columns``)
         The unshrunk phase-aware amplitude.
     ``FEXT_SCALAR`` (``all_columns``)
@@ -771,18 +736,15 @@ def _extrapolation_columns(
         sig_light_vals**2 + w_dark**2 * sig_dark_vals**2
     ) / w_light
 
-    eps, dss = geometry if geometry is not None else (None, None)
-    F_ext_bayes_amp, var_ext_bayes, w_shrinkage, tau_sq = (
-        compute_bayes_extrapolated_amplitudes(
-            Fobs_dark_vals,
-            Fobs_light_vals,
-            sig_light_extra,
-            phi_dark,
-            ctx["phi_mixed"],
-            w_light,
-            epsilon=eps,
-            d_star_sq=dss,
-        )
+    F_ext_bayes_amp, var_ext_bayes, w_shrinkage = compute_bayes_extrapolated_amplitudes(
+        Fobs_dark_vals,
+        Fobs_light_vals,
+        sig_dark_vals,
+        phi_dark,
+        ctx["phi_mixed"],
+        w_light,
+        snr=snr_est.snr,
+        noise=snr_est.noise,
     )
     sig_ext_bayes = torch.sqrt(var_ext_bayes)
 
@@ -803,8 +765,9 @@ def _extrapolation_columns(
     if verbose > 0:
         print("  Bayes extrapolation rfactors:",
               rfactor_work_free(data_bayes, amp_calc_bayes))
-        print(f"  Bayes: tau^2 = {tau_sq:.4f}, "
-              f"mean w(h) = {w_shrinkage.mean().item():.3f}")
+        print(f"  Shrinkage: SNR from {snr_est.source} differences, "
+              f"mean w(h) = {w_shrinkage.mean().item():.3f}, "
+              f"min w(h) = {w_shrinkage.min().item():.3g}")
 
     if all_columns:
         amp_phased = torch.abs(F_light_extra)
@@ -842,8 +805,9 @@ def _extrapolation_columns(
                   rfactor_work_free(data_scalar, amp_calc_scalar))
 
     diagnostics = {
-        "tau_sq": float(tau_sq),
+        "shrinkage_source": snr_est.source,
         "w_shrinkage_mean": float(w_shrinkage.mean().item()),
+        "w_shrinkage_min": float(w_shrinkage.min().item()),
     }
     return columns, types, diagnostics
 
@@ -1018,15 +982,19 @@ def write_results_mtz(
 
     diff_t = Fobs_light_vals - Fobs_dark_vals
     sig_diff_t = torch.sqrt(sig_dark_vals**2 + sig_light_vals**2)
-    all_w = all_ded_weights(
+    delta_I, sig_delta_I = intensity_difference(data_dark, data_light, mask)
+    snr_inputs = dict(
         delta_obs=diff_t,
         sigma_diff=sig_diff_t,
         hkl=hkl,
         cell=data_dark.cell,
         spacegroup=data_dark.spacegroup,
         f_dark=Fobs_dark_vals,
+        delta_intensity=delta_I,
+        sigma_delta_intensity=sig_delta_I,
         gamma=sigma_d_config.gamma if sigma_d_config is not None else None,
     )
+    all_w = all_ded_weights(**snr_inputs)
     selected = all_w[ded_weight]
     weights = selected.weights.detach().cpu().numpy()
     diff_Fobs = diff_t.detach().cpu().numpy()
@@ -1036,9 +1004,6 @@ def write_results_mtz(
         for name in WEIGHT_COLUMNS
     }
     kscale = scaler.multiplicative_scale()[mask].detach().cpu().numpy()
-    geometry = reflection_geometry(
-        hkl, data_dark.cell, data_dark.spacegroup, diff_t.device, diff_t.dtype
-    )
     q_diag = all_w["q"].diagnostics
     diagnostics = {
         "ded_weights": {
@@ -1053,7 +1018,8 @@ def write_results_mtz(
             print(f"  q-weight fallback: {q_diag['fallback_reason']}")
         else:
             print(
-                f"  q-weight fit: gamma = {q_diag['gamma']:.3f}, "
+                f"  q-weight fit on {q_diag['source']} differences: "
+                f"gamma = {q_diag['gamma']:.3f}, "
                 f"sigma scale k = {q_diag['sigma_scale']:.3f}, "
                 f"centric factor = {q_diag['centric_factor']:.3f}, "
                 f"weights {q_diag['weight_min']:.3f}-{q_diag['weight_max']:.3f} "
@@ -1100,9 +1066,9 @@ def write_results_mtz(
             phi_dark=phi_dark,
             ctx=ctx,
             rfree_flags_masked=rfree_flags_masked,
+            snr_est=difference_snr(**snr_inputs),
             all_columns=all_columns,
             verbose=verbose,
-            geometry=geometry,
         )
         diagnostics.update(ext_diagnostics)
         columns.update(ext_cols)

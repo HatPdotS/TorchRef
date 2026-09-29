@@ -50,6 +50,13 @@ DEFAULT_NU = 4.0
 #: Newton iterations; the problem has at most eight parameters and converges in ~10.
 MAX_ITER = 60
 _GAMMA_BOUNDS = (-1.0, 3.0)
+#: Bounds on the sigma scale ``k``. No merge misreports its sigmas tenfold; outside
+#: these the data hold no noise to calibrate against (identical datasets drive ``k``
+#: to zero), and a zero noise would give an infinite SNR and zero sigmas downstream.
+SIGMA_SCALE_BOUNDS = (0.1, 10.0)
+_LOG_K_BOUNDS = tuple(math.log(b) for b in SIGMA_SCALE_BOUNDS)
+# Bounds on the log centric factor, so a fit without signal cannot underflow it to zero.
+_LOG_CENTRIC_BOUNDS = (-7.0, 7.0)
 
 
 @dataclass(frozen=True)
@@ -64,7 +71,11 @@ class DifferencePowerFit:
     gamma : float
         Exponent on ``F_dark``; ``0`` when no dark amplitude was used.
     sigma_scale : float
-        The factor ``k`` on the reported sigmas; ``1`` when not fitted.
+        The factor ``k`` on the reported sigmas, within :data:`SIGMA_SCALE_BOUNDS`;
+        ``1`` when not fitted.
+    sigma_scale_at_bound : bool
+        Whether ``k`` stopped at a bound: the reported sigmas and the scatter of the
+        differences disagree beyond any plausible miscalibration.
     centric_factor : float
         Power of a centric reflection relative to an acentric one at equal resolution;
         ``1`` when no centric flags were given.
@@ -89,6 +100,7 @@ class DifferencePowerFit:
     coeffs: torch.Tensor
     gamma: float
     sigma_scale: float
+    sigma_scale_at_bound: bool
     centric_factor: float
     stol_range: tuple
     amp_scale: float
@@ -305,6 +317,8 @@ def fit_difference_power(
             trial = theta.clone()
             trial[idx] = trial[idx] - step
             trial[n_c] = trial[n_c].clamp(*_GAMMA_BOUNDS)
+            trial[n_c + 1] = trial[n_c + 1].clamp(*_LOG_K_BOUNDS)
+            trial[n_c + 2] = trial[n_c + 2].clamp(*_LOG_CENTRIC_BOUNDS)
             new = float(nll(trial))
             if math.isfinite(new) and new <= current:
                 theta, improved = trial, True
@@ -337,6 +351,10 @@ def fit_difference_power(
         coeffs=theta[:n_c].clone(),
         gamma=float(theta[n_c]) if use_f else 0.0,
         sigma_scale=float(theta[n_c + 1].exp()),
+        sigma_scale_at_bound=bool(
+            fit_sigma_scale
+            and min(abs(float(theta[n_c + 1]) - b) for b in _LOG_K_BOUNDS) < 1e-4
+        ),
         centric_factor=float(theta[n_c + 2].exp()) if has_centric else 1.0,
         stol_range=stol_range,
         amp_scale=amp_scale,
@@ -377,6 +395,7 @@ def bounded_wiener_weight(
 __all__ = [
     "DEFAULT_ORDER",
     "DEFAULT_SNR_FLOOR",
+    "SIGMA_SCALE_BOUNDS",
     "DifferencePowerFit",
     "bounded_wiener_weight",
     "fit_difference_power",

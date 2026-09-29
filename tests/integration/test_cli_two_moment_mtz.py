@@ -376,9 +376,13 @@ class TestTwoMomentValuesAreConsistent:
         assert results["lambda_twin"] == pytest.approx(LAMBDA_TWIN)
 
     def test_summary_reports_the_shrinkage_diagnostics(self, two_moment_mtz):
-        """``tau_sq`` and mean ``w(h)`` say whether the default extrapolated map is
-        over-shrunk, so they belong in the summary rather than only in a print."""
+        """The shrinkage's source and mean and least ``w(h)`` say whether the default
+        extrapolated map is over-shrunk, so they belong in the summary rather than only
+        in a print. This pair carries intensities, so they supply the SNR. Its dark and
+        light halves are the same deposited data, so there is no difference signal and
+        the weights may reach zero here; positivity with signal is pinned in the unit
+        tests."""
         _, summary = two_moment_mtz
         results = json.loads(summary.read_text())["results"]
-        assert "tau_sq" in results and "w_shrinkage_mean" in results
-        assert 0.0 < results["w_shrinkage_mean"] <= 1.0
+        assert results["shrinkage_source"] == "intensity"
+        assert 0.0 <= results["w_shrinkage_min"] <= results["w_shrinkage_mean"] < 1.0

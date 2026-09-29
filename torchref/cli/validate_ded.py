@@ -38,6 +38,7 @@ from torchref.cli._common import (
     add_outdir_arg,
     build_dual_column_names,
     configure_unbuffered_output,
+    intensity_difference,
     load_model,
     load_reflection_data,
     parse_device_str,
@@ -293,9 +294,12 @@ def setup_ded_context(
     # Difference Fo and the registered weights; the selected scheme is the headline.
     dfo = F_light - F_dark
     sig_diff = torch.sqrt(sig_dark**2 + sig_light**2)
+    delta_I, sig_delta_I = intensity_difference(data_dark, data_light, refl_mask)
     all_w = all_ded_weights(
         delta_obs=dfo,
         sigma_diff=sig_diff,
+        delta_intensity=delta_I,
+        sigma_delta_intensity=sig_delta_I,
         hkl=hkl,
         cell=data_dark.cell,
         spacegroup=data_dark.spacegroup,
@@ -727,6 +731,7 @@ def run_validation(args):
             **{
                 k: ctx["ded_weight_diagnostics"].get(k)
                 for k in (
+                    "source",
                     "gamma",
                     "gamma_fitted",
                     "sigma_scale",

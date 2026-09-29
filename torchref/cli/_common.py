@@ -419,6 +419,35 @@ def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def intensity_difference(data_dark, data_light, mask=None):
+    """``(I_light - I_dark, sigma)`` on the shared scale, or ``(None, None)``.
+
+    Parameters
+    ----------
+    data_dark, data_light : ReflectionData
+        Datasets on one HKL list, already inter-scaled.
+    mask : torch.Tensor, optional
+        Boolean selection applied to both.
+
+    Returns
+    -------
+    tuple of torch.Tensor or None
+        ``(None, None)`` when either dataset carries no intensities, so callers fall
+        back to the amplitude differences.
+    """
+    try:
+        I_dark, sig_dark = data_dark.get_corrected_intensities()
+        I_light, sig_light = data_light.get_corrected_intensities()
+    except ValueError:
+        return None, None
+    if I_dark is None or I_light is None or sig_dark is None or sig_light is None:
+        return None, None
+    if mask is not None:
+        I_dark, sig_dark = I_dark[mask], sig_dark[mask]
+        I_light, sig_light = I_light[mask], sig_light[mask]
+    return I_light - I_dark, (sig_dark**2 + sig_light**2).sqrt()
+
+
 def sigma_d_config_from_args(args: argparse.Namespace):
     """The :class:`~torchref.refinement.model_error_estimation.sigma_d.SigmaDConfig`
     selected by ``--sigma-d-gamma``."""

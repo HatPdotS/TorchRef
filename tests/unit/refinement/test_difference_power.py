@@ -4,14 +4,15 @@ Pinned on seeded synthetic differences with a known power law: the power, the
 dark-amplitude exponent and the sigma scale are recovered from one dataset, including
 when the reported sigmas are uniformly inflated; a fixed exponent stays fixed; the
 bounded Wiener weight never falls below its floor, so no reflection or resolution range
-is removed even when the data hold no signal; the fit runs under ``torch.no_grad()`` and
-on every available device.
+is removed even when the data hold no signal; the sigma scale stays within its bounds when the differences hold no noise; the fit runs
+under ``torch.no_grad()`` and on every available device.
 """
 
 import pytest
 import torch
 
 from torchref.refinement.model_error_estimation.difference_power import (
+    SIGMA_SCALE_BOUNDS,
     bounded_wiener_weight,
     fit_difference_power,
 )
@@ -90,3 +91,20 @@ def test_fits_under_no_grad():
     with torch.no_grad():
         fit = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"])
     assert fit.converged
+
+
+@pytest.mark.unit
+def test_sigma_scale_stays_bounded_when_the_differences_hold_no_noise():
+    # Identical datasets: every difference is zero, so the fit would drive k to zero.
+    s = synth(n=5000)
+    zeros = torch.zeros_like(s["delta"]) + 1e-3 * torch.randn(
+        len(s["delta"]), generator=torch.Generator().manual_seed(1)
+    )
+    fit = fit_difference_power(zeros, s["sigma"], s["dss"], f_dark=s["f"])
+    assert fit.sigma_scale == pytest.approx(SIGMA_SCALE_BOUNDS[0], rel=1e-3)
+    assert fit.sigma_scale_at_bound
+    snr = fit.snr(s["sigma"], d_star_sq=s["dss"], f_dark=s["f"])
+    assert bool(torch.isfinite(snr).all())
+    assert not fit_difference_power(
+        s["delta"], s["sigma"], s["dss"], f_dark=s["f"]
+    ).sigma_scale_at_bound
