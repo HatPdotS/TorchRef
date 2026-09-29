@@ -31,14 +31,24 @@ and reports, not a curve to normalise by.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+import math
+import warnings
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
 
 import torch
 
 from torchref.config import get_float_dtype
+from torchref.scaling._protein_gamma import protein_gamma as _protein_gamma
 from torchref.scaling.basis import chebyshev_design
 
-__all__ = ["WilsonNormaliser", "fit_wilson_b"]
+__all__ = [
+    "WilsonNormaliser",
+    "WilsonFit",
+    "fit_wilson_b",
+    "sum_f_squared",
+    "PROTEIN_RESIDUE",
+]
 
 #: Chebyshev terms. Enough to follow a Wilson plot's curvature and the
 #: low-resolution solvent deficit without chasing shell-to-shell noise.
@@ -484,202 +494,227 @@ class WilsonNormaliser:
         )
 
 
-#: Fallback structure B (Å²) when the high-resolution fit has fewer than three
-#: usable shells. This is the value the fit has always returned there.
-_FALLBACK_B = 200.0
+#: Average protein residue, as xtriage assumes when no composition is given.
+#: Only the relative amounts matter: the absolute scale goes into ``K``.
+PROTEIN_RESIDUE = {"H": 8.0, "C": 5.0, "N": 1.5, "O": 1.2}
+
+#: Without the protein correction the plot is only linear at high resolution;
+#: fit reflections from this d-spacing (Å) outward only.
+_PLAIN_D_MAX = 4.5
 
 
-def fit_wilson_b(
-    F: torch.Tensor,
-    d: torch.Tensor,
-    n_bins: int = 30,
-    verbose: int = 0,
-) -> Optional[float]:
-    """Fit an overall Wilson B from amplitudes and resolution.
-
-    Bins ``F^2`` in ``s^2 = 1/(4 d^2)``, seeds a structure B from the shells
-    below 3.5 Å and a solvent B from those above 6 Å, then refines the
-    two-component curve ``<F^2> = A [(1-k) exp(-2 B s^2) + k exp(-2 B_sol s^2)]``
-    and returns its structure B -- what "the Wilson B" usually means. This is a
-    single number for priors and reports; for normalising intensities use
-    :class:`WilsonNormaliser`.
+def sum_f_squared(
+    d_star_sq: torch.Tensor, composition: Optional[Dict[str, float]] = None
+) -> torch.Tensor:
+    """``sum_j n_j f_j(d*^2)^2`` for a composition, with ITC92 form factors.
 
     Parameters
     ----------
-    F : torch.Tensor
-        Amplitudes of shape (N,). Non-finite and non-positive values are ignored.
+    d_star_sq : torch.Tensor
+        ``1/d^2`` in Å^-2, shape (N,).
+    composition : dict, optional
+        Element symbol to count. Defaults to :data:`PROTEIN_RESIDUE`.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape (N,), in electrons squared, dtype of ``d_star_sq``.
+    """
+    from torchref.base.scattering.scattering_table import (
+        elements_to_z,
+        get_scattering_params_by_z,
+    )
+
+    composition = PROTEIN_RESIDUE if composition is None else composition
+    elements = list(composition)
+    counts = torch.tensor([composition[e] for e in elements]).to(d_star_sq)
+    A, B = get_scattering_params_by_z(
+        elements_to_z(elements).to(d_star_sq.device), dtype=d_star_sq.dtype
+    )
+    # f(s) = sum_k A_k exp(-B_k d*^2 / 4), ITC92 in sin^2(theta)/lambda^2.
+    f = (A[None] * torch.exp(-B[None] * (d_star_sq[:, None, None] / 4.0))).sum(-1)
+    return (f**2 * counts[None]).sum(-1)
+
+
+@dataclass
+class WilsonFit:
+    """Result of :func:`fit_wilson_b`.
+
+    The model is ``<I/eps> = K * sum_f2(d*^2) * (1 + gamma(d*^2)) * exp(-B d*^2 / 2)``,
+    with ``gamma`` the empirical protein correction (zero when
+    ``protein_gamma`` is False).
+
+    Attributes
+    ----------
+    B : float
+        Wilson B in Å².
+    sigma_B : float
+        Standard error of ``B`` from the scatter of the shell means about the
+        line; it reflects how straight the plot is, not the measurement error.
+    log_scale : float
+        ``ln K``.
+    d_max, d_min : float
+        Resolution range of the fitted reflections, Å.
+    n_reflections, n_shells : int
+        Reflections and equal-count shells in the fit.
+    composition : dict
+        Composition used for ``sum_f2``.
+    protein_gamma : bool
+        Whether the protein correction was applied.
+    """
+
+    B: float
+    sigma_B: float
+    log_scale: float
+    d_max: float
+    d_min: float
+    n_reflections: int
+    n_shells: int
+    composition: Dict[str, float]
+    protein_gamma: bool
+
+    def shape(self, d: torch.Tensor) -> torch.Tensor:
+        """``sum_f2 * (1 + gamma) * exp(-B d*^2 / 2)`` at resolution ``d`` (Å); no K."""
+        d_star_sq = d.pow(-2)
+        curve = sum_f_squared(d_star_sq, self.composition)
+        if self.protein_gamma:
+            curve = curve * (1.0 + _protein_gamma(d_star_sq))
+        return curve * torch.exp(-0.5 * self.B * d_star_sq)
+
+    def expected_intensity(
+        self, d: torch.Tensor, epsilon: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Expected mean intensity at resolution ``d`` (Å), times ``epsilon``."""
+        out = math.exp(self.log_scale) * self.shape(d)
+        return out if epsilon is None else out * epsilon.to(out)
+
+
+def fit_wilson_b(
+    I: torch.Tensor,
+    d: torch.Tensor,
+    *,
+    sigma: Optional[torch.Tensor] = None,
+    epsilon: Optional[torch.Tensor] = None,
+    amplitudes: bool = False,
+    composition: Optional[Dict[str, float]] = None,
+    protein_gamma: bool = True,
+    n_shells: int = 20,
+    min_per_shell: int = 20,
+    verbose: int = 0,
+) -> Optional[WilsonFit]:
+    """Fit the overall Wilson B, as xtriage does, by a line through shell means.
+
+    Fits ``ln <I / (eps sum_f2 (1 + gamma))>`` against ``d*^2`` in shells of
+    equal reflection count: the slope is ``-B/2``. ``sum_f2`` is the random-atom
+    mean intensity of ``composition``, and ``gamma`` the empirical protein
+    correction of Zwart & Lamzin (2004), which straightens the plot down to
+    about 11 Å, so data at 3.5-4 Å still give a usable B. Without either
+    correction the fit reads the form-factor falloff as B and comes out 7-10 Å²
+    too high on protein data. The correction also lowers B relative to the plain
+    ``d <= 4.5`` Å fit that ctruncate reports and most deposited
+    ``B_iso_Wilson_estimate`` values follow -- by 10-15 Å² on some datasets --
+    so compare like with like. A single number for priors and reports; for
+    normalising intensities use :class:`WilsonNormaliser`.
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Intensities of shape (N,), or amplitudes with ``amplitudes=True``.
+        Pass only the reflections to use (e.g. ``data.masks()`` applied).
     d : torch.Tensor
         Resolution of each reflection in Å, shape (N,).
-    n_bins : int, optional
-        Number of equal-width ``s^2`` bins. Default 30.
+    sigma : torch.Tensor, optional
+        Uncertainties of ``I`` (N,). Used only with ``amplitudes=True``, where
+        the intensity proxy is ``F^2 + sigma_F^2``: a French-Wilson ``F^2`` alone
+        underestimates the mean intensity of weak reflections.
+    epsilon : torch.Tensor, optional
+        Reflection multiplicity (N,) from ``SpaceGroup.epsilon``; intensities
+        are divided by it.
+    amplitudes : bool, optional
+        ``I`` holds amplitudes.
+    composition : dict, optional
+        Element symbol to count; defaults to :data:`PROTEIN_RESIDUE`. The
+        result barely depends on it for proteins.
+    protein_gamma : bool, optional
+        Apply the protein correction (default True). Without it only
+        reflections with d <= 4.5 Å are fitted; turn it off for nucleic acids.
+    n_shells : int, optional
+        Number of equal-count shells, default 20, reduced so each holds at
+        least ``min_per_shell`` reflections.
+    min_per_shell : int, optional
+        Default 20.
     verbose : int, optional
         Print the result when > 0.
 
     Returns
     -------
-    float or None
-        Structure B in Å², within 1-200. ``None`` with fewer than 100 usable
-        reflections or fewer than 5 bins holding more than 5 each.
+    WilsonFit or None
+        ``None``, with a warning saying why, when the data cannot support a
+        fit: fewer than three shells, a ``d*^2`` range under 0.03 Å^-2, or a
+        non-positive shell mean. There is no fallback value and ``B`` is not
+        clamped -- an implausible B means implausible data.
     """
-    device = F.device
-    valid = torch.isfinite(F) & (F > 0) & torch.isfinite(d)
-    if valid.sum() < 100:
-        if verbose > 0:
-            print(f"  Wilson B: too few reflections ({int(valid.sum())}), skipping")
-        return None
+    from torchref.scaling._protein_gamma import D_STAR_SQ_HIGH, D_STAR_SQ_LOW
 
-    s_sq = 1.0 / (4.0 * d[valid] ** 2)
-    F_sq = F[valid] ** 2
-
-    bin_edges = torch.linspace(s_sq.min(), s_sq.max(), n_bins + 1, device=device)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    bin_idx = torch.bucketize(s_sq, bin_edges[1:-1])
-    bin_sums = torch.zeros(n_bins, device=device, dtype=F_sq.dtype)
-    bin_counts = torch.zeros(n_bins, device=device, dtype=F_sq.dtype)
-    bin_sums.scatter_add_(0, bin_idx, F_sq)
-    bin_counts.scatter_add_(0, bin_idx, torch.ones_like(F_sq))
-
-    valid_bins = bin_counts > 5
-    if valid_bins.sum() < 5:
-        if verbose > 0:
-            print(f"  Wilson B: insufficient bins ({valid_bins.sum()}), skipping")
-        return None
-
-    mean_F_sq = bin_sums[valid_bins] / bin_counts[valid_bins]
-    s_sq_bins = bin_centers[valid_bins]
-    d_bins = 1.0 / (2.0 * torch.sqrt(s_sq_bins))
-
-    B_struct = _fit_single_wilson(s_sq_bins, mean_F_sq, d_bins < 3.5)
-    B_sol = _fit_single_wilson(s_sq_bins, mean_F_sq, d_bins > 6.0)
-    B, _, _ = _fit_two_component_wilson(s_sq_bins, mean_F_sq, B_struct, B_sol)
-
-    if verbose > 0:
-        print(f"  Wilson B-factor (structure): {B:.1f} Å²")
-    return B
-
-
-def _fit_single_wilson(
-    s_sq: torch.Tensor, mean_F_sq: torch.Tensor, mask: torch.Tensor
-) -> float:
-    """Fit ``ln(F^2) = c - 2 B s^2`` over the masked shells, clamped to 0-300 Å²."""
-    if mask.sum() < 3:
-        return _FALLBACK_B
-    x = s_sq[mask]
-    y = torch.log(mean_F_sq[mask])
-    x_c, y_c = x - x.mean(), y - y.mean()
-    denominator = (x_c**2).sum()
-    if denominator < 1e-12:
-        return _FALLBACK_B
-    B = -((x_c * y_c).sum() / denominator).item() / 2.0
-    return max(0.0, min(B, 300.0))
-
-
-def _fit_two_component_wilson(
-    s_sq: torch.Tensor,
-    mean_F_sq: torch.Tensor,
-    B_struct_init: float,
-    B_sol_init: float,
-    n_iter: int = 50,
-) -> Tuple[float, float, float]:
-    """Refine ``F^2 = A [(1-k) exp(-2 B_s s^2) + k exp(-2 B_sol s^2)]``.
-
-    Finite-difference gradient descent from the single-component estimates.
-
-    Returns ``(B_struct, B_sol, k_sol)``, constrained to B_s in 1-200, B_sol in
-    50-500 with ``B_sol >= B_struct + 20``, and k in 0.01-0.9 -- a value on a
-    bound means the fit hit the clamp.
-    """
-    device = s_sq.device
-    F_sq_max = mean_F_sq.max()
-    y = mean_F_sq / F_sq_max
-    x = s_sq
-
-    # Initialize parameters
-    B_struct = torch.tensor(B_struct_init, device=device, dtype=x.dtype)
-    B_sol = torch.tensor(B_sol_init, device=device, dtype=x.dtype)
-
-    # Estimate initial k from ratio of low-res to high-res decay
-    # At low resolution, solvent contributes more
-    d_from_s = 1.0 / (2.0 * torch.sqrt(x))
-    low_res_val = y[d_from_s > 5.0].mean() if (d_from_s > 5.0).any() else y[0]
-    high_res_val = y[d_from_s < 3.0].mean() if (d_from_s < 3.0).any() else y[-1]
-
-    # k estimates solvent fraction - if low res is much higher than expected
-    # from structure alone, there's solvent contribution
-    struct_decay = torch.exp(-2 * B_struct * x)
-    expected_low = (
-        struct_decay[d_from_s > 5.0].mean()
-        if (d_from_s > 5.0).any()
-        else struct_decay[0]
-    )
-
-    if expected_low > 1e-6 and low_res_val > expected_low:
-        k_init = min(0.5, (low_res_val - expected_low).item() / low_res_val.item())
+    I = I.detach().reshape(-1)
+    d = d.detach().to(I).reshape(-1)
+    if amplitudes:
+        y = I**2 if sigma is None else I**2 + sigma.detach().to(I) ** 2
     else:
-        k_init = 0.1
+        y = I
+    if epsilon is not None:
+        y = y / epsilon.detach().to(I)
+    d_star_sq = d.pow(-2)
+    keep = torch.isfinite(y) & torch.isfinite(d_star_sq)
+    if protein_gamma:
+        keep &= (d_star_sq > D_STAR_SQ_LOW) & (d_star_sq < D_STAR_SQ_HIGH)
+    else:
+        keep &= d <= _PLAIN_D_MAX
+    y, d_star_sq = y[keep], d_star_sq[keep]
 
-    k = torch.tensor(max(0.01, min(0.5, k_init)), device=device, dtype=x.dtype)
+    def _give_up(reason: str) -> None:
+        warnings.warn(f"No Wilson B: {reason}.", stacklevel=3)
+        return None
 
-    # Simple gradient descent refinement
-    lr = 0.1
+    n_shells = min(n_shells, len(y) // min_per_shell)
+    if n_shells < 3:
+        return _give_up(f"{len(y)} usable reflections, need {3 * min_per_shell}")
+    span = float(d_star_sq.max() - d_star_sq.min())
+    if span < 0.03:
+        return _give_up(f"d*^2 range {span:.3f} Å^-2 is too short for a slope")
 
-    for _ in range(n_iter):
-        # Compute model
-        struct_term = (1 - k) * torch.exp(-2 * B_struct * x)
-        sol_term = k * torch.exp(-2 * B_sol * x)
-        model = struct_term + sol_term
+    y = y / sum_f_squared(d_star_sq, composition)
+    if protein_gamma:
+        y = y / (1.0 + _protein_gamma(d_star_sq))
 
-        # Compute scale factor analytically
-        A = (y * model).sum() / (model * model).sum()
-        model_scaled = A * model
+    order = torch.argsort(d_star_sq)
+    shells = torch.tensor_split(order, n_shells)
+    x = torch.stack([d_star_sq[s].mean() for s in shells])
+    mean_y = torch.stack([y[s].mean() for s in shells])
+    if bool((mean_y <= 0).any()):
+        return _give_up("a resolution shell has non-positive mean intensity")
+    ln_y = torch.log(mean_y)
 
-        # Compute gradients (simplified, using finite differences for robustness)
-        eps = 0.1
-
-        # B_struct gradient
-        model_plus = A * ((1 - k) * torch.exp(-2 * (B_struct + eps) * x) + sol_term)
-        model_minus = A * (
-            (1 - k) * torch.exp(-2 * (B_struct - eps) * x) + sol_term
+    # Centred regression keeps the float32 normal equations well conditioned.
+    x_c, y_c = x - x.mean(), ln_y - ln_y.mean()
+    sxx = (x_c**2).sum()
+    slope = (x_c * y_c).sum() / sxx
+    resid = y_c - slope * x_c
+    sigma_slope = torch.sqrt((resid**2).sum() / (n_shells - 2) / sxx)
+    fit = WilsonFit(
+        B=float(-2.0 * slope),
+        sigma_B=float(2.0 * sigma_slope),
+        log_scale=float(ln_y.mean() - slope * x.mean()),
+        d_max=float(d_star_sq.min().rsqrt()),
+        d_min=float(d_star_sq.max().rsqrt()),
+        n_reflections=len(y),
+        n_shells=n_shells,
+        composition=dict(PROTEIN_RESIDUE if composition is None else composition),
+        protein_gamma=protein_gamma,
+    )
+    if verbose > 0:
+        print(
+            f"  Wilson B: {fit.B:.1f} ± {fit.sigma_B:.1f} Å² "
+            f"({fit.d_max:.2f}-{fit.d_min:.2f} Å, {fit.n_reflections} reflections)"
         )
-        loss_plus = ((y - model_plus) ** 2).sum()
-        loss_minus = ((y - model_minus) ** 2).sum()
-        grad_B_struct = (loss_plus - loss_minus) / (2 * eps)
-
-        # B_sol gradient
-        model_plus = A * (struct_term + k * torch.exp(-2 * (B_sol + eps) * x))
-        model_minus = A * (struct_term + k * torch.exp(-2 * (B_sol - eps) * x))
-        loss_plus = ((y - model_plus) ** 2).sum()
-        loss_minus = ((y - model_minus) ** 2).sum()
-        grad_B_sol = (loss_plus - loss_minus) / (2 * eps)
-
-        # k gradient
-        eps_k = 0.01
-        k_plus = min(0.9, k + eps_k)
-        k_minus = max(0.01, k - eps_k)
-        model_plus = A * (
-            (1 - k_plus) * torch.exp(-2 * B_struct * x)
-            + k_plus * torch.exp(-2 * B_sol * x)
-        )
-        model_minus = A * (
-            (1 - k_minus) * torch.exp(-2 * B_struct * x)
-            + k_minus * torch.exp(-2 * B_sol * x)
-        )
-        loss_plus = ((y - model_plus) ** 2).sum()
-        loss_minus = ((y - model_minus) ** 2).sum()
-        grad_k = (loss_plus - loss_minus) / (2 * eps_k)
-
-        # Update parameters
-        B_struct = B_struct - lr * grad_B_struct
-        B_sol = B_sol - lr * grad_B_sol
-        k = k - lr * 0.1 * grad_k  # Slower learning rate for k
-
-        # Enforce constraints
-        B_struct = torch.clamp(B_struct, 1.0, 200.0)
-        B_sol = torch.clamp(B_sol, 50.0, 500.0)
-        k = torch.clamp(k, 0.01, 0.9)
-
-        # Ensure B_sol > B_struct (solvent is more disordered)
-        if B_sol < B_struct + 20:
-            B_sol = B_struct + 20
-
-    return B_struct.item(), B_sol.item(), k.item()
+    return fit
