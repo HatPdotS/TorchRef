@@ -2,10 +2,12 @@
 
 Pinned on seeded synthetic differences with a known power law: the power, the
 dark-amplitude exponent and the sigma scale are recovered from one dataset, including
-when the reported sigmas are uniformly inflated; a fixed exponent stays fixed; the
-bounded Wiener weight never falls below its floor, so no reflection or resolution range
-is removed even when the data hold no signal; the sigma scale stays within its bounds when the differences hold no noise; the fit runs
-under ``torch.no_grad()`` and on every available device.
+when the reported sigmas are uniformly inflated; a fixed exponent stays fixed; a model
+difference's resolution-dependent coupling and the power it leaves unexplained are
+recovered together; the bounded Wiener weight never falls below its floor, so no
+reflection or resolution range is removed even when the data hold no signal; the sigma
+scale stays within its bounds when the differences hold no noise; the fit runs under
+``torch.no_grad()`` and on every available device.
 """
 
 import pytest
@@ -108,3 +110,25 @@ def test_sigma_scale_stays_bounded_when_the_differences_hold_no_noise():
     assert not fit_difference_power(
         s["delta"], s["sigma"], s["dss"], f_dark=s["f"]
     ).sigma_scale_at_bound
+
+
+@pytest.mark.unit
+def test_recovers_the_model_coupling_and_the_unexplained_power():
+    g = torch.Generator().manual_seed(4)
+    s = synth()
+    n = len(s["delta"])
+    stol = s["dss"].sqrt() / 2.0
+    alpha_true = 0.8 - 0.3 * stol / stol.max()
+    # The model explains part of the difference; the rest is the planted s_true.
+    delta_calc = torch.randn(n, generator=g) * 3.0
+    delta = s["delta"] + alpha_true * delta_calc
+    fit = fit_difference_power(
+        delta, s["sigma"], s["dss"], f_dark=s["f"], delta_calc=delta_calc
+    )
+    assert fit.converged
+    alpha = fit.alpha_at(s["dss"])
+    assert float((alpha - alpha_true).abs().max()) < 0.05
+    beta = fit.signal_power(s["dss"], f_dark=s["f"])
+    assert float((beta / s["s_true"]).log().abs().median()) < LOG_POWER_ATOL
+    no_model = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"])
+    assert torch.equal(no_model.alpha_at(s["dss"]), torch.ones_like(s["dss"]))

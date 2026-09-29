@@ -22,6 +22,11 @@ absorbs it. The sigma scale ``k`` is identifiable because the reported sigmas va
 many-fold between reflections at one resolution while ``S`` does not; it is what keeps
 inflated sigmas from reading as an absence of signal.
 
+Given a model difference ``dF_calc``, the mean becomes :math:`\\alpha(x_h) dF_{calc,h}`
+with :math:`\\alpha` a low-order Chebyshev series in the same abscissa, and ``S`` is the
+power the model does not explain -- the coupling and unexplained power a difference
+likelihood needs, fitted in one pass instead of from per-shell cross moments.
+
 :func:`bounded_wiener_weight` turns a fit into a weight that down-weights noisy
 reflections but never removes one, the resolution-continuous counterpart of the
 q-weight's floor.
@@ -45,6 +50,9 @@ DEFAULT_ORDER = 4
 #: q-weight's noise-only limit (``S`` floored at half the raw difference power gives
 #: ``w = 1/3``), so a reflection without signal keeps a third of the full weight.
 DEFAULT_SNR_FLOOR = 0.5
+#: Chebyshev order of the model coupling ``alpha``. Quadratic follows the fall of the
+#: coupling with resolution, which is smooth and far less structured than ``S``.
+DEFAULT_ALPHA_ORDER = 2
 #: Degrees of freedom of the Student-t likelihood when ``robust=True``.
 DEFAULT_NU = 4.0
 #: Newton iterations; the problem has at most eight parameters and converges in ~10.
@@ -86,9 +94,12 @@ class DifferencePowerFit:
     amp_scale, log_f_ref : float
         The amplitude unit the fit was done in and the mean ``log F_dark`` it was
         centred on.
+    alpha_coeffs : torch.Tensor
+        Chebyshev coefficients of the model coupling ``alpha``; empty when no model
+        difference was fitted. Evaluate with :meth:`alpha_at`.
     stderr : torch.Tensor
-        Standard errors of ``(coeffs, gamma, log k, log centric_factor)`` from the
-        inverse Hessian; NaN where a parameter was fixed.
+        Standard errors of ``(coeffs, gamma, log k, log centric_factor, alpha_coeffs)``
+        from the inverse Hessian; NaN where a parameter was fixed.
     nll : float
         Mean negative log-likelihood per reflection at the optimum.
     converged : bool
@@ -103,6 +114,7 @@ class DifferencePowerFit:
     sigma_scale_at_bound: bool
     centric_factor: float
     stol_range: tuple
+    alpha_coeffs: torch.Tensor
     amp_scale: float
     log_f_ref: float
     stderr: torch.Tensor
@@ -150,6 +162,14 @@ class DifferencePowerFit:
             power = power * epsilon.to(dss)
         return power
 
+    def alpha_at(self, d_star_sq: torch.Tensor) -> torch.Tensor:
+        """Model coupling ``alpha`` at each ``1/d**2`` (A^-2); ones without a model."""
+        dss = d_star_sq.to(self.coeffs)
+        if len(self.alpha_coeffs) == 0:
+            return torch.ones_like(dss)
+        n = len(self.alpha_coeffs)
+        return _design(dss, n, self.stol_range) @ self.alpha_coeffs
+
     def snr(self, sigma: torch.Tensor, **kwargs) -> torch.Tensor:
         """``signal_power / (k * sigma)**2`` per reflection; keywords as
         :meth:`signal_power`."""
@@ -182,7 +202,9 @@ def fit_difference_power(
     f_dark: torch.Tensor | None = None,
     centric: torch.Tensor | None = None,
     fit_mask: torch.Tensor | None = None,
+    delta_calc: torch.Tensor | None = None,
     order: int = DEFAULT_ORDER,
+    alpha_order: int = DEFAULT_ALPHA_ORDER,
     gamma: float | None = None,
     fit_sigma_scale: bool = True,
     robust: bool = False,
@@ -205,8 +227,13 @@ def fit_difference_power(
         Boolean centric flags; given, a centric power factor is fitted.
     fit_mask : torch.Tensor, optional
         Reflections entering the fit; default every finite one with positive sigma.
+    delta_calc : torch.Tensor, optional
+        Model difference, shape ``(N,)``, on the scale of ``delta_obs``. Given, the
+        mean is ``alpha * delta_calc`` and ``S`` is the unexplained power.
     order : int
         Chebyshev order of ``log S`` in ``sin(theta)/lambda``.
+    alpha_order : int
+        Chebyshev order of ``alpha``; used only with ``delta_calc``.
     gamma : float, optional
         Fix the ``F_dark`` exponent instead of fitting it.
     fit_sigma_scale : bool
@@ -242,6 +269,9 @@ def fit_difference_power(
     if use_f:
         f = f_dark.detach().reshape(-1).to(dev, dtype)
         ok = ok & torch.isfinite(f)
+    if delta_calc is not None:
+        c_all = delta_calc.detach().reshape(-1).to(dev, dtype)
+        ok = ok & torch.isfinite(c_all)
     n_fit = int(ok.sum())
     if n_fit < order + 4:
         raise ValueError(f"need at least {order + 4} usable reflections, got {n_fit}")
@@ -250,7 +280,8 @@ def fit_difference_power(
     # Work in units of the rms difference so every term of the likelihood is O(1) and
     # the Hessian is well conditioned in float32.
     amp_scale = float(d.square().mean().sqrt().clamp(min=1e-12))
-    d2 = (d / amp_scale).square()
+    d_std = d / amp_scale
+    d2 = d_std.square()
     log_sig2 = 2.0 * torch.log(sig / amp_scale)
     log_eps = (
         torch.log(epsilon.reshape(-1).to(dev, dtype)[ok])
@@ -270,14 +301,26 @@ def fit_difference_power(
     cen = centric.reshape(-1).to(dev)[ok].to(dtype) if has_centric else None
 
     n_c = order + 1
+    n_a = alpha_order + 1 if delta_calc is not None else 0
+    i_a = n_c + 3
+    if n_a:
+        c_std = c_all[ok] / amp_scale
+        basis_a = _design(dss, n_a, stol_range)
     fit_gamma = use_f and gamma is None
-    free = torch.zeros(n_c + 3, dtype=torch.bool, device=dev)
+    free = torch.zeros(i_a + n_a, dtype=torch.bool, device=dev)
     free[:n_c] = True
     free[n_c] = fit_gamma
     free[n_c + 1] = fit_sigma_scale
     free[n_c + 2] = has_centric
+    free[i_a:] = True
 
-    theta = torch.zeros(n_c + 3, dtype=dtype, device=dev)
+    theta = torch.zeros(i_a + n_a, dtype=dtype, device=dev)
+    if n_a:
+        # Start from the global least-squares coupling, so the power starts from the
+        # residual rather than from the whole difference.
+        cc = float(c_std.square().mean())
+        theta[i_a] = float((d_std * c_std).mean()) / cc if cc > 0 else 1.0
+        d2 = (d_std - theta[i_a] * c_std).square()
     excess = float((d2.mean() - log_sig2.exp().mean()))
     theta[0] = math.log(max(excess, 0.1 * float(d2.mean())))
     theta[n_c] = float(gamma) if (use_f and gamma is not None) else (1.0 if use_f else 0.0)
@@ -289,7 +332,11 @@ def fit_difference_power(
         # log V = log(eps S + k^2 sigma^2), formed in log space so neither term can
         # underflow the sum.
         log_v = torch.logaddexp(log_eps + log_s, 2.0 * t[n_c + 1] + log_sig2)
-        z = d2 * torch.exp(-log_v)
+        if n_a:
+            resid2 = (d_std - (basis_a @ t[i_a:]) * c_std).square()
+        else:
+            resid2 = d2
+        z = resid2 * torch.exp(-log_v)
         if robust:
             per = 0.5 * log_v + 0.5 * (nu + 1.0) * torch.log1p(z / nu)
         else:
@@ -357,6 +404,7 @@ def fit_difference_power(
         ),
         centric_factor=float(theta[n_c + 2].exp()) if has_centric else 1.0,
         stol_range=stol_range,
+        alpha_coeffs=theta[i_a:].clone(),
         amp_scale=amp_scale,
         log_f_ref=log_f_ref,
         stderr=stderr,
@@ -393,6 +441,7 @@ def bounded_wiener_weight(
 
 
 __all__ = [
+    "DEFAULT_ALPHA_ORDER",
     "DEFAULT_ORDER",
     "DEFAULT_SNR_FLOOR",
     "SIGMA_SCALE_BOUNDS",
