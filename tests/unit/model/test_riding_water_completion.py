@@ -52,12 +52,10 @@ def test_add_with_riding_completes_every_water(heavy_model, model_class):
 @pytest.mark.unit
 def test_partial_water_is_completed_without_moving_its_hydrogen(heavy_model):
     """A water that arrives with one hydrogen receives just its missing partner."""
-    water = (
-        heavy_model.pdb[heavy_model.pdb.resname.str.strip().eq("HOH")].iloc[:1].copy()
-    )
+    table = heavy_model.to_dataframe()
+    water = table[table.resname.eq("HOH")].iloc[:1].copy()
     complete = heavy_model._derive(water, hydrogens="add")
-    complete.update_pdb()
-    partial_table = complete.pdb.iloc[:2].copy()
+    partial_table = complete.to_dataframe().iloc[:2].copy()
 
     kept = heavy_model._derive(partial_table, hydrogens="keep")
     assert len(kept.pdb) == 2

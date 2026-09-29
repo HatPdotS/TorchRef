@@ -481,7 +481,7 @@ class ModelFT(CachedForwardMixin, Model):
             get_significant_elements,
         )
 
-        element_list = self.pdb["element"].tolist()
+        element_list = self.ctx.topology.atoms.element.tolist()
         elements_hash = hash(tuple(element_list))
 
         if (
@@ -744,7 +744,7 @@ class ModelFT(CachedForwardMixin, Model):
             if old in state_dict and new not in state_dict:
                 state_dict[new] = state_dict.pop(old)
         for name in ("_A", "_B"):
-            if state_dict.get(name) is not None and self.pdb is not None:
+            if state_dict.get(name) is not None and self.ctx.topology is not None:
                 self.register_buffer(
                     name, torch.zeros_like(state_dict[name], device=self.device)
                 )

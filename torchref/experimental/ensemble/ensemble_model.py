@@ -283,7 +283,7 @@ def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
     Returns
     -------
     Model
-        A single-conformation model exposing ``.pdb`` / ``.update_pdb()`` /
+        A single-conformation model exposing ``.to_dataframe()`` / ``.ctx.topology`` /
         ``.xyz()`` / ``.device`` over the selected atoms.
     """
     from torchref.model.model import Model

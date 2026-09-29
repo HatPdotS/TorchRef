@@ -1626,17 +1626,17 @@ Examples:
                     meta.n_reflections_all = n_all
                     meta.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
 
-            # B-factor statistics
-            pdb = model.pdb
-            bvals = pdb["tempfactor"]
+            # B-factor statistics, from the written B column
+            bvals = model.to_dataframe()["tempfactor"]
             meta.b_mean_overall = float(bvals.mean())
             meta.b_min = float(bvals.min())
             meta.b_max = float(bvals.max())
 
             # Atom counts
-            meta.n_atoms_total = len(pdb)
-            meta.n_atoms_protein = int((pdb["ATOM"] == "ATOM").sum())
-            meta.n_atoms_solvent = int((pdb["ATOM"] == "HETATM").sum())
+            is_hetatm = model.ctx.topology.atoms.is_hetatm
+            meta.n_atoms_total = len(is_hetatm)
+            meta.n_atoms_protein = int((~is_hetatm).sum())
+            meta.n_atoms_solvent = int(is_hetatm.sum())
 
             # Geometry deviations
             if model.ctx.initialized and model.ctx.restraints is not None:
@@ -1682,8 +1682,8 @@ Examples:
 
     # --- Write merged deposition CIF (if no altlocs) ---
     merged_cif_out = str(outdir / f"{prefix}_merged.cif")
-    has_altloc_dark = (model_dark.pdb["altloc"].astype(str).str.strip() != "").any()
-    has_altloc_light = (model_light.pdb["altloc"].astype(str).str.strip() != "").any()
+    has_altloc_dark = bool((model_dark.ctx.topology.atoms.altloc != " ").any())
+    has_altloc_light = bool((model_light.ctx.topology.atoms.altloc != " ").any())
 
     if not has_altloc_dark and not has_altloc_light:
         import pandas as pd
@@ -1691,11 +1691,11 @@ Examples:
         from torchref import __version__
         from torchref.io.metadata import RefinementMetadata
 
-        dark_df = model_dark.pdb.copy()
+        dark_df = model_dark.to_dataframe()
         dark_df["altloc"] = "A"
         dark_df["occupancy"] = fractions[0]
 
-        light_df = model_light.pdb.copy()
+        light_df = model_light.to_dataframe()
         light_df["altloc"] = "B"
         light_df["occupancy"] = fractions[1]
 

@@ -7,10 +7,14 @@ parameter wrappers and per-atom buffers. The geometry restraints belong here too
 are fixed by the atom set and the dictionaries, and are evaluated against coordinates
 the caller passes in.
 
-:meth:`ModelContext.from_atoms` is the one place an atom table is settled: hydrogens
-stripped or generated, unusable rows dropped, the crystal built. Every way of making a
-model -- loading a file, selecting, stripping, hydrogenating, restoring a state dict --
-produces a context first and only then installs parameter wrappers over it.
+Atom identity lives on :attr:`ModelContext.topology`, a node-only
+:class:`~torchref.topology.Topology`; refinable values never live here. An atom table
+(a pandas DataFrame) is read only at construction: :meth:`ModelContext.from_atoms`
+settles it -- unusable rows dropped, hydrogens stripped or generated, the crystal built
+-- and splits it into the topology and an :class:`AtomValues` bundle of starting values
+that the model's parameter wrappers are built from. Every way of making a model --
+loading a file, selecting, stripping, hydrogenating, restoring a state dict -- produces
+a context and values first, and only then installs wrappers over them.
 
 Splitting it out means the crystallographic context can be passed to code that needs
 only that (structure-factor engines, scalers, most targets) without handing over the
@@ -24,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 
 from torchref.utils.device_mixin import DeviceMixin
@@ -32,6 +37,7 @@ if TYPE_CHECKING:
     import pandas
 
     from torchref.symmetry import Cell, SpaceGroup
+    from torchref.topology import Topology
     from torchref.topology.restraints import Restraints
 
 #: Three-letter residue code to one-letter code, modified residues included.
@@ -107,6 +113,13 @@ def check_hydrogen_policy(hydrogens: str, hydrogen_mode: str) -> None:
         )
 
 
+def _copy_links(links):
+    """An independent copy of a reader's LINK records (a DataFrame or a sequence)."""
+    if links is None:
+        return None
+    return links.copy() if hasattr(links, "copy") else list(links)
+
+
 def own_spacegroup(value, dtype: torch.dtype, device) -> Optional["SpaceGroup"]:
     """A space group owned by the caller, on ``device`` and in ``dtype``.
 
@@ -135,6 +148,75 @@ def own_spacegroup(value, dtype: torch.dtype, device) -> Optional["SpaceGroup"]:
     return SpaceGroup(value, dtype=dtype, device=device)
 
 
+#: Columns of an atom table that are parameter values rather than identity.
+_U_COLUMNS = ("u11", "u22", "u33", "u12", "u13", "u23")
+
+
+@dataclass(eq=False)
+class AtomValues:
+    """Starting values for the parameter wrappers, one row per atom.
+
+    Read from an atom table at construction and consumed by
+    ``Model._install_parameters``; afterwards the wrappers are the only source of these
+    values.
+
+    Parameters
+    ----------
+    xyz : numpy.ndarray
+        Cartesian coordinates in Å, shape ``(N, 3)``.
+    b : numpy.ndarray
+        Isotropic B-factors in Å², shape ``(N,)``.
+    u : numpy.ndarray
+        Anisotropic U in Å², shape ``(N, 6)`` as ``u11 u22 u33 u12 u13 u23``; NaN for
+        isotropic atoms.
+    occupancy : numpy.ndarray
+        Occupancies, shape ``(N,)``.
+    aniso : numpy.ndarray
+        True for atoms carrying an ANISOU record, shape ``(N,)``.
+    """
+
+    xyz: np.ndarray
+    b: np.ndarray
+    u: np.ndarray
+    occupancy: np.ndarray
+    aniso: np.ndarray
+
+    @classmethod
+    def from_table(cls, pdb: "pandas.DataFrame") -> "AtomValues":
+        """The value columns of an atom table; missing ANISOU columns read as NaN."""
+        n = len(pdb)
+        u = np.full((n, 6), np.nan)
+        for i, column in enumerate(_U_COLUMNS):
+            if column in pdb.columns:
+                u[:, i] = pdb[column].to_numpy(dtype=np.float64)
+        aniso = (
+            pdb["anisou_flag"].to_numpy(dtype=bool)
+            if "anisou_flag" in pdb.columns
+            else np.zeros(n, dtype=bool)
+        )
+        return cls(
+            xyz=pdb[["x", "y", "z"]].to_numpy(dtype=np.float64),
+            b=pdb["tempfactor"].to_numpy(dtype=np.float64),
+            u=u,
+            occupancy=pdb["occupancy"].to_numpy(dtype=np.float64),
+            aniso=aniso,
+        )
+
+    def __len__(self) -> int:
+        return len(self.b)
+
+    def gather(self, rows: np.ndarray) -> "AtomValues":
+        """Values for the atoms ``rows`` names, in that order; rows may repeat."""
+        rows = np.asarray(rows, dtype=np.int64)
+        return AtomValues(
+            xyz=self.xyz[rows].copy(),
+            b=self.b[rows].copy(),
+            u=self.u[rows].copy(),
+            occupancy=self.occupancy[rows].copy(),
+            aniso=self.aniso[rows].copy(),
+        )
+
+
 @dataclass(eq=False, repr=False)
 class ModelContext(DeviceMixin):
     """Crystallographic context, atom bookkeeping and provenance for one model.
@@ -145,9 +227,10 @@ class ModelContext(DeviceMixin):
         Unit cell, or None before a structure is loaded.
     spacegroup : SpaceGroup or None
         Space group, or None before a structure is loaded.
-    pdb : pandas.DataFrame or None
-        The atom table. Refreshed from the model's tensors only by
-        ``Model.update_pdb``, so it is stale between refinement steps by design.
+    topology : Topology or None
+        Atom identity -- names, elements, altlocs, residues, chains, record types --
+        as a node-only topology (no edges). Replaced, never edited, when the atom set
+        changes.
     links : list or None
         Link records from the reader, used to build inter-residue restraints.
     altloc_pairs : list
@@ -155,6 +238,8 @@ class ModelContext(DeviceMixin):
         residue with more than one conformation; rebuilt by :meth:`register_altlocs`.
     input_file : str or None
         Path the structure was loaded from.
+    z_value : int or None
+        The CRYST1 Z of the input file, written back unchanged.
     cif_path : str or list of str or None
         Restraint dictionary path(s). Change it with :meth:`set_cif_path`, which drops
         restraints built over the old dictionaries.
@@ -175,7 +260,8 @@ class ModelContext(DeviceMixin):
     initialized : bool, default False
         Whether a structure has been loaded. ``if model:`` tests this.
     restraints : Restraints or None
-        Geometry restraints over ``pdb``, or None until :meth:`build_restraints` runs.
+        Geometry restraints over ``topology``, or None until :meth:`build_restraints`
+        runs.
         Reset to None whenever the atom table or ``cif_path`` changes; read them
         through ``Model.restraints``, which builds on first access.
 
@@ -192,10 +278,11 @@ class ModelContext(DeviceMixin):
 
     cell: Optional["Cell"] = None
     spacegroup: Optional["SpaceGroup"] = None
-    pdb: Optional["pandas.DataFrame"] = None
+    topology: Optional["Topology"] = None
     links: Optional[List[Any]] = None
     altloc_pairs: List[Any] = field(default_factory=list)
     input_file: Optional[str] = None
+    z_value: Optional[int] = None
     cif_path: Optional[Any] = None
     verbose: int = 1
     hydrogens: str = "keep"
@@ -234,13 +321,13 @@ class ModelContext(DeviceMixin):
         device,
         links=None,
         **settings,
-    ) -> "ModelContext":
-        """Settle an atom table and build the context around it.
+    ) -> Tuple["ModelContext", AtomValues]:
+        """Settle an atom table and split it into a context and starting values.
 
-        In order: strip hydrogens (``hydrogens="strip"``); drop rows without
-        coordinates, B-factor or occupancy and renumber the ``index`` column; build the
-        cell and space group; generate missing hydrogens (``hydrogens="add"``); record
-        the alternative conformations.
+        Rows without coordinates, B-factor or occupancy are dropped, the table is split
+        into identity (:meth:`Topology.from_table`) and :class:`AtomValues`, the cell
+        and space group are built, and the hydrogen policy is applied (see
+        :meth:`derive`). This is the only place a model's atoms are read from a table.
 
         Parameters
         ----------
@@ -260,10 +347,10 @@ class ModelContext(DeviceMixin):
 
         Returns
         -------
-        ModelContext
-            Initialized, with no restraints built yet unless hydrogen generation
-            needed them (in which case they were built over the table *before*
-            generation and discarded).
+        ctx : ModelContext
+            Initialized, with no restraints built yet.
+        values : AtomValues
+            Starting values, row-aligned with ``ctx.topology``.
 
         Raises
         ------
@@ -271,73 +358,83 @@ class ModelContext(DeviceMixin):
             For an invalid hydrogen policy, including ``strip`` with ``riding``.
         """
         from torchref.symmetry import Cell
+        from torchref.topology import Topology
 
-        ctx = cls(links=links, **settings)
-        if ctx.hydrogens == "strip":
-            pdb = pdb.loc[pdb["element"].str.strip() != "H"]
-        # Renumber before deriving ``index``: every consumer uses it to address length-N
-        # per-atom tensors positionally, so a gapped index from the drop sends them past
-        # the end (roughly one PDB-REDO entry in six loses rows here).
+        z_value = getattr(pdb, "attrs", {}).get("z")
+        ctx = cls(links=links, z_value=z_value, **settings)
         pdb = pdb.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"])
-        ctx.pdb = cls._renumbered(pdb)
+        pdb = pdb.reset_index(drop=True)
         ctx.cell = Cell(
             cell.data if isinstance(cell, Cell) else cell, dtype=dtype, device=device
         )
         ctx.spacegroup = own_spacegroup(spacegroup, dtype, device)
-        if ctx.hydrogens == "add":
-            ctx._add_missing_hydrogens(dtype)
-        ctx.register_altlocs()
-        ctx.initialized = True
-        return ctx
+        ctx.topology = Topology.from_table(pdb)
+        values = ctx._settle(AtomValues.from_table(pdb), dtype)
+        return ctx, values
 
-    def derive(self, pdb: "pandas.DataFrame", **overrides) -> "ModelContext":
-        """A new context over ``pdb`` in this one's crystal, with its settings.
+    def derive(
+        self, topology: "Topology", values: AtomValues, **overrides
+    ) -> Tuple["ModelContext", AtomValues]:
+        """A new context over ``topology`` in this one's crystal, with its settings.
+
+        The hydrogen policy is applied to the new atoms: ``"strip"`` removes every
+        hydrogen, ``"add"`` generates the ones the monomer templates name and the atoms
+        lack (waters included), ``"keep"`` leaves them as they are.
 
         Parameters
         ----------
-        pdb : pandas.DataFrame
-            The new atom table; see :meth:`from_atoms`.
+        topology : Topology
+            Identity of the new atom set, node-only.
+        values : AtomValues
+            Its starting values, row-aligned with ``topology``.
         **overrides
             Settings to change, e.g. ``hydrogens="strip"``.
 
         Returns
         -------
-        ModelContext
+        ctx : ModelContext
+        values : AtomValues
+            Row-aligned with ``ctx.topology``, which differs from ``topology`` when the
+            policy added or removed atoms.
         """
-        settings = {**self.settings(), **overrides}
-        return ModelContext.from_atoms(
-            pdb,
-            self.cell,
-            self.spacegroup,
-            dtype=self.cell.dtype,
-            device=self.cell.device,
-            links=self.links,
-            **settings,
+        ctx = ModelContext(
+            cell=self.cell.clone() if self.cell is not None else None,
+            spacegroup=self.spacegroup.copy() if self.spacegroup is not None else None,
+            links=_copy_links(self.links),
+            topology=topology,
+            z_value=self.z_value,
+            **{**self.settings(), **overrides},
         )
+        return ctx, ctx._settle(values, self.cell.dtype)
 
-    @staticmethod
-    def _renumbered(pdb: "pandas.DataFrame") -> "pandas.DataFrame":
-        pdb = pdb.reset_index(drop=True)
-        pdb["index"] = pdb.index.to_numpy(dtype=int)
-        return pdb
+    def _settle(self, values: AtomValues, dtype: torch.dtype) -> AtomValues:
+        """Apply the hydrogen policy to ``topology`` and ``values``; finish the context."""
+        if self.hydrogens == "strip":
+            keep = ~self.topology.atoms.is_hydrogen.cpu().numpy()
+            if not keep.all():
+                rows = np.nonzero(keep)[0]
+                self.topology = self.topology.gather(rows)
+                values = values.gather(rows)
+        if self.hydrogens == "add":
+            values = self._add_missing_hydrogens(values, dtype)
+        self.register_altlocs()
+        self.initialized = True
+        return values
 
-    def _add_missing_hydrogens(self, dtype: torch.dtype) -> None:
-        """Top up the hydrogens the atom table is missing.
+    def _add_missing_hydrogens(self, values: AtomValues, dtype: torch.dtype) -> AtomValues:
+        """Top up the hydrogens the atoms are missing; returns the extended values.
 
         Per parent, not per file: a structure deposited with some hydrogens gets the
         rest, because the plan only ever proposes a hydrogen the template names and the
-        table does not have (1AK5 arrives with 675 of roughly 2500).
+        atoms do not have (1AK5 arrives with 675 of roughly 2500). A new hydrogen takes
+        its parent's occupancy and B-factor, and is isotropic.
 
-        Costs a restraint build without the pair list, over the table as loaded,
-        because the plan needs its topology; it is discarded afterwards.
+        Costs a restraint build without the pair list, because the plan needs the
+        connected topology; it is discarded afterwards.
         """
-        from torchref.topology.hydrogens import (
-            augment_atom_table,
-            optimise_free_torsions,
-            plan_hydrogens,
-        )
+        from torchref.topology.hydrogens import optimise_free_torsions, plan_hydrogens
 
-        xyz = torch.tensor(self.pdb[["x", "y", "z"]].values, dtype=dtype)
+        xyz = torch.tensor(values.xyz, dtype=dtype)
         restraints = self.build_restraints(xyz, nonbonded=False, verbose=0)
         plan = plan_hydrogens(
             restraints.topology, restraints.cif_dict, xyz, verbose=self.verbose
@@ -349,17 +446,21 @@ class ModelContext(DeviceMixin):
                 "with cif_path / --cif."
             )
         if plan.n_hydrogens == 0:
-            return
+            return values
         optimise_free_torsions(plan, restraints.topology, xyz)
-        self.pdb = self._renumbered(
-            augment_atom_table(self.pdb, plan, restraints.topology)
-        )
+        self.topology, source, _, plan_rows = self.topology.with_hydrogens(plan)
+        values = values.gather(source)
+        values.xyz[plan_rows] = np.asarray(plan.position, dtype=np.float64)
+        values.u[plan_rows] = np.nan
+        values.aniso[plan_rows] = False
         if self.verbose > 0:
             print(f"Generated {plan.n_hydrogens} hydrogens")
+        return values
 
-    # ------------------------------------------------------------------
-    # Restraints
-    # ------------------------------------------------------------------
+    @property
+    def n_atoms(self) -> int:
+        """Number of atoms; 0 before a structure is loaded."""
+        return 0 if self.topology is None else self.topology.n_atoms
 
     def set_cif_path(self, cif_path) -> None:
         """Replace the restraint dictionary path and drop restraints built over the old one.
@@ -375,13 +476,13 @@ class ModelContext(DeviceMixin):
     def build_restraints(
         self, xyz: torch.Tensor, *, nonbonded: bool = True, verbose=None
     ) -> "Restraints":
-        """Build restraints over the atom table and store them on :attr:`restraints`.
+        """Build restraints over :attr:`topology` and store them on :attr:`restraints`.
 
         Parameters
         ----------
         xyz : torch.Tensor
-            Current Cartesian coordinates in Å, shape ``(n_atoms, 3)``; the atom table's
-            own columns are stale during refinement. The restraints land on its device.
+            Current Cartesian coordinates in Å, shape ``(n_atoms, 3)``, from the
+            model's ``xyz`` wrapper. The restraints land on its device.
         nonbonded : bool, default True
             Build the non-bonded pair list. False is for a throwaway build that needs
             only the topology, and is then **not** stored.
@@ -394,10 +495,8 @@ class ModelContext(DeviceMixin):
         """
         from torchref.topology.restraints import Restraints
 
-        from torchref.topology import Topology
-
         restraints = Restraints(
-            topology=Topology.from_table(self.pdb),
+            topology=self.topology,
             cif_path=self.cif_path,
             xyz=xyz.detach(),
             cell=self.cell,
@@ -411,12 +510,51 @@ class ModelContext(DeviceMixin):
         return restraints
 
     # ------------------------------------------------------------------
-    # Atom-table queries
+    # Identity queries
     # ------------------------------------------------------------------
+
+    def _residue_groups(self, with_altloc: bool) -> Dict[tuple, List[int]]:
+        """Atom rows grouped by ``(resname, resseq, chain[, altloc])``, keys sorted.
+
+        The key order is the one pandas' sorted ``groupby`` gives. Occupancy groups are
+        numbered in it, and checkpoints store occupancies in group space, so it must
+        not change.
+        """
+        columns = self.topology.columns()
+        altloc = np.where(columns["altloc"] == " ", "", columns["altloc"])
+        keys: Dict[tuple, List[int]] = {}
+        for row in range(self.topology.n_atoms):
+            key = (
+                str(columns["resname"][row]),
+                int(columns["resseq"][row]),
+                str(columns["chain"][row]),
+            )
+            if with_altloc:
+                key = key + (str(altloc[row]),)
+            keys.setdefault(key, []).append(row)
+        return {key: keys[key] for key in sorted(keys)}
+
+    def _altloc_residues(self) -> List[Tuple[tuple, List[str], Dict[str, List[int]]]]:
+        """Residues with more than one altloc: ``(key, sorted altlocs, rows per altloc)``.
+
+        Keys are ``(resname, resseq, chain)``, sorted; blank-altloc atoms are not part
+        of any conformer.
+        """
+        altloc = self.topology.atoms.altloc
+        out = []
+        for key, rows in self._residue_groups(with_altloc=False).items():
+            by_altloc: Dict[str, List[int]] = {}
+            for row in rows:
+                if altloc[row] != " ":
+                    by_altloc.setdefault(str(altloc[row]), []).append(row)
+            if len(by_altloc) > 1:
+                labels = sorted(by_altloc)
+                out.append((key, labels, {a: by_altloc[a] for a in labels}))
+        return out
 
     def occupancy_groups(self, initial_occ):
         """``(sharing_groups, altloc_groups, refinable_mask)`` for an
-        :class:`~torchref.model.parameter_wrappers.OccupancyTensor` over this table.
+        :class:`~torchref.model.parameter_wrappers.OccupancyTensor` over these atoms.
 
         Altloc conformations share one collapsed index each; other residues share
         one only when their occupancies agree to within 0.01, and an occupancy is
@@ -432,46 +570,23 @@ class ModelContext(DeviceMixin):
         # First pass: altlocs. ALL atoms of one conformation must share a collapsed
         # index whatever their individual occupancies, or the sum-to-1
         # normalization in OccupancyTensor.forward() acts on the wrong group.
-        pdb_with_altlocs = self.pdb[self.pdb["altloc"] != ""]
         altloc_residues = set()
-
-        if len(pdb_with_altlocs) > 0:
-            grouped_by_residue = pdb_with_altlocs.groupby(
-                ["resname", "resseq", "chainid"]
-            )
-
-            for (resname, resseq, chainid), group in grouped_by_residue:
-                unique_altlocs = sorted(group["altloc"].unique())
-
-                if len(unique_altlocs) > 1:
-                    altloc_residues.add((resname, resseq, chainid))
-                    conformation_atom_lists = []
-
-                    for altloc in unique_altlocs:
-                        altloc_atoms = group[group["altloc"] == altloc]
-                        indices = altloc_atoms["index"].tolist()
-
-                        sharing_groups_tensor[indices] = collapsed_idx
-
-                        for idx in indices:
-                            if abs(initial_occ[idx].item() - 1.0) > 0.01:
-                                refinable_mask[idx] = True
-
-                        conformation_atom_lists.append(indices)
-                        collapsed_idx += 1
-
-                    altloc_groups.append(tuple(conformation_atom_lists))
+        for key, labels, rows_by_altloc in self._altloc_residues():
+            altloc_residues.add(key)
+            conformation_atom_lists = []
+            for label in labels:
+                indices = rows_by_altloc[label]
+                sharing_groups_tensor[indices] = collapsed_idx
+                for idx in indices:
+                    if abs(initial_occ[idx].item() - 1.0) > 0.01:
+                        refinable_mask[idx] = True
+                conformation_atom_lists.append(indices)
+                collapsed_idx += 1
+            altloc_groups.append(tuple(conformation_atom_lists))
 
         # Second pass: non-altloc residues, sharing by occupancy similarity.
-        grouped = self.pdb.groupby(["resname", "resseq", "chainid", "altloc"])
-
-        for (resname, resseq, chainid, altloc), group in grouped:
-            if (resname, resseq, chainid) in altloc_residues:
-                continue
-
-            indices = group["index"].tolist()
-
-            if len(indices) == 0:
+        for key, indices in self._residue_groups(with_altloc=True).items():
+            if key[:3] in altloc_residues:
                 continue
 
             residue_occs = initial_occ[indices]
@@ -518,37 +633,20 @@ class ModelContext(DeviceMixin):
         return sharing_groups_tensor, altloc_groups, refinable_mask
 
     def register_altlocs(self) -> None:
+        """Rebuild :attr:`altloc_pairs` from the topology's altlocs.
+
+        One tuple per residue that has multiple conformations, holding one index tensor
+        per conformation (in sorted altloc order), e.g.
+        ``[(tensor([100, 101]), tensor([110, 111])), ...]``. Overwrites any previous
+        content, so call it after the atom numbering changes.
         """
-        Rebuild ``self.altloc_pairs`` from the ``altloc`` column.
-
-        One tuple per residue that has multiple conformations, holding one
-        index tensor per conformation (in sorted altloc order), e.g.
-        ``[(tensor([100, 101]), tensor([110, 111])), ...]``. Overwrites any
-        previous content, so call it after the atom numbering changes.
-        """
-        self.altloc_pairs = []
-
-        pdb_with_altlocs = self.pdb[self.pdb["altloc"] != ""]
-
-        if len(pdb_with_altlocs) == 0:
-            return
-
-        grouped = pdb_with_altlocs.groupby(["resname", "resseq", "chainid"])
-
-        for (resname, resseq, chainid), group in grouped:
-            unique_altlocs = sorted(group["altloc"].unique())
-
-            # A lone altloc label is not an alternative conformation.
-            if len(unique_altlocs) > 1:
-                conformation_tensors = []
-                for altloc in unique_altlocs:
-                    altloc_atoms = group[group["altloc"] == altloc]
-                    indices = torch.tensor(
-                        altloc_atoms["index"].tolist(), dtype=torch.long  # dtype-ok: altloc atom indices; indexing requires long
-                    )
-                    conformation_tensors.append(indices)
-
-                self.altloc_pairs.append(tuple(conformation_tensors))
+        self.altloc_pairs = [
+            tuple(
+                torch.tensor(rows_by_altloc[label], dtype=torch.long)  # dtype-ok: altloc atom indices; indexing requires long
+                for label in labels
+            )
+            for _, labels, rows_by_altloc in self._altloc_residues()
+        ]
 
     @property
     def chain_sequences(self) -> List[Tuple[str, str]]:
@@ -557,71 +655,56 @@ class ModelContext(DeviceMixin):
         HETATM records are excluded, numbering gaps become ``?`` and unrecognized
         residues ``X``.
         """
-        if self.pdb is None:
-            return []
-
-        atom_df = self.pdb[self.pdb["ATOM"] == "ATOM"]
         result = []
-
-        for chain in atom_df["chainid"].unique():
-            chain_df = atom_df[atom_df["chainid"] == chain]
-            residues = chain_df.drop_duplicates(subset=["resseq", "icode"]).sort_values(
-                "resseq"
-            )
-            resseqs = residues["resseq"].values
-            resnames = residues["resname"].values
-
+        for chain, residues in self._polymer_residues():
             seq_chars = []
-            for i, (rseq, rname) in enumerate(zip(resseqs, resnames)):
+            for i, (resseq, resname) in enumerate(residues):
                 if i > 0:
-                    gap = int(rseq) - int(resseqs[i - 1]) - 1
+                    gap = resseq - residues[i - 1][0] - 1
                     if gap > 0:
                         seq_chars.extend(["?"] * gap)
-                code = THREE_TO_ONE.get(str(rname).strip(), "X")
-                seq_chars.append(code)
-
-            result.append((str(chain), "".join(seq_chars)))
-
+                seq_chars.append(THREE_TO_ONE.get(resname, "X"))
+            result.append((chain, "".join(seq_chars)))
         return result
+
+    def _polymer_residues(self) -> List[Tuple[str, List[Tuple[int, str]]]]:
+        """``(chain, [(resseq, resname), ...])`` over ATOM records, chains in file order.
+
+        One entry per ``(resseq, icode)``, sorted by ``resseq`` (stably, so insertion
+        codes keep their file order).
+        """
+        if self.topology is None:
+            return []
+        residues = self.topology.residues
+        first = residues.atom_start.astype(np.int64)
+        polymer = ~self.topology.atoms.is_hetatm[first] if len(first) else []
+        chains: Dict[str, Dict[tuple, Tuple[int, str]]] = {}
+        for r in np.nonzero(polymer)[0]:
+            chain, resseq, icode = residues.key(int(r))
+            seen = chains.setdefault(chain, {})
+            seen.setdefault((resseq, icode), (resseq, str(residues.resname[r])))
+        return [
+            (chain, sorted(seen.values(), key=lambda item: item[0]))
+            for chain, seen in chains.items()
+        ]
 
     @property
     def chain_residues(self) -> List[Tuple[str, List[str]]]:
+        """Per-chain residue names as 3-letter codes, ``[(chain_id, [resname, ...])]``.
+
+        Excludes HETATM records. Unlike :attr:`chain_sequences`, the raw 3-letter codes
+        without gap filling; used by the IHM and mmCIF writers.
         """
-        Per-chain residue names as 3-letter codes (for IHM/CIF writing).
-
-        Excludes HETATM records. Unlike :attr:`chain_sequences`, returns
-        the raw 3-letter codes without gap filling.
-
-        Returns
-        -------
-        list of (str, list of str)
-            Ordered list of ``(chain_id, [resname, ...])``.
-        """
-        if self.pdb is None:
-            return []
-
-        atom_df = self.pdb[self.pdb["ATOM"] == "ATOM"]
-        result = []
-
-        for chain in atom_df["chainid"].unique():
-            chain_df = atom_df[atom_df["chainid"] == chain]
-            residues = chain_df.drop_duplicates(subset=["resseq", "icode"]).sort_values(
-                "resseq"
-            )
-            resnames = [str(r).strip() for r in residues["resname"].values]
-            result.append((str(chain), resnames))
-
-        return result
-
-    # ------------------------------------------------------------------
-    # Copying and persistence
-    # ------------------------------------------------------------------
+        return [
+            (chain, [resname for _, resname in residues])
+            for chain, residues in self._polymer_residues()
+        ]
 
     def copy(self) -> "ModelContext":
         """An independent copy.
 
-        The atom table is deep-copied, the cell and space group are cloned and built
-        restraints are copied, so nothing is shared with the original. Cloning the
+        The topology is copied, the cell and space group are cloned and built restraints
+        are copied, so nothing is shared with the original. Cloning the
         space group matters because it is a mutable dataclass: sharing the reference
         would let an edit through one model's context reach every model copied from it.
 
@@ -635,12 +718,13 @@ class ModelContext(DeviceMixin):
             spacegroup=(
                 self.spacegroup.copy() if self.spacegroup is not None else None
             ),
-            pdb=self.pdb.copy(deep=True) if self.pdb is not None else None,
-            links=list(self.links) if self.links is not None else None,
+            topology=self.topology.copy() if self.topology is not None else None,
+            links=_copy_links(self.links),
             altloc_pairs=[
                 tuple(t.clone() for t in group) for group in self.altloc_pairs
             ],
             initialized=self.initialized,
+            z_value=self.z_value,
             **self.settings(),
         )
         if self.restraints is not None:
@@ -653,17 +737,17 @@ class ModelContext(DeviceMixin):
         return duplicate
 
     def state(self) -> Dict[str, Any]:
-        """What :meth:`from_state` needs, as picklable entries for a model state dict.
+        """What :meth:`from_state` needs besides the atom table, as picklable entries.
 
         Returns
         -------
         dict
-            The atom table, the cell as a CPU tensor, the space group as its extended
-            Hermann-Mauguin symbol (``gemmi.SpaceGroup`` is not picklable), the
-            altloc groups and the settings. Restraints are not saved; they rebuild.
+            The cell as a CPU tensor, the space group as its extended Hermann-Mauguin
+            symbol (``gemmi.SpaceGroup`` is not picklable), the altloc groups and the
+            settings. The atom table itself is written by the model, which alone has
+            the current values; restraints are not saved, they rebuild.
         """
         return {
-            "pdb": self.pdb.copy() if self.pdb is not None else None,
             "cell": self.cell.data.cpu() if self.cell is not None else None,
             "spacegroup": self.spacegroup.xhm if self.spacegroup else None,
             "initialized": self.initialized,
@@ -677,12 +761,13 @@ class ModelContext(DeviceMixin):
     @classmethod
     def from_state(
         cls, state: Dict[str, Any], *, dtype: torch.dtype, device, verbose: int = 1
-    ) -> "ModelContext":
-        """Rebuild a context from the entries :meth:`state` wrote.
+    ) -> Tuple["ModelContext", Optional[AtomValues]]:
+        """Rebuild a context, and the saved values, from a model state dict.
 
-        Consumes them: every key read is popped off ``state``, so what remains is for
-        ``load_state_dict``. The atom table is taken as saved -- the hydrogen policy is
-        recorded, not re-applied. Checkpoints that predate the policy are mapped:
+        Consumes the entries: every key read is popped off ``state``, so what remains is
+        for ``load_state_dict``. The saved atom table (``"pdb"``) is split as at
+        construction, but taken as saved -- the hydrogen policy is recorded, not
+        re-applied. Checkpoints that predate the policy are mapped:
         ``strip_H`` becomes ``hydrogens``, ``"free"`` becomes ``"atoms"``, and a saved
         riding wrapper (an ``xyz.h_row`` entry) implies ``"riding"``.
 
@@ -697,9 +782,12 @@ class ModelContext(DeviceMixin):
 
         Returns
         -------
-        ModelContext
+        ctx : ModelContext
+        values : AtomValues or None
+            None when the state holds no atoms.
         """
         from torchref.symmetry import Cell
+        from torchref.topology import Topology
 
         hydrogens = state.pop("hydrogens", None)
         strip_h = state.pop("strip_H", True)
@@ -713,8 +801,10 @@ class ModelContext(DeviceMixin):
             hydrogens = "keep"
 
         cell = state.pop("cell", None)
+        table = state.pop("pdb", None)
+        z_value = None if table is None else getattr(table, "attrs", {}).get("z")
         ctx = cls(
-            pdb=state.pop("pdb", None),
+            topology=None if table is None else Topology.from_table(table),
             cell=Cell(cell, dtype=dtype, device=device) if cell is not None else None,
             spacegroup=own_spacegroup(state.pop("spacegroup", None), dtype, device),
             initialized=state.pop("initialized", False),
@@ -724,8 +814,9 @@ class ModelContext(DeviceMixin):
             hydrogen_mode=mode,
             hydrogens_in_xray=state.pop("hydrogens_in_xray", True),
             verbose=verbose,
+            z_value=z_value,
         )
-        return ctx
+        return ctx, None if table is None else AtomValues.from_table(table)
 
     @property
     def crystal_key(self):
@@ -742,7 +833,7 @@ class ModelContext(DeviceMixin):
         return (self.cell.key, self.spacegroup.key)
 
     def __repr__(self) -> str:
-        n_atoms = 0 if self.pdb is None else len(self.pdb)
+        n_atoms = self.n_atoms
         sg = None if self.spacegroup is None else self.spacegroup.name
         return (
             f"ModelContext(spacegroup={sg!r}, n_atoms={n_atoms}, "
@@ -751,4 +842,10 @@ class ModelContext(DeviceMixin):
         )
 
 
-__all__ = ["ModelContext", "HYDROGEN_SOURCES", "HYDROGEN_MODES", "check_hydrogen_policy"]
+__all__ = [
+    "ModelContext",
+    "AtomValues",
+    "HYDROGEN_SOURCES",
+    "HYDROGEN_MODES",
+    "check_hydrogen_policy",
+]

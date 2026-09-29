@@ -250,10 +250,8 @@ class RefinementMetadata:
 
         # --- B-factor statistics from model ---
         try:
-            model = refinement.model
-            model.update_pdb()
-            pdb = model.pdb
-            bvals = pdb["tempfactor"]
+            # The written B column: B_eq for anisotropic atoms, as in the file.
+            bvals = refinement.model.to_dataframe()["tempfactor"]
             meta.b_mean_overall = float(bvals.mean())
             meta.b_min = float(bvals.min())
             meta.b_max = float(bvals.max())
@@ -282,12 +280,10 @@ class RefinementMetadata:
 
         # --- Atom counts ---
         try:
-            pdb = refinement.model.pdb
-            meta.n_atoms_total = len(pdb)
-            protein_mask = pdb["ATOM"] == "ATOM"
-            meta.n_atoms_protein = int(protein_mask.sum())
-            solvent_mask = pdb["ATOM"] == "HETATM"
-            meta.n_atoms_solvent = int(solvent_mask.sum())
+            is_hetatm = refinement.model.ctx.topology.atoms.is_hetatm
+            meta.n_atoms_total = len(is_hetatm)
+            meta.n_atoms_protein = int((~is_hetatm).sum())
+            meta.n_atoms_solvent = int(is_hetatm.sum())
         except Exception:
             pass
 

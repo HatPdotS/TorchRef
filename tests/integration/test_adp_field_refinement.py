@@ -389,7 +389,6 @@ def test_cli_field_mode_end_to_end(files, tmp_path):
     assert ref.model.adp_field.n_nodes == 9
     ref.refine_adp()
     out = tmp_path / "out.pdb"
-    ref.model.update_pdb()
     ref.model.write_pdb(str(out))
     assert out.exists() and out.stat().st_size > 0
     text = out.read_text()

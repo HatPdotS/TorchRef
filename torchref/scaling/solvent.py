@@ -360,10 +360,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         if self.ignore_hydrogens:
             # Heavy-atom radii are calibrated for masks built without hydrogens, so
             # adding hydrogen spheres on top would exclude solvent twice.
-            heavy = torch.as_tensor(
-                (self.model.pdb["element"].str.strip().str.upper() != "H").values,
-                device=xyz.device,
-            )
+            heavy = ~self.model.ctx.topology.atoms.is_hydrogen.to(xyz.device)
             if not bool(heavy.all()):
                 xyz = xyz[heavy]
                 vdw_radii = vdw_radii[heavy]

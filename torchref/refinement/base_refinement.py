@@ -388,15 +388,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         are exempt; B-factors and occupancy stay refinable. Must run after restraints
         are built.
         """
-        import pandas as pd
-
         model = self.model
-        pdb = getattr(model, "pdb", None)
-        restraints = getattr(getattr(model, "ctx", None), "restraints", None)
+        ctx = getattr(model, "ctx", None)
+        topology = getattr(ctx, "topology", None)
+        restraints = getattr(ctx, "restraints", None)
         acc = None if restraints is None else restraints.restraints
-        if pdb is None or acc is None:
+        if topology is None or acc is None:
             return
-        n = len(pdb)
+        n = topology.n_atoms
 
         # 1. atoms that appear in at least one geometry restraint
         restrained = set()
@@ -423,11 +422,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             pass
 
         # 2. group atoms into residues (positional, aligned with xyz)
-        resname = pdb["resname"].astype(str).str.strip().tolist()
-        icode = (pdb["icode"].astype(str).tolist() if "icode" in pdb.columns
-                 else [""] * n)
-        chainid = pdb["chainid"].astype(str).tolist()
-        resseq = pdb["resseq"].astype(str).tolist()
+        columns = topology.columns()
+        resname = columns["resname"].tolist()
+        icode = columns["icode"].tolist()
+        chainid = columns["chain"].tolist()
+        resseq = [str(r) for r in columns["resseq"].tolist()]
         res_atoms = {}
         for i in range(n):
             res_atoms.setdefault(
@@ -435,7 +434,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             ).append(i)
 
         # 3. residues with an unrestrained atom (skip water + single-atom residues)
-        WATER = {"HOH", "WAT", "DOD", "H2O", "SOL", "TIP", "TIP3", "TIP4"}
+        from torchref.topology.residue_graph import WATER_RESNAMES as WATER
+
         freeze_idx, frozen_res = [], []
         for (c, rs, ic, rn), atoms in res_atoms.items():
             if rn in WATER or len(atoms) <= 1:
@@ -1312,7 +1312,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     print(f"Note: Could not initialize targets: {e}")
 
         if verbose > 0:
-            n_atoms = len(instance.model.pdb) if instance.model.pdb is not None else 0
+            n_atoms = instance.model.n_atoms
             n_refl = (
                 instance.reflection_data.hkl.shape[0]
                 if instance.reflection_data.hkl is not None

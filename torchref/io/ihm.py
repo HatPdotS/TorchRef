@@ -881,11 +881,7 @@ class IHMWriter:
                 break
 
             model = mc.base_models[i]
-            # Update PDB DataFrame with current refined coordinates
-            if hasattr(model, "update_pdb"):
-                model.update_pdb()
-
-            pdb_df = model.pdb
+            pdb_df = model.to_dataframe()
 
             for _, row in pdb_df.iterrows():
                 atom_name = str(row.get("name", "CA"))
