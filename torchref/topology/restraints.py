@@ -453,7 +453,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             )
             sg_cpu = self._spacegroup.copy().to(cpu)
         else:
-            extent = float((xyz_cpu.max(dim=0).values - xyz_cpu.min(dim=0).values).max())
+            span = xyz_cpu.max(dim=0).values - xyz_cpu.min(dim=0).values
+            extent = float(span.max())
             side = extent + 2.0 * cutoff
             cell_cpu = Cell([side, side, side, 90.0, 90.0, 90.0], device=cpu)
             sg_cpu = SpaceGroup("P 1", device=cpu)

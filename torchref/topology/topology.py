@@ -256,7 +256,9 @@ class Topology(DeviceMixin):
         per_residue = ~self.atoms.is_hetatm[first] if len(first) else np.zeros(0, bool)
         return per_residue[self.atoms.residue_of.cpu().numpy()]
 
-    def with_hydrogens(self, plan) -> Tuple["Topology", np.ndarray, np.ndarray, np.ndarray]:
+    def with_hydrogens(
+        self, plan
+    ) -> Tuple["Topology", np.ndarray, np.ndarray, np.ndarray]:
         """This topology's atoms with a hydrogen plan's atoms inserted.
 
         Each residue's planned hydrogens go immediately after its own atoms, never at

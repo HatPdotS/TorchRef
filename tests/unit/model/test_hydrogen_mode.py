@@ -120,7 +120,7 @@ def test_unknown_modes_are_refused(free_model, mode):
 def test_policy_matrix(pdb_dir, hydrogens, hydrogen_mode):
     """Each valid pair loads with the atom set and wrapper it names; strip+riding raises."""
     if hydrogens == "strip" and hydrogen_mode == "riding":
-        with pytest.raises(ValueError, match="Nothing is left to ride"):
+        with pytest.raises(ValueError, match="requires hydrogens=.keep. or .add."):
             Model(verbose=0, hydrogens=hydrogens, hydrogen_mode=hydrogen_mode)
         return
 
@@ -142,5 +142,5 @@ def test_policy_matrix(pdb_dir, hydrogens, hydrogen_mode):
 @pytest.mark.unit
 def test_riding_is_refused_on_a_stripped_model(pdb_dir):
     model = Model(verbose=0, hydrogens="strip").load_pdb(str(pdb_dir / "1DAW.pdb"))
-    with pytest.raises(ValueError, match="Nothing is left to ride"):
+    with pytest.raises(ValueError, match="requires hydrogens=.keep. or .add."):
         model.set_hydrogen_mode("riding")

@@ -886,5 +886,3 @@ def build_vdw_restraints_gpu(
         print(f"  Built {len(indices)} VDW restraints, {n_sym} symmetry contacts")
 
     return result
-
-

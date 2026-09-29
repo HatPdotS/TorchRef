@@ -52,7 +52,7 @@ def _conformer_maps(topology, residue: int) -> List[Dict[str, int]]:
 
 
 def _atom_row(topology, residue: int, name: str) -> Optional[int]:
-    """Row of atom ``name`` in ``residue``: the blank altloc, else ``'A'``, else the first."""
+    """Row of atom ``name`` in ``residue``: blank altloc, else ``'A'``, else first."""
     start = int(topology.residues.atom_start[residue])
     end = int(topology.residues.atom_end[residue])
     hits = np.nonzero(topology.atoms.name[start:end] == name)[0]
@@ -1214,5 +1214,3 @@ class InterResiduePlaneBuilder:
             }
 
         return result
-
-

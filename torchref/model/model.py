@@ -463,7 +463,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Built on first access over the current coordinates and cached on the context
         until the atom table or ``ctx.cif_path`` changes. Evaluations take the
-        coordinates as an argument, e.g. ``model.restraints.bond_deviations(model.xyz())``.
+        coordinates as an argument, e.g.
+        ``model.restraints.bond_deviations(model.xyz())``.
         """
         if self.ctx.restraints is None:
             if not self.ctx.initialized:
@@ -503,13 +504,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def load(self, reader):
         """
-        Populate the model from a reader callable.
-
-        The central loader that ``load_pdb`` / ``load_cif`` funnel through. The context
-        and starting values are built by :meth:`ModelContext.from_atoms` -- which drops
-        rows without coordinates, B-factor or occupancy, applies the hydrogen policy and
-        builds the cell and space group -- and the parameter wrappers are installed over
-        them. The table is not kept.
+        Populate the model from a reader callable, through
+        :meth:`ModelContext.from_atoms`; ``load_pdb`` / ``load_cif`` come through here.
 
         Parameters
         ----------
@@ -567,8 +563,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             torch.as_tensor(values.aniso, dtype=torch.bool, device=self.device),
         )
         self.xyz = self._build_xyz(values, state) if xyz is None else xyz
-        self.adp = self._restore_adp_slot("adp", state, values, dtype, self.xyz, self.device)
-        self.u = self._restore_adp_slot("u", state, values, dtype, self.xyz, self.device)
+        self.adp = self._restore_adp_slot(
+            "adp", state, values, dtype, self.xyz, self.device
+        )
+        self.u = self._restore_adp_slot(
+            "u", state, values, dtype, self.xyz, self.device
+        )
 
         # Residue-level sharing plus altloc sum-to-1 groups.
         initial_occ = torch.tensor(values.occupancy, dtype=dtype)
@@ -599,7 +599,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 )
             if state.get("vdw_radii") is not None:
                 self.register_buffer(
-                    "vdw_radii", torch.zeros_like(state["vdw_radii"], device=self.device)
+                    "vdw_radii",
+                    torch.zeros_like(state["vdw_radii"], device=self.device),
                 )
             return
 
@@ -607,7 +608,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if self.ctx.hydrogen_mode == "riding" and not isinstance(
             self.xyz, RidingXYZTensor
         ):
-            self.xyz = RidingXYZTensor.from_mixed_tensor(self.xyz, self.hydrogen_frames())
+            self.xyz = RidingXYZTensor.from_mixed_tensor(
+                self.xyz, self.hydrogen_frames()
+            )
             self._repoint_coordinate_accessors()
 
     def _build_xyz(self, values: AtomValues, state: dict):
@@ -619,7 +622,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         coords = torch.tensor(values.xyz, dtype=self.dtype_float)
         mask = state.get("xyz.refinable_mask")
         if state.get("xyz.h_row") is None:
-            return MixedTensor(coords, refinable_mask=mask, name="xyz", device=self.device)
+            return MixedTensor(
+                coords, refinable_mask=mask, name="xyz", device=self.device
+            )
 
         from torchref.model.riding_xyz import RidingXYZTensor
         from torchref.topology.hydrogens import HydrogenFrames
@@ -833,7 +838,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         for name, module in self._modules.items():
             # Submodules the constructor already built (ModelFT's engine) derive from
             # the context and are not copied.
-            if module is None or name in duplicate._modules or not hasattr(module, "copy"):
+            if (
+                module is None
+                or name in duplicate._modules
+                or not hasattr(module, "copy")
+            ):
                 continue
             setattr(duplicate, name, module.copy())
         if self._parametrization is not None:
@@ -889,7 +898,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         values = AtomValues.from_table(pdb.reset_index(drop=True))
         return self._derive_from(Topology.from_table(pdb), values, **overrides)
 
-    def _derive_from(self, topology, values: AtomValues, xyz=None, **overrides) -> "Model":
+    def _derive_from(
+        self, topology, values: AtomValues, xyz=None, **overrides
+    ) -> "Model":
         """A new model of this class over ``topology`` and ``values`` in this crystal.
 
         Parameters
@@ -1744,29 +1755,38 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             new_adp, refinable_mask=self.adp.refinable_mask, name="adp"
         )
 
-
     def strip_altlocs(self) -> "Model":
         """Return a new model with alternate conformations removed.
 
-        For each residue that has multiple altlocs, the conformer with the highest mean
-        current occupancy is kept (ties to the first in sorted order), together with the
-        residue's blank-altloc atoms. The returned model has no altlocs; the original is
-        not modified.
+        Conformers are compared within one topology residue, ``(chain, resseq,
+        icode)``, so residues 100 and 100A never compete, and alternates carrying
+        different residue names (microheterogeneity) are treated as the alternates they
+        are. In each residue with more than one altloc the conformer with the highest
+        mean current occupancy is kept (ties to the first in sorted order), together
+        with the residue's blank-altloc atoms. The returned model has no altlocs; the
+        original is not modified.
         """
+        from torchref.topology import Topology
+
         topology = self.ctx.topology
         altloc = topology.atoms.altloc
-        keep = np.ones(self.n_atoms, dtype=bool)
         occupancy = self.occupancy().detach().cpu().numpy()
-        for _, labels, rows_by_altloc in self.ctx._altloc_residues():
-            best = max(labels, key=lambda a: (occupancy[rows_by_altloc[a]].mean(), -labels.index(a)))
-            for label in labels:
-                if label != best:
-                    keep[rows_by_altloc[label]] = False
+        keep = np.ones(self.n_atoms, dtype=bool)
+        for residue in range(topology.n_residues):
+            rows = np.arange(
+                int(topology.residues.atom_start[residue]),
+                int(topology.residues.atom_end[residue]),
+            )
+            labels = sorted(set(altloc[rows].tolist()) - {" "})
+            if len(labels) < 2:
+                continue
+            means = [occupancy[rows[altloc[rows] == label]].mean() for label in labels]
+            best = labels[int(np.argmax(means))]
+            keep[rows[(altloc[rows] != " ") & (altloc[rows] != best)]] = False
+
         rows = np.nonzero(keep)[0]
         columns = {key: value[rows] for key, value in topology.columns().items()}
         columns["altloc"] = np.full(len(rows), " ")
-        from torchref.topology import Topology
-
         return self._derive_from(
             Topology.from_columns(columns),
             self._current_values().gather(rows),
@@ -1792,7 +1812,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         )
 
     def hydrogenate(self, verbose: int = 0) -> "Model":
-        """Return a new model with the missing hydrogens added from the monomer templates.
+        """Return a new model with missing hydrogens added from the monomer templates.
 
         Built from the current parameter values with ``hydrogens="add"``: each residue's
         library template is aligned onto the heavy atoms present and its hydrogens read
@@ -2141,7 +2161,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             raise ValueError(f"Selection '{selection}' matched no atoms.")
 
         rows = np.nonzero(mask.cpu().numpy())[0]
-        riding_xyz = self.xyz.select_rows(mask) if hasattr(self.xyz, "select_rows") else None
+        riding_xyz = (
+            self.xyz.select_rows(mask) if hasattr(self.xyz, "select_rows") else None
+        )
         selected = self._derive_from(
             self.ctx.topology.gather(rows),
             self._current_values().gather(rows),
@@ -2424,9 +2446,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         }
         is_water = topology.is_water
         is_std = np.isin(topology.residues.resname[residue_of], list(_STD_POLYMER))
-        residue_atom_count = (topology.residues.atom_end - topology.residues.atom_start)[
-            residue_of
-        ]
+        residue_sizes = topology.residues.atom_end - topology.residues.atom_start
+        residue_atom_count = residue_sizes[residue_of]
         is_single_atom = residue_atom_count == 1
         drop = is_water | (is_single_atom & ~is_std)
         mobile_arr = ~drop

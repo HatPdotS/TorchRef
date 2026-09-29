@@ -131,5 +131,5 @@ def test_cli_refuses_riding_on_stripped_hydrogens(
         "riding",
     ]
     monkeypatch.setattr(sys, "argv", argv)
-    with pytest.raises(ValueError, match="Nothing is left to ride"):
+    with pytest.raises(ValueError, match="requires hydrogens=.keep. or .add."):
         refine.main()

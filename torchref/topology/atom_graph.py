@@ -175,7 +175,8 @@ class AtomGraph(DeviceMixin):
             self.is_hetatm = np.zeros(n, dtype=bool)
         if self.charge is None:
             self.charge = np.zeros(n, dtype=np.int64)
-        for edge, arity in (("bonds", 2), ("angles", 3), ("torsions", 4), ("chirals", 4)):
+        arities = (("bonds", 2), ("angles", 3), ("torsions", 4), ("chirals", 4))
+        for edge, arity in arities:
             if getattr(self, edge) is None:
                 setattr(self, edge, EdgeBlock.empty(arity, device=device))
         if self._adj_indptr is None:
@@ -207,7 +208,7 @@ class AtomGraph(DeviceMixin):
         return torch.tensor(cache[1], device=self.bonds.indices.device)
 
     def _element_table(self) -> Tuple[np.ndarray, ...]:
-        """``(symbols, atomic numbers, vdW radii)``, parsed once per ``element`` array."""
+        """``(symbols, atomic numbers, vdW radii)``, parsed once per ``element``."""
         cache = self._element_cache
         if cache is None or cache[0] is not self.element:
             import gemmi

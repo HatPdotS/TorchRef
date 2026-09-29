@@ -766,4 +766,3 @@ class ModelFT(CachedForwardMixin, Model):
             if legacy != self.fft.compute_optimal_gridsize(self.max_res):
                 self.explicit_gridsize = legacy
         return super()._restorable_entries(state_dict)
-

@@ -1,24 +1,12 @@
 """The information half of a :class:`~torchref.model.model.Model`.
 
-:class:`ModelContext` holds what a model *is loaded from* and *sits in* -- the unit
-cell, the space group, the atom table, the link records, the provenance and the
-hydrogen policy -- as opposed to what is being refined, which stays on the model as
-parameter wrappers and per-atom buffers. The geometry restraints belong here too: they
-are fixed by the atom set and the dictionaries, and are evaluated against coordinates
-the caller passes in.
-
-Atom identity lives on :attr:`ModelContext.topology`, a node-only
-:class:`~torchref.topology.Topology`; refinable values never live here. An atom table
-(a pandas DataFrame) is read only at construction: :meth:`ModelContext.from_atoms`
-settles it -- unusable rows dropped, hydrogens stripped or generated, the crystal built
--- and splits it into the topology and an :class:`AtomValues` bundle of starting values
-that the model's parameter wrappers are built from. Every way of making a model --
-loading a file, selecting, stripping, hydrogenating, restoring a state dict -- produces
-a context and values first, and only then installs wrappers over them.
-
-Splitting it out means the crystallographic context can be passed to code that needs
-only that (structure-factor engines, scalers, most targets) without handing over the
-refinable state, and it keeps the model's own surface to parameters and behaviour.
+:class:`ModelContext` holds what a model is loaded from and sits in -- cell, space
+group, atom identity (:attr:`ModelContext.topology`, node-only), link records,
+provenance, hydrogen policy and the geometry restraints -- as opposed to what is
+refined, which lives only in the model's parameter wrappers. An atom table is read once,
+by :meth:`ModelContext.from_atoms`, which splits it into the topology and the
+:class:`AtomValues` the wrappers are built from; every other way of making a model goes
+through :meth:`ModelContext.derive`.
 
 Mutable by design; prefer :meth:`ModelContext.copy` over editing in place.
 """
@@ -107,9 +95,8 @@ def check_hydrogen_policy(hydrogens: str, hydrogen_mode: str) -> None:
         )
     if hydrogens == "strip" and hydrogen_mode == "riding":
         raise ValueError(
-            "hydrogen_mode='riding' with hydrogens='strip': you threw the hydrogens "
-            "overboard and then asked them to ride. Nothing is left to ride -- use "
-            "hydrogens='keep' or hydrogens='add'."
+            "hydrogen_mode='riding' requires hydrogens='keep' or 'add': you threw "
+            "the hydrogens overboard and then asked them to ride."
         )
 
 
@@ -155,10 +142,6 @@ _U_COLUMNS = ("u11", "u22", "u33", "u12", "u13", "u23")
 @dataclass(eq=False)
 class AtomValues:
     """Starting values for the parameter wrappers, one row per atom.
-
-    Read from an atom table at construction and consumed by
-    ``Model._install_parameters``; afterwards the wrappers are the only source of these
-    values.
 
     Parameters
     ----------
@@ -327,7 +310,7 @@ class ModelContext(DeviceMixin):
         Rows without coordinates, B-factor or occupancy are dropped, the table is split
         into identity (:meth:`Topology.from_table`) and :class:`AtomValues`, the cell
         and space group are built, and the hydrogen policy is applied (see
-        :meth:`derive`). This is the only place a model's atoms are read from a table.
+        :meth:`derive`).
 
         Parameters
         ----------
@@ -408,7 +391,7 @@ class ModelContext(DeviceMixin):
         return ctx, ctx._settle(values, self.cell.dtype)
 
     def _settle(self, values: AtomValues, dtype: torch.dtype) -> AtomValues:
-        """Apply the hydrogen policy to ``topology`` and ``values``; finish the context."""
+        """Apply the hydrogen policy to ``topology`` and ``values``; finish up."""
         if self.hydrogens == "strip":
             keep = ~self.topology.atoms.is_hydrogen.cpu().numpy()
             if not keep.all():
@@ -421,7 +404,9 @@ class ModelContext(DeviceMixin):
         self.initialized = True
         return values
 
-    def _add_missing_hydrogens(self, values: AtomValues, dtype: torch.dtype) -> AtomValues:
+    def _add_missing_hydrogens(
+        self, values: AtomValues, dtype: torch.dtype
+    ) -> AtomValues:
         """Top up the hydrogens the atoms are missing; returns the extended values.
 
         Per parent, not per file: a structure deposited with some hydrogens gets the
@@ -463,7 +448,7 @@ class ModelContext(DeviceMixin):
         return 0 if self.topology is None else self.topology.n_atoms
 
     def set_cif_path(self, cif_path) -> None:
-        """Replace the restraint dictionary path and drop restraints built over the old one.
+        """Replace the restraint dictionary path and drop restraints built over it.
 
         Parameters
         ----------
@@ -535,7 +520,7 @@ class ModelContext(DeviceMixin):
         return {key: keys[key] for key in sorted(keys)}
 
     def _altloc_residues(self) -> List[Tuple[tuple, List[str], Dict[str, List[int]]]]:
-        """Residues with more than one altloc: ``(key, sorted altlocs, rows per altloc)``.
+        """Residues with several altlocs: ``(key, sorted altlocs, rows per altloc)``.
 
         Keys are ``(resname, resseq, chain)``, sorted; blank-altloc atoms are not part
         of any conformer.
@@ -668,7 +653,7 @@ class ModelContext(DeviceMixin):
         return result
 
     def _polymer_residues(self) -> List[Tuple[str, List[Tuple[int, str]]]]:
-        """``(chain, [(resseq, resname), ...])`` over ATOM records, chains in file order.
+        """``(chain, [(resseq, resname), ...])`` over ATOM records, in file order.
 
         One entry per ``(resseq, icode)``, sorted by ``resseq`` (stably, so insertion
         codes keep their file order).
