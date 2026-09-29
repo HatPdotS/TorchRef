@@ -432,7 +432,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         counts = torch.scatter_add(counts, 0, bins_sel, counts_vals[sel])
         mean_obs_intensity = mean_obs_intensity / (counts + 1e-6)
         mean_calc_intensity = mean_calc_intensity / (counts + 1e-6)
-        return mean_obs_intensity, mean_calc_intensity, self._data.mean_res_per_bin()
+        mean_res = self._data.mean_res_per_bin(self.bins, self.nbins)
+        return mean_obs_intensity, mean_calc_intensity, mean_res
 
     def screen_solvent_params(
         self,

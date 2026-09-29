@@ -605,15 +605,11 @@ def fit_wilson_b(
     """Fit the overall Wilson B, as xtriage does, by a line through shell means.
 
     Fits ``ln <I / (eps sum_f2 (1 + gamma))>`` against ``d*^2`` in shells of
-    equal reflection count: the slope is ``-B/2``. ``sum_f2`` is the random-atom
-    mean intensity of ``composition``, and ``gamma`` the empirical protein
-    correction of Zwart & Lamzin (2004), which straightens the plot down to
-    about 11 Å, so data at 3.5-4 Å still give a usable B. Without either
-    correction the fit reads the form-factor falloff as B and comes out 7-10 Å²
-    too high on protein data. The correction also lowers B relative to the plain
-    ``d <= 4.5`` Å fit that ctruncate reports and most deposited
-    ``B_iso_Wilson_estimate`` values follow -- by 10-15 Å² on some datasets --
-    so compare like with like. A single number for priors and reports; for
+    equal reflection count; the slope is ``-B/2``. ``sum_f2`` is the random-atom
+    mean intensity of ``composition``, ``gamma`` the empirical protein
+    correction of Zwart & Lamzin (2004), which keeps the plot linear from about
+    11 Å to 1.2 Å. Protein-specific: set ``protein_gamma=False`` otherwise.
+    Values run below ctruncate-style Wilson B; see the scaling user guide. For
     normalising intensities use :class:`WilsonNormaliser`.
 
     Parameters

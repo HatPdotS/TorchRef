@@ -62,7 +62,7 @@ def test_resolution_bins(loaded_reflection_data) -> None:
     groups = [(bins == i) & data.masks() for i in range(n_bins)]
     assert all(group.any() for group in groups)
     expected = torch.stack([data.resolution[group].mean() for group in groups])
-    torch.testing.assert_close(data.mean_res_per_bin(), expected)
+    torch.testing.assert_close(data.mean_res_per_bin(bins, n_bins), expected)
 
 
 @pytest.mark.integration
