@@ -6,7 +6,8 @@ when the reported sigmas are uniformly inflated; a fixed exponent stays fixed; a
 difference's resolution-dependent coupling and the power it leaves unexplained are
 recovered together; the bounded Wiener weight never falls below its floor, so no
 reflection or resolution range is removed even when the data hold no signal; the sigma
-scale stays within its bounds when the differences hold no noise; the fit runs under
+scale stays within its bounds when the differences hold no noise; the estimator caches
+one fit until reset and applies its configured exponent; the fit runs under
 ``torch.no_grad()`` and on every available device.
 """
 
@@ -15,6 +16,8 @@ import torch
 
 from torchref.refinement.model_error_estimation.difference_power import (
     SIGMA_SCALE_BOUNDS,
+    DifferencePowerConfig,
+    DifferencePowerEstimator,
     bounded_wiener_weight,
     fit_difference_power,
 )
@@ -132,3 +135,19 @@ def test_recovers_the_model_coupling_and_the_unexplained_power():
     assert float((beta / s["s_true"]).log().abs().median()) < LOG_POWER_ATOL
     no_model = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"])
     assert torch.equal(no_model.alpha_at(s["dss"]), torch.ones_like(s["dss"]))
+
+
+@pytest.mark.unit
+def test_estimator_caches_until_reset_and_applies_its_config():
+    s = synth(n=5000)
+    est = DifferencePowerEstimator(DifferencePowerConfig(gamma=0.0))
+    assert est.fit is None
+    first = est.get(s["delta"], s["sigma"], s["dss"], f_dark=s["f"])
+    assert first.gamma == 0.0 and est.fit is first
+    # Cached: different arguments are ignored until reset.
+    assert est.get(2 * s["delta"], s["sigma"], s["dss"], f_dark=s["f"]) is first
+    est.reset()
+    assert est.fit is None
+    assert est.get(s["delta"], s["sigma"], s["dss"], f_dark=s["f"]) is not first
+    with pytest.raises(ValueError):
+        DifferencePowerConfig(gamma=10.0)

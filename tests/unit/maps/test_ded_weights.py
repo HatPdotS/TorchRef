@@ -12,7 +12,6 @@ shrinkage keeps every reflection and its weight does not depend on the occupancy
 import pytest
 import torch
 
-from tests.unit.refinement.test_sigma_d import synth_diff
 from torchref.maps.ded_weights import (
     DEFAULT_SCHEME,
     SCHEMES,
@@ -24,6 +23,25 @@ from torchref.maps.ded_weights import (
     normalise_mean_one,
 )
 from torchref.symmetry import SpaceGroup
+
+
+def synth_diff(n=30000, gamma=1.0, sig_frac=1.0, seed=7, device="cpu"):
+    """Signed differences with power ``0.05 exp(-3 d*^2) (F / <F>)**gamma``.
+
+    ``F`` is Wilson-like (the modulus of a complex normal). The measurement sigma is
+    ``sig_frac`` times the rms true difference, constant across reflections so the
+    inverse-variance and q weights differ only through ``S``.
+    """
+    g = torch.Generator().manual_seed(seed)
+    dss = torch.linspace(0.02, 0.35, n)
+    f = (torch.randn(n, generator=g) ** 2 + torch.randn(n, generator=g) ** 2).sqrt()
+    f = 10.0 * f
+    s_true = 0.05 * torch.exp(-3.0 * dss) * (f / f.mean()) ** gamma
+    d_true = torch.randn(n, generator=g) * s_true.sqrt()
+    sig = torch.full((n,), float(sig_frac) * float(s_true.mean().sqrt()))
+    d_obs = d_true + torch.randn(n, generator=g) * sig
+    out = {"delta_obs": d_obs, "sigma_diff": sig, "d_star_sq": dss, "f_dark": f}
+    return {k: v.to(device) for k, v in out.items()}
 
 
 def _inputs(n=20000, sig_frac=1.0, device="cpu"):

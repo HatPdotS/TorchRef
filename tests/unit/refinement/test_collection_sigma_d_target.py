@@ -10,10 +10,13 @@ and cleared by ``maintenance()``, and the fit summary reaches ``stats()``.
 import pytest
 import torch
 
+from torchref.refinement.model_error_estimation import (
+    difference_power as difference_power_module,
+)
 from torchref.refinement.model_error_estimation.difference_power import (
+    DifferencePowerEstimator,
     DifferencePowerFit,
 )
-from torchref.refinement.targets.collection import xray as xray_module
 from torchref.refinement.targets.collection import (
     CollectionDifferenceSigmaDTarget,
     CollectionSigmaDLossInputs,
@@ -25,7 +28,7 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def target(loaded_reflection_data, sample_structure_pair):
     """A dark/light collection whose light amplitudes carry a resolution-dependent
-    difference proportional to ``F``, so the sigma_D coupling is not zero, and a light
+    difference proportional to ``F``, so the fitted coupling is not zero, and a light
     model shifted by 0.2 A."""
     from torchref import ReflectionData
     from torchref.cli._common import load_model
@@ -73,8 +76,10 @@ def test_forward_is_finite_and_owns_its_fit(target):
     _dc, _mc, t = target
     loss = t.forward()
     assert torch.isfinite(loss)
-    assert isinstance(t._fit, DifferencePowerFit)
-    assert t._fit.sigma_scale == 1.0 and len(t._fit.alpha_coeffs) > 0
+    assert isinstance(t._estimator, DifferencePowerEstimator)
+    fit = t._estimator.fit
+    assert isinstance(fit, DifferencePowerFit)
+    assert fit.sigma_scale == 1.0 and len(fit.alpha_coeffs) > 0
     ctx = t._loss_inputs()
     assert isinstance(ctx, CollectionSigmaDLossInputs)
     assert ctx.alpha.shape == ctx.beta_model.shape == (ctx.obs.shape[1],)
@@ -95,25 +100,25 @@ def test_gradient_reaches_the_light_model(target):
 def test_fit_is_cached_until_maintenance(target):
     _dc, _mc, t = target
     t.forward()
-    first = t._fit
+    first = t._estimator.fit
     assert first is not None
     t.forward()
-    assert t._fit is first
+    assert t._estimator.fit is first
     t.maintenance()
-    assert t._fit is None
+    assert t._estimator.fit is None
 
 
 def test_fit_uses_free_reflections_of_the_timepoint_row(target, monkeypatch):
     dc, _mc, t = target
     seen = {}
-    real = xray_module.fit_difference_power
+    real = difference_power_module.fit_difference_power
 
     def spy(delta_obs, sigma_diff, d_star_sq, **kw):
         seen["fit_mask"] = kw["fit_mask"].clone()
         seen["n"] = delta_obs.numel()
         return real(delta_obs, sigma_diff, d_star_sq, **kw)
 
-    monkeypatch.setattr(xray_module, "fit_difference_power", spy)
+    monkeypatch.setattr(difference_power_module, "fit_difference_power", spy)
     t.forward()
     n_hkl = dc.hkl.shape[0]
     assert seen["n"] == n_hkl

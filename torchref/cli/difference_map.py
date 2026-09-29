@@ -48,7 +48,7 @@ from torchref.cli._common import (
     configure_unbuffered_output,
     register_timing,
     parse_device_str,
-    sigma_d_config_from_args,
+    difference_config_from_args,
     validate_cif_files,
     validate_files,
 )
@@ -229,7 +229,7 @@ Examples:
             all_columns=args.all_columns,
             verbose=args.verbose,
             ded_weight=args.ded_weight,
-            sigma_d_config=sigma_d_config_from_args(args),
+            difference_config=difference_config_from_args(args),
         )
 
     if args.verbose > 0:

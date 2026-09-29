@@ -390,7 +390,7 @@ def add_all_columns_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
-    """Add ``--ded-weight`` and ``--sigma-d-gamma`` for the difference-map writers.
+    """Add ``--ded-weight`` and ``--difference-gamma`` for the difference-map writers.
 
     Every registered scheme's weight is written to the difference MTZ regardless; the
     choice here decides which one the headline products (validate-ded correlations,
@@ -409,13 +409,13 @@ def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
         f"{DEFAULT_SCHEME}). All weights are written as columns.",
     )
     parser.add_argument(
-        "--sigma-d-gamma",
+        "--difference-gamma",
         type=float,
         default=None,
         metavar="GAMMA",
-        help="Fix the dark-amplitude exponent of the difference power law in [0, 2] "
-        "instead of fitting it; used by the q-weight and the sigma_D difference "
-        "target (default: fitted).",
+        help="Fix the dark-amplitude exponent of the difference power law in [-1, 3] "
+        "instead of fitting it; used by the q-weight on amplitude data and by the "
+        "difference_sd target (default: fitted, or 0 on intensity data).",
     )
 
 
@@ -448,12 +448,14 @@ def intensity_difference(data_dark, data_light, mask=None):
     return I_light - I_dark, (sig_dark**2 + sig_light**2).sqrt()
 
 
-def sigma_d_config_from_args(args: argparse.Namespace):
-    """The :class:`~torchref.refinement.model_error_estimation.sigma_d.SigmaDConfig`
-    selected by ``--sigma-d-gamma``."""
-    from torchref.refinement.model_error_estimation.sigma_d import SigmaDConfig
+def difference_config_from_args(args: argparse.Namespace):
+    """The :class:`~torchref.refinement.model_error_estimation.difference_power.
+    DifferencePowerConfig` selected by ``--difference-gamma``."""
+    from torchref.refinement.model_error_estimation.difference_power import (
+        DifferencePowerConfig,
+    )
 
-    return SigmaDConfig(gamma=getattr(args, "sigma_d_gamma", None))
+    return DifferencePowerConfig(gamma=getattr(args, "difference_gamma", None))
 
 
 def add_output_format_args(parser: argparse.ArgumentParser) -> None:

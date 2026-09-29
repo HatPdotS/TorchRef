@@ -39,7 +39,7 @@ def pair(mtz_dir, pdb_dir, tmp_path_factory):
     """A dark/light pair from 1DAW with a perturbed light state.
 
     The light amplitudes carry an added difference proportional to ``F`` with a
-    resolution-dependent power, so the sigma_D fit has signal to find; the dark set
+    resolution-dependent power, so the difference-power fit has signal to find; the dark set
     keeps the deposited values. The light model is the dark one shifted by 0.2 A.
     """
     import torch

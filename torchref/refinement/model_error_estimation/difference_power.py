@@ -27,6 +27,8 @@ with :math:`\\alpha` a low-order Chebyshev series in the same abscissa, and ``S`
 power the model does not explain -- the coupling and unexplained power a difference
 likelihood needs, fitted in one pass instead of from per-shell cross moments.
 
+:class:`DifferencePowerEstimator` caches one fit for a target that re-evaluates it every
+forward, the counterpart of :class:`~.sigma_a.SigmaAEstimator`.
 :func:`bounded_wiener_weight` turns a fit into a weight that down-weights noisy
 reflections but never removes one, the resolution-continuous counterpart of the
 q-weight's floor.
@@ -65,6 +67,25 @@ SIGMA_SCALE_BOUNDS = (0.1, 10.0)
 _LOG_K_BOUNDS = tuple(math.log(b) for b in SIGMA_SCALE_BOUNDS)
 # Bounds on the log centric factor, so a fit without signal cannot underflow it to zero.
 _LOG_CENTRIC_BOUNDS = (-7.0, 7.0)
+
+
+@dataclass(frozen=True)
+class DifferencePowerConfig:
+    """The user-facing knob of the difference-power fit, as one value.
+
+    ``gamma=None`` fits the dark-amplitude exponent; a float fixes it, within the
+    fit's bounds. Frozen, so two consumers sharing a config cannot drift apart.
+    """
+
+    gamma: float | None = None
+
+    def __post_init__(self):
+        if self.gamma is not None:
+            g = float(self.gamma)
+            lo, hi = _GAMMA_BOUNDS
+            if not (lo <= g <= hi):
+                raise ValueError(f"gamma must lie in {_GAMMA_BOUNDS}, got {g}")
+            object.__setattr__(self, "gamma", g)
 
 
 @dataclass(frozen=True)
@@ -414,6 +435,54 @@ def fit_difference_power(
     )
 
 
+class DifferencePowerEstimator:
+    """Lazy, cached difference-power fit.
+
+    Thin stateful wrapper around :func:`fit_difference_power`: fits on the first
+    :meth:`get` and returns the cached, detached fit until :meth:`reset`. **The owning
+    target must call :meth:`reset` whenever the models or data change** (``LossState``
+    reaches it through ``maintenance()``); otherwise every later :meth:`get` returns
+    the stale fit and ignores its arguments.
+
+    Parameters
+    ----------
+    config : DifferencePowerConfig, optional
+        Its ``gamma`` is passed to every fit that does not name one; module defaults
+        when omitted.
+    """
+
+    def __init__(self, config: DifferencePowerConfig | None = None):
+        self.config = config if config is not None else DifferencePowerConfig()
+        self._fit: DifferencePowerFit | None = None
+
+    def reset(self) -> None:
+        """Invalidate the cache so the next :meth:`get` fits again."""
+        self._fit = None
+
+    @property
+    def fit(self) -> DifferencePowerFit | None:
+        """The last fit, or ``None`` before the first :meth:`get` and after
+        :meth:`reset`."""
+        return self._fit
+
+    def get(
+        self,
+        delta_obs: torch.Tensor,
+        sigma_diff: torch.Tensor,
+        d_star_sq: torch.Tensor,
+        **kwargs,
+    ) -> DifferencePowerFit:
+        """Return the cached fit, or fit and cache it.
+
+        Arguments are those of :func:`fit_difference_power` and are used only when no
+        fit is cached.
+        """
+        if self._fit is None:
+            kwargs.setdefault("gamma", self.config.gamma)
+            self._fit = fit_difference_power(delta_obs, sigma_diff, d_star_sq, **kwargs)
+        return self._fit
+
+
 def bounded_wiener_weight(
     snr: torch.Tensor, snr_floor: float = DEFAULT_SNR_FLOOR
 ) -> torch.Tensor:
@@ -445,6 +514,8 @@ __all__ = [
     "DEFAULT_ORDER",
     "DEFAULT_SNR_FLOOR",
     "SIGMA_SCALE_BOUNDS",
+    "DifferencePowerConfig",
+    "DifferencePowerEstimator",
     "DifferencePowerFit",
     "bounded_wiener_weight",
     "fit_difference_power",

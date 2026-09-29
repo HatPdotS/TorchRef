@@ -48,7 +48,7 @@ from torchref.cli._common import (
     parse_weights,
     register_timing,
     intensity_difference,
-    sigma_d_config_from_args,
+    difference_config_from_args,
     validate_cif_files,
     validate_files,
 )
@@ -239,7 +239,7 @@ def setup_loss_state(
     similarity_alpha=2.0,
     two_moment=False,
     difference_target="difference",
-    sigma_d_config=None,
+    difference_config=None,
 ):
     """Build LossState with collection-aware targets.
 
@@ -256,8 +256,8 @@ def setup_loss_state(
         Which difference row the weight schedule drives. Both are registered, as
         ``xray/difference`` and ``xray/difference_sd``; the other keeps the weight in
         ``target_weights`` (zero by default).
-    sigma_d_config : SigmaDConfig, optional
-        Exponent and shrinkage settings of the ``difference_sd`` row's estimator.
+    difference_config : DifferencePowerConfig, optional
+        Its ``gamma`` fixes the dark-amplitude exponent of the ``difference_sd`` fit.
     """
     from torchref.refinement import LossState
     from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
@@ -280,7 +280,7 @@ def setup_loss_state(
         dataset_collection,
         model_collection,
         scaler=scaler,
-        sigma_d_config=sigma_d_config,
+        difference_config=difference_config,
     )
     selected_diff = {"difference": diff_target, "difference_sd": diff_sd_target}[
         difference_target
@@ -889,7 +889,7 @@ def write_results_mtz(
     all_columns=False,
     verbose=1,
     ded_weight=DEFAULT_SCHEME,
-    sigma_d_config=None,
+    difference_config=None,
 ):
     """Write the difference map, and map coefficients when a light model is given.
 
@@ -929,7 +929,7 @@ def write_results_mtz(
     ded_weight : str, optional
         Weight scheme for the model-phased and two-moment difference columns; one of
         :data:`torchref.maps.ded_weights.SCHEMES`.
-    sigma_d_config : SigmaDConfig, optional
+    difference_config : DifferencePowerConfig, optional
         Its ``gamma`` fixes the ``F_dark`` exponent of the ``q`` scheme.
 
     Returns
@@ -992,7 +992,7 @@ def write_results_mtz(
         f_dark=Fobs_dark_vals,
         delta_intensity=delta_I,
         sigma_delta_intensity=sig_delta_I,
-        gamma=sigma_d_config.gamma if sigma_d_config is not None else None,
+        gamma=difference_config.gamma if difference_config is not None else None,
     )
     all_w = all_ded_weights(**snr_inputs)
     selected = all_w[ded_weight]
@@ -1184,7 +1184,7 @@ Examples:
         default="difference",
         help="Difference row the weight schedule drives: 'difference' is the Gaussian "
         "under the measurement variance, 'difference_sd' centres on "
-        "alpha*dF_calc with the sigma_D unexplained power added to the variance "
+        "alpha*dF_calc with the model's unexplained power added to the variance "
         "(default: difference).",
     )
     refine.add_argument(
@@ -1441,7 +1441,7 @@ Examples:
         similarity_alpha=args.similarity_alpha,
         two_moment=args.two_moment,
         difference_target=args.difference_target,
-        sigma_d_config=sigma_d_config_from_args(args),
+        difference_config=difference_config_from_args(args),
     )
 
     if args.verbose > 0:
@@ -1744,7 +1744,7 @@ Examples:
         all_columns=args.all_columns,
         verbose=args.verbose,
         ded_weight=args.ded_weight,
-        sigma_d_config=sigma_d_config_from_args(args),
+        difference_config=difference_config_from_args(args),
     )
 
     # --- JSON summary ---

@@ -93,7 +93,7 @@ restraints.
 ``--weight-schedule`` annealing schedule (default ``5,3,2``),
 ``-n``/``--n-cycles`` macro-cycles, ``--difference-target {difference,difference_sd}``
 (the difference row the schedule drives; default ``difference``), ``--ded-weight`` and
-``--sigma-d-gamma`` for the difference MTZ (see ``torchref.difference-map``).
+``--difference-gamma`` for the difference MTZ (see ``torchref.difference-map``).
 
 :API: :mod:`torchref.cli.collection_difference_refine`
 
@@ -138,8 +138,7 @@ Computes real-space correlations and resolution-binned reciprocal-space CC.
 selection), ``--mask-radius``, ``--n-bins``, ``--ded-weight`` (the headline weight
 scheme; every scheme is also reported side by side, real-space in each mask and
 reciprocal-space overall, as the ``by_weight`` block of the JSON and a table in the
-summary, and a ``sigma_d`` fallback to inverse variance is recorded under
-``weights``).
+summary, and a ``q`` fallback to inverse variance is recorded under ``weights``).
 
 :API: :mod:`torchref.cli.validate_ded`
 
@@ -181,12 +180,11 @@ records this: the columns sit in named MTZ datasets -- ``observed``, ``differenc
 column chooser shows ``/torchref/extrapolated_light/FWT``, and ``gemmi mtz`` prints a
 history line per dataset. ``torchref.difference-refine`` writes the same file.
 
-**Key options:** ``--ded-weight {inverse_variance,sigma_d,none}`` selects the
-scheme the model-phased and two-moment difference columns carry (default
-``inverse_variance``; ``sigma_d`` needs calibrated sigmas, reports how many shells
-it found without difference power, and falls back to inverse variance with a warning
-when that is every shell); ``--sigma-d-gamma`` fixes the
-dark-amplitude exponent of the sigma_D power law instead of fitting it;
+**Key options:** ``--ded-weight {q,inverse_variance,none}`` selects the scheme the
+model-phased and two-moment difference columns carry (default ``q``; its fit uses the
+intensity differences when the data carry ``I``/``SIGI``, and falls back to inverse
+variance with a warning when too few reflections exist to fit); ``--difference-gamma``
+fixes the dark-amplitude exponent of the difference power law instead of fitting it;
 ``--all-columns`` writes every alternative map coefficient and diagnostic -- the
 model-phased difference, the two other extrapolations and the intensity block -- at
 the cost of two further scale fits.

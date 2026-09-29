@@ -13,7 +13,7 @@ row                   observable   compares
 ``difference``        amplitude    ``F_i - F_mean`` against the model's own spread
 ``difference_i``      intensity    the same, in intensities
 ``difference_sd``     amplitude    ``F_i - F_mean`` against ``alpha dF_calc``, variance
-                                   ``beta_model + sigma^2`` from a sigma_D fit
+                                   ``beta_model + sigma^2`` from a shell-free fit
 ``two_moment``        intensity    ``|F(alpha)|^2 + sigma_alpha^2 |dF|^2``
 ``ml``                amplitude    each dataset absolutely, at a shared Luzzati beta
 ====================  ===========  ==============================================
@@ -141,7 +141,7 @@ COLLECTION_XRAY_TARGETS = CollectionXrayTargetTable(
             name="difference_sd",
             target_cls=CollectionDifferenceSigmaDTarget,
             doc="As 'difference', centred on alpha * dF_calc with the unexplained "
-            "difference power beta_model (sigma_D, fitted on the free set) added to "
+            "difference power beta_model (fitted on the free set) added to "
             "the measurement variance.",
         ),
         CollectionXrayTargetSpec(

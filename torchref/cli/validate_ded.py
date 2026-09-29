@@ -43,7 +43,7 @@ from torchref.cli._common import (
     load_reflection_data,
     parse_device_str,
     register_timing,
-    sigma_d_config_from_args,
+    difference_config_from_args,
     validate_cif_files,
     validate_files,
 )
@@ -206,7 +206,7 @@ def setup_ded_context(
     n_bins=20,
     verbose=0,
     ded_weight=DEFAULT_SCHEME,
-    sigma_d_config=None,
+    difference_config=None,
 ):
     """Load reflection data and prepare shared state for DED validation.
 
@@ -304,7 +304,7 @@ def setup_ded_context(
         cell=data_dark.cell,
         spacegroup=data_dark.spacegroup,
         f_dark=F_dark,
-        gamma=sigma_d_config.gamma if sigma_d_config is not None else None,
+        gamma=difference_config.gamma if difference_config is not None else None,
     )
     selected = all_w[ded_weight]
     weights = selected.weights
@@ -652,7 +652,7 @@ def run_validation(args):
             n_bins=args.n_bins,
             verbose=args.verbose,
             ded_weight=args.ded_weight,
-            sigma_d_config=sigma_d_config_from_args(args),
+            difference_config=difference_config_from_args(args),
         )
     fallback_messages = [
         str(w.message)
