@@ -176,4 +176,3 @@ below the plain :math:`d \le 4.5` Å fit that ctruncate reports and that most
 deposited ``B_iso_Wilson_estimate`` values follow -- by 2-16 Å² on the test
 data (e.g. 4BX9: 60.5 against 76.1 deposited). Compare Wilson B values only
 within one convention.
-
