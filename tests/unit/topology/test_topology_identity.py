@@ -136,3 +136,39 @@ def test_hydrogen_insertion_matches_the_table_insertion(pdb_dir, code):
     for key, value in expected.columns().items():
         np.testing.assert_array_equal(nodes.columns()[key], value, err_msg=key)
     np.testing.assert_array_equal(nodes.residues.atom_start, expected.residues.atom_start)
+
+
+@pytest.mark.unit
+def test_padded_strings_read_like_clean_ones(pdb_dir):
+    """Whitespace around names, residue names, elements and icodes is not identity."""
+    df = _table(pdb_dir, "1DAW")
+    padded = df.copy()
+    for column in ("name", "resname", "element", "icode"):
+        padded[column] = " " + padded[column].astype(str) + " "
+    clean, noisy = Topology.from_table(df), Topology.from_table(padded)
+    for key, value in clean.columns().items():
+        np.testing.assert_array_equal(noisy.columns()[key], value, err_msg=key)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dropped", [["icode"], ["altloc"], ["ATOM"], ["charge"], ["element"]])
+def test_optional_columns_fall_back_to_defaults(pdb_dir, dropped):
+    df = _table(pdb_dir, "1DAW")
+    full = Topology.from_table(df)
+    reduced = Topology.from_table(df.drop(columns=dropped))
+    assert reduced.n_atoms == full.n_atoms
+    defaults = {"icode": "", "altloc": " ", "ATOM": False, "charge": 0, "element": ""}
+    column = {"ATOM": "is_hetatm"}.get(dropped[0], dropped[0])
+    assert (reduced.columns()[column] == defaults[dropped[0]]).all()
+    if dropped[0] in ("charge", "element"):
+        np.testing.assert_array_equal(reduced.residues.atom_start, full.residues.atom_start)
+
+
+@pytest.mark.unit
+def test_charges_are_coerced(pdb_dir):
+    df = _table(pdb_dir, "1DAW")
+    df["charge"] = df["charge"].astype(object)
+    df.loc[::7, "charge"] = "junk"
+    df.loc[1, "charge"] = 2
+    charge = Topology.from_table(df).atoms.charge
+    assert charge.dtype == np.int64 and charge[0] == 0 and charge[1] == 2

@@ -1,19 +1,18 @@
-"""Restraint builders that walk the whole structure inside a single ``build()``.
+"""Inter-residue restraint builders, and the dictionary preprocessing they share.
 
-One ``build(pdb, cif_dict, device)`` call per restraint type handles every residue
-internally -- callers do not loop -- or :func:`build_all_restraints` does all the
-intra-residue types at once. Inter-residue links go through the
-``InterResidue*Builder`` classes, whose ``build()`` returns directly like the others;
-only their disulfide path is stateful -- it accumulates over ``process_disulfide_*``
-calls and emits nothing until ``finalize()`` (``finalize_disulfide()`` on the torsion
-builder).
+The ``InterResidue*Builder`` classes turn a link definition (``TRANS``, ``PTRANS``,
+``disulf``) into edges over a topology. Their ``build()`` reads a
+:class:`PeptideResidues` -- the peptide-linked residue pairs and each residue's
+conformer maps, prepared once from the topology -- and returns directly; only the
+disulfide path is stateful, accumulating over ``process_disulfide_*`` calls until
+``finalize()`` (``finalize_disulfide()`` on the torsion builder). Edge indices are atom
+rows of the topology.
 
 Nothing here is re-exported at the package level; import from
 ``torchref.topology.builders``.
 """
 
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -21,205 +20,80 @@ import torch
 
 from torchref.config import get_float_dtype, get_int_dtype
 
-# Intra-residue restraint matchers
-from torchref.topology.matchers import (
-    match_angles,
-    match_bonds,
-    match_chirals,
-    match_torsions,
-)
-
 
 # =============================================================================
 # Pre-processing utilities
 # =============================================================================
 
 
-class PreprocessedPDB:
+def _conformer_maps(topology, residue: int) -> List[Dict[str, int]]:
+    """Atom-name-to-row maps for one residue, one per alternative conformation.
+
+    A residue without altlocs gives one map. One with altlocs gives one per altloc,
+    each holding the residue's blank-altloc atoms plus that altloc's own; one with no
+    blank atoms gives one per altloc on its own.
     """
-    Pre-processed PDB data as NumPy arrays for fast iteration.
+    start = int(topology.residues.atom_start[residue])
+    end = int(topology.residues.atom_end[residue])
+    names = topology.atoms.name[start:end]
+    rows = np.arange(start, end, dtype=np.int64)
+    altlocs = topology.atoms.altloc[start:end]
+    unique = np.unique(altlocs)
+    if len(unique) == 1 and unique[0] == " ":
+        return [dict(zip(names, rows))]
+    common = altlocs == " "
+    maps = []
+    for alt in unique:
+        if alt == " ":
+            continue
+        chosen = common | (altlocs == alt)
+        maps.append(dict(zip(names[chosen], rows[chosen])))
+    return maps
 
-    Converts DataFrame to arrays once, computes residue boundaries,
-    enabling O(1) access to residue data without DataFrame operations.
 
-    Supports altloc expansion: residues with alternate conformations can be
-    expanded into multiple conformations, each with common atoms plus the
-    specific altloc atoms. The constructor only normalizes altlocs and
-    computes residue boundaries; the expansion itself is performed on demand
-    by :meth:`get_altloc_conformations`, not at preprocessing time.
+def _atom_row(topology, residue: int, name: str) -> Optional[int]:
+    """Row of atom ``name`` in ``residue``: the blank altloc, else ``'A'``, else the first."""
+    start = int(topology.residues.atom_start[residue])
+    end = int(topology.residues.atom_end[residue])
+    hits = np.nonzero(topology.atoms.name[start:end] == name)[0]
+    if len(hits) == 0:
+        return None
+    altlocs = topology.atoms.altloc[start:end][hits]
+    for wanted in (" ", "A"):
+        chosen = hits[altlocs == wanted]
+        if len(chosen):
+            return start + int(chosen[0])
+    return start + int(hits[0])
+
+
+class PeptideResidues:
+    """What the peptide-link builders read, prepared once from a topology.
+
+    Parameters
+    ----------
+    topology : Topology
+        Supplies atom names, altlocs and residue ranges; edges are not needed.
+    pairs : sequence of tuple of int
+        ``(residue donating C, residue donating N)`` pairs, from
+        :func:`~torchref.topology.residue_graph.find_peptide_links`.
+    xyz : numpy.ndarray
+        Cartesian coordinates in Å, shape ``(N, 3)``; the torsion builder classifies
+        each proline's omega as cis or trans from them.
+
+    Attributes
+    ----------
+    conformer_maps : dict
+        ``{residue: [ {atom name: row}, ... ]}`` for every residue in a pair.
+    resnames : numpy.ndarray
+        Residue name per residue, shape ``(R,)``.
     """
 
-    def __init__(self, pdb: pd.DataFrame):
-        """
-        Initialize from PDB DataFrame.
-
-        Parameters
-        ----------
-        pdb : pd.DataFrame
-            PDB DataFrame with standard columns.
-        """
-        self.n_atoms = len(pdb)
-
-        # Core arrays
-        self.atom_names = pdb["name"].values.astype(str)
-        self.atom_indices = pdb["index"].values.astype(np.int64)
-        self.chain_ids = pdb["chainid"].values.astype(str)
-        self.resseqs = pdb["resseq"].values.astype(np.int64)
-        self.resnames = pdb["resname"].values.astype(str)
-
-        # Optional columns - normalize altloc (treat '' as ' ')
-        if "altloc" in pdb.columns:
-            altlocs = pdb["altloc"].values.astype(str)
-            # Normalize: treat '' as ' ' (no altloc)
-            altlocs = np.where(altlocs == "", " ", altlocs)
-            self.altlocs = altlocs
-        else:
-            self.altlocs = np.full(self.n_atoms, " ", dtype="<U1")
-
-        if "ATOM" in pdb.columns:
-            self.atom_types = pdb["ATOM"].values.astype(str)
-        else:
-            self.atom_types = np.full(self.n_atoms, "ATOM", dtype="<U6")
-
-        # Pre-compute residue boundaries
-        self._compute_residue_boundaries()
-
-    def _compute_residue_boundaries(self):
-        """Compute start/end indices for each residue."""
-        # Create residue key for grouping
-        residue_keys = np.char.add(
-            np.char.add(self.chain_ids.astype("<U10"), "_"), self.resseqs.astype(str)
-        )
-
-        # Find boundaries where residue changes
-        changes = np.where(residue_keys[:-1] != residue_keys[1:])[0] + 1
-        self.residue_starts = np.concatenate([[0], changes])
-        self.residue_ends = np.concatenate([changes, [self.n_atoms]])
-        self.n_residues = len(self.residue_starts)
-
-        # Store residue metadata (from first atom of each residue)
-        self.residue_chain_ids = self.chain_ids[self.residue_starts]
-        self.residue_resseqs = self.resseqs[self.residue_starts]
-        self.residue_resnames = self.resnames[self.residue_starts]
-
-    def get_residue_data(self, residue_idx: int) -> Tuple[np.ndarray, np.ndarray, str]:
-        """
-        Get atom data for a residue.
-
-        Returns
-        -------
-        atom_names : np.ndarray
-            Atom names for this residue.
-        atom_indices : np.ndarray
-            Global atom indices.
-        resname : str
-            Residue name.
-        """
-        start = self.residue_starts[residue_idx]
-        end = self.residue_ends[residue_idx]
-        return (
-            self.atom_names[start:end],
-            self.atom_indices[start:end],
-            self.residue_resnames[residue_idx],
-        )
-
-    def residue_keys(
-        self, mapping: Optional[Mapping[Tuple[str, int], str]] = None
-    ) -> List[str]:
-        """Return the restraint-dictionary key of each residue, by residue index.
-
-        Parameters
-        ----------
-        mapping : mapping, optional
-            ``{(chain_id, resseq): key}`` overriding the residue name for those
-            residues -- how a linked residue is pointed at a modified copy of its
-            component (see :mod:`torchref.topology.monomer.modifications`). Residues
-            absent from it, and every residue when this is None, key on their own
-            residue name, which is the unmodified behaviour.
-
-        Returns
-        -------
-        list of str
-            One key per residue, indexed as ``residue_resnames``.
-        """
-        if not mapping:
-            return list(self.residue_resnames)
-        return [
-            mapping.get(
-                (str(self.residue_chain_ids[i]), int(self.residue_resseqs[i])),
-                self.residue_resnames[i],
-            )
-            for i in range(self.n_residues)
-        ]
-
-    def has_duplicate_atoms(self, residue_idx: int) -> bool:
-        """Check if residue has duplicate atom names (altlocs)."""
-        start = self.residue_starts[residue_idx]
-        end = self.residue_ends[residue_idx]
-        names = self.atom_names[start:end]
-        return len(names) != len(set(names))
-
-    def has_altlocs(self, residue_idx: int) -> bool:
-        """Check if residue has any alternate conformations."""
-        start = self.residue_starts[residue_idx]
-        end = self.residue_ends[residue_idx]
-        altlocs = self.altlocs[start:end]
-        # Has altlocs if any altloc is not ' ' (normalized no-altloc marker)
-        return np.any(altlocs != " ")
-
-    def get_altloc_conformations(
-        self, residue_idx: int
-    ) -> Iterator[Tuple[np.ndarray, np.ndarray, str]]:
-        """
-        Iterate over altloc conformations for a residue.
-
-        For residues without altlocs, yields once with all atoms.
-        For residues with altlocs, yields once per unique altloc,
-        each time with common atoms (no altloc) + altloc-specific atoms.
-
-        Yields
-        ------
-        atom_names : np.ndarray
-            Atom names for this conformation.
-        atom_indices : np.ndarray
-            Global atom indices.
-        resname : str
-            Residue name.
-        """
-        start = self.residue_starts[residue_idx]
-        end = self.residue_ends[residue_idx]
-
-        names = self.atom_names[start:end]
-        indices = self.atom_indices[start:end]
-        altlocs = self.altlocs[start:end]
-        resname = self.residue_resnames[residue_idx]
-
-        unique_altlocs = np.unique(altlocs)
-
-        if len(unique_altlocs) == 1 and unique_altlocs[0] == " ":
-            # No altlocs - yield all atoms once
-            yield names, indices, resname
-        elif " " in unique_altlocs:
-            # Has common atoms (no altloc) and altloc-specific atoms
-            # Common atoms mask
-            common_mask = altlocs == " "
-            common_names = names[common_mask]
-            common_indices = indices[common_mask]
-
-            # Yield once per specific altloc (A, B, etc.)
-            for alt in unique_altlocs:
-                if alt == " ":
-                    continue
-                alt_mask = altlocs == alt
-                # Combine common + altloc-specific
-                combined_names = np.concatenate([common_names, names[alt_mask]])
-                combined_indices = np.concatenate([common_indices, indices[alt_mask]])
-                yield combined_names, combined_indices, resname
-        else:
-            # No common atoms - yield each altloc separately
-            for alt in unique_altlocs:
-                alt_mask = altlocs == alt
-                yield names[alt_mask], indices[alt_mask], resname
+    def __init__(self, topology, pairs, xyz):
+        self.pairs = [(int(a), int(b)) for a, b in pairs]
+        self.resnames = np.char.strip(np.asarray(topology.residues.resname).astype(str))
+        self.xyz = np.asarray(xyz, dtype=np.float64)
+        involved = sorted({r for pair in self.pairs for r in pair})
+        self.conformer_maps = {r: _conformer_maps(topology, r) for r in involved}
 
 
 class PreprocessedCIF:
@@ -380,743 +254,6 @@ class PreprocessedCIF:
 
 
 # =============================================================================
-# Residue pairing shared by the inter-residue builders
-# =============================================================================
-
-
-def build_residue_conformation_maps(
-    pp_pdb: PreprocessedPDB,
-) -> List[List[Dict[str, int]]]:
-    """Atom-name-to-index maps per residue per conformer (outer, then inner list).
-
-    One map for a residue without altlocs; otherwise one per conformer, each
-    holding the common atoms plus that conformer's own.
-    """
-    all_maps = []
-    for res_idx in range(pp_pdb.n_residues):
-        res_maps = []
-        for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-            res_maps.append(dict(zip(atom_names, atom_indices)))
-        all_maps.append(res_maps)
-    return all_maps
-
-
-def find_consecutive_residue_pairs(pp_pdb: PreprocessedPDB) -> List[Tuple[int, int]]:
-    """Find pairs of residues numbered consecutively within one chain.
-
-    Sequence numbering is the only criterion: no distance check, and insertion
-    codes are invisible here because :class:`PreprocessedPDB` groups residues on
-    ``(chain, resseq)`` alone.
-    """
-    pairs = []
-    by_chain: Dict[Any, List[Tuple[int, int]]] = {}
-    for res_idx in range(pp_pdb.n_residues):
-        chain = pp_pdb.residue_chain_ids[res_idx]
-        by_chain.setdefault(chain, []).append(
-            (pp_pdb.residue_resseqs[res_idx], res_idx)
-        )
-
-    for residues in by_chain.values():
-        residues_sorted = sorted(residues, key=lambda x: x[0])
-        for i in range(len(residues_sorted) - 1):
-            resseq_i, idx_i = residues_sorted[i]
-            resseq_next, idx_next = residues_sorted[i + 1]
-            if resseq_next == resseq_i + 1:
-                pairs.append((idx_i, idx_next))
-    return pairs
-
-
-def find_peptide_link_pairs(pp_pdb: PreprocessedPDB) -> List[Tuple[int, int]]:
-    """Consecutive residue pairs that actually carry a C-N peptide bond.
-
-    Narrows :func:`find_consecutive_residue_pairs` to pairs where the first
-    residue has a ``C`` and the second an ``N`` -- the condition
-    :meth:`InterResidueBondBuilder.build` applies implicitly when it looks the two
-    atoms up. Deciding which residues are peptide-linked has to agree with that
-    builder exactly, or a residue could be given linked restraint targets without
-    getting the link itself.
-
-    Parameters
-    ----------
-    pp_pdb : PreprocessedPDB
-        Preprocessed atoms, already filtered to polymer atoms by the caller.
-
-    Returns
-    -------
-    list of tuple of int
-        ``(residue index donating C, residue index donating N)`` pairs.
-    """
-    pairs = []
-    for res_i, res_next in find_consecutive_residue_pairs(pp_pdb):
-        names_i, _, _ = pp_pdb.get_residue_data(res_i)
-        names_next, _, _ = pp_pdb.get_residue_data(res_next)
-        if "C" in names_i and "N" in names_next:
-            pairs.append((res_i, res_next))
-    return pairs
-
-
-# =============================================================================
-# Builder Base Class
-# =============================================================================
-
-
-class RestraintBuilder(ABC):
-    """
-    Abstract base class for restraint builders.
-
-    All builders share the same API:
-        builder = SomeRestraintBuilder(verbose=0)
-        result = builder.build(pdb, cif_dict, device)
-    """
-
-    def __init__(self, verbose: int = 0):
-        """Initialize builder."""
-        self.verbose = verbose
-
-    @abstractmethod
-    def build(
-        self,
-        pdb: pd.DataFrame,
-        cif_dict: Dict,
-        device: torch.device,
-        sort_indices: bool = True,
-        residue_keys: Optional[Mapping[Tuple[str, int], str]] = None,
-    ) -> Optional[Dict[str, torch.Tensor]]:
-        """
-        Build restraints from PDB and CIF data.
-
-        Parameters
-        ----------
-        pdb : pd.DataFrame
-            PDB DataFrame with atom data.
-        cif_dict : dict
-            CIF dictionary with restraints per residue type.
-        device : torch.device
-            Target device for output tensors.
-        sort_indices : bool, default True
-            Whether to sort by first atom index for cache efficiency.
-        residue_keys : mapping, optional
-            ``{(chain_id, resseq): cif_dict key}`` for residues whose restraints
-            come from somewhere other than their residue name -- a peptide-linked
-            residue draws from a modified copy of its component. Residues absent
-            from it key on their residue name, so None reproduces the plain
-            per-residue-type lookup.
-
-        Returns
-        -------
-        dict or None
-            Dictionary with restraint tensors, or None if no restraints found.
-        """
-        pass
-
-
-# =============================================================================
-# Bond Builder
-# =============================================================================
-
-
-class BondRestraintBuilder(RestraintBuilder):
-    """
-    Fast bond restraint builder.
-
-    Usage:
-        builder = BondRestraintBuilder()
-        result = builder.build(pdb, cif_dict, device)
-        # result = {'indices': tensor, 'references': tensor, 'sigmas': tensor}
-    """
-
-    def build(
-        self,
-        pdb: pd.DataFrame,
-        cif_dict: Dict,
-        device: torch.device,
-        sort_indices: bool = True,
-        residue_keys: Optional[Mapping[Tuple[str, int], str]] = None,
-    ) -> Optional[Dict[str, torch.Tensor]]:
-        """Build all bond restraints."""
-        # Pre-process data
-        pp_pdb = PreprocessedPDB(pdb)
-        pp_cif = PreprocessedCIF(cif_dict)
-        keys = pp_pdb.residue_keys(residue_keys)
-
-        # Allocate work arrays
-        max_per_residue = 50
-        work_idx1 = np.zeros(max_per_residue, dtype=np.int64)
-        work_idx2 = np.zeros(max_per_residue, dtype=np.int64)
-        work_refs = np.zeros(max_per_residue, dtype=np.float64)
-        work_sigmas = np.zeros(max_per_residue, dtype=np.float64)
-
-        # Accumulate results
-        all_indices = []
-        all_refs = []
-        all_sigmas = []
-
-        # Process all residues (with altloc expansion)
-        for res_idx in range(pp_pdb.n_residues):
-            key = keys[res_idx]
-
-            # Skip if no bond restraints for this residue type
-            if key not in pp_cif.bonds:
-                continue
-
-            cif_bonds = pp_cif.bonds[key]
-            n_cif = len(cif_bonds["atom1"])
-
-            # Resize work arrays if needed
-            if n_cif > max_per_residue:
-                max_per_residue = n_cif * 2
-                work_idx1 = np.zeros(max_per_residue, dtype=np.int64)
-                work_idx2 = np.zeros(max_per_residue, dtype=np.int64)
-                work_refs = np.zeros(max_per_residue, dtype=np.float64)
-                work_sigmas = np.zeros(max_per_residue, dtype=np.float64)
-
-            # Iterate over altloc conformations (yields once if no altlocs)
-            for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-                count = match_bonds(
-                    atom_names,
-                    atom_indices,
-                    cif_bonds["atom1"],
-                    cif_bonds["atom2"],
-                    cif_bonds["value"],
-                    cif_bonds["sigma"],
-                    work_idx1,
-                    work_idx2,
-                    work_refs,
-                    work_sigmas,
-                )
-
-                if count > 0:
-                    all_indices.append(
-                        np.column_stack(
-                            [work_idx1[:count].copy(), work_idx2[:count].copy()]
-                        )
-                    )
-                    all_refs.append(work_refs[:count].copy())
-                    all_sigmas.append(work_sigmas[:count].copy())
-
-        # Finalize
-        if not all_indices:
-            return None
-
-        indices = np.concatenate(all_indices, axis=0)
-        references = np.concatenate(all_refs)
-        sigmas = np.concatenate(all_sigmas)
-
-        if sort_indices and len(indices) > 0:
-            order = np.argsort(indices[:, 0])
-            indices = indices[order]
-            references = references[order]
-            sigmas = sigmas[order]
-
-        # Replace zero sigmas
-        sigmas = np.where(sigmas == 0, 1e-4, sigmas)
-
-        return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
-            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
-        }
-
-
-# =============================================================================
-# Angle Builder
-# =============================================================================
-
-
-class AngleRestraintBuilder(RestraintBuilder):
-    """
-    Fast angle restraint builder.
-
-    Usage:
-        builder = AngleRestraintBuilder()
-        result = builder.build(pdb, cif_dict, device)
-    """
-
-    def build(
-        self,
-        pdb: pd.DataFrame,
-        cif_dict: Dict,
-        device: torch.device,
-        sort_indices: bool = True,
-        residue_keys: Optional[Mapping[Tuple[str, int], str]] = None,
-    ) -> Optional[Dict[str, torch.Tensor]]:
-        """Build all angle restraints."""
-        pp_pdb = PreprocessedPDB(pdb)
-        pp_cif = PreprocessedCIF(cif_dict)
-        keys = pp_pdb.residue_keys(residue_keys)
-
-        max_per_residue = 100
-        work_idx1 = np.zeros(max_per_residue, dtype=np.int64)
-        work_idx2 = np.zeros(max_per_residue, dtype=np.int64)
-        work_idx3 = np.zeros(max_per_residue, dtype=np.int64)
-        work_refs = np.zeros(max_per_residue, dtype=np.float64)
-        work_sigmas = np.zeros(max_per_residue, dtype=np.float64)
-
-        all_indices = []
-        all_refs = []
-        all_sigmas = []
-
-        for res_idx in range(pp_pdb.n_residues):
-            key = keys[res_idx]
-
-            if key not in pp_cif.angles:
-                continue
-
-            cif_angles = pp_cif.angles[key]
-            n_cif = len(cif_angles["atom1"])
-
-            if n_cif > max_per_residue:
-                max_per_residue = n_cif * 2
-                work_idx1 = np.zeros(max_per_residue, dtype=np.int64)
-                work_idx2 = np.zeros(max_per_residue, dtype=np.int64)
-                work_idx3 = np.zeros(max_per_residue, dtype=np.int64)
-                work_refs = np.zeros(max_per_residue, dtype=np.float64)
-                work_sigmas = np.zeros(max_per_residue, dtype=np.float64)
-
-            # Iterate over altloc conformations (yields once if no altlocs)
-            for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-                count = match_angles(
-                    atom_names,
-                    atom_indices,
-                    cif_angles["atom1"],
-                    cif_angles["atom2"],
-                    cif_angles["atom3"],
-                    cif_angles["value"],
-                    cif_angles["sigma"],
-                    work_idx1,
-                    work_idx2,
-                    work_idx3,
-                    work_refs,
-                    work_sigmas,
-                )
-
-                if count > 0:
-                    all_indices.append(
-                        np.column_stack(
-                            [
-                                work_idx1[:count].copy(),
-                                work_idx2[:count].copy(),
-                                work_idx3[:count].copy(),
-                            ]
-                        )
-                    )
-                    all_refs.append(work_refs[:count].copy())
-                    all_sigmas.append(work_sigmas[:count].copy())
-
-        if not all_indices:
-            return None
-
-        indices = np.concatenate(all_indices, axis=0)
-        references = np.concatenate(all_refs)
-        sigmas = np.concatenate(all_sigmas)
-
-        if sort_indices and len(indices) > 0:
-            order = np.argsort(indices[:, 0])
-            indices = indices[order]
-            references = references[order]
-            sigmas = sigmas[order]
-
-        sigmas = np.where(sigmas == 0, 1e-4, sigmas)
-
-        return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
-            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
-        }
-
-
-# =============================================================================
-# Torsion Builder
-# =============================================================================
-
-
-class TorsionRestraintBuilder(RestraintBuilder):
-    """
-    Fast torsion restraint builder.
-
-    Usage:
-        builder = TorsionRestraintBuilder()
-        result = builder.build(pdb, cif_dict, device)
-        # result includes 'periods' tensor
-    """
-
-    def build(
-        self,
-        pdb: pd.DataFrame,
-        cif_dict: Dict,
-        device: torch.device,
-        sort_indices: bool = True,
-        residue_keys: Optional[Mapping[Tuple[str, int], str]] = None,
-    ) -> Optional[Dict[str, torch.Tensor]]:
-        """Build all torsion restraints."""
-        pp_pdb = PreprocessedPDB(pdb)
-        pp_cif = PreprocessedCIF(cif_dict)
-        keys = pp_pdb.residue_keys(residue_keys)
-
-        max_per_residue = 50
-        work_idx1 = np.zeros(max_per_residue, dtype=np.int64)
-        work_idx2 = np.zeros(max_per_residue, dtype=np.int64)
-        work_idx3 = np.zeros(max_per_residue, dtype=np.int64)
-        work_idx4 = np.zeros(max_per_residue, dtype=np.int64)
-        work_refs = np.zeros(max_per_residue, dtype=np.float64)
-        work_sigmas = np.zeros(max_per_residue, dtype=np.float64)
-        work_periods = np.zeros(max_per_residue, dtype=np.int64)
-
-        all_indices = []
-        all_refs = []
-        all_sigmas = []
-        all_periods = []
-
-        for res_idx in range(pp_pdb.n_residues):
-            key = keys[res_idx]
-
-            if key not in pp_cif.torsions:
-                continue
-
-            cif_torsions = pp_cif.torsions[key]
-            n_cif = len(cif_torsions["atom1"])
-
-            if n_cif > max_per_residue:
-                max_per_residue = n_cif * 2
-                work_idx1 = np.zeros(max_per_residue, dtype=np.int64)
-                work_idx2 = np.zeros(max_per_residue, dtype=np.int64)
-                work_idx3 = np.zeros(max_per_residue, dtype=np.int64)
-                work_idx4 = np.zeros(max_per_residue, dtype=np.int64)
-                work_refs = np.zeros(max_per_residue, dtype=np.float64)
-                work_sigmas = np.zeros(max_per_residue, dtype=np.float64)
-                work_periods = np.zeros(max_per_residue, dtype=np.int64)
-
-            # Iterate over altloc conformations (yields once if no altlocs)
-            for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-                count = match_torsions(
-                    atom_names,
-                    atom_indices,
-                    cif_torsions["atom1"],
-                    cif_torsions["atom2"],
-                    cif_torsions["atom3"],
-                    cif_torsions["atom4"],
-                    cif_torsions["value"],
-                    cif_torsions["sigma"],
-                    cif_torsions["period"],
-                    work_idx1,
-                    work_idx2,
-                    work_idx3,
-                    work_idx4,
-                    work_refs,
-                    work_sigmas,
-                    work_periods,
-                )
-
-                if count > 0:
-                    all_indices.append(
-                        np.column_stack(
-                            [
-                                work_idx1[:count].copy(),
-                                work_idx2[:count].copy(),
-                                work_idx3[:count].copy(),
-                                work_idx4[:count].copy(),
-                            ]
-                        )
-                    )
-                    all_refs.append(work_refs[:count].copy())
-                    all_sigmas.append(work_sigmas[:count].copy())
-                    all_periods.append(work_periods[:count].copy())
-
-        if not all_indices:
-            return None
-
-        indices = np.concatenate(all_indices, axis=0)
-        references = np.concatenate(all_refs)
-        sigmas = np.concatenate(all_sigmas)
-        periods = np.concatenate(all_periods)
-
-        if sort_indices and len(indices) > 0:
-            order = np.argsort(indices[:, 0])
-            indices = indices[order]
-            references = references[order]
-            sigmas = sigmas[order]
-            periods = periods[order]
-
-        sigmas = np.where(sigmas == 0, 1e-4, sigmas)
-
-        return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
-            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
-            "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
-        }
-
-
-# =============================================================================
-# Plane Builder
-# =============================================================================
-
-
-class PlaneRestraintBuilder(RestraintBuilder):
-    """
-    Fast plane restraint builder.
-
-    Returns planes grouped by atom count (e.g., '4_atoms', '5_atoms').
-
-    Usage:
-        builder = PlaneRestraintBuilder()
-        result = builder.build(pdb, cif_dict, device)
-        # result = {'4_atoms': {'indices': ..., 'sigmas': ...}, '5_atoms': {...}}
-    """
-
-    def build(
-        self,
-        pdb: pd.DataFrame,
-        cif_dict: Dict,
-        device: torch.device,
-        sort_indices: bool = True,
-        residue_keys: Optional[Mapping[Tuple[str, int], str]] = None,
-    ) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
-        """Build all plane restraints, grouped by atom count."""
-        pp_pdb = PreprocessedPDB(pdb)
-        pp_cif = PreprocessedCIF(cif_dict)
-        keys = pp_pdb.residue_keys(residue_keys)
-
-        # Group planes by size: {n_atoms: [(indices_array, sigmas_array), ...]}
-        planes_by_size: Dict[int, List[Tuple[np.ndarray, np.ndarray]]] = {}
-
-        for res_idx in range(pp_pdb.n_residues):
-            key = keys[res_idx]
-
-            if key not in pp_cif.planes:
-                continue
-
-            # Iterate over altloc conformations (yields once if no altlocs)
-            for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-                # Build name to index map
-                name_to_idx = {name: idx for name, idx in zip(atom_names, atom_indices)}
-
-                for plane_data in pp_cif.planes[key]:
-                    plane_atom_names = plane_data["atoms"]
-                    plane_sigmas = plane_data["sigmas"]
-
-                    # Find atoms in this plane
-                    plane_indices = []
-                    plane_sigma_values = []
-                    for i, atom_name in enumerate(plane_atom_names):
-                        if atom_name in name_to_idx:
-                            plane_indices.append(name_to_idx[atom_name])
-                            plane_sigma_values.append(plane_sigmas[i])
-
-                    # Need at least 3 atoms for a plane
-                    if len(plane_indices) >= 3:
-                        n_atoms = len(plane_indices)
-                        indices_array = np.array(plane_indices, dtype=np.int64)
-                        sigmas_array = np.array(plane_sigma_values, dtype=np.float64)
-
-                        if n_atoms not in planes_by_size:
-                            planes_by_size[n_atoms] = []
-                        planes_by_size[n_atoms].append((indices_array, sigmas_array))
-
-        if not planes_by_size:
-            return None
-
-        # Finalize each size group
-        result = {}
-        for n_atoms, planes_list in planes_by_size.items():
-            indices = np.stack([p[0] for p in planes_list], axis=0)
-            sigmas = np.stack([p[1] for p in planes_list], axis=0)
-
-            if sort_indices and len(indices) > 0:
-                order = np.argsort(indices[:, 0])
-                indices = indices[order]
-                sigmas = sigmas[order]
-
-            sigmas = np.where(sigmas == 0, 1e-4, sigmas)
-
-            key = f"{n_atoms}_atoms"
-            result[key] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-                "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
-            }
-
-        return result
-
-
-# =============================================================================
-# Chiral Builder
-# =============================================================================
-
-
-class ChiralRestraintBuilder(RestraintBuilder):
-    """
-    Fast chiral restraint builder.
-
-    Usage:
-        builder = ChiralRestraintBuilder()
-        result = builder.build(pdb, cif_dict, device)
-        # result includes 'ideal_volumes' tensor
-    """
-
-    def build(
-        self,
-        pdb: pd.DataFrame,
-        cif_dict: Dict,
-        device: torch.device,
-        sort_indices: bool = True,
-        residue_keys: Optional[Mapping[Tuple[str, int], str]] = None,
-    ) -> Optional[Dict[str, torch.Tensor]]:
-        """Build all chiral restraints."""
-        pp_pdb = PreprocessedPDB(pdb)
-        pp_cif = PreprocessedCIF(cif_dict)
-        keys = pp_pdb.residue_keys(residue_keys)
-
-        max_per_residue = 20
-        work_center = np.zeros(max_per_residue, dtype=np.int64)
-        work_idx1 = np.zeros(max_per_residue, dtype=np.int64)
-        work_idx2 = np.zeros(max_per_residue, dtype=np.int64)
-        work_idx3 = np.zeros(max_per_residue, dtype=np.int64)
-        work_signs = np.zeros(max_per_residue, dtype=np.float64)
-        work_sigmas = np.zeros(max_per_residue, dtype=np.float64)
-
-        all_indices = []
-        all_ideal_volumes = []
-        all_sigmas = []
-
-        for res_idx in range(pp_pdb.n_residues):
-            key = keys[res_idx]
-
-            if key not in pp_cif.chirals:
-                continue
-
-            cif_chirals = pp_cif.chirals[key]
-            n_cif = len(cif_chirals["center"])
-
-            if n_cif > max_per_residue:
-                max_per_residue = n_cif * 2
-                work_center = np.zeros(max_per_residue, dtype=np.int64)
-                work_idx1 = np.zeros(max_per_residue, dtype=np.int64)
-                work_idx2 = np.zeros(max_per_residue, dtype=np.int64)
-                work_idx3 = np.zeros(max_per_residue, dtype=np.int64)
-                work_signs = np.zeros(max_per_residue, dtype=np.float64)
-                work_sigmas = np.zeros(max_per_residue, dtype=np.float64)
-
-            # Iterate over altloc conformations (yields once if no altlocs)
-            for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
-                count = match_chirals(
-                    atom_names,
-                    atom_indices,
-                    cif_chirals["center"],
-                    cif_chirals["atom1"],
-                    cif_chirals["atom2"],
-                    cif_chirals["atom3"],
-                    cif_chirals["volume_sign"],
-                    cif_chirals["sigma"],
-                    work_center,
-                    work_idx1,
-                    work_idx2,
-                    work_idx3,
-                    work_signs,
-                    work_sigmas,
-                )
-
-                if count > 0:
-                    all_indices.append(
-                        np.column_stack(
-                            [
-                                work_center[:count].copy(),
-                                work_idx1[:count].copy(),
-                                work_idx2[:count].copy(),
-                                work_idx3[:count].copy(),
-                            ]
-                        )
-                    )
-                    # Ideal volume = sign * 2.5 (typical tetrahedral volume).
-                    # For volume_sign 'both'/'either' the sign is 0.0, so this
-                    # stores exactly 0.0. That 0.0 is a sentinel: the chiral
-                    # target treats ideal_volume == 0 as an achiral centre and
-                    # restrains |volume| toward 2.5 (not toward a target of 0).
-                    # Note: chirals with an unknown sign were mapped to NaN by
-                    # PreprocessedCIF._preprocess_chirals and dropped upstream
-                    # by match_chirals, so they never reach here.
-                    all_ideal_volumes.append(work_signs[:count].copy() * 2.5)
-                    all_sigmas.append(work_sigmas[:count].copy())
-
-        if not all_indices:
-            return None
-
-        indices = np.concatenate(all_indices, axis=0)
-        ideal_volumes = np.concatenate(all_ideal_volumes)
-        sigmas = np.concatenate(all_sigmas)
-
-        if sort_indices and len(indices) > 0:
-            order = np.argsort(indices[:, 0])
-            indices = indices[order]
-            ideal_volumes = ideal_volumes[order]
-            sigmas = sigmas[order]
-
-        sigmas = np.where(sigmas == 0, 1e-4, sigmas)
-
-        return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "ideal_volumes": torch.tensor(
-                ideal_volumes, dtype=get_float_dtype(), device=device
-            ),
-            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
-        }
-
-
-# =============================================================================
-# Convenience function to build all restraints at once
-# =============================================================================
-
-
-def build_all_restraints(
-    pdb: pd.DataFrame, cif_dict: Dict, device: torch.device, verbose: int = 0
-) -> Dict[str, Any]:
-    """
-    Build every intra-residue restraint type at once, on ``device``.
-
-    Returns
-    -------
-    dict
-        Present keys only, so a type with no matches is absent rather than empty:
-        ``bond``/``angle`` as ``{indices, references, sigmas}``, ``torsion`` also
-        with ``periods``, ``chiral`` also with ``ideal_volumes``, and ``plane``
-        nested by atom count (``{'4_atoms': {...}, '5_atoms': {...}}``).
-    """
-    result = {}
-
-    bond_result = BondRestraintBuilder(verbose).build(pdb, cif_dict, device)
-    if bond_result:
-        result["bond"] = bond_result
-        if verbose > 0:
-            print(f"Built {bond_result['indices'].shape[0]} bond restraints")
-
-    angle_result = AngleRestraintBuilder(verbose).build(pdb, cif_dict, device)
-    if angle_result:
-        result["angle"] = angle_result
-        if verbose > 0:
-            print(f"Built {angle_result['indices'].shape[0]} angle restraints")
-
-    torsion_result = TorsionRestraintBuilder(verbose).build(pdb, cif_dict, device)
-    if torsion_result:
-        result["torsion"] = torsion_result
-        if verbose > 0:
-            print(f"Built {torsion_result['indices'].shape[0]} torsion restraints")
-
-    plane_result = PlaneRestraintBuilder(verbose).build(pdb, cif_dict, device)
-    if plane_result:
-        result["plane"] = plane_result
-        if verbose > 0:
-            n_planes = sum(v["indices"].shape[0] for v in plane_result.values())
-            print(f"Built {n_planes} plane restraints")
-
-    chiral_result = ChiralRestraintBuilder(verbose).build(pdb, cif_dict, device)
-    if chiral_result:
-        result["chiral"] = chiral_result
-        if verbose > 0:
-            print(f"Built {chiral_result['indices'].shape[0]} chiral restraints")
-
-    return result
-
-
-# =============================================================================
 # Fast Inter-Residue Builders
 # =============================================================================
 
@@ -1219,7 +356,7 @@ class InterResidueBondBuilder:
 
     Usage:
         builder = InterResidueBondBuilder()
-        result = builder.build(pdb, link_dict, device)
+        result = builder.build(residues, link_dict, device)
 
         # Or for disulfides (incremental):
         builder = InterResidueBondBuilder()
@@ -1320,10 +457,9 @@ class InterResidueBondBuilder:
 
     def build(
         self,
-        pdb: pd.DataFrame,
+        residues: "PeptideResidues",
         link_dict: Dict,
         device: torch.device,
-        filter_atom_type: str = "ATOM",
         sort_indices: bool = True,
     ) -> Optional[Dict[str, torch.Tensor]]:
         """
@@ -1331,14 +467,12 @@ class InterResidueBondBuilder:
 
         Parameters
         ----------
-        pdb : pd.DataFrame
-            PDB DataFrame.
+        residues : PeptideResidues
+            The linked residue pairs and their atoms.
         link_dict : dict
             Link dictionary with 'bonds' DataFrame.
         device : torch.device
             Target device.
-        filter_atom_type : str, optional
-            Filter to only this atom type (e.g., 'ATOM' for protein).
         sort_indices : bool
             Whether to sort output by first atom index.
 
@@ -1356,17 +490,9 @@ class InterResidueBondBuilder:
             return None
 
         # Pre-process PDB
-        if filter_atom_type:
-            pdb = pdb[pdb["ATOM"] == filter_atom_type]
-        if pdb.empty:
+        conf_maps, pairs = residues.conformer_maps, residues.pairs
+        if not pairs:
             return None
-        pp_pdb = PreprocessedPDB(pdb)
-
-        # Build per-conformation maps for each residue (altloc-aware)
-        conf_maps = build_residue_conformation_maps(pp_pdb)
-
-        # Find consecutive residue pairs
-        pairs = find_consecutive_residue_pairs(pp_pdb)
 
         # Accumulate restraints
         all_indices = []
@@ -1423,11 +549,11 @@ class InterResidueAngleBuilder:
 
     Usage:
         builder = InterResidueAngleBuilder()
-        result = builder.build(pdb, link_dict, device)
+        result = builder.build(residues, link_dict, device)
 
         # Or for disulfides (incremental):
         builder = InterResidueAngleBuilder()
-        builder.process_disulfide_angles(res1_atoms, res2_atoms, link_angles)
+        builder.process_disulfide_angles(topology, res1, res2, link_angles)
         result = builder.finalize(device)
     """
 
@@ -1447,23 +573,11 @@ class InterResidueAngleBuilder:
         self._sigmas.clear()
         self._count = 0
 
-    @staticmethod
-    def _get_atom_index(residue: pd.DataFrame, atom_name: str) -> Optional[int]:
-        """Get atom index from residue, handling alternate conformations."""
-        atoms = residue[residue["name"] == atom_name]
-        if len(atoms) == 0:
-            return None
-        if " " in atoms["altloc"].values:
-            return int(atoms[atoms["altloc"] == " "].iloc[0]["index"])
-        elif "A" in atoms["altloc"].values:
-            return int(atoms[atoms["altloc"] == "A"].iloc[0]["index"])
-        else:
-            return int(atoms.iloc[0]["index"])
-
     def process_disulfide_angles(
         self,
-        res1_atoms: pd.DataFrame,
-        res2_atoms: pd.DataFrame,
+        topology,
+        res1_atoms: int,
+        res2_atoms: int,
         link_angles: pd.DataFrame,
     ) -> int:
         """
@@ -1471,10 +585,10 @@ class InterResidueAngleBuilder:
 
         Parameters
         ----------
-        res1_atoms : pd.DataFrame
-            First cysteine residue atoms.
-        res2_atoms : pd.DataFrame
-            Second cysteine residue atoms.
+        topology : Topology
+            Supplies the two residues' atom names and altlocs.
+        res1_atoms, res2_atoms : int
+            Residue indices of the two cysteines.
         link_angles : pd.DataFrame
             Angle definitions from disulfide link.
 
@@ -1496,9 +610,9 @@ class InterResidueAngleBuilder:
             res2 = res1_atoms if comp2 == "1" else res2_atoms
             res3 = res1_atoms if comp3 == "1" else res2_atoms
 
-            idx1 = self._get_atom_index(res1, atom1_name)
-            idx2 = self._get_atom_index(res2, atom2_name)
-            idx3 = self._get_atom_index(res3, atom3_name)
+            idx1 = _atom_row(topology, res1, atom1_name)
+            idx2 = _atom_row(topology, res2, atom2_name)
+            idx3 = _atom_row(topology, res3, atom3_name)
 
             if idx1 is not None and idx2 is not None and idx3 is not None:
                 self._indices.append(np.array([[idx1, idx2, idx3]], dtype=np.int64))
@@ -1545,10 +659,9 @@ class InterResidueAngleBuilder:
 
     def build(
         self,
-        pdb: pd.DataFrame,
+        residues: "PeptideResidues",
         link_dict: Dict,
         device: torch.device,
-        filter_atom_type: str = "ATOM",
         sort_indices: bool = True,
         next_resname_filter: Optional[str] = None,
         exclude_next_resname: Optional[str] = None,
@@ -1557,14 +670,12 @@ class InterResidueAngleBuilder:
 
         Parameters
         ----------
-        pdb : pd.DataFrame
-            Atom DataFrame.
+        residues : PeptideResidues
+            The linked residue pairs and their atoms.
         link_dict : Dict
             Link definition dictionary containing angle parameters.
         device : torch.device
             Target device for tensors.
-        filter_atom_type : str, optional
-            Filter to this ATOM type (default "ATOM").
         sort_indices : bool, optional
             Sort output by first atom index (default True).
         next_resname_filter : str, optional
@@ -1582,13 +693,9 @@ class InterResidueAngleBuilder:
         if link_data.angles is None:
             return None
 
-        if filter_atom_type:
-            pdb = pdb[pdb["ATOM"] == filter_atom_type]
-        if pdb.empty:
+        conf_maps, pairs = residues.conformer_maps, residues.pairs
+        if not pairs:
             return None
-        pp_pdb = PreprocessedPDB(pdb)
-        conf_maps = build_residue_conformation_maps(pp_pdb)
-        pairs = find_consecutive_residue_pairs(pp_pdb)
 
         all_indices = []
         all_refs = []
@@ -1600,10 +707,10 @@ class InterResidueAngleBuilder:
         for res_i_idx, res_next_idx in pairs:
             # Filter by next residue name if requested
             if next_resname_filter is not None:
-                if pp_pdb.residue_resnames[res_next_idx] != next_resname_filter:
+                if residues.resnames[res_next_idx] != next_resname_filter:
                     continue
             if exclude_next_resname is not None:
-                if pp_pdb.residue_resnames[res_next_idx] == exclude_next_resname:
+                if residues.resnames[res_next_idx] == exclude_next_resname:
                     continue
 
             for map_i in conf_maps[res_i_idx]:
@@ -1659,13 +766,13 @@ class InterResidueTorsionBuilder:
 
     Usage:
         builder = InterResidueTorsionBuilder()
-        result = builder.build(pdb, link_dict, device)
+        result = builder.build(residues, link_dict, device)
         # result = {'phi': {...}, 'psi': {...}, 'omega': {...},
         #           'ramachandran': {...}}
 
         # Or for disulfides (incremental):
         builder = InterResidueTorsionBuilder()
-        builder.process_disulfide_torsions(res1_atoms, res2_atoms, link_torsions)
+        builder.process_disulfide_torsions(topology, res1, res2, link_torsions)
         result = builder.finalize_disulfide(device)
     """
 
@@ -1687,23 +794,11 @@ class InterResidueTorsionBuilder:
         self._disulfide_periods.clear()
         self._disulfide_count = 0
 
-    @staticmethod
-    def _get_atom_index(residue: pd.DataFrame, atom_name: str) -> Optional[int]:
-        """Get atom index from residue, handling alternate conformations."""
-        atoms = residue[residue["name"] == atom_name]
-        if len(atoms) == 0:
-            return None
-        if " " in atoms["altloc"].values:
-            return int(atoms[atoms["altloc"] == " "].iloc[0]["index"])
-        elif "A" in atoms["altloc"].values:
-            return int(atoms[atoms["altloc"] == "A"].iloc[0]["index"])
-        else:
-            return int(atoms.iloc[0]["index"])
-
     def process_disulfide_torsions(
         self,
-        res1_atoms: pd.DataFrame,
-        res2_atoms: pd.DataFrame,
+        topology,
+        res1_atoms: int,
+        res2_atoms: int,
         link_torsions: pd.DataFrame,
     ) -> int:
         """
@@ -1711,10 +806,10 @@ class InterResidueTorsionBuilder:
 
         Parameters
         ----------
-        res1_atoms : pd.DataFrame
-            First cysteine residue atoms.
-        res2_atoms : pd.DataFrame
-            Second cysteine residue atoms.
+        topology : Topology
+            Supplies the two residues' atom names and altlocs.
+        res1_atoms, res2_atoms : int
+            Residue indices of the two cysteines.
         link_torsions : pd.DataFrame
             Torsion definitions from disulfide link.
 
@@ -1739,10 +834,10 @@ class InterResidueTorsionBuilder:
             res3 = res1_atoms if comp3 == "1" else res2_atoms
             res4 = res1_atoms if comp4 == "1" else res2_atoms
 
-            idx1 = self._get_atom_index(res1, atom1_name)
-            idx2 = self._get_atom_index(res2, atom2_name)
-            idx3 = self._get_atom_index(res3, atom3_name)
-            idx4 = self._get_atom_index(res4, atom4_name)
+            idx1 = _atom_row(topology, res1, atom1_name)
+            idx2 = _atom_row(topology, res2, atom2_name)
+            idx3 = _atom_row(topology, res3, atom3_name)
+            idx4 = _atom_row(topology, res4, atom4_name)
 
             if idx1 is None or idx2 is None or idx3 is None or idx4 is None:
                 continue
@@ -1810,10 +905,9 @@ class InterResidueTorsionBuilder:
 
     def build(
         self,
-        pdb: pd.DataFrame,
+        residues: "PeptideResidues",
         link_dict: Dict,
         device: torch.device,
-        filter_atom_type: str = "ATOM",
         sort_indices: bool = True,
     ) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
         """
@@ -1828,18 +922,11 @@ class InterResidueTorsionBuilder:
         if link_data.torsions is None:
             return None
 
-        if filter_atom_type:
-            pdb = pdb[pdb["ATOM"] == filter_atom_type]
-        if pdb.empty:
+        conf_maps, pairs = residues.conformer_maps, residues.pairs
+        if not pairs:
             return None
-        pp_pdb = PreprocessedPDB(pdb)
-        conf_maps = build_residue_conformation_maps(pp_pdb)
-        pairs = find_consecutive_residue_pairs(pp_pdb)
 
-        # Build coordinate array for omega angle computation (cis/trans PRO)
-        max_idx = int(pdb["index"].max()) + 1
-        coords_np = np.zeros((max_idx, 3))
-        coords_np[pdb["index"].values] = pdb[["x", "y", "z"]].values
+        coords_np = residues.xyz
 
         # Separate accumulators for phi, psi, omega
         phi_data = {"indices": [], "periods": []}
@@ -1866,8 +953,8 @@ class InterResidueTorsionBuilder:
         from torchref.topology.ramachandran import classify_residue
 
         for res_i_idx, res_next_idx in pairs:
-            resname_i = pp_pdb.residue_resnames[res_i_idx]
-            resname_next = pp_pdb.residue_resnames[res_next_idx]
+            resname_i = residues.resnames[res_i_idx]
+            resname_next = residues.resnames[res_next_idx]
             is_proline = resname_next == "PRO"
 
             for map_i in conf_maps[res_i_idx]:
@@ -2041,7 +1128,7 @@ class InterResiduePlaneBuilder:
 
     Usage:
         builder = InterResiduePlaneBuilder()
-        result = builder.build(pdb, link_dict, device)
+        result = builder.build(residues, link_dict, device)
     """
 
     def __init__(self, verbose: int = 0):
@@ -2050,10 +1137,9 @@ class InterResiduePlaneBuilder:
 
     def build(
         self,
-        pdb: pd.DataFrame,
+        residues: "PeptideResidues",
         link_dict: Dict,
         device: torch.device,
-        filter_atom_type: str = "ATOM",
         sort_indices: bool = True,
     ) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
         """Build all inter-residue plane restraints, grouped by atom count."""
@@ -2064,13 +1150,9 @@ class InterResiduePlaneBuilder:
         if link_data.planes is None:
             return None
 
-        if filter_atom_type:
-            pdb = pdb[pdb["ATOM"] == filter_atom_type]
-        if pdb.empty:
+        conf_maps, pairs = residues.conformer_maps, residues.pairs
+        if not pairs:
             return None
-        pp_pdb = PreprocessedPDB(pdb)
-        conf_maps = build_residue_conformation_maps(pp_pdb)
-        pairs = find_consecutive_residue_pairs(pp_pdb)
 
         # Group planes by atom count
         planes_by_size: Dict[int, List[Tuple[np.ndarray, np.ndarray]]] = {}
@@ -2134,57 +1216,3 @@ class InterResiduePlaneBuilder:
         return result
 
 
-# =============================================================================
-# Legacy-compatible ResidueIterator (for code that still needs it)
-# =============================================================================
-
-
-class ResidueIterator:
-    """
-    Efficient iterator over residues.
-
-    .. deprecated::
-        Retained only for backward compatibility with code that still relies
-        on residue-by-residue iteration. Prefer :func:`build_all_restraints`
-        or the individual ``builder.build()`` methods instead.
-    """
-
-    def __init__(self, pdb: pd.DataFrame, filter_atom_type: Optional[str] = None):
-        """Initialize with pre-grouping of residues."""
-        if filter_atom_type is not None:
-            pdb = pdb[pdb["ATOM"] == filter_atom_type]
-
-        self.pdb = pdb
-        self._grouped = pdb.groupby(["chainid", "resseq"], sort=False)
-        self.groups = list(self._grouped.groups.keys())
-
-    def __iter__(self) -> Iterator[Tuple[str, int, pd.DataFrame]]:
-        """Iterate over residues."""
-        for chain_id, resseq in self.groups:
-            residue = self._grouped.get_group((chain_id, resseq))
-            yield chain_id, resseq, residue
-
-    def __len__(self) -> int:
-        """Return number of residues."""
-        return len(self.groups)
-
-    def get_consecutive_pairs(self) -> Iterator[Tuple[pd.DataFrame, pd.DataFrame]]:
-        """Iterate over consecutive residue pairs within each chain."""
-        by_chain = {}
-        for chain_id, resseq in self.groups:
-            if chain_id not in by_chain:
-                by_chain[chain_id] = []
-            by_chain[chain_id].append(resseq)
-
-        for chain_id, resseqs in by_chain.items():
-            resseqs_sorted = sorted(resseqs)
-            for i in range(len(resseqs_sorted) - 1):
-                resseq_i = resseqs_sorted[i]
-                resseq_next = resseqs_sorted[i + 1]
-
-                if resseq_next != resseq_i + 1:
-                    continue
-
-                residue_i = self._grouped.get_group((chain_id, resseq_i))
-                residue_next = self._grouped.get_group((chain_id, resseq_next))
-                yield residue_i, residue_next

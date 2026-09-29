@@ -111,9 +111,10 @@ def initialized_scaler(model_and_data: dict[str, Any]) -> Scaler:
 def model_with_restraints(loaded_model: Model) -> dict[str, Any]:
     """Build restraints around a fresh model."""
     from torchref.topology.restraints import Restraints
+    from torchref.topology.topology import Topology
 
     restraints = Restraints(
-        pdb=loaded_model.pdb,
+        topology=Topology.from_table(loaded_model.pdb),
         xyz=loaded_model.xyz(),
         verbose=0,
     )

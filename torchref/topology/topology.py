@@ -54,8 +54,9 @@ def identity_columns(pdb: "pandas.DataFrame") -> Dict[str, np.ndarray]:
     Returns
     -------
     dict
-        :data:`IDENTITY_COLUMNS`, each shape ``(N,)``. A blank altloc reads as
-        ``' '``; a missing or non-numeric charge as 0.
+        :data:`IDENTITY_COLUMNS`, each shape ``(N,)``. Strings are stripped, so a
+        padded ``' ALA'`` reads as ``'ALA'``; a blank altloc reads as ``' '``; a
+        missing or non-numeric charge as 0.
     """
     import pandas as pd
 
@@ -63,7 +64,7 @@ def identity_columns(pdb: "pandas.DataFrame") -> Dict[str, np.ndarray]:
 
     def text(column: str, default: str) -> np.ndarray:
         if column in pdb.columns:
-            return pdb[column].values.astype(str)
+            return np.char.strip(pdb[column].values.astype(str))
         return np.full(n, default)
 
     altloc = text("altloc", "")

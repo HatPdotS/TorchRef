@@ -42,14 +42,16 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
     Parameters
     ----------
-    pdb : pd.DataFrame, optional
-        DataFrame containing atomic structure data. If None, creates empty shell.
+    topology : Topology, optional
+        The atoms to restrain -- a node-only topology is enough
+        (:meth:`~torchref.topology.Topology.from_table`); it is connected here. If
+        None, creates an empty shell.
     cif_path : str or list of str, optional
         Path to the CIF restraints dictionary file(s).
     xyz : torch.Tensor, optional
         Cartesian coordinates in Å, shape ``(n_atoms, 3)``, that the topology and the
-        first pair list are built over. Defaults to the ``x``/``y``/``z`` columns of
-        ``pdb``. The build lands on this tensor's device. Not retained.
+        first pair list are built over. Required with ``topology``. The build lands on
+        this tensor's device. Not retained.
     cell : Cell, optional
         Crystallographic unit cell. Together with ``spacegroup``, enables
         symmetry-aware VDW restraints (contacts with symmetry mates). Without both,
@@ -72,7 +74,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         Restraint groups as ``restraints["bond"]["intra"]["indices"]``. A plain nested
         dict; the per-origin indices are views into ``topology``'s edge blocks.
     topology : Topology
-        The connectivity the geometry restraints are defined over.
+        The connected topology the geometry restraints are defined over; a new object,
+        the input is not modified.
     cif_dict : dict
         Parsed CIF restraints keyed by residue type; ``missing_residues`` lists
         the types that could not be resolved.
@@ -80,13 +83,13 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         Riding-hydrogen map, built only when the model carries no hydrogens of its
         own. Empty otherwise; see :mod:`torchref.topology.riding`.
     link_dict, link_list
-        Link-type definitions from the monomer library, set only when ``pdb``
+        Link-type definitions from the monomer library, set only when ``topology``
         was provided.
     """
 
     def __init__(
         self,
-        pdb: pd.DataFrame = None,
+        topology=None,
         cif_path=None,
         xyz: torch.Tensor = None,
         cell=None,
@@ -117,27 +120,18 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         self._torsion_max_period = 1
 
         # Empty initialization
-        if pdb is None:
-            self.pdb = None
+        if topology is None:
             self.cif_dict = {}
             self.unique_residues = []
             return
-
-        # Full initialization with pdb
-        from torchref.topology.nonbonded import vdw_radii_for_elements
-
-        self.pdb = pdb
         if xyz is None:
-            xyz = torch.tensor(pdb[["x", "y", "z"]].values, dtype=get_float_dtype())
+            raise ValueError("Restraints over a topology need the coordinates, xyz=")
+
+        self._nodes = topology
         self._vdw_radii = torch.tensor(
-            vdw_radii_for_elements(pdb["element"]), dtype=get_float_dtype()
+            topology.atoms.vdw_radii, dtype=get_float_dtype()
         )
-        self.unique_residues = pdb.resname.unique()
-        self.unique_residues = [
-            residue
-            for residue in self.unique_residues
-            if self.pdb.loc[self.pdb["resname"] == residue, "name"].nunique() > 1
-        ]
+        self.unique_residues = self._multi_atom_resnames(topology)
 
         # Parse CIF files
         self._load_cif_dictionaries(cif_path)
@@ -152,6 +146,43 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         self.build_restraints(xyz)
         if self.verbose > 0:
             self.summary()
+
+    @staticmethod
+    def _multi_atom_resnames(topology) -> list:
+        """Residue names, in first-seen order, whose atoms carry more than one name.
+
+        Single-atom residues (ions, lone waters) need no dictionary lookup.
+        """
+        names_by_resname: dict = {}
+        resnames = np.char.strip(topology.residues.resname.astype(str))
+        for r, resname in enumerate(resnames):
+            rows = topology.residues.atom_rows(r)
+            names_by_resname.setdefault(str(resname), set()).update(
+                topology.atoms.name[rows.start : rows.stop].tolist()
+            )
+        return [name for name, atoms in names_by_resname.items() if len(atoms) > 1]
+
+    def _riding_table(self, xyz: torch.Tensor) -> pd.DataFrame:
+        """The identity-plus-coordinates table :mod:`torchref.topology.riding` reads.
+
+        That module still takes an atom table; it goes when the phantom-hydrogen path
+        is deleted.
+        """
+        columns = self.topology.columns()
+        coords = xyz.detach().cpu().numpy()
+        return pd.DataFrame(
+            {
+                "name": columns["name"],
+                "element": columns["element"],
+                "resname": columns["resname"],
+                "chainid": columns["chain"],
+                "resseq": columns["resseq"],
+                "icode": columns["icode"],
+                "x": coords[:, 0],
+                "y": coords[:, 1],
+                "z": coords[:, 2],
+            }
+        )
 
     @property
     def restraints(self) -> dict:
@@ -287,12 +318,12 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             from torchref.topology import build_topology_with_values
 
             self.topology, self._values, extras = build_topology_with_values(
-                self.pdb,
+                self._nodes,
                 self.cif_dict,
+                xyz.detach().to(device),
                 link_dict=self.link_dict,
                 link_list=self.link_list,
                 links=self.links,
-                xyz=xyz.detach().to(device),
                 device=device,
                 verbose=self.verbose,
             )
@@ -335,7 +366,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         if h_topo is None or h_topo.n_hydrogens == 0:
             return torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty index tensor; int64 index required
 
-        n_heavy = len(self.pdb)
+        n_heavy = self.topology.n_atoms
         n_h = h_topo.n_hydrogens
         exclusions = set()
 
@@ -434,7 +465,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             vdw_radii=radii_cpu,
             cell=cell_cpu,
             sg=sg_cpu,
-            pdb=self.pdb,
+            topology=self.topology,
             exclusion_set=self.topology.atoms.exclusions_from_restraint_edges(),
             cutoff=cutoff,
             sigma=sigma,
@@ -460,12 +491,12 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             build_hydrogen_topology,
         )
 
-        elements = self.pdb["element"].astype(str).str.strip().values
-        if (elements == "H").any():
+        if bool(self.topology.atoms.is_hydrogen.any()):
             self._h_topo = HydrogenTopology(device=cpu)
         else:
+            riding_table = self._riding_table(xyz)
             self._h_topo = build_hydrogen_topology(
-                pdb=self.pdb,
+                pdb=riding_table,
                 device=cpu,
                 verbose=self.verbose,
             )
@@ -477,7 +508,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             build_h_candidate_pairs(
                 h_topo=self._h_topo,
                 vdw_data=vdw_data,
-                pdb=self.pdb,
+                pdb=riding_table,
                 h_excl_hash=self._h_excl_hash,
                 device=cpu,
                 verbose=self.verbose,

@@ -2,10 +2,9 @@
 
 A deposited structure may number two residues 100 and 100A. They are different residues
 with different chemistry, and the only thing separating them is the insertion code. The
-topology keys residues on ``(chain, resseq, icode)`` for that reason; the restraint
-builders key on ``(chain, resseq)`` alone, which merges them into one residue whose
-atom names then collide, so the name-to-index map keeps the first of each and every
-restraint belonging to the later residues is silently lost.
+topology keys residues on ``(chain, resseq, icode)`` for that reason, and every builder
+-- intra-residue matching and the peptide links alike -- works on those residues, so
+each inserted residue gets its own geometry and the chain runs through the insertion.
 
 No bundled structure has an insertion code, so the case is synthesised here rather
 than shipped as another data file: the rewrite is then visible, and it is obvious that
@@ -16,6 +15,7 @@ import pytest
 
 from torchref.model.model import Model
 from torchref.topology import build_topology
+from torchref.topology.topology import Topology
 
 #: Base structure: chain A, no altlocs, no insertion codes anywhere.
 BASE = "3GR5"
@@ -66,12 +66,12 @@ def inserted(pdb_dir, tmp_path_factory):
     restraints = model.restraints
 
     topology = build_topology(
-        model.pdb,
+        Topology.from_table(model.pdb),
         restraints.cif_dict,
+        model.xyz().detach(),
         link_dict=restraints.link_dict,
         link_list=restraints.link_list,
         links=restraints.links,
-        xyz=model.xyz().detach(),
         verbose=0,
     )
     return topology, restraints, expected, model
@@ -105,49 +105,6 @@ def test_the_graph_keeps_them_apart(inserted):
     assert len({key[2] for key in found}) == 3, "insertion codes were not distinguished"
 
 
-@pytest.mark.unit
-def test_the_builders_merge_them(inserted):
-    """The comparison only means something if the old grouping really does merge.
-
-    ``PreprocessedPDB`` groups on ``(chain, resseq)``, so the three residues become one
-    with three sets of backbone atom names.
-    """
-    from torchref.topology.builders import PreprocessedPDB
-
-    _, _, expected, model = inserted
-    preprocessed = PreprocessedPDB(model.pdb)
-
-    merged = [
-        i
-        for i in range(preprocessed.n_residues)
-        if int(preprocessed.residue_resseqs[i]) == expected[0][0]
-    ]
-    assert len(merged) == 1, "the builders did not merge the inserted residues"
-    assert preprocessed.has_duplicate_atoms(merged[0]), (
-        "the merged residue should carry duplicate atom names, which is what makes the "
-        "name-to-index map lose the later residues"
-    )
-
-
-def _legacy_intra_bonds(model, restraints):
-    """Intra-residue bonds as the ``(chain, resseq)``-keyed builder produces them.
-
-    ``restraints.py`` now builds from the topology, so it cannot serve as the
-    baseline -- it *is* the graph. ``BondRestraintBuilder`` is the original path, still
-    keying residues on ``(chain, resseq)``, which is the behaviour under test.
-    """
-    import torch
-
-    from torchref.topology.builders import BondRestraintBuilder
-
-    built = BondRestraintBuilder(verbose=0).build(
-        model.pdb, restraints.cif_dict, torch.device("cpu")
-    )
-    if not built:
-        return set()
-    return {tuple(int(v) for v in row) for row in built["indices"].cpu().numpy()}
-
-
 def _inserted_residue_indices(topology, expected):
     wanted = {(seq, code) for seq, code in expected}
     return [
@@ -162,59 +119,6 @@ def _bonds_within(edges, topology, residue):
     start = int(topology.residues.atom_start[residue])
     end = int(topology.residues.atom_end[residue])
     return {e for e in edges if all(start <= int(a) < end for a in e)}
-
-
-@pytest.mark.unit
-def test_the_legacy_grouping_loses_the_later_residues(inserted):
-    """The merged residue gets restraints for its first component only.
-
-    This is the defect keying on ``(chain, resseq, icode)`` fixes. The three residues
-    become one, their backbone atom names collide, the name-to-index map keeps the first
-    of each, and the second and third end up with no intra-residue geometry at all.
-    """
-    topology, restraints, expected, model = inserted
-    legacy = _legacy_intra_bonds(model, restraints)
-    residues = _inserted_residue_indices(topology, expected)
-    assert len(residues) == 3
-
-    counts = [len(_bonds_within(legacy, topology, r)) for r in residues]
-    assert counts[0] > 0, "even the first component lost its bonds; check the fixture"
-    assert counts[1:] == [0, 0], (
-        f"the legacy grouping was expected to lose the second and third residues, "
-        f"but found {counts} bonds in them"
-    )
-
-
-@pytest.mark.unit
-def test_the_graph_finds_what_the_legacy_grouping_lost(inserted):
-    """Every inserted residue gets its own bonds, and the graph is a strict superset.
-
-    Localised, not merely larger: the bonds the graph adds all lie inside the inserted
-    residues, so this is the insertion-code fix rather than a general difference.
-    """
-    topology, restraints, expected, model = inserted
-    legacy = _legacy_intra_bonds(model, restraints)
-    graph = topology.atoms.bonds.tuple_set("intra")
-    residues = _inserted_residue_indices(topology, expected)
-
-    for residue in residues:
-        assert _bonds_within(
-            graph, topology, residue
-        ), f"residue {topology.residues.key(residue)} has no intra-residue bonds"
-
-    gained = graph - legacy
-    assert gained, "the graph found nothing the legacy grouping missed"
-
-    inserted_set = set(residues)
-    stray = [
-        edge
-        for edge in gained
-        if not ({topology.residue_of_atom(a) for a in edge} & inserted_set)
-    ]
-    assert not stray, (
-        f"{len(stray)} gained bonds lie outside the inserted residues, so the "
-        f"difference is not localised to the insertion codes: {stray[:3]}"
-    )
 
 
 @pytest.mark.unit
@@ -281,3 +185,33 @@ def test_the_inserted_stretch_is_peptide_linked(inserted):
         f"expected two peptide links inside the three inserted residues, got "
         f"{len(internal)}"
     )
+
+
+def _atom(topology, residue, name):
+    rows = topology.residues.atom_rows(residue)
+    return next(r for r in rows if str(topology.atoms.name[r]).strip() == name)
+
+
+@pytest.mark.unit
+def test_peptide_edges_run_through_the_insertion(inserted):
+    """C(i)-N(i+1) bonds, and the phi/psi torsions, exist at every insertion-code step.
+
+    The peptide-link builders pair residues along the residue graph's links, so 23 to
+    23A and 23A to 23B are linked like any other step, and the middle residue gets
+    both its phi and its psi.
+    """
+    topology, _, expected, _ = inserted
+    residues = _inserted_residue_indices(topology, expected)
+    peptide = topology.atoms.bonds.tuple_set("peptide")
+    phi = topology.atoms.torsions.tuple_set("phi")
+    psi = topology.atoms.torsions.tuple_set("psi")
+
+    for first, second in zip(residues, residues[1:]):
+        c, n = _atom(topology, first, "C"), _atom(topology, second, "N")
+        assert (min(c, n), max(c, n)) in {tuple(sorted(e)) for e in peptide}, (
+            f"no peptide bond from {topology.residues.key(first)} to "
+            f"{topology.residues.key(second)}"
+        )
+    middle = residues[1]
+    assert any(row[1] == _atom(topology, middle, "N") for row in phi)
+    assert any(row[0] == _atom(topology, middle, "N") for row in psi)

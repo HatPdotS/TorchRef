@@ -10,7 +10,6 @@ undone on a device move or a copy.
 import pytest
 import torch
 
-from torchref.config import get_float_dtype
 from torchref.model.model import Model
 from torchref.utils.caching import ParameterFingerprint
 
@@ -172,13 +171,7 @@ def test_blocks_are_untouched_by_a_refinement_step(restraints):
     blocks = [restraints.topology.edge_block(t).indices for t in KEYED_TYPES]
     fingerprint = ParameterFingerprint(blocks)
 
-    block = restraints.topology.atoms.bonds.indices
-    xyz = torch.tensor(
-        restraints.pdb[["x", "y", "z"]].values,
-        dtype=get_float_dtype(),
-        device=block.device,
-        requires_grad=True,
-    )
+    xyz = restraints._last_vdw_build_xyz.clone().requires_grad_(True)
     loss = restraints.nll_bonds(xyz).sum() + restraints.nll_angles(xyz).sum()
     loss.backward()
 

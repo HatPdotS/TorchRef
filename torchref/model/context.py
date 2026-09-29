@@ -394,8 +394,10 @@ class ModelContext(DeviceMixin):
         """
         from torchref.topology.restraints import Restraints
 
+        from torchref.topology import Topology
+
         restraints = Restraints(
-            pdb=self.pdb,
+            topology=Topology.from_table(self.pdb),
             cif_path=self.cif_path,
             xyz=xyz.detach(),
             cell=self.cell,
@@ -643,9 +645,8 @@ class ModelContext(DeviceMixin):
         )
         if self.restraints is not None:
             restraints = self.restraints.copy()
-            # Point at the copied table and crystal rather than the deep-copied
-            # duplicates, so the new context is the single owner of both.
-            restraints.pdb = duplicate.pdb
+            # Point at the copied crystal rather than the deep-copied duplicates, so the
+            # new context is its single owner.
             restraints._cell = duplicate.cell
             restraints._spacegroup = duplicate.spacegroup
             duplicate.restraints = restraints

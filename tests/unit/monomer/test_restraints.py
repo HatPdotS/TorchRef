@@ -20,8 +20,8 @@ class TestRestraintsInitialization:
         from torchref.topology.restraints import Restraints
         
         restraints = Restraints()
-        
-        assert restraints.pdb is None
+
+        assert restraints.topology is None
 
     @pytest.mark.unit
     def test_restraints_is_nn_module(self):

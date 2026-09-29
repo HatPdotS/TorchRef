@@ -628,10 +628,14 @@ def filter_pairs(
     identity_combo: int,
     excl_hash: torch.Tensor,
     max_idx: int,
-    pdb,
+    topology,
     inter_residue_only: bool = True,
 ) -> torch.Tensor:
-    """Apply exclusion, residue, and altloc filters. Returns keep mask."""
+    """Apply exclusion, residue, and altloc filters. Returns keep mask.
+
+    Residues are the topology's ``(chain, resseq, icode)`` nodes, so atoms of residues
+    100 and 100A are in different residues.
+    """
     device = pair_atom_i.device
     N = len(pair_atom_i)
     keep = torch.ones(N, dtype=torch.bool, device=device)
@@ -650,29 +654,21 @@ def filter_pairs(
         keep &= ~(is_excluded & is_intra_asu)
 
     # Same-residue filter – intra-ASU only
+    ai_np = pair_atom_i.cpu().numpy()
+    aj_np = pair_atom_j.cpu().numpy()
     if inter_residue_only:
-        chainid = pdb["chainid"].values
-        resseq = pdb["resseq"].values
-        ai_np = pair_atom_i.cpu().numpy()
-        aj_np = pair_atom_j.cpu().numpy()
-        same_res = (
-            (chainid[ai_np] == chainid[aj_np])
-            & (resseq[ai_np] == resseq[aj_np])
-        )
+        residue_of = topology.atoms.residue_of.cpu().numpy()
+        same_res = residue_of[ai_np] == residue_of[aj_np]
         same_res_t = torch.tensor(same_res, dtype=torch.bool, device=device)
         keep &= ~(same_res_t & is_intra_asu)
 
     # Altloc compatibility – intra-ASU only
-    if "altloc" in pdb.columns:
-        altloc = pdb["altloc"].values.astype(str)
-        altloc = np.where(np.isin(altloc, ["", " "]), " ", altloc)
-        ai_np = pair_atom_i.cpu().numpy()
-        aj_np = pair_atom_j.cpu().numpy()
-        alt_i = altloc[ai_np]
-        alt_j = altloc[aj_np]
-        incompat = (alt_i != " ") & (alt_j != " ") & (alt_i != alt_j)
-        incompat_t = torch.tensor(incompat, dtype=torch.bool, device=device)
-        keep &= ~(incompat_t & is_intra_asu)
+    altloc = topology.atoms.altloc
+    alt_i = altloc[ai_np]
+    alt_j = altloc[aj_np]
+    incompat = (alt_i != " ") & (alt_j != " ") & (alt_i != alt_j)
+    incompat_t = torch.tensor(incompat, dtype=torch.bool, device=device)
+    keep &= ~(incompat_t & is_intra_asu)
 
     return keep
 
@@ -687,7 +683,7 @@ def build_vdw_restraints_gpu(
     vdw_radii: torch.Tensor,
     cell: "Cell",
     sg: "SpaceGroup",
-    pdb,
+    topology,
     exclusion_set: Set[Tuple[int, int]],
     cutoff: float = 5.0,
     sigma: float = 0.2,
@@ -704,7 +700,8 @@ def build_vdw_restraints_gpu(
         ``(N,)`` van der Waals radii in Å.
     cell : Cell
     sg : SpaceGroup
-    pdb : DataFrame
+    topology : Topology
+        Residue membership and altlocs for the same-residue and altloc filters.
     exclusion_set : set of (int, int) bonded exclusion pairs
     cutoff : float
         Contact distance cutoff in Angstrom.
@@ -824,7 +821,7 @@ def build_vdw_restraints_gpu(
     keep = filter_pairs(
         pair_atom_i, pair_atom_j, pair_combo_j,
         identity_combo, excl_hash, max_idx,
-        pdb, inter_residue_only,
+        topology, inter_residue_only,
     )
 
     pair_atom_i = pair_atom_i[keep]
@@ -891,219 +888,3 @@ def build_vdw_restraints_gpu(
     return result
 
 
-# ------------------------------------------------------------------ #
-# H-involving pair search (forward-time, called every evaluation)
-# ------------------------------------------------------------------ #
-
-@torch.no_grad()
-def find_h_vdw_pairs_gpu(
-    xyz_heavy: torch.Tensor,
-    xyz_h: torch.Tensor,
-    cell: "Cell",
-    sg: "SpaceGroup",
-    op_indices: torch.Tensor,
-    cell_offsets_valid: torch.Tensor,
-    grid_dims: torch.Tensor,
-    identity_combo: int,
-    n_heavy: int,
-    cutoff: float = 3.5,
-    h_excl_hash: Optional[torch.Tensor] = None,
-    pdb=None,
-    h_chainid_enc: Optional[torch.Tensor] = None,
-    h_resseq: Optional[torch.Tensor] = None,
-    inter_residue_only: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Find VDW pairs involving at least one hydrogen atom.
-
-    The heavy-atom search run over a combined (heavy + H) coordinate set, keeping
-    only pairs with a participant at index >= ``n_heavy``. Called on every forward
-    evaluation, so it reuses the cached grid and symop combos rather than
-    re-deriving them.
-
-    Parameters
-    ----------
-    xyz_heavy : (N_heavy, 3) Cartesian ASU heavy-atom positions
-    xyz_h : (N_h, 3) Cartesian ASU hydrogen positions
-    cell, sg : Cell, SpaceGroup
-    op_indices : (M,) cached valid symop indices
-    cell_offsets_valid : (M, 3) cached valid cell translations
-    grid_dims : (3,) cached grid dimensions
-    identity_combo : int
-    n_heavy : int
-        Number of heavy atoms (indices 0..n_heavy-1 are heavy)
-    cutoff : float
-        Cartesian cutoff (Å), tighter than heavy-atom search
-    h_excl_hash : (E,) sorted long
-        Hash tensor for H-specific 1-2/1-3 exclusions
-    pdb : DataFrame
-        Heavy-atom pdb for same-residue filtering
-    h_chainid_enc : (N_h,) long
-        Chain ID encoding for H atoms
-    h_resseq : (N_h,) long
-        Residue sequence number for H atoms
-    inter_residue_only : bool
-
-    Returns
-    -------
-    pair_atom_i, pair_atom_j, pair_combo_j : each (P,) long
-        Indices into the combined (heavy + H) array.  atom_i is always
-        from the ASU (identity combo).
-    """
-    from torchref.symmetry.spacegroup import SpaceGroup as SG
-
-    device = xyz_heavy.device
-    fdtype = dtypes.float
-
-    if not isinstance(sg, SG):
-        sg = SG(sg)
-
-    # Combine heavy + H into a single coordinate set
-    xyz_all = torch.cat([xyz_heavy, xyz_h], dim=0)  # (N_all, 3)
-    n_all = xyz_all.shape[0]
-
-    empty = torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty index placeholder tensor; int64 required
-    if n_all == 0:
-        return empty, empty, empty
-
-    # Convert to fractional
-    xyz_frac = cell.cartesian_to_fractional(xyz_all.detach().to(fdtype))
-
-    M = op_indices.shape[0]
-
-    # Step 2: assign to grid (reusing cached grid_dims and symop combos)
-    flat_cell, atom_idx, combo_idx, cart_pos = assign_to_grid(
-        xyz_frac, cell, sg, op_indices, cell_offsets_valid, grid_dims
-    )
-
-    n_grid_total = grid_dims[0].item() * grid_dims[1].item() * grid_dims[2].item()
-
-    # Step 3: sort into cell list
-    sort_order, unique_cells, starts, cell_lookup = build_cell_list(
-        flat_cell, n_grid_total
-    )
-    cart_sorted = cart_pos[sort_order]
-    atom_idx_sorted = atom_idx[sort_order]
-    combo_idx_sorted = combo_idx[sort_order]
-
-    # Step 4: find pairs (use the canonical-14-offset fast path)
-    pair_atom_i, pair_atom_j, pair_combo_j = find_pairs_periodic_grid_v2(
-        cart_sorted, atom_idx_sorted, combo_idx_sorted,
-        unique_cells, starts, cell_lookup, grid_dims,
-        cutoff, identity_combo,
-    )
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Filter to keep only pairs involving at least one H
-    has_h = (pair_atom_i >= n_heavy) | (pair_atom_j >= n_heavy)
-    pair_atom_i = pair_atom_i[has_h]
-    pair_atom_j = pair_atom_j[has_h]
-    pair_combo_j = pair_combo_j[has_h]
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Step 5: filtering
-
-    is_intra_asu = pair_combo_j == identity_combo
-
-    # Bonded exclusions (1-2 H-parent, 1-3 H-parent_neighbor) — intra-ASU
-    if h_excl_hash is not None and len(h_excl_hash) > 0 and is_intra_asu.any():
-        max_idx = max(n_all, int(pair_atom_i.max().item()) + 1,
-                      int(pair_atom_j.max().item()) + 1)
-        norm_i = torch.minimum(pair_atom_i, pair_atom_j)
-        norm_j = torch.maximum(pair_atom_i, pair_atom_j)
-        pair_hash = norm_i * max_idx + norm_j
-        ins = torch.searchsorted(h_excl_hash, pair_hash)
-        ins = ins.clamp(max=len(h_excl_hash) - 1)
-        is_excluded = h_excl_hash[ins] == pair_hash
-        keep = ~(is_excluded & is_intra_asu)
-        pair_atom_i = pair_atom_i[keep]
-        pair_atom_j = pair_atom_j[keep]
-        pair_combo_j = pair_combo_j[keep]
-        is_intra_asu = is_intra_asu[keep]
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Same-residue filter — intra-ASU only
-    if inter_residue_only and pdb is not None:
-        pdb_chainid = pdb["chainid"].values
-        pdb_resseq = pdb["resseq"].values.astype(np.int64)
-
-        # Build combined chain/resseq arrays (heavy from pdb, H from topology)
-        if h_chainid_enc is not None and h_resseq is not None:
-            # For heavy atoms, encode chain IDs consistently
-            chain_vals = pdb_chainid.astype(str)
-            unique_chains = np.unique(chain_vals)
-            chain_to_int = {c: i for i, c in enumerate(unique_chains)}
-            heavy_chain_enc = np.array([chain_to_int.get(c, -1) for c in chain_vals],
-                                       dtype=np.int64)
-            heavy_resseq = pdb_resseq
-
-            all_chain_enc = np.concatenate([
-                heavy_chain_enc,
-                h_chainid_enc.cpu().numpy(),
-            ])
-            all_resseq = np.concatenate([
-                heavy_resseq,
-                h_resseq.cpu().numpy(),
-            ])
-        else:
-            all_chain_enc = None
-
-        if all_chain_enc is not None:
-            ai_np = pair_atom_i.cpu().numpy()
-            aj_np = pair_atom_j.cpu().numpy()
-            same_res = (
-                (all_chain_enc[ai_np] == all_chain_enc[aj_np])
-                & (all_resseq[ai_np] == all_resseq[aj_np])
-            )
-            same_res_t = torch.tensor(same_res, dtype=torch.bool, device=device)
-            keep = ~(same_res_t & is_intra_asu)
-            pair_atom_i = pair_atom_i[keep]
-            pair_atom_j = pair_atom_j[keep]
-            pair_combo_j = pair_combo_j[keep]
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Altloc compatibility — intra-ASU, only relevant for heavy atoms
-    if pdb is not None and "altloc" in pdb.columns:
-        is_intra_asu = pair_combo_j == identity_combo
-        # Only check altloc for pairs where both are heavy atoms
-        both_heavy = (pair_atom_i < n_heavy) & (pair_atom_j < n_heavy) & is_intra_asu
-        if both_heavy.any():
-            altloc = pdb["altloc"].values.astype(str)
-            altloc = np.where(np.isin(altloc, ["", " "]), " ", altloc)
-            ai_np = pair_atom_i[both_heavy].cpu().numpy()
-            aj_np = pair_atom_j[both_heavy].cpu().numpy()
-            incompat = (altloc[ai_np] != " ") & (altloc[aj_np] != " ") & (altloc[ai_np] != altloc[aj_np])
-            reject = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-            reject[both_heavy] = torch.tensor(incompat, dtype=torch.bool, device=device)
-            keep = ~reject
-            pair_atom_i = pair_atom_i[keep]
-            pair_atom_j = pair_atom_j[keep]
-            pair_combo_j = pair_combo_j[keep]
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Deduplicate
-    dedup_hash = pair_atom_i * (n_all * M) + pair_atom_j * M + pair_combo_j
-    _, inverse, counts = torch.unique(
-        dedup_hash, return_inverse=True, return_counts=True
-    )
-    # MPS does not support int64 scatter_reduce; use the configured int dtype.
-    _int_dtype = dtypes.int
-    inverse_i = inverse.to(_int_dtype)
-    perm = torch.arange(len(inverse), device=device, dtype=_int_dtype)
-    first_occ = torch.full(
-        (counts.shape[0],), len(inverse), device=device, dtype=_int_dtype
-    )
-    first_occ.scatter_reduce_(0, inverse_i, perm, reduce="amin")
-    first_mask = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-    first_mask[first_occ.long()] = True
-
-    return pair_atom_i[first_mask], pair_atom_j[first_mask], pair_combo_j[first_mask]

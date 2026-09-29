@@ -16,12 +16,13 @@ class TestRestraintsBuildingFunctional:
         """Test building restraints from a real CIF file."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # Should have built some restraints
@@ -33,12 +34,13 @@ class TestRestraintsBuildingFunctional:
         """Test that bond restraints are built correctly."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # Check bond restraints exist
@@ -70,12 +72,13 @@ class TestRestraintsBuildingFunctional:
         """Test that angle restraints are built correctly."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # Check angle restraints exist
@@ -100,12 +103,13 @@ class TestRestraintsBuildingFunctional:
         """Test that torsion restraints are built correctly."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # Check torsion restraints exist
@@ -128,12 +132,13 @@ class TestRestraintsBuildingFunctional:
         """Test that plane restraints are built correctly."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # Check plane restraints exist
@@ -159,12 +164,13 @@ class TestRestraintsDeviationsFunctional:
         """Test computing bond length deviations."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # Compute bond deviations
@@ -182,12 +188,13 @@ class TestRestraintsDeviationsFunctional:
         """Test computing angle deviations."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # Compute angle deviations
@@ -206,10 +213,11 @@ class TestRestraintsMultipleStructures:
     def test_restraints_multiple_cif_files(self, compatibility_model):
         """Each extended crystal supplies bond and angle restraints."""
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = compatibility_model
         restraints = Restraints(
-            pdb=model.pdb,
+            topology=Topology.from_table(model.pdb),
             xyz=model.xyz(),
             verbose=0,
         )
@@ -225,12 +233,13 @@ class TestRestraintsDeviceHandling:
         """Test moving restraints to different devices."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model(device=cpu_device)
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # Check that tensors are on the correct device
@@ -247,12 +256,13 @@ class TestRestraintsCIFParsing:
         """Test that CIF dictionary is loaded correctly."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # CIF dict should be populated with residue restraints
@@ -273,12 +283,13 @@ class TestRestraintsCIFParsing:
         """Test that unique residues are detected from model."""
         from torchref.model.model import Model
         from torchref.topology.restraints import Restraints
+        from torchref.topology.topology import Topology
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         restraints = Restraints(
-            pdb=model.pdb, xyz=model.xyz(), verbose=0
+            topology=Topology.from_table(model.pdb), xyz=model.xyz(), verbose=0
         )
 
         # Should have detected unique residues

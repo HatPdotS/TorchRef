@@ -7,6 +7,8 @@ between processes.
 """
 
 import pytest
+
+from torchref.topology.topology import Topology
 import torch
 
 from torchref.model.model import Model
@@ -71,12 +73,12 @@ def built(request, pdb_dir):
             model.ctx.set_cif_path(None)
             restraints = model.restraints
             topology = build_topology(
-                model.pdb,
+                Topology.from_table(model.pdb),
                 restraints.cif_dict,
+                model.xyz().detach(),
                 link_dict=getattr(restraints, "link_dict", None),
                 link_list=getattr(restraints, "link_list", None),
                 links=restraints.links,
-                xyz=model.xyz().detach(),
                 verbose=0,
             )
             cache[code] = (topology, _current_edges(restraints))
@@ -203,12 +205,12 @@ def test_layout_is_reproducible(built, pdb_dir):
     model.ctx.set_cif_path(None)
     restraints = model.restraints
     topology_b = build_topology(
-        model.pdb,
+        Topology.from_table(model.pdb),
         restraints.cif_dict,
+        model.xyz().detach(),
         link_dict=getattr(restraints, "link_dict", None),
         link_list=getattr(restraints, "link_list", None),
         links=restraints.links,
-        xyz=model.xyz().detach(),
         verbose=0,
     )
 
