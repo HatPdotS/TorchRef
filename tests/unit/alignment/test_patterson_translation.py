@@ -45,7 +45,7 @@ def setup():
     rec = data.cell.reciprocal_basis_matrix.cpu().to(torch.float64)
     s = (data.hkl.cpu().to(torch.float64) @ rec).norm(dim=-1)
     window = ((s >= 1.0 / 15.0) & (s <= 1.0 / 4.0)).to(data.hkl.device)
-    mask = data.get_valid_mask() & window
+    mask = data.masks() & window
     return canonical, data, mask
 
 
