@@ -12,8 +12,9 @@ Variable naming conventions:
 - f_calc/f_obs: Complex structure factors (lowercase = complex)
 """
 
+import math
 import warnings
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union
 
 import gemmi
 import numpy as np
@@ -39,6 +40,9 @@ from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.utils import sanitize_pdb_dataframe
+
+if TYPE_CHECKING:
+    import pandas
 
 
 class Model(DeviceMovementMixin, DebugMixin, nn.Module):
