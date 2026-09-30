@@ -236,3 +236,23 @@ def test_unusable_reference_is_skipped_or_rejected(inputs, tmp_path):
     res = _run(allwork, bare, "--reference", "allwork", "-o", tmp_path / "explicit")
     assert res.returncode == 1
     assert "no reflection as free" in res.stderr and "Traceback" not in res.stderr
+
+
+@pytest.mark.parametrize("suffix", ["mtz", "cif"])
+def test_keep_old_flags_preserved_or_rejected(mtz_dir, tmp_path, suffix):
+    """The CLI either retains requested original flags or reports unsupported export."""
+    source = mtz_dir / "1DAW.mtz"
+    out = tmp_path / "out"
+    res = _run(source, "-o", out, "--fresh", "--keep-old-flags", "--format", suffix)
+    path = out / ("1DAW_rfree." + suffix)
+    if suffix == "cif":
+        assert res.returncode == 1
+        assert "FreeR_flag_orig" in res.stderr and "use MTZ" in res.stderr
+        assert not path.exists()
+    else:
+        assert res.returncode == 0, res.stderr
+        original = rs.read_mtz(str(source))
+        restored = rfree.read_sf_file(str(path))
+        np.testing.assert_array_equal(
+            restored.FreeR_flag_orig.to_numpy(), original.FreeR_flag.to_numpy()
+        )

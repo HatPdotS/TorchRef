@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- SF-CIF export preserves supported numerical columns and free-flag values, and rejects unsupported columns before writing; use MTZ to retain custom columns or saved original flags.
 - Added ``torchref.uniform-rfree``: gives any number of MTZ / SF-mmCIF files of one cell and space group a shared CCP4 ``FreeR_flag``.
   - An existing free set (CCP4, Phenix or mmCIF convention) is inherited by default and extended, at its own fraction, to reflections it lacks, including those beyond its resolution. That extension is seeded with a hash of the reference's free/work partition, so it is reproducible whatever the file format or convention. New sets are stratified by resolution shell on the complete ASU and depend only on cell, space group and seed.
   - Options: ``--check`` reports whether the inputs' free sets agree; ``--max-free`` caps the size of a new set; ``--scale`` optionally scales the datasets together with ``DatasetCollection.scale``.

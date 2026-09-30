@@ -279,3 +279,70 @@ def test_hkl_keys_reject_indices_beyond_the_encoding():
 def test_max_free_must_be_positive(small):
     with pytest.raises(ValueError, match="max_free"):
         rfree.uniform_rfree({"x": small}, max_free=0)
+
+
+@pytest.mark.parametrize("suffix", [".mtz", ".cif"])
+def test_supported_columns_and_numeric_flags_roundtrip(mtz_dir, tmp_path, suffix):
+    """Amplitude, intensity, sigma and numeric flag values survive SF export."""
+    ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+    flags, _ = rfree.uniform_rfree({"data": ds})
+    out = rfree.apply_flags(ds, flags["data"])
+    path = tmp_path / ("data" + suffix)
+    rfree.write_sf_file(out, str(path))
+    restored = rfree.read_sf_file(str(path))
+    np.testing.assert_array_equal(restored.get_hkls(), out.get_hkls())
+    for col in out.columns:
+        alias = (
+            {"I": "IMEAN", "SIGI": "SIGIMEAN"}.get(col, col)
+            if suffix == ".cif"
+            else col
+        )
+        np.testing.assert_array_equal(restored[alias].to_numpy(), out[col].to_numpy())
+
+
+@pytest.mark.parametrize("extra", ["EXTRA_F", "FreeR_flag_orig", "I_DUP"])
+def test_cif_rejects_unmapped_columns_without_touching_destination(
+    mtz_dir, tmp_path, extra
+):
+    """Custom and original-flag columns must not disappear during conversion."""
+    ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+    flags, _ = rfree.uniform_rfree({"data": ds})
+    ds = rfree.apply_flags(ds, flags["data"], keep_old=extra == "FreeR_flag_orig")
+    if extra != "FreeR_flag_orig":
+        ds[extra] = rs.DataSeries(
+            np.arange(len(ds)), index=ds.index, dtype="J" if extra == "I_DUP" else "F"
+        )
+    path = tmp_path / "data.cif"
+    path.write_text("existing destination")
+    with pytest.raises(ValueError, match=extra):
+        rfree.write_sf_file(ds, str(path))
+    assert path.read_text() == "existing destination"
+    mtz = tmp_path / "data.mtz"
+    rfree.write_sf_file(ds, str(mtz))
+    restored = rfree.read_sf_file(str(mtz))
+    assert set(restored.columns) == set(ds.columns)
+    np.testing.assert_array_equal(restored[extra].to_numpy(), ds[extra].to_numpy())
+
+
+def test_cif_read_rejects_unmapped_measurement_column(mtz_dir, tmp_path):
+    """An unrecognised CIF measurement cannot silently disappear on input."""
+    ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+    path = tmp_path / "data.cif"
+    rfree.write_sf_file(ds, str(path))
+    doc = gemmi.cif.read(str(path))
+    doc[0].find_loop("_refln.index_h").get_loop().add_columns(["_refln.EXTRA_F"], "1")
+    doc.write_file(str(path))
+    with pytest.raises(ValueError, match="EXTRA_F"):
+        rfree.read_sf_file(str(path))
+
+
+def test_cif_read_rejects_colliding_measurement_aliases(mtz_dir, tmp_path):
+    """Two measurements cannot silently collapse into one conventional MTZ column."""
+    ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+    path = tmp_path / "data.cif"
+    rfree.write_sf_file(ds, str(path))
+    doc = gemmi.cif.read(str(path))
+    doc[0].find_loop("_refln.index_h").get_loop().add_columns(["_refln.F_meas"], "1")
+    doc.write_file(str(path))
+    with pytest.raises(ValueError, match="F_meas"):
+        rfree.read_sf_file(str(path))

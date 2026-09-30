@@ -13,11 +13,12 @@ Output follows the CCP4 ``FreeR_flag`` convention: integers ``0..N-1`` with
 
 All functions here operate on :class:`reciprocalspaceship.DataSet` objects so
 that every original column of the input files is preserved in MTZ output;
-mmCIF output keeps only the columns gemmi's MTZ-to-mmCIF conversion maps to a
-``_refln`` item (see :func:`write_sf_file`).
+mmCIF output preserves supported mapped measurement columns and rejects
+unsupported columns before writing (see :func:`write_sf_file`).
 """
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -28,6 +29,46 @@ import reciprocalspaceship as rs
 from torchref.io.mtz import MTZReader
 
 FREE_COLUMN = "FreeR_flag"
+
+# Gemmi merged-reflection mappings, including aliases accepted on input.
+_CIF_COLUMNS = {
+    "pdbx_r_free_flag": ("FreeR_flag", "I"),
+    "status": ("FreeR_flag", "I"),
+    "intensity_meas": ("IMEAN", "J"),
+    "F_squared_meas": ("IMEAN", "J"),
+    "intensity_sigma": ("SIGIMEAN", "Q"),
+    "F_squared_sigma": ("SIGIMEAN", "Q"),
+    "pdbx_I_plus": ("I(+)", "K"),
+    "pdbx_I_plus_sigma": ("SIGI(+)", "M"),
+    "pdbx_I_minus": ("I(-)", "K"),
+    "pdbx_I_minus_sigma": ("SIGI(-)", "M"),
+    "F_meas": ("FP", "F"),
+    "F_meas_au": ("FP", "F"),
+    "F_meas_sigma": ("SIGFP", "Q"),
+    "F_meas_sigma_au": ("SIGFP", "Q"),
+    "pdbx_F_plus": ("F(+)", "G"),
+    "pdbx_F_plus_sigma": ("SIGF(+)", "L"),
+    "pdbx_F_minus": ("F(-)", "G"),
+    "pdbx_F_minus_sigma": ("SIGF(-)", "L"),
+    "pdbx_anom_difference": ("DP", "D"),
+    "pdbx_anom_difference_sigma": ("SIGDP", "Q"),
+    "F_calc": ("FC", "F"),
+    "F_calc_au": ("FC", "F"),
+    "phase_calc": ("PHIC", "P"),
+    "pdbx_F_calc_with_solvent": ("F-model", "F"),
+    "pdbx_phase_calc_with_solvent": ("PHIF-model", "P"),
+    "fom": ("FOM", "W"),
+    "weight": ("FOM", "W"),
+    "pdbx_HL_A_iso": ("HLA", "A"),
+    "pdbx_HL_B_iso": ("HLB", "A"),
+    "pdbx_HL_C_iso": ("HLC", "A"),
+    "pdbx_HL_D_iso": ("HLD", "A"),
+    "pdbx_FWT": ("FWT", "F"),
+    "pdbx_PHWT": ("PHWT", "P"),
+    "pdbx_DELFWT": ("DELFWT", "F"),
+    "pdbx_DELPHWT": ("PHDELWT", "P"),
+}
+
 
 # Existing flag columns that are replaced on output.
 FLAG_COLUMN_NAMES = tuple(dict.fromkeys([*MTZReader.RFREE_FLAG_NAMES, FREE_COLUMN]))
@@ -41,7 +82,12 @@ _KEY_OFFSET = 1 << 10  # |h|, |k|, |l| < 1024
 
 
 def read_sf_file(path: str, cif_block: Optional[str] = None) -> rs.DataSet:
-    """Read an MTZ or SF-mmCIF file into a DataSet, keeping every column.
+    """Read MTZ columns or supported merged SF-mmCIF measurements.
+
+    CIF measurement aliases use conventional MTZ labels. Crystal, wavelength and
+    scale-group identifiers are metadata rather than MTZ measurements. Unsupported
+    measurement columns and aliases that collide on one MTZ label raise ValueError.
+
 
     Parameters
     ----------
@@ -65,7 +111,44 @@ def read_sf_file(path: str, cif_block: Optional[str] = None) -> rs.DataSet:
             blocks = [b for b in blocks if b.block.name == cif_block]
         if not blocks:
             raise ValueError(f"No reflection block found in {path}")
-        mtz = gemmi.CifToMtz().convert_block_to_mtz(blocks[0])
+        block = blocks[0]
+        tags = [tag.rsplit(".", 1)[-1] for tag in block.column_labels()]
+        metadata = {
+            "index_h",
+            "index_k",
+            "index_l",
+            "crystal_id",
+            "wavelength_id",
+            "scale_group_code",
+        }
+        unsupported = set(tags) - set(_CIF_COLUMNS) - metadata
+        if unsupported:
+            raise ValueError(
+                "Unsupported SF-CIF columns would be lost: "
+                + ", ".join(sorted(unsupported))
+            )
+        by_label = {}
+        for tag in tags:
+            if tag in _CIF_COLUMNS:
+                by_label.setdefault(_CIF_COLUMNS[tag][0], []).append(tag)
+        collisions = [
+            ", ".join(group)
+            for label, group in by_label.items()
+            if label != FREE_COLUMN and len(group) > 1
+        ]
+        if collisions:
+            raise ValueError(
+                "CIF columns map to the same MTZ label: " + "; ".join(collisions)
+            )
+        converter = gemmi.CifToMtz()
+        converter.spec_lines = [
+            f"{tag} {label} {kind} 1" + (" o=1,f=0,x=-1" if tag == "status" else "")
+            for tag in tags
+            if tag in _CIF_COLUMNS
+            for label, kind in [_CIF_COLUMNS[tag]]
+            if tag != "status" or "pdbx_r_free_flag" not in tags
+        ]
+        mtz = converter.convert_block_to_mtz(block)
         return rs.io.from_gemmi(mtz)
     raise ValueError(f"Unsupported structure-factor format: {path}")
 
@@ -73,21 +156,23 @@ def read_sf_file(path: str, cif_block: Optional[str] = None) -> rs.DataSet:
 def write_sf_file(ds: rs.DataSet, path: str) -> None:
     """Write a DataSet as MTZ or SF-mmCIF depending on the extension.
 
+    CIF output preserves supported numerical columns and numeric free flags;
+    ``FreeR_flag == 0`` also writes status ``f`` and negative flags status ``x``.
+    Standard CIF aliases may rename columns (for example I to IMEAN).
+    Columns without a supported CIF mapping, including saved original flags,
+    raise ValueError before the destination is written; use MTZ for these.
+
     Parameters
     ----------
-    ds : rs.DataSet
-        Reflections with cell and space group attached.
+    ds : reciprocalspaceship.DataSet
+        Reflections with MTZ column types, cell and space group.
     path : str
-        Output file; ``.mtz`` writes every column, ``.cif`` / ``.mmcif`` goes
-        through gemmi's MTZ-to-mmCIF conversion.
+        Output MTZ or SF-mmCIF filename.
 
-    Notes
-    -----
-    mmCIF output silently drops columns that gemmi's default conversion does
-    not map to a ``_refln`` item (e.g. ``DANO`` or custom columns); write MTZ
-    to keep them. ``FreeR_flag == 0`` becomes ``_refln.status 'f'``, negative
-    (excluded) flags ``'x'`` and all other values ``'o'``, so only the
-    free/work split survives, not the CCP4 test-set number.
+    Raises
+    ------
+    ValueError
+        If the output format or a CIF column mapping is unsupported.
     """
     suffix = Path(path).suffix.lower()
     if suffix == ".mtz":
@@ -95,7 +180,36 @@ def write_sf_file(ds: rs.DataSet, path: str) -> None:
     elif suffix in (".cif", ".mmcif"):
         converter = gemmi.MtzToCif()
         converter.free_flag_value = 0
-        text = converter.write_cif_to_string(ds.to_gemmi())
+        converter.skip_empty = False
+        converter.skip_negative_sigi = False
+        mtz = ds.to_gemmi()
+        text = converter.write_cif_to_string(mtz)
+        # Gemmi reports the columns it selected; default recipes can choose only
+        # one of several columns with the same MTZ type or familiar label.
+        mappings = re.findall(r"^# .* / (\S+) -> (\S+)$", text, re.MULTILINE)
+        selected = {label for label, _ in mappings}
+        unsupported = set(ds.columns) - selected
+        unsupported.update(
+            label
+            for label, tag in mappings
+            if label in ds.columns and tag not in _CIF_COLUMNS
+        )
+        if unsupported:
+            raise ValueError(
+                "Unsupported CIF output columns would be lost: "
+                + ", ".join(sorted(unsupported))
+                + "; use MTZ output instead"
+            )
+        types = {c.label: c.type for c in mtz.columns}
+        converter.spec_lines = [
+            f"{label} {types[label]} {tag} {'S' if tag == 'status' else '.9g'}"
+            for label, tag in mappings
+        ]
+        if FREE_COLUMN in ds.columns:
+            # status encodes only free/work, whereas CCP4 flags carry work-set
+            # numbers too. Retain those numbers in the standard numeric tag.
+            converter.spec_lines += [f"{FREE_COLUMN} I pdbx_r_free_flag .9g"]
+        text = converter.write_cif_to_string(mtz)
         if FREE_COLUMN in ds.columns:
             text = _mark_excluded(text, ds)
         Path(path).write_text(text)

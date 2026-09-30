@@ -138,10 +138,11 @@ reflection is free in one dataset and work in another.
   in the file that marked them, as ``-1`` / ``x``. They are not copied to the
   other files.
 - **Output.** MTZ output keeps every input column; existing flag columns are
-  replaced by a CCP4 ``FreeR_flag`` (``0..N-1``, ``0`` = free). mmCIF output
-  keeps only the columns gemmi's MTZ-to-mmCIF conversion maps to a ``_refln``
-  item (e.g. ``DANO`` and custom columns are dropped), and writes
-  ``_refln.status`` ``f``/``o``/``x``, so only the free/work split is kept.
+  replaced unless ``--keep-old-flags`` retains them as ``<name>_orig``. SF-mmCIF
+  output retains supported mapped measurements and numeric free-flag values,
+  including CCP4 work-set numbers. Unsupported columns, including saved original
+  flag columns, cause an error before writing the CIF; use MTZ for these columns.
+  Standard CIF aliases may rename measurements (for example ``I`` to ``IMEAN``).
 
 .. code-block:: bash
 
