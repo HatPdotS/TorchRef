@@ -251,8 +251,8 @@ def setup_ded_context(
         str(light_sf), device=device, column_names=col_light, verbose=0
     )
     if dmin is not None:
-        data_dark.cut_res(highres=dmin)
-        data_light.cut_res(highres=dmin)
+        data_dark.filter_by_resolution(d_min=dmin)
+        data_light.filter_by_resolution(d_min=dmin)
 
     collection = DatasetCollection(device=str(device))
     collection.add_dataset("dark", data_dark)

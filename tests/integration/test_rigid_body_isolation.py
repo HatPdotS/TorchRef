@@ -74,29 +74,29 @@ def test_targets_and_data_are_not_replaced(refinement):
 def test_resolution_range_survives_a_coarse_only_cutoff_list(refinement):
     """The caller's resolution range must be what it was, not the last cutoff's.
 
-    `cut_res` masks in place and returns `self`, so a `cutoffs` list ending above
-    the native d_min can leave the caller truncated. Object identity does not
-    catch it -- the data object is the same one throughout.
+    `filter_by_resolution` masks in place and returns `self`, so a `cutoffs` list
+    ending above the native d_min can leave the caller truncated. Object identity
+    does not catch it -- the data object is the same one throughout.
     """
     ref = refinement()
     data = ref.reflection_data
     ref.get_scales()
     n_before = int(data.masks().sum())
     n_work_before = int(data.work.mask.sum())
-    d_min_before = data.get_max_res()
+    d_min_before = data.d_min
 
     # Deliberately coarse-only, and deliberately not ending at the native d_min.
     ref.refine_rigid_body(iterations_per_step=5, cutoffs=[6.0, 4.0])
 
     assert int(data.masks().sum()) == n_before
     assert int(data.work.mask.sum()) == n_work_before
-    assert data.get_max_res() == pytest.approx(d_min_before)
+    assert data.d_min == pytest.approx(d_min_before)
 
 
 def test_a_caller_supplied_resolution_limit_is_not_widened(refinement):
     """A refinement built with `max_res` keeps that limit across a rigid-body run."""
     ref = refinement()
-    ref.reflection_data.cut_res(highres=3.5)
+    ref.reflection_data.filter_by_resolution(d_min=3.5)
     data = ref.reflection_data
     ref.get_scales()
     n_before = int(data.masks().sum())
@@ -104,7 +104,7 @@ def test_a_caller_supplied_resolution_limit_is_not_widened(refinement):
     ref.refine_rigid_body(iterations_per_step=5)
 
     assert int(data.masks().sum()) == n_before
-    assert data.get_max_res() >= 3.5
+    assert data.d_min >= 3.5
 
 
 def test_refined_coordinates_still_reach_the_caller(refinement):

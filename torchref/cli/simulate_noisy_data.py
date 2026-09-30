@@ -168,7 +168,7 @@ def _run_reference_mode(args, model, device) -> int:
         args.reference_hkl, cell=model.cell, spacegroup=model.spacegroup,
     )
     # Prune reference tensors by resolution so the simulation output only
-    # covers the requested range. cut_res() only masks — we want the HKL
+    # covers the requested range. filter_by_resolution() only masks — we want the HKL
     # list itself to be filtered so Scaler, model(), and add_noise all see
     # the same reflection set.
     if args.d_min is not None or args.d_max is not None:

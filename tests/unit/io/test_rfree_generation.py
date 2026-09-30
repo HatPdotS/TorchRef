@@ -1,8 +1,7 @@
 """Unit tests for resolution-stratified R-free flag generation.
 
-Covers the binning contract of ``ReflectionData._generate_rfree_flags`` /
-``regenerate_rfree_flags``: each resolution bin holds >= min_per_bin (1000)
-reflections and contributes >= min_free_per_bin (50) free reflections, the
+Covers the binning contract of ``ReflectionData.generate_rfree_flags``: each
+resolution bin holds >= min_per_bin (1000) reflections and contributes >= min_free_per_bin (50) free reflections, the
 flags are binary, generation is reproducible under a seed, and tiny datasets
 degrade gracefully to a single clamped bin.
 """
@@ -18,7 +17,7 @@ def _synthetic_data(h=12, k=12, lmax=30, seed=0, device="cpu"):
     Friedel folding changes the count). (2h+1)(2k+1)*lmax reflections.
 
     Built with placeholder (all-work) flags, then flags are (re)generated via the
-    public ``regenerate_rfree_flags`` once the validity masks exist.
+    public ``generate_rfree_flags`` once the validity masks exist.
     """
     hs = torch.arange(-h, h + 1)
     ks = torch.arange(-k, k + 1)
@@ -35,7 +34,7 @@ def _synthetic_data(h=12, k=12, lmax=30, seed=0, device="cpu"):
         rfree_flags=torch.ones(n, dtype=torch.bool), device=device,
         verbose=0, friedel_merged=True,
     )
-    data.regenerate_rfree_flags(force=True, seed=seed)
+    data.generate_rfree_flags(force=True, seed=seed)
     return data
 
 
@@ -105,7 +104,7 @@ def test_default_generation_matches_min_free_floor():
 def test_seed_reproducible():
     data = _synthetic_data(seed=42)
     flags_a = data.rfree_flags.clone()
-    data.regenerate_rfree_flags(force=True, seed=42)
+    data.generate_rfree_flags(force=True, seed=42)
     assert torch.equal(flags_a, data.rfree_flags)
 
 
@@ -186,7 +185,7 @@ def test_free_set_excludes_masked_reflections():
     keep = torch.ones(len(data.hkl), dtype=torch.bool, device=data.device)
     keep[::3] = False
     data.masks["unusable"] = keep
-    data.regenerate_rfree_flags(force=True, seed=0)
+    data.generate_rfree_flags(force=True, seed=0)
 
     valid = data.masks().to(torch.bool)
     assert not bool(valid.all()), "expected some masked-out reflections"
