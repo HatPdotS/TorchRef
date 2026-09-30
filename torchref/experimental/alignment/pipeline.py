@@ -593,8 +593,8 @@ class MolecularReplacementPipeline(DeviceMixin):
         device = self.device
         hkl_full = data.hkl
         F_obs_full = data.F
-        if hasattr(data, "get_valid_mask"):
-            tmask = data.get_valid_mask()
+        if getattr(data, "masks", None) is not None:
+            tmask = data.masks()
         else:
             tmask = torch.ones(
                 F_obs_full.shape[0], dtype=torch.bool, device=F_obs_full.device,

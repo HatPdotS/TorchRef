@@ -157,3 +157,69 @@ class TestDifferenceMap:
             assert os.path.getsize(filepath) > 0
         finally:
             os.unlink(filepath)
+
+
+def _merged_and_anomalous(data):
+    """The acentric reflections of ``data``, once merged and once as Bijvoet
+    pairs F*(1 +/- eps) whose mean is the merged F. Both keep every row, so the
+    outlier masks recomputed on construction cannot make them differ."""
+    keep = data.masks() & ~data.centric
+    hkl, F, sigF = data.hkl[keep], data.F[keep], data.F_sigma[keep]
+    common = dict(cell=data.cell, spacegroup=data.spacegroup, verbose=0)
+    merged = ReflectionData.from_tensors(hkl, F, sigF, **common)
+    anom = ReflectionData.from_tensors(
+        torch.cat([hkl, -hkl]),
+        torch.cat([F * 1.2, F * 0.8]),
+        torch.cat([sigF, sigF]),
+        friedel_merged=False,
+        **common,
+    )
+    for d in (merged, anom):
+        d.masks.clear()
+        d.masks["all"] = torch.ones(len(d.hkl), dtype=torch.bool)
+    return merged, anom
+
+
+class TestAnomalousInput:
+    """Bijvoet pairs enter a map once, at their mean amplitude."""
+
+    def test_bijvoet_helpers(self, model_ft_and_data):
+        _, data, _ = model_ft_and_data
+        merged, anom = _merged_and_anomalous(data)
+        assert anom.friedel_merged is False
+
+        rows = anom.bijvoet_representatives()
+        assert len(rows) == len(merged.hkl)
+        mean = anom.bijvoet_mean(anom.F)
+        by_hkl = dict(zip(map(tuple, merged.hkl.tolist()), merged.F.tolist()))
+        for h, f in zip(anom.hkl[rows].tolist(), mean[rows].tolist()):
+            assert f == pytest.approx(by_hkl[tuple(h)], rel=1e-5)
+
+        # Merged data pass through untouched.
+        assert torch.equal(merged.bijvoet_mean(merged.F), merged.F)
+        assert torch.equal(
+            merged.bijvoet_representatives(),
+            torch.arange(len(merged.hkl), device=merged.device),
+        )
+
+    def test_map_from_anomalous_data_equals_merged(self, model_ft_and_data):
+        model, data, _ = model_ft_and_data
+        merged, anom = _merged_and_anomalous(data)
+        grid = Map(merged, model, map_type="2Fo-Fc")._determine_gridsize()
+
+        expected = Map(merged, model, gridsize=grid, map_type="2Fo-Fc").calculate()
+        result = Map(anom, model, gridsize=grid, map_type="2Fo-Fc").calculate()
+
+        torch.testing.assert_close(result, expected, rtol=1e-4, atol=1e-5)
+
+    def test_difference_map_from_anomalous_data_equals_merged(self, model_ft_and_data):
+        model, data, _ = model_ft_and_data
+        merged, anom = _merged_and_anomalous(data)
+        merged_pert, anom_pert = _merged_and_anomalous(data)
+        merged_pert.F = merged_pert.F * 1.1
+        anom_pert.F = anom_pert.F * 1.1
+
+        expected = DifferenceMap(merged_pert, merged, model).calculate()
+        result = DifferenceMap(anom_pert, anom, model).calculate()
+
+        torch.testing.assert_close(result, expected, rtol=1e-4, atol=1e-5)

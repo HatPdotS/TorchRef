@@ -7,21 +7,21 @@ intensities, and R-free flags.
 """
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Callable, Optional, Tuple, Union
 
 import numpy as np
-import pandas as pd
 import torch
 
 from torchref.base import math_torch
-from torchref.base.french_wilson import FrenchWilson
+from torchref.base.french_wilson import french_wilson_auto
 from torchref.config import dtypes, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
+from torchref.utils.utils import TensorMasks
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
@@ -199,23 +199,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ``torchref.symmetry.SpaceGroup`` object here.
     resolution : torch.Tensor
         Resolution per reflection in Ångströms of shape (N,).
-    wilson_b : float
-        Overall Wilson B-factor in Ų.
     """
 
     # Additional fields specific to ReflectionData (beyond CrystalDataset)
     # Note: Most fields are inherited from CrystalDataset dataclass
 
-    # Cached properties (not serialized)
-    _centric: Optional[torch.Tensor] = field(default=None, repr=False)
-    _n_bins: Optional[int] = field(default=None, repr=False)
-    _FrenchWilson: Optional[FrenchWilson] = field(default=None, repr=False)
-
-    # Dynamic fields used by various methods
+    # Provenance: the dataset this one was derived from, and the operation.
     source: Optional["ReflectionData"] = field(default=None, repr=False)
-    dataset: Optional[pd.DataFrame] = field(default=None, repr=False)
     last_op: Optional[str] = field(default=None, repr=False)
-    reader: Optional[Any] = field(default=None, repr=False)
 
     def __post_init__(self):
         """
@@ -386,9 +377,50 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     # Per-reflection fields that are pure functions of (hkl, cell, spacegroup):
     # never gathered/aggregated, always recomputed or invalidated after an HKL
-    # change (``resolution`` recomputed; ``bin_indices`` / ``_centric_flags``
-    # lazily rebuilt by ``get_bins`` / the ``centric`` property).
-    _REINDEX_DERIVED = ("resolution", "bin_indices", "_centric_flags")
+    # change (``resolution`` recomputed; ``_centric_flags`` lazily rebuilt by
+    # the ``centric`` property).
+    _REINDEX_DERIVED = ("resolution", "_centric_flags")
+
+    def _per_row_fields(self):
+        """Yield ``(name, tensor)`` for each per-reflection dataclass field.
+
+        Enumerated generically (``shape[0] == len(hkl)``) so a new per-reflection
+        field is carried by every reindexing operation without being listed.
+        """
+        n = len(self.hkl) if self.hkl is not None else 0
+        for f in fields(self):
+            val = getattr(self, f.name)
+            if isinstance(val, torch.Tensor) and val.shape and val.shape[0] == n:
+                yield f.name, val
+
+    @staticmethod
+    def _gather_rows(val: torch.Tensor, index: torch.Tensor, fill) -> torch.Tensor:
+        """``val[index]``, with rows where ``index == -1`` set to ``fill``."""
+        present = index >= 0
+        if bool(present.all()):
+            return val[index]
+        shape = (len(index),) + tuple(val.shape[1:])
+        out = torch.full(shape, fill, dtype=val.dtype, device=val.device)
+        out[present] = val[index[present]]
+        return out
+
+    def _gathered_masks(self, index: torch.Tensor) -> TensorMasks:
+        """Every mask gathered by ``index``; rows with ``index == -1`` are masked out.
+
+        Call before ``hkl`` changes length: masks of any other length are dropped.
+        """
+        n = len(self.hkl) if self.hkl is not None else 0
+        out = TensorMasks(device=self.device)
+        for name, mask in self.masks.items():
+            if mask is not None and len(mask) == n:
+                out[name] = self._gather_rows(mask, index, False)
+        return out
+
+    def _replace_masks(self, new: TensorMasks) -> None:
+        """Swap in ``new``'s masks, keeping the existing ``TensorMasks`` object."""
+        self.masks.clear()
+        for name, mask in new.items():
+            self.masks[name] = mask
 
     def _reindex_per_reflection(
         self,
@@ -420,49 +452,29 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Boolean presence mask (``index_map >= 0``), for building the
             caller's ``hkl_present`` / ``missing`` masks.
         """
-        from dataclasses import fields as dc_fields
-
         if target is None:
             target = self
 
-        n_src = len(self.hkl) if self.hkl is not None else 0
         new_hkl = new_hkl.to(dtype=dtypes.int, device=self.device)
-        n_out = len(new_hkl)
         index_map = index_map.to(device=self.device, dtype=torch.long)  # dtype-ok: index map used for indexing/gather; PyTorch requires int64
         present = index_map >= 0
-        src_idx = index_map[present]
 
-        derived = set(self._REINDEX_DERIVED)
-        for f in dc_fields(self):
-            name = f.name
-            if name == "hkl" or name in derived:
-                continue
-            val = getattr(self, name)
-            if not isinstance(val, torch.Tensor):
-                continue
-            if not (val.shape and val.shape[0] == n_src):
-                # Non-per-reflection tensor: leave target's own value untouched
-                # (a fresh default when target is a new instance).
-                continue
-            if name == "hkl_anomalous":
-                # Present rows keep their signed (anomalous) index; missing rows
-                # fall back to the canonical reference HKL (never a 0,0,0 row).
-                out = new_hkl.clone()
-                out[present] = val[src_idx]
-            else:
-                fill = self._REINDEX_FILL.get(name, 0)
-                out = torch.full(
-                    (n_out,) + tuple(val.shape[1:]),
-                    fill,
-                    dtype=val.dtype,
-                    device=self.device,
-                )
-                out[present] = val[src_idx]
-            setattr(target, name, out)
+        skip = {"hkl", *self._REINDEX_DERIVED}
+        # Collected first: writing into self (the in-place case) changes the
+        # row count _per_row_fields keys on.
+        gathered = {
+            name: self._gather_rows(val, index_map, self._REINDEX_FILL.get(name, 0))
+            for name, val in self._per_row_fields()
+            if name not in skip
+        }
+        if "hkl_anomalous" in gathered:
+            # Missing rows fall back to the reference HKL, never a 0,0,0 row.
+            gathered["hkl_anomalous"][~present] = new_hkl[~present]
+        for name, val in gathered.items():
+            setattr(target, name, val)
 
         # Install the new HKL and recompute / invalidate derived-from-HKL fields.
         target.hkl = new_hkl
-        target.bin_indices = None
         target._centric_flags = None
         if target.cell is not None:
             target._calculate_resolution()
@@ -476,11 +488,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Post-condition for the reindex routines; raises rather than letting a
         stale-length field surface as a downstream shape mismatch.
         """
-        from dataclasses import fields as dc_fields
-
         n = len(self.hkl) if self.hkl is not None else 0
         bad = []
-        for f in dc_fields(self):
+        for f in fields(self):
             val = getattr(self, f.name)
             if isinstance(val, torch.Tensor) and val.ndim >= 1 and val.shape[0] != n:
                 bad.append((f.name, tuple(val.shape)))
@@ -491,8 +501,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     def _canonicalize_in_place(self) -> None:
         """Remap HKL to canonical CCP4 ASU form and reorder all data in-place."""
-        from dataclasses import fields as dc_fields
-
         if self.hkl is None or self.spacegroup is None:
             return
 
@@ -502,13 +510,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
         )
 
-        n_refl = len(self.hkl)
-
-        for f in dc_fields(self):
-            val = getattr(self, f.name)
-            if isinstance(val, torch.Tensor) and val.shape and val.shape[0] == n_refl:
-                setattr(self, f.name, val[sort_indices])
-
+        masks = self._gathered_masks(sort_indices)
+        for name, val in list(self._per_row_fields()):
+            setattr(self, name, val[sort_indices])
+        self._replace_masks(masks)
         self.hkl = canonical_hkl
 
         if self.phase is not None:
@@ -518,17 +523,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         if self.cell is not None:
             self._calculate_resolution()
-
-        if hasattr(self, "masks") and self.masks is not None:
-            for name in list(self.masks.keys()):
-                mask_tensor = self.masks[name]
-                if mask_tensor is not None:
-                    # Bypass __setitem__ validation (reordering preserves True count)
-                    dict.__setitem__(self.masks, name, mask_tensor[sort_indices])
-            self.masks._updated = True
-
-        if hasattr(self, "dataset") and self.dataset is not None:
-            self.dataset = self.dataset.iloc[sort_indices.cpu().numpy()].copy()
 
         # friedel_flags comes back already in sorted (canonical) order, matching
         # self.hkl. hkl_anomalous carries the SIGNED index used for
@@ -685,6 +679,72 @@ class ReflectionData(CrystalDataset, DebugMixin):
         uniq, inverse = torch.unique(self.hkl.cpu(), dim=0, return_inverse=True)
         return inverse.to(self.device), int(uniq.shape[0])
 
+    def bijvoet_mean(
+        self, values: torch.Tensor, valid: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Replace each row's value by the mean over the valid rows of its Bijvoet pair.
+
+        For consumers that want one value per reflection -- a Hermitian map
+        puts each amplitude at ``h`` and its conjugate at ``-h``, so feeding it
+        both mates would count every measured pair twice. Merged data are
+        returned unchanged.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            Per-row real values of shape (N,), e.g. amplitudes or differences.
+        valid : torch.Tensor, optional
+            Boolean (N,), rows allowed to contribute. Defaults to ``masks()``.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape (N,). Rows of a pair with no valid member keep their own value.
+        """
+        if self.friedel_merged:
+            return values
+        if valid is None:
+            valid = self.masks()
+        if valid is None:
+            valid = torch.ones_like(values, dtype=torch.bool)
+        group_id, n_groups = self.asu_group_indices()
+        w = valid.to(values.dtype)
+        total = torch.zeros(n_groups, dtype=values.dtype, device=values.device)
+        total = total.index_add(0, group_id, torch.where(valid, values, 0.0))
+        count = torch.zeros_like(total).index_add(0, group_id, w)
+        mean = (total / count.clamp(min=1))[group_id]
+        return torch.where(count[group_id] > 0, mean, values)
+
+    def bijvoet_representatives(
+        self, valid: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """One row index per unique reflection, in row order.
+
+        Pairs with :meth:`bijvoet_mean` to build a Friedel-averaged reflection
+        list from anomalous data. For merged data every row is its own
+        representative.
+
+        Parameters
+        ----------
+        valid : torch.Tensor, optional
+            Boolean (N,). If given, only reflections with at least one valid row
+            are represented.
+
+        Returns
+        -------
+        torch.Tensor
+            Row indices, int64, ascending.
+        """
+        if self.friedel_merged:
+            if valid is None:
+                return torch.arange(len(self.hkl), device=self.device)
+            return torch.nonzero(valid).squeeze(-1)
+        group_id, n_groups = self.asu_group_indices()
+        rows = self._group_representative_rows(group_id, n_groups)
+        if valid is not None:
+            rows = rows[self._group_any(valid, group_id, n_groups)]
+        return torch.sort(rows).values
+
     @staticmethod
     def _group_any(
         mask: torch.Tensor, group_id: torch.Tensor, n_groups: int
@@ -796,12 +856,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     requires_grad=False,
                 )
             self.intensity_source = data_dict.get("I_col", "Unknown")
-            self._FrenchWilson = FrenchWilson(
-                self.hkl, self.cell.data, self.spacegroup, verbose=self.verbose
+            self.F, self.F_sigma, fw_keep = french_wilson_auto(
+                self.I,
+                self.I_sigma,
+                self.hkl,
+                self.resolution,
+                self.spacegroup or "P1",
             )
-            F, F_sigma = self._FrenchWilson(self.I, self.I_sigma)
-            self.F = F
-            self.F_sigma = F_sigma
             # Record French-Wilson's own input criterion, evaluated on the true
             # intensities. This is strictly better than anything reconstructible
             # from the amplitudes afterwards: F is a positive posterior mean, so
@@ -812,7 +873,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             # outlier mask -- this one guards the posterior integral against
             # unphysical input, which is a different question from whether an
             # observation is an outlier.
-            self._set_french_wilson_mask(self._FrenchWilson.valid_mask)
+            self._set_french_wilson_mask(fw_keep)
         elif "F" in data_dict:
             self.F = torch.tensor(
                 data_dict["F"],
@@ -869,9 +930,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Generate only after canonicalization: the free set must be drawn on
         # unique ASU reflections, and the Bijvoet grouping that requires does
         # not exist until _canonicalize_in_place has run. See
-        # asu_group_indices / _generate_rfree_flags.
+        # asu_group_indices / generate_rfree_flags.
         if self.rfree_flags is None:
-            self._generate_rfree_flags()
+            self.generate_rfree_flags()
 
         return self
 
@@ -908,9 +969,16 @@ class ReflectionData(CrystalDataset, DebugMixin):
         verbose: int = 1,
         friedel_merged: Optional[bool] = None,
         detach: bool = True,
+        I: Optional[torch.Tensor] = None,
+        I_sigma: Optional[torch.Tensor] = None,
+        validation_flags: Optional[torch.Tensor] = None,
     ) -> "ReflectionData":
         """
         Construct ReflectionData directly from tensors.
+
+        Every per-reflection tensor must be row-aligned with ``hkl`` as passed.
+        Canonicalization then reorders all of them together, so pass them here
+        rather than assigning them to the returned object.
 
         Parameters
         ----------
@@ -941,6 +1009,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
             True (default) stores constant observations, dropping the caller's
             autograd graph; False keeps it so gradients reach whatever produced
             ``F``/``F_sigma``.
+        I, I_sigma : torch.Tensor, optional
+            Intensities and their uncertainties of shape (N,). Stored as given;
+            ``F`` is not derived from them.
+        validation_flags : torch.Tensor, optional
+            Boolean validation-set flags of shape (N,).
 
         Returns
         -------
@@ -978,6 +1051,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
             data.rfree_flags = _prep(rfree_flags).to(
                 device=data.device, dtype=torch.bool
             )
+        if I is not None:
+            data.I = _prep(I).to(device=data.device)
+        if I_sigma is not None:
+            data.I_sigma = _prep(I_sigma).to(device=data.device)
+        if validation_flags is not None:
+            data.validation_flags = _prep(validation_flags).to(
+                device=data.device, dtype=torch.bool
+            )
 
         # Set before canonicalization, which is what detects real Bijvoet mates
         # and downgrades this to False -- the same seam load() goes through.
@@ -988,7 +1069,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # As in load(): generate after canonicalization so the draw can group
         # Bijvoet mates onto a shared canonical index.
         if data.rfree_flags is None:
-            data._generate_rfree_flags()
+            data.generate_rfree_flags()
 
         return data
 
@@ -1091,44 +1172,25 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             Self, for method chaining.
         """
-        self.reader = cif.ReflectionCIFReader(
+        reader = cif.ReflectionCIFReader(
             str(path), verbose=self.verbose, data_block=data_block, anomalous=anomalous
         )
-        return self.load(self.reader)
+        return self.load(reader)
 
-    @staticmethod
-    def list_cif_data_blocks(path: str) -> List[str]:
-        """
-        List all data blocks available in a CIF file without loading data.
-
-        Useful for multi-dataset CIF files to inspect available blocks
-        before loading a specific one.
-
-        Parameters
-        ----------
-        path : str
-            Path to CIF file.
-
-        Returns
-        -------
-        list of str
-            Names of all data blocks in the CIF file, in file order; pass one to
-            ``load_cif(data_block=...)``.
-        """
-        return cif.list_data_blocks(path)
-
-    def _generate_rfree_flags(
+    def generate_rfree_flags(
         self,
         free_fraction: float = 0.02,
         n_bins: int = 10,
         min_per_bin: int = 1000,
         min_free_per_bin: int = 50,
         seed: Optional[int] = None,
+        force: bool = False,
     ) -> None:
         """
         Generate R-free flags with resolution-stratified sampling.
 
         Sets ``rfree_flags`` (int32, 1=work/0=free) and ``rfree_source``.
+        ``load`` and ``from_tensors`` call this when the input carries no flags.
 
         The draw is over *unique ASU reflections*, not rows: the two members of
         a Bijvoet pair share a canonical index (see :meth:`asu_group_indices`)
@@ -1139,8 +1201,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Only reflections passing the validity masks are drawn from, so the
         counts below describe usable reflections rather than raw rows.
-
-        Must be called *after* canonicalization -- see :meth:`load`.
 
         Parameters
         ----------
@@ -1157,7 +1217,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Minimum free unique reflections per bin, clamped to the number the
             bin holds.
         seed : int, optional
-            Random seed for reproducibility. Default is None.
+            Seeds the **global** torch and numpy RNGs before the draw, so the
+            same seed on the same data reproduces the same set.
+        force : bool, optional
+            Overwrite existing flags. Default False: existing flags are kept and
+            the call only warns.
 
         Raises
         ------
@@ -1167,38 +1231,35 @@ class ReflectionData(CrystalDataset, DebugMixin):
             If the data have not been canonicalized (via
             :meth:`asu_group_indices`).
         """
+        if self.rfree_flags is not None and not force:
+            warnings.warn(
+                f"R-free flags already exist ({self.rfree_source}); "
+                "pass force=True to overwrite them."
+            )
+            return
         if self.resolution is None:
             raise ValueError("Resolution information required to generate R-free flags")
+        if self.verbose > 0:
+            if self.rfree_flags is not None:
+                print(f"Overwriting existing R-free flags ({self.rfree_source})")
+            print(
+                f"Generating R-free flags: {free_fraction*100:.1f}% free, "
+                f"{n_bins} bins of >= {min_per_bin}, >= {min_free_per_bin} free per bin"
+            )
 
-        print("Generating R-free flags:")
-        print(f"  Target free fraction: {free_fraction*100:.1f}%")
-        print(f"  Target bins: {n_bins}")
-        print(f"  Minimum per bin: {min_per_bin} reflections")
-        print(f"  Minimum free per bin: {min_free_per_bin} reflections")
-
-        # Set random seed for reproducibility
         if seed is not None:
             np.random.seed(seed)
             torch.manual_seed(seed)
 
-        n_refl = len(self.resolution)
-
-        # Create resolution bins
         bin_indices, actual_n_bins = self.get_bins(
             n_bins=n_bins, min_per_bin=min_per_bin
         )
-
-        print(f"  Created {actual_n_bins} resolution bins")
-
-        # Draw on unique ASU reflections rather than rows, so Bijvoet mates
-        # (which share a canonical index) cannot be split across work/free.
         group_id, n_groups = self.asu_group_indices()
 
         # A group is eligible if any of its rows survives the validity masks;
         # spending the free quota on masked-out rows would silently shrink the
         # usable free set below min_free_per_bin.
-        valid = self.masks().to(torch.bool)
-        group_valid = self._group_any(valid, group_id, n_groups)
+        group_valid = self._group_any(self.masks().to(torch.bool), group_id, n_groups)
         if not bool(group_valid.any()):
             warnings.warn(
                 "No reflections pass the validity masks; drawing R-free flags "
@@ -1206,31 +1267,16 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
             group_valid = torch.ones_like(group_valid)
 
-        # One bin per group, from a representative row.
         group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
-
-        group_free = torch.zeros(n_groups, dtype=torch.bool, device=self.device)
-        for bin_idx in range(actual_n_bins):
-            eligible = torch.where((group_bin == bin_idx) & group_valid)[0]
-            n_bin_groups = int(eligible.numel())
-            if n_bin_groups == 0:
-                continue
-
-            # At least min_free_per_bin unique reflections, otherwise
-            # free_fraction of the bin; never more than the bin holds.
-            n_free_in_bin = min(
-                n_bin_groups,
-                max(min_free_per_bin, int(n_bin_groups * free_fraction)),
-            )
-            perm = torch.randperm(n_bin_groups, device=eligible.device)[:n_free_in_bin]
-            group_free[eligible[perm]] = True
-
-        # Broadcast each group's decision to every row sharing its ASU index.
-        flags = torch.ones(
-            n_refl, dtype=dtypes.int, device=self.device, requires_grad=False
+        group_free = self._stratified_group_draw(
+            group_valid,
+            group_bin,
+            actual_n_bins,
+            lambda n: min(n, max(min_free_per_bin, int(n * free_fraction))),
         )
-        flags[group_free[group_id]] = 0
 
+        flags = torch.ones(len(self.resolution), dtype=dtypes.int, device=self.device)
+        flags[group_free[group_id]] = 0
         self.rfree_flags = flags
         # The seed belongs in the provenance string: without it "generated"
         # names a draw nobody can reproduce.
@@ -1240,23 +1286,50 @@ class ReflectionData(CrystalDataset, DebugMixin):
             + ")"
         )
 
-        n_free = (flags == 0).sum().item()
-        n_work = (flags != 0).sum().item()
-        free_pct = 100.0 * n_free / n_refl
+        if self.verbose > 0:
+            n_free = int((flags == 0).sum())
+            print(
+                f"  {n_free} free ({100.0 * n_free / len(flags):.1f}%) in "
+                f"{actual_n_bins} bins, drawn over {int(group_valid.sum())} unique "
+                "ASU reflections; Bijvoet mates share a flag"
+            )
 
-        print(
-            f"  ✓ Generated flags: {n_free} free ({free_pct:.1f}%), {n_work} work ({100-free_pct:.1f}%)"
-        )
-        print(
-            f"  Drawn over {int(group_valid.sum())} unique ASU reflections "
-            f"({n_groups} groups total); Bijvoet mates share a flag"
-        )
+    @staticmethod
+    def _stratified_group_draw(
+        eligible: torch.Tensor,
+        group_bin: torch.Tensor,
+        n_bins: int,
+        n_to_draw: Callable[[int], int],
+    ) -> torch.Tensor:
+        """Draw ``n_to_draw(n)`` of the ``n`` eligible groups in each resolution bin.
+
+        Shared by R-free and validation-set generation so both split whole ASU
+        groups the same way. Uses the global torch RNG, one ``randperm`` per
+        non-empty bin in bin order, so a seeded caller is reproducible.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean mask of shape ``(n_groups,)``, True for drawn groups.
+        """
+        drawn = torch.zeros_like(eligible, dtype=torch.bool)
+        for b in range(n_bins):
+            members = torch.where((group_bin == b) & eligible)[0]
+            n = int(members.numel())
+            if n == 0:
+                continue
+            perm = torch.randperm(n, device=members.device)[: n_to_draw(n)]
+            drawn[members[perm]] = True
+        return drawn
 
     def get_bins(
         self, n_bins: int = 20, min_per_bin: int = 100
     ) -> Tuple[torch.Tensor, int]:
         """
-        Create resolution bins with approximately equal reflection counts.
+        Create resolution bins with approximately equal counts of valid reflections.
+
+        Pure: nothing is stored on the dataset, so callers that need the same
+        bins later (e.g. :meth:`mean_res_per_bin`) must keep the returned tensor.
 
         Parameters
         ----------
@@ -1328,160 +1401,35 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     )
             if actual_n_bins > 20:
                 print(f"    ... ({actual_n_bins - 20} more bins)")
-        self.bin_indices = bin_indices
-        self._n_bins = actual_n_bins
         return bin_indices, actual_n_bins
 
-    def mean_res_per_bin(self) -> torch.Tensor:
+    def mean_res_per_bin(self, bin_indices: torch.Tensor, n_bins: int) -> torch.Tensor:
         """
-        Calculate mean resolution for each bin.
-
-        Returns
-        -------
-        torch.Tensor
-            Mean resolution for each bin in Ångströms.
-
-        Raises
-        ------
-        ValueError
-            If bins have not been created yet.
-        """
-        if self.bin_indices is None or self.resolution is None:
-            raise ValueError("Bins have not been created yet")
-
-        mean_resolutions = torch.zeros(
-            self._n_bins, dtype=dtypes.float, device=self.device
-        )
-        count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
-        mask = self.masks()
-        mean_resolutions = torch.scatter_add(
-            mean_resolutions,
-            0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
-            self.resolution[mask],
-        )
-        count_per_bin = torch.scatter_add(
-            count_per_bin,
-            0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add/index; PyTorch requires int64
-            torch.ones_like(self.resolution[mask], dtype=dtypes.int),
-        )
-        mean_resolutions = mean_resolutions / count_per_bin.clamp(min=1).float()
-        return mean_resolutions
-
-    def mean_F_per_bin(self) -> torch.Tensor:
-        """
-        Calculate mean structure factor amplitude per resolution bin.
-
-        Returns
-        -------
-        torch.Tensor
-            Mean F per bin of shape (n_bins,).
-
-        Raises
-        ------
-        ValueError
-            If bins have not been created yet.
-        """
-        if self.bin_indices is None:
-            self.get_bins()
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        mean_F = torch.zeros(self._n_bins, dtype=dtypes.float, device=self.device)
-        count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
-        mask = self.masks()
-        mean_F = torch.scatter_add(
-            mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
-        )
-        count_per_bin = torch.scatter_add(
-            count_per_bin,
-            0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
-            torch.ones_like(self.F[mask], dtype=dtypes.int),
-        )
-        mean_F = mean_F / count_per_bin.clamp(min=1).float()
-        return mean_F
-
-    def mean_sigma_per_bin(self) -> Optional[torch.Tensor]:
-        """
-        Calculate mean structure factor uncertainty per resolution bin.
-
-        Returns
-        -------
-        torch.Tensor or None
-            Mean sigma_F per bin of shape (n_bins,), or None if no uncertainties.
-
-        Raises
-        ------
-        ValueError
-            If bins have not been created yet.
-        """
-        if self.bin_indices is None:
-            self.get_bins()
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        mean_sigma = torch.zeros(self._n_bins, dtype=dtypes.float, device=self.device)
-        count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
-        mask = self.masks()
-        mean_sigma = torch.scatter_add(
-            mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
-        )
-        count_per_bin = torch.scatter_add(
-            count_per_bin,
-            0,
-            self.bin_indices[mask].to(torch.int64),  # dtype-ok: bin indices for scatter_add index arg; PyTorch requires int64
-            torch.ones_like(self.F_sigma[mask], dtype=dtypes.int),
-        )
-        mean_sigma = mean_sigma / count_per_bin.clamp(min=1).float()
-        return mean_sigma
-
-    def regenerate_rfree_flags(
-        self,
-        free_fraction: float = 0.02,
-        n_bins: int = 10,
-        min_per_bin: int = 1000,
-        min_free_per_bin: int = 50,
-        seed: Optional[int] = None,
-        force: bool = False,
-    ) -> None:
-        """
-        Regenerate R-free flags with resolution-stratified sampling.
+        Mean resolution of the valid reflections in each bin.
 
         Parameters
         ----------
-        free_fraction : float, optional
-            Fraction of reflections to mark as free. Default is 0.02 (2%).
-        n_bins : int, optional
-            Target number of resolution bins. Default is 10.
-        min_per_bin : int, optional
-            Minimum reflections per resolution bin. Default is 1000.
-        min_free_per_bin : int, optional
-            Minimum free reflections per resolution bin. Default is 50.
-        seed : int, optional
-            Random seed for reproducibility. Default is None.
-        force : bool, optional
-            If True, overwrite existing flags. Default False, in which case an
-            existing set is kept and the call is a no-op (warning only).
+        bin_indices : torch.Tensor
+            Bin of each reflection, shape (N,), as returned by :meth:`get_bins`.
+        n_bins : int
+            Number of bins, as returned by :meth:`get_bins`.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean resolution per bin in Ångströms, shape (n_bins,); 0 for an
+            empty bin.
         """
-        if self.rfree_flags is not None and not force:
-            print("⚠️  WARNING: R-free flags already exist!")
-            print(f"   Current source: {self.rfree_source}")
-            print("   Use force=True to overwrite existing flags")
-            return
-
-        if self.rfree_flags is not None and force:
-            print("⚠️  WARNING: Overwriting existing R-free flags")
-            print(f"   Old source: {self.rfree_source}")
-
-        self._generate_rfree_flags(
-            free_fraction=free_fraction,
-            n_bins=n_bins,
-            min_per_bin=min_per_bin,
-            min_free_per_bin=min_free_per_bin,
-            seed=seed,
+        if self.resolution is None:
+            self._calculate_resolution()
+        mask = self.masks()
+        idx = bin_indices[mask].to(torch.int64)  # dtype-ok: index_add_ requires int64 indices
+        res = self.resolution[mask]
+        total = torch.zeros(n_bins, dtype=res.dtype, device=res.device).index_add_(
+            0, idx, res
         )
+        count = torch.zeros_like(total).index_add_(0, idx, torch.ones_like(res))
+        return total / count.clamp(min=1)
 
     def _calculate_resolution(self) -> None:
         """Set ``self.resolution`` to per-reflection d-spacing in Ångströms.
@@ -1499,309 +1447,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         s = math_torch.get_scattering_vectors(self.hkl, self.cell.data)
         resolution = 1.0 / torch.linalg.norm(s, axis=1)
         self.resolution = resolution
-
-    def _calculate_wilson_b(self, n_bins: int = 30) -> None:
-        """Fit a two-component Wilson plot, ``<F²> ∝ A_s·exp(-2B_s·s²) + A_sol·exp(-2B_sol·s²)``.
-
-        Sets ``wilson_b`` (= the structure B), ``wilson_b_structure``,
-        ``wilson_b_solvent`` and ``wilson_k_sol`` (clamped to 0.01-0.9). Returns
-        early without setting anything when there are too few valid reflections
-        or bins, so callers must not assume the attributes exist afterwards.
-        ``n_bins`` (default 30) is the averaging bin count.
-        """
-        if self.F is None or self.resolution is None:
-            return
-
-        # Get valid reflections
-        F = self.F
-        d = self.resolution
-        valid = torch.isfinite(F) & (F > 0) & torch.isfinite(d)
-
-        if valid.sum() < 100:
-            if self.verbose > 0:
-                print(
-                    f"  Wilson B: insufficient data ({valid.sum()} reflections), skipping"
-                )
-            return
-
-        F_valid = F[valid]
-        d_valid = d[valid]
-
-        # Calculate s² = 1/(4d²)
-        s_sq = 1.0 / (4.0 * d_valid**2)
-        F_sq = F_valid**2
-
-        # Bin the data for noise reduction
-        s_sq_min, s_sq_max = s_sq.min(), s_sq.max()
-        bin_edges = torch.linspace(s_sq_min, s_sq_max, n_bins + 1, device=self.device)
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        bin_idx = torch.bucketize(s_sq, bin_edges[1:-1])
-
-        # Calculate mean F² per bin
-        bin_sums = torch.zeros(n_bins, device=self.device, dtype=F_sq.dtype)
-        bin_counts = torch.zeros(n_bins, device=self.device, dtype=F_sq.dtype)
-        bin_sums.scatter_add_(0, bin_idx, F_sq)
-        bin_counts.scatter_add_(0, bin_idx, torch.ones_like(F_sq))
-
-        valid_bins = bin_counts > 5
-        if valid_bins.sum() < 5:
-            if self.verbose > 0:
-                print(f"  Wilson B: insufficient bins ({valid_bins.sum()}), skipping")
-            return
-
-        mean_F_sq = bin_sums[valid_bins] / bin_counts[valid_bins]
-        s_sq_bins = bin_centers[valid_bins]
-
-        # Convert s² back to d-spacing for resolution-based selection
-        d_bins = 1.0 / (2.0 * torch.sqrt(s_sq_bins))
-
-        # Stage 1: Fit high-resolution region (d < 3.5 Å) for structure B
-        high_res_mask = d_bins < 3.5
-        B_struct = self._fit_single_wilson(
-            s_sq_bins, mean_F_sq, high_res_mask, "high-res"
-        )
-
-        # Stage 2: Fit low-resolution region (d > 6 Å) for solvent B
-        low_res_mask = d_bins > 6.0
-        B_sol = self._fit_single_wilson(s_sq_bins, mean_F_sq, low_res_mask, "low-res")
-
-        # Stage 3: Two-component fit across all data
-        B_struct_final, B_sol_final, k_sol = self._fit_two_component_wilson(
-            s_sq_bins, mean_F_sq, B_struct, B_sol
-        )
-
-        # Store results
-        self.wilson_b_structure = B_struct_final
-        self.wilson_b_solvent = B_sol_final
-        self.wilson_k_sol = k_sol
-
-        # Overall Wilson B is the structure B (what people usually mean by "Wilson B")
-        self.wilson_b = B_struct_final
-
-        if self.verbose > 0:
-            print(f"  Wilson B-factor (structure): {B_struct_final:.1f} Å²")
-            print(f"  Wilson B-factor (solvent):   {B_sol_final:.1f} Å²")
-            print(f"  Solvent fraction (k_sol):    {k_sol:.3f}")
-
-    def _fit_single_wilson(
-        self,
-        s_sq: torch.Tensor,
-        mean_F_sq: torch.Tensor,
-        mask: torch.Tensor,
-        label: str,
-    ) -> float:
-        """Fit ``ln(F²) = c - 2B·s²`` over the masked bins, clamped to 0-300 Å².
-
-        ``label`` is not only cosmetic: with fewer than 3 usable bins the
-        fallback is 50.0 when it contains "struct", else 200.0.
-        """
-        if mask.sum() < 3:
-            # Not enough data, return reasonable default
-            if self.verbose > 1:
-                print(
-                    f"    Wilson {label}: insufficient bins ({mask.sum()}), using default"
-                )
-            return 50.0 if "struct" in label else 200.0
-
-        x = s_sq[mask]
-        y = torch.log(mean_F_sq[mask])
-
-        # Linear regression: ln(F²) = const - 2B*s²
-        x_mean = x.mean()
-        y_mean = y.mean()
-
-        numerator = ((x - x_mean) * (y - y_mean)).sum()
-        denominator = ((x - x_mean) ** 2).sum()
-
-        if denominator < 1e-12:
-            return 50.0 if "struct" in label else 200.0
-
-        slope = numerator / denominator
-        B = -slope.item() / 2.0
-
-        # Sanity bounds
-        B = max(0.0, min(B, 300.0))
-
-        return B
-
-    def _fit_two_component_wilson(
-        self,
-        s_sq: torch.Tensor,
-        mean_F_sq: torch.Tensor,
-        B_struct_init: float,
-        B_sol_init: float,
-        n_iter: int = 50,
-    ) -> Tuple[float, float, float]:
-        """Refine ``F² = A·[(1-k)·exp(-2B_s·s²) + k·exp(-2B_sol·s²)]`` by finite-difference descent.
-
-        ``k`` is the relative solvent contribution at s²=0. Returns
-        ``(B_struct, B_sol, k_sol)``, constrained to B_s in 1-200, B_sol in
-        50-500 with ``B_sol >= B_struct + 20``, and k in 0.01-0.9 -- so a
-        returned value sitting exactly on a bound means the fit hit the clamp.
-        """
-        # Normalize F² for numerical stability
-        F_sq_max = mean_F_sq.max()
-        y = mean_F_sq / F_sq_max
-        x = s_sq
-
-        # Initialize parameters
-        B_struct = torch.tensor(B_struct_init, device=self.device, dtype=x.dtype)
-        B_sol = torch.tensor(B_sol_init, device=self.device, dtype=x.dtype)
-
-        # Estimate initial k from ratio of low-res to high-res decay
-        # At low resolution, solvent contributes more
-        d_from_s = 1.0 / (2.0 * torch.sqrt(x))
-        low_res_val = y[d_from_s > 5.0].mean() if (d_from_s > 5.0).any() else y[0]
-        high_res_val = y[d_from_s < 3.0].mean() if (d_from_s < 3.0).any() else y[-1]
-
-        # k estimates solvent fraction - if low res is much higher than expected
-        # from structure alone, there's solvent contribution
-        struct_decay = torch.exp(-2 * B_struct * x)
-        expected_low = (
-            struct_decay[d_from_s > 5.0].mean()
-            if (d_from_s > 5.0).any()
-            else struct_decay[0]
-        )
-
-        if expected_low > 1e-6 and low_res_val > expected_low:
-            k_init = min(0.5, (low_res_val - expected_low).item() / low_res_val.item())
-        else:
-            k_init = 0.1
-
-        k = torch.tensor(max(0.01, min(0.5, k_init)), device=self.device, dtype=x.dtype)
-
-        # Simple gradient descent refinement
-        lr = 0.1
-
-        for _ in range(n_iter):
-            # Compute model
-            struct_term = (1 - k) * torch.exp(-2 * B_struct * x)
-            sol_term = k * torch.exp(-2 * B_sol * x)
-            model = struct_term + sol_term
-
-            # Compute scale factor analytically
-            A = (y * model).sum() / (model * model).sum()
-            model_scaled = A * model
-
-            # Compute gradients (simplified, using finite differences for robustness)
-            eps = 0.1
-
-            # B_struct gradient
-            model_plus = A * ((1 - k) * torch.exp(-2 * (B_struct + eps) * x) + sol_term)
-            model_minus = A * (
-                (1 - k) * torch.exp(-2 * (B_struct - eps) * x) + sol_term
-            )
-            loss_plus = ((y - model_plus) ** 2).sum()
-            loss_minus = ((y - model_minus) ** 2).sum()
-            grad_B_struct = (loss_plus - loss_minus) / (2 * eps)
-
-            # B_sol gradient
-            model_plus = A * (struct_term + k * torch.exp(-2 * (B_sol + eps) * x))
-            model_minus = A * (struct_term + k * torch.exp(-2 * (B_sol - eps) * x))
-            loss_plus = ((y - model_plus) ** 2).sum()
-            loss_minus = ((y - model_minus) ** 2).sum()
-            grad_B_sol = (loss_plus - loss_minus) / (2 * eps)
-
-            # k gradient
-            eps_k = 0.01
-            k_plus = min(0.9, k + eps_k)
-            k_minus = max(0.01, k - eps_k)
-            model_plus = A * (
-                (1 - k_plus) * torch.exp(-2 * B_struct * x)
-                + k_plus * torch.exp(-2 * B_sol * x)
-            )
-            model_minus = A * (
-                (1 - k_minus) * torch.exp(-2 * B_struct * x)
-                + k_minus * torch.exp(-2 * B_sol * x)
-            )
-            loss_plus = ((y - model_plus) ** 2).sum()
-            loss_minus = ((y - model_minus) ** 2).sum()
-            grad_k = (loss_plus - loss_minus) / (2 * eps_k)
-
-            # Update parameters
-            B_struct = B_struct - lr * grad_B_struct
-            B_sol = B_sol - lr * grad_B_sol
-            k = k - lr * 0.1 * grad_k  # Slower learning rate for k
-
-            # Enforce constraints
-            B_struct = torch.clamp(B_struct, 1.0, 200.0)
-            B_sol = torch.clamp(B_sol, 50.0, 500.0)
-            k = torch.clamp(k, 0.01, 0.9)
-
-            # Ensure B_sol > B_struct (solvent is more disordered)
-            if B_sol < B_struct + 20:
-                B_sol = B_struct + 20
-
-        return B_struct.item(), B_sol.item(), k.item()
-
-    def get_structure_factors(self, as_complex: bool = False) -> torch.Tensor:
-        """
-        Get structure factors, optionally as complex numbers.
-
-        Parameters
-        ----------
-        as_complex : bool, optional
-            If True and phases available, return F*exp(i*phi). Default is False.
-
-        Returns
-        -------
-        torch.Tensor
-            Structure factor amplitudes or complex structure factors.
-
-        Raises
-        ------
-        ValueError
-            If no amplitude data is loaded.
-        """
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        if as_complex and self.phase is not None:
-            return self.F * torch.exp(1j * self.phase)
-        else:
-            return self.F
-
-    def get_structure_factors_with_sigma(
-        self,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Get structure factor amplitudes and their uncertainties.
-
-        Returns
-        -------
-        F : torch.Tensor
-            Structure factor amplitudes of shape (N,).
-        F_sigma : torch.Tensor or None
-            Uncertainties of shape (N,), or None if not available.
-
-        Raises
-        ------
-        ValueError
-            If no amplitude data is loaded.
-        """
-        if self.F is None:
-            raise ValueError("No amplitude data loaded")
-
-        return self.F, self.F_sigma
-
-    def get_hkl(self):
-        """
-        Return Miller indices for valid reflections.
-
-        Returns
-        -------
-        torch.Tensor
-            Miller indices of the valid subset, shape (M, 3) with M <= N
-            (M = number of valid reflections), dtype int32.
-
-        Raises
-        ------
-        ValueError
-            If no Miller indices are loaded.
-        """
-        if self.hkl is None:
-            raise ValueError("No Miller indices loaded")
-        return self.hkl[self.masks()]
 
     def filter_by_resolution(
         self, d_min: Optional[float] = None, d_max: Optional[float] = None
@@ -1835,51 +1480,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         self.masks["resolution"] = mask
 
-        valid = self.masks().sum().item()
-        print(
-            f"Filtering: {mask.sum()}/{len(mask)} reflections in range "
-            f"[{d_max if d_max else 'inf'} - {d_min if d_min else 'inf'}] "
-            f"\u00c5 ({valid} valid after all masks)"
-        )
+        if self.verbose > 0:
+            valid = self.masks().sum().item()
+            print(
+                f"Filtering: {mask.sum()}/{len(mask)} reflections in range "
+                f"[{d_max if d_max else 'inf'} - {d_min if d_min else 'inf'}] "
+                f"\u00c5 ({valid} valid after all masks)"
+            )
 
         return self
-
-    def cut_res(
-        self, highres: Optional[float] = None, lowres: Optional[float] = None
-    ) -> "ReflectionData":
-        """
-        Filter reflections by resolution range (alias for filter_by_resolution).
-
-        Masks rather than deletes: reflections outside the range stay in the
-        arrays but are excluded by ``masks()``.
-
-        Parameters
-        ----------
-        highres : float, optional
-            High-resolution cutoff (small d, e.g. 1.5 Å); keeps d >= highres.
-        lowres : float, optional
-            Low-resolution cutoff (large d, e.g. 50.0 Å); keeps d <= lowres.
-
-        Returns
-        -------
-        ReflectionData
-            Self, for method chaining.
-        """
-        return self.filter_by_resolution(d_min=highres, d_max=lowres)
-
-    def get_max_res(self) -> Optional[float]:
-        """Smallest d-spacing among valid reflections, in Ångströms."""
-        if self.resolution is None:
-            self._calculate_resolution()
-        mask = self.masks()
-        return float(self.resolution[mask].min().item())
-
-    def get_min_res(self) -> Optional[float]:
-        """Largest d-spacing among valid reflections, in Ångströms."""
-        if self.resolution is None:
-            self._calculate_resolution()
-        mask = self.masks()
-        return float(self.resolution[mask].max().item())
 
     def __len__(self) -> int:
         """Number of reflections (full array, ignoring masks)."""
@@ -1887,8 +1496,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     @property
     def d_min(self) -> Optional[float]:
-        """High-resolution limit: the smallest d-spacing, in Ångströms."""
-        return self.get_max_res()
+        """High-resolution limit: smallest d-spacing of the valid reflections, in Å."""
+        if self.resolution is None:
+            self._calculate_resolution()
+        return float(self.resolution[self.masks()].min().item())
 
     def __repr__(self) -> str:
         """Count, data sources, resolution range and space group."""
@@ -1905,17 +1516,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         parts.append(f"sg={self.spacegroup}")
 
         return ", ".join(parts) + ")"
-
-    def get_valid_mask(self) -> torch.Tensor:
-        """
-        Return the combined validity mask over all active filters.
-
-        Returns
-        -------
-        torch.Tensor
-            Boolean mask of shape (N,); True = valid/included.
-        """
-        return self.masks()
 
     def data_indexed(
         self,
@@ -1950,65 +1550,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         )
 
         return hkl, F, F_sigma, rfree_flags
-
-    def data_fill_masked(
-        self, mode="mean"
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Return data tensors with missing or flagged reflections filled in.
-
-        Parameters
-        ----------
-        mode : str, optional
-            Fill strategy for missing/flagged reflections. Default is 'mean'.
-
-            - 'mean' : fill with the per-bin mean of the present data.
-            - 'zero' : fill with zero.
-
-        Returns
-        -------
-        hkl : torch.Tensor
-            Miller indices of shape (N, 3).
-        F : torch.Tensor
-            Structure factor amplitudes of shape (N,) with gaps filled.
-        F_sigma : torch.Tensor
-            Amplitude uncertainties of shape (N,) with gaps filled.
-        rfree : torch.Tensor
-            R-free flags of shape (N,); filled-in reflections are assigned to
-            the work set (True).
-        """
-        hkl, F, F_sigma = self.hkl, self.F, self.F_sigma
-        if F is None or F_sigma is None:
-            raise ValueError("Amplitude observations and uncertainties are required")
-        mask = self.masks()
-        if not bool(mask.any()):
-            raise ValueError("No valid reflections to fill from")
-        rfree = (
-            self.rfree_flags.clone()
-            if self.rfree_flags is not None
-            else torch.ones_like(mask)
-        )
-
-        if mode == "mean":
-            mean_F = self.mean_F_per_bin()
-            mean_F_sigma = self.mean_sigma_per_bin()
-            F_data = F.clone()
-            F_sigma_data = F_sigma.clone()
-            F_data[~mask] = mean_F[self.bin_indices[~mask]]
-            F_sigma_data[~mask] = mean_F_sigma[self.bin_indices[~mask]]
-            rfree[~mask] = True  # set missing to work set
-            return hkl, F_data, F_sigma_data, rfree
-
-        elif mode == "zero":
-            F_data = F.clone()
-            F_sigma_data = F_sigma.clone()
-            F_data[~mask] = 0.0
-            F_sigma_data[~mask] = 0.0
-            rfree[~mask] = True  # set missing to work set
-            return hkl, F_data, F_sigma_data, rfree
-
-        else:
-            raise ValueError(f"Unknown fill mode: {mode}")
 
     def __getitem__(self, key):
         """
@@ -2047,43 +1588,20 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             New ReflectionData object with selected reflections.
         """
-        from dataclasses import fields as dc_fields
-
-        from torchref.utils.utils import TensorMasks
-
-        n_refl = len(self.hkl) if self.hkl is not None else 0
-
-        # Create new instance with same device
+        if indices.dtype == torch.bool:
+            indices = torch.nonzero(indices).squeeze(-1)
         selected = ReflectionData(verbose=self.verbose, device=self.device)
 
-        for f in dc_fields(self):
+        per_row = dict(self._per_row_fields())
+        for f in fields(self):
             val = getattr(self, f.name)
-            if val is None:
-                continue
-            if isinstance(val, torch.Tensor):
-                if val.shape and val.shape[0] == n_refl:
-                    setattr(selected, f.name, val[indices])
-                else:
-                    # Preserve scalar tensor metadata.
-                    setattr(selected, f.name, val.clone())
-            elif isinstance(val, Cell):
+            if f.name in per_row:
+                setattr(selected, f.name, val[indices])
+            elif isinstance(val, (torch.Tensor, Cell)):
                 setattr(selected, f.name, val.clone())
-            else:
-                # Scalars, strings, None, gemmi objects, etc.
+            elif val is not None:
                 setattr(selected, f.name, val)
-
-        # Handle masks (not a dataclass field)
-        if hasattr(self, "masks") and self.masks is not None and len(self.masks) > 0:
-            new_masks = TensorMasks(device=self.device)
-            for name, mask_tensor in self.masks.items():
-                if mask_tensor is not None:
-                    new_masks[name] = mask_tensor[indices]
-            selected.masks = new_masks
-
-        # Handle DataFrame
-        if hasattr(self, "dataset") and self.dataset is not None:
-            idx_np = indices.cpu().numpy()
-            selected.dataset = self.dataset.iloc[idx_np].copy()
+        selected.masks = self._gathered_masks(indices)
 
         selected.source = self
         selected.last_op = op
@@ -2140,20 +1658,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             if self.F_sigma is not None:
                 self.F_sigma[mask] = 0.0
         return self
-
-    def check_all_data_types(self):
-        """Print dtype/shape (or type/value) of every attribute, for debugging."""
-        for key in self.__dict__:
-            if self.__dict__[key] is not None and isinstance(
-                self.__dict__[key], torch.Tensor
-            ):
-                print(
-                    f"{key}: {self.__dict__[key].dtype}, shape: {self.__dict__[key].shape}"
-                )
-            elif self.__dict__[key] is not None:
-                print(f"{key}: {type(self.__dict__[key])}, value: {self.__dict__[key]}")
-            else:
-                print(f"{key}: None")
 
     def validate_hkl(
         self, hkl_ref: torch.Tensor, *, identity_hkl: Optional[torch.Tensor] = None
@@ -2219,26 +1723,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Reindex EVERY per-reflection field via the shared primitive. Masks are
         # handled separately below because they are not dataclass fields.
+        masks = self._gathered_masks(valid_indices)
         presence_mask = self._reindex_per_reflection(valid_indices, hkl_ref)
         if identity_hkl is not None:
             self.hkl_anomalous = identity_hkl.to(self.hkl).clone()
             self.friedel_flags = (self.hkl_anomalous != self.hkl).any(dim=-1)
-
-        # Transfer existing masks to new indexing
-        old_masks = dict(self.masks.items())
-        # Clear existing masks
-        self.masks.clear()
-        self.masks._updated = True
-
-        for name, old_mask in old_masks.items():
-            if old_mask is not None and len(old_mask) == n_data:
-                # Expand mask: missing reflections are masked out (False)
-                new_mask = torch.zeros(n_ref, dtype=torch.bool, device=self.device)
-                mask = valid_indices >= 0
-                new_mask[mask] = old_mask[valid_indices[mask]]
-                self.masks[name] = new_mask
-
-        # Add presence mask - this is the key mask that marks real vs placeholder data
+        self._replace_masks(masks)
+        # The mask that tells real reflections from placeholder rows.
         self.masks["hkl_present"] = presence_mask
 
         n_present = presence_mask.sum().item()
@@ -2252,21 +1743,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             print(f"  Missing (masked): {n_missing} ({100*n_missing/n_ref:.1f}%)")
 
         self._assert_per_reflection_consistent()
-        return self
-
-    def unpack_one(self):
-        """
-        Unpack one level of source.
-
-        Does not recurse fully and does not flag.
-
-        Returns
-        -------
-        ReflectionData
-            Parent source or self if no source.
-        """
-        if self.source is not None:
-            return self.source
         return self
 
     WILSON_MASK_KEY = "wilson_valid"
@@ -2407,266 +1883,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             device=self.device, dtype=torch.bool
         )
 
-    def flag_suspicious_sigma(self, z_threshold: float = 5.0) -> None:
-        """
-        Flag sigma values that deviate significantly from expected distribution.
-
-        Sigma values from a detector should follow a log-normal distribution.
-        Values with z-scores beyond threshold are flagged as suspicious.
-
-        .. note::
-           No longer run during loading -- :meth:`flag_wilson_outliers`
-           supersedes it. The z-score here is taken against a *global* mean and
-           std of ``log sigma``, but that distribution is a mixture across
-           resolution shells (sigma tracks the intensity fall-off), so the
-           global std is inflated by the resolution trend and the test is
-           correspondingly blunt. It also never looks at ``F`` beside its sigma.
-           Kept for diagnostics and backwards compatibility.
-
-        Parameters
-        ----------
-        z_threshold : float, optional
-            Z-score threshold, on ``log(sigma)``, for flagging a sigma as suspicious.
-            Default is 5.0.
-        """
-        sigmas = self.F_sigma
-        log_sigmas = torch.log(sigmas)
-        flagged_initial = torch.isnan(log_sigmas) | torch.isinf(log_sigmas)
-        mean_log_sigma = torch.mean(log_sigmas[~flagged_initial])
-        std_log_sigma = torch.std(log_sigmas[~flagged_initial]) + 1e-5 * mean_log_sigma
-        z_scores = (log_sigmas - mean_log_sigma) / std_log_sigma
-        flagged = torch.abs(z_scores) > z_threshold
-        flagged = flagged | flagged_initial
-        if self.verbose > 0:
-            n_flagged = flagged.sum().item()
-            n_total = len(sigmas)
-            print(
-                f"Suspicious sigma detection: {n_flagged}/{n_total} ({100*n_flagged/n_total:.2f}%) reflections flagged"
-            )
-        self.masks["flagged_sigma"] = ~flagged
-
-    def dump(self):
-        """
-        Dump all reflection data to console for debugging.
-
-        Prints type, shape, and device information for all attributes.
-        """
-        print("ReflectionData dump:")
-        for key in self.__dict__:
-            value = self.__dict__[key]
-            if isinstance(value, torch.Tensor):
-                print(
-                    f"  {key}: dtype={value.dtype}, shape={value.shape}, device={value.device}"
-                )
-            else:
-                print(f"  {key}: type={type(value)}, value={value}")
-
-    def _build_anomalous_dataframe(
-        self, fcalc: Optional[torch.Tensor] = None
-    ) -> pd.DataFrame:
-        """Build a phenix-style anomalous MTZ DataFrame on the canonical ASU.
-
-        Bijvoet mates share a canonical ASU index in :attr:`hkl`; here they are
-        (a) merged by mean amplitude for the display maps / ``F-obs`` / ``F-model``
-        and (b) unstacked into ``(+)/(-)`` columns. No negative-ASU Miller
-        indices are emitted, so the display maps render normally in Coot while
-        the anomalous columns are available for anomalous difference maps.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor, optional
-            Complex per-row structure factors in the canonical-ASU convention,
-            row-aligned with :attr:`hkl` (see :meth:`structure_factors`). If
-            None, only the observation columns (``F-obs``, ``F-obs(+/-)``,
-            ``SIGF-obs(+/-)``, R-free) are written -- the model-derived columns
-            (``F-model``, ``PHIF-model``, display maps and ``ANOM``/``PANOM``,
-            which need the model phase) are omitted.
-
-        Returns
-        -------
-        pandas.DataFrame
-            One row per unique canonical ASU reflection.
-        """
-        if fcalc is not None and not torch.is_complex(fcalc):
-            raise ValueError("anomalous fcalc, when provided, must be complex")
-        has_model = fcalc is not None
-        if self.friedel_flags is None:
-            raise ValueError(
-                "anomalous output requires canonicalized data with friedel_flags; "
-                "load via load_mtz so Friedel bookkeeping is populated."
-            )
-
-        hkl = self.hkl.detach().cpu()
-        N = hkl.shape[0]
-        flag = self.friedel_flags.detach().cpu()
-
-        # Group rows by unique canonical ASU index; inverse maps row -> group.
-        inverse, M = self.asu_group_indices()
-        inverse = inverse.cpu()
-        # One row per group carries that group's canonical index by definition.
-        uniq = hkl[self._group_representative_rows(inverse, M)]
-
-        # The (+) member is the unconjugated row, (-) is the Friedel-flagged row.
-        arange = torch.arange(N)
-        plus_idx = torch.full((M,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
-        minus_idx = torch.full((M,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
-        # A Bijvoet mate only counts as present if it is a real, positive
-        # observation. Stacked anomalous input (rs.stack_anomalous) carries a
-        # row for every *absent* mate with a NaN intensity, which French-Wilson
-        # maps to F=0; pairing such a phantom with its observed mate would yield
-        # a spurious ANOM = |F_obs - 0| = |F_obs| -- the whole amplitude, not a
-        # Bijvoet difference. Gate membership on the same validity convention as
-        # sanitize_F (finite, positive F and finite sigma) so single-mate
-        # reflections drop to NaN ANOM/PANOM, matching phenix.
-        F_cpu = self.F.detach().cpu()
-        observed = torch.isfinite(F_cpu) & (F_cpu > 0)
-        if self.F_sigma is not None:
-            observed = observed & torch.isfinite(self.F_sigma.detach().cpu())
-        plus_sel = (~flag) & observed
-        minus_sel = flag & observed
-        plus_idx[inverse[plus_sel]] = arange[plus_sel]
-        minus_idx[inverse[minus_sel]] = arange[minus_sel]
-        has_plus = (plus_idx >= 0).numpy()
-        has_minus = (minus_idx >= 0).numpy()
-        pi = plus_idx.clamp(min=0).numpy()
-        mi = minus_idx.clamp(min=0).numpy()
-
-        # Centric flags per ASU group (centrics obey Friedel's law: F(+)=F(-)).
-        cen_full = self.centric
-        centric = np.zeros(M, dtype=bool)
-        if cen_full is not None:
-            cen_full = cen_full.detach().cpu().numpy()
-            centric[has_plus] = cen_full[pi][has_plus]
-            centric[has_minus] = cen_full[mi][has_minus]
-
-        if has_model:
-            fc = fcalc.detach().cpu().numpy()
-            Fc_amp = np.abs(fc)
-            # The (+)/(-) phase columns describe each mate at its own index, so
-            # they read the signed convention. conjugate_friedel is its own
-            # inverse, so it recovers that from the canonical input.
-            Fc_ph = np.angle(
-                self.conjugate_friedel(fcalc).detach().cpu().numpy(), deg=True
-            )
-        F = self.F.detach().cpu().numpy()
-        Fsig = self.F_sigma.detach().cpu().numpy() if self.F_sigma is not None else None
-        rfree = (
-            self.rfree_flags.detach().cpu().numpy().astype(int)
-            if self.rfree_flags is not None
-            else None
-        )
-
-        def plus_of(src):
-            out = np.full(M, np.nan, dtype=np.float64)
-            out[has_plus] = src[pi][has_plus]
-            return out
-
-        def minus_of(src):
-            out = np.full(M, np.nan, dtype=np.float64)
-            out[has_minus] = src[mi][has_minus]
-            return out
-
-        def mirror_centric(plus, minus):
-            # For centrics, the absent mate equals the present one.
-            p = np.where(centric & ~np.isfinite(plus) & np.isfinite(minus), minus, plus)
-            m = np.where(centric & ~np.isfinite(minus) & np.isfinite(plus), plus, minus)
-            return p, m
-
-        # Observed (+/-) amplitudes (always available, no model required).
-        Fobs_p, Fobs_m = plus_of(F), minus_of(F)
-        Fobs_p_out, Fobs_m_out = mirror_centric(Fobs_p, Fobs_m)
-
-        # Merged observed amplitude: mean over present mates. Groups with neither
-        # mate observed average to NaN (expected "empty slice"); nan_to_num'd below.
-        with warnings.catch_warnings(), np.errstate(invalid="ignore"):
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            Fobs_disp = np.nanmean(np.vstack([Fobs_p, Fobs_m]), axis=0)
-
-        uniq_np = uniq.numpy()
-        data = {
-            "H": uniq_np[:, 0],
-            "K": uniq_np[:, 1],
-            "L": uniq_np[:, 2],
-            "F-obs": Fobs_disp,
-            "F-obs(+)": Fobs_p_out,
-            "F-obs(-)": Fobs_m_out,
-        }
-        # Columns that must be FFT-safe (no NaN). Model/map columns are appended
-        # to this list only when a model is supplied.
-        fft_safe = ["F-obs"]
-
-        if has_model:
-            Fmod_p, Fmod_m = plus_of(Fc_amp), minus_of(Fc_amp)
-            Phi_p, Phi_m = plus_of(Fc_ph), minus_of(Fc_ph)
-            Fmod_p_out, Fmod_m_out = mirror_centric(Fmod_p, Fmod_m)
-            Phi_p_out, Phi_m_out = mirror_centric(Phi_p, Phi_m)
-
-            # ASU representative structure factor: the + member, else the -
-            # member. Both rows are already on the canonical index.
-            fc_disp = np.full(M, np.nan, dtype=complex)
-            fc_disp[has_plus] = fc[pi][has_plus]
-            only_minus = has_minus & ~has_plus
-            fc_disp[only_minus] = fc[mi][only_minus]
-
-            Fc_disp_amp = np.abs(fc_disp)
-            ph_disp = np.angle(fc_disp, deg=True)
-
-            # Map coefficients (same convention as the legacy per-row path).
-            two_mfo = np.abs(2.0 * Fobs_disp - Fc_disp_amp)
-            mfo_complex = Fobs_disp * np.exp(1j * np.deg2rad(ph_disp)) - fc_disp
-            delf = np.abs(mfo_complex)
-            delph = np.angle(mfo_complex, deg=True)
-
-            # Anomalous-difference Fourier: signed dF = |F(+)| - |F(-)| with
-            # phase (phi_model - 90deg). Stored in the phenix convention --
-            # ANOM = |dF| (always positive) with the sign of dF carried by a
-            # 180deg flip in PANOM (the (-) member maps to phi-270 = phi+90) --
-            # so ANOM*exp(i*PANOM) reproduces the signed dF*exp(i(phi-90)).
-            anom = Fobs_p_out - Fobs_m_out
-            panom = np.where(anom < 0.0, ph_disp - 270.0, ph_disp - 90.0)
-            anom = np.abs(anom)
-            # Centrics obey Friedel's law even under anomalous scattering, so their
-            # Bijvoet difference is exactly zero; any measured value is noise that
-            # inflates the anomalous-map RMS. Phenix omits centrics -- match that.
-            anom[centric] = np.nan
-            panom[centric] = np.nan
-
-            data.update(
-                {
-                    "F-model": Fc_disp_amp,
-                    "PH-model": ph_disp,
-                    "F-model(+)": Fmod_p_out,
-                    "PHIF-model(+)": Phi_p_out,
-                    "F-model(-)": Fmod_m_out,
-                    "PHIF-model(-)": Phi_m_out,
-                    "FWT": two_mfo,
-                    "PHWT": ph_disp,
-                    "DELFWT": delf,
-                    "PHDELWT": delph,
-                    "ANOM": anom,
-                    "PANOM": panom,
-                }
-            )
-            fft_safe += ["F-model", "PH-model", "FWT", "PHWT", "DELFWT", "PHDELWT"]
-
-        if Fsig is not None:
-            data["SIGF-obs(+)"], data["SIGF-obs(-)"] = mirror_centric(
-                plus_of(Fsig), minus_of(Fsig)
-            )
-        if rfree is not None:
-            rf = np.zeros(M, dtype=int)
-            rf[has_minus] = rfree[mi][has_minus]
-            rf[has_plus] = rfree[pi][has_plus]  # both mates share a flag
-            data["R-free-flags"] = rf
-
-        # The display-map / merged columns must be FFT-safe (no NaN); the
-        # anomalous (+/-) columns may legitimately carry NaN where a mate is
-        # absent (incomplete anomalous data), matching phenix output.
-        for key in fft_safe:
-            data[key] = np.nan_to_num(data[key], nan=0.0)
-
-        return pd.DataFrame(data)
-
     def write_mtz(
         self,
         fname: str,
@@ -2674,48 +1890,31 @@ class ReflectionData(CrystalDataset, DebugMixin):
         model_ft: Optional["ModelFT"] = None,
         anomalous: Optional[bool] = None,
     ) -> None:
-        """
-        Write reflection data to MTZ file with optional map coefficients.
+        """Write this dataset, and optionally a model's map coefficients, to MTZ.
+
+        A thin wrapper over :func:`torchref.io.mtz.write_reflections`, which
+        documents the layouts and on-disk labels.
 
         Parameters
         ----------
         fname : str
             Output MTZ filename.
         fcalc : torch.Tensor, optional
-            Complex calculated structure factors of shape (N,), in the
-            canonical-ASU convention and row-aligned with :attr:`hkl` -- as
-            returned by :meth:`structure_factors`. If provided, computes phases
-            and map coefficients.
+            Complex structure factors of shape (N,), row-aligned with
+            :attr:`hkl` in the canonical-ASU convention (as returned by
+            :meth:`structure_factors`) and on the scale of ``F``. Adds model
+            and 2Fo-Fc / Fo-Fc columns.
         model_ft : ModelFT, optional
-            ModelFT object to compute fcalc if not provided.
+            Used to compute ``fcalc`` when it is not given.
         anomalous : bool, optional
-            If True, write a phenix-style anomalous MTZ on the canonical ASU:
-            display maps (FWT/PHWT, DELFWT/PHDELWT) and merged F-obs/F-model
-            with Friedel mates merged by mean amplitude, plus unstacked
-            F-obs(+/-), SIGF-obs(+/-), F-model(+/-), PHIF-model(+/-) and
-            ANOM/PANOM columns. No negative-ASU indices are emitted. If False,
-            the legacy per-row layout is written. If None (default), this is
-            chosen automatically from the data: anomalous output when the data
-            were loaded as Bijvoet pairs (``friedel_merged`` is False), legacy
-            layout otherwise.
+            Phenix-style anomalous layout; default when the data hold Bijvoet
+            pairs (``friedel_merged`` False).
 
-        Notes
-        -----
-        Final on-disk labels (``mtz.write`` remaps the intermediate DataFrame
-        keys ``F-obs``/``SIGF-obs``/``I-obs``/``SIGI-obs``/``R-free-flags``):
-        FP, SIGFP, I, SIGI, FreeR_flag, plus FWT/PHWT and DELFWT/PHDELWT when
-        ``fcalc`` is given.
-
-        The map coefficients use the standard Coot names but are the
-        *unweighted* forms ``2Fo-Fc`` and ``Fo-Fc`` (m=1, D=1) -- not
-        likelihood-weighted 2mFo-DFc / mFo-DFc maps.
+        Raises
+        ------
+        ValueError
+            If ``fcalc`` is not row-aligned with :attr:`hkl`.
         """
-        from torchref.io.mtz import write
-
-        # Auto: write anomalous (+)/(-) columns when the data are Friedel pairs.
-        if anomalous is None:
-            anomalous = not self.friedel_merged
-
         # One fallback for both layouts, so ``fcalc`` means the same thing
         # whether the caller supplied it or it was derived here. cached=False
         # keeps a no-grad write from leaving a detached tensor in the model's
@@ -2727,113 +1926,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 f"fcalc has {fcalc.shape[0]} rows but this dataset has "
                 f"{len(self.hkl)}; it must be row-aligned with hkl."
             )
-
-        if anomalous:
-            df = self._build_anomalous_dataframe(fcalc)
-            write(df, self.cell.data, self.spacegroup, fname)
-            if self.verbose > 0:
-                print(f"✓ Wrote phenix-style anomalous MTZ: {fname}")
-                print(f"  ASU reflections: {len(df)}")
-                print(f"  Columns: {', '.join(df.columns)}")
-            return
-
-        # Convert data to numpy for DataFrame creation
-        hkl_np = self.hkl.detach().cpu().numpy()
-
-        # Create DataFrame with HKL indices
-        data_dict = {
-            "H": hkl_np[:, 0],
-            "K": hkl_np[:, 1],
-            "L": hkl_np[:, 2],
-        }
-
-        # Add observed amplitudes (canonical names: FP, SIGFP)
-        if self.F is not None:
-            data_dict["F-obs"] = self.F.detach().cpu().numpy()
-            if self.F_sigma is not None:
-                data_dict["SIGF-obs"] = self.F_sigma.detach().cpu().numpy()
-
-        # Add observed intensities (canonical names: I, SIGI)
-        if self.I is not None:
-            data_dict["I-obs"] = self.I.detach().cpu().numpy()
-            if self.I_sigma is not None:
-                data_dict["SIGI-obs"] = self.I_sigma.detach().cpu().numpy()
-
-        # Add R-free flags (canonical name: FreeR_flag).
-        # The work/free split lives in the binary ``rfree_flags`` (1=work,
-        # 0=free); the optional held-out validation set lives in the separate
-        # boolean ``validation_flags``. They are written as two standard columns
-        # so external crystallography tools keep working:
-        #   FreeR_flag:      1 = work, 0 = free (classical "1 = refined against")
-        #   Validation_flag: 1 = validation, 0 = otherwise (optional column)
-        if self.rfree_flags is not None:
-            flags_np = self.rfree_flags.detach().cpu().numpy()
-            # rfree_flags is binary work/free (bool or {0,1}); write 1=work.
-            data_dict["R-free-flags"] = (flags_np != 0).astype(int)
-            # Emit Validation_flag column only if a validation set exists.
-            if self.validation_flags is not None and bool(
-                self.validation_flags.any()
-            ):
-                val_np = self.validation_flags.detach().cpu().numpy()
-                data_dict["Validation_flag"] = (val_np != 0).astype(int)
-
-        mask = self.masks().detach().cpu().numpy()
-        # Add map coefficients if fcalc is provided
-        if fcalc is not None:
-            # Ensure fcalc is complex
-            if not torch.is_complex(fcalc):
-                raise ValueError("fcalc must be a complex tensor")
-
-            # Convert to numpy
-            fcalc_np = fcalc.detach().cpu().numpy()
-            F_obs = self.F.detach().cpu().numpy()
-
-            # Compute phases in degrees
-            phases = np.angle(fcalc_np, deg=True)
-            F_calc_amp = np.abs(fcalc_np)
-
-            # Compute map coefficients
-            # 2Fo-Fc (unweighted, m=D=1): observed amplitudes with calculated phases
-            # When 2*Fobs - Fcalc < 0, flip phase by 180° and use absolute amplitude
-            two_mfo_dfc_raw = 2.0 * F_obs - F_calc_amp
-            two_mfo_dfc_amp = np.abs(two_mfo_dfc_raw)
-            two_mfo_dfc_phase = phases.copy()
-
-            # Fo-Fc: Difference map (unweighted, m=D=1)
-            mfo_dfc_complex = F_obs * np.exp(1j * np.deg2rad(phases)) - fcalc_np
-            mfo_dfc_complex[~mask] = 0.0  # Zero out reflections outside mask
-            mfo_dfc_amp = np.abs(mfo_dfc_complex)
-            mfo_dfc_phase = np.angle(mfo_dfc_complex, deg=True)
-
-            # Add 2Fo-Fc map coefficients (standard Coot names: FWT, PHWT)
-            data_dict["FWT"] = two_mfo_dfc_amp
-            data_dict["PHWT"] = two_mfo_dfc_phase
-
-            # Add Fo-Fc map coefficients (standard Coot names: DELFWT, PHDELWT)
-            data_dict["DELFWT"] = mfo_dfc_amp
-            data_dict["PHDELWT"] = mfo_dfc_phase
-
-            data_dict["F-model"] = F_calc_amp
-            data_dict["PH-model"] = phases
-
-            if self.verbose > 0:
-                print("Added map coefficients:")
-                print("  2Fo-Fc: FWT, PHWT")
-                print("  Fo-Fc: DELFWT, PHDELWT")
-                print(
-                    f"  Resolution range: {self.resolution.min().item():.2f} - {self.resolution.max().item():.2f} Å"
-                )
-
-        # Create DataFrame
-        df = pd.DataFrame(data_dict)
-
-        # Write MTZ file
-        write(df, self.cell.data, self.spacegroup, fname)
-
-        if self.verbose > 0:
-            print(f"✓ Wrote MTZ file: {fname}")
-            print(f"  Reflections: {len(df)}")
-            print(f"  Columns: {', '.join(df.columns)}")
+        mtz.write_reflections(
+            self, fname, fcalc=fcalc, anomalous=anomalous, verbose=self.verbose
+        )
 
     @property
     def centric(self):
@@ -2853,80 +1948,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             self._centric_flags = sg.is_centric(self.hkl)
 
         return self._centric_flags
-
-    def calc_patterson(
-        self,
-        grid_size: Optional[Tuple[int, int, int]] = None,
-        grid_sampling: Optional[float] = 1,
-    ) -> torch.Tensor:
-        """
-        Calculate Patterson map of the dataset.
-
-        The Patterson function P(u,v,w) = Σ|F(hkl)|² exp(-2πi(hu+kv+lw))
-        is computed via inverse FFT of F². Data is expanded to P1 symmetry
-        using only observed reflections (no filling of missing data).
-
-        Parameters
-        ----------
-        grid_size : tuple of int, optional
-            Grid dimensions (Nx, Ny, Nz). If None, automatically determined
-            from unit cell and resolution.
-        grid_sampling : float, optional
-            Sampling interval for the grid. Default is 1.
-            This sets the grid so that we sample twice as much as normal for a given resolution
-
-        Returns
-        -------
-        torch.Tensor
-            Real-valued Patterson map of shape (Nx, Ny, Nz).
-            Origin is at grid position [0, 0, 0].
-        """
-        from torchref.base.fourier import find_grid_size
-        from torchref.base.reciprocal import place_on_grid
-
-        # Expand to P1 symmetry (don't fill missing reflections - use only observed data)
-        data = self.expand_to_p1()
-
-        max_res = data.resolution.min() * grid_sampling
-
-        if grid_size is None:
-            grid_size = find_grid_size(data.cell, max_res)
-
-        # Use data_indexed to get only valid (observed) reflections
-        hkl, F, _, _ = data.data_indexed()
-
-        F_2 = F**2
-
-        # Place F² on reciprocal grid (don't enforce Hermitian since we have P1 expansion)
-        grid = place_on_grid(hkl, F_2, grid_size, enforce_hermitian=False)
-
-        patterson = torch.fft.ifftn(grid, dim=(0, 1, 2), norm="forward").real
-
-        return patterson
-
-    def possible_hkl(self) -> torch.Tensor:
-        """
-        Generate all possible HKL indices within the resolution limit.
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (M, 3) containing all possible Miller indices
-            within the resolution limit defined by self.resolution.
-        """
-        from torchref.base.reciprocal import generate_possible_hkl
-
-        if self.cell is None or self.resolution is None:
-            raise ValueError(
-                "Cell and resolution must be defined to generate possible HKL"
-            )
-
-        max_res = self.resolution.min().item()
-        possible_hkl = generate_possible_hkl(
-            self.cell.data, max_res, device=self.device
-        )
-
-        return possible_hkl
 
     def remap(
         self,
@@ -2967,21 +1988,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         from torchref.symmetry.spacegroup import SpaceGroup
 
-        # Mask remapper. Masks are not dataclass fields, so the shared
-        # per-reflection reindexer below does not touch them.
-        def _remap_mask(tensor, fill_value):
-            if tensor is None:
-                return None
-            valid_mask = index_mapping >= 0
-            result = torch.full(
-                (len(new_hkl),) + tensor.shape[1:],
-                fill_value,
-                dtype=tensor.dtype,
-                device=self.device,
-            )
-            result[valid_mask] = tensor[index_mapping[valid_mask]]
-            return result
-
         # Create new ReflectionData; set cell/spacegroup first so the shared
         # reindexer can recompute resolution on the new grid.
         remapped = ReflectionData(verbose=self.verbose, device=self.device)
@@ -2992,24 +1998,20 @@ class ReflectionData(CrystalDataset, DebugMixin):
             remapped.spacegroup = self.spacegroup
 
         # Reindex ALL per-reflection dataclass fields onto new_hkl: sets hkl /
-        # resolution, invalidates bin_indices and _centric_flags, and fills
+        # resolution, invalidates _centric_flags, and fills
         # missing rows (index -1) per _REINDEX_FILL.
         self._reindex_per_reflection(index_mapping, new_hkl, target=remapped)
 
         # Apply optional phase shifts (e.g. from symmetry translations).
-        if remapped.phase is not None:
-            if phase_shifts is not None:
-                remapped.phase = remapped.phase + phase_shifts.to(device=self.device)
-        elif phase_shifts is not None:
-            # No original phases: store the shifts for later phase reconstruction.
-            remapped._expansion_phase_shifts = phase_shifts.to(device=self.device)
+        if remapped.phase is not None and phase_shifts is not None:
+            remapped.phase = remapped.phase + phase_shifts.to(device=self.device)
 
         # Carry forward prior combined mask if available.
         prior_mask = self.masks()
         if prior_mask is not None:
-            remapped.masks["prior_flagged"] = _remap_mask(
-                prior_mask.to(dtype=dtypes.int), fill_value=0
-            ).to(torch.bool)
+            remapped.masks["prior_flagged"] = self._gather_rows(
+                prior_mask, index_mapping.to(self.device), False
+            )
 
         # Copy metadata sources
         remapped.amplitude_source = self.amplitude_source
@@ -3029,54 +2031,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         remapped._assert_per_reflection_consistent()
         return remapped
 
-    def fill(self, d_min: Optional[float] = None) -> "ReflectionData":
-        """
-        Fill missing reflections within resolution limit.
-
-        Generates all possible reflections for the current spacegroup within
-        the resolution limit, identifies which are missing, and creates a
-        complete dataset. Missing reflections are filled with default values.
-
-        Parameters
-        ----------
-        d_min : float, optional
-            High resolution limit in Angstroms. If None, uses the minimum
-            resolution from the current dataset.
-
-        Returns
-        -------
-        ReflectionData
-            New ReflectionData with complete set of reflections.
-            Missing reflections have F/I/phase/fom = 0.0,
-            F_sigma/I_sigma = 1.0 and ``masks['missing'] = True``.
-        """
-        if self.hkl is None:
-            raise ValueError("ReflectionData has no Miller indices loaded")
-        if self.cell is None:
-            raise ValueError("ReflectionData has no unit cell defined")
-
-        # Use current resolution limit if not specified
-        if d_min is None:
-            if self.resolution is None:
-                raise ValueError("Resolution not available - specify d_min")
-            d_min = self.resolution.min().item()
-
-        # Get complete HKL set with index mapping
-        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
-        filled_hkl, indices, missing = sg.complete_hkl(
-            self.hkl, self.cell.data, d_min, device=self.device
-        )
-
-        # Use remap to create the new dataset
-        remapped = self.remap(
-            new_hkl=filled_hkl,
-            index_mapping=indices,
-            spacegroup=self.spacegroup,  # Keep same spacegroup
-            op_name=f"fill(d_min={d_min:.2f})",
-        )
-
-        return remapped
-
     def expand_to_p1(
         self, include_friedel: bool = True, remove_absences: bool = True
     ) -> "ReflectionData":
@@ -3086,6 +2040,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Applies all symmetry operations from the current space group to generate
         all symmetry-equivalent reflections. Returns a NEW ReflectionData object
         with expanded reflections; does not modify self.
+
+        Anomalous data (``friedel_merged`` False) expand from their signed
+        indices, so ``F(+)`` and ``F(-)`` each keep their own P1 reflections
+        (``h`` and ``-h``) and the result holds both halves of reciprocal space
+        whatever ``include_friedel`` says; with it, a Friedel copy fills in only
+        where a mate was not measured. Consumers that want one value per
+        reflection pair (a Hermitian map) must merge the mates first, e.g. with
+        ``merge_to_spacegroup(data, data.spacegroup, anomalous=False)``.
 
         Parameters
         ----------
@@ -3099,325 +2061,46 @@ class ReflectionData(CrystalDataset, DebugMixin):
         -------
         ReflectionData
             New object at ``spacegroup="P1"`` holding every symmetry-equivalent
-            reflection (duplicates removed). Per-reflection fields are indexed
-            from the original, ``phase`` additionally gets the translation phase
-            shift, ``resolution`` is recomputed and ``bin_indices`` is cleared.
-            ``source``/``last_op`` record the provenance.
+            reflection. Per-reflection fields are indexed from the original,
+            ``phase`` additionally gets the translation phase shift, and
+            ``resolution`` is recomputed. ``hkl_anomalous`` equals ``hkl``: each
+            P1 row is its own index. ``source``/``last_op`` record the provenance.
+
+        Raises
+        ------
+        ValueError
+            If the data hold symmetry-equivalent rows (unmerged observations),
+            which expansion would otherwise silently drop.
         """
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
 
-        # Get expanded HKL set with index mapping and phase shifts
+        anomalous = not self.friedel_merged and self.hkl_anomalous is not None
         sg = self.spacegroup or SpaceGroup("P1", device=self.device)
         hkl_p1, indices, phase_shifts = sg.expand_hkl(
-            self.hkl,
+            self.hkl_anomalous if anomalous else self.hkl,
             include_friedel=include_friedel,
             remove_absences=remove_absences,
             device=self.device,
         )
 
-        # Use remap to create the new dataset
-        return self.remap(
+        p1 = self.remap(
             new_hkl=hkl_p1,
             index_mapping=indices,
-            phase_shifts=phase_shifts,
             spacegroup="P1",
             op_name=f"expand_to_p1(include_friedel={include_friedel})",
         )
-
-    def reduce_to_spacegroup(
-        self, spacegroup, include_friedel: bool = True, aggregation: str = "mean"
-    ) -> "ReflectionData":
-        """
-        Reduce P1 reflection data to asymmetric unit of a target spacegroup.
-
-        This is the inverse of expand_to_p1(). Takes reflection data in P1 and
-        merges symmetry-equivalent reflections into single ASU reflections using
-        the specified aggregation function.
-
-        Parameters
-        ----------
-        spacegroup : str, int, or gemmi.SpaceGroup
-            Target space group specification.
-        include_friedel : bool, default True
-            If True, also merge Friedel mates when reducing.
-        aggregation : str, default 'mean'
-            Aggregation function for merging equivalent reflections:
-            - 'mean': Average values (default, good for amplitudes)
-            - 'sum': Sum values
-            - 'first': Take first valid value (no averaging)
-
-        Returns
-        -------
-        ReflectionData
-            New ReflectionData with merged reflections in the target spacegroup.
-
-        Notes
-        -----
-        Per-field handling: F/I by ``aggregation``; sigmas propagated as
-        ``sqrt(sum(sigma²))/n`` for ``'mean'`` and ``sqrt(sum(sigma²))`` for
-        ``'sum'`` (first valid value for ``'first'``); ``phase`` by
-        amplitude-weighted complex averaging (so it wraps correctly) with
-        ``fom`` from the resultant
-        length; ``rfree_flags`` free if any equivalent is free, and
-        ``validation_flags`` set if any equivalent is set. Any other
-        per-reflection field takes its first valid equivalent.
-        """
-        from torchref.symmetry.spacegroup import SpaceGroup
-
-        if self.hkl is None:
-            raise ValueError("ReflectionData has no Miller indices loaded")
-
-        # Get reduction mapping
-        hkl_asu, reduction_indices, phase_shifts = SpaceGroup(
-            spacegroup, device=self.device
-        ).reduce_hkl(self.hkl, include_friedel=include_friedel, device=self.device)
-
-        n_asu = len(hkl_asu)
-        n_equiv = reduction_indices.shape[1]
-        valid_mask = reduction_indices >= 0  # (n_asu, n_equiv)
-        count_valid = valid_mask.sum(dim=1).clamp(min=1).float()  # (n_asu,)
-
-        # Helper function for aggregating 1D tensors
-        def _aggregate_tensor(tensor, agg_func="mean", fill_value=0.0):
-            if tensor is None:
-                return None
-
-            # Gather values: (n_asu, n_equiv)
-            # Use clamp(min=0) to avoid indexing errors, then mask invalid
-            gathered = tensor[reduction_indices.clamp(min=0)]
-            gathered = torch.where(valid_mask, gathered, torch.zeros_like(gathered))
-
-            if agg_func == "mean":
-                return gathered.sum(dim=1) / count_valid
-            elif agg_func == "sum":
-                return gathered.sum(dim=1)
-            elif agg_func == "first":
-                # Take first valid value
-                first_valid_idx = valid_mask.to(dtype=dtypes.int).argmax(dim=1)
-                return gathered[
-                    torch.arange(n_asu, device=self.device), first_valid_idx
-                ]
-            else:
-                raise ValueError(f"Unknown aggregation: {agg_func}")
-
-        def _aggregate_sigma(tensor, agg_func="mean"):
-            """Propagate uncertainty correctly for averaging."""
-            if tensor is None:
-                return None
-
-            # Gather values
-            gathered = tensor[reduction_indices.clamp(min=0)]
-            gathered = torch.where(valid_mask, gathered, torch.zeros_like(gathered))
-
-            if agg_func == "mean":
-                # For averaging: sigma_mean = sqrt(sum(sigma^2)) / n
-                variance_sum = (gathered**2).sum(dim=1)
-                return torch.sqrt(variance_sum) / count_valid
-            elif agg_func == "sum":
-                # For summing: sigma_sum = sqrt(sum(sigma^2))
-                variance_sum = (gathered**2).sum(dim=1)
-                return torch.sqrt(variance_sum)
-            elif agg_func == "first":
-                first_valid_idx = valid_mask.to(dtype=dtypes.int).argmax(dim=1)
-                return gathered[
-                    torch.arange(n_asu, device=self.device), first_valid_idx
-                ]
-            else:
-                raise ValueError(f"Unknown aggregation: {agg_func}")
-
-        # Create new ReflectionData
-        reduced = ReflectionData(verbose=self.verbose, device=self.device)
-
-        # Set HKL
-        reduced.hkl = hkl_asu.to(device=self.device)
-
-        # Aggregate amplitude and intensity fields
-        reduced.F = _aggregate_tensor(self.F, aggregation)
-        reduced.F_sigma = _aggregate_sigma(self.F_sigma, aggregation)
-        reduced.I = _aggregate_tensor(self.I, aggregation)
-        reduced.I_sigma = _aggregate_sigma(self.I_sigma, aggregation)
-
-        # Handle phases via complex averaging
-        if self.phase is not None:
-            # Gather phases and apply phase shifts for proper averaging
-            phases_gathered = self.phase[reduction_indices.clamp(min=0)]
-            phases_gathered = phases_gathered + phase_shifts
-            phases_gathered = torch.where(
-                valid_mask, phases_gathered, torch.zeros_like(phases_gathered)
-            )
-
-            # Get weights (amplitudes or FOM)
-            if self.fom is not None:
-                weights = self.fom[reduction_indices.clamp(min=0)]
-            elif self.F is not None:
-                weights = self.F[reduction_indices.clamp(min=0)]
-            else:
-                weights = torch.ones_like(phases_gathered)
-            weights = torch.where(valid_mask, weights, torch.zeros_like(weights))
-
-            # Complex averaging: mean of F*exp(i*phi) then extract angle
-            complex_sf = weights * torch.exp(1j * phases_gathered)
-            complex_mean = complex_sf.sum(dim=1) / count_valid
-            reduced.phase = torch.angle(complex_mean).float()
-
-            # FOM as magnitude of normalized mean complex vector
-            if self.fom is not None:
-                norm_weights = weights / weights.sum(dim=1, keepdim=True).clamp(
-                    min=1e-10
-                )
-                unit_vectors = torch.exp(1j * phases_gathered)
-                mean_vector = (norm_weights * unit_vectors).sum(dim=1)
-                reduced.fom = torch.abs(mean_vector).float()
-        else:
-            reduced.phase = None
-            reduced.fom = (
-                _aggregate_tensor(self.fom, aggregation)
-                if self.fom is not None
-                else None
-            )
-
-        # Handle rfree_flags: OR operation (free if any equivalent is free)
-        if self.rfree_flags is not None:
-            rfree_gathered = self.rfree_flags[reduction_indices.clamp(min=0)].to(
-                dtypes.int
-            )
-            rfree_gathered = torch.where(
-                valid_mask,
-                rfree_gathered,
-                torch.ones_like(rfree_gathered),  # Default to work set
-            )
-            # 0 = free, non-zero = work. Take min to get free if any is free.
-            reduced.rfree_flags = rfree_gathered.min(dim=1).values != 0
-
-        # Boolean per-reflection flags: an equivalent's flag propagates to the
-        # merged reflection if ANY contributor has it set (validation is a
-        # conservative "exclude if any").
-        def _aggregate_any(tensor):
-            if tensor is None:
-                return None
-            gathered = tensor[reduction_indices.clamp(min=0)].to(torch.bool)
-            gathered = gathered & valid_mask
-            return gathered.any(dim=1)
-
-        if self.validation_flags is not None:
-            reduced.validation_flags = _aggregate_any(self.validation_flags)
-
-        # Completeness pass: carry any remaining per-reflection dataclass tensor
-        # field not handled above so the merge never silently drops data.
-        # Derived-from-HKL fields are recomputed/invalidated below, not
-        # aggregated; 'first' is a safe representative for the rest.
-        from dataclasses import fields as dc_fields
-
-        _already_set = {
-            "hkl",
-            "F",
-            "F_sigma",
-            "I",
-            "I_sigma",
-            "phase",
-            "fom",
-            "rfree_flags",
-            "validation_flags",
-        }
-        _recomputed = set(self._REINDEX_DERIVED) | {"hkl_anomalous", "friedel_flags"}
-        n_src = len(self.hkl)
-        for f in dc_fields(self):
-            name = f.name
-            if name in _already_set or name in _recomputed:
-                continue
-            val = getattr(self, name)
-            if not isinstance(val, torch.Tensor):
-                continue
-            if not (val.shape and val.shape[0] == n_src):
-                continue
-            setattr(reduced, name, _aggregate_tensor(val, "first"))
-
-        # Clone cell
-        reduced.cell = self.cell.clone() if self.cell is not None else None
-
-        # Set spacegroup (on the reduced dataset's device, not the global default)
-        reduced.spacegroup = SpaceGroup(spacegroup, device=reduced.device)
-
-        # Recalculate resolution
-        if reduced.cell is not None and reduced.hkl is not None:
-            reduced._calculate_resolution()
-
-        # Invalidate derived-from-HKL fields (recomputed lazily for the new ASU).
-        # hkl_anomalous / friedel_flags are left unset: the merged ASU is
-        # Friedel-merged, so _hkl_for_sf() correctly falls back to hkl.
-        reduced.bin_indices = None
-        reduced._centric_flags = None
-
-        # Copy metadata sources
-        reduced.amplitude_source = self.amplitude_source
-        reduced.intensity_source = self.intensity_source
-        reduced.phase_source = self.phase_source
-        reduced.rfree_source = self.rfree_source
-
-        # Track provenance
-        reduced.source = self
-        reduced.last_op = (
-            f"reduce_to_spacegroup({spacegroup}, aggregation={aggregation})"
-        )
-
-        reduced._assert_per_reflection_consistent()
-        return reduced
-
-    def canonicalize(self, include_friedel: bool = True) -> "ReflectionData":
-        """Return new ReflectionData with HKL in standard CCP4 ASU form.
-
-        Remaps all Miller indices to the canonical CCP4 asymmetric unit
-        representative using ``gemmi.ReciprocalAsu``, adjusts phases
-        accordingly, and sorts reflections lexicographically by (h, k, l).
-
-        Parameters
-        ----------
-        include_friedel : bool, default True
-            Whether Friedel mates are considered equivalent.
-
-        Returns
-        -------
-        ReflectionData
-            New object with canonicalized, sorted Miller indices.
-        """
-        if self.hkl is None:
-            raise ValueError("ReflectionData has no Miller indices loaded")
-
-        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
-        canonical_hkl, phase_shifts, friedel_flags, sort_indices = sg.canonicalize_hkl(
-            self.hkl, include_friedel, device=self.device
-        )
-
-        # Reorder all fields using __select__
-        result = self.__select__(
-            sort_indices, op=f"canonicalize(include_friedel={include_friedel})"
-        )
-
-        # Overwrite HKL with canonical form (already sorted)
-        result.hkl = canonical_hkl
-
-        # Fix phases: phi_new = where(friedel, -phi_old, phi_old) + phase_shift
-        if result.phase is not None:
-            result.phase = (
-                torch.where(friedel_flags, -result.phase, result.phase) + phase_shifts
-            )
-
-        # Record anomalous bookkeeping for the canonical result (the stale values
-        # carried over by __select__ are recomputed here). See _hkl_for_sf.
-        result.friedel_flags = friedel_flags
-        result.hkl_anomalous = torch.where(
-            friedel_flags.unsqueeze(-1), -canonical_hkl, canonical_hkl
-        )
-
-        # Recalculate resolution from canonical HKL + cell
-        if result.cell is not None:
-            result._calculate_resolution()
-
-        # Invalidate bin_indices
-        result.bin_indices = None
-
-        return result
+        if p1.phase is not None:
+            phase = p1.phase
+            if anomalous:
+                # A conjugated mate stores the phase of its canonical index, the
+                # negative of the phase at its own signed index.
+                phase = torch.where(self.friedel_flags[indices], -phase, phase)
+            p1.phase = phase + phase_shifts
+        p1.hkl_anomalous = p1.hkl.clone()
+        p1.friedel_flags = torch.zeros_like(p1.hkl[:, 0], dtype=torch.bool)
+        p1.friedel_merged = self.friedel_merged
+        return p1
 
     # ========== E-VALUE AND ANISOTROPY CORRECTION METHODS ==========
 
@@ -3482,7 +2165,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         :attr:`rfree_flags` untouched. The work/free/validation subsets are
         disjoint (validation is carved out of free) -- see
         :meth:`_subset_indices` and the ``work``/``free``/``validation``
-        accessors. Like :meth:`_generate_rfree_flags`, the split is over whole
+        accessors. Like :meth:`generate_rfree_flags`, the split is over whole
         ASU groups so Bijvoet mates stay together (see
         :meth:`asu_group_indices`).
 
@@ -3508,26 +2191,21 @@ class ReflectionData(CrystalDataset, DebugMixin):
         rwork = self.rfree_flags.to(torch.bool)
         free_mask = ~rwork
 
-        # Split whole ASU groups, exactly as _generate_rfree_flags does -- a
+        # Split whole ASU groups, exactly as generate_rfree_flags does -- a
         # per-row draw here would re-open the Friedel leak at the free/validation
         # boundary. The free set is already group-consistent, so a group is
         # wholly free or wholly work.
         group_id, n_groups = self.asu_group_indices()
         group_free = self._group_any(free_mask, group_id, n_groups)
 
-        # Reuse get_bins for resolution-stratified sampling.
         bin_indices, n_bins = self.get_bins(n_bins=20, min_per_bin=20)
         group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
-
-        group_val = torch.zeros(n_groups, dtype=torch.bool, device=self.device)
-        for b in range(n_bins):
-            bin_free_groups = torch.where((group_bin == b) & group_free)[0]
-            n_bin_free = int(bin_free_groups.numel())
-            if n_bin_free == 0:
-                continue
-            n_val = max(1, int(n_bin_free * val_fraction_of_free))
-            perm = torch.randperm(n_bin_free, device=bin_free_groups.device)[:n_val]
-            group_val[bin_free_groups[perm]] = True
+        group_val = self._stratified_group_draw(
+            group_free,
+            group_bin,
+            n_bins,
+            lambda n: max(1, int(n * val_fraction_of_free)),
+        )
 
         # Broadcast to rows, staying within the free set.
         val_flags = group_val[group_id] & free_mask

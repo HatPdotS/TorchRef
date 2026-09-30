@@ -149,3 +149,30 @@ Use ``WilsonNormaliser`` for normalized E values. Work, free and validation
 observations are accessed through ``data.work``, ``data.free`` and
 ``data.validation``; full observations are available directly as ``data.F`` and
 ``data.F_sigma``.
+
+Wilson B
+--------
+
+``torchref.scaling.wilson.fit_wilson_b`` fits xtriage's Wilson model,
+
+.. math::
+
+   \langle I/\epsilon \rangle = K \, \Sigma f^2(s) \, (1 + \gamma(s)) \, e^{-B d^{*2}/2},
+
+through equal-count resolution shells, and returns a ``WilsonFit`` (B, its
+standard error, the fitted curve) or ``None`` with a warning when the data
+cannot support a fit. :math:`\Sigma f^2` is the random-atom intensity of an
+average protein residue; :math:`\gamma` is the empirical protein correction of
+Zwart & Lamzin (2004, Acta Cryst. D60, 220-226), taken from cctbx.
+
+Both corrections matter. Without :math:`\Sigma f^2` the fit reads the
+form-factor falloff as B, 7-10 Å² too high on the deposited test data. Without
+:math:`\gamma` the plot is only linear below about 4.5 Å, so data that stop at
+3.5-4 Å have nothing straight left to fit; with it, cutting 1DAW, 3E98, 3K7M,
+4BX9, 5BOV and 6G9X at 3.5 Å moves B by at most 9 Å².
+
+The correction also changes the slope between 4.5 and 2.5 Å, so B comes out
+below the plain :math:`d \le 4.5` Å fit that ctruncate reports and that most
+deposited ``B_iso_Wilson_estimate`` values follow -- by 2-16 Å² on the test
+data (e.g. 4BX9: 60.5 against 76.1 deposited). Compare Wilson B values only
+within one convention.

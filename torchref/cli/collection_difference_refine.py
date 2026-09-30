@@ -31,6 +31,7 @@ from pathlib import Path
 
 import torch
 
+from torchref.base.french_wilson import french_wilson_auto
 from torchref.cli._common import (
     add_all_columns_arg,
     add_ded_weight_args,
@@ -144,8 +145,8 @@ def setup_dataset_collection(sf_dark, sf_light, d_min, device,
         sf_light, device=device, column_names=column_names_light,
     )
     if d_min is not None:
-        data_dark.cut_res(highres=d_min)
-        data_light.cut_res(highres=d_min)
+        data_dark.filter_by_resolution(d_min=d_min)
+        data_light.filter_by_resolution(d_min=d_min)
 
     dc = DatasetCollection(device=device)
     dc.add_dataset("dark", data_dark)
@@ -451,24 +452,20 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
         return empty
 
     with torch.no_grad():
-        # Full-size, so French-Wilson sees the reflection list it was fitted on.
+        # Full-size, so French-Wilson estimates its shell means from every reflection.
         delta_F_full = fcalc_mixed_full - fcalc_dark_full
         variance_full = mc.sigma_alpha_sq * delta_F_full.abs() ** 2
 
         I_light_full, sig_I_full = data_light.get_corrected_intensities()
         I_corrected_full = I_light_full - variance_full
 
-        # The retained estimator is fitted on the dataset's HKL list *as loaded*;
-        # joining a collection expands the dataset onto the common grid, so it can be
-        # the wrong length by then. Rebuild against the current list when that happens.
-        fw = data_light._FrenchWilson
-        if fw is None or len(fw.d_spacings) != len(I_corrected_full):
-            from torchref.base.french_wilson import FrenchWilson
-
-            fw = FrenchWilson(
-                data_light.hkl, data_light.cell, data_light.spacegroup, verbose=0
-            )
-        F_corr_full, sig_F_corr_full = fw(I_corrected_full, sig_I_full)
+        F_corr_full, sig_F_corr_full, _ = french_wilson_auto(
+            I_corrected_full,
+            sig_I_full,
+            data_light.hkl,
+            data_light.resolution,
+            data_light.spacegroup or "P1",
+        )
 
         def _np(t):
             return t[mask].detach().cpu().numpy()
