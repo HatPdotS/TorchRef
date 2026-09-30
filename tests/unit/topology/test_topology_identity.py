@@ -108,7 +108,8 @@ def test_water_and_polymer_masks(pdb_dir):
     np.testing.assert_array_equal(nodes.is_water, (df.resname == "HOH").to_numpy())
     np.testing.assert_array_equal(nodes.is_polymer, (df.ATOM == "ATOM").to_numpy())
     np.testing.assert_array_equal(
-        nodes.atoms.is_hydrogen.cpu().numpy(), (df.element.str.strip() == "H").to_numpy()
+        nodes.atoms.is_hydrogen.cpu().numpy(),
+        (df.element.str.strip() == "H").to_numpy(),
     )
 
 
@@ -118,7 +119,9 @@ def test_hydrogen_insertion_matches_the_table_insertion(pdb_dir, code):
     """Same row maps and the same identity, row for row, as the table-level insertion."""
     model = Model(verbose=0, hydrogens="strip").load_pdb(str(pdb_dir / f"{code}.pdb"))
     restraints = model.ctx.build_restraints(model.xyz(), nonbonded=False, verbose=0)
-    plan = plan_hydrogens(restraints.topology, restraints.cif_dict, model.xyz().detach())
+    plan = plan_hydrogens(
+        restraints.topology, restraints.cif_dict, model.xyz().detach()
+    )
     assert plan.n_hydrogens > 0
 
     augmented, old_to_new, plan_to_new = augment_atom_table_with_maps(
@@ -135,7 +138,9 @@ def test_hydrogen_insertion_matches_the_table_insertion(pdb_dir, code):
     expected = Topology.from_table(augmented)
     for key, value in expected.columns().items():
         np.testing.assert_array_equal(nodes.columns()[key], value, err_msg=key)
-    np.testing.assert_array_equal(nodes.residues.atom_start, expected.residues.atom_start)
+    np.testing.assert_array_equal(
+        nodes.residues.atom_start, expected.residues.atom_start
+    )
 
 
 @pytest.mark.unit
@@ -151,7 +156,9 @@ def test_padded_strings_read_like_clean_ones(pdb_dir):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("dropped", [["icode"], ["altloc"], ["ATOM"], ["charge"], ["element"]])
+@pytest.mark.parametrize(
+    "dropped", [["icode"], ["altloc"], ["ATOM"], ["charge"], ["element"]]
+)
 def test_optional_columns_fall_back_to_defaults(pdb_dir, dropped):
     df = _table(pdb_dir, "1DAW")
     full = Topology.from_table(df)
@@ -161,7 +168,9 @@ def test_optional_columns_fall_back_to_defaults(pdb_dir, dropped):
     column = {"ATOM": "is_hetatm"}.get(dropped[0], dropped[0])
     assert (reduced.columns()[column] == defaults[dropped[0]]).all()
     if dropped[0] in ("charge", "element"):
-        np.testing.assert_array_equal(reduced.residues.atom_start, full.residues.atom_start)
+        np.testing.assert_array_equal(
+            reduced.residues.atom_start, full.residues.atom_start
+        )
 
 
 @pytest.mark.unit

@@ -44,7 +44,11 @@ def test_insertion_coded_residues_are_not_conformers_of_each_other(table, baseli
     first, second = _residue_rows(df, 10), _residue_rows(df, 11)
     df.loc[first, ["altloc", "occupancy"]] = ["A", 0.6]
     df.loc[second, ["resseq", "icode", "altloc", "occupancy", "resname"]] = [
-        10, "A", "B", 0.4, df.loc[first[0], "resname"]
+        10,
+        "A",
+        "B",
+        0.4,
+        df.loc[first[0], "resname"],
     ]
 
     model = _model(df, cell, sg)
@@ -81,7 +85,9 @@ def test_the_higher_occupancy_conformer_survives(table, baseline):
     kept = kept[(kept.chainid == "A") & (kept.resseq == 20)]
     original = df[(df.chainid == "A") & (df.resseq == 20) & (df.altloc != "B")]
     np.testing.assert_allclose(
-        kept[["x", "y", "z"]].to_numpy(), original[["x", "y", "z"]].to_numpy(), atol=1e-4
+        kept[["x", "y", "z"]].to_numpy(),
+        original[["x", "y", "z"]].to_numpy(),
+        atol=1e-4,
     )
 
 
