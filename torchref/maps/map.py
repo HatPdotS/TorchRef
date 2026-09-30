@@ -21,6 +21,7 @@ from typing import Optional, Tuple
 
 import torch
 
+from torchref.base.fourier.coefficients import map_coefficients
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.cif import write_map
 from torchref.utils.device_mixin import DeviceMixin
@@ -136,13 +137,8 @@ class Map(DeviceMixin):
         if self.map_type == "Fcalc":
             return fcalc
 
-        # 2Fo-Fc: (2*Fobs - |Fcalc|) * exp(i * phi_calc). Note this is a plain
-        # 2Fo-Fc map: no figure-of-merit ``m`` weights Fobs and no sigma-A
-        # coefficient ``D`` scales Fcalc (i.e. m=1, D=1), so it is not a true
-        # likelihood-weighted 2mFo-DFc map.
-        fcalc_amp = fcalc.abs()
-        phi_calc = torch.angle(fcalc)
-        return (2.0 * fobs - fcalc_amp) * torch.exp(1j * phi_calc)
+        # Plain 2Fo-Fc (m=1, D=1), not a likelihood-weighted 2mFo-DFc map.
+        return map_coefficients(fobs, fcalc)[0]
 
     def calculate(self) -> torch.Tensor:
         """Compute the electron density map.
