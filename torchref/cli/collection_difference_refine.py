@@ -323,16 +323,16 @@ def setup_loss_state(
 
 
 def compute_bayes_extrapolated_amplitudes(
-    Fobs_dark,
-    Fobs_light,
-    sig_dark,
-    phi_dark,
-    phi_mixed,
-    f,
+    Fobs_dark: torch.Tensor,
+    Fobs_light: torch.Tensor,
+    sig_dark: torch.Tensor,
+    phi_dark: torch.Tensor,
+    phi_mixed: torch.Tensor,
+    f: float | torch.Tensor,
     *,
-    snr,
-    noise,
-):
+    snr: torch.Tensor,
+    sig_light: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Shrink the extrapolated amplitudes toward ``Fo_dark`` by their signal fraction.
 
     The posterior mean of the extrapolated deviation under a Gaussian prior of the
@@ -362,23 +362,44 @@ def compute_bayes_extrapolated_amplitudes(
     snr : Tensor (N,)
         Per-reflection signal-to-noise ratio of the difference, from
         :func:`torchref.maps.ded_weights.difference_snr`.
-    noise : Tensor (N,)
-        Calibrated noise of the amplitude difference, from the same call.
+    sig_light : Tensor (N,)
+        Sigma of the independent light amplitude measurement, in amplitude units.
+        Intensity-derived difference noise controls the SNR and shrinkage weight,
+        not these marginal amplitude uncertainties.
 
     Returns
     -------
     tuple
         ``(F_ext_bayes, var_ext_bayes, w_shrinkage)`` -- the shrunk extrapolated
-        amplitude, its variance ``sig_dark**2 + w (noise / f)**2`` (the dark
-        measurement plus the posterior variance of the deviation) and the weight per
-        reflection.
+        amplitude, its first-order propagated measurement variance and the weight
+        per reflection. The variance holds model phases and the fitted weight fixed;
+        it is not the Gaussian posterior variance of a latent difference and does
+        not include uncertainty in the fit, phases or occupancy. For equal phases
+        and positive extrapolated amplitude it is
+        ``(1 - w/f)**2 * sig_dark**2 + (w/f)**2 * sig_light**2``.
+        The covariance with the dark component is thereby included. At exactly
+        zero extrapolated complex amplitude, where the norm has no derivative,
+        the directional upper bound is used.
     """
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
-    F_ext = torch.abs(F_dark_phased + (F_light_phased - F_dark_phased) / f)
+    z = F_dark_phased + (F_light_phased - F_dark_phased) / f
+    F_ext = torch.abs(z)
     # snr / (1 + snr), written so an infinite SNR gives exactly 1 rather than inf/inf.
     w = 1.0 / (1.0 + 1.0 / snr)
-    var_ext_bayes = sig_dark**2 + w * (noise / f) ** 2
+    unit = z / F_ext.clamp_min(torch.finfo(Fobs_dark.dtype).tiny)
+    a, b = 1.0 - 1.0 / f, 1.0 / f
+    d_dark = a * (unit.conj() * torch.exp(1j * phi_dark)).real
+    d_light = b * (unit.conj() * torch.exp(1j * phi_mixed)).real
+    j_dark = (1.0 - w) + w * d_dark
+    j_light = w * d_light
+    var_ext_bayes = (
+        j_dark.square() * sig_dark.square() + j_light.square() * sig_light.square()
+    )
+    zero_bound = ((1.0 - w) + w * abs(a)).square() * sig_dark.square() + (
+        w * abs(b)
+    ).square() * sig_light.square()
+    var_ext_bayes = torch.where(F_ext > 0, var_ext_bayes, zero_bound)
     # Shrink the amplitude toward Fo_dark -- scalar, so no phase interference.
     F_ext_bayes = Fobs_dark + w * (F_ext - Fobs_dark)
     return F_ext_bayes, var_ext_bayes, w
@@ -741,10 +762,9 @@ def _extrapolation_columns(
     ) / w_light
 
     if snr_est is not None:
-        snr, noise, source = snr_est.snr, snr_est.noise, snr_est.source
+        snr, source = snr_est.snr, snr_est.source
     else:
         snr = torch.full_like(Fobs_dark_vals, float("inf"))
-        noise = torch.sqrt(sig_dark_vals**2 + sig_light_vals**2)
         source = "none"
     F_ext_bayes_amp, var_ext_bayes, w_shrinkage = compute_bayes_extrapolated_amplitudes(
         Fobs_dark_vals,
@@ -754,7 +774,7 @@ def _extrapolation_columns(
         ctx["phi_mixed"],
         w_light,
         snr=snr,
-        noise=noise,
+        sig_light=sig_light_vals,
     )
     sig_ext_bayes = torch.sqrt(var_ext_bayes)
 

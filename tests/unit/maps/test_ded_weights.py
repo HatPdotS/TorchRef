@@ -224,7 +224,14 @@ def test_extrapolated_shrinkage_keeps_every_reflection_and_ignores_occupancy():
     sig_dark = torch.full((n,), 0.5)
     out = {
         f: compute_bayes_extrapolated_amplitudes(
-            f_dark, f_light, sig_dark, phi, phi, f, snr=snr, noise=noise
+            f_dark,
+            f_light,
+            sig_dark,
+            phi,
+            phi,
+            f,
+            snr=snr,
+            sig_light=torch.sqrt(noise**2 - sig_dark**2),
         )
         for f in (0.2, 0.5)
     }
@@ -233,7 +240,10 @@ def test_extrapolated_shrinkage_keeps_every_reflection_and_ignores_occupancy():
         assert bool((w > 0).all()) and bool((w < 1).all())
         lo, hi = torch.minimum(f_dark, f_ext), torch.maximum(f_dark, f_ext)
         assert bool((f_ext_b >= lo - 1e-4).all()) and bool((f_ext_b <= hi + 1e-4).all())
-        assert torch.allclose(var, sig_dark**2 + w * (noise / f) ** 2)
+        assert torch.allclose(
+            var,
+            (1 - w / f) ** 2 * sig_dark**2 + (w / f) ** 2 * (noise**2 - sig_dark**2),
+        )
         assert bool((var > 0).all())
     assert torch.equal(out[0.2][2], out[0.5][2])
     # The fallback after a failed fit: an infinite SNR gives the unshrunk amplitude, a
@@ -248,7 +258,7 @@ def test_extrapolated_shrinkage_keeps_every_reflection_and_ignores_occupancy():
             phi,
             0.2,
             snr=torch.full((n,), s_val),
-            noise=noise,
+            sig_light=torch.sqrt(noise**2 - sig_dark**2),
         )
         assert bool(torch.isfinite(f_ext_b).all()) and bool(torch.isfinite(var).all())
         assert torch.allclose(f_ext_b, expect, atol=1e-4)
@@ -282,3 +292,73 @@ def test_q_takes_a_failed_fit_without_retrying(monkeypatch):
         q = compute_ded_weights("q", **kw, snr_estimate=ValueError("too few"))
     assert len(record) == 1 and "too few" in str(record[0].message)
     assert q.applied == "inverse_variance"
+
+
+@pytest.mark.parametrize("occupancy", [0.2, 0.5, 1.0])
+@pytest.mark.parametrize("snr_value", [0.0, 0.5, 2.0, float("inf")])
+def test_extrapolation_propagates_shared_dark_noise(occupancy, snr_value):
+    """Shrinking a shared-noise difference propagates both independent measurements."""
+    from torchref.cli.collection_difference_refine import (
+        compute_bayes_extrapolated_amplitudes,
+    )
+    from torchref.config import get_float_dtype
+
+    dark, light, sd, sl, phi, snr = [
+        torch.tensor([value], dtype=get_float_dtype())
+        for value in (10.0, 12.0, 2.0, 3.0, 0.0, snr_value)
+    ]
+    amplitude, variance, w = compute_bayes_extrapolated_amplitudes(
+        dark, light, sd, phi, phi, occupancy, snr=snr, sig_light=sl
+    )
+    coefficient = w / occupancy
+    torch.testing.assert_close(amplitude, dark + coefficient * (light - dark))
+    torch.testing.assert_close(
+        variance, (1 - coefficient) ** 2 * sd**2 + coefficient**2 * sl**2
+    )
+    if occupancy == 1.0 and snr_value == float("inf"):
+        assert amplitude.item() == 12.0
+        assert variance.item() == 9.0
+
+
+def test_extrapolation_phase_derivatives_on_deposited_amplitudes(mtz_dir):
+    """Reported variance agrees with derivatives of the phase-aware shrunk amplitude."""
+    from torchref import ReflectionData
+    from torchref.cli.collection_difference_refine import (
+        compute_bayes_extrapolated_amplitudes,
+    )
+
+    data = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    dark, sd = data.get_corrected_data()
+    dark, sd = dark[:64].detach().clone().requires_grad_(), sd[:64].detach()
+    light = (dark.detach() * 1.2).requires_grad_()
+    sl = sd * 1.5
+    phi_d = torch.linspace(-1.5, 1.5, len(dark), dtype=dark.dtype)
+    phi_l = phi_d + 0.8
+    snr = torch.linspace(0.1, 3.0, len(dark), dtype=dark.dtype)
+    amp, var, _ = compute_bayes_extrapolated_amplitudes(
+        dark, light, sd, phi_d, phi_l, 0.35, snr=snr, sig_light=sl
+    )
+    jd, jl = torch.autograd.grad(amp.sum(), (dark, light))
+    torch.testing.assert_close(var, jd**2 * sd**2 + jl**2 * sl**2)
+
+
+def test_intensity_snr_controls_weight_with_amplitude_uncertainty():
+    """Intensity noise sets shrinkage while amplitude sigmas describe propagated error."""
+    from torchref.cli.collection_difference_refine import (
+        compute_bayes_extrapolated_amplitudes,
+    )
+
+    kw = _intensity_inputs(n=5000)
+    est = difference_snr(**kw)
+    assert est.source == "intensity"
+    dark = kw["f_dark"]
+    light = dark + kw["delta_obs"]
+    sd = torch.ones_like(dark)
+    sl = 2 * sd
+    phi = torch.zeros_like(dark)
+    amp, var, w = compute_bayes_extrapolated_amplitudes(
+        dark, light, sd, phi, phi, 1.0, snr=est.snr, sig_light=sl
+    )
+    torch.testing.assert_close(w, 1 / (1 + 1 / est.snr))
+    torch.testing.assert_close(var, (1 - w) ** 2 * sd**2 + w**2 * sl**2)
+    assert torch.isfinite(amp).all()

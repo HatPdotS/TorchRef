@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- Extrapolated amplitude sigmas propagate independent dark and light measurement errors with their shared-difference covariance and phase-aware derivatives, for finite shrinkage and unshrunk fallback alike; they describe measurement uncertainty rather than latent-difference posterior variance.
 - The difference MTZ groups its columns into named datasets -- ``observed``, ``difference``, ``light_model``, ``extrapolated_light``, ``two_moment`` -- with one history line describing each, so ``FWT``/``PHWT`` reads as ``/torchref/extrapolated_light/FWT`` (the extrapolated light-state map ``2*FEXT - Fc``). Labels are unchanged and Coot still auto-opens it
 - ``SpaceGroup.canonicalize_hkl`` gains ``sort=False``, which keeps the input row order and returns ``None`` for ``sort_indices``; the ASU mapping runs as threaded torch operations and reuses the rotated indices for the Friedel mate, so large reflection lists map faster with unchanged outputs
 - ``torchref.difference-map``, ``torchref.difference-refine`` and ``torchref.validate-ded`` gain ``--ded-weight {q,inverse_variance,none}`` (default ``q``) and ``--difference-gamma``. The difference MTZ now carries the unweighted ``dF``/``SIGdF`` on ``PHDELWT`` with one mean-one weight column per scheme, ``W_Q`` and ``W_InVa`` (MTZ type W), and the observed-to-model scale ``KSCALE``; ``DELFWT`` is no longer written, build the map with ``torchref.mtz2map -csf dF -cw W_Q -cphi PHDELWT``. Registered in ``torchref.maps.ded_weights``
