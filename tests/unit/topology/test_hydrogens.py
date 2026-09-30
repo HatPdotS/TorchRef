@@ -30,8 +30,8 @@ def built(pdb_dir):
 
     def _build(code):
         if code not in cache:
-            # add_hydrogens=False: these tests exercise generation itself, so the model
-            # has to arrive without the hydrogens the loader would otherwise add.
+            # hydrogens="strip": these tests exercise generation itself, so the model
+            # has to arrive without hydrogens.
             model = Model(verbose=0, hydrogens="strip")
             model.load_pdb(str(pdb_dir / f"{code}.pdb"))
             model.ctx.set_cif_path(None)

@@ -1,6 +1,7 @@
 """Riding hydrogens: the sterics of hydrogens a model does not carry.
 
-For a model loaded with ``strip_H=True``, whose atoms are heavy only. A static map
+For a model whose atoms are heavy only (loaded with ``hydrogens="strip"``, or from a
+file without hydrogens). A static map
 built once at restraint-construction time says how to reconstruct each absent hydrogen
 from its parent and the parent's bonded neighbours; ``place_riding_hydrogens`` then
 produces those positions in one vectorized pass at every non-bonded evaluation and
@@ -298,7 +299,7 @@ def build_hydrogen_topology(
     Parameters
     ----------
     pdb : pd.DataFrame
-        Heavy-atom DataFrame (``strip_H=True``).
+        Heavy-atom DataFrame (no hydrogen rows).
     device : torch.device
         Target device for tensors.
     verbose : int

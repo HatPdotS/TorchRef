@@ -22,8 +22,9 @@ extra CIF definitions *before* that first access:
 Restraints hold no reference to the model: every evaluation takes the
 coordinates (or B-factors) it scores, and the non-bonded pair list is rebuilt
 from the coordinates the non-bonded target passes in. ``Restraints.__init__``
-takes an atom table and the coordinates to build over (``pdb, cif_path, xyz,
-cell, spacegroup, links, verbose, nonbonded``).
+takes a node-only topology (``model.ctx.topology``, or
+``Topology.from_table(table)``) and the coordinates to build over
+(``topology, cif_path, xyz, cell, spacegroup, links, verbose, nonbonded``).
 
 Residues for which no restraints could be built are frozen in ``xyz`` rather
 than refined unrestrained, so a missing ligand definition shows up as an
@@ -120,8 +121,8 @@ the geometry *targets*, not off ``Restraints``:
 .. code-block:: python
 
    # Raw per-restraint deviations and their sigmas
-   deviations, sigmas = restraints.bond_deviations()
-   deviations, sigmas = restraints.angle_deviations()
+   deviations, sigmas = restraints.bond_deviations(model.xyz())
+   deviations, sigmas = restraints.angle_deviations(model.xyz())
 
    # Summary statistics, keyed by component: bond, angle, torsion, planarity,
    # chiral, nonbonded, ramachandran

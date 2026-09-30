@@ -58,9 +58,10 @@ class TestCIFSaving:
 
         assert output_path.exists()
 
-        # add_hydrogens=False on reload: what is under test is whether the written
-        # file round-trips, not whether generation reruns. Regenerating on reload can
-        # legitimately differ, because ``write_pdb`` does not emit LINK records -- so a
+        # The default hydrogens="keep" on reload: what is under test is whether the
+        # written file round-trips, not whether generation reruns. Regenerating on
+        # reload can legitimately differ, because ``write_pdb`` does not emit LINK
+        # records -- so a
         # metal-coordinated nitrogen comes back with a free valence and takes a hydrogen
         # it did not have before.
         model2 = Model()

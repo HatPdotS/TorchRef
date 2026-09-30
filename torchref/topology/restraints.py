@@ -1,8 +1,9 @@
 """The restraint layer over a topology, and what it takes to build one.
 
-:class:`Restraints` is the orchestrator. Given an atom table it resolves the monomer
-dictionaries, builds the :class:`~torchref.topology.topology.Topology`, layers the ideal
-values over its edges, derives the non-bonded pair list, and exposes the whole thing as
+:class:`Restraints` is the orchestrator. Given a node-only
+:class:`~torchref.topology.topology.Topology` and the coordinates to build over, it
+resolves the monomer dictionaries, connects the topology, layers the ideal values over
+its edges, derives the non-bonded pair list, and exposes the whole thing as
 ``restraints[edge_type][origin][property]`` -- three dict lookups into a mapping
 assembled once, because the geometry targets read it on every iteration.
 
@@ -14,7 +15,7 @@ Three kinds of thing live here, and only the first is really connectivity:
   it is held apart from the rest;
 * the Ramachandran map, a residue-level product of the same build.
 
-Deliberately decoupled from :class:`~torchref.model.Model`: it takes an atom table and
+Deliberately decoupled from :class:`~torchref.model.Model`: it takes a topology and
 holds no reference back to whatever owns the coordinates. Every evaluation takes the
 coordinates (or ADPs) it scores as an argument, and the pair list is rebuilt from the
 coordinates it is handed, so the same object serves any model that shares the atom set.
@@ -165,8 +166,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
     def _riding_table(self, xyz: torch.Tensor) -> pd.DataFrame:
         """The identity-plus-coordinates table :mod:`torchref.topology.riding` reads.
 
-        That module still takes an atom table; it goes when the phantom-hydrogen path
-        is deleted.
+        That module takes an atom table rather than a topology, so one is assembled
+        here from :attr:`topology` and ``xyz`` (Cartesian, Å, shape ``(n_atoms, 3)``).
         """
         columns = self.topology.columns()
         coords = xyz.detach().cpu().numpy()
