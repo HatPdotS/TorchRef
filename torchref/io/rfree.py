@@ -309,8 +309,32 @@ def asu_hkl(ds: rs.DataSet) -> np.ndarray:
 
 
 def hkl_keys(hkl: np.ndarray) -> np.ndarray:
-    """Encode integer Miller indices (N, 3) as unique int64 scalars."""
-    h = hkl.astype(np.int64) + _KEY_OFFSET
+    """Encode integer Miller indices as unique int64 scalars.
+
+    Parameters
+    ----------
+    hkl : np.ndarray
+        Miller indices, shape (N, 3), integer-valued.
+
+    Returns
+    -------
+    np.ndarray
+        int64 keys, shape (N,), ordered like ``hkl`` and decoded by
+        :func:`_unkey`.
+
+    Raises
+    ------
+    ValueError
+        If any index lies outside ``[-1023, 1023]``, where the fixed-width
+        encoding would silently map two reflections onto one key.
+    """
+    h = hkl.astype(np.int64)
+    if h.size and np.abs(h).max() >= _KEY_OFFSET:
+        raise ValueError(
+            f"Miller index {int(np.abs(h).max())} exceeds the supported range "
+            f"|h|, |k|, |l| < {_KEY_OFFSET}"
+        )
+    h = h + _KEY_OFFSET
     span = 2 * _KEY_OFFSET
     return (h[:, 0] * span + h[:, 1]) * span + h[:, 2]
 
@@ -545,6 +569,8 @@ def uniform_rfree(
     """
     if free_fraction is not None and not 0 < free_fraction < 1:
         raise ValueError("free_fraction must be between 0 and 1")
+    if max_free is not None and max_free < 1:
+        raise ValueError("max_free must be at least 1")
 
     # the flag table lives on the reference's cell when there is one, so the
     # result does not depend on input order

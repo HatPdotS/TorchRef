@@ -264,3 +264,18 @@ def test_reference_without_free_reflections_is_rejected(small):
         rfree.uniform_rfree({"x": small}, reference=small)
     report = rfree.compare_free_sets({"x": small})
     assert report["files"]["x"]["n_free"] == 0 and not report["consistent"]
+
+
+def test_hkl_keys_reject_indices_beyond_the_encoding():
+    edge = np.array([[1023, -1023, 0], [-1023, 1023, 1023]])
+    np.testing.assert_array_equal(rfree._unkey(rfree.hkl_keys(edge)), edge)
+    # (0, 1024, 0) and (1, -1024, 0) would share a key
+    with pytest.raises(ValueError, match="supported range"):
+        rfree.hkl_keys(np.array([[0, 1024, 0]]))
+    with pytest.raises(ValueError, match="supported range"):
+        rfree.hkl_keys(np.array([[1, -1024, 0]]))
+
+
+def test_max_free_must_be_positive(small):
+    with pytest.raises(ValueError, match="max_free"):
+        rfree.uniform_rfree({"x": small}, max_free=0)
