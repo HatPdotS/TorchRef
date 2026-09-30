@@ -536,27 +536,27 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
     n_unplaceable = 0
     n_no_template = 0
 
+    atom_resnames = topology.columns()["resname"]
     for residue in range(residues.n_residues):
-        resname = str(residues.resname[residue]).strip()
-        template = _template(cif_dict, resname)
-        if template is None:
-            # Atoms without a dictionary cannot supply either bond geometry or
-            # hydrogen identities; leave those residues unchanged.
-            n_no_template += 1
-            continue
-
         rows = np.arange(
             int(residues.atom_start[residue]), int(residues.atom_end[residue])
         )
-        present = set(names[rows])
-        h1_alias = "H" in template["h_names"] and "H1" not in template["h_names"]
-        if h1_alias and "H1" in present:
-            present.add("H")
-        candidates = [h for h in template["h_names"] if h not in present]
-        if not candidates:
-            continue
-
         for altloc, conformer in _conformer_rows(rows, altlocs):
+            labelled = conformer[altlocs[conformer] != " "]
+            identity_row = labelled[0] if len(labelled) else conformer[0]
+            resname = str(atom_resnames[identity_row]).strip()
+            template = _template(cif_dict, resname)
+            if template is None:
+                n_no_template += 1
+                continue
+            present = set(names[conformer])
+            h1_alias = "H" in template["h_names"] and "H1" not in template["h_names"]
+            if h1_alias and "H1" in present:
+                present.add("H")
+            candidates = [h for h in template["h_names"] if h not in present]
+            if not candidates:
+                continue
+
             name_to_row = {}
             for row in conformer:
                 name = "H" if h1_alias and names[row] == "H1" else names[row]

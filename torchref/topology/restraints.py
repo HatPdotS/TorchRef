@@ -155,12 +155,9 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         Single-atom residues (ions, lone waters) need no dictionary lookup.
         """
         names_by_resname: dict = {}
-        resnames = np.char.strip(topology.residues.resname.astype(str))
-        for r, resname in enumerate(resnames):
-            rows = topology.residues.atom_rows(r)
-            names_by_resname.setdefault(str(resname), set()).update(
-                topology.atoms.name[rows.start : rows.stop].tolist()
-            )
+        columns = topology.columns()
+        for resname, atom_name in zip(columns["resname"], columns["name"]):
+            names_by_resname.setdefault(str(resname), set()).add(str(atom_name))
         return [name for name, atoms in names_by_resname.items() if len(atoms) > 1]
 
     def _riding_table(self, xyz: torch.Tensor) -> pd.DataFrame:

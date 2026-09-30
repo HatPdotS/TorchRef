@@ -1776,6 +1776,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         altloc = topology.atoms.altloc
         occupancy = self.occupancy().detach().cpu().numpy()
         keep = np.ones(self.n_atoms, dtype=bool)
+        resnames = topology.columns()["resname"]
         for residue in range(topology.n_residues):
             rows = np.arange(
                 int(topology.residues.atom_start[residue]),
@@ -1786,11 +1787,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 continue
             means = [occupancy[rows[altloc[rows] == label]].mean() for label in labels]
             best = labels[int(np.argmax(means))]
+            # Shared atoms belong to the retained chemical conformer in a model
+            # with no altlocs, even when their deposited name was the other type.
+            resnames[rows] = resnames[rows[altloc[rows] == best][0]]
             keep[rows[(altloc[rows] != " ") & (altloc[rows] != best)]] = False
 
         rows = np.nonzero(keep)[0]
         columns = {key: value[rows] for key, value in topology.columns().items()}
         columns["altloc"] = np.full(len(rows), " ")
+        columns["resname"] = resnames[rows]
         return self._derive_from(
             Topology.from_columns(columns),
             self._current_values().gather(rows),

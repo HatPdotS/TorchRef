@@ -91,9 +91,33 @@ class PeptideResidues:
     def __init__(self, topology, pairs, xyz):
         self.pairs = [(int(a), int(b)) for a, b in pairs]
         self.resnames = np.char.strip(np.asarray(topology.residues.resname).astype(str))
+        self.atom_altlocs = topology.atoms.altloc
+        self.atom_resnames = topology.columns()["resname"]
         self.xyz = np.asarray(xyz, dtype=np.float64)
         involved = sorted({r for pair in self.pairs for r in pair})
         self.conformer_maps = {r: _conformer_maps(topology, r) for r in involved}
+
+    def conformer_resname(self, mapping: Dict[str, int]) -> str:
+        """Return the chemical identity of a conformer atom-name map.
+
+        Parameters
+        ----------
+        mapping : dict
+            Atom names mapped to topology rows for one conformer.
+
+        Returns
+        -------
+        str
+            Residue name of the labelled atoms, or the shared atoms if unlabelled.
+        """
+        rows = list(mapping.values())
+        names = self.atom_resnames[rows]
+        # Shared atoms can retain the first conformer's name. A conformer's
+        # distinct chemical identity belongs to its labelled atoms.
+        for row in rows:
+            if self.atom_altlocs[row] != " ":
+                return str(self.atom_resnames[row])
+        return str(names[0])
 
 
 class PreprocessedCIF:
@@ -705,16 +729,19 @@ class InterResidueAngleBuilder:
         n_angles = len(angles["atom1"])
 
         for res_i_idx, res_next_idx in pairs:
-            # Filter by next residue name if requested
-            if next_resname_filter is not None:
-                if residues.resnames[res_next_idx] != next_resname_filter:
-                    continue
-            if exclude_next_resname is not None:
-                if residues.resnames[res_next_idx] == exclude_next_resname:
-                    continue
-
             for map_i in conf_maps[res_i_idx]:
                 for map_next in conf_maps[res_next_idx]:
+                    next_name = residues.conformer_resname(map_next)
+                    if (
+                        next_resname_filter is not None
+                        and next_name != next_resname_filter
+                    ):
+                        continue
+                    if (
+                        exclude_next_resname is not None
+                        and next_name == exclude_next_resname
+                    ):
+                        continue
 
                     for a in range(n_angles):
                         comp1, comp2, comp3 = (
@@ -953,12 +980,13 @@ class InterResidueTorsionBuilder:
         from torchref.topology.ramachandran import classify_residue
 
         for res_i_idx, res_next_idx in pairs:
-            resname_i = residues.resnames[res_i_idx]
-            resname_next = residues.resnames[res_next_idx]
-            is_proline = resname_next == "PRO"
-
             for map_i in conf_maps[res_i_idx]:
                 for map_next in conf_maps[res_next_idx]:
+                    resname_i = residues.conformer_resname(map_i)
+                    resname_next = residues.conformer_resname(map_next)
+                    is_proline = resname_next == "PRO"
+                    key_i = (res_i_idx, resname_i)
+                    key_next = (res_next_idx, resname_next)
 
                     # Track which residue each phi/psi belongs to
                     pair_phi = None   # phi from this pair belongs to res_next_idx
@@ -1013,19 +1041,19 @@ class InterResidueTorsionBuilder:
                     # phi: C(i) - N(j) - CA(j) - C(j)  → belongs to residue j
                     # psi: N(i) - CA(i) - C(i)  - N(j)  → belongs to residue i
                     if pair_phi is not None:
-                        phi_by_residue[res_next_idx] = pair_phi
+                        phi_by_residue[key_next] = pair_phi
                     if pair_psi is not None:
-                        psi_by_residue[res_i_idx] = pair_psi
+                        psi_by_residue[key_i] = pair_psi
                     # Track residue names and next-residue names for classification
-                    resname_by_residue[res_i_idx] = resname_i
-                    resname_by_residue[res_next_idx] = resname_next
-                    next_resname_by_residue[res_i_idx] = resname_next
+                    resname_by_residue[key_i] = resname_i
+                    resname_by_residue[key_next] = resname_next
+                    next_resname_by_residue[key_i] = resname_next
                     # Compute omega for PRO cis/trans detection
                     if omega_data["indices"]:
                         omega_deg = self._torsion_angle_np(
                             coords_np, *omega_data["indices"][-1]
                         )
-                        omega_by_residue[res_next_idx] = omega_deg
+                        omega_by_residue[key_next] = omega_deg
 
         result = {}
 

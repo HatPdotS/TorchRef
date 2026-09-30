@@ -52,6 +52,42 @@ def _atom_columns(topology: Topology) -> Dict[str, np.ndarray]:
     cols["index"] = np.arange(topology.n_atoms, dtype=np.int64)
     return cols
 
+
+def _chemical_nodes(cols, nodes, peptide_pairs):
+    """Expand sequence positions into chemical identities for template matching.
+
+    Blank-altloc atoms participate in every chemical conformer at their position.
+    ``index`` continues to address the original atom order, including when shared
+    atoms are duplicated in this temporary matching view.
+    """
+    rows, identities, owners, starts, ends = [], [], [], [], []
+    variants = {}
+    for r, (start, end) in enumerate(zip(nodes["atom_start"], nodes["atom_end"])):
+        source = np.arange(int(start), int(end))
+        names = list(dict.fromkeys(cols["resname"][source].tolist()))
+        variants[r] = []
+        for rn in names:
+            variants[r].append(len(owners))
+            chosen = source[
+                (cols["resname"][source] == rn) | (cols["altloc"][source] == " ")
+            ]
+            starts.append(len(rows))
+            rows.extend(chosen.tolist())
+            identities.extend([rn] * len(chosen))
+            ends.append(len(rows))
+            owners.append(r)
+    rows = np.asarray(rows, dtype=np.int64)
+    owners = np.asarray(owners, dtype=np.int64)
+    expanded = {k: v[rows] for k, v in cols.items()}
+    expanded["resname"] = np.asarray(identities)
+    chemical = {k: v[owners] for k, v in nodes.items()}
+    chemical["resname"] = expanded["resname"][starts]
+    chemical["atom_start"] = np.asarray(starts, dtype=np.int64)
+    chemical["atom_end"] = np.asarray(ends, dtype=np.int64)
+    pairs = [(a, b) for i, j in peptide_pairs for a in variants[i] for b in variants[j]]
+    return expanded, chemical, pairs, rows, owners
+
+
 def _conformers(
     cols: Dict[str, np.ndarray], start: int, end: int
 ) -> List[Tuple[np.ndarray, np.ndarray]]:
@@ -570,17 +606,15 @@ def _lookup_link_atom(
     key = (str(chainid), int(resseq), str(icode).strip())
     candidates = residue_by_key.get(key, [])
     wanted = str(resname).strip() if resname else ""
-    if wanted:
-        tied = [
-            r for r in candidates if str(topology.residues.resname[r]).strip() == wanted
-        ]
-        candidates = tied or candidates
     rows = [
         row
         for r in candidates
         for row in topology.residues.atom_rows(r)
         if str(topology.atoms.name[row]).strip() == str(name).strip()
     ]
+    if wanted:
+        tied = [row for row in rows if topology.resname_of_atom(row).strip() == wanted]
+        rows = tied or rows
     if not rows:
         return None
     altlocs = [str(topology.atoms.altloc[row]) for row in rows]
@@ -801,33 +835,47 @@ def build_topology_with_values(
         (int(polymer_map[a]), int(polymer_map[b])) for a, b in peptide_local
     ]
 
-    comp_dict, template_key = resolve_template_keys(
-        nodes["resname"], peptide_pairs, cif_dict, link_list, verbose=verbose
+    match_cols, chemical_nodes, chemical_pairs, source_rows, owners = _chemical_nodes(
+        cols, nodes, peptide_pairs
     )
+    comp_dict, chemical_keys = resolve_template_keys(
+        chemical_nodes["resname"], chemical_pairs, cif_dict, link_list, verbose=verbose
+    )
+    template_key = np.asarray(nodes["resname"], dtype=object).copy()
+    _, first_variant = np.unique(owners, return_index=True)
+    template_key[:] = chemical_keys[first_variant]
     pp_cif = PreprocessedCIF(comp_dict)
-    match_cols = dict(cols)
-    match_cols["name"] = cols["name"].copy()
+    match_cols["name"] = match_cols["name"].copy()
     # PDB terminal H1 is the monomer dictionary's H. Resolve the alias only
     # for matching, preserving the model's atom names and row identities.
-    for r in range(n_res):
-        start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
+    for r in range(len(chemical_keys)):
+        start, end = int(chemical_nodes["atom_start"][r]), int(
+            chemical_nodes["atom_end"][r]
+        )
         names = match_cols["name"][start:end]
         if "H1" not in names or "H" in names:
             continue
-        component = comp_dict.get(str(template_key[r]), {})
+        component = comp_dict.get(str(chemical_keys[r]), {})
         atom_table = component.get("atoms")
         if atom_table is None:
             continue
         template_names = set(atom_table["atom_id"].astype(str).str.strip())
         if "H" in template_names and "H1" not in template_names:
             names[names == "H1"] = "H"
-    energy_type, template_h_count = _atom_types(
-        match_cols, nodes, template_key, comp_dict
+    chemical_energy, chemical_h_count = _atom_types(
+        match_cols, chemical_nodes, chemical_keys, comp_dict
     )
+    energy_type = np.full(topology.n_atoms, "", dtype=chemical_energy.dtype)
+    template_h_count = np.full(topology.n_atoms, -1, dtype=np.int8)
+    own_identity = match_cols["resname"] == cols["resname"][source_rows]
+    energy_type[source_rows[own_identity]] = chemical_energy[own_identity]
+    template_h_count[source_rows[own_identity]] = chemical_h_count[own_identity]
 
-    intra, intra_values = _match_intra(match_cols, nodes, template_key, pp_cif)
+    intra, intra_values = _match_intra(
+        match_cols, chemical_nodes, chemical_keys, pp_cif
+    )
     intra_planes, intra_plane_values = _match_intra_planes(
-        match_cols, nodes, template_key, pp_cif
+        match_cols, chemical_nodes, chemical_keys, pp_cif
     )
     inter, inter_values, extras = _inter_residue_edges(
         PeptideResidues(topology, peptide_pairs, xyz.detach().cpu().numpy()),
@@ -970,6 +1018,7 @@ def build_topology_with_values(
     )
 
     atoms = AtomGraph(
+        resname=cols["resname"].copy(),
         name=cols["name"],
         element=cols["element"],
         altloc=cols["altloc"],
@@ -990,8 +1039,9 @@ def build_topology_with_values(
         planes=plane_blocks,
         energy_type=energy_type,
         template_h_count=torch.as_tensor(
-            # dtype-ok: small per-atom count; int8 is AtomGraph's documented storage
-            template_h_count, dtype=torch.int8, device=device
+            template_h_count,
+            dtype=torch.int8,  # dtype-ok: small per-atom count; AtomGraph storage
+            device=device,
         ),
     )
 

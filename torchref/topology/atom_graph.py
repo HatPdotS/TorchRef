@@ -115,6 +115,9 @@ class AtomGraph(DeviceMixin):
         Per-atom identifiers, shape ``(N,)``. Strings, so NumPy rather than tensors;
         residue-level identity is reached through ``residue_of`` rather than duplicated
         here. ``altloc`` is ``' '`` for atoms in no alternative conformation.
+    resname : numpy.ndarray, optional
+        Chemical residue identity per atom, shape ``(N,)``, preserving identities
+        of alternate conformers at one sequence position.
     residue_of : torch.Tensor
         Residue index per atom, shape ``(N,)``, dtype ``int64``.
     is_hetatm : numpy.ndarray, optional
@@ -160,6 +163,7 @@ class AtomGraph(DeviceMixin):
     energy_type: Optional[np.ndarray] = None
     template_h_count: Optional[torch.Tensor] = None
     hb_type: Optional[torch.Tensor] = None
+    resname: Optional[np.ndarray] = None
 
     _adj_indptr: Optional[torch.Tensor] = field(default=None, repr=False)
     _adj_indices: Optional[torch.Tensor] = field(default=None, repr=False)
@@ -243,6 +247,7 @@ class AtomGraph(DeviceMixin):
     def copy(self) -> "AtomGraph":
         """An independent copy sharing no storage with this one."""
         return AtomGraph(
+            resname=None if self.resname is None else self.resname.copy(),
             name=self.name.copy(),
             element=self.element.copy(),
             altloc=self.altloc.copy(),
@@ -310,6 +315,7 @@ class AtomGraph(DeviceMixin):
 
         keep_t = torch.as_tensor(keep, device=self.residue_of.device)
         return AtomGraph(
+            resname=None if self.resname is None else self.resname[keep],
             name=self.name[keep],
             element=self.element[keep],
             altloc=self.altloc[keep],

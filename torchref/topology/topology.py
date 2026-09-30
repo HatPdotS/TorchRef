@@ -2,8 +2,9 @@
 
 :class:`Topology` is where a model's atom identity and connectivity live. The residue
 level carries the sequence and the inter-residue links; the atom level carries the
-atoms, the typed edge blocks and the bond adjacency. Per-atom residue identity is
-reached through ``atoms.residue_of`` rather than duplicated per atom.
+atoms, the typed edge blocks and the bond adjacency. Sequence position is reached
+through ``atoms.residue_of``; chemical residue identity is per atom so alternate
+residue types can share a sequence position.
 
 Identity comes first. :meth:`Topology.from_table` is the one place an atom table's
 identity columns become arrays; the result is a node-only topology -- names, elements,
@@ -172,6 +173,7 @@ class Topology(DeviceMixin):
             device=device,
         )
         atoms = AtomGraph(
+            resname=np.asarray(columns["resname"]).copy(),
             name=np.asarray(columns["name"]),
             element=np.asarray(columns["element"]),
             altloc=np.asarray(columns["altloc"]),
@@ -182,7 +184,7 @@ class Topology(DeviceMixin):
         return cls(residues=residues, atoms=atoms)
 
     def columns(self) -> Dict[str, np.ndarray]:
-        """Per-atom identity arrays, residue fields broadcast to atoms.
+        """Per-atom identity arrays, sequence-position fields broadcast to atoms.
 
         Returns
         -------
@@ -197,7 +199,11 @@ class Topology(DeviceMixin):
             "chain": self.residues.chain[of],
             "resseq": self.residues.resseq[of],
             "icode": self.residues.icode[of],
-            "resname": self.residues.resname[of],
+            "resname": (
+                self.residues.resname[of]
+                if self.atoms.resname is None
+                else self.atoms.resname.copy()
+            ),
             "is_hetatm": self.atoms.is_hetatm.copy(),
             "charge": self.atoms.charge.copy(),
         }
@@ -243,7 +249,9 @@ class Topology(DeviceMixin):
     @property
     def is_water(self) -> np.ndarray:
         """True for atoms of water residues, shape ``(N,)``."""
-        return self.residues.is_water[self.atoms.residue_of.cpu().numpy()]
+        from torchref.topology.residue_graph import WATER_RESNAMES
+
+        return np.isin(self.columns()["resname"], list(WATER_RESNAMES))
 
     @property
     def is_polymer(self) -> np.ndarray:
@@ -424,7 +432,9 @@ class Topology(DeviceMixin):
         return int(self.atoms.residue_of[i])
 
     def resname_of_atom(self, i: int) -> str:
-        """Residue name of atom ``i``, joined through the residue graph."""
+        """Chemical residue name of atom ``i``, including alternate residue types."""
+        if self.atoms.resname is not None:
+            return str(self.atoms.resname[i])
         return str(self.residues.resname[self.residue_of_atom(i)])
 
     def edge_block(self, edge_type: str):
