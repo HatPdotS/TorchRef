@@ -322,10 +322,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     raise ValueError(f"max_res must be a float > 0, got {max_res!r}")
                 if max_res_val <= 0:
                     raise ValueError(f"max_res must be > 0, got {max_res_val}")
-                self.reflection_data = self.reflection_data.cut_res(max_res_val)
+                self.reflection_data = self.reflection_data.filter_by_resolution(
+                    d_min=max_res_val
+                )
                 self.max_res = max_res_val
             else:
-                self.max_res = self.reflection_data.get_max_res()
+                self.max_res = self.reflection_data.d_min
             self.model = ModelFT(
                 verbose=self.verbose,
                 max_res=self.max_res,
