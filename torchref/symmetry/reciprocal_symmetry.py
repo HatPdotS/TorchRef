@@ -55,9 +55,9 @@ def _equivalent_hkl(
 
     Returns
     -------
-    copies : torch.Tensor, shape (M, 3), dtype=int32
+    copies : torch.Tensor, shape (M, 3), configured int dtype
         ``M = n_ops * N``, doubled with ``include_friedel``.
-    source : torch.Tensor, shape (M,), dtype=int64
+    source : torch.Tensor, shape (M,), configured int dtype
         Input row of each copy.
     phase_shifts : torch.Tensor, shape (M,)
         Translation phase offset in radians of each copy.
@@ -82,7 +82,7 @@ def _equivalent_hkl(
 
     copies = copies.reshape(-1, 3)
     phase = phase.reshape(-1)
-    source = torch.arange(n, device=device).repeat(sym.n_ops)
+    source = torch.arange(n, dtype=get_int_dtype(), device=device).repeat(sym.n_ops)
     is_friedel = torch.zeros(len(copies), dtype=torch.bool, device=device)
     if include_friedel:
         copies = torch.cat([copies, -copies])
@@ -122,9 +122,9 @@ def _expand_hkl(
 
     Returns
     -------
-    expanded_hkl : torch.Tensor, shape (M, 3), dtype=int32
+    expanded_hkl : torch.Tensor, shape (M, 3), configured int dtype
         All unique expanded Miller indices, in order of first occurrence.
-    orig_indices : torch.Tensor, shape (M,), dtype=int64
+    orig_indices : torch.Tensor, shape (M,), configured int dtype
         Index mapping expanded → original: ``F_expanded = F_orig[orig_indices]``.
     phase_shifts : torch.Tensor, shape (M,), dtype=float32
         Translation phase offsets in radians:
