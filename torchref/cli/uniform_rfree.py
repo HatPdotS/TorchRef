@@ -164,7 +164,10 @@ Examples:
     flg.add_argument(
         "--reference-column",
         default=None,
-        help="R-free column in --reference (default: auto-detect)",
+        help=(
+            "R-free column in --reference, or in the inputs with --reference auto "
+            "and --check (default: auto-detect)"
+        ),
     )
 
     scl = parser.add_argument_group("Scaling")
@@ -441,7 +444,11 @@ def main(argv=None):
             return 1
 
     # ---- existing flags -------------------------------------------------
-    report = rfree.compare_free_sets(datasets)
+    # With --reference auto the reference is one of the inputs, so the named
+    # column is the one to look for in them; an explicit reference file's column
+    # says nothing about the inputs' own flags.
+    input_column = args.reference_column if args.reference == "auto" else None
+    report = rfree.compare_free_sets(datasets, input_column)
     if args.check or args.verbose > 1 or (args.verbose and not report["consistent"]):
         _existing_report(report)
     elif args.verbose:

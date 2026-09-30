@@ -148,6 +148,29 @@ def test_auto_inherits_or_generates(inputs, tmp_path):
     assert "generating a new free set" in res.stdout
 
 
+def test_auto_reference_honours_reference_column(inputs, tmp_path):
+    """A non-standard flag column named by --reference-column is inherited."""
+    _, paths = inputs
+    ds = rs.read_mtz(str(paths[0]))
+    renamed = tmp_path / "renamed.mtz"
+    ds.rename(columns={"FreeR_flag": "MYFREE"}).write_mtz(str(renamed))
+    bare = tmp_path / "bare.mtz"
+    _strip_flags(paths[1], bare)
+
+    res = _run(bare, renamed, "--reference-column", "MYFREE", "--check")
+    assert "MYFREE" in res.stdout
+
+    out = tmp_path / "out"
+    res = _run(bare, renamed, "--reference-column", "MYFREE", "-o", out)
+    assert res.returncode == 0, res.stderr
+    assert "inherited from renamed" in res.stdout
+    orig = _free_tables([paths[0]])[0]
+    new = _free_tables([out / "bare_rfree.mtz"])[0]
+    common = set(new) & set(orig)
+    assert common
+    assert all(new[k] == orig[k] for k in common)
+
+
 def test_mixed_resolution_and_max_free(inputs, tmp_path):
     _, paths = inputs
     out = tmp_path / "out"
