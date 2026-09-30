@@ -38,12 +38,12 @@ from torchref.cli._common import (
     add_outdir_arg,
     build_dual_column_names,
     configure_unbuffered_output,
+    difference_config_from_args,
     intensity_difference,
     load_model,
     load_reflection_data,
     parse_device_str,
     register_timing,
-    difference_config_from_args,
     validate_cif_files,
     validate_files,
 )
@@ -357,10 +357,7 @@ def setup_ded_context(
         "weights_by_scheme": weights_by_scheme,
         "ded_weight": ded_weight,
         "ded_weight_applied": selected.applied,
-        "ded_weight_diagnostics": {
-            k: v
-            for k, v in all_w["q"].diagnostics.items()
-        },
+        "ded_weight_diagnostics": dict(all_w["q"].diagnostics),
         "d_spacing": d_spacing,
         "cell_t": cell_t,
         "cell_np": cell_np,

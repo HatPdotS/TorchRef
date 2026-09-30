@@ -57,7 +57,8 @@ DEFAULT_SNR_FLOOR = 0.5
 DEFAULT_ALPHA_ORDER = 2
 #: Degrees of freedom of the Student-t likelihood when ``robust=True``.
 DEFAULT_NU = 4.0
-#: Newton iterations; the problem has at most eight parameters and converges in ~10.
+#: Newton iterations; the problem has at most eight parameters (eleven with a model
+#: difference) and converges in ~10.
 MAX_ITER = 60
 _GAMMA_BOUNDS = (-1.0, 3.0)
 #: Bounds on the sigma scale ``k``. No merge misreports its sigmas tenfold; outside
@@ -174,8 +175,9 @@ class DifferencePowerFit:
         if self.gamma != 0.0:
             if f_dark is None:
                 raise ValueError("this fit uses F_dark; pass f_dark")
-            log_s = log_s + self.gamma * (_log_amp(f_dark.to(dss), self.amp_scale)
-                                          - self.log_f_ref)
+            log_s = log_s + self.gamma * (
+                _log_amp(f_dark.to(dss), self.amp_scale) - self.log_f_ref
+            )
         if centric is not None and self.centric_factor != 1.0:
             log_s = log_s + math.log(self.centric_factor) * centric.to(dss)
         power = torch.exp(log_s) * self.amp_scale**2
@@ -241,13 +243,16 @@ def fit_difference_power(
     d_star_sq : torch.Tensor
         ``1/d**2`` in A^-2, shape ``(N,)``.
     epsilon : torch.Tensor, optional
-        Reflection multiplicity; ones when omitted.
+        Reflection multiplicity, shape ``(N,)``; ones when omitted.
     f_dark : torch.Tensor, optional
-        Dark amplitudes for the ``F_dark**gamma`` term; without them ``gamma`` is 0.
+        Dark amplitudes for the ``F_dark**gamma`` term, shape ``(N,)``, on the scale
+        of ``delta_obs``; without them ``gamma`` is 0.
     centric : torch.Tensor, optional
-        Boolean centric flags; given, a centric power factor is fitted.
+        Boolean centric flags, shape ``(N,)``. A centric power factor is fitted when
+        the usable reflections hold both centric and acentric ones; otherwise it is 1.
     fit_mask : torch.Tensor, optional
-        Reflections entering the fit; default every finite one with positive sigma.
+        Boolean, shape ``(N,)``: reflections entering the fit; default every finite
+        one with positive sigma.
     delta_calc : torch.Tensor, optional
         Model difference, shape ``(N,)``, on the scale of ``delta_obs``. Given, the
         mean is ``alpha * delta_calc`` and ``S`` is the unexplained power.
@@ -271,7 +276,8 @@ def fit_difference_power(
     DifferencePowerFit
         The fitted model, detached from the inputs. Standard errors are NaN for fixed
         parameters. Runs with gradients enabled internally, so it works under
-        ``torch.no_grad()``.
+        ``torch.no_grad()``. Every trial step reads the objective back to the host,
+        one GPU->CPU sync each on an accelerator.
 
     Raises
     ------
@@ -321,8 +327,12 @@ def fit_difference_power(
         log_f = log_f - log_f_ref
     else:
         log_f, log_f_ref = torch.zeros_like(d), 0.0
-    has_centric = centric is not None and bool(centric.reshape(-1)[ok].any())
-    cen = centric.reshape(-1).to(dev)[ok].to(dtype) if has_centric else None
+    cen_ok = centric.reshape(-1).to(dev)[ok] if centric is not None else None
+    # Fitted only when both classes are present: an all-centric set (every reflection
+    # of a centrosymmetric group) makes the factor collinear with the constant term
+    # and the Newton Hessian singular.
+    has_centric = cen_ok is not None and bool(cen_ok.any()) and not bool(cen_ok.all())
+    cen = cen_ok.to(dtype) if has_centric else None
 
     n_c = order + 1
     n_a = alpha_order + 1 if delta_calc is not None else 0
@@ -496,8 +506,9 @@ def bounded_wiener_weight(
     """Wiener weight with the signal-to-noise ratio floored smoothly at ``snr_floor``.
 
     ``w = (snr + snr_floor) / (snr + 1 + snr_floor)``, which lies in
-    ``[snr_floor / (1 + snr_floor), 1)``: a reflection is down-weighted by its noise
-    fraction but never removed. ``snr_floor = 0`` is the plain Wiener weight.
+    ``[snr_floor / (1 + snr_floor), 1)`` and is 1 at an infinite SNR (a zero sigma):
+    a reflection is down-weighted by its noise fraction but never removed.
+    ``snr_floor = 0`` is the plain Wiener weight.
 
     Parameters
     ----------
@@ -513,7 +524,10 @@ def bounded_wiener_weight(
     """
     if snr_floor < 0:
         raise ValueError("snr_floor must be non-negative")
-    return (snr + snr_floor) / (snr + 1.0 + snr_floor)
+    w = (snr + snr_floor) / (snr + 1.0 + snr_floor)
+    # A zero reported sigma gives an infinite SNR, and inf/inf would be a NaN weight
+    # that removes the reflection; its limit is one.
+    return torch.where(torch.isposinf(snr), torch.ones_like(w), w)
 
 
 __all__ = [

@@ -5,11 +5,12 @@ dark-amplitude exponent and the sigma scale are recovered from one dataset, incl
 when the reported sigmas are uniformly inflated; a fixed exponent stays fixed; a model
 difference's resolution-dependent coupling and the power it leaves unexplained are
 recovered together; the bounded Wiener weight never falls below its floor, so no
-reflection or resolution range is removed even when the data hold no signal; the sigma
-scale stays within its bounds when the differences hold no noise; the fit stays defined
-when the residual holds no power; the estimator caches one fit until reset and applies
-its configured exponent; the fit runs under ``torch.no_grad()`` and on every available
-device.
+reflection or resolution range is removed even when the data hold no signal, and an
+infinite SNR gets full weight; the centric factor is fitted, and recovered, only when
+both centric and acentric reflections are present; the sigma scale stays within its
+bounds when the differences hold no noise; the fit stays defined when the residual holds
+no power; the estimator caches one fit until reset and applies its configured exponent;
+the fit runs under ``torch.no_grad()`` and on every available device.
 """
 
 import pytest
@@ -82,8 +83,37 @@ def test_weight_never_removes_a_reflection_without_signal():
     assert float(w.min()) >= 1.0 / 3.0 - 1e-6
     assert float(w.max()) < 1.0
     assert float(bounded_wiener_weight(torch.zeros(1), 0.0)) == 0.0
+    # A zero reported sigma gives an infinite SNR: full weight, not a NaN.
+    assert float(bounded_wiener_weight(torch.tensor([float("inf")]), 0.5)) == 1.0
     with pytest.raises(ValueError):
         bounded_wiener_weight(snr, -0.1)
+
+
+@pytest.mark.unit
+def test_centric_factor_is_fitted_only_when_both_classes_are_present():
+    # Every reflection of a centrosymmetric group is centric: the factor would be
+    # collinear with the constant term, so it is left at one and the fit matches the
+    # one without flags. Several seeds, because a singular Hessian is seed-dependent.
+    for seed in range(4):
+        s = synth(n=5000, seed=seed)
+        all_centric = torch.ones_like(s["delta"], dtype=torch.bool)
+        fit = fit_difference_power(
+            s["delta"], s["sigma"], s["dss"], f_dark=s["f"], centric=all_centric
+        )
+        plain = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"])
+        assert fit.centric_factor == 1.0
+        assert torch.allclose(fit.coeffs, plain.coeffs)
+    # A doubled centric power is recovered when both classes are present.
+    s = synth()
+    centric = torch.rand(len(s["delta"]), generator=torch.Generator().manual_seed(7))
+    centric = centric < 0.3
+    g = torch.Generator().manual_seed(8)
+    extra = torch.randn(len(s["delta"]), generator=g) * s["s_true"].sqrt()
+    delta = torch.where(centric, s["delta"] + extra, s["delta"])
+    fit = fit_difference_power(
+        delta, s["sigma"], s["dss"], f_dark=s["f"], centric=centric
+    )
+    assert fit.centric_factor == pytest.approx(2.0, rel=0.15)
 
 
 @pytest.mark.unit

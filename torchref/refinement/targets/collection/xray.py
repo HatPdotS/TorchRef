@@ -32,13 +32,13 @@ from torchref.base.targets.xray_likelihoods import (
     gaussian_per_refl,
     rice_per_refl,
 )
-from torchref.refinement.model_error_estimation.sigma_a import (
-    SigmaAEstimator,
-    epsilon_from_hkl,
-)
 from torchref.refinement.model_error_estimation.difference_power import (
     DifferencePowerConfig,
     DifferencePowerEstimator,
+)
+from torchref.refinement.model_error_estimation.sigma_a import (
+    SigmaAEstimator,
+    epsilon_from_hkl,
 )
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
@@ -316,9 +316,7 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
             finite, f_dark, f_dark[finite].median() if bool(finite.any()) else 1.0
         )
         alpha = fit.alpha_at(dss)
-        beta = fit.signal_power(
-            dss, epsilon=eps, f_dark=f_eval, centric=centric
-        )
+        beta = fit.signal_power(dss, epsilon=eps, f_dark=f_eval, centric=centric)
         return CollectionSigmaDLossInputs(
             *ctx, alpha=alpha.to(dtype).detach(), beta_model=beta.to(dtype).detach()
         )

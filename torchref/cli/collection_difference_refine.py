@@ -43,13 +43,13 @@ from torchref.cli._common import (
     add_weights_arg,
     build_dual_column_names,
     configure_unbuffered_output,
+    difference_config_from_args,
+    intensity_difference,
     load_model,
     load_reflection_data,
     parse_device_str,
     parse_weights,
     register_timing,
-    intensity_difference,
-    difference_config_from_args,
     validate_cif_files,
     validate_files,
 )
@@ -773,11 +773,15 @@ def _extrapolation_columns(
     types = {"FEXT": "F", "SIGFEXT": "Q", "FWT": "F", "PHWT": "P"}
 
     if verbose > 0:
-        print("  Bayes extrapolation rfactors:",
-              rfactor_work_free(data_bayes, amp_calc_bayes))
-        print(f"  Shrinkage: SNR from {source} differences, "
-              f"mean w(h) = {w_shrinkage.mean().item():.3f}, "
-              f"min w(h) = {w_shrinkage.min().item():.3g}")
+        print(
+            "  Bayes extrapolation rfactors:",
+            rfactor_work_free(data_bayes, amp_calc_bayes),
+        )
+        print(
+            f"  Shrinkage: SNR from {source} differences, "
+            f"mean w(h) = {w_shrinkage.mean().item():.3f}, "
+            f"min w(h) = {w_shrinkage.min().item():.3g}"
+        )
 
     if all_columns:
         amp_phased = torch.abs(F_light_extra)
@@ -945,9 +949,10 @@ def write_results_mtz(
     Returns
     -------
     dict
-        Diagnostics worth recording outside the file -- currently the Bayes shrinkage's
-        ``tau_sq`` and mean ``w(h)``, which say whether the default extrapolated map is
-        over-shrunk. Empty when no light model was given.
+        Diagnostics worth recording outside the file: the ``q``-weight fit under
+        ``ded_weights`` and, with a light model, the extrapolation shrinkage's
+        ``shrinkage_source`` and mean and least ``w(h)``, which say whether the default
+        extrapolated map is over-shrunk.
     """
     import reciprocalspaceship as rs
 
