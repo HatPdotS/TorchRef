@@ -66,18 +66,18 @@ class _DerivedRowsMixin:
             if len(rows) and is_riding[rows[rows >= 0]].any():
                 raise ValueError(f"{name} must reference stored rows, not riding ones")
 
-        long = dict(dtype=get_int_dtype(), device=device)
-        self.register_buffer("base_row", torch.as_tensor(base, **long))
-        self.register_buffer("h_row", torch.as_tensor(h, **long))
+        idx = dict(dtype=get_int_dtype(), device=device)
+        self.register_buffer("base_row", torch.as_tensor(base, **idx))
+        self.register_buffer("h_row", torch.as_tensor(h, **idx))
         self.register_buffer(
             "parent_row",
-            torch.as_tensor(np.asarray(frames.parent_row, dtype=np.int64), **long),
+            torch.as_tensor(np.asarray(frames.parent_row, dtype=np.int64), **idx),
         )
         self.register_buffer(
-            "n1_row", torch.as_tensor(np.asarray(frames.n1_row, dtype=np.int64), **long)
+            "n1_row", torch.as_tensor(np.asarray(frames.n1_row, dtype=np.int64), **idx)
         )
         self.register_buffer(
-            "n2_row", torch.as_tensor(np.asarray(frames.n2_row, dtype=np.int64), **long)
+            "n2_row", torch.as_tensor(np.asarray(frames.n2_row, dtype=np.int64), **idx)
         )
         self.register_buffer(
             "frame_valid",

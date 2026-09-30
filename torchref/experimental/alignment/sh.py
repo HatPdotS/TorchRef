@@ -29,9 +29,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from torchref.config import get_int_dtype
-
-from ...config import get_float_dtype
+from ...config import get_float_dtype, get_int_dtype
 
 
 def legendre_recurrence_coefficients(L: int, dtype, device):

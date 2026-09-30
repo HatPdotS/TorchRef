@@ -40,9 +40,7 @@ from typing import List, Tuple
 
 import torch
 
-from torchref.config import get_int_dtype
-
-from ....config import canonical_device
+from ....config import canonical_device, get_int_dtype
 from ....symmetry.symmetry import find_fft_friendly_size
 from .types import AdaptiveRotationFunction
 from .wigner_d import wigner_contraction_per_beta
