@@ -305,7 +305,9 @@ class MTZReader:
             file, and may include: ``"HKL"`` (int32 Miller indices); ``"F"`` /
             ``"SIGF"`` and/or ``"I"`` / ``"SIGI"`` (float32 data, with
             ``"*_col"`` provenance keys recording the source column names);
-            ``"R-free-flags"`` (a **bool** mask) and ``"R-free-source"``;
+            ``"R-free-flags"`` (int32: ``0`` = free, positive = work,
+            negative = excluded; a column whose majority value is ``0`` is
+            flipped to this convention) and ``"R-free-source"``;
             ``"Validation-flags"`` (a **bool** mask) and ``"Validation-source"``;
             and ``"friedel_merged"`` (bool) indicating the Bijvoet state of the
             returned data (False when anomalous F(+)/F(-) pairs were stacked).

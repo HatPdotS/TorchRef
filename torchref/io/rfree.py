@@ -12,7 +12,9 @@ Output follows the CCP4 ``FreeR_flag`` convention: integers ``0..N-1`` with
 ``0`` = free, so a different test set ``k`` can still be selected later.
 
 All functions here operate on :class:`reciprocalspaceship.DataSet` objects so
-that every original column of the input files is preserved on output.
+that every original column of the input files is preserved in MTZ output;
+mmCIF output keeps only the columns gemmi's MTZ-to-mmCIF conversion maps to a
+``_refln`` item (see :func:`write_sf_file`).
 """
 
 import hashlib
@@ -71,8 +73,21 @@ def read_sf_file(path: str, cif_block: Optional[str] = None) -> rs.DataSet:
 def write_sf_file(ds: rs.DataSet, path: str) -> None:
     """Write a DataSet as MTZ or SF-mmCIF depending on the extension.
 
-    CIF output uses gemmi's MTZ-to-mmCIF conversion, with ``FreeR_flag == 0``
-    written as ``_refln.status 'f'`` and negative (excluded) flags as ``'x'``.
+    Parameters
+    ----------
+    ds : rs.DataSet
+        Reflections with cell and space group attached.
+    path : str
+        Output file; ``.mtz`` writes every column, ``.cif`` / ``.mmcif`` goes
+        through gemmi's MTZ-to-mmCIF conversion.
+
+    Notes
+    -----
+    mmCIF output silently drops columns that gemmi's default conversion does
+    not map to a ``_refln`` item (e.g. ``DANO`` or custom columns); write MTZ
+    to keep them. ``FreeR_flag == 0`` becomes ``_refln.status 'f'``, negative
+    (excluded) flags ``'x'`` and all other values ``'o'``, so only the
+    free/work split survives, not the CCP4 test-set number.
     """
     suffix = Path(path).suffix.lower()
     if suffix == ".mtz":
@@ -113,18 +128,46 @@ def _mark_excluded(text: str, ds: rs.DataSet) -> str:
 
 
 def flag_column(ds: rs.DataSet, column: Optional[str] = None) -> Optional[str]:
-    """Name of the R-free column in ``ds`` (``column`` if given), or None."""
+    """Return the name of the R-free column in ``ds``.
+
+    Parameters
+    ----------
+    ds : rs.DataSet
+        Reflections to search.
+    column : str, optional
+        Column to look for. By default the first of :data:`FLAG_COLUMN_NAMES`
+        present in ``ds``.
+
+    Returns
+    -------
+    str or None
+        The column name, or None when ``ds`` has no such column.
+    """
     if column is not None:
         return column if column in ds.columns else None
     return next((c for c in FLAG_COLUMN_NAMES if c in ds.columns), None)
 
 
 def excluded_rows(ds: rs.DataSet, column: Optional[str] = None) -> np.ndarray:
-    """Rows marked excluded (negative or missing flag, CIF ``x``), shape (N,).
+    """Mark the rows an R-free column excludes.
 
-    All-false when ``ds`` has no R-free column. Independent of whether the
-    remaining rows form a valid partition, so a column that excludes every
-    row still excludes every row.
+    A row is excluded when its flag is negative or missing: MTZ ``-1`` or
+    missing-number flags, and every mmCIF ``_refln.status`` other than ``o``
+    and ``f`` (``x``, ``<``, ``-``, ``h``, ``l``), which gemmi reads as missing.
+    The result does not depend on whether the remaining rows form a valid
+    partition, so a column that excludes every row still excludes every row.
+
+    Parameters
+    ----------
+    ds : rs.DataSet
+        Reflections, N rows.
+    column : str, optional
+        R-free column; auto-detected by :func:`flag_column` by default.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask, shape (N,); all False when ``ds`` has no R-free column.
     """
     column = flag_column(ds, column)
     if column is None:
@@ -141,11 +184,23 @@ def read_free_set(ds: rs.DataSet, column: Optional[str] = None) -> dict:
     (0 = free); a binary column takes its majority value as work, which covers
     both CCP4 ``0 = free`` and Phenix ``1 = free``.
 
+    Parameters
+    ----------
+    ds : rs.DataSet
+        Reflections, N rows.
+    column : str, optional
+        R-free column; auto-detected by :func:`flag_column` by default.
+
     Returns
     -------
     dict
         ``column``, ``convention``, ``raw`` (int, -1 where excluded),
-        ``free`` and ``excluded`` (bool per row).
+        ``free`` and ``excluded`` (bool per row), each array of shape (N,).
+
+    Raises
+    ------
+    ValueError
+        If ``ds`` has no R-free column, or the column has no valid value.
     """
     column = flag_column(ds, column)
     if column is None:
@@ -188,6 +243,14 @@ def compare_free_sets(
     datasets: Dict[str, rs.DataSet], column: Optional[str] = None
 ) -> dict:
     """Report whether the existing free sets of several datasets agree.
+
+    Parameters
+    ----------
+    datasets : dict of str to rs.DataSet
+        Datasets to compare, by name.
+    column : str, optional
+        R-free column to read in every dataset; auto-detected per dataset by
+        default. A dataset without it is reported as having no free set.
 
     Returns
     -------
@@ -303,7 +366,18 @@ def check_compatible(
 
 
 def asu_hkl(ds: rs.DataSet) -> np.ndarray:
-    """Friedel-merged reciprocal-ASU indices for every row, shape (N, 3)."""
+    """Map every row of ``ds`` to its Friedel-merged reciprocal-ASU index.
+
+    Parameters
+    ----------
+    ds : rs.DataSet
+        Reflections, N rows, with a space group attached.
+
+    Returns
+    -------
+    np.ndarray
+        int64 Miller indices, shape (N, 3), in the reciprocalspaceship ASU.
+    """
     hkl = ds.get_hkls()
     return rs.utils.hkl_to_asu(hkl, ds.spacegroup)[0].astype(np.int64)
 
@@ -361,7 +435,21 @@ def _lookup(table_keys: np.ndarray, table_values: np.ndarray, keys: np.ndarray):
 
 
 def resolution_bins(dstar2: np.ndarray, n_bins: int) -> np.ndarray:
-    """Equal-count resolution bin index (0..n_bins-1) for each 1/d^2 value."""
+    """Assign equal-count resolution bins.
+
+    Parameters
+    ----------
+    dstar2 : np.ndarray
+        ``1/d^2`` per reflection in Å⁻², shape (N,).
+    n_bins : int
+        Requested number of bins, clipped to ``[1, N]``.
+
+    Returns
+    -------
+    np.ndarray
+        Bin index ``0..n_bins-1`` per reflection, shape (N,), 0 at low
+        resolution.
+    """
     n_bins = max(1, min(n_bins, len(dstar2)))
     order = np.argsort(dstar2, kind="stable")
     bins = np.empty(len(dstar2), dtype=np.int64)
@@ -379,11 +467,23 @@ def _hash_flags(hkl: np.ndarray, n_flags: int, seed: int) -> np.ndarray:
 
 
 def partition_seed(keys: np.ndarray, free: np.ndarray) -> int:
-    """Seed derived from a free/work partition (SHA-256 of keys and free mask).
+    """Derive a seed from a free/work partition (SHA-256 of keys and free mask).
 
     Depends only on which unique reflections are free and which are work, not
     on file format, row order or flag convention, so every extension of the
     same deposited free set is identical.
+
+    Parameters
+    ----------
+    keys : np.ndarray
+        Unique ASU keys from :func:`hkl_keys`, shape (M,), any order.
+    free : np.ndarray
+        Boolean free mask aligned with ``keys``, shape (M,).
+
+    Returns
+    -------
+    int
+        Non-negative 63-bit seed.
     """
     order = np.argsort(keys)
     digest = hashlib.sha256(
@@ -401,7 +501,7 @@ def complete_flag_table(
     seed: int = 0,
     shell_size: int = 1000,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Stratified CCP4 flags on the complete reciprocal ASU out to ``dmin``.
+    """Deal stratified CCP4 flags on the complete reciprocal ASU out to ``dmin``.
 
     The complete ASU is sorted by resolution (ties by index) and cut into
     consecutive shells of ``shell_size`` reflections. Each shell is shuffled
@@ -411,6 +511,27 @@ def complete_flag_table(
     reflections beyond ``dmin``, so the flag of any reflection depends only on
     cell, space group, ``n_flags``, ``shell_size`` and ``seed``: a larger
     ``dmin`` (a later, better dataset) never changes existing flags.
+
+    A flag is tied to a reflection's rank in resolution, so it depends on the
+    exact cell: a relative change of 1e-5 in one cell edge already moves about
+    a tenth of the free set, and the ~0.05 % that separates two crystals of
+    one form leaves the sets nearly independent. Pass the same cell (the same
+    reference file) to reproduce a table.
+
+    Parameters
+    ----------
+    cell : gemmi.UnitCell
+        Unit cell; lengths in Å, angles in degrees.
+    spacegroup : gemmi.SpaceGroup
+        Space group defining the reciprocal ASU.
+    dmin : float
+        High-resolution limit in Å.
+    n_flags : int
+        Number of flag values; the free fraction is ``1 / n_flags``.
+    seed : int
+        Base seed of the per-shell shuffles.
+    shell_size : int
+        Reflections per shell, rounded down to a multiple of ``n_flags``.
 
     Returns
     -------
@@ -454,6 +575,18 @@ def reference_flags(
     skipped. Multi-valued columns (CCP4 ``0..K``) are kept as-is. For binary
     columns free becomes ``0`` and work reflections are dealt pseudo-random
     values ``1..n_flags-1``.
+
+    Parameters
+    ----------
+    ref : rs.DataSet
+        Reference reflections carrying an R-free column.
+    n_flags : int
+        Number of flag values for the work values of a binary column; unused
+        for a CCP4 column.
+    column : str, optional
+        R-free column in ``ref``; auto-detected by default.
+    seed : int
+        Seed of the pseudo-random work values of a binary column.
 
     Returns
     -------
@@ -541,8 +674,8 @@ def uniform_rfree(
         flags assigned to reflections the reference lacks (e.g. its missing
         high-resolution shells) are a deterministic function of the reference.
     dmin : float, optional
-        High-resolution limit of the flag table; the best resolution of the
-        inputs is used if it is finer.
+        High-resolution limit of the flag table in Å; the best resolution of
+        the inputs is used if it is finer.
     reference : rs.DataSet, optional
         Dataset whose existing flags are inherited; reflections it lacks are
         newly assigned.
@@ -680,6 +813,21 @@ def apply_flags(
 
     Existing flag columns are dropped, or renamed ``<name>_orig`` with
     ``keep_old``. Row order and all other columns are unchanged.
+
+    Parameters
+    ----------
+    ds : rs.DataSet
+        Reflections, N rows; not modified.
+    flags : np.ndarray
+        Integer ``FreeR_flag`` per row, shape (N,), aligned with ``ds``.
+    keep_old : bool
+        Keep existing flag columns under ``<name>_orig`` instead of dropping
+        them.
+
+    Returns
+    -------
+    rs.DataSet
+        Copy of ``ds`` with a ``FreeR_flag`` column of MTZ type ``I``.
     """
     out = ds.copy()
     for col in [c for c in out.columns if c in FLAG_COLUMN_NAMES]:
@@ -726,6 +874,13 @@ def scale_columns(ds: rs.DataSet, factor: np.ndarray) -> Tuple[rs.DataSet, List[
     (an amplitude directly followed by a phase column, e.g. ``FWT``/``PHWT``,
     or a ``FC``/``FCALC``/``FMODEL``-style name), phases, weights, flags and
     other columns are untouched.
+
+    Parameters
+    ----------
+    ds : rs.DataSet
+        Reflections, N rows; not modified.
+    factor : np.ndarray
+        Amplitude scale factor per row, shape (N,), aligned with ``ds``.
 
     Returns
     -------

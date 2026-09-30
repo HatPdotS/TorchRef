@@ -223,7 +223,7 @@ def test_extension_is_identical_across_targets(full):
 
 @pytest.fixture
 def small(mtz_dir):
-    """30 rows of deposited 1DAW (the reviewer's probe set)."""
+    """The first 30 rows of deposited 1DAW."""
     path = mtz_dir / "1DAW.mtz"
     if not path.exists():
         pytest.skip("1DAW.mtz not found")

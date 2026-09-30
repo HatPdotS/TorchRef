@@ -128,13 +128,19 @@ reflection is free in one dataset and work in another.
 - **Reproducibility.** New flags are drawn on the complete reciprocal ASU
   (Friedel mates and symmetry equivalents share a flag), with exactly the free
   fraction in every resolution shell of ``--shell-size`` reflections. Each flag
-  depends only on cell, space group, fraction and ``--seed``, so a dataset
-  added later gets the same flags.
+  depends only on cell, space group, fraction and ``--seed``. The cell is that
+  of the reference, or of the first input when there is none, and the flags
+  are sensitive to it at the 1e-5 level. To give a dataset added later the same
+  flags, run it together with an already flagged file (inherited by default)
+  or name that file with ``--reference``. A separate ``--fresh`` run on a
+  dataset with its own cell gives a different free set.
 - **Excluded reflections** (MTZ flag ``-1``, mmCIF ``status x``) stay excluded
   in the file that marked them, as ``-1`` / ``x``. They are not copied to the
   other files.
-- **Output.** Every input column is kept; existing flag columns are replaced
-  by a CCP4 ``FreeR_flag`` (``0..N-1``, ``0`` = free). mmCIF output writes
+- **Output.** MTZ output keeps every input column; existing flag columns are
+  replaced by a CCP4 ``FreeR_flag`` (``0..N-1``, ``0`` = free). mmCIF output
+  keeps only the columns gemmi's MTZ-to-mmCIF conversion maps to a ``_refln``
+  item (e.g. ``DANO`` and custom columns are dropped), and writes
   ``_refln.status`` ``f``/``o``/``x``, so only the free/work split is kept.
 
 .. code-block:: bash
