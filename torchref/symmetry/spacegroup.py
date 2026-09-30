@@ -337,6 +337,13 @@ class SpaceGroup(Symmetry):
         phase_shifts : torch.Tensor
             Translation phase offsets in radians, shape ``(M,)``:
             ``phase_exp = phase_orig[orig_indices] + phase_shifts``.
+
+        Raises
+        ------
+        ValueError
+            If two input rows are symmetry-equivalent, since one would be
+            silently dropped. Merge them first; anomalous data expand from their
+            signed indices (see ``ReflectionData.expand_to_p1``).
         """
         from torchref.symmetry.reciprocal_symmetry import _expand_hkl
 
@@ -346,6 +353,45 @@ class SpaceGroup(Symmetry):
             include_friedel=include_friedel,
             remove_absences=remove_absences,
             device=device,
+        )
+
+    def equivalent_hkl(
+        self,
+        hkl: torch.Tensor,
+        include_friedel: bool = True,
+        device: Optional[torch.device] = None,
+    ):
+        """Every symmetry copy of every input row, not deduplicated.
+
+        The primitive behind :meth:`expand_hkl`, for callers that must know
+        which input row each copy came from even where copies coincide (e.g.
+        merging observations into another space group).
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Input Miller indices, shape ``(N, 3)``.
+        include_friedel : bool, default True
+            Append the Friedel copy of every rotated index.
+        device : torch.device, optional
+            Output device. Defaults to ``hkl``'s.
+
+        Returns
+        -------
+        copies : torch.Tensor
+            Shape ``(M, 3)``, int32, ordered by operation then row, Friedel copies
+            last; ``M = n_ops * N``, doubled with ``include_friedel``.
+        source : torch.Tensor
+            Input row of each copy, shape ``(M,)``.
+        phase_shifts : torch.Tensor
+            Translation phase offset in radians, shape ``(M,)``.
+        is_friedel : torch.Tensor
+            Boolean, shape ``(M,)``, True for the Friedel copies.
+        """
+        from torchref.symmetry.reciprocal_symmetry import _equivalent_hkl
+
+        return _equivalent_hkl(
+            self, hkl, include_friedel=include_friedel, device=device
         )
 
     def reduce_hkl(

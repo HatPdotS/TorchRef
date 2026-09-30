@@ -201,3 +201,39 @@ class TestAnisotropicScaling:
         for i in range(5):
             mat = U_matrices[i]
             assert torch.allclose(mat, mat.T, atol=1e-6)
+
+
+class TestBinwiseMeans:
+    """The scaler's per-bin means use the scaler's own bins."""
+
+    @pytest.fixture
+    def scaler_and_data(self, mtz_dir):
+        from torchref.io import ReflectionData
+        from torchref.scaling.scaler_base import ScalerBase
+
+        data = ReflectionData(verbose=0, device="cpu").load_mtz(
+            str(mtz_dir / "1DAW.mtz")
+        )
+        return ScalerBase(data=data, nbins=10, verbose=0), data
+
+    @pytest.mark.unit
+    def test_mean_resolution_is_per_scaler_bin(self, scaler_and_data):
+        scaler, data = scaler_and_data
+        fcalc = data.F.to(torch.complex64)
+        _, _, mean_res = scaler.get_binwise_mean_intensity(fcalc)
+
+        valid = data.masks()
+        per_bin = [(scaler.bins == b) & valid for b in range(scaler.nbins)]
+        expected = torch.stack([data.resolution[sel].mean() for sel in per_bin])
+        torch.testing.assert_close(mean_res, expected)
+
+    @pytest.mark.unit
+    def test_later_binning_of_the_dataset_does_not_move_the_shells(
+        self, scaler_and_data
+    ):
+        scaler, data = scaler_and_data
+        fcalc = data.F.to(torch.complex64)
+        before = scaler.get_binwise_mean_intensity(fcalc)[2]
+        data.get_bins(n_bins=3, min_per_bin=10)
+        after = scaler.get_binwise_mean_intensity(fcalc)[2]
+        torch.testing.assert_close(after, before)
