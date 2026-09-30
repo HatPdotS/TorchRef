@@ -29,7 +29,7 @@ ALL_MEMBERS: Dict[str, Optional[Tuple[str, ...]]] = {
     "torsion": ("intra", "disulfide"),
 }
 
-#: Integer-valued edge properties, kept as ``int64`` rather than the float dtype.
+#: Integer-valued edge properties, kept in the configured int dtype, not the float one.
 _INTEGER_PROPERTIES = frozenset({"periods", "symop_indices", "cell_offsets"})
 
 #: Boolean edge properties.

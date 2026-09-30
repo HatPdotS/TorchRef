@@ -75,24 +75,24 @@ class HydrogenTopology(DeviceMixin):
     Attributes
     ----------
     h_parent_idx : torch.Tensor
-        Heavy-atom index of each riding H's parent, ``(N_h,)`` long.
+        Heavy-atom index of each riding H's parent, ``(N_h,)`` int.
     h_bond_length : torch.Tensor
         Ideal H-parent bond length in Angstroms, ``(N_h,)``.
     h_vdw_radius : torch.Tensor
         Van der Waals radius per H (1.20 A), ``(N_h,)``.
     h_placement_type : torch.Tensor
-        Placement-geometry enum, ``(N_h,)`` long; see the module-level constants.
+        Placement-geometry enum, ``(N_h,)`` int; see the module-level constants.
     h_slot_in_parent : torch.Tensor
-        Ordinal among sibling H atoms on the same parent (0, 1, 2), ``(N_h,)`` long.
+        Ordinal among sibling H atoms on the same parent (0, 1, 2), ``(N_h,)`` int.
     parent_neighbor_idx : torch.Tensor
-        Heavy-atom neighbours of the parent, ``(N_h, MAX_HEAVY_NB)`` long, ``-1``
+        Heavy-atom neighbours of the parent, ``(N_h, MAX_HEAVY_NB)`` int, ``-1``
         padded.
     parent_neighbor_count : torch.Tensor
-        Heavy-atom neighbour count per parent, ``(N_h,)`` long.
+        Heavy-atom neighbour count per parent, ``(N_h,)`` int.
     h_chainid_enc : torch.Tensor
-        Encoded chain ID, ``(N_h,)`` long, for same-residue filtering.
+        Encoded chain ID, ``(N_h,)`` int, for same-residue filtering.
     h_resseq : torch.Tensor
-        Residue sequence number, ``(N_h,)`` long, for same-residue filtering.
+        Residue sequence number, ``(N_h,)`` int, for same-residue filtering.
     type_bounds : dict
         ``{placement_type: (start, end)}`` bounds into the type-sorted arrays.
     cand_idx_i, cand_idx_j, cand_symop_idx, cand_cell_offset : torch.Tensor

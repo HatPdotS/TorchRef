@@ -562,7 +562,7 @@ class QuasiCrystalAmberTarget(AmberTarget):
         N = self._n_members
         n_omm = self._n_omm_per_member
 
-        # Index pairs (long) for the scatter from model atoms into OMM slots.
+        # Index pairs for the scatter from model atoms into OMM slots.
         self._src_model_idx_torch = torch.from_numpy(self._src_model_idx_np).to(
             device=device,
             dtype=get_int_dtype(),

@@ -73,7 +73,7 @@ def farthest_point_anchors(xyz: torch.Tensor, n_nodes: int) -> torch.Tensor:
     Returns
     -------
     torch.Tensor
-        ``(K,)`` int64 atom indices, sorted ascending.
+        ``(K,)`` atom indices in the configured int dtype, sorted ascending.
     """
     n_atoms = int(xyz.shape[0])
     n_nodes = max(1, min(int(n_nodes), n_atoms))

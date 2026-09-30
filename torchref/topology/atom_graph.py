@@ -28,7 +28,7 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     Parameters
     ----------
     bonds : torch.Tensor
-        Bond atom indices, shape ``(E, 2)``, dtype ``int64``.
+        Bond atom indices, shape ``(E, 2)``, integer dtype.
     n_atoms : int
         Number of atoms, so isolated trailing atoms still get an entry.
 

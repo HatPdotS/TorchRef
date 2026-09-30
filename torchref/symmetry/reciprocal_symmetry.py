@@ -239,7 +239,7 @@ def _reduce_hkl(
     -------
     hkl_asu : torch.Tensor, shape (M, 3), dtype int32
         Unique Miller indices in the asymmetric unit.
-    reduction_indices : torch.Tensor, shape (M, n_equiv), dtype int64
+    reduction_indices : torch.Tensor, shape (M, n_equiv), configured int dtype
         Indices into ``hkl_p1`` for each ASU reflection's equivalents, **-1 where
         no P1 reflection exists** -- mask or clamp before gathering, or a -1 will
         silently read the last row: ``F_asu = aggregate(F_p1[reduction_indices], dim=1)``.
@@ -413,7 +413,7 @@ def _canonicalize_hkl(
     ----------
     sym : SpaceGroup
         The space group whose asymmetric unit convention applies.
-    hkl : torch.Tensor, shape (N, 3), dtype int32
+    hkl : torch.Tensor, shape (N, 3), integer dtype
         Input Miller indices.
     include_friedel : bool, default True
         Whether Friedel mates are considered equivalent.
@@ -425,9 +425,9 @@ def _canonicalize_hkl(
 
     Returns
     -------
-    canonical_hkl : torch.Tensor, shape (N, 3), dtype int32
+    canonical_hkl : torch.Tensor, shape (N, 3), dtype of ``hkl``
         Remapped indices, sorted lexicographically by (h, k, l) when ``sort``.
-    phase_shifts : torch.Tensor, shape (N,), dtype float32
+    phase_shifts : torch.Tensor, shape (N,), configured float dtype
         Additive phase correction in radians, in the same row order.
     friedel_flags : torch.Tensor, shape (N,), dtype bool
         True where Friedel conjugation was applied, in the same row order.

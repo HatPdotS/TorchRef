@@ -51,8 +51,8 @@ def prefilter_symop_offsets(
 
     Returns
     -------
-    op_indices : (M,) long – symop indices for each valid combo
-    cell_offsets : (M, 3) long – integer cell translations
+    op_indices : (M,) int – symop indices for each valid combo
+    cell_offsets : (M, 3) int – integer cell translations
     """
     device = xyz_frac.device
     fdtype = dtypes.float
@@ -110,8 +110,8 @@ def assign_to_grid(
     xyz_frac : (N, 3)
     cell : Cell
     sg : SpaceGroup
-    op_indices : (M,) long
-    cell_offsets : (M, 3) long
+    op_indices : (M,) int
+    cell_offsets : (M, 3) int
     grid_dims : (3,) long – number of grid cells per axis
 
     Returns
@@ -178,8 +178,8 @@ def build_cell_list(
     -------
     sort_order : (E,) long
     unique_cells : (C,) long – occupied cell indices
-    starts : (C+1,) long – CSR boundaries into sorted arrays
-    cell_lookup : (n_grid_total,) long – maps flat cell → index in
+    starts : (C+1,) int – CSR boundaries into sorted arrays
+    cell_lookup : (n_grid_total,) int – maps flat cell → index in
         unique_cells, or -1 if empty.
     """
     device = flat_cell.device
@@ -312,9 +312,9 @@ def find_pairs_periodic_grid_v2(
         ASU atom index and (symop, offset) combo index per entry.
     unique_cells : (C,) long
         Occupied flat grid-cell indices.
-    starts : (C+1,) long
+    starts : (C+1,) int
         CSR boundaries into the sorted arrays.
-    cell_lookup : (n_grid_total,) long
+    cell_lookup : (n_grid_total,) int
         Maps a flat cell index to its position in ``unique_cells`` (-1 empty).
     grid_dims : (3,) long
         Number of grid cells per axis.
@@ -392,7 +392,7 @@ def find_pairs_periodic_grid_v2(
             + nb_ijk[:, 1] * gz
             + nb_ijk[:, 2]
         )
-        nb_occ_idx = cell_lookup[nb_flat]               # (C,) long, -1 empty
+        nb_occ_idx = cell_lookup[nb_flat]               # (C,) int, -1 empty
 
         has_nb = nb_occ_idx >= 0
         nb_occ_safe = nb_occ_idx.clamp(min=0)

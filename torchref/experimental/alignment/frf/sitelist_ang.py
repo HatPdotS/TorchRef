@@ -135,7 +135,7 @@ def build_adaptive_sample_list(
         alphas    : (N_samples,)         α value per sample
         betas     : (N_samples,)         β value per sample
         gammas    : (N_samples,)         γ value per sample
-        beta_starts: (bmax + 1,) int64    slice [beta_starts[b]:beta_starts[b+1]]
+        beta_starts: (bmax + 1,) int      slice [beta_starts[b]:beta_starts[b+1]]
                                           is the samples at β = b · Δ
         beta_grid : (bmax,)              the β values in radians
 

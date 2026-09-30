@@ -7,8 +7,9 @@ each origin's rows begin and end. Every per-origin subset is therefore a **slice
 the block: a view that shares storage, costs nothing to take, and reflects an in-place
 edit to the block immediately.
 
-Nothing here is refinable. Indices are ``int64``, no gradient reaches them, and the
-block is a constant for the lifetime of a topology unless the topology is mutated.
+Nothing here is refinable. Indices are in the configured int dtype, no gradient reaches
+them, and the block is a constant for the lifetime of a topology unless the topology is
+mutated.
 """
 
 from dataclasses import dataclass, field
@@ -136,7 +137,7 @@ class EdgeBlock(DeviceMixin):
     Parameters
     ----------
     indices : torch.Tensor
-        Atom indices, shape ``(E, k)``, dtype ``int64``, in canonical order.
+        Atom indices, shape ``(E, k)``, integer dtype, in canonical order.
     origin_bounds : dict
         ``{origin: (start, end)}`` half-open row ranges into ``indices``. Ranges are
         contiguous and cover the block.

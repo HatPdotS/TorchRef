@@ -125,7 +125,7 @@ class _MapSymmetryDirect(DeviceMixin):
         Returns
         -------
         torch.Tensor
-            Shape ``(nx, ny, nz, 3)``, dtype ``int64``.
+            Shape ``(nx, ny, nz, 3)``, in the configured int dtype.
 
         Notes
         -----
