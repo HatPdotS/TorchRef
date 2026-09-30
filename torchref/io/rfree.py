@@ -207,10 +207,17 @@ def compare_free_sets(
         try:
             fs = read_free_set(ds, column)
         except ValueError as exc:
-            files[name] = {"column": None, "n": len(ds), "dmin": dmin, "problem": str(exc)}
+            files[name] = {
+                "column": None,
+                "n": len(ds),
+                "dmin": dmin,
+                "problem": str(exc),
+            }
             continue
         keep = ~fs["excluded"]
-        ukeys, ufree, conflict = _group_free(hkl_keys(asu_hkl(ds))[keep], fs["free"][keep])
+        ukeys, ufree, conflict = _group_free(
+            hkl_keys(asu_hkl(ds))[keep], fs["free"][keep]
+        )
         tables[name] = (ukeys[~conflict], ufree[~conflict])
         files[name] = {
             "column": fs["column"],
@@ -227,11 +234,15 @@ def compare_free_sets(
         for b in names[i + 1 :]:
             ka, fa = tables[a]
             kb, fb = tables[b]
-            common, ia, ib = np.intersect1d(ka, kb, assume_unique=True, return_indices=True)
+            common, ia, ib = np.intersect1d(
+                ka, kb, assume_unique=True, return_indices=True
+            )
             pairs[(a, b)] = (len(common), int((fa[ia] != fb[ib]).sum()))
     consistent = (
         len(tables) == len(datasets)
-        and all(files[n]["n_free"] > 0 and files[n]["n_conflicting"] == 0 for n in tables)
+        and all(
+            files[n]["n_free"] > 0 and files[n]["n_conflicting"] == 0 for n in tables
+        )
         and all(d == 0 for _, d in pairs.values())
     )
     return {"files": files, "pairs": pairs, "consistent": consistent}
@@ -307,7 +318,9 @@ def hkl_keys(hkl: np.ndarray) -> np.ndarray:
 def _unkey(keys: np.ndarray) -> np.ndarray:
     """Inverse of :func:`hkl_keys`."""
     span = 2 * _KEY_OFFSET
-    return np.stack([keys // span**2, keys // span % span, keys % span], 1) - _KEY_OFFSET
+    return (
+        np.stack([keys // span**2, keys // span % span, keys % span], 1) - _KEY_OFFSET
+    )
 
 
 def _lookup(table_keys: np.ndarray, table_values: np.ndarray, keys: np.ndarray):
@@ -563,9 +576,14 @@ def uniform_rfree(
     else:
         n_flags, source = 20, "default"
     if max_free is not None:
-        n_complete = len(rs.utils.generate_reciprocal_asu(cell, sg, dmin, anomalous=False))
+        n_complete = len(
+            rs.utils.generate_reciprocal_asu(cell, sg, dmin, anomalous=False)
+        )
         if n_complete / n_flags > max_free:
-            n_flags, source = int(np.ceil(n_complete / max_free)), f"max_free={max_free}"
+            n_flags, source = (
+                int(np.ceil(n_complete / max_free)),
+                f"max_free={max_free}",
+            )
     if rinfo is not None and rinfo["convention"] != "ccp4":
         rkeys, rflags, rinfo = reference_flags(
             reference, n_flags, column=reference_column, seed=seed
@@ -655,7 +673,17 @@ _AMPLITUDE_TYPES = {"F", "G", "D", "L"}  # F, F(+/-), anomalous diff, sigma F(+/
 _INTENSITY_TYPES = {"J", "K", "M"}  # I, I(+/-), sigma I(+/-)
 
 
-_CALC_PREFIXES = ("FC", "FCALC", "FMODEL", "F-MODEL", "FCAL", "FWT", "DELFWT", "2FOFC", "FOFC")
+_CALC_PREFIXES = (
+    "FC",
+    "FCALC",
+    "FMODEL",
+    "F-MODEL",
+    "FCAL",
+    "FWT",
+    "DELFWT",
+    "2FOFC",
+    "FOFC",
+)
 
 
 def _is_calculated(name: str) -> bool:

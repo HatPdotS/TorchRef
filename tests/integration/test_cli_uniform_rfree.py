@@ -36,7 +36,9 @@ def inputs(mtz_dir, cif_sf_dir, tmp_path):
     L = light.get_hkls()[:, 2].astype(float)
     f = 1.7 * np.exp(-2.0 * (L / L.max()) ** 2)
     light["FP"] = rs.DataSeries(light.FP.to_numpy() * f, index=light.index, dtype="F")
-    light["SIGFP"] = rs.DataSeries(light.SIGFP.to_numpy() * f, index=light.index, dtype="Q")
+    light["SIGFP"] = rs.DataSeries(
+        light.SIGFP.to_numpy() * f, index=light.index, dtype="Q"
+    )
     paths = [tmp_path / "dark.mtz", tmp_path / "light.mtz"]
     dark.write_mtz(str(paths[0]))
     light.write_mtz(str(paths[1]))
@@ -70,7 +72,9 @@ def test_uniform_flags_mtz_and_cif(inputs, tmp_path):
 def test_scale_onto_reference(inputs, tmp_path):
     full, paths = inputs
     out = tmp_path / "out"
-    res = _run(*paths[:2], "-o", out, "--scale", "--scale-reference", "dark", "--device", "cpu")
+    res = _run(
+        *paths[:2], "-o", out, "--scale", "--scale-reference", "dark", "--device", "cpu"
+    )
     assert res.returncode == 0, res.stderr
     light = rs.read_mtz(str(out / "light_rfree.mtz"))
     ratio = light.FP.to_numpy() / full.loc[light.index].FP.to_numpy()
@@ -92,7 +96,9 @@ def test_torchref_reads_flags(inputs, tmp_path):
 def test_mismatched_cell_fails(inputs, tmp_path):
     _, paths = inputs
     other = rs.read_mtz(str(paths[1]))
-    other.cell = gemmi.UnitCell(*(np.array(other.cell.parameters) * [1.05, 1, 1, 1, 1, 1]))
+    other.cell = gemmi.UnitCell(
+        *(np.array(other.cell.parameters) * [1.05, 1, 1, 1, 1, 1])
+    )
     bad = tmp_path / "bad.mtz"
     other.write_mtz(str(bad))
     res = _run(paths[0], bad, "-o", tmp_path / "out")
@@ -102,7 +108,9 @@ def test_mismatched_cell_fails(inputs, tmp_path):
 
 def _strip_flags(src, dst):
     ds = rs.read_mtz(str(src))
-    ds.drop(columns=[c for c in ds.columns if c in rfree.FLAG_COLUMN_NAMES]).write_mtz(str(dst))
+    ds.drop(columns=[c for c in ds.columns if c in rfree.FLAG_COLUMN_NAMES]).write_mtz(
+        str(dst)
+    )
 
 
 def test_check_mode(inputs, tmp_path):
@@ -175,10 +183,16 @@ def test_excluded_flags_survive(inputs, tmp_path):
     back = rs.read_mtz(str(out / "excl_rfree.mtz"))
     assert (back["FreeR_flag"].to_numpy()[:100] == -1).all()
     # the light file does not inherit dark's exclusions
-    assert (rs.read_mtz(str(out / "light_rfree.mtz"))["FreeR_flag"].to_numpy() >= 0).all()
+    assert (
+        rs.read_mtz(str(out / "light_rfree.mtz"))["FreeR_flag"].to_numpy() >= 0
+    ).all()
     for f in ("excl_rfree.mtz", "excl_rfree.cif"):
         data = ReflectionData(device="cpu", verbose=0)
-        data.load_mtz(str(out / f)) if f.endswith("mtz") else data.load_cif(str(out / f))
+        (
+            data.load_mtz(str(out / f))
+            if f.endswith("mtz")
+            else data.load_cif(str(out / f))
+        )
         assert int((~data.masks["flagged_initial"]).sum()) == 100, f
 
 

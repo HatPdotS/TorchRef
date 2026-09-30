@@ -69,9 +69,7 @@ Examples:
     )
 
     inp = parser.add_argument_group("Input")
-    inp.add_argument(
-        "files", nargs="+", help="Structure-factor files (.mtz or .cif)"
-    )
+    inp.add_argument("files", nargs="+", help="Structure-factor files (.mtz or .cif)")
     inp.add_argument(
         "--cif-block", default=None, help="Data block to read from CIF inputs"
     )
@@ -191,7 +189,9 @@ Examples:
     add_device_arg(scl)
 
     out = parser.add_argument_group("Output")
-    add_outdir_arg(out, required=False, help="Output directory (required unless --check)")
+    add_outdir_arg(
+        out, required=False, help="Output directory (required unless --check)"
+    )
     out.add_argument(
         "--format",
         nargs="+",
@@ -297,7 +297,10 @@ def _new_report(datasets, flags, info, ref_label, args):
             f"  inherited from {ref_label} ({r['column']}, {r['convention']}, "
             f"{r['dmin']:.2f} A): {info['n_inherited']} kept, {info['n_generated']} new"
         )
-        n_beyond, n_gaps = info["n_generated_beyond_reference"], info["n_gaps_in_reference"]
+        n_beyond, n_gaps = (
+            info["n_generated_beyond_reference"],
+            info["n_gaps_in_reference"],
+        )
         if n_beyond:
             print(
                 f"  Warning: reference ends at {r['dmin']:.2f} A; {n_beyond} reflections "
@@ -489,11 +492,16 @@ def main(argv=None):
                 else rfree.read_sf_file(args.reference, cif_block=args.cif_block)
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"Error: cannot read reference {args.reference}: {exc}", file=sys.stderr)
+            print(
+                f"Error: cannot read reference {args.reference}: {exc}", file=sys.stderr
+            )
             return 1
         ref_label = ref_label or args.reference
         if rfree.flag_column(reference, args.reference_column) is None:
-            print(f"Error: reference {args.reference} has no R-free column", file=sys.stderr)
+            print(
+                f"Error: reference {args.reference} has no R-free column",
+                file=sys.stderr,
+            )
             return 1
         problems = rfree.check_compatible(
             {"inputs": next(iter(datasets.values())), "reference": reference},

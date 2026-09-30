@@ -30,7 +30,9 @@ def _table(ds, flags):
 
 
 def test_complete_table_exact_per_shell(full):
-    keys, flags = rfree.complete_flag_table(full.cell, full.spacegroup, 2.0, 20, shell_size=1000)
+    keys, flags = rfree.complete_flag_table(
+        full.cell, full.spacegroup, 2.0, 20, shell_size=1000
+    )
     assert len(flags) % 1000 == 0
     hkl = rfree._unkey(keys)
     np.testing.assert_array_equal(rfree.hkl_keys(hkl), keys)
@@ -113,7 +115,9 @@ def test_reference_free_set_is_inherited(full, convention):
 
 def test_check_compatible_flags_mismatch(full):
     other = full.copy()
-    other.cell = gemmi.UnitCell(*(np.array(full.cell.parameters) * [1.05, 1, 1, 1, 1, 1]))
+    other.cell = gemmi.UnitCell(
+        *(np.array(full.cell.parameters) * [1.05, 1, 1, 1, 1, 1])
+    )
     assert rfree.check_compatible({"a": full, "b": full.copy()}) == []
     assert rfree.check_compatible({"a": full, "b": other})
 
@@ -132,15 +136,31 @@ def test_apply_flags_replaces_existing_columns(full):
 def test_scale_columns_amplitude_and_intensity():
     ds = rs.DataSet(
         {
-            "H": [1, 2], "K": [0, 0], "L": [0, 0],
-            "FP": [10.0, 20.0], "SIGFP": [1.0, 2.0],
-            "I": [100.0, 400.0], "SIGI": [10.0, 20.0],
+            "H": [1, 2],
+            "K": [0, 0],
+            "L": [0, 0],
+            "FP": [10.0, 20.0],
+            "SIGFP": [1.0, 2.0],
+            "I": [100.0, 400.0],
+            "SIGI": [10.0, 20.0],
             "PHI": [30.0, 40.0],
-            "FWT": [5.0, 6.0], "PHWT": [0.0, 90.0],
+            "FWT": [5.0, 6.0],
+            "PHWT": [0.0, 90.0],
         },
-        cell=[50, 50, 50, 90, 90, 90], spacegroup=1,
+        cell=[50, 50, 50, 90, 90, 90],
+        spacegroup=1,
     ).set_index(["H", "K", "L"])
-    ds = ds.astype({"FP": "F", "SIGFP": "Q", "I": "J", "SIGI": "Q", "PHI": "P", "FWT": "F", "PHWT": "P"})
+    ds = ds.astype(
+        {
+            "FP": "F",
+            "SIGFP": "Q",
+            "I": "J",
+            "SIGI": "Q",
+            "PHI": "P",
+            "FWT": "F",
+            "PHWT": "P",
+        }
+    )
     out, cols = rfree.scale_columns(ds, np.array([2.0, 0.5]))
     assert cols == ["FP", "SIGFP", "I", "SIGI"]
     np.testing.assert_allclose(out.FP, [20, 10])
@@ -211,7 +231,9 @@ def small(mtz_dir):
 
 
 def test_all_excluded_rows_stay_excluded(small):
-    small["FreeR_flag"] = rs.DataSeries(np.full(len(small), -1), index=small.index, dtype="I")
+    small["FreeR_flag"] = rs.DataSeries(
+        np.full(len(small), -1), index=small.index, dtype="I"
+    )
     flags, info = rfree.uniform_rfree({"x": small}, seed=0)
     assert info["n_excluded"]["x"] == len(small)
     assert (flags["x"] == -1).all()
@@ -235,7 +257,9 @@ def test_conflicting_equivalents_are_inconsistent(small):
 
 
 def test_reference_without_free_reflections_is_rejected(small):
-    small["FreeR_flag"] = rs.DataSeries(np.ones(len(small)), index=small.index, dtype="I")
+    small["FreeR_flag"] = rs.DataSeries(
+        np.ones(len(small)), index=small.index, dtype="I"
+    )
     with pytest.raises(ValueError, match="no reflection as free"):
         rfree.uniform_rfree({"x": small}, reference=small)
     report = rfree.compare_free_sets({"x": small})
