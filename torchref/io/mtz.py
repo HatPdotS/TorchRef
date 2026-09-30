@@ -440,7 +440,8 @@ class MTZReader:
                                 free_pct = 100.0 * n_free / len(rfree_flags)
                                 print(f"   After flip: free={n_free} ({free_pct:.1f}%)")
 
-                        self.data["R-free-flags"] = rfree_flags.astype(bool)
+                        # keep int: -1 (excluded) is masked by ReflectionData.load
+                        self.data["R-free-flags"] = rfree_flags
                         self.data["R-free-source"] = col
                         return
 

@@ -9,5 +9,6 @@ __all__ = [
     "mtz2map",
     "refine",
     "strip_altlocs",
+    "uniform_rfree",
     "validate_ded",
 ]
