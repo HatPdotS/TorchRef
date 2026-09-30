@@ -193,7 +193,9 @@ def difference_snr(
         else None
     )
     use_intensity = (
-        delta_intensity is not None and sigma_delta_intensity is not None and f is not None
+        delta_intensity is not None
+        and sigma_delta_intensity is not None
+        and f is not None
     )
     if use_intensity:
         # A floor on the divisor: a near-zero dark amplitude would send both terms to
@@ -253,6 +255,7 @@ def compute_ded_weights(
     fit_mask: torch.Tensor | None = None,
     gamma: float | None = None,
     snr_floor: float | None = None,
+    snr_estimate: DifferenceSNR | ValueError | None = None,
 ) -> DedWeights:
     """Per-reflection weights for one scheme.
 
@@ -283,6 +286,10 @@ def compute_ded_weights(
         Signal-to-noise floor of the ``q`` weight; default
         :data:`~torchref.refinement.model_error_estimation.difference_power.
         DEFAULT_SNR_FLOOR`.
+    snr_estimate : DifferenceSNR or ValueError, optional
+        A :func:`difference_snr` result on the same inputs, reused instead of fitting
+        again, so a caller that also needs the SNR fits once; or the ``ValueError`` that
+        call raised, taken as the failure without retrying.
 
     Returns
     -------
@@ -308,7 +315,9 @@ def compute_ded_weights(
 
     floor = DEFAULT_SNR_FLOOR if snr_floor is None else float(snr_floor)
     try:
-        est = difference_snr(
+        if isinstance(snr_estimate, ValueError):
+            raise snr_estimate
+        est = snr_estimate or difference_snr(
             delta_obs=delta_obs,
             sigma_diff=sigma_diff,
             hkl=hkl,
@@ -339,7 +348,9 @@ def compute_ded_weights(
     diagnostics = {
         "source": est.source,
         "gamma": fit.gamma,
-        "gamma_fitted": gamma is None and est.source == "amplitude" and f_dark is not None,
+        "gamma_fitted": (
+            gamma is None and est.source == "amplitude" and f_dark is not None
+        ),
         "sigma_scale": fit.sigma_scale,
         "sigma_scale_at_bound": fit.sigma_scale_at_bound,
         "centric_factor": fit.centric_factor,

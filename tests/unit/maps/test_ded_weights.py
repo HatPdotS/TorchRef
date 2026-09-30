@@ -4,9 +4,10 @@ Pinned: the three schemes exist with their MTZ column names; ``none`` is flat;
 ``inverse_variance`` has mean one and floors a zero sigma; ``q`` gives strong
 reflections more weight than weak ones where inverse variance cannot, keeps every
 reflection at or above its floor when noise dominates, and falls back to inverse
-variance with a warning that names why when too few reflections exist to fit. The
-SNR prefers intensity differences and calibrates their sigmas; the extrapolated
-shrinkage keeps every reflection and its weight does not depend on the occupancy.
+variance with a warning that names why when too few reflections exist to fit. The SNR
+prefers intensity differences, calibrates their sigmas and is reused when supplied; the
+extrapolated shrinkage keeps every reflection and its weight does not depend on the
+occupancy.
 """
 
 import pytest
@@ -172,8 +173,8 @@ def test_too_few_reflections_fall_back_to_inverse_variance_with_a_warning():
 def _intensity_inputs(n=20000, inflation=1.0, seed=3):
     """Dark/light intensities with known measurement noise, and crude amplitudes."""
     g = torch.Generator().manual_seed(seed)
-    f_dark = (torch.randn(n, generator=g) ** 2 + torch.randn(n, generator=g) ** 2).sqrt()
-    f_dark = 100.0 * f_dark
+    re, im = torch.randn(n, generator=g), torch.randn(n, generator=g)
+    f_dark = 100.0 * (re**2 + im**2).sqrt()
     f_light = f_dark + torch.randn(n, generator=g) * 5.0
     sig_i = 200.0 + 0.05 * f_dark**2 * torch.exp(0.3 * torch.randn(n, generator=g))
     i_dark = f_dark**2 + torch.randn(n, generator=g) * sig_i
@@ -235,3 +236,49 @@ def test_extrapolated_shrinkage_keeps_every_reflection_and_ignores_occupancy():
         assert torch.allclose(var, sig_dark**2 + w * (noise / f) ** 2)
         assert bool((var > 0).all())
     assert torch.equal(out[0.2][2], out[0.5][2])
+    # The fallback after a failed fit: an infinite SNR gives the unshrunk amplitude, a
+    # zero SNR the dark one, both finite.
+    unshrunk = f_dark + (f_light - f_dark) / 0.2
+    for s_val, expect in ((float("inf"), unshrunk), (0.0, f_dark)):
+        f_ext_b, var, w = compute_bayes_extrapolated_amplitudes(
+            f_dark,
+            f_light,
+            sig_dark,
+            phi,
+            phi,
+            0.2,
+            snr=torch.full((n,), s_val),
+            noise=noise,
+        )
+        assert bool(torch.isfinite(f_ext_b).all()) and bool(torch.isfinite(var).all())
+        assert torch.allclose(f_ext_b, expect, atol=1e-4)
+
+
+@pytest.mark.unit
+def test_q_reuses_a_supplied_snr_estimate(monkeypatch):
+    kw = _intensity_inputs(n=5000)
+    est = difference_snr(**kw)
+    from torchref.maps import ded_weights as module
+
+    def refuse(**_):
+        raise AssertionError("fitted again")
+
+    monkeypatch.setattr(module, "difference_snr", refuse)
+    reused = compute_ded_weights("q", **kw, snr_estimate=est)
+    monkeypatch.undo()
+    assert torch.allclose(reused.weights, compute_ded_weights("q", **kw).weights)
+
+
+@pytest.mark.unit
+def test_q_takes_a_failed_fit_without_retrying(monkeypatch):
+    kw = _intensity_inputs(n=5000)
+    from torchref.maps import ded_weights as module
+
+    def refuse(**_):
+        raise AssertionError("fitted again")
+
+    monkeypatch.setattr(module, "difference_snr", refuse)
+    with pytest.warns(DedWeightFallbackWarning) as record:
+        q = compute_ded_weights("q", **kw, snr_estimate=ValueError("too few"))
+    assert len(record) == 1 and "too few" in str(record[0].message)
+    assert q.applied == "inverse_variance"

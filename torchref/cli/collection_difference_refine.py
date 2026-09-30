@@ -26,6 +26,7 @@ import argparse
 import itertools
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import torch
@@ -55,6 +56,7 @@ from torchref.cli._common import (
 from torchref.maps.ded_weights import (
     DEFAULT_SCHEME,
     WEIGHT_COLUMNS,
+    DedWeightFallbackWarning,
     all_ded_weights,
     difference_snr,
 )
@@ -374,7 +376,8 @@ def compute_bayes_extrapolated_amplitudes(
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
     F_ext = torch.abs(F_dark_phased + (F_light_phased - F_dark_phased) / f)
-    w = snr / (1.0 + snr)
+    # snr / (1 + snr), written so an infinite SNR gives exactly 1 rather than inf/inf.
+    w = 1.0 / (1.0 + 1.0 / snr)
     var_ext_bayes = sig_dark**2 + w * (noise / f) ** 2
     # Shrink the amplitude toward Fo_dark -- scalar, so no phase interference.
     F_ext_bayes = Fobs_dark + w * (F_ext - Fobs_dark)
@@ -689,7 +692,8 @@ def _extrapolation_columns(
     """Extrapolated light-state amplitudes and the map to view them in.
 
     ``snr_est`` is the :class:`~torchref.maps.ded_weights.DifferenceSNR` of the
-    light-minus-dark differences on the same reflections.
+    light-minus-dark differences on the same reflections; ``None`` (the fit failed)
+    writes the unshrunk amplitudes.
 
     Three constructions of the same quantity, all needing the light model:
 
@@ -736,6 +740,12 @@ def _extrapolation_columns(
         sig_light_vals**2 + w_dark**2 * sig_dark_vals**2
     ) / w_light
 
+    if snr_est is not None:
+        snr, noise, source = snr_est.snr, snr_est.noise, snr_est.source
+    else:
+        snr = torch.full_like(Fobs_dark_vals, float("inf"))
+        noise = torch.sqrt(sig_dark_vals**2 + sig_light_vals**2)
+        source = "none"
     F_ext_bayes_amp, var_ext_bayes, w_shrinkage = compute_bayes_extrapolated_amplitudes(
         Fobs_dark_vals,
         Fobs_light_vals,
@@ -743,8 +753,8 @@ def _extrapolation_columns(
         phi_dark,
         ctx["phi_mixed"],
         w_light,
-        snr=snr_est.snr,
-        noise=snr_est.noise,
+        snr=snr,
+        noise=noise,
     )
     sig_ext_bayes = torch.sqrt(var_ext_bayes)
 
@@ -765,7 +775,7 @@ def _extrapolation_columns(
     if verbose > 0:
         print("  Bayes extrapolation rfactors:",
               rfactor_work_free(data_bayes, amp_calc_bayes))
-        print(f"  Shrinkage: SNR from {snr_est.source} differences, "
+        print(f"  Shrinkage: SNR from {source} differences, "
               f"mean w(h) = {w_shrinkage.mean().item():.3f}, "
               f"min w(h) = {w_shrinkage.min().item():.3g}")
 
@@ -805,7 +815,7 @@ def _extrapolation_columns(
                   rfactor_work_free(data_scalar, amp_calc_scalar))
 
     diagnostics = {
-        "shrinkage_source": snr_est.source,
+        "shrinkage_source": source,
         "w_shrinkage_mean": float(w_shrinkage.mean().item()),
         "w_shrinkage_min": float(w_shrinkage.min().item()),
     }
@@ -994,7 +1004,21 @@ def write_results_mtz(
         sigma_delta_intensity=sig_delta_I,
         gamma=difference_config.gamma if difference_config is not None else None,
     )
-    all_w = all_ded_weights(**snr_inputs)
+    # One fit serves the weights and the extrapolation, with one failure policy: when it
+    # cannot be made, the q weights fall back to inverse variance and the extrapolated
+    # amplitudes are written unshrunk.
+    try:
+        snr_est = difference_snr(**snr_inputs)
+    except ValueError as err:
+        snr_est = err
+        # The q-weight fallback warns for itself; this one covers the extrapolation.
+        warnings.warn(
+            f"difference SNR fit failed ({err}); the extrapolated amplitudes are "
+            "written unshrunk",
+            DedWeightFallbackWarning,
+            stacklevel=2,
+        )
+    all_w = all_ded_weights(**snr_inputs, snr_estimate=snr_est)
     selected = all_w[ded_weight]
     weights = selected.weights.detach().cpu().numpy()
     diff_Fobs = diff_t.detach().cpu().numpy()
@@ -1066,7 +1090,7 @@ def write_results_mtz(
             phi_dark=phi_dark,
             ctx=ctx,
             rfree_flags_masked=rfree_flags_masked,
-            snr_est=difference_snr(**snr_inputs),
+            snr_est=None if isinstance(snr_est, ValueError) else snr_est,
             all_columns=all_columns,
             verbose=verbose,
         )

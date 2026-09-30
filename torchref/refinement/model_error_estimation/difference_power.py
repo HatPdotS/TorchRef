@@ -299,8 +299,11 @@ def fit_difference_power(
 
     d, sig, dss = d[ok], sig[ok], dss[ok]
     # Work in units of the rms difference so every term of the likelihood is O(1) and
-    # the Hessian is well conditioned in float32.
-    amp_scale = float(d.square().mean().sqrt().clamp(min=1e-12))
+    # the Hessian is well conditioned in float32; the rms sigma when every difference
+    # is zero.
+    amp_scale = float(d.square().mean().sqrt())
+    if not amp_scale > 0.0:
+        amp_scale = float(sig.square().mean().sqrt().clamp(min=1e-12))
     d_std = d / amp_scale
     d2 = d_std.square()
     log_sig2 = 2.0 * torch.log(sig / amp_scale)
@@ -342,9 +345,13 @@ def fit_difference_power(
         cc = float(c_std.square().mean())
         theta[i_a] = float((d_std * c_std).mean()) / cc if cc > 0 else 1.0
         d2 = (d_std - theta[i_a] * c_std).square()
-    excess = float((d2.mean() - log_sig2.exp().mean()))
-    theta[0] = math.log(max(excess, 0.1 * float(d2.mean())))
-    theta[n_c] = float(gamma) if (use_f and gamma is not None) else (1.0 if use_f else 0.0)
+    noise = float(log_sig2.exp().mean())
+    excess = float(d2.mean()) - noise
+    # Start below the noise when the residual holds no power -- all differences zero, or
+    # exactly explained by the model -- so the log is always defined.
+    theta[0] = math.log(max(excess, 0.1 * float(d2.mean()), 1e-3 * noise))
+    if use_f:
+        theta[n_c] = float(gamma) if gamma is not None else 1.0
 
     def nll(t):
         log_s = basis @ t[:n_c] + t[n_c] * log_f

@@ -6,9 +6,10 @@ when the reported sigmas are uniformly inflated; a fixed exponent stays fixed; a
 difference's resolution-dependent coupling and the power it leaves unexplained are
 recovered together; the bounded Wiener weight never falls below its floor, so no
 reflection or resolution range is removed even when the data hold no signal; the sigma
-scale stays within its bounds when the differences hold no noise; the estimator caches
-one fit until reset and applies its configured exponent; the fit runs under
-``torch.no_grad()`` and on every available device.
+scale stays within its bounds when the differences hold no noise; the fit stays defined
+when the residual holds no power; the estimator caches one fit until reset and applies
+its configured exponent; the fit runs under ``torch.no_grad()`` and on every available
+device.
 """
 
 import pytest
@@ -60,9 +61,13 @@ def test_recovers_power_exponent_and_sigma_scale(inflation):
 @pytest.mark.unit
 def test_fixed_gamma_is_kept():
     s = synth()
-    fit = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"], gamma=0.0)
+    fit = fit_difference_power(
+        s["delta"], s["sigma"], s["dss"], f_dark=s["f"], gamma=0.0
+    )
     assert fit.gamma == 0.0
-    fit = fit_difference_power(s["delta"], s["sigma"], s["dss"], f_dark=s["f"], gamma=2.0)
+    fit = fit_difference_power(
+        s["delta"], s["sigma"], s["dss"], f_dark=s["f"], gamma=2.0
+    )
     assert fit.gamma == 2.0
 
 
@@ -151,3 +156,22 @@ def test_estimator_caches_until_reset_and_applies_its_config():
     assert est.get(s["delta"], s["sigma"], s["dss"], f_dark=s["f"]) is not first
     with pytest.raises(ValueError):
         DifferencePowerConfig(gamma=10.0)
+
+
+@pytest.mark.unit
+def test_fit_is_defined_when_the_residual_holds_no_power():
+    # All differences zero, and differences exactly explained by the model: the
+    # residual power is zero, which the estimator's target path meets on identical data.
+    s = synth(n=5000)
+    cases = {
+        "zero": (torch.zeros_like(s["delta"]), None),
+        "explained": (s["delta"], s["delta"].clone()),
+    }
+    for name, (delta, calc) in cases.items():
+        est = DifferencePowerEstimator()
+        fit = est.get(delta, s["sigma"], s["dss"], f_dark=s["f"], delta_calc=calc)
+        snr = fit.snr(s["sigma"], d_star_sq=s["dss"], f_dark=s["f"])
+        assert bool(torch.isfinite(snr).all()), name
+        assert float(snr.max()) < 1e-2, name
+        if calc is not None:
+            assert float((fit.alpha_at(s["dss"]) - 1.0).abs().max()) < 1e-3
