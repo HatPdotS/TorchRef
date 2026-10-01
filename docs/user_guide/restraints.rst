@@ -106,9 +106,11 @@ in the deviation from ideal:
        + \log \sigma_i + \tfrac{1}{2}\log 2\pi \right]
 
 with :math:`q` the interatomic distance or the bond angle (angles in radians,
-sigmas converted from the CIF's degrees). Torsions use a periodic von Mises NLL,
-planarity restrains a group's out-of-plane deviations, chirality preserves
-stereochemistry, and the non-bonded term is a steep PROLSQ-style repulsion
+sigmas converted from the CIF's degrees). Torsions are measured with the IUPAC sign
+the monomer library uses (the same as ``gemmi.calculate_dihedral``) and scored with
+a periodic von Mises NLL, planarity restrains a group's out-of-plane deviations,
+chirality preserves stereochemistry, and the non-bonded term is a steep PROLSQ-style
+repulsion
 (:math:`E \sim \text{violation}^4`) applied to symmetry mates as well as to the
 asymmetric unit.
 

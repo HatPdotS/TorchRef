@@ -26,6 +26,7 @@ import pandas as pd
 import torch
 from torch.nn import Module
 
+from torchref.base.targets._common import torsions_from_xyz
 from torchref.config import get_float_dtype
 from torchref.topology.monomer.cif import (
     find_cif_file_in_library,
@@ -858,53 +859,26 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         if self.topology is not None and "all" not in self._entries.get("bond", {}):
             self._rebuild_entries()
 
-    def torsions(self, idx, xyz: torch.Tensor):
-        """
-        Compute current torsion angle values for all torsion restraints.
+    def torsions(self, idx: torch.Tensor, xyz: torch.Tensor) -> torch.Tensor:
+        """Compute current torsion angles, IUPAC sign, in degrees.
+
+        Delegates to :func:`torchref.base.targets._common.torsions_from_xyz`, the
+        package's one eager dihedral, whose sign is the convention the monomer-library
+        references are written in (the same as ``gemmi.calculate_dihedral``).
 
         Parameters
         ----------
         idx : torch.Tensor
-            Torsion indices tensor of shape (N, 4).
+            Torsion atom indices of shape (n_torsions, 4), integer dtype.
         xyz : torch.Tensor
             Cartesian coordinates in Å, shape (n_atoms, 3).
 
         Returns
         -------
         torch.Tensor
-            Tensor of shape (n_torsions,) with current torsion values in degrees.
+            Torsion angles in degrees in [-180, 180], shape (n_torsions,).
         """
-        pos1 = xyz[idx[:, 0], :]
-        pos2 = xyz[idx[:, 1], :]
-        pos3 = xyz[idx[:, 2], :]
-        pos4 = xyz[idx[:, 3], :]
-
-        # Compute torsion angles using vector math
-        b1 = pos2 - pos1
-        b2 = pos3 - pos2
-        b3 = pos4 - pos3
-
-        # Normalize b2 for projection
-        b2_norm = torch.linalg.norm(b2, dim=-1, keepdim=True)
-        b2_unit = b2 / b2_norm
-
-        # Compute normals to planes
-        n1 = torch.cross(b1, b2, dim=-1)
-        n2 = torch.cross(b2, b3, dim=-1)
-
-        # Normalize normals
-        n1_unit = n1 / torch.linalg.norm(n1, dim=-1, keepdim=True)
-        n2_unit = n2 / torch.linalg.norm(n2, dim=-1, keepdim=True)
-
-        # Compute angle between normals
-        m1 = torch.cross(n1_unit, b2_unit, dim=-1)
-
-        x = torch.sum(n1_unit * n2_unit, dim=-1)
-        y = torch.sum(m1 * n2_unit, dim=-1)
-
-        torsions_rad = torch.atan2(y, x)
-        torsions_deg = torch.rad2deg(torsions_rad)
-        return torsions_deg
+        return torsions_from_xyz(xyz, idx)
 
     def _wrap_torsion_periodicity(self, diff_rad, periods):
         """Smallest angular deviation under n-fold rotational symmetry.

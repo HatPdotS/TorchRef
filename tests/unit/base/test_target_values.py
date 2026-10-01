@@ -6,12 +6,13 @@ import numpy as np
 import pytest
 import torch
 
-from torchref.base.targets._common import EPS
+from torchref.base.targets._common import EPS, torsions_from_xyz
 from torchref.base.targets.adp import adp_simu_math
 from torchref.base.targets.angle import angle_math
 from torchref.base.targets.bond import bond_math
 from torchref.base.targets.chiral import chiral_math
 from torchref.base.targets.planarity import planarity_math
+from torchref.base.targets.ramachandran import ramachandran_math
 from torchref.base.targets.xray_ls import ls_xray_loss_math
 from torchref.config import get_default_device, get_float_dtype, get_int_dtype
 
@@ -19,17 +20,43 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(scope="module")
-def deposited_atoms(sample_cif_file):
-    """Return detached Cartesian coordinates (Å) and isotropic B-factors (Å²)."""
+def deposited_model(sample_cif_file):
+    """The sample structure (1DAW) as deposited."""
     from torchref.model import Model
 
     model = Model(verbose=0)
     model.load_cif(str(sample_cif_file))
-    return model.xyz().detach().clone(), model.adp().detach().clone()
+    return model
+
+
+@pytest.fixture(scope="module")
+def deposited_atoms(deposited_model):
+    """Return detached Cartesian coordinates (Å) and isotropic B-factors (Å²)."""
+    return (
+        deposited_model.xyz().detach().clone(),
+        deposited_model.adp().detach().clone(),
+    )
 
 
 def _indices(rows, device):
     return torch.tensor(rows, dtype=get_int_dtype(), device=device)
+
+
+def _gemmi_dihedrals(xyz: torch.Tensor, rows) -> np.ndarray:
+    """``gemmi.calculate_dihedral`` in degrees for each atom quadruple in ``rows``."""
+    import gemmi
+
+    host = xyz.detach().cpu().double().numpy()
+    return np.degrees(
+        [
+            gemmi.calculate_dihedral(*(gemmi.Position(*host[i]) for i in row))
+            for row in rows
+        ]
+    )
+
+
+def _wrapped(degrees: np.ndarray) -> np.ndarray:
+    return (degrees + 180.0) % 360.0 - 180.0
 
 
 def _gaussian_sum(residual, sigma):
@@ -68,6 +95,67 @@ def test_angle_value(deposited_atoms) -> None:
     expected = _gaussian_sum(angles - refs.cpu().numpy(), sigma.cpu().numpy())
     torch.testing.assert_close(
         angle_math(xyz, idx, refs, sigma), xyz.new_tensor(expected)
+    )
+
+
+def test_dihedral_sign_is_iupac() -> None:
+    """Viewed along B→C, a far bond turned clockwise from the near bond is positive."""
+    c, s = math.cos(math.radians(60.0)), math.sin(math.radians(60.0))
+    xyz = torch.tensor(
+        [[1.0, 0, 0], [0, 0, 0], [0, 0, 1.0], [c, s, 1.0], [c, -s, 1.0]],
+        dtype=get_float_dtype(),
+        device=get_default_device(),
+    )
+    # Looking along +z, +x -> (c, s) is a clockwise turn. Reversing the atom order
+    # leaves a dihedral unchanged; the mirror image negates it.
+    idx = _indices([[0, 1, 2, 3], [3, 2, 1, 0], [0, 1, 2, 4]], xyz.device)
+    torch.testing.assert_close(
+        torsions_from_xyz(xyz, idx), xyz.new_tensor([60.0, 60.0, -60.0])
+    )
+
+
+def test_dihedral_matches_gemmi(deposited_atoms) -> None:
+    """The eager dihedral is gemmi's, on deposited atoms and on random quadruples."""
+    xyz, _ = deposited_atoms
+    generator = torch.Generator().manual_seed(0)
+    scattered = (3.0 * torch.randn(400, 3, generator=generator)).to(xyz)
+    for points in (xyz[:400], scattered):
+        rows = [[i, i + 1, i + 2, i + 3] for i in range(len(points) - 3)]
+        ours = torsions_from_xyz(points, _indices(rows, points.device))
+        delta = _wrapped(ours.cpu().double().numpy() - _gemmi_dihedrals(points, rows))
+        assert np.abs(delta).max() < 1e-3
+
+
+def test_ramachandran_reads_surfaces_at_iupac_phi_psi(deposited_model) -> None:
+    """The Ramachandran NLL is the surface interpolated at gemmi's phi and psi.
+
+    The surfaces are tabulated in the IUPAC convention and are not symmetric under
+    (phi, psi) -> (-phi, -psi): read at the mirror image, 1DAW scores several times
+    higher, which this comparison would not survive.
+    """
+    restraints = deposited_model.restraints
+    xyz = deposited_model.xyz().detach()
+    phi_idx, psi_idx = restraints._rama_phi_indices, restraints._rama_psi_indices
+    surfaces, kind = restraints._rama_surfaces, restraints._rama_surface_type
+
+    phi = (_gemmi_dihedrals(xyz, phi_idx.tolist()) + 180.0) % 360.0
+    psi = (_gemmi_dihedrals(xyz, psi_idx.tolist()) + 180.0) % 360.0
+    grid = surfaces.cpu().double().numpy()[kind.cpu().numpy()]
+    i0, j0 = np.floor(phi).astype(int) % 360, np.floor(psi).astype(int) % 360
+    i1, j1 = (i0 + 1) % 360, (j0 + 1) % 360
+    u, v = phi - np.floor(phi), psi - np.floor(psi)
+    n = np.arange(len(phi))
+    expected = np.sum(
+        (1 - u) * (1 - v) * grid[n, i0, j0]
+        + (1 - u) * v * grid[n, i0, j1]
+        + u * (1 - v) * grid[n, i1, j0]
+        + u * v * grid[n, i1, j1]
+    )
+    torch.testing.assert_close(
+        ramachandran_math(xyz, phi_idx, psi_idx, surfaces, kind),
+        xyz.new_tensor(expected),
+        rtol=1e-5,
+        atol=1e-3,
     )
 
 
