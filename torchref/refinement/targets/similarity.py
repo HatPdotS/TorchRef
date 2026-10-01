@@ -9,6 +9,7 @@ import torch
 from typing import TYPE_CHECKING, Dict
 
 from .base import Target
+from torchref.config import get_int_dtype
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -68,10 +69,10 @@ class CoordinateSimilarityTarget(Target):
         # path (the one ``load_state_dict`` uses) would have no such buffers at all.
         # ``_build_atom_map`` overwrites them rather than creating them.
         self.register_buffer(
-            "_idx_dark", torch.zeros(0, dtype=torch.long, device=self.device)  # dtype-ok: index buffer for gather/index_select; PyTorch requires int64
+            "_idx_dark", torch.zeros(0, dtype=get_int_dtype(), device=self.device)
         )
         self.register_buffer(
-            "_idx_light", torch.zeros(0, dtype=torch.long, device=self.device)  # dtype-ok: index buffer for gather/index_select; PyTorch requires int64
+            "_idx_light", torch.zeros(0, dtype=get_int_dtype(), device=self.device)
         )
         if model_dark is not None and model_light is not None:
             self._build_atom_map()
@@ -140,10 +141,10 @@ class CoordinateSimilarityTarget(Target):
                 "dark and light models"
             )
             self.register_buffer(
-                "_idx_dark", torch.zeros(0, dtype=torch.long, device=self.device)  # dtype-ok: index buffer for gather/index_select; PyTorch requires int64
+                "_idx_dark", torch.zeros(0, dtype=get_int_dtype(), device=self.device)
             )
             self.register_buffer(
-                "_idx_light", torch.zeros(0, dtype=torch.long, device=self.device)  # dtype-ok: index buffer for gather/index_select; PyTorch requires int64
+                "_idx_light", torch.zeros(0, dtype=get_int_dtype(), device=self.device)
             )
             return
 
@@ -166,13 +167,13 @@ class CoordinateSimilarityTarget(Target):
         self.register_buffer(
             "_idx_dark",
             torch.tensor(
-                merged["_idx_dark"].values, dtype=torch.long, device=self.device  # dtype-ok: atom index tensor used for indexing; PyTorch requires int64
+                merged["_idx_dark"].values, dtype=get_int_dtype(), device=self.device
             ),
         )
         self.register_buffer(
             "_idx_light",
             torch.tensor(
-                merged["_idx_light"].values, dtype=torch.long, device=self.device  # dtype-ok: atom index tensor used for indexing; PyTorch requires int64
+                merged["_idx_light"].values, dtype=get_int_dtype(), device=self.device
             ),
         )
 
