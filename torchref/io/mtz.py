@@ -313,7 +313,9 @@ class MTZReader:
             file, and may include: ``"HKL"`` (int32 Miller indices); ``"F"`` /
             ``"SIGF"`` and/or ``"I"`` / ``"SIGI"`` (float32 data, with
             ``"*_col"`` provenance keys recording the source column names);
-            ``"R-free-flags"`` (a **bool** mask) and ``"R-free-source"``;
+            ``"R-free-flags"`` (int32: ``0`` = free, positive = work,
+            negative = excluded; a column whose majority value is ``0`` is
+            flipped to this convention) and ``"R-free-source"``;
             ``"Validation-flags"`` (a **bool** mask) and ``"Validation-source"``;
             and ``"friedel_merged"`` (bool) indicating the Bijvoet state of the
             returned data (False when anomalous F(+)/F(-) pairs were stacked).
@@ -448,7 +450,8 @@ class MTZReader:
                                 free_pct = 100.0 * n_free / len(rfree_flags)
                                 print(f"   After flip: free={n_free} ({free_pct:.1f}%)")
 
-                        self.data["R-free-flags"] = rfree_flags.astype(bool)
+                        # keep int: -1 (excluded) is masked by ReflectionData.load
+                        self.data["R-free-flags"] = rfree_flags
                         self.data["R-free-source"] = col
                         return
 

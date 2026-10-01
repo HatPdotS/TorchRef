@@ -4,6 +4,13 @@ Changelog
 
 Unreleased
 ----------
+- SF-CIF export preserves supported numerical columns and free-flag values, and rejects unsupported columns before writing; use MTZ to retain custom columns or saved original flags.
+- Added ``torchref.uniform-rfree``: gives any number of MTZ / SF-mmCIF files of one cell and space group a shared CCP4 ``FreeR_flag``.
+  - An existing free set (CCP4, Phenix or mmCIF convention) is inherited by default and extended, at its own fraction, to reflections it lacks, including those beyond its resolution. That extension is seeded with a hash of the reference's free/work partition, so it is reproducible whatever the file format or convention. New sets are stratified by resolution shell on the complete ASU and depend only on cell, space group and seed.
+  - Options: ``--check`` reports whether the inputs' free sets agree; ``--free-fraction`` and ``--max-free`` size a new set and are refused while a set is inherited; ``--scale`` optionally scales the datasets together with ``DatasetCollection.scale``.
+  - Excluded reflections (``-1`` / ``x``) are preserved per file. Output is MTZ (all input columns kept) and/or mmCIF (columns with an mmCIF equivalent). Library helpers are in ``torchref.io.rfree``.
+- The MTZ reader keeps R-free flags as integers, so ``-1`` (excluded) reflections are masked on load instead of becoming work reflections.
+- ``ModelFT.create_from_state_dict`` restores the restraint dictionary path (``cif_path``) as ``Model`` does, and ``Refinement.create_from_state_dict`` no longer builds a stray ``Restraints`` from the model; the restored model builds its own on first access.
 - Extrapolated amplitude sigmas propagate independent dark and light measurement errors with their shared-difference covariance and phase-aware derivatives, for finite shrinkage and unshrunk fallback alike; they describe measurement uncertainty rather than latent-difference posterior variance.
 - Integer and index tensors now take the configured int dtype (``get_int_dtype()``, ``TORCHREF_DTYPE_INT``, int32 by default) throughout the package. A hardcoded ``int64`` remains only where a torch op (``scatter``/``gather`` on torch < 2.8, ``index_copy_``), a compiled kernel, an int32 overflow, or an external library requires it, and each such site says which.
 - Fixed the 2Fo-Fc coefficients (FWT/PHWT) written to MTZ: where 2Fo < |Fc| the amplitude was made positive without flipping the phase, reversing the sign of 1-7 % of reflections on the test structures. Unmeasured (masked) reflections are now filled with Fc and get zero Fo-Fc in both layouts. ``Map`` and the MTZ writer share ``torchref.base.fourier.map_coefficients``, and the writer moved to ``torchref.io.mtz.write_reflections`` (``ReflectionData.write_mtz`` calls it)
