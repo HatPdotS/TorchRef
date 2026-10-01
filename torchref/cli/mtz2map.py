@@ -66,7 +66,7 @@ def main():
         type=str,
         metavar="COL",
         help="Weight column multiplied into the amplitudes before the FFT "
-        "(e.g. W_SD, W_IVW from torchref.difference-map). Default: none.",
+        "(e.g. W_Q, W_InVa from torchref.difference-map). Default: none.",
     )
     inp.add_argument(
         "-ck",

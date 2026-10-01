@@ -8,43 +8,42 @@ comparable scales. Three schemes are registered:
     Every reflection weighted equally.
 ``inverse_variance``
     ``1 / sigma_diff**2``. Weights by precision alone; the right rule for averaging
-    estimates of one quantity, and the default for difference maps.
-``sigma_d``
-    The Wiener weight ``S / (S + sigma_diff**2)`` with ``S`` the expected true difference
-    power from :mod:`torchref.refinement.model_error_estimation.sigma_d`. Weights by the
-    signal fraction of each coefficient, so strong reflections whose expected difference
-    is large keep their weight. ``S`` is ``mean(dF**2) - mean(sigma**2)`` per shell, so
-    it inherits any miscalibration of ``sigma_diff``: where the reported sigmas are too
-    large the estimate finds no power and the weight vanishes, which turns the scheme
-    into a resolution cut. The count of such shells is reported as ``n_s2_clamped``;
-    a large fraction means the sigmas, not the data, are deciding the map.
+    estimates of one quantity. On French-Wilson amplitudes it *up*-weights the weak
+    high-resolution reflections, whose posterior sigma the prior keeps small.
+``q``
+    The q-weight: a Wiener weight ``(snr + b) / (snr + 1 + b)`` on the per-reflection
+    signal-to-noise ratio of :func:`difference_snr`, the default. The floor ``b`` keeps
+    a reflection without signal at ``b / (1 + b)`` of the full weight (one third at the
+    default), so a noisy resolution range is down-weighted, never removed.
 
-Plain tensors in and out. The weights live on the device of ``delta_obs``. The sigma_D
-estimator is imported inside the scheme that needs it so that :mod:`torchref.maps` does
-not import :mod:`torchref.refinement` at module load.
+:func:`difference_snr` is the one estimate of how much of each observed difference is
+signal; the extrapolated amplitudes of ``torchref.difference-map`` shrink by the same
+ratio. It prefers intensities: French-Wilson amplitude sigmas describe the posterior of
+one amplitude, not the noise of a difference between two, and overstate it increasingly
+toward high resolution, where intensity sigmas are the measurement noise itself.
+
+Plain tensors in and out. The weights live on the device of ``delta_obs``. The
+difference-power fit is imported inside the scheme that needs it so that
+:mod:`torchref.maps` does not import :mod:`torchref.refinement` at module load.
 """
 
 import warnings
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 import torch
 
 from torchref.base.reciprocal.basis import get_scattering_vectors
 from torchref.base.targets.xray_likelihoods import SIGMA_FLOOR_ABS, SIGMA_FLOOR_FRAC
 
-if TYPE_CHECKING:
-    from torchref.refinement.model_error_estimation.sigma_d import SigmaDConfig
-
 #: The selectable schemes, in the order they are reported.
-SCHEMES = ("none", "inverse_variance", "sigma_d")
-#: Scheme applied when none is named. Inverse variance, because ``sigma_d`` depends on
-#: calibrated sigmas: on the 15 Sep campaign TorchSX's TD1 sigmas were ~1.5x too large at
-#: high resolution, ``sigma_d`` zeroed 60-90 % of the shells there and the map agreement
-#: rose in the bulk solvent as much as in the region of interest.
-DEFAULT_SCHEME = "inverse_variance"
+SCHEMES = ("none", "inverse_variance", "q")
+#: Scheme applied when none is named. On simulated dark/light half datasets of 1DAW
+#: (ligand moved at 0.3 and 0.6 occupancy, calibrated and 1.5x-inflated sigmas) ``q``
+#: recovered the most contour-level information about the true difference density;
+#: ``inverse_variance`` recovered less than no weighting.
+DEFAULT_SCHEME = "q"
 #: MTZ column carrying each scheme's weight (type ``W``); ``none`` writes no column.
-WEIGHT_COLUMNS = {"inverse_variance": "W_IVW", "sigma_d": "W_SD"}
+WEIGHT_COLUMNS = {"inverse_variance": "W_InVa", "q": "W_Q"}
 
 
 class DedWeightFallbackWarning(UserWarning):
@@ -65,8 +64,8 @@ class DedWeights:
     weights
         Per-reflection weights, shape ``(N,)``, mean one over finite positive entries.
     diagnostics
-        Scheme-specific record: for ``sigma_d`` the fitted exponent, shrinkage sd,
-        clamp counters and the per-shell table.
+        Scheme-specific record: for ``q`` the fitted exponent, sigma scale, centric
+        factor, Chebyshev coefficients and their standard errors, and the weight range.
     """
 
     scheme: str
@@ -80,9 +79,8 @@ def normalise_mean_one(w: torch.Tensor) -> torch.Tensor:
     that mean is not positive.
 
     Non-finite entries become zero, so a coefficient without a usable uncertainty drops
-    out of the map rather than poisoning it. Zero weights (shells without difference
-    power) stay zero and count in the mean, so the column mean is one whatever fraction
-    of the reflections carries weight.
+    out of the map rather than poisoning it. Zero weights stay zero and count in the
+    mean, so the column mean is one whatever fraction of the reflections carries weight.
     """
     w = torch.where(torch.isfinite(w), w, torch.zeros_like(w))
     if w.numel() == 0 or not bool((w > 0).any()):
@@ -103,6 +101,130 @@ def reflection_geometry(hkl, cell, spacegroup, device, dtype):
     dss = (s * s).sum(dim=1).to(dtype)
     eps = epsilon_from_hkl(hkl_t, spacegroup).to(device=device, dtype=dtype)
     return eps, dss
+
+
+@dataclass(frozen=True)
+class DifferenceSNR:
+    """Per-reflection signal-to-noise ratio of observed differences.
+
+    Attributes
+    ----------
+    snr : torch.Tensor
+        ``S / noise**2``, shape ``(N,)``, the same in amplitude and intensity terms.
+    noise : torch.Tensor
+        Calibrated noise ``k * sigma`` of the amplitude difference, shape ``(N,)``, in
+        the amplitude units of ``delta_obs``.
+    fit : DifferencePowerFit
+        The fit ``snr`` came from.
+    source : str
+        ``"intensity"`` or ``"amplitude"``: which observations were fitted.
+    """
+
+    snr: torch.Tensor
+    noise: torch.Tensor
+    fit: object
+    source: str
+
+
+def difference_snr(
+    *,
+    delta_obs: torch.Tensor,
+    sigma_diff: torch.Tensor,
+    hkl: torch.Tensor,
+    cell,
+    spacegroup,
+    f_dark: torch.Tensor | None = None,
+    delta_intensity: torch.Tensor | None = None,
+    sigma_delta_intensity: torch.Tensor | None = None,
+    fit_mask: torch.Tensor | None = None,
+    gamma: float | None = None,
+) -> DifferenceSNR:
+    """Fit the expected difference power and return each reflection's SNR.
+
+    Given intensity differences and ``f_dark``, the fit runs on
+    ``delta_intensity / (2 F_dark)`` with sigma ``sigma_delta_intensity / (2 F_dark)``:
+    the ratio of an intensity difference to its measurement noise, carried on the
+    amplitude scale so the likelihood is as well conditioned as an amplitude fit. The
+    ``F_dark`` exponent then defaults to 0, because ``S`` and ``F_dark`` enter the
+    divided difference together and the fitted exponent is not identified. Otherwise
+    the amplitude differences and their sigmas are fitted.
+
+    Parameters
+    ----------
+    delta_obs, sigma_diff : torch.Tensor
+        Signed amplitude differences and their propagated sigma, shape ``(N,)``.
+    hkl : torch.Tensor
+        Miller indices, shape ``(N, 3)``.
+    cell : Cell or torch.Tensor
+        Unit cell, or its six parameters in A and degrees.
+    spacegroup : SpaceGroup or None
+        For the multiplicity and centric flags; ``None`` means P1.
+    f_dark : torch.Tensor, optional
+        Dark amplitudes, shape ``(N,)``; required for the intensity path.
+    delta_intensity, sigma_delta_intensity : torch.Tensor, optional
+        Intensity differences ``I_light - I_dark`` and their propagated sigma, shape
+        ``(N,)``, on the scale whose square root is the amplitude scale of
+        ``delta_obs``.
+    fit_mask : torch.Tensor, optional
+        Reflections entering the fit; default every finite one.
+    gamma : float, optional
+        Fix the ``F_dark`` exponent.
+
+    Returns
+    -------
+    DifferenceSNR
+
+    Raises
+    ------
+    ValueError
+        If too few reflections are usable for the fit.
+    """
+    from torchref.refinement.model_error_estimation.difference_power import (
+        fit_difference_power,
+    )
+
+    d = delta_obs.reshape(-1)
+    sig = sigma_diff.reshape(-1).to(d.device, d.dtype)
+    eps, dss = reflection_geometry(hkl, cell, spacegroup, d.device, d.dtype)
+    f = f_dark.reshape(-1).to(d.device, d.dtype) if f_dark is not None else None
+    centric = (
+        spacegroup.is_centric(torch.as_tensor(hkl, device=d.device)).to(d.device)
+        if spacegroup is not None
+        else None
+    )
+    use_intensity = (
+        delta_intensity is not None
+        and sigma_delta_intensity is not None
+        and f is not None
+    )
+    if use_intensity:
+        # A floor on the divisor: a near-zero dark amplitude would send both terms to
+        # infinity. Their ratio, the SNR, does not depend on it.
+        ok_f = torch.isfinite(f) & (f > 0)
+        f_floor = 0.1 * float(f[ok_f].median()) if bool(ok_f.any()) else 1.0
+        two_f = 2.0 * f.clamp(min=f_floor)
+        values = delta_intensity.reshape(-1).to(d.device, d.dtype) / two_f
+        sigma = sigma_delta_intensity.reshape(-1).to(d.device, d.dtype) / two_f
+        g = 0.0 if gamma is None else gamma
+    else:
+        values, sigma, g = d, sig, gamma
+    fit = fit_difference_power(
+        values,
+        sigma,
+        dss,
+        epsilon=eps,
+        f_dark=f,
+        centric=centric,
+        fit_mask=fit_mask,
+        gamma=g,
+    )
+    snr = fit.snr(sigma, d_star_sq=dss, epsilon=eps, f_dark=f, centric=centric)
+    return DifferenceSNR(
+        snr=snr,
+        noise=fit.sigma_scale * sigma,
+        fit=fit,
+        source="intensity" if use_intensity else "amplitude",
+    )
 
 
 def _inverse_variance(sigma_diff: torch.Tensor) -> torch.Tensor:
@@ -128,8 +250,12 @@ def compute_ded_weights(
     cell,
     spacegroup,
     f_dark: torch.Tensor | None = None,
+    delta_intensity: torch.Tensor | None = None,
+    sigma_delta_intensity: torch.Tensor | None = None,
     fit_mask: torch.Tensor | None = None,
-    sigma_d_config: "SigmaDConfig | None" = None,
+    gamma: float | None = None,
+    snr_floor: float | None = None,
+    snr_estimate: DifferenceSNR | ValueError | None = None,
 ) -> DedWeights:
     """Per-reflection weights for one scheme.
 
@@ -146,19 +272,30 @@ def compute_ded_weights(
         Unit cell, as a :class:`~torchref.symmetry.Cell` or its six parameters in A and
         degrees.
     spacegroup : SpaceGroup or None
-        For the reflection multiplicity; ``None`` means ones.
+        For the reflection multiplicity and centric flags; ``None`` means P1.
     f_dark : torch.Tensor, optional
-        Dark amplitudes, shape ``(N,)``, for the sigma_D amplitude power law.
+        Dark amplitudes, shape ``(N,)``, for the ``q`` power law in ``F_dark``.
+    delta_intensity, sigma_delta_intensity : torch.Tensor, optional
+        Intensity differences and their sigma; given with ``f_dark``, the ``q`` SNR is
+        fitted on them (see :func:`difference_snr`).
     fit_mask : torch.Tensor, optional
-        Reflections entering the sigma_D fit; default every finite one.
-    sigma_d_config : SigmaDConfig, optional
-        Exponent and shrinkage settings for ``sigma_d``.
+        Reflections entering the ``q`` fit; default every finite one.
+    gamma : float, optional
+        Fix the ``F_dark`` exponent of the ``q`` fit instead of fitting it.
+    snr_floor : float, optional
+        Signal-to-noise floor of the ``q`` weight; default
+        :data:`~torchref.refinement.model_error_estimation.difference_power.
+        DEFAULT_SNR_FLOOR`.
+    snr_estimate : DifferenceSNR or ValueError, optional
+        A :func:`difference_snr` result on the same inputs, reused instead of fitting
+        again, so a caller that also needs the SNR fits once; or the ``ValueError`` that
+        call raised, taken as the failure without retrying.
 
     Returns
     -------
     DedWeights
-        Mean-one weights on ``delta_obs.device``. When ``sigma_d`` finds no difference
-        power in any shell, the inverse-variance weights are returned with
+        Mean-one weights on ``delta_obs.device``. When the ``q`` fit has too few
+        usable reflections, the inverse-variance weights are returned with
         ``applied="inverse_variance"`` and a :class:`DedWeightFallbackWarning`.
     """
     if scheme not in SCHEMES:
@@ -171,64 +308,63 @@ def compute_ded_weights(
             scheme, scheme, normalise_mean_one(_inverse_variance(sigma_diff))
         )
 
-    from torchref.refinement.model_error_estimation.sigma_d import (
-        SigmaDConfig,
-        estimate_sigma_d,
-        sigma_d_per_reflection,
+    from torchref.refinement.model_error_estimation.difference_power import (
+        DEFAULT_SNR_FLOOR,
+        bounded_wiener_weight,
     )
 
-    config = sigma_d_config if sigma_d_config is not None else SigmaDConfig()
-    d = delta_obs.reshape(-1)
-    eps, dss = reflection_geometry(hkl, cell, spacegroup, d.device, d.dtype)
-    f = f_dark.reshape(-1).to(d.device, d.dtype) if f_dark is not None else None
-    mask = (
-        fit_mask.reshape(-1).to(d.device, torch.bool)
-        if fit_mask is not None
-        else torch.isfinite(d) & torch.isfinite(sigma_diff)
-    )
-    shells = estimate_sigma_d(
-        d, sigma_diff, eps, dss, f, mask, gamma=config.gamma, shrink=config.shrink
-    )
-    est = sigma_d_per_reflection(shells, dss, eps, f, sigma_diff)
-    diagnostics = {
-        "gamma": shells.gamma,
-        "gamma_fitted": shells.gamma_fitted,
-        "tau": shells.tau,
-        "curve_a": shells.curve_a,
-        "curve_b": shells.curve_b,
-        "degenerate": shells.degenerate,
-        "all_zero": shells.all_zero,
-        **shells.diagnostics,
-        "shells": {
-            "d_star_sq": shells.bin_dss.detach().cpu().tolist(),
-            "counts": shells.counts.detach().cpu().tolist(),
-            "B": shells.B.detach().cpu().tolist(),
-            "S2": shells.S2.detach().cpu().tolist(),
-            "Sigma_N_raw": shells.Sigma_N_raw.detach().cpu().tolist(),
-            "Sigma_N": shells.Sigma_N.detach().cpu().tolist(),
-        },
-        "weight_sigma_d_raw": est.w.detach(),
-    }
-    if shells.all_zero or shells.degenerate:
-        reason = (
-            "no difference power above the measurement variance in any shell "
-            f"(n_s2_clamped={shells.diagnostics['n_s2_clamped']})"
-            if shells.all_zero
-            else "fewer than two usable reflections"
+    floor = DEFAULT_SNR_FLOOR if snr_floor is None else float(snr_floor)
+    try:
+        if isinstance(snr_estimate, ValueError):
+            raise snr_estimate
+        est = snr_estimate or difference_snr(
+            delta_obs=delta_obs,
+            sigma_diff=sigma_diff,
+            hkl=hkl,
+            cell=cell,
+            spacegroup=spacegroup,
+            f_dark=f_dark,
+            delta_intensity=delta_intensity,
+            sigma_delta_intensity=sigma_delta_intensity,
+            fit_mask=fit_mask,
+            gamma=gamma,
         )
+    except ValueError as err:
+        reason = str(err)
         warnings.warn(
-            f"sigma_d weights: {reason}; applying inverse-variance weights instead",
+            f"q weights: {reason}; applying inverse-variance weights instead",
             DedWeightFallbackWarning,
             stacklevel=2,
         )
-        diagnostics["fallback_reason"] = reason
         return DedWeights(
             scheme,
             "inverse_variance",
             normalise_mean_one(_inverse_variance(sigma_diff)),
-            diagnostics,
+            {"fallback_reason": reason},
         )
-    return DedWeights(scheme, scheme, normalise_mean_one(est.w), diagnostics)
+    fit = est.fit
+    w = bounded_wiener_weight(est.snr, floor)
+    ok = torch.isfinite(w)
+    diagnostics = {
+        "source": est.source,
+        "gamma": fit.gamma,
+        "gamma_fitted": (
+            gamma is None and est.source == "amplitude" and f_dark is not None
+        ),
+        "sigma_scale": fit.sigma_scale,
+        "sigma_scale_at_bound": fit.sigma_scale_at_bound,
+        "centric_factor": fit.centric_factor,
+        "order": len(fit.coeffs) - 1,
+        "coeffs": fit.coeffs.detach().cpu().tolist(),
+        "stderr": fit.stderr.detach().cpu().tolist(),
+        "stol_range": list(fit.stol_range),
+        "converged": fit.converged,
+        "n_fit": fit.n_fit,
+        "snr_floor": floor,
+        "weight_min": float(w[ok].min()) if bool(ok.any()) else float("nan"),
+        "weight_max": float(w[ok].max()) if bool(ok.any()) else float("nan"),
+    }
+    return DedWeights(scheme, scheme, normalise_mean_one(w), diagnostics)
 
 
 def all_ded_weights(**kwargs) -> dict[str, DedWeights]:
@@ -246,8 +382,10 @@ __all__ = [
     "WEIGHT_COLUMNS",
     "DedWeightFallbackWarning",
     "DedWeights",
+    "DifferenceSNR",
     "all_ded_weights",
     "compute_ded_weights",
+    "difference_snr",
     "normalise_mean_one",
     "reflection_geometry",
 ]

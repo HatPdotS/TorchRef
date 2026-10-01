@@ -1091,7 +1091,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         column_names : dict, optional
             Explicit column name mapping to override automatic detection.
             Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
-            Example: ``{"F": "DFo", "SIGF": "sig_DFo"}``.
+            Example: ``{"F": "dFo", "SIGF": "sig_dFo"}``.
         french_wilson : bool, optional
             Whether to derive amplitudes from intensities via French-Wilson.
             Default True. Set False to use existing French-Wilson-corrected

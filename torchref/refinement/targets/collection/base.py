@@ -89,7 +89,7 @@ class CollectionSigmaALossInputs(NamedTuple):
 
 
 class CollectionSigmaDLossInputs(NamedTuple):
-    """:class:`CollectionLossInputs` plus the sigma_D difference-error estimate.
+    """:class:`CollectionLossInputs` plus the difference model-error estimate.
 
     ``alpha`` and ``beta_model`` live on the **common HKL**, shape ``(n_hkl,)``, and
     broadcast over the dataset axis: the coupling of the model difference to the true

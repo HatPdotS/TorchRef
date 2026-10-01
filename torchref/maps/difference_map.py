@@ -1,7 +1,7 @@
 """
 Isomorphous difference map from two datasets.
 
-Computes a difference Fourier map using DF = F_data - F_reference with
+Computes a difference Fourier map using dF = F_data - F_reference with
 phases from a model, after scaling both datasets to a common reference.
 """
 
@@ -23,7 +23,7 @@ class DifferenceMap(Map):
 
     Scales both datasets to a common reference using ``DatasetCollection``,
     then computes difference Fourier coefficients:
-    ``DF * exp(i * phi_calc)`` where ``DF = F_data - F_reference``.
+    ``dF * exp(i * phi_calc)`` where ``dF = F_data - F_reference``.
 
     Parameters
     ----------

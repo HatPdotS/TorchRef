@@ -1,4 +1,4 @@
-"""The two model-error estimators, one module each.
+"""The model-error estimators, one module each.
 
 A refined model disagrees with the data for two reasons that need separating: the
 measurement is noisy (``sigma_obs``, which the data carries) and the *model is wrong*.
@@ -12,8 +12,13 @@ interfaces so comparing them is a first-class capability:
   *structure alone* via the diagonal Fisher information, never seeing ``F_obs`` or
   ``F_calc``. It agrees with ``beta`` on shape but not magnitude, which is why it takes a
   caller-supplied scale.
+* :mod:`.difference_power` -- **difference-driven**. The expected power of a
+  light-minus-dark difference and, given a model difference, its coupling and the power
+  the model leaves unexplained, by one per-reflection likelihood fit with no resolution
+  shells. What the difference-map weights, the extrapolated amplitudes and the
+  ``difference_sd`` collection target consume.
 
-**This ``__init__`` deliberately imports nothing.** Both modules are heavy and
+**This ``__init__`` deliberately imports nothing.** The modules are heavy and
 ``sigma_a`` is imported from inside :mod:`torchref.scaling` methods to avoid closing a
 ``scaling`` <-> ``refinement`` cycle; pulling them in here would defeat that, and
 re-exporting from :mod:`torchref.refinement` would make the import an attribute lookup on
