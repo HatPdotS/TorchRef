@@ -13,7 +13,10 @@ chains through:
 
 Cartesian symmetry transforms (M·R·M⁻¹ and M·t) are precomputed once on
 the host, so the kernel only does a 3×3 matvec (forward) and 3×3
-transposed matvec (backward) per pair.
+transposed matvec (backward) per pair. As in the eager
+:func:`~torchref.base.targets.nonbonded.nonbonded_pair_positions`, every pair
+is transformed whenever symmetry tensors are passed:
+``M·R·M⁻¹·x + M·t + M·n = M·(R·M⁻¹·x + t + n)``, the eager image term for term.
 """
 
 from __future__ import annotations
@@ -226,18 +229,22 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
         N = indices.shape[0]
         nll = torch.empty(N, dtype=xyz.dtype, device=xyz.device)
 
-        has_sym = (
-            symop_indices is not None
-            and symop_indices.numel() > 0
-            and not bool((symop_indices == 0).all())
-        )
+        # The eager rule (``nonbonded_pair_positions``): with symmetry tensors present
+        # every pair is imaged, identity rows included. Testing the operations alone
+        # would drop the lattice translation of a pair whose operation is the identity,
+        # which is every crystal contact in P1.
+        has_sym = symop_indices is not None
         if has_sym:
             cart_mat, cart_off = _build_cartesian_symops(
                 symop_matrices, symop_translations,
                 fractional_matrix, inv_fractional_matrix,
             )
-            cell_off_cart = (cell_offsets.to(xyz.dtype)
-                             @ fractional_matrix.T).contiguous()
+            if cell_offsets is None:
+                cell_off_cart = torch.zeros(N, 3, device=xyz.device, dtype=xyz.dtype)
+            else:
+                cell_off_cart = (
+                    cell_offsets.to(xyz.dtype) @ fractional_matrix.T
+                ).contiguous()
             symop_i32 = symop_indices.to(torch.int32).contiguous()
         else:
             cart_mat = torch.zeros(1, 3, 3, device=xyz.device, dtype=xyz.dtype)

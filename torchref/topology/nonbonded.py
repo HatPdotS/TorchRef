@@ -17,6 +17,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 import numpy as np
 import torch
 
+from torchref.base.coordinates.symmetry_images import (
+    is_symmetry_image,
+    symmetry_image_positions,
+)
 from torchref.config import dtypes, get_float_dtype, get_int_dtype
 
 if TYPE_CHECKING:
@@ -69,13 +73,18 @@ def vdw_radii_for_elements(elements) -> np.ndarray:
 def prefilter_symop_offsets(
     cell: "Cell",
     sg: "SpaceGroup",
-    xyz_frac: torch.Tensor,
+    xyz: torch.Tensor,
     cutoff: float,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Select (symop, cell_offset) combos that could produce contacts.
+    """Select every (symop, cell_offset) combination whose image can reach the model.
 
-    Uses the ASU centroid and molecule radius to eliminate obviously
-    distant combinations.  Always includes identity (op=0, offset=0).
+    An image can hold an atom within ``cutoff`` of the model only if it moves the
+    centroid by at most ``2 r + cutoff``, ``r`` being the largest atom-centroid
+    distance. Every combination meeting that bound is returned, however far the
+    coordinates sit from the origin cell: the offsets are relative to ``xyz`` as
+    given, which is how :func:`assign_to_grid` and the VDW kernels form images from
+    them (:func:`~torchref.base.coordinates.symmetry_image_positions`, on unwrapped
+    coordinates). Always includes the identity (op=0, offset=0).
 
     Parameters
     ----------
@@ -83,8 +92,8 @@ def prefilter_symop_offsets(
         Crystallographic unit cell.
     sg : SpaceGroup
         Space group providing the symmetry operators.
-    xyz_frac : torch.Tensor
-        ``(N, 3)`` fractional ASU coordinates.
+    xyz : torch.Tensor
+        ``(N, 3)`` Cartesian ASU coordinates in Å.
     cutoff : float
         Cartesian cutoff in Angstrom.
 
@@ -92,42 +101,51 @@ def prefilter_symop_offsets(
     -------
     op_indices : (M,) int – symop indices for each valid combo
     cell_offsets : (M, 3) int – integer cell translations
+        Ordered by operation, then offset, lexicographically.
     """
-    device = xyz_frac.device
-    fdtype = dtypes.float
-
-    centroid_frac = xyz_frac.mean(dim=0)
-    centroid_cart = cell.fractional_to_cartesian(xyz_frac).mean(dim=0)
-    xyz_cart = cell.fractional_to_cartesian(xyz_frac)
-    molecule_radius = (xyz_cart - centroid_cart).norm(dim=1).max().item()
-    threshold = 2.0 * molecule_radius + cutoff
+    device = xyz.device
+    fdtype = get_float_dtype()
+    int_dtype = get_int_dtype()
+    xyz = xyz.to(fdtype)
 
     B = cell.fractional_matrix.to(device=device, dtype=fdtype)
-    I_mat = torch.eye(3, dtype=fdtype, device=device)
-
+    B_inv = cell.inv_fractional_matrix.to(device=device, dtype=fdtype)
     matrices = sg.matrices.to(device=device, dtype=fdtype)
     translations = sg.translations.to(device=device, dtype=fdtype)
+    tables = (matrices, translations, B, B_inv)
 
-    valid_ops = []
-    valid_offsets = []
+    centroid = xyz.mean(dim=0)
+    reach = 2.0 * (xyz - centroid).norm(dim=1).max() + cutoff
 
-    for op_idx in range(sg.n_ops):
-        R = matrices[op_idx]
-        t = translations[op_idx]
-        for dx in range(-1, 2):
-            for dy in range(-1, 2):
-                for dz in range(-1, 2):
-                    offset = torch.tensor([dx, dy, dz], dtype=fdtype,
-                                          device=device)
-                    d_frac = (R - I_mat) @ centroid_frac + t + offset
-                    d_cart = B @ d_frac
-                    if d_cart.norm().item() <= threshold:
-                        valid_ops.append(op_idx)
-                        valid_offsets.append([dx, dy, dz])
+    n_ops = matrices.shape[0]
+    ops = torch.arange(n_ops, dtype=int_dtype, device=device)
+    no_offset = torch.zeros(n_ops, 3, dtype=int_dtype, device=device)
+    image0 = symmetry_image_positions(
+        centroid.expand(n_ops, 3), ops, no_offset, *tables
+    )
+    # Fractional centroid displacement under each operation before any lattice
+    # translation. An offset n qualifies only if |B (u + n)| <= reach, which along
+    # axis k bounds |u_k + n_k| by reach * |row k of B^-1| (reach over the spacing of
+    # the lattice planes normal to that axis), so this box holds every candidate.
+    u = (image0 - centroid) @ B_inv.T
+    half_width = reach * B_inv.norm(dim=1)
+    lo = torch.ceil(-u - half_width)
+    hi = torch.floor(-u + half_width)
 
-    op_indices = torch.tensor(valid_ops, dtype=get_int_dtype(), device=device)
-    cell_offsets = torch.tensor(valid_offsets, dtype=get_int_dtype(), device=device)
-    return op_indices, cell_offsets
+    box = (hi - lo).max(dim=0).values.to(int_dtype) + 1
+    steps = torch.cartesian_prod(
+        *(torch.arange(int(k), dtype=fdtype, device=device) for k in box)
+    )
+    candidates = lo[:, None, :] + steps[None, :, :]  # (n_ops, K, 3)
+    in_box = (candidates <= hi[:, None, :]).all(dim=-1)
+    candidate_ops = ops[:, None].expand(-1, steps.shape[0])
+    offsets = candidates.to(int_dtype)
+    image = symmetry_image_positions(
+        centroid.expand_as(candidates), candidate_ops, offsets, *tables
+    )
+    keep = in_box & ((image - centroid).norm(dim=-1) <= reach)
+
+    return candidate_ops[keep], offsets[keep]
 
 
 # ------------------------------------------------------------------ #
@@ -135,7 +153,7 @@ def prefilter_symop_offsets(
 # ------------------------------------------------------------------ #
 
 def assign_to_grid(
-    xyz_frac: torch.Tensor,
+    xyz: torch.Tensor,
     cell: "Cell",
     sg: "SpaceGroup",
     op_indices: torch.Tensor,
@@ -144,9 +162,15 @@ def assign_to_grid(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute Cartesian image positions and assign to grid cells.
 
+    Images come from :func:`~torchref.base.coordinates.symmetry_image_positions`,
+    the function the VDW kernels place stored pairs with, so a pair is scored at the
+    distance it is found at here.
+
     Parameters
     ----------
-    xyz_frac : (N, 3)
+    xyz : (N, 3)
+        Cartesian ASU coordinates in Å, unwrapped, as passed to
+        :func:`prefilter_symop_offsets`.
     cell : Cell
     sg : SpaceGroup
     op_indices : (M,) int
@@ -160,29 +184,26 @@ def assign_to_grid(
     combo_idx : (N*M,) long – index into op_indices / cell_offsets
     cart_pos : (N*M, 3) float – Cartesian positions (reused in step 4)
     """
-    device = xyz_frac.device
-    fdtype = dtypes.float
-    N = xyz_frac.shape[0]
+    device = xyz.device
+    fdtype = get_float_dtype()
+    N = xyz.shape[0]
     M = op_indices.shape[0]
 
-    R_sel = sg.matrices[op_indices].to(dtype=fdtype)        # (M, 3, 3)
-    t_sel = sg.translations[op_indices].to(dtype=fdtype)    # (M, 3)
-    offs = cell_offsets.to(dtype=fdtype)                     # (M, 3)
+    B = cell.fractional_matrix.to(device=device, dtype=fdtype)
+    B_inv = cell.inv_fractional_matrix.to(device=device, dtype=fdtype)
+    images = symmetry_image_positions(
+        xyz.to(fdtype)[:, None, :],
+        op_indices.to(device),
+        cell_offsets.to(device),
+        sg.matrices.to(device=device, dtype=fdtype),
+        sg.translations.to(device=device, dtype=fdtype),
+        B,
+        B_inv,
+    )  # (N, M, 3)
+    cart_pos = images.reshape(-1, 3)
 
-    # (N, M, 3) = einsum over symops applied to each atom
-    frac_images = (
-        torch.einsum("mij,nj->nmi", R_sel, xyz_frac.to(fdtype))
-        + t_sel[None, :, :]
-        + offs[None, :, :]
-    )
-
-    # Cartesian positions (stored for reuse)
-    cart_pos = cell.fractional_to_cartesian(
-        frac_images.reshape(-1, 3)
-    )  # (N*M, 3)
-
-    # Wrap to [0, 1) for grid assignment
-    frac_wrapped = frac_images % 1.0
+    # Wrap to [0, 1) for grid assignment only; distances use the unwrapped images.
+    frac_wrapped = (images @ B_inv.T) % 1.0
     gd = grid_dims.to(device=device, dtype=fdtype)
     cell_ijk = (frac_wrapped * gd[None, None, :]).long()
     cell_ijk = cell_ijk.clamp(
@@ -732,20 +753,15 @@ def build_vdw_restraints_gpu(
     }
 
     # Step 1: prefilter symop combos
-    xyz_frac = cell.cartesian_to_fractional(xyz.detach().to(fdtype))
-    op_indices, cell_offsets_valid = prefilter_symop_offsets(
-        cell, sg, xyz_frac, cutoff
-    )
+    xyz_asu = xyz.detach().to(fdtype)
+    op_indices, cell_offsets_valid = prefilter_symop_offsets(cell, sg, xyz_asu, cutoff)
     M = len(op_indices)
 
     if verbose > 0:
         print(f"  Symmetry expansion: {M} valid (symop, offset) combos")
 
     # Find the identity combo index
-    is_identity = (
-        (op_indices == 0)
-        & (cell_offsets_valid == 0).all(dim=1)
-    )
+    is_identity = ~is_symmetry_image(op_indices, cell_offsets_valid)
     identity_indices = is_identity.nonzero(as_tuple=True)[0]
     if len(identity_indices) == 0:
         # Identity not in valid combos — should not happen, but add it
@@ -773,7 +789,7 @@ def build_vdw_restraints_gpu(
     )  # (3,)
 
     flat_cell, atom_idx, combo_idx, cart_pos = assign_to_grid(
-        xyz_frac, cell, sg, op_indices, cell_offsets_valid, grid_dims
+        xyz_asu, cell, sg, op_indices, cell_offsets_valid, grid_dims
     )
 
     if device.type == "cpu":
@@ -885,9 +901,7 @@ def build_vdw_restraints_gpu(
     }
 
     if verbose > 0:
-        n_sym = (
-            (symop_indices != 0) | (pair_cell_offsets != 0).any(dim=1)
-        ).sum().item()
+        n_sym = is_symmetry_image(symop_indices, pair_cell_offsets).sum().item()
         print(f"  Built {len(indices)} VDW restraints, {n_sym} symmetry contacts")
 
     return result

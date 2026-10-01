@@ -6,6 +6,7 @@ coordinate systems used in crystallography:
 - Cartesian <-> fractional coordinate conversions
 - Periodic boundary condition handling
 - Transformation matrix computations
+- Symmetry images: a position under a space-group operation and lattice translation
 
 All of them are PyTorch functions; the cell metric is written out once, in
 :func:`get_fractional_matrix`.
@@ -21,6 +22,11 @@ from .transforms_torch import (
 from .periodic_boundary import (
     smallest_diff,
     smallest_diff_aniso,
+)
+
+from .symmetry_images import (
+    is_symmetry_image,
+    symmetry_image_positions,
 )
 
 from .local_frame import (
@@ -39,6 +45,9 @@ __all__ = [
     # Periodic boundary
     "smallest_diff",
     "smallest_diff_aniso",
+    # Symmetry images (non-bonded pair building and scoring)
+    "symmetry_image_positions",
+    "is_symmetry_image",
     # Local frames (riding hydrogens)
     "local_frame_axes",
     "place_local_frame",
