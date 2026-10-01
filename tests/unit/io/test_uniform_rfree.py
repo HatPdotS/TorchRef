@@ -281,6 +281,13 @@ def test_max_free_must_be_positive(small):
         rfree.uniform_rfree({"x": small}, max_free=0)
 
 
+@pytest.mark.parametrize("size", [{"free_fraction": 0.1}, {"max_free": 500}])
+def test_new_set_size_is_refused_with_a_reference(small, size):
+    """An inherited set keeps its own fraction, so no new-set size applies."""
+    with pytest.raises(ValueError, match="reference=None"):
+        rfree.uniform_rfree({"x": small}, reference=small, **size)
+
+
 @pytest.mark.parametrize("suffix", [".mtz", ".cif"])
 def test_supported_columns_and_numeric_flags_roundtrip(mtz_dir, tmp_path, suffix):
     """Amplitude, intensity, sigma and numeric flag values survive SF export."""

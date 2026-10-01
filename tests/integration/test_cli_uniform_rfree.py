@@ -190,6 +190,18 @@ def test_mixed_resolution_and_max_free(inputs, tmp_path):
     assert abs(free[d < 2.3].mean() - free[d >= 2.3].mean()) < 0.02
 
 
+@pytest.mark.parametrize("size", [["--free-fraction", "0.1"], ["--max-free", "500"]])
+def test_new_set_size_needs_fresh_while_inheriting(inputs, tmp_path, size):
+    """A new-set size is refused while a set is inherited, and works with --fresh."""
+    _, paths = inputs
+    res = _run(*paths[:2], "-o", tmp_path / "inh", *size)
+    assert res.returncode == 1
+    assert size[0] in res.stderr and "--fresh" in res.stderr
+    assert not (tmp_path / "inh").exists()
+    res = _run(*paths[:2], "-o", tmp_path / "new", *size, "--fresh")
+    assert res.returncode == 0, res.stderr
+
+
 def test_excluded_flags_survive(inputs, tmp_path):
     from torchref.io.datasets.reflection_data import ReflectionData
 

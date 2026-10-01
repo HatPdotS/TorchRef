@@ -111,11 +111,12 @@ reflection is free in one dataset and work in another.
 
 - **Existing flags are kept by default.** If any input already has an R-free
   column (CCP4 ``0 = free``, Phenix ``1 = free`` or mmCIF ``status``), its
-  free set is inherited and extended to the reflections it lacks. The source
-  is the first input with flags, or the file named with ``--reference``.
-  Without any flags a new set is generated. ``--fresh`` always generates one.
-  Replacing a set that a model was already refined against makes that model's
-  R-free meaningless.
+  free set is inherited and extended, at its own fraction, to the reflections
+  it lacks. The source is the first input with flags, or the file named with
+  ``--reference``. Without any flags a new set is generated. ``--fresh`` always
+  generates one. ``--free-fraction`` and ``--max-free`` size a new set, so they
+  are refused while a set is inherited. Replacing a set that a model was
+  already refined against makes that model's R-free meaningless.
 - **Mixed resolution cutoffs.** If the reference stops short of the data
   resolution, a warning is printed and the higher-resolution shells, plus any
   gaps in the reference, are generated at the reference's free fraction,
@@ -164,8 +165,8 @@ alone. By default everything goes onto the shared consensus scale;
 ``--scale-reference`` leaves one input unchanged instead.
 
 **Key options:** ``--check``, ``--reference {auto,FILE}``/``--fresh``,
-``--reference-column``, ``--free-fraction`` (default: the reference's, else
-0.05), ``--max-free`` (because the cap depends on resolution, the run prints
+``--reference-column``, ``--free-fraction`` (new sets, default 0.05),
+``--max-free`` (new sets; because the cap depends on resolution, the run prints
 the ``--free-fraction`` that reproduces it), ``--seed`` (default: 0 for a new
 set, the reference hash when extending), ``--shell-size``,
 ``--format {mtz,cif}``, ``--suffix``, ``--keep-old-flags``,

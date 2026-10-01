@@ -10,9 +10,10 @@ datasets are also put on a common scale with the joint dataset scaler
 (:meth:`torchref.io.datasets.collection.DatasetCollection.scale`).
 
 If any input already carries an R-free column, its free set is inherited and
-extended to the reflections it lacks (``--reference auto``, the default);
-otherwise a new set is generated. ``--check`` only reports whether the
-inputs' existing free sets agree.
+extended, at its own fraction, to the reflections it lacks (``--reference
+auto``, the default); otherwise a new set is generated. ``--free-fraction`` and
+``--max-free`` size a new set, so they need ``--fresh`` when an input has
+flags. ``--check`` only reports whether the inputs' existing free sets agree.
 
 Usage::
 
@@ -105,8 +106,9 @@ Examples:
         type=float,
         default=None,
         help=(
-            "Free-set fraction; FreeR_flag takes round(1/f) values (default: the "
-            "reference's own fraction when inheriting, else 0.05)"
+            "Fraction of a new free set; FreeR_flag takes round(1/f) values "
+            "(default: 0.05). An inherited set keeps its own fraction, so this "
+            "needs --fresh when an input has flags"
         ),
     )
     flg.add_argument(
@@ -114,8 +116,9 @@ Examples:
         type=int,
         default=None,
         help=(
-            "Cap the free set at this many reflections of the complete set to the "
-            "best resolution (e.g. 2000, as in Phenix); lowers the fraction"
+            "Cap a new free set at this many reflections of the complete set to "
+            "the best resolution (e.g. 2000, as in Phenix); lowers the fraction. "
+            "Needs --fresh when an input has flags"
         ),
     )
     flg.add_argument(
@@ -519,6 +522,24 @@ def main(argv=None):
             for p in problems:
                 print("Error: " + p, file=sys.stderr)
             return 1
+
+    sizing = [
+        option
+        for option, value in [
+            ("--free-fraction", args.free_fraction),
+            ("--max-free", args.max_free),
+        ]
+        if value is not None
+    ]
+    if reference is not None and sizing:
+        options = " and ".join(sizing)
+        print(
+            f"Error: cannot combine {options} with the free set inherited from "
+            f"{ref_label!r}, which is extended at its own fraction. Drop {options} "
+            "to extend it, or add --fresh to generate a new set instead.",
+            file=sys.stderr,
+        )
+        return 1
 
     # ---- flags ------------------------------------------------------------
     try:

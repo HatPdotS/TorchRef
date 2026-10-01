@@ -778,8 +778,9 @@ def uniform_rfree(
     datasets : dict
         Name to DataSet (same cell / space group).
     free_fraction : float, optional
-        Target free fraction; the number of flag values is ``round(1/f)``.
-        Defaults to the reference's own fraction when inheriting, else 0.05.
+        Free fraction of a new set; the number of flag values is ``round(1/f)``.
+        Defaults to 0.05. Not allowed with ``reference``: an inherited set is
+        extended at its own fraction.
     shell_size : int
         Reflections per stratification shell (see :func:`complete_flag_table`).
     seed : int, optional
@@ -796,9 +797,10 @@ def uniform_rfree(
     reference_column : str, optional
         Flag column in ``reference`` (auto-detected by default).
     max_free : int, optional
-        Cap on the number of free reflections in the complete set to ``dmin``
-        (Phenix-style); lowers the fraction for large datasets. The cap depends
-        on ``dmin``, so reuse the reported fraction to reproduce a flag set.
+        Cap on the number of free reflections of a new set, counted in the
+        complete set to ``dmin`` (Phenix-style); lowers the fraction for large
+        datasets. The cap depends on ``dmin``, so reuse the reported fraction to
+        reproduce a flag set. Not allowed with ``reference``.
     keep_excluded : bool
         Rows a dataset itself marks as excluded (negative flag, CIF ``x``)
         stay ``-1`` in that dataset's output.
@@ -813,11 +815,25 @@ def uniform_rfree(
         ``n_unique``, ``n_off_asu``, ``n_inherited``, ``n_generated``,
         ``n_generated_beyond_reference``, ``n_excluded`` (per file) and the
         reference ``info``.
+
+    Raises
+    ------
+    ValueError
+        If ``free_fraction`` is outside (0, 1), ``max_free`` is below 1, either
+        is given together with ``reference``, or ``reference`` has no usable
+        R-free column (none recognised, no valid value, or no free reflection).
     """
     if free_fraction is not None and not 0 < free_fraction < 1:
         raise ValueError("free_fraction must be between 0 and 1")
     if max_free is not None and max_free < 1:
         raise ValueError("max_free must be at least 1")
+    # Extending at another fraction than the inherited set's would leave a mixed
+    # partition that no single reported fraction describes.
+    if reference is not None and (free_fraction is not None or max_free is not None):
+        raise ValueError(
+            "free_fraction and max_free size a new free set; an inherited set is "
+            "extended at its own fraction, so pass reference=None to replace it"
+        )
 
     # the flag table lives on the reference's cell when there is one, so the
     # result does not depend on input order
