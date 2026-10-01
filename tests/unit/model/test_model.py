@@ -53,14 +53,14 @@ class TestModelInitialization:
         assert model.dtype_float == torch.float64
 
     @pytest.mark.unit
-    def test_model_strip_h_default(self):
-        """Hydrogen stripping and generation are both opt-in."""
+    def test_model_hydrogen_default(self):
+        """Hydrogen stripping and generation are both opt-in; hydrogens are atoms."""
         from torchref.model.model import Model
 
         model = Model()
 
-        assert model.ctx.strip_H is False
-        assert model.ctx.add_hydrogens is False
+        assert model.ctx.hydrogens == "keep"
+        assert model.ctx.hydrogen_mode == "atoms"
 
     @pytest.mark.unit
     def test_model_bool_uninitialized(self):
@@ -145,7 +145,7 @@ def test_dropped_rows_leave_a_positional_index(pdb_dir, tmp_path):
     sg = src.spacegroup
 
     model = Model(verbose=0)
-    model.load(lambda: (df, cell, sg), add_hydrogens=False)
+    model.load(lambda: (df, cell, sg))
 
     assert len(model.pdb) == n_before - len(victims)
     idx = model.pdb["index"].to_numpy()

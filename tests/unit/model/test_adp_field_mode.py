@@ -121,6 +121,21 @@ def test_field_mode_collapses_anisotropic_atoms_first(pdb_path):
 
 
 @pytest.mark.unit
+def test_flat_anisotropic_field_starts_at_the_median_b_eq(pdb_path):
+    """``init="flat"`` on the U slot flattens through B_eq to one isotropic U."""
+    model = _model(pdb_path)
+    beq = (8.0 * math.pi**2 / 3.0) * model.adp_u6().detach()[:, :3].sum(dim=1)
+
+    model.set_adp_mode("field_aniso", n_nodes=8, k_neighbors=8, init="flat")
+
+    u6 = model.adp_u6().detach()
+    assert torch.isfinite(u6).all()
+    got = (8.0 * math.pi**2 / 3.0) * u6[:, :3].sum(dim=1)
+    assert torch.allclose(got, beq.median().expand_as(got), rtol=1e-4)
+    assert torch.allclose(u6[:, 3:], torch.zeros_like(u6[:, 3:]), atol=1e-6)
+
+
+@pytest.mark.unit
 def test_sf_indices_and_flags_stay_consistent(pdb_path):
     """Everything keyed off the iso/aniso split is refreshed, not left stale."""
     model = _model(pdb_path)

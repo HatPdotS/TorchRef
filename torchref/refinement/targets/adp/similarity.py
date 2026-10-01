@@ -118,7 +118,7 @@ class ADPSimilarityTarget(ADPTarget):
 
     def stats(self) -> Dict[str, any]:
         """Get SIMU restraint statistics."""
-        b_diffs = self.restraints.adp_b_differences()
+        b_diffs = self.restraints.adp_b_differences(self.model.adp())
 
         if len(b_diffs) == 0:
             return {}

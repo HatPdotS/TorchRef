@@ -44,8 +44,8 @@ class ForceFieldTarget(ModelTarget):
     ----------
     model : Model, optional
         Reference to the Model object. Should include hydrogens for accurate
-        energies (load with ``strip_H=False``); a hydrogen-less model is not
-        rejected, only flagged via a warning when ``verbose > 0``.
+        energies (load with ``hydrogens="keep"`` or ``"add"``); a hydrogen-less model is
+        not rejected, only flagged via a warning when ``verbose > 0``.
     model_path : str, optional
         Path to TorchMD-Net checkpoint file (.ckpt).
     cutoff : float, optional
@@ -63,7 +63,7 @@ class ForceFieldTarget(ModelTarget):
     >>> from torchref.experimental.targets import ForceFieldTarget
     >>>
     >>> # Load model WITH hydrogens
-    >>> model = Model(strip_H=False)
+    >>> model = Model(hydrogens="add")
     >>> model.load_pdb('structure_with_H.pdb')
     >>>
     >>> # Create force field target
@@ -152,7 +152,7 @@ class ForceFieldTarget(ModelTarget):
             warnings.warn(
                 "Model appears to have no hydrogen atoms. "
                 "TorchMD-Net typically requires all-atom structures. "
-                "Load with Model(strip_H=False) if hydrogens are needed.",
+                "Load with Model(hydrogens='add') if hydrogens are needed.",
                 UserWarning
             )
 

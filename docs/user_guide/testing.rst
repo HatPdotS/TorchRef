@@ -168,7 +168,7 @@ free of file I/O:
             model = Model()
             model.load_cif(str(sample_cif_file))
             assert model.initialized
-            assert len(model.pdb) > 0
+            assert model.n_atoms > 0
 
 Cover the edge cases that actually bite here: empty selections, degenerate
 geometry (which is where gradients go NaN), and non-default dtype/device.

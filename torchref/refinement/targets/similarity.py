@@ -105,21 +105,25 @@ class CoordinateSimilarityTarget(Target):
         import pandas as pd
         import warnings
 
-        pdb_dark = self._model_dark.pdb.copy()
-        pdb_light = self._model_light.pdb.copy()
-
-        for df in (pdb_dark, pdb_light):
-            df["_key"] = (
-                df["chainid"].astype(str)
-                + "_"
-                + df["resseq"].astype(str)
-                + "_"
-                + df["icode"].astype(str).str.strip()
-                + "_"
-                + df["name"].astype(str).str.strip()
-                + "_"
-                + df["altloc"].astype(str).str.strip()
+        def identity(model):
+            columns = model.ctx.topology.columns()
+            return pd.DataFrame(
+                {
+                    "_key": [
+                        f"{c}_{r}_{i.strip()}_{n.strip()}_{a.strip()}"
+                        for c, r, i, n, a in zip(
+                            columns["chain"],
+                            columns["resseq"],
+                            columns["icode"],
+                            columns["name"],
+                            columns["altloc"],
+                        )
+                    ]
+                }
             )
+
+        pdb_dark = identity(self._model_dark)
+        pdb_light = identity(self._model_light)
 
         pdb_dark["_idx"] = range(len(pdb_dark))
         pdb_light["_idx"] = range(len(pdb_light))

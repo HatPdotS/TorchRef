@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from torchref.base.fourier import fft, ifft
-from torchref.config import canonical_device, dtypes, get_default_device, get_float_dtype
+from torchref.config import dtypes
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
@@ -182,75 +182,6 @@ class ModelFT(CachedForwardMixin, Model):
         change that leaves the grid buffers untouched until the next forward.
         """
         return super()._fingerprint_state() + (self.fft.grid_key,)
-
-    def load_pdb(self, filename):
-        """
-        Load a PDB file and initialize the model with FT-specific setup.
-
-        Parameters
-        ----------
-        filename : str
-            Path to the PDB file.
-
-        Returns
-        -------
-        ModelFT
-            Self, for method chaining.
-        """
-        super().load_pdb(filename)
-        return self
-
-    def select(self, selection):
-        """
-        Return a new ModelFT containing only the selected atoms.
-
-        Extends :meth:`Model.select` with the FT-specific setup: rebuilding
-        the ITC92 parametrization and carrying ``max_res`` and
-        ``explicit_gridsize`` across, so the selection sizes its grid the same way.
-
-        Parameters
-        ----------
-        selection : array-like or str
-            Atom selection forwarded to :meth:`Model.select`.
-
-        Returns
-        -------
-        ModelFT
-            A new model holding the selected atoms.
-
-        Notes
-        -----
-        ``wavelength`` and ``anomalous_threshold`` are **not** propagated:
-        :meth:`Model.select` passes only the base kwargs, so the returned model
-        carries the ModelFT defaults for those.
-        """
-        selection = super().select(selection)
-        selection._build_parametrization()
-        selection.max_res = self.max_res
-        selection.explicit_gridsize = self.explicit_gridsize
-        return selection
-
-    def load_cif(self, filename):
-        """
-        Load a CIF file and initialize the model with FT-specific setup.
-
-        Parameters
-        ----------
-        filename : str
-            Path to the CIF/mmCIF file.
-
-        Returns
-        -------
-        ModelFT
-            Self, for method chaining.
-        """
-        super().load_cif(filename)
-        self._build_parametrization()
-        return self
-
-    def _build_parametrization(self):
-        """Build the ITC92 parametrization (delegates to :class:`Model`)."""
-        return super()._build_parametrization()
 
     # =========================================================================
     # Backward-compatible properties for scattering parameters
@@ -518,12 +449,6 @@ class ModelFT(CachedForwardMixin, Model):
         }
         return stats
 
-    def update_pdb(self):
-        """
-        Update PDB with current atomic parameters.
-        """
-        return super().update_pdb()
-
     def reset_cache(self):
         """Reset SF cache, anomalous cache, and all wrapper forward caches."""
         self.reset_forward_cache()
@@ -556,7 +481,7 @@ class ModelFT(CachedForwardMixin, Model):
             get_significant_elements,
         )
 
-        element_list = self.pdb["element"].tolist()
+        element_list = self.ctx.topology.atoms.element.tolist()
         elements_hash = hash(tuple(element_list))
 
         if (
@@ -746,80 +671,6 @@ class ModelFT(CachedForwardMixin, Model):
 
         return sf
 
-    def copy(self, detach: bool = True) -> "ModelFT":
-        """
-        Create a deep copy of the ModelFT.
-
-        Creates a complete independent copy including all Model base class data,
-        the grid inputs (``max_res``, ``explicit_gridsize``; the grid itself is
-        re-derived from the copied context), the ITC92 parametrization, and
-        scalar attributes.
-        Cache is reset to empty.
-
-        Parameters
-        ----------
-        detach : bool, optional
-            If True, the copy's parameters will be detached from the
-            computation graph (default: True).
-        Returns
-        -------
-        ModelFT
-            A new, fully independent ModelFT instance with copied data.
-        """
-        if not self.ctx.initialized:
-            raise RuntimeError("Cannot copy an uninitialized ModelFT. Load data first.")
-
-        model_copy = ModelFT(
-            dtype_float=self.dtype_float,
-            verbose=self.ctx.verbose,
-            device=self.device,
-            strip_H=self.ctx.strip_H,
-            max_res=self.max_res,
-            gridsize=self.explicit_gridsize,
-            wavelength=self.wavelength,
-            anomalous_threshold=self.anomalous_threshold,
-        )
-
-        # Carries the atom table, cell, space group, altloc groups and provenance.
-        model_copy.ctx = self.ctx.copy()
-
-        # Own buffers only; the engine's grid buffers are derived, not copied.
-        for buffer_name, buffer_value in self._buffers.items():
-            if buffer_value is not None:
-                if detach:
-                    model_copy.register_buffer(
-                        buffer_name, buffer_value.clone().detach()
-                    )
-                else:
-                    model_copy.register_buffer(buffer_name, buffer_value.clone())
-
-        # Parameter wrappers via their own .copy(); the engine came from the ctor.
-        skip_modules = {"_fft"}
-        for module_name, module in self._modules.items():
-            if module_name in skip_modules:
-                continue
-            if module is not None and hasattr(module, "copy"):
-                setattr(model_copy, module_name, module.copy())
-
-        if hasattr(self, "_parametrization") and self._parametrization is not None:
-            import copy as copy_module
-
-            model_copy._parametrization = copy_module.deepcopy(self._parametrization)
-
-        # Borrowed coordinate accessors (restraints, ADP node field) still point at
-        # THIS model's wrappers after their own ``copy``; re-point them.
-        model_copy._repoint_coordinate_accessors()
-
-        # Don't share cached structure factors with the original.
-        model_copy.reset_cache()
-        # The iso/aniso partition is derived state, not a buffer, so it is not
-        # carried by the buffer loop above; get_iso()/get_aniso() read it.
-
-        if self.ctx.verbose > 0:
-            print(f"✓ ModelFT copied successfully ({len(model_copy.pdb)} atoms)")
-
-        return model_copy
-
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         """
         Return a dictionary containing the complete state of the ModelFT.
@@ -857,163 +708,61 @@ class ModelFT(CachedForwardMixin, Model):
         # _cache, _anomalous_cache (from the element list).
         return state
 
+    def _subclass_kwargs(self) -> dict:
+        """The grid, wavelength and Bijvoet settings a new instance must share."""
+        return {
+            "max_res": self.max_res,
+            "gridsize": self.explicit_gridsize,
+            "wavelength": self.wavelength,
+            "anomalous_threshold": self.anomalous_threshold,
+            "apply_bijvoet": bool(self.anomalous_bijvoet),
+        }
+
     @classmethod
-    def create_from_state_dict(
-        cls,
-        state_dict: dict,
-        device: torch.device = None,
-        verbose: int = 1,
-        dtype_float: torch.dtype = None,
-    ) -> "ModelFT":
+    def _pop_subclass_state(cls, state_dict: dict) -> dict:
+        """Pop the FT settings :meth:`state_dict` wrote, as constructor kwargs.
+
+        The ``radius_angstrom`` key of older checkpoints is dropped unused.
         """
-        Create a fully initialized ModelFT from a state dictionary.
+        state_dict.pop("radius_angstrom", None)
+        return {
+            "max_res": state_dict.pop("max_res", 1.0),
+            "gridsize": state_dict.pop("explicit_gridsize", None),
+            "wavelength": state_dict.pop("wavelength", 1.0),
+            "anomalous_threshold": state_dict.pop("anomalous_threshold", 0.5),
+        }
 
-        This is the recommended way to restore a ModelFT from a saved state.
-        Creates an instance with properly initialized submodules, then loads the state.
+    def _restorable_entries(self, state_dict: dict) -> dict:
+        """Register the scattering buffers and adopt a legacy stored grid size.
 
-        Parameters
-        ----------
-        state_dict : dict
-            State dictionary from torch.save(model.state_dict(), ...).
-        device : torch.device, optional
-            Move the restored model here once it is built. The restore itself always
-            runs on CPU; ``None`` then moves it to the configured default device; see
-            :meth:`Model.create_from_state_dict`.
-        verbose : int, optional
-            Verbosity level. Default is 1.
-        dtype_float : torch.dtype, optional
-            Float dtype for tensors. Default is dtypes.float.
-
-        Returns
-        -------
-        ModelFT
-            Fully initialized instance with restored state.
-
-        Notes
-        -----
-        Legacy state_dicts are accepted: the obsolete ``radius_angstrom`` key is
-        ignored and old-style ``A`` / ``B`` buffers are remapped to ``_A`` / ``_B``.
-        The anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, as in
-        :meth:`load`, so the positive-definite parametrization round-trips.
+        Old checkpoints name the scattering buffers ``A`` / ``B`` rather than
+        ``_A`` / ``_B``, and those written while the grid was stored state carry its
+        size (``_fft.gridsize``, or a flat ``gridsize``). That size is adopted only
+        when it differs from what the crystal and ``max_res`` give.
         """
-        # Build on CPU throughout and move once at the end, as Model does; the grid
-        # setup below otherwise sizes an accelerator allocation before the model is
-        # placed. The final target is the caller's device, or the configured default
-        # when they name none, so a restore lands beside a same-config model.
-        target_device = (
-            canonical_device(device) if device is not None else get_default_device()
-        )
-        device = torch.device("cpu")
-        if dtype_float is None:
-            dtype_float = get_float_dtype()
+        for old, new in (("A", "_A"), ("B", "_B")):
+            if old in state_dict and new not in state_dict:
+                state_dict[new] = state_dict.pop(old)
+        for name in ("_A", "_B"):
+            if state_dict.get(name) is not None and self.ctx.topology is not None:
+                self.register_buffer(
+                    name, torch.zeros_like(state_dict[name], device=self.device)
+                )
 
-        max_res = state_dict.pop("max_res", 1.0)
-        explicit_gridsize = state_dict.pop("explicit_gridsize", None)
-        state_dict.pop("radius_angstrom", None)  # legacy key, no longer used
-        wavelength = state_dict.pop("wavelength", 1.0)
-        anomalous_threshold = state_dict.pop("anomalous_threshold", 0.5)
-
-        pdb = state_dict.pop("pdb", None)
-        spacegroup_str = state_dict.pop("spacegroup", None)
-        cell_tensor = state_dict.pop("cell", None)
-        initialized = state_dict.pop("initialized", False)
-        saved_dtype = state_dict.pop("dtype_float", dtype_float)
-        state_dict.pop("device", None)  # Remove but don't use (use provided device)
-        strip_H = state_dict.pop("strip_H", True)
-        cif_path = state_dict.pop("cif_path", None)
-        altloc_pairs = state_dict.pop("altloc_pairs", [])
-        hydrogens_in_xray = state_dict.pop("hydrogens_in_xray", True)
-        hydrogen_mode = state_dict.pop("hydrogen_mode", None)
-
-        # Checkpoints written while the grid was stored state carry its buffers
-        # ("_fft." prefixed, or flat in older ones). The size is adopted below only
-        # when it differs from what the crystal and max_res give.
-        legacy_gridsize = state_dict.pop("_fft.gridsize", None)
-        if legacy_gridsize is None:
-            legacy_gridsize = state_dict.pop("gridsize", None)
+        legacy = state_dict.pop("_fft.gridsize", None)
+        if legacy is None:
+            legacy = state_dict.pop("gridsize", None)
         state_dict.pop("_fft.voxel_size", None)
         state_dict.pop("voxel_size", None)
-
-        instance = cls(
-            dtype_float=saved_dtype,
-            verbose=verbose,
-            device=device,
-            strip_H=strip_H,
-            cif_path=cif_path,
-            max_res=max_res,
-            gridsize=explicit_gridsize,
-            wavelength=wavelength,
-            anomalous_threshold=anomalous_threshold,
-            hydrogens_in_xray=hydrogens_in_xray,
-        )
-
-        instance.pdb = pdb
-        instance.ctx.initialized = initialized
-        instance.ctx.altloc_pairs = altloc_pairs
-        if hydrogen_mode is None:
-            hydrogen_mode = "riding" if state_dict.get("xyz.h_row") is not None else "free"
-        instance.ctx.hydrogen_mode = hydrogen_mode
-
-        # The engine reads both off the context; nothing further to build.
-        instance.spacegroup = spacegroup_str
-
-        from torchref.symmetry import Cell
-
-        if cell_tensor is not None:
-            instance.cell = Cell(cell_tensor, dtype=saved_dtype, device=device)
-
-        # Wrappers and per-atom buffers: shared with Model so the two restores cannot
-        # drift apart again. ModelFT adds only its own scattering buffers below.
-        if pdb is not None:
-            cls._rebuild_wrappers_from_pdb(
-                instance, pdb, state_dict, saved_dtype, device
-            )
-
-            # Scattering buffers: accept both old-style (A, B) and new (_A, _B).
-            a_key = "_A" if "_A" in state_dict else "A" if "A" in state_dict else None
-            b_key = "_B" if "_B" in state_dict else "B" if "B" in state_dict else None
-
-            if a_key and state_dict[a_key] is not None:
-                instance.register_buffer(
-                    "_A", torch.zeros_like(state_dict[a_key], device=device)
-                )
-            if b_key and state_dict[b_key] is not None:
-                instance.register_buffer(
-                    "_B", torch.zeros_like(state_dict[b_key], device=device)
-                )
-
         if (
-            legacy_gridsize is not None
-            and explicit_gridsize is None
-            and instance.ctx.crystal_key is not None
-            and instance.max_res is not None
+            legacy is not None
+            and self.explicit_gridsize is None
+            and self.ctx.crystal_key is not None
+            and self.max_res is not None
         ):
-            if isinstance(legacy_gridsize, torch.Tensor):
-                legacy_gridsize = legacy_gridsize.tolist()
-            legacy = tuple(int(x) for x in legacy_gridsize)
-            if legacy != instance.fft.compute_optimal_gridsize(instance.max_res):
-                instance.explicit_gridsize = legacy
-
-        # Drop empty placeholders, remapping old-style A/B keys to _A/_B.
-        filtered_state_dict = {}
-        for k, v in state_dict.items():
-            if not hasattr(v, "shape") or v.numel() > 0:
-                if k == "A":
-                    filtered_state_dict["_A"] = v
-                elif k == "B":
-                    filtered_state_dict["_B"] = v
-                else:
-                    filtered_state_dict[k] = v
-
-        instance.load_state_dict(filtered_state_dict, strict=False)
-
-        # Always placed: target_device is the caller's device or the configured default.
-        instance.to(target_device)
-
-        instance.reset_cache()
-
-        if verbose > 0:
-            n_atoms = len(instance.pdb) if instance.pdb is not None else 0
-            print(f"Created ModelFT from state_dict: {n_atoms} atoms")
-
-        return instance
+            if isinstance(legacy, torch.Tensor):
+                legacy = legacy.tolist()
+            legacy = tuple(int(x) for x in legacy)
+            if legacy != self.fft.compute_optimal_gridsize(self.max_res):
+                self.explicit_gridsize = legacy
+        return super()._restorable_entries(state_dict)

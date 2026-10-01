@@ -673,8 +673,8 @@ def run_validation(args):
     )
 
     if args.verbose >= 1:
-        print(f"  Dark model: {len(model_dark.pdb)} atoms")
-        print(f"  Light model: {len(model_light.pdb)} atoms")
+        print(f"  Dark model: {model_dark.n_atoms} atoms")
+        print(f"  Light model: {model_light.n_atoms} atoms")
         print(f"  Fraction: {args.fraction}")
 
     # R-factors (verbose only, before DED computation)

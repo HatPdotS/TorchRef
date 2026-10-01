@@ -173,8 +173,8 @@ class EnsembleAmberTarget(AmberTarget):
     def _member_xyz(self, i: int) -> torch.Tensor:
         """Member ``i`` coordinates ``(n_chem_atoms, 3)``, subset to kept atoms.
 
-        The returned ordering matches ``self._chem_model.pdb`` (what the OpenMM
-        atom map was built on), so it can be fed straight to
+        The returned ordering matches the rows of ``self._chem_model.to_dataframe()``
+        (what the OpenMM atom map was built on), so it can be fed straight to
         :meth:`AmberTarget._energy`.
         """
         xyz = self._model.xyz_per_member[i]

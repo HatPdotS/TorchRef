@@ -1,9 +1,11 @@
-"""Switching a loaded model between riding and free hydrogens.
+"""The hydrogen policy, and switching a loaded model between riding and atom hydrogens.
 
-The switch replaces the coordinate wrapper and nothing else: coordinates are
-unchanged, the heavy-atom refinable set carries over, hydrogens leave or rejoin the
-refinable set, the restraints keep reading the live wrapper, and the mode survives
-copies, selections and state dicts.
+``hydrogens`` (keep / add / strip) settles the atom table at load and
+``hydrogen_mode`` (atoms / riding) how its hydrogen rows are parametrised; strip with
+riding is refused. The switch replaces the coordinate wrapper and nothing else:
+coordinates are unchanged, the heavy-atom refinable set carries over, hydrogens leave or
+rejoin the refinable set, the restraints are untouched, and the mode survives copies,
+selections and state dicts.
 """
 
 import pytest
@@ -16,7 +18,7 @@ from torchref.model.riding_xyz import RidingXYZTensor
 
 @pytest.fixture
 def free_model(pdb_dir):
-    model = Model(verbose=0, add_hydrogens=True)
+    model = Model(verbose=0, hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     return model
 
@@ -39,24 +41,26 @@ def test_switch_to_riding_keeps_coordinates_and_drops_hydrogen_parameters(free_m
 
 
 @pytest.mark.unit
-def test_switch_back_to_free_restores_per_atom_wrapper(free_model):
+def test_switch_back_to_atoms_restores_per_atom_wrapper(free_model):
     model = free_model
     model.set_hydrogen_mode("riding")
-    model.set_hydrogen_mode("free")
-    assert model.hydrogen_mode == "free"
+    model.set_hydrogen_mode("atoms")
+    assert model.hydrogen_mode == "atoms"
     assert not isinstance(model.xyz, RidingXYZTensor)
     assert model.parameters_of_types(("xyz",))[0].shape[0] == len(model.pdb)
 
 
 @pytest.mark.unit
-def test_restraints_read_the_installed_wrapper(free_model):
+def test_restraints_survive_the_switch(free_model):
+    """The atom table is unchanged, so the restraints are too; they score whatever
+    coordinates they are handed, including the riding wrapper's."""
     model = free_model
     restraints = model.restraints
     model.set_hydrogen_mode("riding")
-    assert restraints._xyz_fn is model.xyz
-    with torch.no_grad():
-        model.xyz.refinable_params.add_(0.1)
-    assert torch.equal(restraints.xyz(), model.xyz())
+    assert model.restraints is restraints
+    deviations, _ = restraints.bond_deviations(model.xyz())
+    deviations.sum().backward()
+    assert model.xyz.refinable_params.grad is not None
 
 
 @pytest.mark.unit
@@ -90,7 +94,7 @@ def test_mode_survives_copy_select_and_shake(free_model):
 @pytest.mark.parametrize("model_class", [Model, ModelFT])
 def test_riding_mode_round_trips_through_state_dict(pdb_dir, model_class):
     kwargs = {"max_res": 3.0} if model_class is ModelFT else {}
-    model = model_class(verbose=0, add_hydrogens=True, **kwargs)
+    model = model_class(verbose=0, hydrogens="add", **kwargs)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     model.set_hydrogen_mode("riding")
     with torch.no_grad():
@@ -104,6 +108,39 @@ def test_riding_mode_round_trips_through_state_dict(pdb_dir, model_class):
 
 
 @pytest.mark.unit
-def test_none_mode_is_refused(free_model):
-    with pytest.raises(ValueError):
-        free_model.set_hydrogen_mode("none")
+@pytest.mark.parametrize("mode", ["none", "free"])
+def test_unknown_modes_are_refused(free_model, mode):
+    with pytest.raises(ValueError, match="hydrogen_mode must be one of"):
+        free_model.set_hydrogen_mode(mode)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("hydrogens", ["keep", "add", "strip"])
+@pytest.mark.parametrize("hydrogen_mode", ["atoms", "riding"])
+def test_policy_matrix(pdb_dir, hydrogens, hydrogen_mode):
+    """Each valid pair loads with the atom set and wrapper it names; strip+riding raises."""
+    if hydrogens == "strip" and hydrogen_mode == "riding":
+        with pytest.raises(ValueError, match="requires hydrogens=.keep. or .add."):
+            Model(verbose=0, hydrogens=hydrogens, hydrogen_mode=hydrogen_mode)
+        return
+
+    model = Model(verbose=0, hydrogens=hydrogens, hydrogen_mode=hydrogen_mode)
+    model.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
+    deposited = Model(verbose=0).load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
+
+    n_h = _n_h(model)
+    if hydrogens == "strip":
+        assert n_h == 0
+    elif hydrogens == "keep":
+        assert n_h == _n_h(deposited)
+    else:
+        assert n_h > _n_h(deposited)
+    assert isinstance(model.xyz, RidingXYZTensor) is (hydrogen_mode == "riding")
+    assert model.xyz().shape[0] == len(model.pdb)
+
+
+@pytest.mark.unit
+def test_riding_is_refused_on_a_stripped_model(pdb_dir):
+    model = Model(verbose=0, hydrogens="strip").load_pdb(str(pdb_dir / "1DAW.pdb"))
+    with pytest.raises(ValueError, match="requires hydrogens=.keep. or .add."):
+        model.set_hydrogen_mode("riding")

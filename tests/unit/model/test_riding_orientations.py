@@ -15,7 +15,7 @@ def oriented_model(pdb_dir):
     """A deposited protein with explicitly generated protein and water hydrogens."""
     with torch.random.fork_rng():
         torch.manual_seed(19)
-        model = Model(verbose=0, device="cpu", add_hydrogens=True)
+        model = Model(verbose=0, device="cpu", hydrogens="add")
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     model.set_hydrogen_mode("riding")
     return model

@@ -29,8 +29,12 @@ and a ``refinement_history.json`` log.
 **Key options:**
 
 * ``-n`` / ``--n-cycles`` number of macro cycles (default 5)
-* ``--add-hydrogens`` generate missing hydrogens on model loading (default off).
-  Hydrogens already present in the input are retained with or without this flag
+* ``--hydrogens {keep,add,strip}`` what loading does with the model's hydrogens:
+  keep the ones the file has (default), also generate the missing ones (waters
+  included), or strip them all
+* ``--hydrogen-mode {atoms,riding}`` refine hydrogens as ordinary atoms (default) or
+  let them ride on their parent heavy atoms; ``riding`` with ``--hydrogens strip`` is
+  an error
 * ``--hydrogens-in-xray`` / ``--no-hydrogens-in-xray`` include hydrogen atoms in the
   structure-factor calculation (default on). Off keeps them in the restraints only;
   the bulk-solvent mask is built from heavy atoms in either case

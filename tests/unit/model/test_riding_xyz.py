@@ -20,7 +20,7 @@ from torchref.topology.hydrogens import HydrogenFrames, hydrogen_frames
 @pytest.fixture(scope="module")
 def hydrogenated(pdb_dir):
     """1DAW with generated hydrogens, its frames, and its full coordinate table."""
-    model = Model(verbose=0, add_hydrogens=True)
+    model = Model(verbose=0, hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     frames = hydrogen_frames(model.restraints.topology)
     return model, frames, model.xyz().detach()

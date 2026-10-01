@@ -20,7 +20,7 @@ TEST_PDB = os.path.join(
 @pytest.fixture(scope="module")
 def protein():
     """A deposited, hydrogenated protein with methyl orientation parameters."""
-    model = Model(verbose=0, device="cpu", add_hydrogens=True).load_pdb(TEST_PDB)
+    model = Model(verbose=0, device="cpu", hydrogens="add").load_pdb(TEST_PDB)
     model = model.strip_altlocs()
     model.set_hydrogen_mode("riding")
     return model
@@ -118,7 +118,7 @@ def test_permuted_positions_and_gradients(target, protein):
 def test_missing_hydrogens_are_not_added():
     """Disabled generation leaves a heavy-only model untouched on AMBER rejection."""
     model = (
-        Model(verbose=0, device="cpu", strip_H=True, add_hydrogens=False)
+        Model(verbose=0, device="cpu", hydrogens="strip")
         .load_pdb(TEST_PDB)
         .strip_altlocs()
     )
@@ -133,7 +133,7 @@ def test_missing_hydrogens_are_not_added():
 @pytest.fixture(scope="module")
 def water_target(pdb_dir):
     """Two nearby deposited waters with TorchRef-generated rotating hydrogens."""
-    model = Model(verbose=0, device="cpu", add_hydrogens=False).load_pdb(
+    model = Model(verbose=0, device="cpu").load_pdb(
         str(pdb_dir / "1DAW.pdb")
     )
     waters = model.pdb[model.pdb.resname.str.strip().eq("HOH")].copy()
@@ -141,11 +141,11 @@ def water_target(pdb_dir):
     distances = np.linalg.norm(coords[:, None] - coords[None, :], axis=-1)
     np.fill_diagonal(distances, np.inf)
     i, j = np.unravel_index(np.argmin(distances), distances.shape)
-    model = model._new_model_from_df(waters.iloc[sorted([i, j])].copy(), strip_H=False)
-    model.ctx.add_hydrogens = True
     with torch.random.fork_rng():
         torch.manual_seed(42)
-        model.set_hydrogen_mode("riding")
+        model = model._derive(
+            waters.iloc[sorted([i, j])].copy(), hydrogens="add", hydrogen_mode="riding"
+        )
     return AmberTarget(model=model, normalize_by_atoms=False)
 
 
@@ -306,7 +306,7 @@ def test_bridge_follows_coordinate_device(water_target, any_device):
 def test_torchref_hydrogenation_prepares_compatible_protein():
     """TorchRef can prepare all model hydrogens before AMBER construction."""
     model = (
-        Model(verbose=0, device="cpu", strip_H=True, add_hydrogens=False)
+        Model(verbose=0, device="cpu", hydrogens="strip")
         .load_pdb(TEST_PDB)
         .strip_altlocs()
         .hydrogenate()
@@ -355,7 +355,7 @@ def test_partial_terminal_hydrogens_preserve_h1_alias(protein):
         & (pdb.icode == first.icode)
     )
     missing = residue & pdb.name.str.strip().isin(["H2", "H3"])
-    partial = protein._new_model_from_df(pdb.loc[~missing].copy(), strip_H=False)
+    partial = protein._derive(pdb.loc[~missing].copy(), hydrogens="keep")
     prepared = partial.hydrogenate()
     first_residue = prepared.pdb[
         (prepared.pdb.chainid == first.chainid) & (prepared.pdb.resseq == first.resseq)

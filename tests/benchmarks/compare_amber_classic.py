@@ -32,7 +32,7 @@ def _prepare(code: str, output: Path, seed: int) -> dict:
 
     source = FILES / "pdb" / f"{code}_af.pdb"
     original = (
-        Model(device="cpu", verbose=0, strip_H=True, add_hydrogens=False)
+        Model(device="cpu", verbose=0, hydrogens="strip")
         .load_pdb(str(source))
         .strip_altlocs()
     )
@@ -44,7 +44,7 @@ def _prepare(code: str, output: Path, seed: int) -> dict:
     fixed_path = output / f"{code}_heavy_completed.pdb"
     with fixed_path.open("w") as handle:
         app.PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
-    fixed = Model(device="cpu", verbose=0, add_hydrogens=False).load_pdb(
+    fixed = Model(device="cpu", verbose=0).load_pdb(
         str(fixed_path)
     )
     original_rows = {
@@ -70,7 +70,7 @@ def _prepare(code: str, output: Path, seed: int) -> dict:
             frame.at[i, "tempfactor"] = float(same_residue.tempfactor.mean())
             frame.at[i, "occupancy"] = 1.0
     assert found == set(original_rows), "Heavy-atom preparation dropped original atoms"
-    model = original._new_model_from_df(frame, strip_H=False)
+    model = original._derive(frame, hydrogens="keep")
     torch.manual_seed(seed)
     model = model.hydrogenate()
     model.set_hydrogen_mode("riding")
@@ -230,7 +230,6 @@ def _run(
         data_file=str(FILES / "mtz" / f"{code}.mtz"),
         device=torch.device("cpu"),
         verbose=0,
-        add_hydrogens=False,
         hydrogens_in_xray=True,
         target_mode="ml",
     )

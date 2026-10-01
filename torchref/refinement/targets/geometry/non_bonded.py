@@ -211,7 +211,7 @@ class NonBondedTarget(GeometryTarget):
                 f"  VDW rebuild: max drift {max_disp:.2f} Å > "
                 f"threshold {thresh:.2f} Å"
             )
-        r.rebuild_vdw_restraints()
+        r.rebuild_vdw_restraints(self._model.xyz().detach())
 
     def _compute_positions(
         self, xyz: torch.Tensor
