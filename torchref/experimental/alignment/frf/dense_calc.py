@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Tuple
 
 import torch
 
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 
 if TYPE_CHECKING:
     from torchref.model import ModelFT
@@ -80,9 +80,9 @@ def dense_calc_via_box(
         nmax = int(math.ceil(a / d_min))
         idx = torch.arange(-nmax, nmax + 1, device=dev)
         H, K, Lg = torch.meshgrid(idx, idx, idx, indexing="ij")
-        hkl = torch.stack(
-            [H.reshape(-1), K.reshape(-1), Lg.reshape(-1)], dim=-1
-        ).to(torch.long)  # dtype-ok: Miller indices are integers
+        hkl = torch.stack([H.reshape(-1), K.reshape(-1), Lg.reshape(-1)], dim=-1).to(
+            get_int_dtype()
+        )
         # Cubic box: |s| = |hkl| / a.
         real = get_float_dtype()
         smag = hkl.to(real).norm(dim=-1) / a

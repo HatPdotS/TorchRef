@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
+from torchref.config import get_int_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
 if TYPE_CHECKING:
@@ -549,7 +550,7 @@ class ModelContext(DeviceMixin):
         altloc_groups = []
         refinable_mask = torch.zeros(n_atoms, dtype=torch.bool)
 
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)  # dtype-ok: arange atom indices (sharing groups); index requires long
+        sharing_groups_tensor = torch.arange(n_atoms, dtype=get_int_dtype())
         collapsed_idx = 0
 
         # First pass: altlocs. ALL atoms of one conformation must share a collapsed
@@ -595,7 +596,7 @@ class ModelContext(DeviceMixin):
 
         # Compact to contiguous indices 0..n_collapsed-1.
         unique_indices = torch.unique(sharing_groups_tensor, sorted=True)
-        index_map = torch.zeros(n_atoms, dtype=torch.long)  # dtype-ok: index_map atom-index remap; indexing requires long
+        index_map = torch.zeros(n_atoms, dtype=get_int_dtype())
         for new_idx, old_idx in enumerate(unique_indices):
             mask = sharing_groups_tensor == old_idx
             sharing_groups_tensor[mask] = new_idx
@@ -627,7 +628,7 @@ class ModelContext(DeviceMixin):
         """
         self.altloc_pairs = [
             tuple(
-                torch.tensor(rows_by_altloc[label], dtype=torch.long)  # dtype-ok: altloc atom indices; indexing requires long
+                torch.tensor(rows_by_altloc[label], dtype=get_int_dtype())
                 for label in labels
             )
             for _, labels, rows_by_altloc in self._altloc_residues()

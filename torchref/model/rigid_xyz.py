@@ -27,7 +27,7 @@ import torch
 from torch import nn
 
 from torchref.base.alignment.rotation import rotation_matrix_euler_xyz
-from torchref.config import get_float_dtype, normalize_device
+from torchref.config import get_float_dtype, get_int_dtype, normalize_device
 from torchref.utils.caching import CachedForwardMixin
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -73,7 +73,7 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             dtype = dtype if dtype is not None else get_float_dtype()
             self.register_buffer("original_xyz", torch.empty(0, 3, device=device, dtype=dtype))
             self.register_buffer(
-                "chain_indices", torch.empty(0, dtype=torch.long, device=device)  # dtype-ok: empty chain_indices buffer; indexing requires long
+                "chain_indices", torch.empty(0, dtype=get_int_dtype(), device=device)
             )
             self.register_buffer("chain_centers", torch.empty(0, 3, device=device, dtype=dtype))
             self.register_buffer(

@@ -26,6 +26,7 @@ from torchref.config import (
     canonical_device,
     get_default_device,
     get_float_dtype,
+    get_int_dtype,
     normalize_device,
 )
 from torchref.io import cif, pdb
@@ -254,7 +255,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def _aniso_is_empty(self) -> bool:
         return self._sf_partition()[3]
 
-
     # =========================================================================
     # Cell, SpaceGroup, and Symmetry properties
     # =========================================================================
@@ -356,7 +356,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             for elem in self.ctx.topology.atoms.element
         ]
         self.register_buffer(
-            "_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device)  # dtype-ok: atomic-number Z categorical codes buffer; fixed int32 lookup keys
+            "_Z", torch.tensor(z_values, dtype=get_int_dtype(), device=self.device)
         )
         return self._Z
 

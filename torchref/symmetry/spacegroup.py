@@ -331,9 +331,10 @@ class SpaceGroup(Symmetry):
         Returns
         -------
         expanded_hkl : torch.Tensor
-            Expanded indices, shape ``(M, 3)``, dtype ``int32``.
+            Expanded indices, shape ``(M, 3)``, in the configured int dtype.
         orig_indices : torch.Tensor
-            Map expanded -> original, shape ``(M,)``: ``F_exp = F_orig[orig_indices]``.
+            Map expanded -> original, shape ``(M,)``, in the configured int dtype:
+            ``F_exp = F_orig[orig_indices]``.
         phase_shifts : torch.Tensor
             Translation phase offsets in radians, shape ``(M,)``:
             ``phase_exp = phase_orig[orig_indices] + phase_shifts``.
@@ -379,10 +380,11 @@ class SpaceGroup(Symmetry):
         Returns
         -------
         copies : torch.Tensor
-            Shape ``(M, 3)``, int32, ordered by operation then row, Friedel copies
-            last; ``M = n_ops * N``, doubled with ``include_friedel``.
+            Shape ``(M, 3)``, in the configured int dtype, ordered by operation
+            then row, Friedel copies last; ``M = n_ops * N``, doubled with
+            ``include_friedel``.
         source : torch.Tensor
-            Input row of each copy, shape ``(M,)``.
+            Input row of each copy, shape ``(M,)``, in the configured int dtype.
         phase_shifts : torch.Tensor
             Translation phase offset in radians, shape ``(M,)``.
         is_friedel : torch.Tensor
@@ -416,7 +418,7 @@ class SpaceGroup(Symmetry):
         Returns
         -------
         hkl_asu : torch.Tensor
-            Unique ASU indices, shape ``(M, 3)``, dtype ``int32``.
+            Unique ASU indices, shape ``(M, 3)``, in the configured int dtype.
         reduction_indices : torch.Tensor
             Indices into ``hkl_p1`` per equivalent, shape ``(M, n_equiv)``, **-1 where
             no P1 reflection exists** -- mask or clamp before gathering, or a -1

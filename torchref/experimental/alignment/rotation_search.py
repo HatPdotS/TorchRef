@@ -408,7 +408,7 @@ def search_peaks(
         # were measured with -- a different row order changes the summation order
         # in the later index_add_/unique and the last bits with it.
         #
-        # It rounds to int64 internally, so the products are exact and the cast
+        # It rounds to integers internally, so the products are exact and the cast
         # below loses nothing. It also returns on the SPACE GROUP's device rather
         # than the caller's, so the move is load-bearing whenever they differ.
         hkl_unrolled = (

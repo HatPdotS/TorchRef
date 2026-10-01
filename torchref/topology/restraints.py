@@ -26,15 +26,14 @@ import pandas as pd
 import torch
 from torch.nn import Module
 
+from torchref.config import get_float_dtype
 from torchref.topology.monomer.cif import (
     find_cif_file_in_library,
     read_cif,
     read_link_definitions,
 )
-from torchref.config import get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
-
 
 
 class Restraints(DeviceMixin, DebugMixin, Module):
@@ -291,7 +290,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                     f"and will have no restraints applied: {self.missing_residues}"
                 )
 
-
     def _load_rama_surfaces(self, device: torch.device):
         """Load pre-computed Ramachandran NLL surfaces as a buffer."""
         from torchref.topology.ramachandran import load_nll_surfaces
@@ -354,7 +352,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         """Access riding hydrogen topology (None if not built)."""
         return getattr(self, "_h_topo", None)
 
-
     def _build_h_exclusion_hash(self, h_topo, device):
         """Sorted 1-D hash tensor of H-specific 1-2 and 1-3 exclusions.
 
@@ -362,7 +359,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         ``torch.searchsorted`` lookup.
         """
         if h_topo is None or h_topo.n_hydrogens == 0:
-            return torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty index tensor; int64 index required
+            # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+            return torch.tensor([], dtype=torch.long, device=device)
 
         n_heavy = self.topology.n_atoms
         n_h = h_topo.n_hydrogens
@@ -387,13 +385,15 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                     exclusions.add((min(h_combined, nb), max(h_combined, nb)))
 
         if not exclusions:
-            return torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty index tensor; int64 index required
+            # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+            return torch.tensor([], dtype=torch.long, device=device)
 
         arr = np.array(list(exclusions), dtype=np.int64)
         max_idx = max(n_heavy + n_h, int(arr.max()) + 1)
         hashes = arr[:, 0] * max_idx + arr[:, 1]
         hashes.sort()
-        return torch.tensor(hashes, dtype=torch.long, device=device)  # dtype-ok: grid-cell hash values used as keys/index; int64 required
+        # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+        return torch.tensor(hashes, dtype=torch.long, device=device)
 
     def _build_vdw_restraints(
         self, xyz, cutoff=6.0, sigma=0.2, inter_residue_only=True
@@ -652,8 +652,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             f"Restraints(bonds={n_bonds}, angles={n_angles}, "
             f"torsions={n_torsions}, peptide_bonds={n_bonds_peptide})"
         )
-
-
 
     def bond_lengths(self, idx, xyz: torch.Tensor):
         """
@@ -977,7 +975,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             # All periods are 0 or 1, simple wrapping
             return torch.remainder(diff_rad + torch.pi, 2.0 * torch.pi) - torch.pi
 
-
     def torsion_deviations_with_sigmas(self, xyz: torch.Tensor):
         """
         Compute torsion deviations (wrapped for periodicity) and sigmas.
@@ -1010,9 +1007,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
         return deviations_rad, sigmas_deg
 
-
-
-
     def adp_b_differences(self, adp: torch.Tensor):
         """
         Compute B-factor differences between bonded atoms.
@@ -1043,4 +1037,3 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         if diffs_list:
             return torch.cat(diffs_list, dim=0)
         return torch.tensor([], device=b_factors.device)
-
