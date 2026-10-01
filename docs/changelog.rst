@@ -4,6 +4,9 @@ Changelog
 
 Unreleased
 ----------
+- PDB output writes the insertion code in column 27 of ATOM, HETATM and ANISOU records. It went to column 30 and was lost, so residues such as 52 and 52A merged on reading. ANISOU values are rounded rather than truncated
+- ``Model.write_pdb`` and ``write_cif`` no longer split residues that share a name and number but differ by insertion code into one-atom residues. Only HETATM residues whose atom identifiers repeat are renumbered, whole; ATOM records never are
+- mmCIF output keeps the case of insertion codes and no longer drops atoms with a blank chain ID, which it writes as chain ``A``
 - Loading a model keeps its deposited occupancies. Occupancy sharing groups could collide, which merged atoms of unrelated residues into one refinable occupancy (on load 6G9X lost seven partial sulfur occupancies, and 5BOV GLN A46 N read 0.66 instead of 1.00). Groups now follow topology residues ``(chain, resseq, icode)``: residues 100 and 100A stay apart, and alternates with different residue names at one position are conformers that sum to 1
 - Checkpoints restore the occupancy groups they were saved with instead of regrouping from the saved values, so 3E98, 5BOV and 6G9X checkpoints, and any checkpoint taken after occupancy refinement, restore. ``OccupancyTensor.from_residue_groups`` is removed, and ``Model.load_state`` works on an empty ``Model()``
 - Fixed the reciprocal basis of cells with three non-90° angles (triclinic, rhombohedral R setting): it squared the cosines in the cell-volume term, so d-spacings, resolution cuts and bins, scaling and direct-summation structure factors were off (d by up to 1.3 % on 5BOV, |F| by up to 5 %); cells with a 90° angle were exact. The cell metric is now written once, in ``get_fractional_matrix``, which is differentiable in the cell: the reciprocal basis is its inverse (``Cell.reciprocal_basis_matrix`` is ``Cell.inv_fractional_matrix``) and the cell volume its determinant

@@ -162,7 +162,8 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
     Returns
     -------
     gemmi.Structure
-        The constructed gemmi Structure object.
+        The constructed gemmi Structure object. A blank or NaN chain ID is named
+        ``A``, the same name as a real chain ``A`` if the model has one.
     """
     import gemmi
 
@@ -180,18 +181,22 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
 
     model = gemmi.Model("1")
 
-    # Group by chain, then by (resseq, icode, resname) for residues
-    for chain_id, chain_group in df.groupby("chainid", sort=False):
-        chain = gemmi.Chain(str(chain_id) if chain_id and str(chain_id) != "nan" else "A")
+    # Group by chain, then by (resseq, icode, resname) for residues. NaN keys are
+    # kept: the PDB reader reads a blank chain ID as NaN, and groupby would
+    # otherwise drop those atoms.
+    for chain_id, chain_group in df.groupby("chainid", sort=False, dropna=False):
+        chain = gemmi.Chain(
+            str(chain_id) if chain_id and str(chain_id) != "nan" else "A"
+        )
 
         for (resseq, icode, resname), res_group in chain_group.groupby(
-            ["resseq", "icode", "resname"], sort=False
+            ["resseq", "icode", "resname"], sort=False, dropna=False
         ):
             residue = gemmi.Residue()
             residue.name = str(resname).strip()
-            seq_str = str(int(resseq))
-            icode_str = str(icode).strip() if icode and str(icode) not in ("nan", " ") else ""
-            residue.seqid = gemmi.SeqId(seq_str + icode_str)
+            icode_str = str(icode).strip() if icode and str(icode) != "nan" else ""
+            # Not gemmi.SeqId("52A"): parsing a string lower-cases the insertion code.
+            residue.seqid = gemmi.SeqId(int(resseq), icode_str or " ")
 
             # Set het flag based on ATOM/HETATM
             first_atom_type = res_group.iloc[0]["ATOM"]

@@ -494,6 +494,126 @@ def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
     return df
 
 
+_ATOM_COLUMNS = (
+    "ATOM",
+    "serial",
+    "name",
+    "altloc",
+    "resname",
+    "chainid",
+    "resseq",
+    "icode",
+    "x",
+    "y",
+    "z",
+    "occupancy",
+    "tempfactor",
+    "element",
+    "charge",
+)
+
+_U_COLUMNS = ("u11", "u22", "u33", "u12", "u13", "u23")
+
+
+def _text(value) -> str:
+    """``value`` as stripped text, with None, NaN and the string ``'nan'`` blank.
+
+    The reader leaves a blank chain ID as NaN, which ``astype(str)`` downstream
+    turns into ``'nan'``; both mean the field is empty.
+    """
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text == "nan" else text
+
+
+def _format_charge(charge) -> str:
+    """Formal charge for columns 79-80: blank when neutral, else ``+1`` / ``-2``."""
+    charge = 0 if pd.isna(charge) else int(charge)
+    return f"{charge:+d}" if charge else ""
+
+
+def _format_atom_identity(row) -> str:
+    """Columns 7-27 of an ATOM, HETATM or ANISOU record: which atom it describes.
+
+    wwPDB v3.3 layout: serial 7-11, atom name 13-16, altLoc 17, resName 18-20,
+    chainID 22, resSeq 23-26, iCode 27. A two-character chain ID takes columns
+    21-22, where gemmi reads and writes it.
+
+    Parameters
+    ----------
+    row : mapping
+        One atom; reads ``serial``, ``name``, ``element``, ``altloc``,
+        ``resname``, ``chainid``, ``resseq`` and ``icode``.
+
+    Returns
+    -------
+    str
+        Exactly 21 characters for in-range values. A value wider than its field
+        (serial > 99999, a 4-character residue name) is not truncated and shifts
+        every later column.
+    """
+    name = _format_pdb_atom_name(row["name"], _text(row["element"]))
+    return (
+        f"{int(row['serial']):>5} {name}{_text(row['altloc']):1}"
+        f"{_text(row['resname']):>3}{_text(row['chainid']):>2}"
+        f"{int(row['resseq']):>4}{_text(row['icode']):1}"
+    )
+
+
+def _format_atom_records(row, anisou: bool) -> str:
+    """The ATOM or HETATM record of one atom, then its ANISOU record if ``anisou``.
+
+    Both records take columns 7-27 from :func:`_format_atom_identity`, so they
+    cannot disagree about the atom. ANISOU holds round(U * 10^4) with U in Å².
+
+    Parameters
+    ----------
+    row : mapping
+        One atom with the columns :func:`write` requires, plus ``u11`` ...
+        ``u23`` when ``anisou`` is true.
+    anisou : bool
+        Whether to append the ANISOU record.
+
+    Returns
+    -------
+    str
+        One or two newline-terminated 80-column records.
+    """
+    identity = _format_atom_identity(row)
+    element_charge = f"{_text(row['element']):>2}{_format_charge(row['charge']):>2}"
+    records = (
+        f"{_text(row['ATOM']):<6}{identity}   "
+        f"{row['x']:8.3f}{row['y']:8.3f}{row['z']:8.3f}"
+        f"{row['occupancy']:6.2f}{row['tempfactor']:6.2f}"
+        f"{'':10}{element_charge}\n"
+    )
+    if anisou:
+        u = "".join(f"{round(float(row[c]) * 1e4):7d}" for c in _U_COLUMNS)
+        records += f"ANISOU{identity} {u}{'':6}{element_charge}\n"
+    return records
+
+
+def _write_atom_records(handle, df: pd.DataFrame, anisou: bool) -> None:
+    """Write one ATOM/HETATM record per row of ``df``, in row order.
+
+    With ``anisou``, rows whose ``anisou_flag`` is set also get an ANISOU
+    record. A row that cannot be formatted is skipped whole, with a printed
+    warning, so one bad value costs one atom rather than the file.
+    """
+    anisou = anisou and "anisou_flag" in df.columns and bool(df["anisou_flag"].any())
+    columns = list(_ATOM_COLUMNS)
+    if anisou:
+        columns += ["anisou_flag", *_U_COLUMNS]
+    for i, row in enumerate(df[columns].to_dict("records")):
+        try:
+            records = _format_atom_records(row, anisou and bool(row["anisou_flag"]))
+        except (TypeError, ValueError) as error:
+            print(f"Skipping atom row {i}, which cannot be formatted: {error}")
+            continue
+        handle.write(records)
+
+
 def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     """
     Write a DataFrame to a PDB file.
@@ -501,13 +621,19 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     Parameters
     ----------
     df : pandas.DataFrame
-        DataFrame containing atom data with columns: ATOM, serial, name,
-        altloc, resname, chainid, resseq, icode, x, y, z, occupancy,
-        tempfactor, element, charge.
+        Atom table with columns ATOM, serial, name, altloc, resname, chainid,
+        resseq, icode, x, y, z (Cartesian, Å), occupancy, tempfactor (Å²),
+        element and charge. Rows whose optional ``anisou_flag`` is set also get
+        an ANISOU record from ``u11`` ... ``u23`` (Å²).
     filepath : str
         Output PDB filename.
     metadata : RefinementMetadata, optional
         Metadata to render as PDB header (REMARK 3, TITLE, etc.).
+
+    Raises
+    ------
+    KeyError
+        If a required column is missing.
 
     Notes
     -----
@@ -517,7 +643,9 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     the file is written without a CRYST1 record and a warning is printed.
 
     Rows that fail to format are skipped with a printed warning; the
-    remaining rows are still written.
+    remaining rows are still written. Nothing is renumbered: duplicated atom
+    identifiers are written as they are (see
+    :func:`torchref.utils.sanitize_pdb_dataframe`).
     """
     with open(filepath, "w") as n:
         # Write metadata header if provided (before CRYST1)
@@ -548,85 +676,7 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
         except:
             print("No cell information found, writing without cell and spacegroup")
 
-        # Write atom records
-        for i, row in df.iterrows():
-            (
-                ATOM,
-                serial,
-                name,
-                altloc,
-                resname,
-                chainid,
-                resseq,
-                icode,
-                x,
-                y,
-                z_coord,
-                occupancy,
-                tempfactor,
-                element,
-                charge,
-            ) = row[
-                [
-                    "ATOM",
-                    "serial",
-                    "name",
-                    "altloc",
-                    "resname",
-                    "chainid",
-                    "resseq",
-                    "icode",
-                    "x",
-                    "y",
-                    "z",
-                    "occupancy",
-                    "tempfactor",
-                    "element",
-                    "charge",
-                ]
-            ]
-
-            if charge > 0:
-                charge = "+" + str(charge)
-            elif charge == 0:
-                charge = ""
-            else:
-                charge = str(charge)
-
-            # 4-character PDB atom-name field (cols 13-16); preceded by the
-            # blank col 12 in the format string below.
-            name_field = _format_pdb_atom_name(name, element)
-
-            if chainid is None or str(chainid) == "nan":
-                chainid = ""
-
-            try:
-                s = (
-                    f"{str(ATOM):<6}{int(serial):>5} {name_field}{str(altloc):>1}"
-                    f"{str(resname):>3}{str(chainid):>2}{int(resseq):>4}{str(icode):>4}"
-                    f"{x:>8.3f}{y:>8.3f}{z_coord:>8.3f}"
-                    f"{occupancy:>6.2f}{tempfactor:>6.2f}"
-                    f"{str(element):>12}{charge:>2}\n"
-                )
-                n.write(s)
-            except:
-                print("row", i, "failed")
-                print(row)
-
-            # Write ANISOU record if present
-            if row["anisou_flag"]:
-                u11, u22, u33, u12, u13, u23 = row[
-                    ["u11", "u22", "u33", "u12", "u13", "u23"]
-                ]
-                s = (
-                    f"ANISOU{int(serial):>5} {name_field}{str(altloc):>1}"
-                    f"{str(resname):>3}{str(chainid):>2}{int(resseq):>4}  "
-                    f"{int(u11 * 1e4):>{7}}{int(u22 * 1e4):>{7}}{int(u33 * 1e4):>{7}}"
-                    f"{int(u12 * 1e4):>{7}}{int(u13 * 1e4):>{7}}{int(u23 * 1e4):>{7}}"
-                    f"      {str(element):>{2}}{str(charge):>2}\n"
-                )
-                n.write(s)
-
+        _write_atom_records(n, df, anisou=True)
         n.write("END")
 
 
@@ -639,17 +689,24 @@ def write_multi_model(
     Write multiple models to a single PDB file with MODEL/ENDMDL records.
 
     Each DataFrame is wrapped in a MODEL/ENDMDL pair, producing a
-    multi-model PDB file suitable for ensemble or time-resolved data.
+    multi-model PDB file suitable for ensemble or time-resolved data. Atom
+    records are formatted as by :func:`write`, but without ANISOU records:
+    each model's ADPs are its isotropic ``tempfactor``.
 
     Parameters
     ----------
     dataframes : list of pandas.DataFrame
-        List of atom DataFrames (same format as ``write()`` expects).
+        List of atom DataFrames, with the columns :func:`write` requires.
     filepath : str
         Output PDB filename.
     model_names : list of str, optional
         Names for each model (written as REMARK before each MODEL record).
         If None, models are numbered sequentially.
+
+    Raises
+    ------
+    KeyError
+        If a DataFrame lacks a required column.
     """
     if not dataframes:
         return
@@ -685,50 +742,7 @@ def write_multi_model(
             if model_names and model_idx < len(model_names):
                 f.write(f"REMARK   3  MODEL {model_num}: {model_names[model_idx]}\n")
             f.write(f"MODEL     {model_num:>4}\n")
-
-            for i, row in df.iterrows():
-                ATOM = row.get("ATOM", "ATOM")
-                serial = row.get("serial", i + 1)
-                name = str(row.get("name", "CA"))
-                altloc = str(row.get("altloc", ""))
-                resname = str(row.get("resname", "UNK"))
-                chainid = str(row.get("chainid", ""))
-                resseq = int(row.get("resseq", 1))
-                icode = str(row.get("icode", ""))
-                x = float(row.get("x", 0.0))
-                y = float(row.get("y", 0.0))
-                z_coord = float(row.get("z", 0.0))
-                occupancy = float(row.get("occupancy", 1.0))
-                tempfactor = float(row.get("tempfactor", 20.0))
-                element = str(row.get("element", "C"))
-                charge = row.get("charge", 0)
-
-                if charge > 0:
-                    charge_str = "+" + str(charge)
-                elif charge == 0:
-                    charge_str = ""
-                else:
-                    charge_str = str(charge)
-
-                # 4-character PDB atom-name field (cols 13-16); preceded by the
-                # blank col 12 in the format string below.
-                name_field = _format_pdb_atom_name(name, element)
-
-                if chainid is None or chainid == "nan":
-                    chainid = ""
-
-                try:
-                    s = (
-                        f"{str(ATOM):<6}{int(serial):>5} {name_field}{altloc:>1}"
-                        f"{resname:>3}{chainid:>2}{resseq:>4}{icode:>4}"
-                        f"{x:>8.3f}{y:>8.3f}{z_coord:>8.3f}"
-                        f"{occupancy:>6.2f}{tempfactor:>6.2f}"
-                        f"{element:>12}{charge_str:>2}\n"
-                    )
-                    f.write(s)
-                except Exception:
-                    pass
-
+            _write_atom_records(f, df, anisou=False)
             f.write("ENDMDL\n")
 
         f.write("END\n")

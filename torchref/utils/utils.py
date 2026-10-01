@@ -6,8 +6,8 @@ Core utility containers and atom-selection parsing, re-exported from ``torchref.
 - :class:`TensorDict` -- dict-like tensor container backed by ``nn.Module`` buffers.
 - :class:`TensorMasks` -- ``dict`` of boolean masks with device movement and a cached
   combined (logical-AND) mask.
-- :func:`sanitize_pdb_dataframe` -- repair duplicate atom identifiers and over-long
-  residue names in a PDB/CIF DataFrame.
+- :func:`sanitize_pdb_dataframe` -- renumber HETATM residues whose atom identifiers
+  repeat, and truncate over-long residue names, before an atom table is written.
 - :func:`parse_phenix_selection` / :func:`create_selection_mask` -- Phenix-style
   atom-selection strings to boolean masks.
 """
@@ -307,27 +307,59 @@ class TensorMasks(DeviceMovementMixin, dict):
         return f"TensorMasks({{{mask_info}}}, device={self.device})"
 
 
+#: What identifies one atom in a PDB or mmCIF file.
+_ATOM_KEY = ["chainid", "resseq", "icode", "name", "altloc"]
+
+#: What the rows of one residue share.
+_RESIDUE_KEY = ["chainid", "resseq", "icode", "resname"]
+
+
+def _residue_blocks(pdb: pd.DataFrame) -> np.ndarray:
+    """Residue index of every row, shape ``(n_atoms,)``, non-decreasing down the table.
+
+    A residue is a contiguous run of one ``(chainid, resseq, icode, resname)``, split
+    wherever an atom ``(name, altloc)`` repeats: unnumbered waters share that whole key,
+    yet each is a residue of its own.
+    """
+    keys = pdb.groupby(_RESIDUE_KEY, sort=False, dropna=False).ngroup().to_numpy()
+    names = ["name", "altloc"]
+    atoms = pdb.groupby(names, sort=False, dropna=False).ngroup().to_numpy()
+    blocks = np.empty(len(pdb), dtype=np.int64)
+    block, current, seen = -1, None, set()
+    for row, (key, atom) in enumerate(zip(keys.tolist(), atoms.tolist())):
+        if key != current or atom in seen:
+            block, current, seen = block + 1, key, set()
+        seen.add(atom)
+        blocks[row] = block
+    return blocks
+
+
 def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
     """
-    Repair a PDB/CIF DataFrame so ``(chainid, resseq, name, altloc)`` is unique.
+    Prepare an atom table for writing: unique HETATM residues, 3-character names.
 
-    Fixes duplicate ``resseq`` on HETATM records (waters are often all 0) by renumbering
-    within the chain, and truncates residue names to 3 characters. Returns a copy; the
-    input is not modified.
+    Truncates residue names to the 3 characters a PDB file holds. Then each HETATM
+    residue that repeats an atom identifier ``(chainid, resseq, icode, name, altloc)``
+    already taken by an ATOM record or an earlier residue -- typically waters all
+    numbered 0, or a ligand copied without renumbering -- gets a new ``resseq``, counting
+    up from the chain's highest. A residue is a contiguous run of rows sharing
+    ``(chainid, resseq, icode, resname)``, split where an atom ``(name, altloc)``
+    repeats, so it moves whole and a run of unnumbered waters becomes one residue per
+    water. ATOM records are never renumbered, and residues kept apart by an insertion
+    code (52 and 52A) are not duplicates. Returns a copy; the input is not modified.
 
     Parameters
     ----------
     pdb : pandas.DataFrame
-        DataFrame with PDB data (must have columns: ATOM, chainid, resseq, name, altloc,
-        resname, serial).
+        Atom table with columns ATOM, chainid, resseq, icode, resname, name and altloc.
     verbose : int, default 0
         Verbosity level (0=silent, 1=info, 2=debug).
 
     Returns
     -------
     pandas.DataFrame
-        Sanitized copy. Renumbering can fail to converge on pathological input, in which
-        case duplicates remain and a warning is printed at ``verbose > 0``.
+        Sanitized copy. Duplicated identifiers among ATOM records are left as they are,
+        with a warning printed at ``verbose > 0``.
     """
     pdb = pdb.copy()
 
@@ -335,7 +367,6 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
         print("Sanitizing PDB DataFrame...")
         print(f"  Initial atoms: {len(pdb)}")
 
-    # 1. Standardize residue names to max 3 characters
     long_resnames = pdb["resname"].str.len() > 3
     if long_resnames.any():
         n_long = long_resnames.sum()
@@ -346,80 +377,44 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
             )
         pdb.loc[long_resnames, "resname"] = pdb.loc[long_resnames, "resname"].str[:3]
 
-    # 2. Fix duplicate atom identifiers by reassigning resseq
-    dup_mask = pdb.duplicated(
-        subset=["chainid", "resseq", "name", "altloc"], keep=False
-    )
+    het = (pdb["ATOM"].astype(str).str.strip() == "HETATM").to_numpy()
+    residue = _residue_blocks(pdb)
+    # ATOM records come first, so of a polymer residue and a HETATM residue that
+    # collide it is always the HETATM one that moves.
+    order = np.argsort(het, kind="stable")
+    taken = np.empty(len(pdb), dtype=bool)
+    taken[order] = pdb.iloc[order].duplicated(subset=_ATOM_KEY).to_numpy()
+    moved = np.unique(residue[taken & het])
 
-    if dup_mask.any():
-        n_dup = dup_mask.sum()
+    if len(moved):
+        first_row = np.searchsorted(residue, moved)
+        chain = pd.Series(pdb["chainid"].to_numpy()[first_row])
+        by_chain = pdb.groupby("chainid", sort=False, dropna=False)["resseq"]
+        top = by_chain.transform("max").to_numpy()[first_row]
+        offset = chain.groupby(chain, sort=False, dropna=False).cumcount().to_numpy()
+        new = np.where(top > 0, top + 1, 1) + offset
+        rows = np.isin(residue, moved)
+        new_resseq = pd.Series(new, index=moved).loc[residue[rows]]
+        pdb.loc[rows, "resseq"] = new_resseq.to_numpy()
         if verbose > 0:
-            print(f"  Found {n_dup} atoms with duplicate identifiers")
-
-        # This ensures we only renumber within the same molecule type and chain
-        for (chainid, resname, atom_type), group in pdb.groupby(
-            ["chainid", "resname", "ATOM"]
-        ):
-            group_indices = group.index
-
-            group_dup_mask = group.duplicated(
-                subset=["chainid", "resseq", "name", "altloc"], keep=False
+            print(
+                f"  Renumbered {len(moved)} HETATM residues ({rows.sum()} atoms) "
+                "whose atom identifiers were already taken"
             )
-
-            if group_dup_mask.any():
-                chain_data = pdb[pdb["chainid"] == chainid]
-                max_resseq = chain_data["resseq"].max()
-
-                new_resseq_start = (
-                    max_resseq + 1 if pd.notna(max_resseq) and max_resseq > 0 else 1
-                )
-
-                # Group by (serial) to keep atoms of the same residue together
-                unique_serials = group["serial"].unique()
-                residue_counter = new_resseq_start
-
-                for serial in unique_serials:
-                    serial_mask = pdb["serial"] == serial
-                    pdb.loc[serial_mask, "resseq"] = residue_counter
-                    residue_counter += 1
-
-                if verbose > 1:
-                    n_fixed = len(unique_serials)
-                    print(
-                        f"    Fixed {n_fixed} {resname} residues in chain {chainid} (resseq {new_resseq_start}-{residue_counter-1})"
-                    )
-
-        final_dup_mask = pdb.duplicated(
-            subset=["chainid", "resseq", "name", "altloc"], keep=False
-        )
-        if final_dup_mask.any():
-            remaining_dups = final_dup_mask.sum()
-            if verbose > 0:
-                print(
-                    f"  WARNING: Still have {remaining_dups} duplicate identifiers after sanitization"
-                )
-                dups = pdb[final_dup_mask].sort_values(["chainid", "resseq", "name"])
-                print(
-                    dups[
-                        [
-                            "ATOM",
-                            "serial",
-                            "name",
-                            "resname",
-                            "chainid",
-                            "resseq",
-                            "altloc",
-                        ]
-                    ].head(10)
-                )
-        else:
-            if verbose > 0:
-                print("  ✓ All duplicate identifiers resolved")
-    else:
-        if verbose > 0:
-            print("  ✓ No duplicate atom identifiers found")
+        if verbose > 1:
+            for chainid, numbers in pd.Series(new).groupby(chain, dropna=False):
+                print(f"    chain {chainid}: resseq {numbers.min()}-{numbers.max()}")
+    elif verbose > 0:
+        print("  No HETATM residue needed renumbering")
 
     if verbose > 0:
+        remaining = pdb.duplicated(subset=_ATOM_KEY, keep=False)
+        if remaining.any():
+            print(
+                f"  WARNING: {remaining.sum()} ATOM records share an atom identifier "
+                "and are left as they are"
+            )
+            print(pdb.loc[remaining, ["ATOM", "resname", *_ATOM_KEY]].head(10))
         print(f"  Final atoms: {len(pdb)}")
 
     return pdb
