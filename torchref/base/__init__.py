@@ -1,7 +1,7 @@
 """
 Mathematical functions for crystallographic computations.
 
-This module provides PyTorch and NumPy implementations of:
+This module provides PyTorch implementations of:
 - Coordinate transformations (Cartesian <-> fractional)
 - Structure factor calculations
 - R-factor computations
@@ -86,10 +86,6 @@ from .coordinates import (
     fractional_to_cartesian_torch,
     get_fractional_matrix,
     get_inv_fractional_matrix_torch,
-    cartesian_to_fractional,
-    fractional_to_cartesian,
-    get_inv_fractional_matrix,
-    convert_coords_to_fractional,
     smallest_diff,
     smallest_diff_aniso,
 )
@@ -100,10 +96,7 @@ from .coordinates import (
 from .reciprocal import (
     # Basis
     reciprocal_basis_matrix,
-    reciprocal_basis_matrix_numpy,
     get_scattering_vectors,
-    get_scattering_vectors_numpy,
-    get_s,
     # HKL
     get_d_spacing,
     compute_d_spacing_batch,
@@ -159,8 +152,6 @@ from .fourier import (
     ifft,
     get_real_grid,
     find_grid_size,
-    get_real_grid_numpy,
-    get_grids,
     put_hkl_on_grid,
 )
 
@@ -257,20 +248,13 @@ __all__ = [
     "fractional_to_cartesian_torch",
     "get_fractional_matrix",
     "get_inv_fractional_matrix_torch",
-    "cartesian_to_fractional",
-    "fractional_to_cartesian",
-    "get_inv_fractional_matrix",
-    "convert_coords_to_fractional",
     "smallest_diff",
     "smallest_diff_aniso",
     # -------------------------------------------------------------------------
     # Reciprocal space
     # -------------------------------------------------------------------------
     "reciprocal_basis_matrix",
-    "reciprocal_basis_matrix_numpy",
     "get_scattering_vectors",
-    "get_scattering_vectors_numpy",
-    "get_s",
     "get_d_spacing",
     "compute_d_spacing_batch",
     "generate_possible_hkl",
@@ -311,8 +295,6 @@ __all__ = [
     "ifft",
     "get_real_grid",
     "find_grid_size",
-    "get_real_grid_numpy",
-    "get_grids",
     "put_hkl_on_grid",
     # -------------------------------------------------------------------------
     # alignment
