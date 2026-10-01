@@ -128,32 +128,22 @@ class TestTorsionRestraintCalculations:
 
     @pytest.mark.unit
     def test_torsion_calculation(self):
-        """Test torsion angle calculation between four atoms."""
-        # Create atoms with known torsion
-        coords = torch.tensor([
-            [0.0, 0.0, 0.0],
-            [1.5, 0.0, 0.0],
-            [2.0, 1.5, 0.0],
-            [3.5, 1.5, 0.5]
-        ], dtype=torch.float32)
-        
-        # Vectors along bonds
-        b1 = coords[1] - coords[0]
-        b2 = coords[2] - coords[1]
-        b3 = coords[3] - coords[2]
-        
-        # Normal vectors to planes
-        n1 = torch.cross(b1, b2)
-        n2 = torch.cross(b2, b3)
-        
-        # Torsion angle
-        m1 = torch.cross(n1, b2 / torch.norm(b2))
-        x = torch.dot(n1, n2)
-        y = torch.dot(m1, n2)
-        torsion = torch.atan2(y, x) * 180 / torch.pi
-        
-        assert torch.isfinite(torsion)
-        assert -180 <= torsion <= 180
+        """``Restraints.torsions`` gives gemmi's (IUPAC) dihedral for four atoms."""
+        import gemmi
+
+        from torchref.config import get_float_dtype, get_int_dtype
+        from torchref.topology.restraints import Restraints
+
+        rows = [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [2.0, 1.5, 0.0], [3.5, 1.5, 0.5]]
+        coords = torch.tensor(rows, dtype=get_float_dtype())
+        idx = torch.tensor([[0, 1, 2, 3]], dtype=get_int_dtype())
+        expected = np.degrees(
+            gemmi.calculate_dihedral(*(gemmi.Position(*row) for row in rows))
+        )
+
+        torsion = Restraints().torsions(idx, coords)
+
+        torch.testing.assert_close(torsion, coords.new_tensor([expected]))
 
 
 class TestRestraintDeviceHandling:

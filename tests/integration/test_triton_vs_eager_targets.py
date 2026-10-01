@@ -262,6 +262,61 @@ def test_triton_matches_eager_per_target(target_name, gpu_refinement, gpu_state)
     _assert_close(target_name, eager, triton, atol, rtol)
 
 
+@pytest.fixture(scope="module")
+def gpu_glycoprotein(pdb_dir):
+    """3A5V on CUDA; its NAG/MAN/BMA torsion references are sign-sensitive."""
+    from torchref.model.model import Model
+
+    pdb = pdb_dir / "3A5V.pdb"
+    if not pdb.exists():
+        pytest.skip("3A5V fixture not present")
+    model = Model(verbose=0, device=torch.device("cuda"))
+    model.load_pdb(str(pdb))
+    return model
+
+
+@pytest.mark.cuda
+@pytest.mark.integration
+@pytest.mark.parametrize("target_name", ["geometry/torsion", "geometry/ramachandran"])
+def test_triton_matches_eager_where_the_dihedral_sign_matters(
+    target_name, gpu_glycoprotein
+):
+    """The Triton dihedral carries the eager sign, value and forces alike.
+
+    The 1DAW sweep above cannot see a flipped Triton dihedral in the torsion target:
+    every amino-acid reference is symmetric under negation for its period, and
+    ``sin(-d) * (-F) = sin(d) * F`` leaves the gradient unchanged too. 3A5V's sugar
+    torsions are not symmetric, and the Ramachandran surfaces are not symmetric under
+    (phi, psi) -> (-phi, -psi), so both targets here differ if the signs disagree.
+    """
+    from torchref.refinement.targets import RamachandranTarget, TorsionTarget
+    from torchref.utils import use_portable
+
+    model = gpu_glycoprotein
+    target = {
+        "geometry/torsion": TorsionTarget,
+        "geometry/ramachandran": RamachandranTarget,
+    }[target_name](model)
+
+    def loss_and_grads():
+        model.zero_grad(set_to_none=True)
+        loss = target()
+        loss.backward()
+        grads = {
+            name: p.grad.detach().clone()
+            for name, p in model.named_parameters()
+            if p.grad is not None
+        }
+        return float(loss.detach().item()), grads
+
+    with use_portable():
+        eager = loss_and_grads()
+    triton = loss_and_grads()
+
+    assert eager[1], "no gradient reached the model parameters"
+    _assert_close(target_name, eager, triton, *_tol_for(target_name))
+
+
 @pytest.mark.cuda
 @pytest.mark.integration
 @pytest.mark.parametrize("target_mode", _triton_xray_modes())

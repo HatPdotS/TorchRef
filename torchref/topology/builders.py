@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from torchref.base.targets._common import torsions_from_xyz
 from torchref.config import get_float_dtype, get_int_dtype
 
 
@@ -927,19 +928,6 @@ class InterResidueTorsionBuilder:
         """Return total number of disulfide torsion restraints accumulated."""
         return self._disulfide_count
 
-    @staticmethod
-    def _torsion_angle_np(coords: np.ndarray, i1, i2, i3, i4) -> float:
-        """Compute torsion angle (degrees) from coordinates for 4 atom indices."""
-        p = coords[[i1, i2, i3, i4]]
-        b1, b2, b3 = p[1] - p[0], p[2] - p[1], p[3] - p[2]
-        n1, n2 = np.cross(b1, b2), np.cross(b2, b3)
-        n1_len, n2_len = np.linalg.norm(n1), np.linalg.norm(n2)
-        if n1_len < 1e-10 or n2_len < 1e-10:
-            return 180.0
-        n1, n2 = n1 / n1_len, n2 / n2_len
-        m1 = np.cross(n1, b2 / np.linalg.norm(b2))
-        return float(np.degrees(np.arctan2(np.dot(m1, n2), np.dot(n1, n2))))
-
     def build(
         self,
         residues: "PeptideResidues",
@@ -963,8 +951,6 @@ class InterResidueTorsionBuilder:
         if not pairs:
             return None
 
-        coords_np = residues.xyz
-
         # Separate accumulators for phi, psi, omega
         phi_data = {"indices": [], "periods": []}
         psi_data = {"indices": [], "periods": []}
@@ -980,7 +966,7 @@ class InterResidueTorsionBuilder:
         # psi from pair (i, j) belongs to residue i (first residue)
         phi_by_residue = {}  # res_idx -> atom indices
         psi_by_residue = {}  # res_idx -> atom indices
-        omega_by_residue = {}  # res_idx -> omega_deg (for cis/trans PRO detection)
+        omega_idx_by_residue = {}  # res_idx -> omega atom indices (cis/trans PRO)
         resname_by_residue = {}  # res_idx -> resname
         next_resname_by_residue = {}  # res_idx -> next resname (for pre-PRO)
 
@@ -1058,12 +1044,9 @@ class InterResidueTorsionBuilder:
                     resname_by_residue[key_i] = resname_i
                     resname_by_residue[key_next] = resname_next
                     next_resname_by_residue[key_i] = resname_next
-                    # Compute omega for PRO cis/trans detection
+                    # The omega that decides PRO cis/trans, measured after the loop
                     if omega_data["indices"]:
-                        omega_deg = self._torsion_angle_np(
-                            coords_np, *omega_data["indices"][-1]
-                        )
-                        omega_by_residue[key_next] = omega_deg
+                        omega_idx_by_residue[key_next] = omega_data["indices"][-1]
 
         result = {}
 
@@ -1125,6 +1108,17 @@ class InterResidueTorsionBuilder:
             set(phi_by_residue.keys()) & set(psi_by_residue.keys())
         )
         if rama_residues:
+            omega_keys = [r for r in rama_residues if r in omega_idx_by_residue]
+            omega_by_residue = {}
+            if omega_keys:
+                omega_values = torsions_from_xyz(
+                    torch.as_tensor(residues.xyz, dtype=get_float_dtype()),
+                    torch.as_tensor(
+                        [omega_idx_by_residue[r] for r in omega_keys],
+                        dtype=get_int_dtype(),
+                    ),
+                )
+                omega_by_residue = dict(zip(omega_keys, omega_values.tolist()))
             rama_phi = []
             rama_psi = []
             rama_types = []

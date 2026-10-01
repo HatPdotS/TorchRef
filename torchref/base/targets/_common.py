@@ -1,4 +1,9 @@
-"""Shared helpers for target math kernels."""
+"""Shared helpers for target math kernels.
+
+Also home to :func:`torsions_from_xyz`, the package's only eager dihedral, which the
+topology layer uses as well; :mod:`torchref.base.targets.triton._dihedral` is its Triton
+counterpart.
+"""
 
 import numpy as np
 import torch
@@ -21,14 +26,31 @@ COS_CLAMP: float = 1.0 - EPS
 def torsions_from_xyz(xyz: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
     """Compute dihedral angles in degrees from 4-atom indices.
 
-    Matches the sign convention of ``Restraints.torsions``.
+    The one eager dihedral in the package: ``Restraints.torsions``, the omega that
+    classifies cis/trans proline for the Ramachandran map and every eager geometry
+    target call it.
+
+    The sign is IUPAC, the same as ``gemmi.calculate_dihedral`` and the convention the
+    CCP4/AceDRG monomer-library references are written in: for atoms A-B-C-D viewed
+    along the B→C bond, the angle is positive when the far bond C-D is rotated
+    clockwise from the near bond B-A. References in the opposite convention would
+    restrain every torsion that is not symmetric under negation for its period
+    (nucleotide and carbohydrate sugar rings among them) toward its mirror image.
 
     Parameters
     ----------
     xyz : torch.Tensor
-        (N_atoms, 3) Cartesian coordinates.
+        Cartesian coordinates in Å, shape (n_atoms, 3).
     idx : torch.Tensor
-        (N, 4) atom indices defining each dihedral.
+        Atom indices A, B, C, D of each dihedral, shape (n_torsions, 4), integer
+        dtype.
+
+    Returns
+    -------
+    torch.Tensor
+        Dihedral angles in degrees in [-180, 180], shape (n_torsions,), in the dtype
+        of ``xyz``. A fully degenerate quadruple (coincident or collinear atoms) gives
+        0 with a zero gradient rather than NaN.
     """
     p1 = xyz[idx[:, 0]]
     p2 = xyz[idx[:, 1]]
@@ -44,7 +66,9 @@ def torsions_from_xyz(xyz: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
     # Floor the |b2| divisor so collinear atoms (|b2| -> 0) give a finite
     # gradient instead of 0/0 = NaN.
     b2_norm = torch.linalg.norm(b2, dim=-1, keepdim=True).clamp_min(EPS)
-    m1 = torch.cross(n1, b2 / b2_norm, dim=-1)
+    # b2_hat x n1, not n1 x b2_hat: the operand order is what makes the sign IUPAC.
+    # Textbook forms built on n1 x b2_hat carry a compensating minus on the atan2.
+    m1 = torch.cross(b2 / b2_norm, n1, dim=-1)
 
     x = torch.sum(n1 * n2, dim=-1)
     y = torch.sum(m1 * n2, dim=-1)
