@@ -549,9 +549,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         values : AtomValues
             Starting values, row-aligned with ``ctx.topology``.
         state : dict, optional
-            A state dict about to be loaded. Its saved refinable masks, riding frames
-            and node-field ADP layout fix the wrappers' shapes, and the default masks
-            are **not** applied; ``load_state_dict`` supplies the values afterwards.
+            A state dict about to be loaded. Its saved refinable masks, occupancy
+            groups, riding frames and node-field ADP layout fix the wrappers' shapes,
+            and the default masks are **not** applied; ``load_state_dict`` supplies
+            the values afterwards.
         xyz : MixedTensor, optional
             Coordinate wrapper to install as is, instead of building one from
             ``values``.
@@ -573,25 +574,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.u = self._restore_adp_slot(
             "u", state, values, dtype, self.xyz, self.device
         )
-
-        # Residue-level sharing plus altloc sum-to-1 groups.
-        initial_occ = torch.tensor(values.occupancy, dtype=dtype)
-        sharing_groups, altloc_groups, refinable_mask = self.ctx.occupancy_groups(
-            initial_occ
-        )
-        saved_occ_mask = state.get("occupancy.refinable_mask")
-        if saved_occ_mask is not None:
-            # Saved in group space; expanded back over atoms.
-            refinable_mask = saved_occ_mask.to(sharing_groups.device)[sharing_groups]
-        self.occupancy = OccupancyTensor(
-            initial_values=initial_occ,
-            sharing_groups=sharing_groups,
-            altloc_groups=altloc_groups,
-            refinable_mask=refinable_mask,
-            dtype=dtype,
-            device=self.device,
-            name="occupancy",
-        )
+        self.occupancy = self._build_occupancy(values, state)
 
         if restoring:
             # Placeholders: the saved masks arrive with load_state_dict, and applying
@@ -616,6 +599,36 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 self.xyz, self.hydrogen_frames()
             )
             self._repoint_coordinate_accessors()
+
+    def _build_occupancy(self, values: AtomValues, state: dict) -> OccupancyTensor:
+        """The occupancy wrapper over ``values``, grouped as ``state`` saved it.
+
+        A saved grouping is taken as saved, never re-derived from the saved
+        occupancies: which atoms share a group depends on the values (the 0.01
+        deadband of :meth:`ModelContext.occupancy_groups`), and refinement moves them,
+        so a re-derivation can disagree with the group-space parameters being loaded.
+        Without one -- a fresh load -- the context groups the atoms.
+        """
+        initial = torch.tensor(values.occupancy, dtype=self.dtype_float)
+        settings = {
+            "dtype": self.dtype_float,
+            "device": self.device,
+            "name": "occupancy",
+        }
+        if state.get("occupancy.expansion_mask") is not None:
+            return OccupancyTensor.from_saved_groups(
+                initial, state, prefix="occupancy.", **settings
+            )
+        sharing_groups, altloc_groups, refinable_mask = self.ctx.occupancy_groups(
+            initial
+        )
+        return OccupancyTensor(
+            initial_values=initial,
+            sharing_groups=sharing_groups,
+            altloc_groups=altloc_groups,
+            refinable_mask=refinable_mask,
+            **settings,
+        )
 
     def _build_xyz(self, values: AtomValues, state: dict):
         """The coordinate wrapper over ``values``, riding if ``state`` saved one.
@@ -1773,24 +1786,19 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         from torchref.topology import Topology
 
         topology = self.ctx.topology
-        altloc = topology.atoms.altloc
         occupancy = self.occupancy().detach().cpu().numpy()
         keep = np.ones(self.n_atoms, dtype=bool)
         resnames = topology.columns()["resname"]
-        for residue in range(topology.n_residues):
-            rows = np.arange(
-                int(topology.residues.atom_start[residue]),
-                int(topology.residues.atom_end[residue]),
-            )
-            labels = sorted(set(altloc[rows].tolist()) - {" "})
-            if len(labels) < 2:
-                continue
-            means = [occupancy[rows[altloc[rows] == label]].mean() for label in labels]
+        for residue, labels, conformers in self.ctx.altloc_residues():
+            means = [occupancy[conformers[label]].mean() for label in labels]
             best = labels[int(np.argmax(means))]
             # Shared atoms belong to the retained chemical conformer in a model
             # with no altlocs, even when their deposited name was the other type.
-            resnames[rows] = resnames[rows[altloc[rows] == best][0]]
-            keep[rows[(altloc[rows] != " ") & (altloc[rows] != best)]] = False
+            rows = list(topology.residues.atom_rows(residue))
+            resnames[rows] = resnames[conformers[best][0]]
+            for label in labels:
+                if label != best:
+                    keep[conformers[label]] = False
 
         rows = np.nonzero(keep)[0]
         columns = {key: value[rows] for key, value in topology.columns().items()}
@@ -1915,7 +1923,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         loaded = type(self).create_from_state_dict(
             state_dict, device=target_device, verbose=self.ctx.verbose
         )
-        # Adopt the fully-built model's state wholesale.
+        # Replace rather than merge: an empty model's ``None`` wrapper placeholders are
+        # plain attributes, and left in place they would shadow the restored modules.
+        self.__dict__.clear()
         self.__dict__.update(loaded.__dict__)
         if self.ctx.verbose > 0:
             print(f"Loaded model state from {path}")
