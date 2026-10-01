@@ -54,6 +54,7 @@ dependencies = [
 "torchref.phased-difference-map" = "torchref.cli.difference_map:main"
 "torchref.add-metadata" = "torchref.cli.add_metadata:main"
 "torchref.strip-altlocs" = "torchref.cli.strip_altlocs:main"
+"torchref.uniform-rfree" = "torchref.cli.uniform_rfree:main"
 
 [project.optional-dependencies]
 

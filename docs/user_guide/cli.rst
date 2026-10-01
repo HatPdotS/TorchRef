@@ -101,6 +101,83 @@ restraints.
 
 :API: :mod:`torchref.cli.collection_difference_refine`
 
+Data Utilities
+--------------
+
+``torchref.uniform-rfree``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Give any number of structure-factor files (MTZ or SF-mmCIF) of one crystal
+form a single shared R-free set, for example before refining and
+difference-refining the dark and light datasets of a time-resolved experiment.
+Run it before ``torchref.refine`` / ``torchref.difference-refine`` so that no
+reflection is free in one dataset and work in another.
+
+- **Existing flags are kept by default.** If any input already has an R-free
+  column (CCP4 ``0 = free``, Phenix ``1 = free`` or mmCIF ``status``), its
+  free set is inherited and extended, at its own fraction, to the reflections
+  it lacks. The source is the first input with flags, or the file named with
+  ``--reference``. Without any flags a new set is generated. ``--fresh`` always
+  generates one. ``--free-fraction`` and ``--max-free`` size a new set, so they
+  are refused while a set is inherited. Replacing a set that a model was
+  already refined against makes that model's R-free meaningless.
+- **Mixed resolution cutoffs.** If the reference stops short of the data
+  resolution, a warning is printed and the higher-resolution shells, plus any
+  gaps in the reference, are generated at the reference's free fraction,
+  stratified by shell. By default these shells are seeded with a hash of the
+  reference's free/work partition. Every extension of the same free set is
+  therefore identical, whatever the file format, row order, flag convention
+  or the other inputs. A dataset cut at lower resolution gets exactly the
+  matching subset of the shared flags. Datasets with fewer than 500 free
+  reflections are reported.
+- **Reproducibility.** New flags are drawn on the complete reciprocal ASU
+  (Friedel mates and symmetry equivalents share a flag), with exactly the free
+  fraction in every resolution shell of ``--shell-size`` reflections. Each flag
+  depends only on cell, space group, fraction and ``--seed``. The cell is that
+  of the reference, or of the first input when there is none, and the flags
+  are sensitive to it at the 1e-5 level. To give a dataset added later the same
+  flags, run it together with an already flagged file (inherited by default)
+  or name that file with ``--reference``. A separate ``--fresh`` run on a
+  dataset with its own cell gives a different free set.
+- **Excluded reflections** (MTZ flag ``-1``, mmCIF ``status x``) stay excluded
+  in the file that marked them, as ``-1`` / ``x``. They are not copied to the
+  other files.
+- **Output.** MTZ output keeps every input column; existing flag columns are
+  replaced unless ``--keep-old-flags`` retains them as ``<name>_orig``. SF-mmCIF
+  output retains supported mapped measurements and numeric free-flag values,
+  including CCP4 work-set numbers. Unsupported columns, including saved original
+  flag columns, cause an error before writing the CIF; use MTZ for these columns.
+  Standard CIF aliases may rename measurements (for example ``I`` to ``IMEAN``).
+
+.. code-block:: bash
+
+   # do the existing free sets agree? (writes nothing; exit code 2 if not)
+   torchref.uniform-rfree dark.mtz light_*.mtz --check
+
+   # shared free set (inherited if any input has one), MTZ and mmCIF output
+   torchref.uniform-rfree dark.mtz light_*.mtz --format mtz cif -o flagged/
+
+   # new set capped at 2000 free reflections, all light data scaled onto dark
+   torchref.uniform-rfree dark.mtz light_*.mtz --fresh --max-free 2000 \
+       --scale --scale-reference dark -o flagged/
+
+With ``--scale`` the datasets are scaled together (overall plus anisotropic, on
+work reflections only) with ``DatasetCollection.scale``. The fitted factor
+multiplies the observed amplitude columns and its square multiplies the
+observed intensity columns; map coefficients such as ``FWT``/``PHWT`` are left
+alone. By default everything goes onto the shared consensus scale;
+``--scale-reference`` leaves one input unchanged instead.
+
+**Key options:** ``--check``, ``--reference {auto,FILE}``/``--fresh``,
+``--reference-column``, ``--free-fraction`` (new sets, default 0.05),
+``--max-free`` (new sets; because the cap depends on resolution, the run prints
+the ``--free-fraction`` that reproduces it), ``--seed`` (default: 0 for a new
+set, the reference hash when extending), ``--shell-size``,
+``--format {mtz,cif}``, ``--suffix``, ``--keep-old-flags``,
+``--length-tol``/``--angle-tol``/``--force`` for the cell/space-group check.
+
+:API: :mod:`torchref.cli.uniform_rfree`
+
 Map & Validation Utilities
 --------------------------
 
