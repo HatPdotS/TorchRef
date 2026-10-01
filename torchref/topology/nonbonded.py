@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 import numpy as np
 import torch
 
-from torchref.config import dtypes, get_float_dtype
+from torchref.config import dtypes, get_float_dtype, get_int_dtype
 
 if TYPE_CHECKING:
     from torchref.symmetry.cell import Cell
@@ -51,8 +51,8 @@ def prefilter_symop_offsets(
 
     Returns
     -------
-    op_indices : (M,) long – symop indices for each valid combo
-    cell_offsets : (M, 3) long – integer cell translations
+    op_indices : (M,) int – symop indices for each valid combo
+    cell_offsets : (M, 3) int – integer cell translations
     """
     device = xyz_frac.device
     fdtype = dtypes.float
@@ -86,8 +86,8 @@ def prefilter_symop_offsets(
                         valid_ops.append(op_idx)
                         valid_offsets.append([dx, dy, dz])
 
-    op_indices = torch.tensor(valid_ops, dtype=torch.long, device=device)  # dtype-ok: symmetry-operator index tensor; int64
-    cell_offsets = torch.tensor(valid_offsets, dtype=torch.long, device=device)  # dtype-ok: integer cell-offset lattice vectors; symmetry-image metadata
+    op_indices = torch.tensor(valid_ops, dtype=get_int_dtype(), device=device)
+    cell_offsets = torch.tensor(valid_offsets, dtype=get_int_dtype(), device=device)
     return op_indices, cell_offsets
 
 
@@ -110,8 +110,8 @@ def assign_to_grid(
     xyz_frac : (N, 3)
     cell : Cell
     sg : SpaceGroup
-    op_indices : (M,) long
-    cell_offsets : (M, 3) long
+    op_indices : (M,) int
+    cell_offsets : (M, 3) int
     grid_dims : (3,) long – number of grid cells per axis
 
     Returns
@@ -147,7 +147,7 @@ def assign_to_grid(
     gd = grid_dims.to(device=device, dtype=fdtype)
     cell_ijk = (frac_wrapped * gd[None, None, :]).long()
     cell_ijk = cell_ijk.clamp(
-        min=torch.zeros(3, dtype=torch.long, device=device),  # dtype-ok: clamp min-bound for long grid-index tensor; matches int64
+        min=torch.zeros(3, dtype=get_int_dtype(), device=device),
         max=(grid_dims - 1).to(device),
     )
 
@@ -178,8 +178,8 @@ def build_cell_list(
     -------
     sort_order : (E,) long
     unique_cells : (C,) long – occupied cell indices
-    starts : (C+1,) long – CSR boundaries into sorted arrays
-    cell_lookup : (n_grid_total,) long – maps flat cell → index in
+    starts : (C+1,) int – CSR boundaries into sorted arrays
+    cell_lookup : (n_grid_total,) int – maps flat cell → index in
         unique_cells, or -1 if empty.
     """
     device = flat_cell.device
@@ -189,14 +189,12 @@ def build_cell_list(
     unique_cells, counts = torch.unique_consecutive(
         sorted_cells, return_counts=True
     )
-    starts = torch.zeros(len(unique_cells) + 1, dtype=torch.long, device=device)  # dtype-ok: CSR boundary/offset array; int64 required
+    starts = torch.zeros(len(unique_cells) + 1, dtype=get_int_dtype(), device=device)
     starts[1:] = counts.cumsum(0)
 
-    cell_lookup = torch.full(
-        (n_grid_total,), -1, dtype=torch.long, device=device  # dtype-ok: grid-cell to index lookup table; used for indexing, int64
-    )
+    cell_lookup = torch.full((n_grid_total,), -1, dtype=get_int_dtype(), device=device)
     cell_lookup[unique_cells] = torch.arange(
-        len(unique_cells), dtype=torch.long, device=device  # dtype-ok: index values written into lookup table; int64
+        len(unique_cells), dtype=get_int_dtype(), device=device
     )
 
     return sort_order, unique_cells, starts, cell_lookup
@@ -234,7 +232,7 @@ def _get_canonical_offsets_14(device: torch.device) -> torch.Tensor:
                         offsets.append([dx, dy, dz])
         assert len(offsets) == 14, f"expected 14 canonical offsets, got {len(offsets)}"
         _NEIGHBOR_OFFSETS_14 = torch.tensor(
-            offsets, dtype=torch.long, device=device  # dtype-ok: grid neighbor-cell offset deltas used to compute index; int64
+            offsets, dtype=get_int_dtype(), device=device
         )
     return _NEIGHBOR_OFFSETS_14
 
@@ -314,9 +312,9 @@ def find_pairs_periodic_grid_v2(
         ASU atom index and (symop, offset) combo index per entry.
     unique_cells : (C,) long
         Occupied flat grid-cell indices.
-    starts : (C+1,) long
+    starts : (C+1,) int
         CSR boundaries into the sorted arrays.
-    cell_lookup : (n_grid_total,) long
+    cell_lookup : (n_grid_total,) int
         Maps a flat cell index to its position in ``unique_cells`` (-1 empty).
     grid_dims : (3,) long
         Number of grid cells per axis.
@@ -394,7 +392,7 @@ def find_pairs_periodic_grid_v2(
             + nb_ijk[:, 1] * gz
             + nb_ijk[:, 2]
         )
-        nb_occ_idx = cell_lookup[nb_flat]               # (C,) long, -1 empty
+        nb_occ_idx = cell_lookup[nb_flat]               # (C,) int, -1 empty
 
         has_nb = nb_occ_idx >= 0
         nb_occ_safe = nb_occ_idx.clamp(min=0)
@@ -494,7 +492,7 @@ def find_pairs_periodic_grid_v2(
                 all_pair_combo_j.append(cj)
 
     if not all_pair_atom_i:
-        empty = torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty atom-pair index placeholder; int64 required
+        empty = torch.tensor([], dtype=get_int_dtype(), device=device)
         return empty, empty, empty
 
     return (
@@ -575,11 +573,13 @@ def exclusion_set_to_hash(
     Hash: min(i,j) * max_idx + max(i,j), sorted for searchsorted.
     """
     if not exclusion_set:
-        return torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty exclusion-hash placeholder; int64
+        # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+        return torch.tensor([], dtype=torch.long, device=device)
     arr = np.array(list(exclusion_set), dtype=np.int64)
     hashes = arr[:, 0] * max_idx + arr[:, 1]  # already (min, max)
     hashes.sort()
-    return torch.tensor(hashes, dtype=torch.long, device=device)  # dtype-ok: packed pair-hash key for searchsorted; int64 avoids overflow
+    # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+    return torch.tensor(hashes, dtype=torch.long, device=device)
 
 
 def filter_pairs(
@@ -687,11 +687,11 @@ def build_vdw_restraints_gpu(
         sg = SG(sg)
 
     empty_result = {
-        "indices": torch.zeros(0, 2, dtype=torch.long, device=device),  # dtype-ok: atom-pair index tensor; torch indexing requires int64
+        "indices": torch.zeros(0, 2, dtype=get_int_dtype(), device=device),
         "min_distances": torch.zeros(0, dtype=get_float_dtype(), device=device),
         "sigmas": torch.zeros(0, dtype=get_float_dtype(), device=device),
-        "symop_indices": torch.zeros(0, dtype=torch.long, device=device),  # dtype-ok: symmetry-operator index tensor; int64
-        "cell_offsets": torch.zeros(0, 3, dtype=torch.long, device=device),  # dtype-ok: integer cell-offset lattice vectors; symmetry-image metadata
+        "symop_indices": torch.zeros(0, dtype=get_int_dtype(), device=device),
+        "cell_offsets": torch.zeros(0, 3, dtype=get_int_dtype(), device=device),
     }
 
     # Step 1: prefilter symop combos
@@ -712,12 +712,15 @@ def build_vdw_restraints_gpu(
     identity_indices = is_identity.nonzero(as_tuple=True)[0]
     if len(identity_indices) == 0:
         # Identity not in valid combos — should not happen, but add it
-        op_indices = torch.cat([
-            torch.zeros(1, dtype=torch.long, device=device), op_indices  # dtype-ok: identity prepended to symop-index tensor; int64
-        ])
-        cell_offsets_valid = torch.cat([
-            torch.zeros(1, 3, dtype=torch.long, device=device), cell_offsets_valid  # dtype-ok: identity prepended to cell-offset tensor; int64
-        ])
+        op_indices = torch.cat(
+            [torch.zeros(1, dtype=get_int_dtype(), device=device), op_indices]
+        )
+        cell_offsets_valid = torch.cat(
+            [
+                torch.zeros(1, 3, dtype=get_int_dtype(), device=device),
+                cell_offsets_valid,
+            ]
+        )
         identity_combo = 0
         M = len(op_indices)
     else:
@@ -841,7 +844,9 @@ def build_vdw_restraints_gpu(
         "valid_op_indices": op_indices,
         "valid_cell_offsets": cell_offsets_valid,
         "grid_dims": grid_dims,
-        "identity_combo": torch.tensor(identity_combo, dtype=torch.long, device=device),  # dtype-ok: combo index scalar into symop/offset arrays; int64
+        "identity_combo": torch.tensor(
+            identity_combo, dtype=get_int_dtype(), device=device
+        ),
     }
 
     if verbose > 0:
@@ -923,7 +928,7 @@ def find_h_vdw_pairs_gpu(
     xyz_all = torch.cat([xyz_heavy, xyz_h], dim=0)  # (N_all, 3)
     n_all = xyz_all.shape[0]
 
-    empty = torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty index placeholder tensor; int64 required
+    empty = torch.tensor([], dtype=get_int_dtype(), device=device)
     if n_all == 0:
         return empty, empty, empty
 

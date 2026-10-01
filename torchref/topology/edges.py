@@ -7,8 +7,9 @@ each origin's rows begin and end. Every per-origin subset is therefore a **slice
 the block: a view that shares storage, costs nothing to take, and reflects an in-place
 edit to the block immediately.
 
-Nothing here is refinable. Indices are ``int64``, no gradient reaches them, and the
-block is a constant for the lifetime of a topology unless the topology is mutated.
+Nothing here is refinable. Indices are in the configured int dtype, no gradient reaches
+them, and the block is a constant for the lifetime of a topology unless the topology is
+mutated.
 """
 
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 
+from torchref.config import get_int_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
 #: Origin order per edge type. Fixes the block layout so a rebuild on the same
@@ -135,7 +137,7 @@ class EdgeBlock(DeviceMixin):
     Parameters
     ----------
     indices : torch.Tensor
-        Atom indices, shape ``(E, k)``, dtype ``int64``, in canonical order.
+        Atom indices, shape ``(E, k)``, integer dtype, in canonical order.
     origin_bounds : dict
         ``{origin: (start, end)}`` half-open row ranges into ``indices``. Ranges are
         contiguous and cover the block.
@@ -153,7 +155,7 @@ class EdgeBlock(DeviceMixin):
     def empty(cls, arity: int, device=None) -> "EdgeBlock":
         """An edge-free block of the given arity."""
         return cls(
-            indices=torch.zeros((0, arity), dtype=torch.int64, device=device),  # dtype-ok: empty edge index tensor (0,arity); int64 index required
+            indices=torch.zeros((0, arity), dtype=get_int_dtype(), device=device),
             origin_bounds={},
         )
 
@@ -190,7 +192,7 @@ class EdgeBlock(DeviceMixin):
         if len(indices) == 0:
             return cls.empty(arity, device=device)
         return cls(
-            indices=torch.as_tensor(indices, dtype=torch.int64, device=device),  # dtype-ok: edge atom index tensor; int64 index required
+            indices=torch.as_tensor(indices, dtype=get_int_dtype(), device=device),
             origin_bounds=bounds,
         )
 

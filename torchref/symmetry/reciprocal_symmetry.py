@@ -26,8 +26,7 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 
-from torchref.config import get_float_dtype
-
+from torchref.config import get_float_dtype, get_int_dtype
 
 
 def _equivalent_hkl(
@@ -56,9 +55,9 @@ def _equivalent_hkl(
 
     Returns
     -------
-    copies : torch.Tensor, shape (M, 3), dtype=int32
+    copies : torch.Tensor, shape (M, 3), configured int dtype
         ``M = n_ops * N``, doubled with ``include_friedel``.
-    source : torch.Tensor, shape (M,), dtype=int64
+    source : torch.Tensor, shape (M,), configured int dtype
         Input row of each copy.
     phase_shifts : torch.Tensor, shape (M,)
         Translation phase offset in radians of each copy.
@@ -73,9 +72,7 @@ def _equivalent_hkl(
     # h' = h @ R^T, one batched matmul for all operations.
     matrices = sym.reciprocal.matrices.to(device=device, dtype=hkl_float.dtype)
     rotated = torch.einsum("oij,nj->oni", matrices, hkl_float)
-    copies = torch.round(rotated).to(
-        torch.int32  # dtype-ok: transformed Miller indices (hkl); fixed-width int32 representation
-    )
+    copies = torch.round(rotated).to(get_int_dtype())
     # Phase shift from translation: -2π h·t, for h' = hR under the convention
     # F(h) = Σ_j f_j exp(+2πi h·x_j). Do NOT "simplify" the sign: the wrong sign
     # costs 4π h·t mod 2π, which is exactly zero for 2₁ screws and centring, so
@@ -85,7 +82,7 @@ def _equivalent_hkl(
 
     copies = copies.reshape(-1, 3)
     phase = phase.reshape(-1)
-    source = torch.arange(n, device=device).repeat(sym.n_ops)
+    source = torch.arange(n, dtype=get_int_dtype(), device=device).repeat(sym.n_ops)
     is_friedel = torch.zeros(len(copies), dtype=torch.bool, device=device)
     if include_friedel:
         copies = torch.cat([copies, -copies])
@@ -125,9 +122,9 @@ def _expand_hkl(
 
     Returns
     -------
-    expanded_hkl : torch.Tensor, shape (M, 3), dtype=int32
+    expanded_hkl : torch.Tensor, shape (M, 3), configured int dtype
         All unique expanded Miller indices, in order of first occurrence.
-    orig_indices : torch.Tensor, shape (M,), dtype=int64
+    orig_indices : torch.Tensor, shape (M,), configured int dtype
         Index mapping expanded → original: ``F_expanded = F_orig[orig_indices]``.
     phase_shifts : torch.Tensor, shape (M,), dtype=float32
         Translation phase offsets in radians:
@@ -211,7 +208,7 @@ def _complete_hkl(
     -------
     complete_hkl : torch.Tensor, shape (M, 3), dtype int32
         All possible Miller indices within resolution (minus systematic absences).
-    input_indices : torch.Tensor, shape (M,), dtype int64
+    input_indices : torch.Tensor, shape (M,), integer dtype
         Index mapping complete → input, or -1 where missing. Use as
         ``F_complete[~missing] = F_input[input_indices[~missing]]``.
     missing_mask : torch.Tensor, shape (M,), dtype bool
@@ -240,7 +237,7 @@ def _complete_hkl(
     all_hkl_np = all_hkl.cpu().numpy()
     n_complete = len(all_hkl)
 
-    input_indices = torch.full((n_complete,), -1, dtype=torch.int64, device=device)  # dtype-ok: reflection index buffer (-1 sentinel); int64 index required
+    input_indices = torch.full((n_complete,), -1, dtype=get_int_dtype(), device=device)
     missing_mask = torch.ones(n_complete, dtype=torch.bool, device=device)
 
     for i, hkl in enumerate(all_hkl_np):
@@ -281,7 +278,7 @@ def _reduce_hkl(
     -------
     hkl_asu : torch.Tensor, shape (M, 3), dtype int32
         Unique Miller indices in the asymmetric unit.
-    reduction_indices : torch.Tensor, shape (M, n_equiv), dtype int64
+    reduction_indices : torch.Tensor, shape (M, n_equiv), configured int dtype
         Indices into ``hkl_p1`` for each ASU reflection's equivalents, **-1 where
         no P1 reflection exists** -- mask or clamp before gathering, or a -1 will
         silently read the last row: ``F_asu = aggregate(F_p1[reduction_indices], dim=1)``.
@@ -316,7 +313,7 @@ def _reduce_hkl(
         for i in range(n_ops):
             # h' = h @ R^T
             hkl_trans = torch.round(torch.matmul(hkl_single, recip_matrices[i].T)).to(
-                torch.int32  # dtype-ok: transformed Miller indices (hkl); fixed-width int32 representation
+                get_int_dtype()
             )
             equivalents.append(hkl_trans)
 
@@ -353,7 +350,7 @@ def _reduce_hkl(
             R = recip_matrices[equiv_idx]
             t = translations[equiv_idx]
 
-            hkl_trans = torch.round(torch.matmul(hkl_single, R.T)).to(torch.int32)  # dtype-ok: transformed Miller indices (hkl); fixed-width int32 representation
+            hkl_trans = torch.round(torch.matmul(hkl_single, R.T)).to(get_int_dtype())
             # -2π h·t, same convention as expand_hkl (see the derivation there).
             phase_shift = -2.0 * np.pi * torch.matmul(hkl_single, t)
 
@@ -375,9 +372,9 @@ def _reduce_hkl(
     asu_list = sorted(asu_reflections.keys())
     n_asu = len(asu_list)
 
-    hkl_asu = torch.tensor(asu_list, dtype=torch.int32, device=device)  # dtype-ok: ASU Miller indices (hkl); fixed-width int32 representation
+    hkl_asu = torch.tensor(asu_list, dtype=get_int_dtype(), device=device)
     reduction_indices = torch.full(
-        (n_asu, n_equiv), -1, dtype=torch.int64, device=device  # dtype-ok: reduction index map (-1 sentinel); int64 index tensor required
+        (n_asu, n_equiv), -1, dtype=get_int_dtype(), device=device
     )
     phase_shifts = torch.zeros((n_asu, n_equiv), dtype=get_float_dtype(), device=device)
 
@@ -455,7 +452,7 @@ def _canonicalize_hkl(
     ----------
     sym : SpaceGroup
         The space group whose asymmetric unit convention applies.
-    hkl : torch.Tensor, shape (N, 3), dtype int32
+    hkl : torch.Tensor, shape (N, 3), integer dtype
         Input Miller indices.
     include_friedel : bool, default True
         Whether Friedel mates are considered equivalent.
@@ -467,9 +464,9 @@ def _canonicalize_hkl(
 
     Returns
     -------
-    canonical_hkl : torch.Tensor, shape (N, 3), dtype int32
+    canonical_hkl : torch.Tensor, shape (N, 3), dtype of ``hkl``
         Remapped indices, sorted lexicographically by (h, k, l) when ``sort``.
-    phase_shifts : torch.Tensor, shape (N,), dtype float32
+    phase_shifts : torch.Tensor, shape (N,), configured float dtype
         Additive phase correction in radians, in the same row order.
     friedel_flags : torch.Tensor, shape (N,), dtype bool
         True where Friedel conjugation was applied, in the same row order.
@@ -492,7 +489,8 @@ def _canonicalize_hkl(
         empty_hkl = torch.empty((0, 3), dtype=hkl_dtype, device=device)
         empty_f = torch.empty(0, dtype=get_float_dtype(), device=device)
         empty_b = torch.empty(0, dtype=torch.bool, device=device)
-        empty_i = torch.empty(0, dtype=torch.int64, device=device) if sort else None  # dtype-ok: empty index tensor; int64 index dtype required
+        # dtype-ok: the int64 permutation torch.argsort returns for non-empty input
+        empty_i = torch.empty(0, dtype=torch.int64, device=device) if sort else None
         return empty_hkl, empty_f, empty_b, empty_i
 
     # The mapping runs on CPU whatever device ``sym`` or ``hkl`` live on (gemmi's
@@ -502,10 +500,10 @@ def _canonicalize_hkl(
     asu = gemmi.ReciprocalAsu(sym._gemmi)
     condition_key = asu.condition_str()
     # Reciprocal-space rotation matrices are always integer-valued (0, ±1).
-    recip_ops = torch.round(sym.reciprocal.matrices.detach().cpu()).to(torch.int32)
+    recip_ops = torch.round(sym.reciprocal.matrices.detach().cpu()).to(get_int_dtype())
     translations = sym.translations.detach().cpu()  # (n_ops, 3)
     n_ops = len(recip_ops)
-    hkl_cpu = hkl.detach().to(device="cpu", dtype=torch.int32)  # (N, 3)
+    hkl_cpu = hkl.detach().to(device="cpu", dtype=get_int_dtype())  # (N, 3)
 
     def in_asu(h, k, l):
         try:
@@ -533,7 +531,7 @@ def _canonicalize_hkl(
     # most reflections are resolved by the first few operators. ``todo`` holds the
     # still-unmapped rows in increasing order (``None`` while that is all of them).
     canonical = torch.empty_like(hkl_cpu)
-    op_idx = torch.empty(n_refl, dtype=torch.int16)
+    op_idx = torch.empty(n_refl, dtype=get_int_dtype())
     friedel = torch.zeros(n_refl, dtype=torch.bool)
     todo = None
 
@@ -586,17 +584,17 @@ def _canonicalize_hkl(
     # A single uniform sign is wrong for one half and invisible in P21/P212121/C2,
     # where every shift is 0 or π. tests/unit/symmetry/test_phase_convention.py.
     # h·t is summed left to right so the value does not depend on a backend's
-    # reduction order; the shift is rounded to float32 like the rest of the output.
+    # reduction order.
     if bool(translations.any()):
-        t_sel = translations.index_select(0, op_idx.long())
-        hf = hkl_cpu.to(torch.float32)
+        t_sel = translations.index_select(0, op_idx)
+        hf = hkl_cpu.to(get_float_dtype())
         h_dot_t = (
             hf[:, 0] * t_sel[:, 0] + hf[:, 1] * t_sel[:, 1] + hf[:, 2] * t_sel[:, 2]
         )
-        friedel_sign = torch.where(friedel, 1.0, -1.0).to(torch.float32)
-        phase = (friedel_sign * 2.0 * math.pi * h_dot_t).to(torch.float32)
+        friedel_sign = torch.where(friedel, 1.0, -1.0).to(get_float_dtype())
+        phase = friedel_sign * 2.0 * math.pi * h_dot_t
     else:
-        phase = torch.zeros(n_refl, dtype=torch.float32)
+        phase = torch.zeros(n_refl, dtype=get_float_dtype())
 
     canonical_hkl = canonical.to(dtype=hkl_dtype, device=device)
     phase_shifts = phase.to(dtype=get_float_dtype(), device=device)
@@ -607,11 +605,9 @@ def _canonicalize_hkl(
     # Lexicographic sort by (h, k, l) via composite key
     h_max = int(canonical_hkl.abs().max().item()) + 1
     base = 2 * h_max + 1
-    sort_key = (
-        canonical_hkl[:, 0].to(torch.int64) * base * base  # dtype-ok: linear HKL hash/key; int64 avoids overflow for indexing
-        + canonical_hkl[:, 1].to(torch.int64) * base  # dtype-ok: linear HKL hash/key; int64 avoids overflow for indexing
-        + canonical_hkl[:, 2].to(torch.int64)  # dtype-ok: linear HKL hash/key; int64 avoids overflow for indexing
-    )
+    # dtype-ok: composite sort key h*base^2+k*base+l overflows int32 for large Miller indices
+    hkl64 = canonical_hkl.to(torch.int64)
+    sort_key = hkl64[:, 0] * base * base + hkl64[:, 1] * base + hkl64[:, 2]
     sort_indices = torch.argsort(sort_key)
 
     return (
