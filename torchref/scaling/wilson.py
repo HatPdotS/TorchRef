@@ -38,7 +38,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 from torchref.scaling._protein_gamma import protein_gamma as _protein_gamma
 from torchref.scaling.basis import chebyshev_design
 
@@ -280,7 +280,6 @@ class WilsonNormaliser:
         out[0] = out[0] + torch.log(ratio)
         return out
 
-
     def _irls(
         self,
         X: torch.Tensor,
@@ -468,7 +467,7 @@ class WilsonNormaliser:
         branches feed two different parameters of the same likelihood.
         """
         work = get_float_dtype()
-        hkl_l = hkl.to(torch.long)  # dtype-ok: Miller indices are integers
+        hkl_l = hkl.to(get_int_dtype())
         # The cell may carry the configured default device while the reflections
         # are somewhere else; the caller should not have to reconcile them.
         rec = cell.reciprocal_basis_matrix.to(device=hkl_l.device, dtype=work)

@@ -47,11 +47,12 @@ def _equiv_hkls_to_flat_indices(
     torch.Tensor
         Flat indices, shape ``(n_ops * N,)``, dtype ``int64``, wrapped modulo the grid.
     """
-    all_hkl = equiv_hkls.reshape(-1, 3)
+    # dtype-ok: the flat index h*Ny*Nz + k*Nz + l overflows int32 above 2**31 voxels
+    all_hkl = equiv_hkls.reshape(-1, 3).to(torch.int64)
     hi = torch.remainder(all_hkl[:, 0], Nx)
     ki = torch.remainder(all_hkl[:, 1], Ny)
     li = torch.remainder(all_hkl[:, 2], Nz)
-    return (hi * (Ny * Nz) + ki * Nz + li).to(torch.int64)  # dtype-ok: flat HKL grid index; int64 avoids overflow, used for indexing
+    return hi * (Ny * Nz) + ki * Nz + li
 
 
 class ReciprocalSymmetryExtractor(DeviceMixin):

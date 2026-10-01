@@ -36,7 +36,7 @@ mask's own ``k_sol`` + falloff.
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_default_device, get_float_dtype, get_int_dtype
 from torchref.scaling.scaler import Scaler
 from torchref.scaling.solvent import SolventModel
 from torchref.experimental.monolithic_refinement.density_solvent import (
@@ -127,7 +127,7 @@ class DensityDerivedSolvent(nn.Module):
         Not detached: ``F_sol`` follows the moving atoms so gradients reach
         ``xyz``/``adp``. The scaler applies the contrast and falloff on top.
         """
-        return self.density(hkl.to(torch.long))  # dtype-ok: hkl cast to long for density lookup indexing; PyTorch requires int64
+        return self.density(hkl.to(get_int_dtype()))
 
     def update_solvent(self):
         """No-op: the density mask is rebuilt live on every scaler forward."""

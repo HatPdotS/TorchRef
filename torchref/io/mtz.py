@@ -21,6 +21,7 @@ import reciprocalspaceship as rs
 import torch
 
 from torchref.base.fourier.coefficients import map_coefficients
+from torchref.config import get_int_dtype
 
 if TYPE_CHECKING:
     from torchref.io.datasets.reflection_data import ReflectionData
@@ -763,9 +764,9 @@ def _anomalous_table(data, fcalc):
     observed = torch.isfinite(F_cpu) & (F_cpu > 0)
     if data.F_sigma is not None:
         observed = observed & torch.isfinite(data.F_sigma.detach().cpu())
-    arange = torch.arange(n)
-    plus_idx = torch.full((m,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
-    minus_idx = torch.full((m,), -1, dtype=torch.long)  # dtype-ok: Friedel-mate index map (-1 sentinel) for indexing; PyTorch requires int64
+    arange = torch.arange(n, dtype=get_int_dtype())
+    plus_idx = torch.full((m,), -1, dtype=get_int_dtype())
+    minus_idx = torch.full((m,), -1, dtype=get_int_dtype())
     plus_sel, minus_sel = (~flag) & observed, flag & observed
     plus_idx[inverse[plus_sel]] = arange[plus_sel]
     minus_idx[inverse[minus_sel]] = arange[minus_sel]

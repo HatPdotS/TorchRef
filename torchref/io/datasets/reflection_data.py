@@ -16,7 +16,7 @@ import torch
 
 from torchref.base import math_torch
 from torchref.base.french_wilson import french_wilson_auto
-from torchref.config import dtypes, normalize_device
+from torchref.config import dtypes, get_int_dtype, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
 from torchref.symmetry import Cell, SpaceGroup
@@ -297,7 +297,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             n = 0 if self.hkl is None else len(self.hkl)
             device = self.device
             if n == 0:
-                empty = torch.empty(0, dtype=torch.long, device=device)  # dtype-ok: empty index tensor; PyTorch requires int64 for indexing
+                empty = torch.empty(0, dtype=get_int_dtype(), device=device)
                 self._subset_cache = {
                     "work": empty,
                     "free": empty,
@@ -456,7 +456,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             target = self
 
         new_hkl = new_hkl.to(dtype=dtypes.int, device=self.device)
-        index_map = index_map.to(device=self.device, dtype=torch.long)  # dtype-ok: index map used for indexing/gather; PyTorch requires int64
+        index_map = index_map.to(device=self.device, dtype=get_int_dtype())
         present = index_map >= 0
 
         skip = {"hkl", *self._REINDEX_DERIVED}
@@ -469,7 +469,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         }
         if "hkl_anomalous" in gathered:
             # Missing rows fall back to the reference HKL, never a 0,0,0 row.
-            gathered["hkl_anomalous"][~present] = new_hkl[~present]
+            anomalous = gathered["hkl_anomalous"]
+            anomalous[~present] = new_hkl[~present].to(anomalous.dtype)
         for name, val in gathered.items():
             setattr(target, name, val)
 
@@ -1423,7 +1424,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if self.resolution is None:
             self._calculate_resolution()
         mask = self.masks()
-        idx = bin_indices[mask].to(torch.int64)  # dtype-ok: index_add_ requires int64 indices
+        idx = bin_indices[mask].to(get_int_dtype())
         res = self.resolution[mask]
         total = torch.zeros(n_bins, dtype=res.dtype, device=res.device).index_add_(
             0, idx, res
@@ -1968,7 +1969,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ----------
         new_hkl : torch.Tensor, shape (M, 3)
             New Miller indices.
-        index_mapping : torch.Tensor, shape (M,), dtype int64
+        index_mapping : torch.Tensor, shape (M,), integer dtype
             Maps new indices to original: ``new[i] = old[index_mapping[i]]``
             Values of -1 indicate missing reflections (filled with defaults).
         phase_shifts : torch.Tensor, optional, shape (M,)

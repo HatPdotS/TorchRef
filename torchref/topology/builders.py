@@ -612,8 +612,10 @@ class BondRestraintBuilder(RestraintBuilder):
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -719,8 +721,10 @@ class AngleRestraintBuilder(RestraintBuilder):
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -840,8 +844,10 @@ class TorsionRestraintBuilder(RestraintBuilder):
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
         }
@@ -931,7 +937,7 @@ class PlaneRestraintBuilder(RestraintBuilder):
 
             key = f"{n_atoms}_atoms"
             result[key] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
+                "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
                 "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             }
 
@@ -1053,7 +1059,7 @@ class ChiralRestraintBuilder(RestraintBuilder):
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
+            "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
             "ideal_volumes": torch.tensor(
                 ideal_volumes, dtype=get_float_dtype(), device=device
             ),
@@ -1308,8 +1314,10 @@ class InterResidueBondBuilder:
         sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -1411,8 +1419,10 @@ class InterResidueBondBuilder:
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -1533,8 +1543,10 @@ class InterResidueAngleBuilder:
         sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -1647,8 +1659,10 @@ class InterResidueAngleBuilder:
         sigmas = np.where(sigmas == 0, 1e-4, sigmas)
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
@@ -1784,8 +1798,10 @@ class InterResidueTorsionBuilder:
             periods = periods[sort_order]
 
         return {
-            "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
-            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
+            "references": torch.tensor(
+                references, dtype=get_float_dtype(), device=device
+            ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
         }
@@ -1951,7 +1967,7 @@ class InterResidueTorsionBuilder:
                 indices = indices[order]
                 periods = periods[order]
             result["phi"] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
+                "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
                 "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
             }
 
@@ -1964,7 +1980,7 @@ class InterResidueTorsionBuilder:
                 indices = indices[order]
                 periods = periods[order]
             result["psi"] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
+                "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
                 "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
             }
 
@@ -1983,7 +1999,7 @@ class InterResidueTorsionBuilder:
                 periods = periods[order]
                 is_proline = is_proline[order]
             result["omega"] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
+                "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
                 "references": torch.tensor(
                     references, dtype=get_float_dtype(), device=device
                 ),
@@ -2022,13 +2038,13 @@ class InterResidueTorsionBuilder:
                 stypes = stypes[order]
             result["ramachandran"] = {
                 "phi_indices": torch.tensor(
-                    phi_idx, dtype=torch.long, device=device  # dtype-ok: phi atom-index tensor for dihedral; int64 required
+                    phi_idx, dtype=get_int_dtype(), device=device
                 ),
                 "psi_indices": torch.tensor(
-                    psi_idx, dtype=torch.long, device=device  # dtype-ok: psi atom-index tensor for dihedral; int64 required
+                    psi_idx, dtype=get_int_dtype(), device=device
                 ),
                 "surface_type": torch.tensor(
-                    stypes, dtype=torch.long, device=device  # dtype-ok: categorical rama surface-type code used as advanced index; int64
+                    stypes, dtype=get_int_dtype(), device=device
                 ),
             }
 
@@ -2076,34 +2092,34 @@ class InterResiduePlaneBuilder:
         planes_by_size: Dict[int, List[Tuple[np.ndarray, np.ndarray]]] = {}
 
         for res_i_idx, res_next_idx in pairs:
-          for map_i in conf_maps[res_i_idx]:
-            for map_next in conf_maps[res_next_idx]:
+            for map_i in conf_maps[res_i_idx]:
+                for map_next in conf_maps[res_next_idx]:
 
-              for plane_data in link_data.planes:
-                comp_ids = plane_data["comp_ids"]
-                atom_names = plane_data["atoms"]
-                sigmas = plane_data["sigmas"]
+                    for plane_data in link_data.planes:
+                        comp_ids = plane_data["comp_ids"]
+                        atom_names = plane_data["atoms"]
+                        sigmas = plane_data["sigmas"]
 
-                plane_indices = []
-                plane_sigmas = []
-                all_found = True
+                        plane_indices = []
+                        plane_sigmas = []
+                        all_found = True
 
-                for i, (comp_id, atom_name, sigma) in enumerate(
+                        for i, (comp_id, atom_name, sigma) in enumerate(
                     zip(comp_ids, atom_names, sigmas)
                 ):
-                    atom_map = map_i if comp_id == "1" else map_next
-                    if atom_name in atom_map:
-                        plane_indices.append(atom_map[atom_name])
-                        plane_sigmas.append(sigma)
-                    else:
-                        all_found = False
-                        break
+                            atom_map = map_i if comp_id == "1" else map_next
+                            if atom_name in atom_map:
+                                plane_indices.append(atom_map[atom_name])
+                                plane_sigmas.append(sigma)
+                            else:
+                                all_found = False
+                                break
 
-                if all_found and len(plane_indices) >= 3:
-                    n_atoms = len(plane_indices)
-                    if n_atoms not in planes_by_size:
-                        planes_by_size[n_atoms] = []
-                    planes_by_size[n_atoms].append(
+                        if all_found and len(plane_indices) >= 3:
+                            n_atoms = len(plane_indices)
+                            if n_atoms not in planes_by_size:
+                                planes_by_size[n_atoms] = []
+                            planes_by_size[n_atoms].append(
                         (
                             np.array(plane_indices, dtype=np.int64),
                             np.array(plane_sigmas, dtype=np.float64),
@@ -2127,7 +2143,7 @@ class InterResiduePlaneBuilder:
 
             key = f"{n_atoms}_atoms"
             result[key] = {
-                "indices": torch.tensor(indices, dtype=torch.long, device=device),  # dtype-ok: atom-index restraint tensor; torch indexing requires int64
+                "indices": torch.tensor(indices, dtype=get_int_dtype(), device=device),
                 "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             }
 
