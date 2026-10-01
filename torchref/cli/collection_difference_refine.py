@@ -26,6 +26,7 @@ import argparse
 import itertools
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import torch
@@ -43,20 +44,22 @@ from torchref.cli._common import (
     add_weights_arg,
     build_dual_column_names,
     configure_unbuffered_output,
+    difference_config_from_args,
+    intensity_difference,
     load_model,
     load_reflection_data,
     parse_device_str,
     parse_weights,
     register_timing,
-    sigma_d_config_from_args,
     validate_cif_files,
     validate_files,
 )
 from torchref.maps.ded_weights import (
     DEFAULT_SCHEME,
     WEIGHT_COLUMNS,
+    DedWeightFallbackWarning,
     all_ded_weights,
-    reflection_geometry,
+    difference_snr,
 )
 from torchref.utils.serialization import convert_to_serializable
 
@@ -239,7 +242,7 @@ def setup_loss_state(
     similarity_alpha=2.0,
     two_moment=False,
     difference_target="difference",
-    sigma_d_config=None,
+    difference_config=None,
 ):
     """Build LossState with collection-aware targets.
 
@@ -256,8 +259,8 @@ def setup_loss_state(
         Which difference row the weight schedule drives. Both are registered, as
         ``xray/difference`` and ``xray/difference_sd``; the other keeps the weight in
         ``target_weights`` (zero by default).
-    sigma_d_config : SigmaDConfig, optional
-        Exponent and shrinkage settings of the ``difference_sd`` row's estimator.
+    difference_config : DifferencePowerConfig, optional
+        Its ``gamma`` fixes the dark-amplitude exponent of the ``difference_sd`` fit.
     """
     from torchref.refinement import LossState
     from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
@@ -280,7 +283,7 @@ def setup_loss_state(
         dataset_collection,
         model_collection,
         scaler=scaler,
-        sigma_d_config=sigma_d_config,
+        difference_config=difference_config,
     )
     selected_diff = {"difference": diff_target, "difference_sd": diff_sd_target}[
         difference_target
@@ -321,103 +324,86 @@ def setup_loss_state(
 
 
 def compute_bayes_extrapolated_amplitudes(
-    Fobs_dark,
-    Fobs_light,
-    sig_ext,
-    phi_dark,
-    phi_mixed,
-    f,
+    Fobs_dark: torch.Tensor,
+    Fobs_light: torch.Tensor,
+    sig_dark: torch.Tensor,
+    phi_dark: torch.Tensor,
+    phi_mixed: torch.Tensor,
+    f: float | torch.Tensor,
     *,
-    tau_sq_floor=1e-4,
-    epsilon=None,
-    d_star_sq=None,
-):
-    """Empirical Bayes shrinkage estimator for extrapolated SF amplitudes.
+    snr: torch.Tensor,
+    sig_light: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Shrink the extrapolated amplitudes toward ``Fo_dark`` by their signal fraction.
 
-    Estimates per-reflection shrinkage weights from the propagated variance of the
-    extrapolation, then shrinks the phase-aware extrapolated amplitude toward
-    Fo_dark, regularising noisy high-resolution and weakly-measured reflections::
+    The posterior mean of the extrapolated deviation under a Gaussian prior of the
+    fitted difference power::
 
-        F_ext     = |F_dark*e^(iφ_d) + ΔF/f|         (phase-aware amplitude)
-        S(h)      = expected power of (F_ext - Fo_dark), per resolution shell
-        w(h)      = S(h) / (S(h) + σ_ext²(h))
-        F_extb    = w(h)·F_ext + (1-w(h))·Fo_dark    (amplitude shrinkage)
+        F_ext  = |F_dark e^(i phi_d) + dF / f|          (phase-aware amplitude)
+        r      = F_ext - Fo_dark                       (~ dF / f)
+        w      = snr / (1 + snr)
+        F_extb = Fo_dark + w r
 
-    With ``d_star_sq`` the signal power comes per resolution shell from
-    :func:`~torchref.refinement.model_error_estimation.sigma_d.estimate_sigma_d`
-    (``<(F_ext - Fo_dark)²> - <σ_ext²>`` per shell, shrunk toward a smooth curve);
-    without it the single global ``τ² = max(<(F_ext - Fo_dark)²> - <σ_ext²>, floor)``
-    is used, which is the one-shell special case.
+    ``r`` is the observed difference scaled by ``1/f``, signal and noise alike, so its
+    signal-to-noise ratio is the difference's and the occupancy does not enter ``w``.
+    ``w`` is positive wherever the fitted power is, so no reflection is removed; a noisy
+    one keeps a small share of its deviation. The result is for viewing: it is biased
+    toward the dark state by construction and is not a refinement target.
 
     Parameters
     ----------
     Fobs_dark, Fobs_light : Tensor (N,)
         Observed amplitudes.
-    sig_ext : Tensor (N,)
-        Propagated uncertainty of the extrapolated amplitude. Taken from the caller
-        rather than rebuilt here: ``F_ext`` is linear in the observations with
-        ``dF_ext/dF_light = 1/f`` and ``dF_ext/dF_dark = 1 - 1/f = -(1-f)/f``, so the
-        dark term carries a ``(1-f)**2`` weight.
+    sig_dark : Tensor (N,)
+        Sigma of ``Fobs_dark``, which the shrunk amplitude sits on.
     phi_dark, phi_mixed : Tensor (N,)
         Calculated phases (radians) for the dark and mixed models.
     f : float or Tensor
         Excited-state population fraction.
-    tau_sq_floor : float
-        Floor on the estimated signal variance.
-    epsilon, d_star_sq : Tensor (N,), optional
-        Reflection multiplicity and ``1/d**2`` in A^-2. Given ``d_star_sq`` the signal
-        power is estimated per resolution shell.
+    snr : Tensor (N,)
+        Per-reflection signal-to-noise ratio of the difference, from
+        :func:`torchref.maps.ded_weights.difference_snr`.
+    sig_light : Tensor (N,)
+        Sigma of the independent light amplitude measurement, in amplitude units.
+        Intensity-derived difference noise controls the SNR and shrinkage weight,
+        not these marginal amplitude uncertainties.
 
     Returns
     -------
     tuple
-        ``(F_ext_bayes, var_ext_bayes, w_shrinkage, tau_sq)`` -- the **shrunk**
-        extrapolated amplitude, its posterior variance and the shrinkage weight per
-        reflection, and the count-weighted mean signal variance as a float.
+        ``(F_ext_bayes, var_ext_bayes, w_shrinkage)`` -- the shrunk extrapolated
+        amplitude, its first-order propagated measurement variance and the weight
+        per reflection. The variance holds model phases and the fitted weight fixed;
+        it is not the Gaussian posterior variance of a latent difference and does
+        not include uncertainty in the fit, phases or occupancy. For equal phases
+        and positive extrapolated amplitude it is
+        ``(1 - w/f)**2 * sig_dark**2 + (w/f)**2 * sig_light**2``.
+        The covariance with the dark component is thereby included. At exactly
+        zero extrapolated complex amplitude, where the norm has no derivative,
+        the directional upper bound is used.
     """
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
-    delta_F = F_light_phased - F_dark_phased
-
-    sig_sq_ext = sig_ext**2
-
-    # Phase-aware extrapolated amplitude
-    F_ext_complex = F_dark_phased + delta_F / f
-    F_ext = torch.abs(F_ext_complex)
-
-    residual = F_ext - Fobs_dark
-    if d_star_sq is None:
-        tau_sq = max(
-            (residual.square().mean() - sig_sq_ext.mean()).item(), tau_sq_floor
-        )
-        S = torch.full_like(F_ext, tau_sq)
-    else:
-        from torchref.refinement.model_error_estimation.sigma_d import (
-            estimate_sigma_d,
-            sigma_d_per_reflection,
-        )
-
-        fit = torch.isfinite(residual) & torch.isfinite(sig_ext)
-        shells = estimate_sigma_d(
-            residual, sig_ext, epsilon, d_star_sq, None, fit, gamma=0.0
-        )
-        est = sigma_d_per_reflection(shells, d_star_sq, epsilon, None, sig_ext)
-        S = est.S.clamp(min=tau_sq_floor)
-        weight = shells.counts.clamp(min=1.0)
-        tau_sq = max(
-            float((shells.Sigma_N * shells.counts).sum() / weight.sum()), tau_sq_floor
-        )
-
-    # Per-reflection shrinkage weight (in [0, 1])
-    w = S / (S + sig_sq_ext)
-
-    # Posterior variance
-    var_ext_bayes = (S * sig_sq_ext) / (S + sig_sq_ext)
-
+    z = F_dark_phased + (F_light_phased - F_dark_phased) / f
+    F_ext = torch.abs(z)
+    # snr / (1 + snr), written so an infinite SNR gives exactly 1 rather than inf/inf.
+    w = 1.0 / (1.0 + 1.0 / snr)
+    unit = z / F_ext.clamp_min(torch.finfo(Fobs_dark.dtype).tiny)
+    a, b = 1.0 - 1.0 / f, 1.0 / f
+    d_dark = a * (unit.conj() * torch.exp(1j * phi_dark)).real
+    d_light = b * (unit.conj() * torch.exp(1j * phi_mixed)).real
+    j_dark = (1.0 - w) + w * d_dark
+    j_light = w * d_light
+    var_ext_bayes = (
+        j_dark.square() * sig_dark.square() + j_light.square() * sig_light.square()
+    )
+    zero_bound = ((1.0 - w) + w * abs(a)).square() * sig_dark.square() + (
+        w * abs(b)
+    ).square() * sig_light.square()
+    var_ext_bayes = torch.where(F_ext > 0, var_ext_bayes, zero_bound)
     # Shrink the amplitude toward Fo_dark -- scalar, so no phase interference.
-    F_ext_bayes = w * F_ext + (1 - w) * Fobs_dark
-
-    return F_ext_bayes, var_ext_bayes, w, tau_sq
+    F_ext_bayes = Fobs_dark + w * (F_ext - Fobs_dark)
+    return F_ext_bayes, var_ext_bayes, w
 
 
 def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
@@ -430,7 +416,7 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     the model's estimate of it and converting back to an amplitude gives a difference
     amplitude that is comparable across datasets, which the raw one is not.
 
-    ``DDF`` is the diagnostic that matters: smooth and featureless against resolution
+    ``ddF`` is the diagnostic that matters: smooth and featureless against resolution
     means the correction is collinear with a scale or overall-B error and should be
     distrusted; structure in it is the signal.
 
@@ -492,9 +478,9 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
         sig_F_corr = _np(sig_F_corr_full)
 
     I_two_moment = I_coherent + variance
-    DF_corr = F_corr - Fobs_dark
-    DDF = DF_corr - diff_Fobs
-    sig_DF_corr = np.sqrt(sig_F_corr**2 + sig_dark**2)
+    dF_corr = F_corr - Fobs_dark
+    ddF = dF_corr - diff_Fobs
+    sig_dF_corr = np.sqrt(sig_F_corr**2 + sig_dark**2)
 
     # Use the modulus of the complex vector difference so the corrected
     # coefficient retains the phase rotation between the dark and light states.
@@ -514,20 +500,20 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
 
     columns = {
         # The corrected difference map, on the same dark phases as DELFWT.
-        "DELFWT_corr": DF_corr * weights,
+        "DELFWT_corr": dF_corr * weights,
         "Fo_light_corr": F_corr,
         "SIGFo_light_corr": sig_F_corr,
-        "DF_corr": DF_corr,
-        "SIGDF_corr": sig_DF_corr,
-        "DDF": DDF,
+        "dF_corr": dF_corr,
+        "SIGdF_corr": sig_dF_corr,
+        "ddF": ddF,
     }
     types = {
         "DELFWT_corr": "F",
         "Fo_light_corr": "F",
         "SIGFo_light_corr": "Q",
-        "DF_corr": "F",
-        "SIGDF_corr": "Q",
-        "DDF": "F",
+        "dF_corr": "F",
+        "SIGdF_corr": "Q",
+        "ddF": "F",
     }
     if all_columns:
         columns.update({
@@ -572,14 +558,14 @@ def _difference_columns(
 ):
     """The difference map's amplitudes, phases and weights.
 
-    ``DF``/``SIGDF`` is the signed amplitude difference ``|Fo_light| - |Fo_dark|`` with
+    ``dF``/``SIGdF`` is the signed amplitude difference ``|Fo_light| - |Fo_dark|`` with
     its propagated uncertainty, ``PHDELWT`` the **dark** model's phase it is carried on:
     the isomorphous difference Fourier, and the construction ``torchref.validate-ded``
-    correlates against. One weight column per registered scheme (``W_SD``, ``W_IVW``;
-    MTZ type ``W``, mean one) sits beside it, so any weighting is ``DF`` times a column
-    and reproducible from the file: ``torchref.mtz2map -csf DF -cw W_SD -cphi PHDELWT``.
+    correlates against. One weight column per registered scheme (``W_Q``, ``W_InVa``;
+    MTZ type ``W``, mean one) sits beside it, so any weighting is ``dF`` times a column
+    and reproducible from the file: ``torchref.mtz2map -csf dF -cw W_Q -cphi PHDELWT``.
     ``KSCALE`` (type ``R``) is the scaler's multiplicative factor from model to observed
-    scale, so ``DF / KSCALE`` is in electrons and ``mtz2map --units electrons`` gives
+    scale, so ``dF / KSCALE`` is in electrons and ``mtz2map --units electrons`` gives
     e/A^3.
 
     This layer needs no light-state model: the amplitude is ``|Fo_light| - |Fo_dark|``
@@ -604,8 +590,8 @@ def _difference_columns(
         "SIGFo_dark": sig_dark,
         "Fo_light": Fobs_light,
         "SIGFo_light": sig_light,
-        "DF": diff_Fobs,
-        "SIGDF": sig_diff,
+        "dF": diff_Fobs,
+        "SIGdF": sig_diff,
         "PHDELWT": phases_dark,
         **weight_columns,
         "KSCALE": kscale,
@@ -623,8 +609,8 @@ def _difference_columns(
         "SIGFo_dark": "Q",
         "Fo_light": "F",
         "SIGFo_light": "Q",
-        "DF": "F",
-        "SIGDF": "Q",
+        "dF": "F",
+        "SIGdF": "Q",
         "PHDELWT": "P",
         **{name: "W" for name in weight_columns},
         "KSCALE": "R",
@@ -685,14 +671,14 @@ def _phasing_columns(mc, scaler, hkl_all, mask, *, fcalc_dark, Fobs_dark_vals,
                 "2mDFop-DFc": (2 * Fobs_diff_phased - Fcalc_diff_amp) * weights,
                 "mDFop-DFc": (Fobs_diff_phased - Fcalc_diff_amp) * weights,
                 "PHIC_diff": torch.angle(fcalc_diff).detach().rad2deg().cpu().numpy(),
-                "DFc": Fcalc_light - Fcalc_dark,
+                "dFc": Fcalc_light - Fcalc_dark,
                 # This column holds the real modulus of the complex vector difference.
-                "DFc_phased": Fcalc_diff_amp,
+                "dFc_phased": Fcalc_diff_amp,
             }
         )
         types.update({
             "2mDFop-DFc": "F", "mDFop-DFc": "F", "PHIC_diff": "P",
-            "DFc": "F", "DFc_phased": "F",
+            "dFc": "F", "dFc_phased": "F",
         })
 
     ctx = {
@@ -717,18 +703,22 @@ def _extrapolation_columns(
     phi_dark,
     ctx,
     rfree_flags_masked,
+    snr_est,
     all_columns=False,
     verbose=1,
-    geometry=None,
 ):
-    """Extrapolated light-state amplitudes and the map to refine against.
+    """Extrapolated light-state amplitudes and the map to view them in.
+
+    ``snr_est`` is the :class:`~torchref.maps.ded_weights.DifferenceSNR` of the
+    light-minus-dark differences on the same reflections; ``None`` (the fit failed)
+    writes the unshrunk amplitudes.
 
     Three constructions of the same quantity, all needing the light model:
 
-    ``FEXT`` (default, Bayes-shrunk)
-        The phase-aware amplitude shrunk toward ``Fo_dark`` by a per-reflection weight
-        ``w(h) = tau^2 / (tau^2 + sigma_ext^2(h))``, which quiets the weak and
-        high-resolution reflections where the extrapolation is noisiest.
+    ``FEXT`` (default, shrunk)
+        The phase-aware amplitude shrunk toward ``Fo_dark`` by the signal fraction of
+        each reflection's difference (:func:`compute_bayes_extrapolated_amplitudes`),
+        which quiets the reflections where the extrapolation is noisiest.
     ``FEXT_PHASED`` (``all_columns``)
         The unshrunk phase-aware amplitude.
     ``FEXT_SCALAR`` (``all_columns``)
@@ -768,18 +758,20 @@ def _extrapolation_columns(
         sig_light_vals**2 + w_dark**2 * sig_dark_vals**2
     ) / w_light
 
-    eps, dss = geometry if geometry is not None else (None, None)
-    F_ext_bayes_amp, var_ext_bayes, w_shrinkage, tau_sq = (
-        compute_bayes_extrapolated_amplitudes(
-            Fobs_dark_vals,
-            Fobs_light_vals,
-            sig_light_extra,
-            phi_dark,
-            ctx["phi_mixed"],
-            w_light,
-            epsilon=eps,
-            d_star_sq=dss,
-        )
+    if snr_est is not None:
+        snr, source = snr_est.snr, snr_est.source
+    else:
+        snr = torch.full_like(Fobs_dark_vals, float("inf"))
+        source = "none"
+    F_ext_bayes_amp, var_ext_bayes, w_shrinkage = compute_bayes_extrapolated_amplitudes(
+        Fobs_dark_vals,
+        Fobs_light_vals,
+        sig_dark_vals,
+        phi_dark,
+        ctx["phi_mixed"],
+        w_light,
+        snr=snr,
+        sig_light=sig_light_vals,
     )
     sig_ext_bayes = torch.sqrt(var_ext_bayes)
 
@@ -798,10 +790,15 @@ def _extrapolation_columns(
     types = {"FEXT": "F", "SIGFEXT": "Q", "FWT": "F", "PHWT": "P"}
 
     if verbose > 0:
-        print("  Bayes extrapolation rfactors:",
-              rfactor_work_free(data_bayes, amp_calc_bayes))
-        print(f"  Bayes: tau^2 = {tau_sq:.4f}, "
-              f"mean w(h) = {w_shrinkage.mean().item():.3f}")
+        print(
+            "  Bayes extrapolation rfactors:",
+            rfactor_work_free(data_bayes, amp_calc_bayes),
+        )
+        print(
+            f"  Shrinkage: SNR from {source} differences, "
+            f"mean w(h) = {w_shrinkage.mean().item():.3f}, "
+            f"min w(h) = {w_shrinkage.min().item():.3g}"
+        )
 
     if all_columns:
         amp_phased = torch.abs(F_light_extra)
@@ -839,21 +836,22 @@ def _extrapolation_columns(
                   rfactor_work_free(data_scalar, amp_calc_scalar))
 
     diagnostics = {
-        "tau_sq": float(tau_sq),
+        "shrinkage_source": source,
         "w_shrinkage_mean": float(w_shrinkage.mean().item()),
+        "w_shrinkage_min": float(w_shrinkage.min().item()),
     }
     return columns, types, diagnostics
 
 
 _DIFFERENCE_DATASET_COLUMNS = (
-    "DF", "SIGDF", "PHDELWT", "KSCALE", *WEIGHT_COLUMNS.values()
+    "dF", "SIGdF", "PHDELWT", "KSCALE", *WEIGHT_COLUMNS.values()
 )
 
 # One history line per MTZ dataset, in the order they are written. MTZ history lines
 # are at most 80 characters.
 _MTZ_DATASET_HISTORY = {
     "observed": "observed: Fo_dark, Fo_light and flags on the shared scale; Fc_dark",
-    "difference": "difference: DF/SIGDF on dark phases PHDELWT; weights W_SD, W_IVW",
+    "difference": "difference: dF/SIGdF on dark phases PHDELWT; weights W_Q, W_InVa",
     "light_model": (
         "light_model: FC/PHIC, amplitude and phase of the mixed dark+light model"
     ),
@@ -922,13 +920,13 @@ def write_results_mtz(
     all_columns=False,
     verbose=1,
     ded_weight=DEFAULT_SCHEME,
-    sigma_d_config=None,
+    difference_config=None,
 ):
     """Write the difference map, and map coefficients when a light model is given.
 
-    The default output is the **difference map**: ``DF``/``SIGDF`` on the dark model's
+    The default output is the **difference map**: ``dF``/``SIGdF`` on the dark model's
     phases ``PHDELWT``, with one mean-one weight column per registered scheme
-    (``W_SD``, ``W_IVW``) and the observed-to-model scale ``KSCALE``; see
+    (``W_Q``, ``W_InVa``) and the observed-to-model scale ``KSCALE``; see
     :func:`_difference_columns`. ``ded_weight`` selects the scheme the model-phased
     difference columns and the two-moment columns are weighted with. That needs no
     light-state model, which is why ``mc`` is optional -- with a dark model alone this
@@ -962,15 +960,16 @@ def write_results_mtz(
     ded_weight : str, optional
         Weight scheme for the model-phased and two-moment difference columns; one of
         :data:`torchref.maps.ded_weights.SCHEMES`.
-    sigma_d_config : SigmaDConfig, optional
-        Exponent and shrinkage settings of the ``sigma_d`` scheme.
+    difference_config : DifferencePowerConfig, optional
+        Its ``gamma`` fixes the ``F_dark`` exponent of the ``q`` scheme.
 
     Returns
     -------
     dict
-        Diagnostics worth recording outside the file -- currently the Bayes shrinkage's
-        ``tau_sq`` and mean ``w(h)``, which say whether the default extrapolated map is
-        over-shrunk. Empty when no light model was given.
+        Diagnostics worth recording outside the file: the ``q``-weight fit under
+        ``ded_weights`` and, with a light model, the extrapolation shrinkage's
+        ``shrinkage_source`` and mean and least ``w(h)``, which say whether the default
+        extrapolated map is over-shrunk.
     """
     import reciprocalspaceship as rs
 
@@ -1015,15 +1014,33 @@ def write_results_mtz(
 
     diff_t = Fobs_light_vals - Fobs_dark_vals
     sig_diff_t = torch.sqrt(sig_dark_vals**2 + sig_light_vals**2)
-    all_w = all_ded_weights(
+    delta_I, sig_delta_I = intensity_difference(data_dark, data_light, mask)
+    snr_inputs = dict(
         delta_obs=diff_t,
         sigma_diff=sig_diff_t,
         hkl=hkl,
         cell=data_dark.cell,
         spacegroup=data_dark.spacegroup,
         f_dark=Fobs_dark_vals,
-        sigma_d_config=sigma_d_config,
+        delta_intensity=delta_I,
+        sigma_delta_intensity=sig_delta_I,
+        gamma=difference_config.gamma if difference_config is not None else None,
     )
+    # One fit serves the weights and the extrapolation, with one failure policy: when it
+    # cannot be made, the q weights fall back to inverse variance and the extrapolated
+    # amplitudes are written unshrunk.
+    try:
+        snr_est = difference_snr(**snr_inputs)
+    except ValueError as err:
+        snr_est = err
+        # The q-weight fallback warns for itself; this one covers the extrapolation.
+        warnings.warn(
+            f"difference SNR fit failed ({err}); the extrapolated amplitudes are "
+            "written unshrunk",
+            DedWeightFallbackWarning,
+            stacklevel=2,
+        )
+    all_w = all_ded_weights(**snr_inputs, snr_estimate=snr_est)
     selected = all_w[ded_weight]
     weights = selected.weights.detach().cpu().numpy()
     diff_Fobs = diff_t.detach().cpu().numpy()
@@ -1033,41 +1050,27 @@ def write_results_mtz(
         for name in WEIGHT_COLUMNS
     }
     kscale = scaler.multiplicative_scale()[mask].detach().cpu().numpy()
-    geometry = reflection_geometry(
-        hkl, data_dark.cell, data_dark.spacegroup, diff_t.device, diff_t.dtype
-    )
-    sd_diag = {
-        k: v
-        for k, v in all_w["sigma_d"].diagnostics.items()
-        if k != "weight_sigma_d_raw"
-    }
+    q_diag = all_w["q"].diagnostics
     diagnostics = {
         "ded_weights": {
             "scheme": ded_weight,
             "applied": selected.applied,
-            "sigma_d": sd_diag,
+            "q": q_diag,
         }
     }
     if verbose > 0:
         print(f"  Difference weights: {ded_weight} (applied: {selected.applied})")
-        print(
-            f"  sigma_D: gamma = {sd_diag['gamma']:.3f} ({sd_diag['gamma_reason']}), "
-            f"tau = {sd_diag['tau']:.3f}, shells = {sd_diag['n_shell']}, "
-            f"shells without difference power = {sd_diag['n_s2_clamped']}"
-        )
-        if "fallback_reason" in sd_diag:
-            print(f"  sigma_D fallback: {sd_diag['fallback_reason']}")
-    if verbose > 1 and not sd_diag["degenerate"]:
-        table = sd_diag["shells"]
-        print("  sigma_D shells: d(A)   n     B        S2       Sigma_N")
-        for dss, n, b, s2, sn in zip(
-            table["d_star_sq"],
-            table["counts"],
-            table["B"],
-            table["S2"],
-            table["Sigma_N"],
-        ):
-            print(f"    {dss ** -0.5:6.2f} {int(n):5d} {b:9.4f} {s2:9.4f} {sn:9.4f}")
+        if "fallback_reason" in q_diag:
+            print(f"  q-weight fallback: {q_diag['fallback_reason']}")
+        else:
+            print(
+                f"  q-weight fit on {q_diag['source']} differences: "
+                f"gamma = {q_diag['gamma']:.3f}, "
+                f"sigma scale k = {q_diag['sigma_scale']:.3f}, "
+                f"centric factor = {q_diag['centric_factor']:.3f}, "
+                f"weights {q_diag['weight_min']:.3f}-{q_diag['weight_max']:.3f} "
+                f"before normalisation"
+            )
 
     columns, types = _difference_columns(
         data_dark,
@@ -1109,9 +1112,9 @@ def write_results_mtz(
             phi_dark=phi_dark,
             ctx=ctx,
             rfree_flags_masked=rfree_flags_masked,
+            snr_est=None if isinstance(snr_est, ValueError) else snr_est,
             all_columns=all_columns,
             verbose=verbose,
-            geometry=geometry,
         )
         diagnostics.update(ext_diagnostics)
         columns.update(ext_cols)
@@ -1227,7 +1230,7 @@ Examples:
         default="difference",
         help="Difference row the weight schedule drives: 'difference' is the Gaussian "
         "under the measurement variance, 'difference_sd' centres on "
-        "alpha*dF_calc with the sigma_D unexplained power added to the variance "
+        "alpha*dF_calc with the model's unexplained power added to the variance "
         "(default: difference).",
     )
     refine.add_argument(
@@ -1484,7 +1487,7 @@ Examples:
         similarity_alpha=args.similarity_alpha,
         two_moment=args.two_moment,
         difference_target=args.difference_target,
-        sigma_d_config=sigma_d_config_from_args(args),
+        difference_config=difference_config_from_args(args),
     )
 
     if args.verbose > 0:
@@ -1787,7 +1790,7 @@ Examples:
         all_columns=args.all_columns,
         verbose=args.verbose,
         ded_weight=args.ded_weight,
-        sigma_d_config=sigma_d_config_from_args(args),
+        difference_config=difference_config_from_args(args),
     )
 
     # --- JSON summary ---
