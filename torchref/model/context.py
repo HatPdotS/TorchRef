@@ -499,124 +499,151 @@ class ModelContext(DeviceMixin):
     # Identity queries
     # ------------------------------------------------------------------
 
-    def _residue_groups(self, with_altloc: bool) -> Dict[tuple, List[int]]:
-        """Atom rows grouped by ``(resname, resseq, chain[, altloc])``, keys sorted.
+    def _residue_parts(self) -> List[Tuple[int, Dict[Tuple[str, str], List[int]]]]:
+        """Each residue's atom rows, split by ``(resname, altloc)``, in a fixed order.
 
-        The key order is the one pandas' sorted ``groupby`` gives. Occupancy groups are
-        numbered in it, and checkpoints store occupancies in group space, so it must
-        not change.
+        A residue is a topology residue, ``(chain, resseq, icode)``, the identity the
+        restraints use: 100 and 100A are two residues, while alternates with different
+        residue names at one position (microheterogeneity) are parts of one. Residues
+        are sorted by ``(resname, resseq, chain, icode)`` and parts by
+        ``(resname, altloc)``, so occupancy groups are numbered the same whatever
+        order the file lists its residues in. A blank altloc is ``" "``.
         """
-        columns = self.topology.columns()
-        altloc = np.where(columns["altloc"] == " ", "", columns["altloc"])
-        keys: Dict[tuple, List[int]] = {}
-        for row in range(self.topology.n_atoms):
-            key = (
-                str(columns["resname"][row]),
-                int(columns["resseq"][row]),
-                str(columns["chain"][row]),
-            )
-            if with_altloc:
-                key = key + (str(altloc[row]),)
-            keys.setdefault(key, []).append(row)
-        return {key: keys[key] for key in sorted(keys)}
-
-    def _altloc_residues(self) -> List[Tuple[tuple, List[str], Dict[str, List[int]]]]:
-        """Residues with several altlocs: ``(key, sorted altlocs, rows per altloc)``.
-
-        Keys are ``(resname, resseq, chain)``, sorted; blank-altloc atoms are not part
-        of any conformer.
-        """
+        residues = self.topology.residues
+        resname = self.topology.columns()["resname"]
         altloc = self.topology.atoms.altloc
+        order = sorted(
+            range(residues.n_residues),
+            key=lambda r: (
+                str(residues.resname[r]),
+                int(residues.resseq[r]),
+                str(residues.chain[r]),
+                str(residues.icode[r]),
+            ),
+        )
         out = []
-        for key, rows in self._residue_groups(with_altloc=False).items():
-            by_altloc: Dict[str, List[int]] = {}
-            for row in rows:
-                if altloc[row] != " ":
-                    by_altloc.setdefault(str(altloc[row]), []).append(row)
-            if len(by_altloc) > 1:
-                labels = sorted(by_altloc)
-                out.append((key, labels, {a: by_altloc[a] for a in labels}))
+        for residue in order:
+            parts: Dict[Tuple[str, str], List[int]] = {}
+            for row in residues.atom_rows(residue):
+                parts.setdefault((str(resname[row]), str(altloc[row])), []).append(row)
+            out.append((residue, {key: parts[key] for key in sorted(parts)}))
         return out
 
-    def occupancy_groups(self, initial_occ):
-        """``(sharing_groups, altloc_groups, refinable_mask)`` for an
+    @staticmethod
+    def _conformers(parts: Dict[Tuple[str, str], List[int]]) -> Dict[str, List[int]]:
+        """A residue's atom rows per altloc label, or ``{}`` below two labels."""
+        rows: Dict[str, List[int]] = {}
+        for (_, label), part in parts.items():
+            if label != " ":
+                rows.setdefault(label, []).extend(part)
+        if len(rows) < 2:
+            return {}
+        return {label: sorted(rows[label]) for label in sorted(rows)}
+
+    def altloc_residues(self) -> List[Tuple[int, List[str], Dict[str, List[int]]]]:
+        """The residues that carry more than one conformer.
+
+        Occupancy grouping, :attr:`altloc_pairs` and ``Model.strip_altlocs`` all take
+        a residue's conformers from here.
+
+        Returns
+        -------
+        list of tuple
+            ``(residue, labels, rows)`` per topology residue with at least two altloc
+            labels, sorted by residue name, then ``resseq``, ``chain`` and ``icode``:
+            the residue index in :attr:`topology`, its sorted labels, and each label's
+            atom rows in ascending order. A conformer includes every residue name it
+            carries; blank-altloc atoms belong to no conformer.
+        """
+        out = []
+        for residue, parts in self._residue_parts():
+            rows = self._conformers(parts)
+            if rows:
+                out.append((residue, list(rows), rows))
+        return out
+
+    def occupancy_groups(
+        self, initial_occ: torch.Tensor
+    ) -> Tuple[torch.Tensor, List[tuple], torch.Tensor]:
+        """Sharing groups, altloc groups and refinable mask for an
         :class:`~torchref.model.parameter_wrappers.OccupancyTensor` over these atoms.
 
-        Altloc conformations share one collapsed index each; other residues share
-        one only when their occupancies agree to within 0.01, and an occupancy is
-        refinable only if it differs from 1.0 by more than that same deadband.
+        Every conformer of a residue with several altlocs is one group, whatever its
+        atoms' occupancies, so the sum-to-1 normalization over a residue's conformers
+        acts on whole conformers. Every other part of a residue -- its blank-altloc
+        atoms, or, in a residue with at most one altloc label, its atoms split by
+        residue name and altloc -- is one group when its occupancies agree to within
+        0.01 and one group per atom otherwise. No group spans two residues; a starting
+        occupancy changes only where the atoms of one group disagree (a conformer's
+        atoms, or a part's within the deadband), which collapse to one shared value.
+
+        Parameters
+        ----------
+        initial_occ : torch.Tensor
+            Occupancies, shape ``(n_atoms,)``.
+
+        Returns
+        -------
+        sharing_groups : torch.Tensor
+            Group index per atom, shape ``(n_atoms,)``, contiguous from 0: the
+            conformers first, then the other parts, both in the residue order of
+            :meth:`altloc_residues`.
+        altloc_groups : list of tuple
+            Per residue with several conformers, the atom rows of each conformer.
+        refinable_mask : torch.Tensor
+            Boolean, shape ``(n_atoms,)``: occupancy (a shared group's mean) differs
+            from 1.0 by more than 0.01.
+
+        Raises
+        ------
+        ValueError
+            If ``initial_occ`` does not hold one value per atom.
         """
         n_atoms = len(initial_occ)
+        if n_atoms != self.n_atoms:
+            raise ValueError(
+                f"initial_occ has {n_atoms} values for a context of {self.n_atoms} atoms"
+            )
+        sharing_groups = torch.full((n_atoms,), -1, dtype=get_int_dtype())
+        refinable_mask = (initial_occ - 1.0).abs() > 0.01
         altloc_groups = []
-        refinable_mask = torch.zeros(n_atoms, dtype=torch.bool)
+        others = []
+        for _, parts in self._residue_parts():
+            conformers = self._conformers(parts)
+            if conformers:
+                altloc_groups.append(tuple(conformers.values()))
+            others.extend(
+                part
+                for (_, label), part in parts.items()
+                if not conformers or label == " "
+            )
 
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=get_int_dtype())
-        collapsed_idx = 0
-
-        # First pass: altlocs. ALL atoms of one conformation must share a collapsed
-        # index whatever their individual occupancies, or the sum-to-1
-        # normalization in OccupancyTensor.forward() acts on the wrong group.
-        altloc_residues = set()
-        for key, labels, rows_by_altloc in self._altloc_residues():
-            altloc_residues.add(key)
-            conformation_atom_lists = []
-            for label in labels:
-                indices = rows_by_altloc[label]
-                sharing_groups_tensor[indices] = collapsed_idx
-                for idx in indices:
-                    if abs(initial_occ[idx].item() - 1.0) > 0.01:
-                        refinable_mask[idx] = True
-                conformation_atom_lists.append(indices)
-                collapsed_idx += 1
-            altloc_groups.append(tuple(conformation_atom_lists))
-
-        # Second pass: non-altloc residues, sharing by occupancy similarity.
-        for key, indices in self._residue_groups(with_altloc=True).items():
-            if key[:3] in altloc_residues:
-                continue
-
-            residue_occs = initial_occ[indices]
-
-            occ_min = residue_occs.min().item()
-            occ_max = residue_occs.max().item()
-            occ_mean = residue_occs.mean().item()
-
-            if (occ_max - occ_min) <= 0.01:
-                sharing_groups_tensor[indices] = collapsed_idx
-                collapsed_idx += 1
-
-                if abs(occ_mean - 1.0) > 0.01:
-                    for idx in indices:
-                        refinable_mask[idx] = True
+        n_groups = 0
+        for conformers in altloc_groups:
+            for rows in conformers:
+                sharing_groups[rows] = n_groups
+                n_groups += 1
+        for rows in others:
+            occ = initial_occ[rows]
+            if occ.max().item() - occ.min().item() <= 0.01:
+                sharing_groups[rows] = n_groups
+                n_groups += 1
+                refinable_mask[rows] = abs(occ.mean().item() - 1.0) > 0.01
             else:
-                # Occupancies disagree within the residue: keep atoms independent.
-                for idx in indices:
-                    if abs(initial_occ[idx].item() - 1.0) > 0.01:
-                        refinable_mask[idx] = True
-
-        # Compact to contiguous indices 0..n_collapsed-1.
-        unique_indices = torch.unique(sharing_groups_tensor, sorted=True)
-        index_map = torch.zeros(n_atoms, dtype=get_int_dtype())
-        for new_idx, old_idx in enumerate(unique_indices):
-            mask = sharing_groups_tensor == old_idx
-            sharing_groups_tensor[mask] = new_idx
-
-        n_collapsed = len(unique_indices)
+                sharing_groups[rows] = torch.arange(
+                    n_groups, n_groups + len(rows), dtype=get_int_dtype()
+                )
+                n_groups += len(rows)
 
         if self.verbose > 1:
-            n_groups = n_collapsed
-            n_independent = n_atoms - n_collapsed
-            n_refinable = refinable_mask.sum().item()
-            n_altloc_groups = len(altloc_groups)
-
             print("\nOccupancy Setup:")
             print(f"  Total atoms: {n_atoms}")
-            print(f"  Collapsed indices: {n_collapsed}")
-            print(f"  Alternative conformation groups: {n_altloc_groups}")
-            print(f"  Refinable atoms: {n_refinable}")
-            print(f"  Compression ratio: {n_atoms / n_collapsed:.2f}x")
+            print(f"  Collapsed indices: {n_groups}")
+            print(f"  Alternative conformation groups: {len(altloc_groups)}")
+            print(f"  Refinable atoms: {refinable_mask.sum().item()}")
+            print(f"  Compression ratio: {n_atoms / max(n_groups, 1):.2f}x")
 
-        return sharing_groups_tensor, altloc_groups, refinable_mask
+        return sharing_groups, altloc_groups, refinable_mask
 
     def register_altlocs(self) -> None:
         """Rebuild :attr:`altloc_pairs` from the topology's altlocs.
@@ -631,7 +658,7 @@ class ModelContext(DeviceMixin):
                 torch.tensor(rows_by_altloc[label], dtype=get_int_dtype())
                 for label in labels
             )
-            for _, labels, rows_by_altloc in self._altloc_residues()
+            for _, labels, rows_by_altloc in self.altloc_residues()
         ]
 
     @property

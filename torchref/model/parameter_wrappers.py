@@ -9,7 +9,7 @@ into one *replaces* its ``refinable_params``, which invalidates optimizer state.
 """
 
 import warnings
-from typing import Optional, Union
+from typing import Iterable, List, Mapping, Optional, Union
 
 import torch
 from torch import nn
@@ -1989,69 +1989,78 @@ class OccupancyTensor(MixedTensor):
 
         self._build_index_cache()
 
-    @staticmethod
-    def from_residue_groups(
+    @classmethod
+    def from_saved_groups(
+        cls,
         initial_values: torch.Tensor,
-        pdb_dataframe,
-        refinable_mask: Optional[torch.Tensor] = None,
+        state: Mapping[str, torch.Tensor],
+        prefix: str = "",
         **kwargs,
     ) -> "OccupancyTensor":
-        """
-        Create an OccupancyTensor where all atoms in each residue share occupancy.
+        """An OccupancyTensor grouped exactly as the one ``state`` was saved from.
 
-        Residues are grouped by ``(resname, resseq, chainid, altloc)``.
+        The sharing groups are the saved ``expansion_mask``, the altloc groups the
+        saved ``linked_occ_<n>`` buffers and the refinable groups the saved
+        ``refinable_mask``, so ``load_state_dict`` then finds every buffer and the
+        refinable parameters at their saved shapes. Nothing is re-derived from the
+        occupancies, which decide the grouping of a fresh load and which refinement
+        is free to move.
 
         Parameters
         ----------
         initial_values : torch.Tensor
-            Initial occupancy values for all atoms.
-        pdb_dataframe : pandas.DataFrame
-            DataFrame with PDB data (must have 'resname', 'resseq', 'chainid').
-        refinable_mask : torch.Tensor, optional
-            Mask for refinable atoms.
+            Occupancies for all atoms, shape ``(n_atoms,)``. Placeholders: the saved
+            values arrive with ``load_state_dict``.
+        state : mapping
+            State dict holding ``<prefix>expansion_mask`` and, where saved,
+            ``<prefix>linked_occ_<n>`` and ``<prefix>refinable_mask``.
+        prefix : str, default ""
+            This wrapper's key prefix in ``state``, e.g. ``"occupancy."``.
         **kwargs
-            Additional arguments passed to OccupancyTensor constructor.
+            Passed to the constructor: ``dtype``, ``device``, ``name``, ...
 
         Returns
         -------
         OccupancyTensor
-            OccupancyTensor with residue-based sharing groups.
         """
-        # Group atoms by residue
-        grouped = pdb_dataframe.groupby(["resname", "resseq", "chainid", "altloc"])
-
-        n_atoms = len(initial_values)
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=get_int_dtype())
-        # Singletons keep their arange ids (0..n_atoms-1); start multi-atom
-        # group ids past that range so a group id can never collide with a
-        # singleton's leftover arange id (the torch.unique compaction below
-        # would otherwise silently merge them into one sharing group).
-        collapsed_idx = n_atoms
-
-        for (resname, resseq, chainid, altloc), group in grouped:
-            indices = group["index"].tolist()
-            if len(indices) > 1:  # Only create group if more than one atom
-                sharing_groups_tensor[indices] = collapsed_idx
-                collapsed_idx += 1
-
-        # Compact the indices
-        unique_indices = torch.unique(sharing_groups_tensor, sorted=True)
-        for new_idx, old_idx in enumerate(unique_indices):
-            mask = sharing_groups_tensor == old_idx
-            sharing_groups_tensor[mask] = new_idx
-
-        return OccupancyTensor(
+        expansion_mask = state[prefix + "expansion_mask"]
+        linked = [
+            value
+            for key, value in state.items()
+            if key.startswith(prefix + "linked_occ_")
+        ]
+        saved_mask = state.get(prefix + "refinable_mask")
+        refinable_mask = (
+            None
+            if saved_mask is None
+            else saved_mask.to(expansion_mask.device)[expansion_mask]
+        )
+        return cls(
             initial_values=initial_values,
-            sharing_groups=sharing_groups_tensor,
+            sharing_groups=expansion_mask,
+            altloc_groups=cls._linked_atoms(expansion_mask, linked),
             refinable_mask=refinable_mask,
-            name="occupancy",
             **kwargs,
         )
 
+    @staticmethod
+    def _linked_atoms(
+        expansion_mask: torch.Tensor, linked: Iterable[torch.Tensor]
+    ) -> List[tuple]:
+        """Altloc groups in atom space, from ``linked_occ_<n>`` rows of group indices."""
+        return [
+            tuple(
+                (expansion_mask == group).nonzero(as_tuple=True)[0].tolist()
+                for group in row
+            )
+            for links in linked
+            for row in links.tolist()
+        ]
+
     def copy(self) -> "OccupancyTensor":
         """
-        Deep-copy, rebuilding the sharing groups, altloc groups and collapsed
-        storage from the current occupancies.
+        Deep-copy, keeping the sharing and altloc groups and rebuilding the
+        collapsed storage from the current occupancies.
 
         Returns
         -------
@@ -2061,26 +2070,13 @@ class OccupancyTensor(MixedTensor):
         current_occ = self.forward().detach()
 
         full_refinable_mask = self._expand_values(self.refinable_mask.float()).bool()
-
-        # Rebuild the altloc groups from the linked_occ buffers.
-        altloc_groups = []
-        if hasattr(self, "linked_occ_sizes"):
-            for n_conf in self.linked_occ_sizes:
-                linked_indices = getattr(
-                    self, f"linked_occ_{n_conf}"
-                )  # shape (N_groups, n_conf)
-
-                for group_collapsed_indices in linked_indices:
-                    conf_atom_lists = []
-                    for collapsed_idx in group_collapsed_indices:
-                        atom_indices = (
-                            (self.expansion_mask == collapsed_idx)
-                            .nonzero(as_tuple=False)
-                            .squeeze(-1)
-                        )
-                        conf_atom_lists.append(atom_indices.tolist())
-
-                    altloc_groups.append(tuple(conf_atom_lists))
+        altloc_groups = self._linked_atoms(
+            self.expansion_mask,
+            [
+                getattr(self, f"linked_occ_{n_conf}")
+                for n_conf in getattr(self, "linked_occ_sizes", [])
+            ],
+        )
 
         new_tensor = OccupancyTensor(
             initial_values=current_occ,

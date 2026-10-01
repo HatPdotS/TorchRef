@@ -138,9 +138,13 @@ def test_microheterogeneity_identity_and_current_occupancy(microheterogeneous_mo
     at_position = (cols["chain"] == "A") & (cols["resseq"] == 30)
     assert len(set(model.ctx.topology.atoms.residue_of[at_position].tolist())) == 1
     assert (cols["resname"][at_position & (cols["altloc"] == "B")] == "ALA").all()
-    groups = model.ctx._residue_groups(with_altloc=True)
-    assert len(groups[("ALA", 30, "A", "B")]) == 5
-    assert len(groups[("THR", 30, "A", "A")]) > 5
+    (conformers,) = [
+        rows
+        for residue, _, rows in model.ctx.altloc_residues()
+        if model.ctx.topology.residues.key(residue) == ("A", 30, "")
+    ]
+    assert len(conformers["B"]) == 5
+    assert len(conformers["A"]) > 5
     np.testing.assert_allclose(
         model.occupancy().detach().numpy()[at_position & (cols["altloc"] == "B")], 0.65
     )
