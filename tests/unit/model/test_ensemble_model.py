@@ -188,8 +188,17 @@ def test_copy_carries_the_ensemble(tmp_path, small_ensemble):
     dup.write_pdb(str(tmp_path / "copy.pdb"))
 
 
-def test_copy_keeps_a_low_rank_xyz(small_ensemble):
-    ens = small_ensemble
+def test_copy_keeps_a_low_rank_xyz():
+    # enable_low_rank seeds its basis with a float64 SVD, which MPS cannot run
+    ens = EnsembleModel.from_single(
+        TEST_PDB,
+        n_members=5,
+        perturb_sigma=0.2,
+        b_const=5.0,
+        seed=42,
+        verbose=0,
+        device="cpu",
+    )
     ens.enable_low_rank(2)
     dup = ens.copy()
     assert torch.allclose(dup.xyz(), ens.xyz())
