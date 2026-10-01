@@ -83,10 +83,11 @@ batched over ``(n_datasets, n_hkl)`` on the collection's common HKL grid.
 - ``difference_sd`` — the ``difference`` Gaussian centred on
   :math:`\alpha\,\Delta F_{calc}` with variance
   :math:`\beta_{model} + \sigma_{\Delta}^2`, where :math:`\alpha` and the unexplained
-  difference power :math:`\beta_{model}` come from a per-shell moment fit of the
-  observed differences on the free set (``sigma_D``,
-  :mod:`torchref.refinement.model_error_estimation.sigma_d`); the expected power
-  carries an :math:`F_{dark}^{\gamma}` dependence with one fitted :math:`\gamma`. A
+  difference power :math:`\beta_{model}` come from one maximum-likelihood fit of the
+  observed differences on the free set, with no resolution shells
+  (:func:`~torchref.refinement.model_error_estimation.difference_power.fit_difference_power`):
+  :math:`\alpha` is a smooth function of resolution and the unexplained power carries an
+  :math:`F_{dark}^{\gamma}` dependence with one fitted :math:`\gamma`. A
   poor light model inflates the variance where it fails instead of pulling the
   coordinates toward noise. Select it with
   ``torchref.difference-refine --difference-target difference_sd``.

@@ -1,6 +1,6 @@
 """The registered difference weights through the CLIs.
 
-Pinned: ``torchref.difference-map`` writes ``DF`` with one mean-one weight column per
+Pinned: ``torchref.difference-map`` writes ``dF`` with one mean-one weight column per
 scheme and ``KSCALE``; ``torchref.mtz2map`` builds the weighted map from those columns
 and the electrons map is the volume-normalised synthesis on the absolute scale;
 ``torchref.validate-ded`` reports every scheme side by side and records a fallback;
@@ -22,11 +22,11 @@ DIFF_COLUMNS = {
     "SIGFo_dark": "Stddev",
     "Fo_light": "SFAmplitude",
     "SIGFo_light": "Stddev",
-    "DF": "SFAmplitude",
-    "SIGDF": "Stddev",
+    "dF": "SFAmplitude",
+    "SIGdF": "Stddev",
     "PHDELWT": "Phase",
-    "W_IVW": "Weight",
-    "W_SD": "Weight",
+    "W_InVa": "Weight",
+    "W_Q": "Weight",
     "KSCALE": "MTZReal",
     "Fc_dark": "SFAmplitude",
     "FreeR_flag_dark": "MTZInt",
@@ -39,7 +39,7 @@ def pair(mtz_dir, pdb_dir, tmp_path_factory):
     """A dark/light pair from 1DAW with a perturbed light state.
 
     The light amplitudes carry an added difference proportional to ``F`` with a
-    resolution-dependent power, so the sigma_D fit has signal to find; the dark set
+    resolution-dependent power, so the difference-power fit has signal to find; the dark set
     keeps the deposited values. The light model is the dark one shifted by 0.2 A.
     """
     import torch
@@ -120,7 +120,7 @@ def diff_mtz(project_root, pair):
         "--device",
         "cpu",
         "--ded-weight",
-        "sigma_d",
+        "q",
         "-v",
         "1",
         "-o",
@@ -138,16 +138,17 @@ def _read(path):
 def test_difference_map_writes_df_weights_and_scale(diff_mtz):
     df = _read(diff_mtz)
     assert {c: str(df.dtypes[c]) for c in df.columns} == DIFF_COLUMNS
-    for col in ("W_IVW", "W_SD"):
+    for col in ("W_InVa", "W_Q"):
         w = df[col].to_numpy().astype(float)
         assert np.isfinite(w).all() and (w >= 0).all()
         assert abs(w.mean() - 1.0) < 1e-4
     assert (df["KSCALE"].to_numpy().astype(float) > 0).all()
-    # The sigma_D weights favour the strong reflections, inverse variance does not.
+    # The q-weights favour the strong reflections and never fall to zero.
     f = df["Fo_dark"].to_numpy().astype(float)
-    w_sd = df["W_SD"].to_numpy().astype(float)
+    w_q = df["W_Q"].to_numpy().astype(float)
     strong = f > np.median(f)
-    assert w_sd[strong].mean() > w_sd[~strong].mean()
+    assert w_q[strong].mean() > w_q[~strong].mean()
+    assert (w_q > 0).all()
 
 
 def test_mtz2map_builds_the_weighted_and_electron_maps(project_root, pair, diff_mtz):
@@ -160,9 +161,9 @@ def test_mtz2map_builds_the_weighted_and_electron_maps(project_root, pair, diff_
         "-sf",
         diff_mtz,
         "-csf",
-        "DF",
+        "dF",
         "-cw",
-        "W_SD",
+        "W_Q",
         "-cphi",
         "PHDELWT",
         "--device",
@@ -176,9 +177,9 @@ def test_mtz2map_builds_the_weighted_and_electron_maps(project_root, pair, diff_
         "-sf",
         diff_mtz,
         "-csf",
-        "DF",
+        "dF",
         "-cw",
-        "W_SD",
+        "W_Q",
         "-cphi",
         "PHDELWT",
         "--units",
@@ -194,9 +195,9 @@ def test_mtz2map_builds_the_weighted_and_electron_maps(project_root, pair, diff_
         "-sf",
         diff_mtz,
         "-csf",
-        "DF",
+        "dF",
         "-cw",
-        "W_SD",
+        "W_Q",
         "-cphi",
         "PHDELWT",
         "--units",
@@ -239,16 +240,16 @@ def test_validate_ded_reports_every_scheme(project_root, pair):
         "--device",
         "cpu",
         "--ded-weight",
-        "sigma_d",
+        "q",
         "-v",
         "1",
         "-o",
         out,
     )
     results = json.loads((out / "validate_ded_results.json").read_text())
-    assert results["weights"]["requested"] == "sigma_d"
-    assert results["weights"]["applied"] in ("sigma_d", "inverse_variance")
-    assert set(results["by_weight"]) == {"none", "inverse_variance", "sigma_d"}
+    assert results["weights"]["requested"] == "q"
+    assert results["weights"]["applied"] in ("q", "inverse_variance")
+    assert set(results["by_weight"]) == {"none", "inverse_variance", "q"}
     for entry in results["by_weight"].values():
         assert np.isfinite(entry["reciprocal_cc_overall"])
         assert "full_cell" in entry["realspace_correlation"]
@@ -256,7 +257,7 @@ def test_validate_ded_reports_every_scheme(project_root, pair):
     assert results["reciprocal_cc_overall"] == pytest.approx(
         headline["reciprocal_cc_overall"], abs=1e-3
     )
-    assert "weights " in proc.stdout and "sigma_d" in proc.stdout
+    assert "headline weights: q" in proc.stdout
 
 
 def test_difference_refine_runs_the_sigma_d_row(project_root, pair):
@@ -294,6 +295,6 @@ def test_difference_refine_runs_the_sigma_d_row(project_root, pair):
     summaries = list(out.glob("*_summary.json"))
     assert len(summaries) == 1
     results = json.loads(summaries[0].read_text())["results"]
-    assert results["ded_weights"]["scheme"] == "inverse_variance"
-    assert results["ded_weights"]["applied"] == "inverse_variance"
-    assert "gamma" in results["ded_weights"]["sigma_d"]
+    assert results["ded_weights"]["scheme"] == "q"
+    assert results["ded_weights"]["applied"] == "q"
+    assert "sigma_scale" in results["ded_weights"]["q"]

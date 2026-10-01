@@ -6,11 +6,11 @@ Uses the ``torchref.difference-refine`` pipeline but performs **no refinement**:
 models are used as-is.
 
 The default output is the difference map: the amplitude difference
-``|Fo_light| - |Fo_dark|`` as ``DF``/``SIGDF`` carried on the **dark** model's phases
+``|Fo_light| - |Fo_dark|`` as ``dF``/``SIGdF`` carried on the **dark** model's phases
 ``PHDELWT``, with the per-reflection weights of every registered scheme beside it as
-``W_IVW`` (inverse variance, the default) and ``W_SD`` (sigma_D Wiener weight), and the
+``W_Q`` (q-weight, the default) and ``W_InVa`` (inverse variance), and the
 observed-to-model scale ``KSCALE``. Build the map with
-``torchref.mtz2map -csf DF -cw W_IVW -cphi PHDELWT`` (``--units electrons`` for e/A^3).
+``torchref.mtz2map -csf dF -cw W_Q -cphi PHDELWT`` (``--units electrons`` for e/A^3).
 That needs no light-state model, so ``-lm`` is optional. It is also deliberately not a
 *phased* difference map: putting the light state's model phases into the observed
 amplitude biases the map toward the very model the experiment is testing.
@@ -48,7 +48,7 @@ from torchref.cli._common import (
     configure_unbuffered_output,
     register_timing,
     parse_device_str,
-    sigma_d_config_from_args,
+    difference_config_from_args,
     validate_cif_files,
     validate_files,
 )
@@ -229,7 +229,7 @@ Examples:
             all_columns=args.all_columns,
             verbose=args.verbose,
             ded_weight=args.ded_weight,
-            sigma_d_config=sigma_d_config_from_args(args),
+            difference_config=difference_config_from_args(args),
         )
 
     if args.verbose > 0:
