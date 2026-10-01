@@ -90,17 +90,14 @@ class TestScalingCalculations:
     @pytest.mark.unit
     def test_resolution_binning_logic(self, mock_hkl_indices, mock_cell):
         """Test resolution binning creates correct number of bins."""
-        from torchref.base.reciprocal import get_s
+        from torchref.base.reciprocal import get_scattering_vectors
 
-        hkl = mock_hkl_indices(n_reflections=1000).numpy()
-        cell = mock_cell.numpy()
-        
-        # Calculate s values
-        s = get_s(hkl, cell)
-        
+        hkl = mock_hkl_indices(n_reflections=1000)
+        s = get_scattering_vectors(hkl, mock_cell).norm(dim=1)
+
         # Create bins
         nbins = 10
-        s_sorted = torch.tensor(sorted(s))
+        s_sorted = torch.sort(s).values
         bin_edges = torch.linspace(s_sorted[0], s_sorted[-1], nbins + 1)
         
         assert len(bin_edges) == nbins + 1
@@ -137,11 +134,10 @@ class TestBFactorScaling:
     @pytest.mark.unit
     def test_b_factor_debye_waller(self, mock_hkl_indices, mock_cell):
         """Test Debye-Waller factor calculation."""
-        from torchref.base.reciprocal import get_s
+        from torchref.base.reciprocal import get_scattering_vectors
 
-        hkl = mock_hkl_indices(n_reflections=100).numpy()
-        cell = mock_cell.numpy()
-        s = torch.tensor(get_s(hkl, cell))
+        hkl = mock_hkl_indices(n_reflections=100)
+        s = get_scattering_vectors(hkl, mock_cell).norm(dim=1)
         
         B_factor = 20.0  # Å²
         
@@ -155,20 +151,15 @@ class TestBFactorScaling:
     @pytest.mark.unit
     def test_b_factor_high_resolution_attenuation(self, mock_cell):
         """Higher resolution (larger s) should have more attenuation."""
-        from torchref.base.reciprocal import get_s
+        from torchref.base.reciprocal import get_scattering_vectors
 
-        cell = mock_cell.numpy()
-        
         # Low and high resolution reflections
-        hkl_low = torch.tensor([[1, 0, 0]], dtype=torch.float64).numpy()
-        hkl_high = torch.tensor([[10, 10, 10]], dtype=torch.float64).numpy()
-        
-        s_low = get_s(hkl_low, cell)[0]
-        s_high = get_s(hkl_high, cell)[0]
-        
+        hkl = torch.tensor([[1, 0, 0], [10, 10, 10]])
+        s_low, s_high = get_scattering_vectors(hkl, mock_cell).norm(dim=1)
+
         B_factor = 20.0
-        dw_low = torch.exp(torch.tensor(-B_factor * (s_low ** 2) / 4))
-        dw_high = torch.exp(torch.tensor(-B_factor * (s_high ** 2) / 4))
+        dw_low = torch.exp(-B_factor * s_low**2 / 4)
+        dw_high = torch.exp(-B_factor * s_high**2 / 4)
         
         # High resolution should be more attenuated
         assert dw_high < dw_low

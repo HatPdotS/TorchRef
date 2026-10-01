@@ -7,7 +7,8 @@ coordinate systems used in crystallography:
 - Periodic boundary condition handling
 - Transformation matrix computations
 
-Both PyTorch (GPU-accelerated) and NumPy (CPU) implementations are provided.
+All of them are PyTorch functions; the cell metric is written out once, in
+:func:`get_fractional_matrix`.
 """
 
 from .transforms_torch import (
@@ -15,14 +16,6 @@ from .transforms_torch import (
     fractional_to_cartesian_torch,
     get_fractional_matrix,
     get_inv_fractional_matrix_torch,
-)
-
-from .transforms_numpy import (
-    cartesian_to_fractional,
-    fractional_to_cartesian,
-    get_fractional_matrix as get_fractional_matrix_numpy,
-    get_inv_fractional_matrix,
-    convert_coords_to_fractional,
 )
 
 from .periodic_boundary import (
@@ -43,12 +36,6 @@ __all__ = [
     "fractional_to_cartesian_torch",
     "get_fractional_matrix",
     "get_inv_fractional_matrix_torch",
-    # NumPy implementations
-    "cartesian_to_fractional",
-    "fractional_to_cartesian",
-    "get_fractional_matrix_numpy",
-    "get_inv_fractional_matrix",
-    "convert_coords_to_fractional",
     # Periodic boundary
     "smallest_diff",
     "smallest_diff_aniso",
