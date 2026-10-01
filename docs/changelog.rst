@@ -4,6 +4,7 @@ Changelog
 
 Unreleased
 ----------
+- ``EnsembleModel.copy()`` (experimental) returns a complete ensemble: member layout, single-copy atom table, per-member ``occ_logits`` / ``b_raw``, dropout and population settings, and a low-rank or PCA ``xyz``. ``enable_low_rank`` and ``enable_pca`` no longer fail on a missing ``verbose`` attribute.
 - Preserve alternate residue types at one sequence position through model loading, selections, occupancy grouping, conformer-specific restraint templates and coordinate writers; stripping altlocs retains the winning conformer's residue name.
 - A model no longer keeps an atom table. Atom identity lives on ``model.ctx.topology`` (a node-only ``Topology``) and every refinable value only on the parameter wrappers; the table is read once at construction (``ModelContext.from_atoms`` splits it into the topology and ``AtomValues``) and written by ``Model.to_dataframe()``, which joins identity and current values afresh on every call. ``Model.update_pdb`` is removed, ``Model.pdb`` is a deprecated read-only view of ``to_dataframe()`` (writing into it changes nothing), ``model.n_atoms`` replaces ``len(model.pdb)``, and checkpoints keep storing the table under ``"pdb"`` so older ones still restore
 - ``Model.strip_altlocs`` compares conformers within one residue, ``(chain, resseq, icode)``, so residues 100 and 100A never compete and alternates with different residue names are resolved to one; the kept conformer is chosen by current occupancy rather than the occupancies the file was loaded with

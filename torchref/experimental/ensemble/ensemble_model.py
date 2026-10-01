@@ -630,8 +630,53 @@ class EnsembleModel(ModelFT):
             try:
                 self.freeze(tgt)
             except Exception:
-                if self.verbose > 0:
+                if self.ctx.verbose > 0:
                     print(f"  EnsembleModel: freeze({tgt!r}) failed (ignored)")
+
+    def copy(self) -> "EnsembleModel":
+        """Create a deep copy of the ensemble, of the same class.
+
+        :meth:`Model.copy` carries the context, buffers and parameter wrappers.
+        This adds the state an ensemble holds outside them: the member layout,
+        the single-copy atom table, the dropout and population-refinement
+        settings, the per-member ``occ_logits`` / ``b_raw`` (``requires_grad``
+        kept), and a low-rank or PCA ``xyz``, which has no ``copy`` of its own.
+
+        Returns
+        -------
+        EnsembleModel
+            A new, fully independent ensemble.
+        """
+        import copy as copy_module
+
+        duplicate = super().copy()
+        for name in (
+            "n_members",
+            "n_atoms_per_member",
+            "dropout_active",
+            "dropout_min",
+            "dropout_max",
+            "_refine_population",
+            "_refine_member_b",
+        ):
+            if hasattr(self, name):
+                setattr(duplicate, name, getattr(self, name))
+        if self._pdb_single is not None:
+            duplicate._pdb_single = self._pdb_single.copy(deep=True)
+        for name, param in self._parameters.items():
+            if param is not None:
+                setattr(
+                    duplicate,
+                    name,
+                    torch.nn.Parameter(
+                        param.detach().clone(), requires_grad=param.requires_grad
+                    ),
+                )
+        if not hasattr(self.xyz, "copy"):
+            duplicate.xyz = copy_module.deepcopy(self.xyz)
+            duplicate._repoint_coordinate_accessors()
+        duplicate.reset_cache()
+        return duplicate
 
     # ------------------------------------------------------------------
     # Per-member occupancy + ADP + birth/death population dynamics
@@ -760,7 +805,7 @@ class EnsembleModel(ModelFT):
         K = int(K)
         max_rank = max(1, N - 1)
         if K > max_rank:
-            if self.verbose > 0:
+            if self.ctx.verbose > 0:
                 print(
                     f"  EnsembleModel.enable_low_rank: K={K} exceeds rank "
                     f"N-1={max_rank}; clamping to {max_rank}."
@@ -793,7 +838,7 @@ class EnsembleModel(ModelFT):
         self.xyz = lowrank
         self.reset_cache()
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(
                 f"  EnsembleModel.enable_low_rank: K={K} modes, "
                 f"DOF {N * n_atoms * 3} -> {N * K} "
@@ -823,7 +868,7 @@ class EnsembleModel(ModelFT):
         )
         self.xyz = pca.to(self.device)
         self.reset_cache()
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(
                 f"  EnsembleModel.enable_pca: K={self.xyz.K} modes (refine μ,A,V), "
                 f"explained variance = {self.xyz.explained_variance * 100:.2f}%"
