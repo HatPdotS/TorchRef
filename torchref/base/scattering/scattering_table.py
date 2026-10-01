@@ -14,6 +14,11 @@ import torch
 
 from torchref.config import get_float_dtype, get_int_dtype
 
+#: Column of the ITC92 constant ``c`` in the ``(n, 5)`` ``A`` / ``B`` coefficient arrays.
+#: ``c`` is stored as a fifth Gaussian of zero width (``B[:, CONSTANT_TERM] == 0``), so
+#: this column is also where any other angle-independent term, such as f' or f'', goes.
+CONSTANT_TERM = 4
+
 # Global cache for the loaded table
 _TABLE_CACHE: Optional[dict] = None
 
@@ -49,7 +54,8 @@ def load_scattering_table(
     Returns
     -------
     dict
-        - 'A', 'B': Tensor(max_z + 1, 5), neutral coefficients indexed by Z
+        - 'A', 'B': Tensor(max_z + 1, 5), neutral coefficients indexed by Z; column
+          :data:`CONSTANT_TERM` holds ``c`` with ``B = 0``
         - 'element_to_z' / 'z_to_element': symbol/number mappings
         - 'ions': ion key -> (A, B)
         - 'metadata': source information

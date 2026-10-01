@@ -2,11 +2,13 @@
 
 Adds the electron-density / FFT path (an :class:`~torchref.model.SfFFT` submodule
 that reads the crystal off the model's context and sizes its grid lazily), the
-ITC92 scattering parametrization, and the anomalous f' / f'' correction.
+ITC92 scattering parametrization, and the anomalous f' / f'' terms. Those enter the
+same density as f0 rather than a separate sum, so every term of F_calc gets the same
+temperature factors and symmetry expansion (see :meth:`ModelFT.forward`).
 """
 
 import math
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import gemmi
 import numpy as np
@@ -18,6 +20,26 @@ from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
 from torchref.utils.caching import CachedForwardMixin
+
+
+class _AnomalousTerms(NamedTuple):
+    """f' and f'' laid out for :meth:`ModelFT._add_anomalous_scattering`.
+
+    ``f_prime_iso`` / ``f_prime_aniso`` are ``(n_iso, 5)`` / ``(n_aniso, 5)`` addends to
+    the ITC92 amplitudes of :meth:`ModelFT.get_iso` / :meth:`ModelFT.get_aniso`: f' in
+    electrons in the zero-width column (``CONSTANT_TERM``) for atoms above
+    ``anomalous_threshold``, zero everywhere else. ``rows_iso`` / ``rows_aniso`` index
+    those atoms within the two subsets, and ``f_double_prime_iso`` /
+    ``f_double_prime_aniso`` are their f'' amplitudes, ``(len(rows), 5)``, laid out the
+    same way.
+    """
+
+    f_prime_iso: torch.Tensor
+    f_prime_aniso: torch.Tensor
+    rows_iso: torch.Tensor
+    rows_aniso: torch.Tensor
+    f_double_prime_iso: torch.Tensor
+    f_double_prime_aniso: torch.Tensor
 
 
 class ModelFT(CachedForwardMixin, Model):
@@ -131,10 +153,8 @@ class ModelFT(CachedForwardMixin, Model):
             torch.tensor(bool(apply_bijvoet), device=self.device),
             persistent=True,
         )
-        self._anomalous_cache = None  # Will hold (mask, f_prime, f_double_prime)
-        self._anomalous_elements_hash = (
-            None  # Hash of element list for cache invalidation
-        )
+        # (key, partition, _AnomalousTerms or None); see _get_anomalous_cache.
+        self._anomalous_cache = None
 
     # =========================================================================
     # Engine binding and grid inputs
@@ -176,12 +196,17 @@ class ModelFT(CachedForwardMixin, Model):
         return self.fft.grid_key
 
     def _fingerprint_state(self):
-        """Fold the grid key into the forward-cache key.
+        """Fold the grid key and the anomalous settings into the forward-cache key.
 
         Parameters and buffers alone would miss a cell, space-group or resolution
-        change that leaves the grid buffers untouched until the next forward.
+        change that leaves the grid buffers untouched until the next forward, and a
+        new ``wavelength`` or ``anomalous_threshold``, which are plain attributes.
         """
-        return super()._fingerprint_state() + (self.fft.grid_key,)
+        return super()._fingerprint_state() + (
+            self.wavelength,
+            self.anomalous_threshold,
+            self.fft.grid_key,
+        )
 
     # =========================================================================
     # Backward-compatible properties for scattering parameters
@@ -455,7 +480,6 @@ class ModelFT(CachedForwardMixin, Model):
         # Drop the anomalous scattering cache; it is recomputed on next use
         # and would otherwise hold tensors on the previous device.
         self._anomalous_cache = None
-        self._anomalous_elements_hash = None
         for module in self.children():
             if hasattr(module, "reset_forward_cache"):
                 module.reset_forward_cache()
@@ -465,109 +489,128 @@ class ModelFT(CachedForwardMixin, Model):
         self.reset_cache()
 
     # =========================================================================
-    # Anomalous Scattering Correction Methods
+    # Anomalous scattering
     # =========================================================================
 
-    def _get_anomalous_cache(
-        self,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Cached ``(mask, f_prime, f_double_prime, has_anomalous, indices)``.
+    def _get_anomalous_cache(self) -> Optional[_AnomalousTerms]:
+        """f' and f'' of the atoms above ``anomalous_threshold``; None if there are none.
 
-        ``mask`` is per-atom; ``f_prime`` / ``f_double_prime`` cover only the
-        significant scatterers. Recomputed when the element list changes.
+        Rebuilt when the element list, ``wavelength``, ``anomalous_threshold`` or the
+        iso/aniso partition changes. Building it costs a device sync; using it, none.
+
+        Raises
+        ------
+        RuntimeError
+            If an anomalous atom's ITC92 column ``CONSTANT_TERM`` has a nonzero width,
+            which would spread f' and f'' like an f0 Gaussian.
         """
         from torchref.base.scattering.anomalous_table import (
             get_anomalous_corrections_by_indices,
             get_significant_elements,
         )
+        from torchref.base.scattering.scattering_table import CONSTANT_TERM
 
-        element_list = self.ctx.topology.atoms.element.tolist()
-        elements_hash = hash(tuple(element_list))
+        elements = self.ctx.topology.atoms.element.tolist()
+        key = (hash(tuple(elements)), self.wavelength, self.anomalous_threshold)
+        # Compared by identity: ``_sf_partition`` hands back the same tuple until the
+        # aniso flags or the hydrogen choice change.
+        partition = self._sf_partition()
+        cached = self._anomalous_cache
+        if cached is not None and cached[0] == key and cached[1] is partition:
+            return cached[2]
 
-        if (
-            self._anomalous_cache is None
-            or self._anomalous_elements_hash != elements_hash
-        ):
-            unique_elements = list(set(element_list))
-            significant = get_significant_elements(
-                unique_elements, self.wavelength, self.anomalous_threshold
-            )
-
-            if self.ctx.verbose > 1 and significant:
+        terms = None
+        significant = get_significant_elements(
+            sorted(set(elements)), self.wavelength, self.anomalous_threshold
+        )
+        if significant:
+            if self.ctx.verbose > 1:
                 print(
                     f"Anomalous scatterers at {self.wavelength:.4f} Å: "
-                    f"{list(significant.keys())}"
+                    f"{sorted(significant)}"
                 )
-
             mask, f_prime, f_double_prime = get_anomalous_corrections_by_indices(
-                element_list, significant, self.device, self.dtype_float
+                elements, significant, self.device, self.dtype_float
+            )
+            rows = mask.nonzero(as_tuple=True)[0]
+            if bool((self.B[rows, CONSTANT_TERM] != 0).any()):
+                raise RuntimeError(
+                    f"{type(self).__name__}: ITC92 column {CONSTANT_TERM} must be the "
+                    "zero-width constant term to carry f' and f'', but an anomalous "
+                    "atom has a nonzero width there."
+                )
+            addend_fp = self.A.new_zeros(len(elements), self.A.shape[1])
+            addend_fdp = torch.zeros_like(addend_fp)
+            addend_fp[rows, CONSTANT_TERM] = f_prime
+            addend_fdp[rows, CONSTANT_TERM] = f_double_prime
+
+            iso_idx, aniso_idx = partition[0], partition[1]
+            rows_iso = mask[iso_idx].nonzero(as_tuple=True)[0].to(dtypes.int)
+            rows_aniso = mask[aniso_idx].nonzero(as_tuple=True)[0].to(dtypes.int)
+            terms = _AnomalousTerms(
+                f_prime_iso=addend_fp[iso_idx],
+                f_prime_aniso=addend_fp[aniso_idx],
+                rows_iso=rows_iso,
+                rows_aniso=rows_aniso,
+                f_double_prime_iso=addend_fdp[iso_idx][rows_iso],
+                f_double_prime_aniso=addend_fdp[aniso_idx][rows_aniso],
             )
 
-            # Pre-compute integer indices to avoid boolean indexing GPU sync
-            has_anomalous = bool(mask.any().item())
-            anomalous_indices = (
-                mask.nonzero(as_tuple=True)[0] if has_anomalous else None
-            )
-            self._anomalous_cache = (
-                mask,
-                f_prime,
-                f_double_prime,
-                has_anomalous,
-                anomalous_indices,
-            )
-            self._anomalous_elements_hash = elements_hash
+        self._anomalous_cache = (key, partition, terms)
+        return terms
 
-        return self._anomalous_cache
+    def _add_anomalous_scattering(self, iso, aniso, include_fdp: bool):
+        """Put f' and f'' into the atoms :meth:`forward` hands to the FFT engine.
 
-    def _apply_anomalous_correction(
-        self,
-        sf: torch.Tensor,
-        hkl: torch.Tensor,
-        include_fdp: bool = True,
-    ) -> torch.Tensor:
-        """Add ``ΔF(h) = Σ (f' + i f'') exp(2πi h·r) occ`` to ``sf``.
+        Neither term depends on the scattering angle, so each is a zero-width Gaussian
+        in the atom's form factor -- the slot ITC92's constant ``c`` already occupies.
+        Placed there, both get exactly what f0 gets: the splat widens the term by the
+        atom's own isotropic or anisotropic displacement, and the FFT path expands it
+        over the symmetry operators. f' joins the real amplitudes. f'' becomes the only
+        amplitude of a copy of the anomalous atoms, which the engine splats into the
+        imaginary part of the density; each copy keeps its atom's ITC92 widths so both
+        parts are truncated at the same per-atom radius.
 
-        Only the significant scatterers (|f'| or |f''| above
-        ``anomalous_threshold``) contribute. ``include_fdp=False`` zeroes f'',
-        keeping Friedel's law intact -- the correct choice for merged data.
+        Parameters
+        ----------
+        iso, aniso : tuple of torch.Tensor
+            :meth:`get_iso` and :meth:`get_aniso` -- read from here rather than from the
+            parameter wrappers, so a subclass that adjusts those (``EnsembleModel``)
+            applies to the anomalous terms too.
+        include_fdp : bool
+            Build the f'' atoms. False keeps ``F(-h) = F(h)*``, which merged data need.
+
+        Returns
+        -------
+        iso, aniso : tuple of torch.Tensor
+            The inputs with f' added to ``A``; returned as given without significant
+            scatterers.
+        imaginary : tuple of torch.Tensor or None
+            The f'' atoms in the layout of ``(*iso, *aniso)``, or None.
         """
-        mask, f_prime, f_double_prime, has_anomalous, anomalous_indices = (
-            self._get_anomalous_cache()
-        )
-
-        if not has_anomalous:
-            return sf  # No significant anomalous scatterers
-
-        # Integer indices, not the boolean mask: boolean indexing forces a GPU sync.
-        xyz_frac = self.xyz_fractional()[anomalous_indices]  # (n_significant, 3)
-        occ = self.occupancy()[anomalous_indices]  # (n_significant,)
-
-        # Phase factors exp(2πi h·r), h·r over fractional coordinates
-        h_dot_r = torch.matmul(
-            hkl.to(dtype=self.dtype_float, device=xyz_frac.device), xyz_frac.T
-        )  # (n_refl, n_significant)
-        phase = 2 * torch.pi * h_dot_r
-
-        cos_phase = torch.cos(phase)
-        sin_phase = torch.sin(phase)
-
-        f_prime_occ = f_prime * occ  # (n_significant,)
-        f_double_prime_occ = f_double_prime * occ  # (n_significant,)
+        terms = self._get_anomalous_cache()
+        if terms is None:
+            return iso, aniso, None
+        xyz_i, adp_i, occ_i, A_i, B_i = iso
+        xyz_a, u_a, occ_a, A_a, B_a = aniso
+        iso = (xyz_i, adp_i, occ_i, A_i + terms.f_prime_iso, B_i)
+        aniso = (xyz_a, u_a, occ_a, A_a + terms.f_prime_aniso, B_a)
         if not include_fdp:
-            # Dispersive f' only, so Friedel's law is preserved (merged data).
-            f_double_prime_occ = torch.zeros_like(f_double_prime_occ)
-
-        # For each reflection:
-        # Real part: Σ [f'·cos(φ) - f''·sin(φ)] × occ
-        # Imag part: Σ [f'·sin(φ) + f''·cos(φ)] × occ
-        delta_real = torch.sum(
-            f_prime_occ * cos_phase - f_double_prime_occ * sin_phase, dim=-1
+            return iso, aniso, None
+        ri, ra = terms.rows_iso, terms.rows_aniso
+        imaginary = (
+            xyz_i[ri],
+            adp_i[ri],
+            occ_i[ri],
+            terms.f_double_prime_iso,
+            B_i[ri],
+            xyz_a[ra],
+            u_a[ra],
+            occ_a[ra],
+            terms.f_double_prime_aniso,
+            B_a[ra],
         )
-        delta_imag = torch.sum(
-            f_prime_occ * sin_phase + f_double_prime_occ * cos_phase, dim=-1
-        )
-
-        return sf + torch.complex(delta_real, delta_imag)
+        return iso, aniso, imaginary
 
     def get_structure_factor(
         self, hkl: torch.Tensor, recalc=False, apply_anomalous: bool = True
@@ -597,8 +640,9 @@ class ModelFT(CachedForwardMixin, Model):
         Notes
         -----
         The full scattering factor is ``f(s, λ) = f₀(s) + f'(λ) + i f''(λ)``,
-        with f₀ from the FFT and the wavelength-dependent f' / f'' applied only
-        to atoms above ``anomalous_threshold``.
+        with the wavelength-dependent f' / f'' applied only to atoms above
+        ``anomalous_threshold``. All three terms go through the same density and
+        FFT, so each carries the atom's temperature factor and symmetry mates.
         """
         return self(hkl, recalc=recalc, apply_anomalous=apply_anomalous)
 
@@ -648,21 +692,24 @@ class ModelFT(CachedForwardMixin, Model):
         -------
         torch.Tensor
             Calculated complex structure factors with shape (n_reflections,).
+
+        Notes
+        -----
+        f' and f'' are not added to F afterwards: they are folded into the atoms'
+        form factors before the density is built, so the one splat and FFT apply
+        each atom's isotropic or anisotropic temperature factor and the space-group
+        symmetry to them exactly as to f0. With f'' the density is complex, and so is
+        the map left in ``self.ed``.
         """
         self._check_forward_dtype(hkl)
-        sf, self.ed = self.fft.compute_structure_factors(
-            hkl,
-            *self.get_iso(),
-            *self.get_aniso(),
-            apply_symmetry=True,
-        )
-
-        # Apply anomalous correction as post-processing. f' always applies when a
-        # wavelength is set; f'' only for unmerged (Bijvoet) data.
+        iso, aniso, imaginary = self.get_iso(), self.get_aniso(), None
         if apply_anomalous and self.wavelength is not None:
-            sf = self._apply_anomalous_correction(
-                sf, hkl, include_fdp=bool(self.anomalous_bijvoet)
+            iso, aniso, imaginary = self._add_anomalous_scattering(
+                iso, aniso, include_fdp=bool(self.anomalous_bijvoet)
             )
+        sf, self.ed = self.fft.compute_structure_factors(
+            hkl, *iso, *aniso, apply_symmetry=True, imaginary=imaginary
+        )
 
         if self.ctx.verbose > 2:
             assert torch.all(
