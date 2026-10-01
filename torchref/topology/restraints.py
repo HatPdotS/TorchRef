@@ -621,8 +621,11 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             symop_indices = self.restraints["vdw"].get("symop_indices")
             cell_offsets = self.restraints["vdw"].get("cell_offsets")
             if symop_indices is not None and len(symop_indices) > 0:
-                import torch as _torch
-                is_sym = (symop_indices != 0) | (cell_offsets != 0).any(dim=-1)
+                from torchref.base.coordinates.symmetry_images import (
+                    is_symmetry_image,
+                )
+
+                is_sym = is_symmetry_image(symop_indices, cell_offsets)
                 vdw_sym_count = int(is_sym.sum().item())
         vdw_asu_count = vdw_count - vdw_sym_count
         if vdw_sym_count > 0:

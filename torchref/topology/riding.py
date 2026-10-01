@@ -23,6 +23,7 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
+from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import dtypes, get_int_dtype, normalize_device
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.device_mixin import DeviceMixin
@@ -715,11 +716,14 @@ def build_h_candidate_pairs(
     """Precompute candidate H-involving VDW pairs from the heavy-atom pair list.
 
     From each heavy-heavy pair (A, B, symop, offset), derives the H-heavy pairs
-    where an H riding on A could reach B and vice versa, applying the exclusion and
-    same-residue filters now so the forward pass only computes distances. Mutates
-    ``h_topo`` in place, registering ``cand_idx_i``/``cand_idx_j`` (combined-array
-    atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (for the heavy atom)
-    and ``cand_min_dist`` (H + heavy radius sum).
+    where an H riding on A could reach B, and for intra-ASU pairs vice versa,
+    applying the exclusion and same-residue filters now so the forward pass only
+    computes distances. An image pair's other direction comes from its reverse
+    entry, B against A under the inverse operation, so the heavy list must hold both
+    directions of every image contact, as ``build_vdw_restraints_gpu`` emits them.
+    Mutates ``h_topo`` in place, registering ``cand_idx_i``/``cand_idx_j``
+    (combined-array atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (the
+    image of the ``cand_idx_j`` end) and ``cand_min_dist`` (H + heavy radius sum).
 
     Parameters
     ----------
@@ -778,6 +782,7 @@ def build_h_candidate_pairs(
     idx_B = heavy_indices[:, 1].cpu().numpy()
     symop_np = heavy_symop.cpu().numpy()
     offsets_np = heavy_offsets.cpu().numpy()
+    is_image_np = is_symmetry_image(heavy_symop, heavy_offsets).cpu().numpy()
 
     # Per-pair VDW radius sums are not computed here: the cand_min_dist
     # buffer is allocated as zeros below and is populated by the caller,
@@ -798,7 +803,7 @@ def build_h_candidate_pairs(
         A, B = int(idx_A[p_idx]), int(idx_B[p_idx])
         sym = int(symop_np[p_idx])
         off = offsets_np[p_idx]
-        is_intra_asu = (sym == 0) and (off == 0).all()
+        is_intra_asu = not is_image_np[p_idx]
 
         h_on_A = parent_to_h.get(A, [])
         h_on_B = parent_to_h.get(B, [])
@@ -815,15 +820,23 @@ def build_h_candidate_pairs(
             acc_offset.append(off)
 
         # --- H on B ↔ heavy A ---
-        for hi in h_on_B:
-            if is_intra_asu and _same_res(
-                h_chain_np[hi], h_resseq_np[hi], heavy_chain_np[A], heavy_resseq_np[A]
-            ):
-                continue
-            acc_idx_i.append(n_heavy + hi)
-            acc_idx_j.append(A)
-            acc_symop.append(0)
-            acc_offset.append(np.zeros(3, dtype=np.int64))
+        # Intra-ASU pairs only. An image pair -- A against B under (symop, offset)
+        # -- is listed together with B against A under the inverse operation, whose
+        # "H on A" branch above emits this contact with the image on the right atom.
+        # From here it could only carry this pair's operation, which images B, not A.
+        if is_intra_asu:
+            for hi in h_on_B:
+                if _same_res(
+                    h_chain_np[hi],
+                    h_resseq_np[hi],
+                    heavy_chain_np[A],
+                    heavy_resseq_np[A],
+                ):
+                    continue
+                acc_idx_i.append(n_heavy + hi)
+                acc_idx_j.append(A)
+                acc_symop.append(0)
+                acc_offset.append(np.zeros(3, dtype=np.int64))
 
         # --- H on A ↔ H on B  (H-H contacts) ---
         for hi_a in h_on_A:
@@ -859,7 +872,7 @@ def build_h_candidate_pairs(
 
     # Apply 1-2 / 1-3 exclusions for intra-ASU candidates
     if h_excl_hash is not None and len(h_excl_hash) > 0:
-        is_intra = (cand_sym == 0) & (cand_off == 0).all(dim=1)
+        is_intra = ~is_symmetry_image(cand_sym, cand_off)
         if is_intra.any():
             max_idx = n_heavy + n_h
             norm_i = torch.minimum(cand_i, cand_j)
@@ -876,18 +889,13 @@ def build_h_candidate_pairs(
             cand_sym = cand_sym[keep]
             cand_off = cand_off[keep]
 
-    # Deduplicate
+    # Deduplicate on whole (i, j, symop, offset) rows. No fixed-stride packed key is
+    # safe: offsets are not confined to -1..1, nor operations to a small count.
     if len(cand_i) > 0:
-        n_all = n_heavy + n_h
-        dedup_key = (
-            cand_i.long() * (n_all * 1000)
-            + cand_j.long() * 1000
-            + cand_sym.long() * 27
-            + (cand_off[:, 0] + 1) * 9
-            + (cand_off[:, 1] + 1) * 3
-            + (cand_off[:, 2] + 1)
+        rows = torch.cat(
+            [torch.stack([cand_i, cand_j, cand_sym], dim=1), cand_off], dim=1
         )
-        _, first_idx = torch.unique(dedup_key, return_inverse=True)
+        _, first_idx = torch.unique(rows, dim=0, return_inverse=True)
         # MPS does not support int64 scatter_reduce; use configured int dtype.
         _int_dtype = dtypes.int
         first_idx_i = first_idx.to(_int_dtype)
@@ -905,7 +913,7 @@ def build_h_candidate_pairs(
         cand_off = cand_off[mask]
 
     # Sort: ASU candidates first, symmetry last
-    is_asu = (cand_sym == 0) & (cand_off == 0).all(dim=1)
+    is_asu = ~is_symmetry_image(cand_sym, cand_off)
     sort_order = (~is_asu).long().argsort(stable=True)
     cand_i = cand_i[sort_order]
     cand_j = cand_j[sort_order]
@@ -923,7 +931,7 @@ def build_h_candidate_pairs(
 
     if verbose > 0:
         n_hh = ((cand_i >= n_heavy) & (cand_j >= n_heavy)).sum().item()
-        n_sym = ((cand_sym != 0) | (cand_off != 0).any(dim=1)).sum().item()
+        n_sym = (~is_asu).sum().item()
         print(
             f"  H candidate pairs: {len(cand_i)} "
             f"({n_hh} H-H, {len(cand_i)-n_hh} H-heavy, {n_sym} symmetry)"

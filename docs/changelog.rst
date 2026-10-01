@@ -4,6 +4,8 @@ Changelog
 
 Unreleased
 ----------
+- The non-bonded pair list includes every symmetry mate in reach wherever the model sits relative to the origin cell. Mates that needed a cell offset beyond ±1 were dropped: all 2,270 of 6G9X's symmetry contacts and 2,838 of 3E98's 4,638. Contact counts now match gemmi and do not change when the model is shifted by a lattice vector
+- Non-bonded scoring applies every pair's cell offset, so P1 lattice contacts are scored at their image distance instead of the untranslated one (on 5BOV, 24,798 pairs moved from 38-105 Å to their true 2-6 Å). Riding-hydrogen contacts and statistics use image positions too. Every image is placed by one function, ``torchref.base.coordinates.symmetry_image_positions``
 - Torsion restraints measure dihedrals with the IUPAC sign the monomer library is written in, the same as gemmi. Torsions whose reference is not symmetric under a sign flip, such as nucleotide and carbohydrate sugar torsions, are no longer restrained toward their mirror image (on 3A5V the glycan torsion rms z drops from 26-31 to 1.5-2.6). Protein torsions and the Ramachandran restraints are unchanged, and every dihedral, eager or Triton, comes from one formula
 - PDB output writes the insertion code in column 27 of ATOM, HETATM and ANISOU records. It went to column 30 and was lost, so residues such as 52 and 52A merged on reading. ANISOU values are rounded rather than truncated
 - ``Model.write_pdb`` and ``write_cif`` no longer split residues that share a name and number but differ by insertion code into one-atom residues. Only HETATM residues whose atom identifiers repeat are renumbered, whole; ATOM records never are
