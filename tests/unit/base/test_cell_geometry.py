@@ -59,7 +59,8 @@ def test_direct_and_reciprocal_bases_match_gemmi(params):
 @pytest.mark.parametrize("params", CELLS.values(), ids=CELLS.keys())
 def test_cell_object_is_consistent_with_gemmi(params):
     _, frac_ref = _gemmi_matrices(params)
-    cell = Cell(list(params), dtype=torch.float64)  # dtype-ok: reference precision
+    # dtype-ok: reference precision, on CPU because MPS has no float64.
+    cell = Cell(list(params), dtype=torch.float64, device="cpu")
     np.testing.assert_allclose(
         cell.reciprocal_basis_matrix.numpy(), frac_ref, atol=1e-12
     )

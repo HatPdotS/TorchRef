@@ -45,13 +45,14 @@ def _read(path):
         dtype=get_float_dtype(),
     )
     c = st.cell
-    cell = Cell([c.a, c.b, c.c, c.alpha, c.beta, c.gamma])
+    cpu = torch.device("cpu")
+    cell = Cell([c.a, c.b, c.c, c.alpha, c.beta, c.gamma], device=cpu)
     return (
         st,
         {key: k for k, key in enumerate(atoms)},
         xyz,
         cell,
-        SpaceGroup(st.spacegroup_hm),
+        SpaceGroup(st.spacegroup_hm, device=cpu),
     )
 
 
