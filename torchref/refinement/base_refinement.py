@@ -124,7 +124,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         nbins: int = 10,
         n_iso_coeff: int = 6,
         column_names: Optional[Dict[str, str]] = None,
-        wavelength: Optional[float] = 1.0,
+        wavelength: Optional[float] = None,
         anomalous_threshold: float = 0.5,
         french_wilson: bool = True,
         anomalous: Optional[bool] = None,
@@ -168,18 +168,20 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         column_names : dict, optional
             Mapping of logical column roles to MTZ column labels.
         wavelength : float, optional
-            X-ray wavelength in Angstroms for the anomalous (f'/f'') correction.
-            ``0`` means "no anomalous refinement": it disables the correction and
-            forces a Friedel-merged read, **overriding** ``anomalous`` to False.
+            X-ray wavelength of the data in Angstroms. Given, the model includes the
+            anomalous f'/f'' and the data may be read as Bijvoet pairs (see
+            ``anomalous``). Default None, as is ``0``: no anomalous scattering and a
+            Friedel-merged read.
         anomalous_threshold : float, optional
             Threshold controlling anomalous data handling. Default 0.5.
         french_wilson : bool, optional
             Derive amplitudes from intensities via French-Wilson. Set False to use
             existing ``F``/``SIGF`` columns when the MTZ also carries intensities.
         anomalous : bool, optional
-            Anomalous (Bijvoet) load preference. None auto-detects ``F(+)/F(-)``
-            (or ``I(+)/I(-)``) and loads Friedel pairs when present, enabling the
-            model's f'' term; True forces it, False forces a merged load.
+            Anomalous (Bijvoet) load preference. None (default) loads Friedel pairs
+            when a ``wavelength`` is given and the file has ``F(+)/F(-)`` (or
+            ``I(+)/I(-)``), enabling the model's f'' term; True forces it; False
+            forces a merged load.
         adp_mode : str, optional
             ADP parametrization: ``"isotropic"`` (default) refines a per-atom
             B-factor, ``"anisotropic"`` a 6-component U tensor for the atoms
@@ -216,6 +218,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         hydrogens_in_xray : bool, optional
             Whether hydrogens contribute to the structure factors. Default True. They
             take part in the restraints either way.
+
+        Raises
+        ------
+        ValueError
+            If ``anomalous=True`` is given without a ``wavelength``.
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -230,14 +237,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.nbins = nbins
         self.n_iso_coeff = n_iso_coeff
         self.lr = 1e-3
-        # Wavelength drives f'/f'' anomalous scattering corrections in ModelFT.
-        # Default 1.0 preserves prior behavior; set to the experimental wavelength
-        # for anomalous (Bijvoet) refinement, or None to disable entirely.
         self.wavelength = wavelength
         self.anomalous_threshold = anomalous_threshold
         self.french_wilson = french_wilson
-        # Anomalous (Bijvoet) load preference: None auto-detects and prefers
-        # anomalous data when present; True forces it; False forces a merged load.
         self.anomalous = anomalous
         # ADP parametrization: 'isotropic' (default) refines per-atom B;
         # 'anisotropic' refines a 6-component U for atoms matched by
@@ -258,10 +260,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.xray_mode = xray_mode
         self.sigma_a_max = sigma_a_max
         self.shrink = shrink
-        # A wavelength of 0 means "no anomalous refinement": disable the f'/f''
-        # correction (model wavelength None) and force a Friedel-merged read so
-        # F(+)/F(-) are not loaded as Bijvoet pairs.
-        if self.wavelength is not None and float(self.wavelength) == 0.0:
+        # Without a wavelength there is no f'' to tell Friedel mates apart, so a
+        # Bijvoet read would only split each acentric reflection into two
+        # observations of one modelled amplitude.
+        if self.wavelength is None or float(self.wavelength) == 0.0:
+            if self.anomalous:
+                raise ValueError(
+                    "anomalous=True reads F(+)/F(-) as Bijvoet pairs for the f'' "
+                    "term, which needs the wavelength the data were collected at; "
+                    "pass wavelength=..."
+                )
             self.wavelength = None
             self.anomalous = False
 

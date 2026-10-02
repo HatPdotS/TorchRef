@@ -194,15 +194,15 @@ def add_adp_mode_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_wavelength_arg(parser: argparse.ArgumentParser) -> None:
-    """Add ``--wavelength`` argument (Angstroms; 0 disables anomalous)."""
+    """Add ``--wavelength`` argument (Angstroms; unset or 0 means no anomalous)."""
     parser.add_argument(
         "--wavelength",
         type=float,
-        default=1.0,
-        help="X-ray wavelength in Angstroms, used for anomalous (f'/f'') "
-        "scattering. Set to 0 to disable anomalous refinement entirely, which "
-        "also forces a Friedel-merged read of the data (no F(+)/F(-) Bijvoet "
-        "pairs). Default 1.0.",
+        default=None,
+        help="X-ray wavelength of the data in Angstroms. Given, the model includes "
+        "anomalous (f'/f'') scattering and F(+)/F(-) columns are read as Bijvoet "
+        "pairs. Default: no anomalous scattering and a Friedel-merged read, which "
+        "0 also selects.",
     )
 
 

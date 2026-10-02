@@ -387,6 +387,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         A_aniso: Optional[torch.Tensor] = None,
         B_aniso: Optional[torch.Tensor] = None,
         apply_symmetry: bool = True,
+        imaginary: Optional[Tuple[Optional[torch.Tensor], ...]] = None,
     ) -> torch.Tensor:
         """
         Build electron density map from atomic parameters.
@@ -394,28 +395,73 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         Parameters
         ----------
         xyz_iso, adp_iso, occ_iso : torch.Tensor
-            Isotropic atoms: coordinates ``(n_iso, 3)``, ADPs ``(n_iso,)``,
-            occupancies ``(n_iso,)``.
+            Isotropic atoms: Cartesian coordinates ``(n_iso, 3)`` in Å, B-factors
+            ``(n_iso,)`` in Å², occupancies ``(n_iso,)``.
         A_iso, B_iso : torch.Tensor
-            ITC92 amplitudes / widths for the isotropic atoms, ``(n_iso, 5)``.
+            ITC92 amplitudes (electrons) / widths (Å²) for the isotropic atoms,
+            ``(n_iso, 5)``.
         xyz_aniso, u_aniso, occ_aniso : torch.Tensor, optional
-            Anisotropic atoms: coordinates ``(n_aniso, 3)``, U components
-            ``(n_aniso, 6)``, occupancies ``(n_aniso,)``.
+            Anisotropic atoms: Cartesian coordinates ``(n_aniso, 3)`` in Å, U
+            components ``(n_aniso, 6)`` in Å², occupancies ``(n_aniso,)``.
         A_aniso, B_aniso : torch.Tensor, optional
             ITC92 amplitudes / widths for the anisotropic atoms, ``(n_aniso, 5)``.
         apply_symmetry : bool, optional
             If True, apply crystallographic symmetry to the map. Default is True.
+        imaginary : tuple of torch.Tensor, optional
+            Atoms of the imaginary part of the density: ten tensors in the order,
+            shapes and units of ``xyz_iso`` ... ``B_aniso`` above. They are splatted
+            like the atoms above, into a second map that becomes the imaginary part.
+            This is how an absorptive f'' term enters the structure factors.
 
         Returns
         -------
         torch.Tensor
-            Electron density map with shape (nx, ny, nz).
+            Electron density map with shape (nx, ny, nz); complex when
+            ``imaginary`` is given, real otherwise.
         """
         self._require_grid()
 
+        density_map = self._splat(
+            xyz_iso,
+            adp_iso,
+            occ_iso,
+            A_iso,
+            B_iso,
+            xyz_aniso,
+            u_aniso,
+            occ_aniso,
+            A_aniso,
+            B_aniso,
+        )
+        density_imag = None if imaginary is None else self._splat(*imaginary)
+
+        if apply_symmetry:
+            symmetrize = self.ctx.spacegroup.symmetrize_map
+            density_map = symmetrize(density_map)
+            if density_imag is not None:
+                density_imag = symmetrize(density_imag)
+
+        if density_imag is not None:
+            density_map = torch.complex(density_map, density_imag)
+        return density_map
+
+    def _splat(
+        self,
+        xyz_iso,
+        adp_iso,
+        occ_iso,
+        A_iso,
+        B_iso,
+        xyz_aniso=None,
+        u_aniso=None,
+        occ_aniso=None,
+        A_aniso=None,
+        B_aniso=None,
+    ) -> torch.Tensor:
+        """Real P1 density of one set of atoms on this grid, ``(nx, ny, nz)``."""
         from torchref.base.electron_density.main import build_electron_density
 
-        density_map = build_electron_density(
+        return build_electron_density(
             grid_shape=self.grid_shape,
             device=self.device,
             xyz_iso=xyz_iso,
@@ -433,11 +479,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             dtype=self.dtype_float,
         )
 
-        if apply_symmetry:
-            density_map = self.ctx.spacegroup.symmetrize_map(density_map)
-
-        return density_map
-
     # =========================================================================
     # Structure Factor Methods
     # =========================================================================
@@ -454,7 +495,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         Parameters
         ----------
         density_map : torch.Tensor
-            Electron density map with shape (nx, ny, nz).
+            Electron density map with shape (nx, ny, nz), real or complex.
             If apply_symmetry=True, this should be a P1 density map.
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
@@ -491,6 +532,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         A_aniso: Optional[torch.Tensor] = None,
         B_aniso: Optional[torch.Tensor] = None,
         apply_symmetry: bool = True,
+        imaginary: Optional[Tuple[Optional[torch.Tensor], ...]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute structure factors from atomic parameters (end-to-end).
@@ -516,13 +558,19 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             ITC92 amplitudes / widths for the anisotropic atoms.
         apply_symmetry : bool, optional
             If True, apply crystallographic symmetry. Default is True.
+        imaginary : tuple of torch.Tensor, optional
+            Atoms of the imaginary part of the density, as in
+            :meth:`build_density_map`. The complex density is transformed in one
+            FFT, so ``F = FT(ρ') + i FT(ρ'')`` -- which no longer obeys
+            ``F(-h) = F(h)*`` -- with symmetry applied to both parts alike.
 
         Returns
         -------
         sf : torch.Tensor
             Complex structure factors with shape (n_reflections,).
         density_map : torch.Tensor
-            Electron density map with shape (nx, ny, nz).
+            Electron density map with shape (nx, ny, nz), complex when
+            ``imaginary`` is given.
             Note: When using late symmetry, this is the P1 map (without symmetry).
         """
         # Resolve the grid first: the late-symmetry flag belongs to the grid the
@@ -544,6 +592,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             A_aniso=A_aniso,
             B_aniso=B_aniso,
             apply_symmetry=not use_late and apply_symmetry,  # Early symmetry
+            imaginary=imaginary,
         )
         sf = self.map_to_structure_factors(
             density_map,
