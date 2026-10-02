@@ -149,14 +149,32 @@ class TestWavelengthFlag:
             pytest.skip("1DAW test files not found")
         return {"pdb": str(pdb), "mtz": str(mtz)}
 
+    @pytest.fixture
+    def anomalous_mtz(self, small_pair, tmp_path):
+        """1DAW written with FP(+)/FP(-) columns, so the file offers Bijvoet pairs."""
+        import reciprocalspaceship as rs
+
+        ds = rs.read_mtz(small_pair["mtz"])
+        out = tmp_path / "1DAW_anomalous.mtz"
+        ds[["FP", "SIGFP", "FreeR_flag"]].copy().unstack_anomalous(
+            columns=["FP", "SIGFP"]
+        ).write_mtz(str(out))
+        return str(out)
+
     @pytest.mark.integration
-    def test_wavelength_zero_disables_anomalous_and_merges(self, small_pair):
-        """wavelength=0 -> no anomalous correction + forced Friedel-merged read."""
+    @pytest.mark.parametrize(
+        "kwargs", [{}, {"wavelength": 0}], ids=["default", "wavelength_zero"]
+    )
+    def test_no_wavelength_means_no_anomalous(self, small_pair, anomalous_mtz, kwargs):
+        """Without a wavelength the model has no f'/f'' and F(+)/F(-) are merged."""
         from torchref.refinement.lbfgs_refinement import LBFGSRefinement
 
         ref = LBFGSRefinement(
-            data_file=small_pair["mtz"], pdb=small_pair["pdb"],
-            device=torch.device("cpu"), verbose=0, wavelength=0,
+            data_file=anomalous_mtz,
+            pdb=small_pair["pdb"],
+            device=torch.device("cpu"),
+            verbose=0,
+            **kwargs,
         )
         assert ref.wavelength is None
         assert ref.anomalous is False
@@ -165,12 +183,31 @@ class TestWavelengthFlag:
         assert bool(ref.model.anomalous_bijvoet) is False
 
     @pytest.mark.integration
-    def test_wavelength_default_preserved(self, small_pair):
+    def test_wavelength_reads_bijvoet_pairs(self, small_pair, anomalous_mtz):
+        """A wavelength gives the model f'/f'' and reads F(+)/F(-) as Bijvoet pairs."""
         from torchref.refinement.lbfgs_refinement import LBFGSRefinement
 
         ref = LBFGSRefinement(
-            data_file=small_pair["mtz"], pdb=small_pair["pdb"],
-            device=torch.device("cpu"), verbose=0,
+            data_file=anomalous_mtz,
+            pdb=small_pair["pdb"],
+            device=torch.device("cpu"),
+            verbose=0,
+            wavelength=1.54,
         )
-        assert ref.wavelength == 1.0
-        assert ref.model.wavelength == 1.0
+        assert bool(ref.reflection_data.friedel_merged) is False
+        assert ref.model.wavelength == 1.54
+        assert bool(ref.model.anomalous_bijvoet) is True
+
+    @pytest.mark.integration
+    def test_anomalous_without_wavelength_raises(self, small_pair):
+        """``anomalous=True`` needs the wavelength its f'' term is computed at."""
+        from torchref.refinement.lbfgs_refinement import LBFGSRefinement
+
+        with pytest.raises(ValueError, match="wavelength"):
+            LBFGSRefinement(
+                data_file=small_pair["mtz"],
+                pdb=small_pair["pdb"],
+                device=torch.device("cpu"),
+                verbose=0,
+                anomalous=True,
+            )

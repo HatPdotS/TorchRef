@@ -63,8 +63,9 @@ and a ``refinement_history.json`` log.
   Ramachandran with ``--weights '{"geometry/ramachandran": 1.0}'``
 * ``--with-rigid-body`` run rigid-body first (``--rigid-body-iter``,
   ``--rigid-body-cutoffs``)
-* ``--wavelength`` Å, for anomalous f'/f''. ``0`` disables anomalous refinement
-  and forces a Friedel-merged read of the data
+* ``--wavelength`` Å, the wavelength the data were collected at. Given, the model
+  includes anomalous f'/f'' and reads F(+)/F(-) as Bijvoet pairs; without it (or
+  with ``0``) there is no anomalous scattering and the read is Friedel-merged
 * ``--dmin`` resolution cutoff
 * ``--output-format`` ``pdb`` / ``cif`` / ``both`` (default both)
 * ``--device`` ``auto`` (default) / ``cpu`` / ``cuda``. ``auto`` picks CUDA only

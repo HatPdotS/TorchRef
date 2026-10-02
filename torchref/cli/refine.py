@@ -294,8 +294,8 @@ Loss weights:
                 f"{args.anisotropic_selection or 'not resname HOH and not element H'})"
             )
         print(adp_line)
-        if args.wavelength == 0:
-            print("Anomalous:         off (wavelength 0 -> Friedel-merged read)")
+        if not args.wavelength:
+            print("Anomalous:         off (no --wavelength; Friedel-merged read)")
         else:
             print(f"Wavelength:        {args.wavelength:.4g} A")
         if manual_weights:

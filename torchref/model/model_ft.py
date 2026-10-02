@@ -58,9 +58,10 @@ class ModelFT(CachedForwardMixin, Model):
     gridsize : tuple of int, optional
         Explicit grid size (nx, ny, nz). If None, computed from cell and max_res.
     wavelength : float or None, optional
-        X-ray wavelength in Angstroms for anomalous scattering correction.
-        Default is 1.0 (standard synchrotron, ~12.4 keV). Set to None to
-        disable anomalous corrections entirely.
+        X-ray wavelength of the data in Angstroms, which sets the anomalous f'
+        and f''. Default None: no anomalous scattering, f0 only. f' and f'' are
+        strongly wavelength-dependent near an absorption edge, so pass the
+        wavelength the data were collected at, not a nominal one.
     anomalous_threshold : float, optional
         Significance threshold for anomalous scattering in electrons.
         Atoms with |f'| > threshold or |f''| > threshold will have
@@ -72,7 +73,7 @@ class ModelFT(CachedForwardMixin, Model):
 
     Attributes
     ----------
-    max_res, wavelength, anomalous_threshold : float
+    max_res, wavelength, anomalous_threshold : float or None
         The constructor arguments above, readable back as attributes.
     gridsize : torch.Tensor or None
         Grid dimensions ``(nx, ny, nz)``, derived by the ``SfFFT`` submodule from
@@ -91,7 +92,7 @@ class ModelFT(CachedForwardMixin, Model):
         *args,
         max_res=1.0,
         gridsize: Optional[Tuple[int, int, int]] = None,
-        wavelength: Optional[float] = 1.0,
+        wavelength: Optional[float] = None,
         anomalous_threshold: float = 0.5,
         apply_bijvoet: bool = False,
         **kwargs,
@@ -111,9 +112,8 @@ class ModelFT(CachedForwardMixin, Model):
         gridsize : tuple of int, optional
             Explicit grid size tuple (nx, ny, nz). If None, computed automatically.
         wavelength : float or None, optional
-            X-ray wavelength in Angstroms for anomalous scattering correction.
-            Default is 1.0 (standard synchrotron, ~12.4 keV). Set to None to
-            disable anomalous corrections entirely.
+            X-ray wavelength of the data in Angstroms, which sets the anomalous
+            f' and f''. Default None: no anomalous scattering, f0 only.
         anomalous_threshold : float, optional
             Significance threshold for anomalous scattering in electrons.
             Atoms with |f'| > threshold or |f''| > threshold will have
@@ -775,7 +775,7 @@ class ModelFT(CachedForwardMixin, Model):
         return {
             "max_res": state_dict.pop("max_res", 1.0),
             "gridsize": state_dict.pop("explicit_gridsize", None),
-            "wavelength": state_dict.pop("wavelength", 1.0),
+            "wavelength": state_dict.pop("wavelength", None),
             "anomalous_threshold": state_dict.pop("anomalous_threshold", 0.5),
         }
 

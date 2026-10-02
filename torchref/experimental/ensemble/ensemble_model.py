@@ -344,7 +344,7 @@ class EnsembleModel(ModelFT):
         hydrogens: str = "keep",
         max_res: float = 1.0,
         gridsize: Optional[Tuple[int, int, int]] = None,
-        wavelength: float = 1.0,
+        wavelength: Optional[float] = None,
         anomalous_threshold: float = 0.5,
         apply_bijvoet: bool = False,
         cif_path=None,
