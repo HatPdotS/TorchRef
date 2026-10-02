@@ -123,7 +123,8 @@ class TestWrittenPhaseConvention:
 
         # Weak reflections have numerically unstable phases and the FFT is not
         # bit-reproducible run to run, so compare where there is real signal.
-        strong = a["F-model"].to_numpy() > np.median(a["F-model"].to_numpy())
+        fm = a["F-model"].to_numpy()
+        strong = fm > np.nanmedian(fm)
         diff = _circular_diff(a[column].to_numpy()[strong], b[column].to_numpy()[strong])
         # A sign flip on ~half the rows shows up as ~2*|phase|, i.e. tens of degrees.
         assert diff.max() < 5.0, f"{column}: max {diff.max():.2f} deg"

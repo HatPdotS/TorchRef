@@ -26,6 +26,7 @@ Breaking changes
 
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
+- Written map and model columns (``FWT``/``PHWT``, ``DELFWT``/``PHDELWT``, ``F-model``/``PH-model``, ``ANOM``) are missing beyond the refinement resolution cut and for rejected reflections, instead of an unmasked ``2Fo-Fc`` on unrefined or aliased F_calc; observed columns keep every reflection
 - Fixed anisotropic ADPs being dropped from mmCIF files that store them in the standard ``_atom_site_anisotrop`` loop (every PDB and PDB-REDO mmCIF), which loaded every atom as isotropic
 - Fixed the empirical-Bayes extrapolation over-weighting the dark-state variance by ``1/(1-f)^2`` (1.64x at f = 0.22), which over-shrank every reflection; the default extrapolated map changes
 - Fixed ``DatasetCollection.scale`` fitting the inter-dataset scale on the free reflections as well as the work set

@@ -2582,6 +2582,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             warnings.simplefilter("ignore", category=RuntimeWarning)
             Fobs_disp = np.nanmean(np.vstack([Fobs_p, Fobs_m]), axis=0)
 
+        # Observed columns carry every measured mate; model and map columns only
+        # the mates masks() keeps, so a reflection past the resolution cut or
+        # rejected as an outlier is missing rather than an unrefined term.
+        valid = self.masks().detach().cpu().numpy()
+        valid_p = has_plus & valid[pi]
+        valid_m = has_minus & valid[mi]
+
         uniq_np = uniq.numpy()
         data = {
             "H": uniq_np[:, 0],
@@ -2596,24 +2603,34 @@ class ReflectionData(CrystalDataset, DebugMixin):
         fft_safe = ["F-obs"]
 
         if has_model:
-            Fmod_p, Fmod_m = plus_of(Fc_amp), minus_of(Fc_amp)
-            Phi_p, Phi_m = plus_of(Fc_ph), minus_of(Fc_ph)
+            Fmod_p = np.where(valid_p, plus_of(Fc_amp), np.nan)
+            Fmod_m = np.where(valid_m, minus_of(Fc_amp), np.nan)
+            Phi_p = np.where(valid_p, plus_of(Fc_ph), np.nan)
+            Phi_m = np.where(valid_m, minus_of(Fc_ph), np.nan)
             Fmod_p_out, Fmod_m_out = mirror_centric(Fmod_p, Fmod_m)
             Phi_p_out, Phi_m_out = mirror_centric(Phi_p, Phi_m)
 
-            # ASU representative structure factor: the + member, else the -
-            # member. Both rows are already on the canonical index.
+            # ASU representative structure factor: the valid + member, else the
+            # valid - member. Both rows are already on the canonical index.
             fc_disp = np.full(M, np.nan, dtype=complex)
-            fc_disp[has_plus] = fc[pi][has_plus]
-            only_minus = has_minus & ~has_plus
+            fc_disp[valid_p] = fc[pi][valid_p]
+            only_minus = valid_m & ~valid_p
             fc_disp[only_minus] = fc[mi][only_minus]
 
             Fc_disp_amp = np.abs(fc_disp)
             ph_disp = np.angle(fc_disp, deg=True)
 
+            # Merged over valid mates only, so a rejected mate cannot leak into
+            # the map amplitude.
+            Fobs_map_p = np.where(valid_p, Fobs_p, np.nan)
+            Fobs_map_m = np.where(valid_m, Fobs_m, np.nan)
+            with warnings.catch_warnings(), np.errstate(invalid="ignore"):
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                Fobs_map = np.nanmean(np.vstack([Fobs_map_p, Fobs_map_m]), axis=0)
+
             # Map coefficients (same convention as the legacy per-row path).
-            two_mfo = np.abs(2.0 * Fobs_disp - Fc_disp_amp)
-            mfo_complex = Fobs_disp * np.exp(1j * np.deg2rad(ph_disp)) - fc_disp
+            two_mfo = np.abs(2.0 * Fobs_map - Fc_disp_amp)
+            mfo_complex = Fobs_map * np.exp(1j * np.deg2rad(ph_disp)) - fc_disp
             delf = np.abs(mfo_complex)
             delph = np.angle(mfo_complex, deg=True)
 
@@ -2622,7 +2639,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             # ANOM = |dF| (always positive) with the sign of dF carried by a
             # 180deg flip in PANOM (the (-) member maps to phi-270 = phi+90) --
             # so ANOM*exp(i*PANOM) reproduces the signed dF*exp(i(phi-90)).
-            anom = Fobs_p_out - Fobs_m_out
+            anom = np.where(valid_p & valid_m, Fobs_p - Fobs_m, np.nan)
             panom = np.where(anom < 0.0, ph_disp - 270.0, ph_disp - 90.0)
             anom = np.abs(anom)
             # Centrics obey Friedel's law even under anomalous scattering, so their
@@ -2647,7 +2664,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     "PANOM": panom,
                 }
             )
-            fft_safe += ["F-model", "PH-model", "FWT", "PHWT", "DELFWT", "PHDELWT"]
 
         if Fsig is not None:
             data["SIGF-obs(+)"], data["SIGF-obs(-)"] = mirror_centric(
@@ -2659,9 +2675,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             rf[has_plus] = rfree[pi][has_plus]  # both mates share a flag
             data["R-free-flags"] = rf
 
-        # The display-map / merged columns must be FFT-safe (no NaN); the
-        # anomalous (+/-) columns may legitimately carry NaN where a mate is
-        # absent (incomplete anomalous data), matching phenix output.
+        # Merged F-obs is written without NaN; every other column may carry NaN
+        # (MTZ missing) where a mate is absent or excluded by masks(), matching
+        # phenix output.
         for key in fft_safe:
             data[key] = np.nan_to_num(data[key], nan=0.0)
 
@@ -2709,6 +2725,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         The map coefficients use the standard Coot names but are the
         *unweighted* forms ``2Fo-Fc`` and ``Fo-Fc`` (m=1, D=1) -- not
         likelihood-weighted 2mFo-DFc / mFo-DFc maps.
+
+        Map and model columns (FWT/PHWT, DELFWT/PHDELWT, F-model/PH-model and
+        the anomalous model columns) are written as missing for every row
+        excluded by :meth:`masks` -- beyond the resolution cut or rejected as
+        an outlier -- so a map computed from them stops at the refinement
+        resolution. Missing reflections are not filled. Observed columns are
+        written for every row.
         """
         from torchref.io.mtz import write
 
@@ -2801,9 +2824,21 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
             # Fo-Fc: Difference map (unweighted, m=D=1)
             mfo_dfc_complex = F_obs * np.exp(1j * np.deg2rad(phases)) - fcalc_np
-            mfo_dfc_complex[~mask] = 0.0  # Zero out reflections outside mask
             mfo_dfc_amp = np.abs(mfo_dfc_complex)
             mfo_dfc_phase = np.angle(mfo_dfc_complex, deg=True)
+
+            # Rows excluded by masks() are written as missing, not zero: past
+            # the resolution cut F_calc is unrefined and, beyond the FFT grid's
+            # Nyquist limit, aliased.
+            for col in (
+                two_mfo_dfc_amp,
+                two_mfo_dfc_phase,
+                mfo_dfc_amp,
+                mfo_dfc_phase,
+                F_calc_amp,
+                phases,
+            ):
+                col[~mask] = np.nan
 
             # Add 2Fo-Fc map coefficients (standard Coot names: FWT, PHWT)
             data_dict["FWT"] = two_mfo_dfc_amp
@@ -2820,9 +2855,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 print("Added map coefficients:")
                 print("  2Fo-Fc: FWT, PHWT")
                 print("  Fo-Fc: DELFWT, PHDELWT")
-                print(
-                    f"  Resolution range: {self.resolution.min().item():.2f} - {self.resolution.max().item():.2f} Å"
-                )
+                if mask.any():
+                    print(
+                        f"  Resolution range: {self.get_min_res():.2f} - "
+                        f"{self.get_max_res():.2f} Å"
+                    )
 
         # Create DataFrame
         df = pd.DataFrame(data_dict)
