@@ -68,7 +68,7 @@ TorchRef supports multiple file formats:
 
    model = read_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
 
-   print(f"Number of atoms: {len(model.pdb)}")
+   print(f"Number of atoms: {model.n_atoms}")
 
 .. testoutput::
    :options: +ELLIPSIS

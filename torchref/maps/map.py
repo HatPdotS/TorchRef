@@ -21,6 +21,7 @@ from typing import Optional, Tuple
 
 import torch
 
+from torchref.base.fourier.coefficients import map_coefficients
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.cif import write_map
 from torchref.utils.device_mixin import DeviceMixin
@@ -136,13 +137,8 @@ class Map(DeviceMixin):
         if self.map_type == "Fcalc":
             return fcalc
 
-        # 2Fo-Fc: (2*Fobs - |Fcalc|) * exp(i * phi_calc). Note this is a plain
-        # 2Fo-Fc map: no figure-of-merit ``m`` weights Fobs and no sigma-A
-        # coefficient ``D`` scales Fcalc (i.e. m=1, D=1), so it is not a true
-        # likelihood-weighted 2mFo-DFc map.
-        fcalc_amp = fcalc.abs()
-        phi_calc = torch.angle(fcalc)
-        return (2.0 * fobs - fcalc_amp) * torch.exp(1j * phi_calc)
+        # Plain 2Fo-Fc (m=1, D=1), not a likelihood-weighted 2mFo-DFc map.
+        return map_coefficients(fobs, fcalc)[0]
 
     def calculate(self) -> torch.Tensor:
         """Compute the electron density map.
@@ -154,8 +150,18 @@ class Map(DeviceMixin):
         """
         # Expand to P1 without Friedel mates (place_on_grid handles
         # Hermitian symmetry via enforce_hermitian=True)
-        data_p1 = self.data.expand_to_p1(include_friedel=False)
-        hkl_p1, fobs_p1, _, _ = data_p1.data_indexed()
+        if self.data.friedel_merged:
+            data_p1 = self.data.expand_to_p1(include_friedel=False)
+            hkl_p1, fobs_p1, _, _ = data_p1.data_indexed()
+        else:
+            # One amplitude per reflection: the Hermitian placement would
+            # otherwise count every measured Bijvoet pair twice.
+            valid = self.data.masks()
+            rows = self.data.bijvoet_representatives(valid)
+            fobs_rows = self.data.bijvoet_mean(self.data.F, valid)[rows]
+            sg = self.data.spacegroup
+            hkl_p1, idx, _ = sg.expand_hkl(self.data.hkl[rows], include_friedel=False)
+            fobs_p1 = fobs_rows[idx]
 
         # Compute Fcalc for P1-expanded hkl
         fcalc_p1 = self.model.get_structure_factor(hkl_p1)

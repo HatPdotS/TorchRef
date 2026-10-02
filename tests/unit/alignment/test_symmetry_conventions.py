@@ -224,6 +224,9 @@ def test_symmetry_unroll_stays_within_the_true_orbit(hm, non_orthogonal):
     sg = SpaceGroup(hm)
     g = torch.Generator().manual_seed(19)
     hkl = torch.randint(-9, 10, (150, 3), generator=g)
+    # One row per unique reflection: expand_hkl refuses symmetry-equivalent rows.
+    canon, *_ = sg.canonicalize_hkl(hkl, include_friedel=True)
+    hkl = torch.unique(canon, dim=0)
 
     unrolled, asu_idx, _ = sg.expand_hkl(hkl, include_friedel=False)
     unrolled = unrolled.detach().cpu().to(torch.long)

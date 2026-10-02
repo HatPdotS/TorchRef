@@ -51,6 +51,12 @@ Practically:
 - **Never hardcode a dtype.** Take it from the config: `torchref.config.get_float_dtype()`,
   `get_int_dtype()`, `get_complex_dtype()`, or from an input tensor. Roughly 200 call sites
   already do this; follow them.
+- Integer and index tensors take `get_int_dtype()` too (int32 by default). Plain indexing,
+  `index_select` and `index_add_` accept it. A literal int dtype survives only where torch or
+  the arithmetic forces it, with a `# dtype-ok:` marker naming the constraint: `scatter`/`gather`
+  indices (int64 on torch < 2.8), `index_copy_`/`index_fill_`/`one_hot` (int64 always), packed
+  keys such as `i * n + j` that overflow int32, compiled kernels that `TORCH_CHECK` a dtype
+  (the Legendre shell kernel), and external-library contracts (TorchMD-Net).
 - `torch.float64` *is* a supported configuration (`TORCHREF_DTYPE_FLOAT=float64`) used as an
   eager numerical reference and in gradient checks. Code must **work** in float64, must not
   **require** it, and must not silently downcast (see `tests/integration/test_dtype_config_float64.py`).
@@ -186,9 +192,9 @@ Black, 88 columns, `isort` with the black profile. Ruff lint with
 |---|---|
 | `base/` | Low-level math and crystallography. `coordinates/` (Cartesian↔fractional), `reciprocal/` (basis, HKL, d-spacing, interpolation, symmetry), `direct_summation/` (F_calc by summation; eager + Triton), `electron_density/` (real-space splatting with CPU/CUDA/MPS kernels, solvent mask, radius policy), `fourier/` (FFT and grids), `scattering/` (form-factor and anomalous tables), `metrics/` (R-factors, binwise scale, loss), `targets/` (the *kernels* behind refinement targets, eager + `triton/`), `french_wilson.py`, `math_torch.py`, `alignment/` |
 | `io/` | `ReflectionData`, `DatasetCollection`, `FcalcDataset`; MTZ / PDB / CIF / IHM readers and writers; `read_mtz` / `read_pdb` / `read_cif` |
-| `model/` | `Model` (refinable atomic parameters), `ModelContext` (the cell, space group, atom table, links and provenance a model is loaded with — `model.cell` / `.spacegroup` / `.pdb` forward to it, the rest is `model.ctx.*`), `ModelFT` (adds F_calc via `SfFFT` or `SfDS`), `MixedModel`, `ModelCollection`, and the parametrizations in `parameter_wrappers.py` / `rigid_xyz.py` that decide what is refinable |
+| `model/` | `Model` (refinable atomic parameters), `ModelContext` (the cell, space group, atom identity as a node-only `ctx.topology`, links, provenance, hydrogen policy and geometry restraints a model is loaded with — `model.cell` / `.spacegroup` / `.restraints` forward to it, the rest is `model.ctx.*`). **Identity is read from `ctx.topology`, values only through the wrappers (`model.xyz()`, `.adp()`, `.u()`, `.occupancy()`, `aniso_flag`); a pandas atom table appears only at construction (`ModelContext.from_atoms`, the one place a table is settled) and output (`Model.to_dataframe()`) — never read `model.pdb`, a deprecated view.** `Model._install_parameters` is the one place wrappers are built. `ModelFT` (adds F_calc via `SfFFT` or `SfDS`), `MixedModel`, `ModelCollection`, and the parametrizations in `parameter_wrappers.py` / `rigid_xyz.py` that decide what is refinable |
 | `refinement/` | Drivers (`Refinement`, `LBFGSRefinement`, `RigidBodyRefinementStep`), `targets/` (`xray/`, `geometry/`, `adp/`, `collection/`, `combined.py`), `weighting/`, `optimizers/` (annealing, Langevin, preconditioned/seeded L-BFGS), `model_error_estimation/` (σ_A, σ_M), `loss_state.py`, `logger.py` |
-| `restraints/` | Bonds, angles, torsions, planes, chirals, VDW. Built from the CCP4 Monomer Library, resolved lazily via `get_library_manager()` — importing this package must not trigger a library download |
+| `topology/` | The connectivity graph (`Topology`, `AtomGraph`, `ResidueGraph`) and the restraint layer over it (`Restraints`: bonds, angles, torsions, planes, chirals, VDW pair list), hydrogen generation (`hydrogens.py`) and riding frames. Built from the CCP4 Monomer Library, resolved lazily via `monomer.library.get_library_manager()` — importing this package must not trigger a library download. `Restraints` holds no reference to a model: evaluations take the coordinates they score |
 | `scaling/` | `ScalerBase` (model-independent), `Scaler`, `CollectionScaler`, `SolventModel` (k_sol, B_sol) |
 | `symmetry/` | `Symmetry` (operations plus everything derived from them), `SpaceGroup` (adds the crystallographic identity and the CCP4 ASU verbs), `Cell`. All dataclasses over `DeviceMixin`, not `nn.Module` — they hold no refinable parameters. Map and reciprocal-grid operators are private, reached through `Symmetry` |
 | `maps/` | `Map` (2Fo−Fc, Fcalc), `DifferenceMap` |

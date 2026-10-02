@@ -51,7 +51,6 @@ class CrystalDataset(DeviceMovementMixin):
     # reflections are carved out of BOTH the work and free sets (disjoint).
     validation_flags: Optional[torch.Tensor] = None  # (N,), bool
     resolution: Optional[torch.Tensor] = None  # Resolution per reflection (N,)
-    bin_indices: Optional[torch.Tensor] = None  # Resolution bin assignments (N,), int32
     phase: Optional[torch.Tensor] = None  # Phases in radians (N,)
     fom: Optional[torch.Tensor] = None  # Figure of merit (N,)
     _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool
@@ -80,12 +79,6 @@ class CrystalDataset(DeviceMovementMixin):
     amplitude_source: Optional[str] = None
     intensity_source: Optional[str] = None
     phase_source: Optional[str] = None
-
-    # === Wilson B-factors ===
-    wilson_b: Optional[float] = None
-    wilson_b_structure: Optional[float] = None
-    wilson_b_solvent: Optional[float] = None
-    wilson_k_sol: Optional[float] = None
 
     # === Masks (initialized in __post_init__) ===
     # Note: masks is not a dataclass field to avoid serialization issues
@@ -121,13 +114,13 @@ class CrystalDataset(DeviceMovementMixin):
         """Return observation fields and masks with tensors on CPU.
 
         Cell/device/space group are flattened to tensors or strings. Loading
-        provenance and French-Wilson conversion caches are omitted.
+        provenance is omitted.
         """
 
         state = {}
         for f in fields(self):
-            if f.name in {"source", "reader", "dataset", "_FrenchWilson"}:
-                # Loading provenance and conversion caches are not observation state.
+            if f.name == "source":
+                # Loading provenance is not observation state.
                 state[f.name] = None
                 continue
             val = getattr(self, f.name)

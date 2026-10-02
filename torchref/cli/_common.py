@@ -194,15 +194,15 @@ def add_adp_mode_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_wavelength_arg(parser: argparse.ArgumentParser) -> None:
-    """Add ``--wavelength`` argument (Angstroms; 0 disables anomalous)."""
+    """Add ``--wavelength`` argument (Angstroms; unset or 0 means no anomalous)."""
     parser.add_argument(
         "--wavelength",
         type=float,
-        default=1.0,
-        help="X-ray wavelength in Angstroms, used for anomalous (f'/f'') "
-        "scattering. Set to 0 to disable anomalous refinement entirely, which "
-        "also forces a Friedel-merged read of the data (no F(+)/F(-) Bijvoet "
-        "pairs). Default 1.0.",
+        default=None,
+        help="X-ray wavelength of the data in Angstroms. Given, the model includes "
+        "anomalous (f'/f'') scattering and F(+)/F(-) columns are read as Bijvoet "
+        "pairs. Default: no anomalous scattering and a Friedel-merged read, which "
+        "0 also selects.",
     )
 
 
@@ -390,7 +390,7 @@ def add_all_columns_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
-    """Add ``--ded-weight`` and ``--sigma-d-gamma`` for the difference-map writers.
+    """Add ``--ded-weight`` and ``--difference-gamma`` for the difference-map writers.
 
     Every registered scheme's weight is written to the difference MTZ regardless; the
     choice here decides which one the headline products (validate-ded correlations,
@@ -402,28 +402,60 @@ def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
         "--ded-weight",
         choices=list(SCHEMES),
         default=DEFAULT_SCHEME,
-        help="Per-reflection weight for difference coefficients: 'inverse_variance' "
-        "is 1/sigma^2, 'sigma_d' is the Wiener weight S/(S+sigma^2) from the "
-        "expected difference power (needs calibrated sigmas; check the reported "
-        f"clamped-shell count), 'none' is flat (default: {DEFAULT_SCHEME}). All "
-        "weights are written as columns.",
+        help="Per-reflection weight for difference coefficients: 'q' is the "
+        "q-weight, a Wiener weight from a shell-free fit of the expected difference "
+        "power that down-weights noisy reflections to no less than a third, "
+        "'inverse_variance' is 1/sigma^2, 'none' is flat (default: "
+        f"{DEFAULT_SCHEME}). All weights are written as columns.",
     )
     parser.add_argument(
-        "--sigma-d-gamma",
+        "--difference-gamma",
         type=float,
         default=None,
         metavar="GAMMA",
-        help="Fix the dark-amplitude exponent of the sigma_d power law in [0, 2] "
-        "instead of fitting it (default: fitted).",
+        help="Fix the dark-amplitude exponent of the difference power law in [-1, 3] "
+        "instead of fitting it; used by the q-weight on amplitude data and by the "
+        "difference_sd target (default: fitted, or 0 on intensity data).",
     )
 
 
-def sigma_d_config_from_args(args: argparse.Namespace):
-    """The :class:`~torchref.refinement.model_error_estimation.sigma_d.SigmaDConfig`
-    selected by ``--sigma-d-gamma``."""
-    from torchref.refinement.model_error_estimation.sigma_d import SigmaDConfig
+def intensity_difference(data_dark, data_light, mask=None):
+    """``(I_light - I_dark, sigma)`` on the shared scale, or ``(None, None)``.
 
-    return SigmaDConfig(gamma=getattr(args, "sigma_d_gamma", None))
+    Parameters
+    ----------
+    data_dark, data_light : ReflectionData
+        Datasets on one HKL list, already inter-scaled.
+    mask : torch.Tensor, optional
+        Boolean selection applied to both.
+
+    Returns
+    -------
+    tuple of torch.Tensor or None
+        ``(None, None)`` when either dataset carries no intensities, so callers fall
+        back to the amplitude differences.
+    """
+    try:
+        I_dark, sig_dark = data_dark.get_corrected_intensities()
+        I_light, sig_light = data_light.get_corrected_intensities()
+    except ValueError:
+        return None, None
+    if I_dark is None or I_light is None or sig_dark is None or sig_light is None:
+        return None, None
+    if mask is not None:
+        I_dark, sig_dark = I_dark[mask], sig_dark[mask]
+        I_light, sig_light = I_light[mask], sig_light[mask]
+    return I_light - I_dark, (sig_dark**2 + sig_light**2).sqrt()
+
+
+def difference_config_from_args(args: argparse.Namespace):
+    """The :class:`~torchref.refinement.model_error_estimation.difference_power.
+    DifferencePowerConfig` selected by ``--difference-gamma``."""
+    from torchref.refinement.model_error_estimation.difference_power import (
+        DifferencePowerConfig,
+    )
+
+    return DifferencePowerConfig(gamma=getattr(args, "difference_gamma", None))
 
 
 def add_output_format_args(parser: argparse.ArgumentParser) -> None:
@@ -711,7 +743,8 @@ def load_model(
     device: Union[str, "torch.device", None] = None,
     verbose: int = 0,
     cif: Optional[Union[str, List[str]]] = None,
-    add_hydrogens: bool = False,
+    hydrogens: str = "keep",
+    hydrogen_mode: str = "atoms",
     hydrogens_in_xray: bool = True,
 ) -> "ModelFT":
     """Load a model from PDB or CIF, auto-detected by file extension.
@@ -729,8 +762,10 @@ def load_model(
     cif : str or list of str, optional
         CIF restraint file(s), registered on the model before it loads so that hydrogen
         generation and the restraints read the same dictionary.
-    add_hydrogens : bool, optional
-        Generate missing hydrogens on load. Default False.
+    hydrogens : {"keep", "add", "strip"}, optional
+        What loading does with the file's hydrogens. Default ``"keep"``.
+    hydrogen_mode : {"atoms", "riding"}, optional
+        Hydrogens as refinable atoms or riding on their parents. Default ``"atoms"``.
     hydrogens_in_xray : bool, optional
         Whether hydrogens contribute to the structure factors. Default True.
 
@@ -747,7 +782,8 @@ def load_model(
         device=device,
         verbose=verbose,
         cif_path=cif,
-        add_hydrogens=add_hydrogens,
+        hydrogens=hydrogens,
+        hydrogen_mode=hydrogen_mode,
         hydrogens_in_xray=hydrogens_in_xray,
     )
     suffix = Path(path).suffix.lower()

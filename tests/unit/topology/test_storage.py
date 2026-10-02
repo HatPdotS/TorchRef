@@ -40,7 +40,7 @@ def restraints(pdb_dir):
     """Restraints for a structure with altlocs, disulfides and peptide links."""
     model = Model(verbose=0)
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
-    model.set_restraints_cif(None)
+    model.ctx.set_cif_path(None)
     return model.restraints
 
 
@@ -171,7 +171,8 @@ def test_blocks_are_untouched_by_a_refinement_step(restraints):
     blocks = [restraints.topology.edge_block(t).indices for t in KEYED_TYPES]
     fingerprint = ParameterFingerprint(blocks)
 
-    loss = restraints.nll_bonds().sum() + restraints.nll_angles().sum()
+    xyz = restraints._last_vdw_build_xyz.clone().requires_grad_(True)
+    loss = restraints.nll_bonds(xyz).sum() + restraints.nll_angles(xyz).sum()
     loss.backward()
 
     assert fingerprint.matches(
@@ -185,13 +186,6 @@ def test_rebuilding_entries_reslices_onto_the_current_blocks(restraints):
 
     This is the operation ``_apply`` and ``copy`` both rely on, and the one that has to
     stay cheap: it re-slices rather than recomputing anything.
-
-    ``Restraints.copy`` is not exercised here because it cannot run at all -- it is
-    ``deepcopy``, which walks the *borrowed* ``_xyz_fn`` wrapper, whose cache holds a
-    graph-attached tensor once ``xyz()`` has been evaluated. Verified to fail
-    identically at the commit before this change, so it is pre-existing rather than a
-    regression, and it is reached only through ``Model.copy`` on a model whose lazy
-    restraints have already been built.
     """
     block = restraints.topology.atoms.bonds.indices
     before = restraints.restraints["bond"]["all"]["indices"].clone()
@@ -205,3 +199,13 @@ def test_rebuilding_entries_reslices_onto_the_current_blocks(restraints):
         entry = restraints.restraints["bond"][origin]["indices"]
         assert entry.shape[0] == bounds[1] - bounds[0]
     assert restraints.restraints["vdw"].get("indices") is not None
+
+
+@pytest.mark.unit
+def test_copy_aliases_its_own_blocks(restraints):
+    """A copy re-slices its entries onto its own blocks, not the original's."""
+    duplicate = restraints.copy()
+    block = duplicate.topology.atoms.bonds.indices
+    entry = duplicate.restraints["bond"]["all"]["indices"]
+    assert entry.data_ptr() == block.data_ptr()
+    assert block.data_ptr() != restraints.topology.atoms.bonds.indices.data_ptr()

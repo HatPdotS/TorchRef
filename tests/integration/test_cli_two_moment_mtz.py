@@ -17,13 +17,13 @@ DEFAULT_COLUMNS = {
     "SIGFo_dark": "Stddev",
     "Fo_light": "SFAmplitude",
     "SIGFo_light": "Stddev",
-    "DF": "SFAmplitude",
-    "SIGDF": "Stddev",
-    # The difference map: DF on the dark phases, one weight column per registered
+    "dF": "SFAmplitude",
+    "SIGdF": "Stddev",
+    # The difference map: dF on the dark phases, one weight column per registered
     # scheme, and the observed-to-model scale.
     "PHDELWT": "Phase",
-    "W_IVW": "Weight",
-    "W_SD": "Weight",
+    "W_InVa": "Weight",
+    "W_Q": "Weight",
     "KSCALE": "MTZReal",
     "Fc_dark": "SFAmplitude",
     # The mixed model, and the extrapolated map to refine against.
@@ -40,9 +40,9 @@ TWO_MOMENT_COLUMNS = {
     "DELFWT_corr": "SFAmplitude",
     "Fo_light_corr": "SFAmplitude",
     "SIGFo_light_corr": "Stddev",
-    "DF_corr": "SFAmplitude",
-    "SIGDF_corr": "Stddev",
-    "DDF": "SFAmplitude",
+    "dF_corr": "SFAmplitude",
+    "SIGdF_corr": "Stddev",
+    "ddF": "SFAmplitude",
 }
 
 # What ``--all-columns`` adds on top, given a light model.
@@ -50,8 +50,8 @@ ALL_COLUMNS_EXTRA = {
     "2mDFop-DFc": "SFAmplitude",
     "mDFop-DFc": "SFAmplitude",
     "PHIC_diff": "Phase",
-    "DFc": "SFAmplitude",
-    "DFc_phased": "SFAmplitude",
+    "dFc": "SFAmplitude",
+    "dFc_phased": "SFAmplitude",
     "FEXT_PHASED": "SFAmplitude",
     "SIGFEXT_PHASED": "Stddev",
     "2FEXT_PHASED-Fc": "SFAmplitude",
@@ -217,13 +217,36 @@ def test_column_layout_and_types(request, fixture, extra):
     assert all(hasattr(dtype, "mtztype") for dtype in frame.dtypes)
 
 
+def test_map_coefficients_are_grouped_into_described_datasets(two_moment_all_mtz):
+    """``FWT``/``PHWT`` keep the label Coot auto-opens but sit in the
+    ``extrapolated_light`` dataset, and every dataset has a history line saying what it
+    holds -- the file, not the label, says which map a standard name is."""
+    import gemmi
+
+    mtz = gemmi.read_mtz_file(str(two_moment_all_mtz[0]))
+    names = {ds.id: ds.dataset_name for ds in mtz.datasets}
+    where = {col.label: names[col.dataset_id] for col in mtz.columns}
+
+    assert where["FWT"] == where["PHWT"] == where["FEXT"] == "extrapolated_light"
+    assert where["FEXT_PHASED"] == where["FEXT_SCALAR"] == "extrapolated_light"
+    assert where["dF"] == where["PHDELWT"] == where["W_Q"] == "difference"
+    assert where["FC"] == where["PHIC"] == "light_model"
+    assert where["dF_corr"] == "two_moment"
+    assert where["H"] == where["Fo_dark"] == where["FreeR_flag_dark"] == "observed"
+    assert all(ds.crystal_name == "torchref" for ds in mtz.datasets)
+
+    assert all(len(line) <= 80 for line in mtz.history)
+    for name in set(names.values()):
+        assert any(line.startswith(f"{name}:") for line in mtz.history), name
+
+
 class TestDefaultLayout:
 
     def test_the_difference_columns_carry_df_and_the_registered_weights(
         self, baseline_mtz
     ):
-        """``DF`` must be ``Fo_light - Fo_dark``, ``W_IVW`` the mean-normalised inverse
-        variance and ``W_SD`` a mean-one weight -- the constructions
+        """``dF`` must be ``Fo_light - Fo_dark``, ``W_InVa`` the mean-normalised inverse
+        variance and ``W_Q`` a mean-one weight -- the constructions
         ``torchref.validate-ded`` correlates against. If these ever diverge, the map
         built from the file stops being the map the validation reports on, which is how
         the output drifted from the science before."""
@@ -240,13 +263,13 @@ class TestDefaultLayout:
         w = 1 / np.maximum(sig, 0.1 * np.median(sig)) ** 2
         w = w / w.mean()
 
-        got_df = df["DF"].to_numpy().astype(float)
+        got_df = df["dF"].to_numpy().astype(float)
         scale = max(float(np.abs(dfo).max()), 1e-30)
         assert np.abs(got_df - dfo).max() / scale < 1e-5
-        got_w = df["W_IVW"].to_numpy().astype(float)
+        got_w = df["W_InVa"].to_numpy().astype(float)
         assert np.abs(got_w - w).max() / max(float(np.abs(w).max()), 1e-30) < 1e-4
-        w_sd = df["W_SD"].to_numpy().astype(float)
-        assert np.isfinite(w_sd).all() and abs(w_sd.mean() - 1.0) < 1e-4
+        w_q = df["W_Q"].to_numpy().astype(float)
+        assert np.isfinite(w_q).all() and abs(w_q.mean() - 1.0) < 1e-4
         assert (df["KSCALE"].to_numpy().astype(float) > 0).all()
 
         # And the phase is the dark model's, not the mixed model's.
@@ -263,13 +286,13 @@ class TestTwoMomentLayout:
     ):
         """``DELFWT_corr`` is the corrected difference on the *same* dark phases, so it
         is opened against ``PHDELWT`` and carries the selected weight scheme, the
-        inverse-variance weights ``W_IVW`` by default."""
+        q-weights ``W_Q`` by default."""
         import numpy as np
 
         df = _read(two_moment_mtz[0])
-        w = df["W_IVW"].to_numpy().astype(float)
+        w = df["W_Q"].to_numpy().astype(float)
 
-        expected = df["DF_corr"].to_numpy().astype(float) * w
+        expected = df["dF_corr"].to_numpy().astype(float) * w
         got = df["DELFWT_corr"].to_numpy().astype(float)
         scale = max(float(np.abs(expected).max()), 1e-30)
         assert np.abs(got - expected).max() / scale < 1e-5
@@ -287,7 +310,7 @@ class TestTwoMomentValuesAreConsistent:
         results = json.loads(summary.read_text())["results"]
 
         sigma_sq = results["sigma_alpha_sq"]
-        dfc = df["DFc_phased"].to_numpy().astype(float)
+        dfc = df["dFc_phased"].to_numpy().astype(float)
         ivar = df["IVAR_ALPHA"].to_numpy().astype(float)
 
         expected = sigma_sq * dfc**2
@@ -335,12 +358,12 @@ class TestTwoMomentValuesAreConsistent:
         assert (ivar > 0).any()
 
     def test_the_correction_moves_the_difference_amplitudes(self, two_moment_mtz):
-        """DDF is the diagnostic; if it were identically zero the whole column set
+        """ddF is the diagnostic; if it were identically zero the whole column set
         would be decorative."""
         import numpy as np
 
         df = _read(two_moment_mtz[0])
-        ddf = df["DDF"].to_numpy().astype(float)
+        ddf = df["ddF"].to_numpy().astype(float)
         assert np.count_nonzero(ddf) > 0.5 * len(ddf)
         # Subtracting a positive contamination lowers the light amplitude on average.
         assert ddf.mean() < 0.0
@@ -353,9 +376,13 @@ class TestTwoMomentValuesAreConsistent:
         assert results["lambda_twin"] == pytest.approx(LAMBDA_TWIN)
 
     def test_summary_reports_the_shrinkage_diagnostics(self, two_moment_mtz):
-        """``tau_sq`` and mean ``w(h)`` say whether the default extrapolated map is
-        over-shrunk, so they belong in the summary rather than only in a print."""
+        """The shrinkage's source and mean and least ``w(h)`` say whether the default
+        extrapolated map is over-shrunk, so they belong in the summary rather than only
+        in a print. This pair carries intensities, so they supply the SNR. Its dark and
+        light halves are the same deposited data, so there is no difference signal and
+        the weights may reach zero here; positivity with signal is pinned in the unit
+        tests."""
         _, summary = two_moment_mtz
         results = json.loads(summary.read_text())["results"]
-        assert "tau_sq" in results and "w_shrinkage_mean" in results
-        assert 0.0 < results["w_shrinkage_mean"] <= 1.0
+        assert results["shrinkage_source"] == "intensity"
+        assert 0.0 <= results["w_shrinkage_min"] <= results["w_shrinkage_mean"] < 1.0

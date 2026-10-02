@@ -289,12 +289,13 @@ class TestModelFileSaving:
         output_path = tmp_path / "output.pdb"
         model1.write_pdb(str(output_path))
         
-        # add_hydrogens=False on reload: what is under test is whether the written
-        # file round-trips, not whether generation reruns. Regenerating on reload can
-        # legitimately differ, because ``write_pdb`` does not emit LINK records -- so a
+        # The default hydrogens="keep" on reload: what is under test is whether the
+        # written file round-trips, not whether generation reruns. Regenerating on
+        # reload can legitimately differ, because ``write_pdb`` does not emit LINK
+        # records -- so a
         # metal-coordinated nitrogen comes back with a free valence and takes a hydrogen
         # it did not have before.
-        model2 = Model(add_hydrogens=False)
+        model2 = Model()
         model2.load_pdb(str(output_path))
         n_atoms2 = model2.xyz().shape[0]
         
@@ -309,7 +310,11 @@ class TestModelMultipleStructures:
         """Test loading different CIF files."""
         from torchref.model.model import Model
         
-        cif_files = list(cif_dir.glob("*.cif"))[:3]  # Load first 3
+        # All of them, in a fixed order: "the first three" of an unsorted glob depended on
+        # the filesystem, and on some runners never reached a file (3GR5) whose single
+        # _struct_conn entry is written as key-value pairs rather than a loop.
+        cif_files = sorted(cif_dir.glob("*.cif"))
+        assert cif_files
         
         for cif_file in cif_files:
             model = Model()

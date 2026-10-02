@@ -15,6 +15,8 @@ is preserved through mmCIF's ``_software`` loop rather than by hoarding the
 previous program's output.
 """
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -23,7 +25,7 @@ from torchref.io.metadata import RefinementMetadata
 
 # 3GR5 was refined with REFMAC 5.1.24 and carries a full deposition header:
 # 420 lines including REMARK 2/3/500, JRNL, AUTHOR, SEQRES, SSBOND and SITE.
-INPUT_PDB = "tests/files/pdb/3GR5.pdb"
+INPUT_PDB = str(Path(__file__).resolve().parents[2] / "files" / "pdb" / "3GR5.pdb")
 
 #: PDB record order, abridged to the records this writer can emit. The format
 #: mandates this sequence; TITLE used to be written *after* REMARK 900.
@@ -397,7 +399,19 @@ def test_starting_model_is_recorded_as_an_accession(tmp_path):
     initial = cats["_pdbx_initial_refinement_model"]
     assert initial["_pdbx_initial_refinement_model.accession_code"] == "3GR5"
     assert initial["_pdbx_initial_refinement_model.type"] == "experimental model"
-    assert cats["_refine"]["_refine.pdbx_starting_model"] == INPUT_PDB
+    assert cats["_refine"]["_refine.pdbx_starting_model"] == "3GR5.pdb"
+
+
+@pytest.mark.unit
+def test_starting_model_is_named_without_its_local_path():
+    """The input's directory is the refiner's filesystem, not provenance."""
+    meta = _refined_metadata()
+    meta.starting_model = "/home/someone/projects/secret_project/run_07/model.pdb"
+    cats = meta.render_cif_categories()
+    header = meta.render_pdb_header()
+    assert "/" not in cats["_refine"]["_refine.pdbx_starting_model"]
+    assert "secret_project" not in header
+    assert "REMARK   3  STARTING MODEL: model.pdb" in header.splitlines()
 
 
 @pytest.mark.unit

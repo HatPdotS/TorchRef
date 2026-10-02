@@ -28,7 +28,7 @@ from torchref.topology.hydrogens import (
 @pytest.fixture(scope="module")
 def heavy_and_plan(pdb_dir):
     """Heavy-only 1DAW with its hydrogen plan."""
-    model = Model(verbose=0, strip_H=True, add_hydrogens=False)
+    model = Model(verbose=0, hydrogens="strip")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     restraints = model.restraints
     xyz = model.xyz().detach()
@@ -44,7 +44,7 @@ def hydrogenated(heavy_and_plan):
     augmented, old_to_new, plan_to_new = augment_atom_table_with_maps(
         model.pdb, plan, restraints.topology
     )
-    full = Model(verbose=0, strip_H=False, add_hydrogens=False)
+    full = Model(verbose=0)
     cell, spacegroup = model.cell.data.cpu().numpy(), model.spacegroup
 
     def reader():

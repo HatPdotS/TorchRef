@@ -1,6 +1,7 @@
 """Riding hydrogens: the sterics of hydrogens a model does not carry.
 
-For a model loaded with ``strip_H=True``, whose atoms are heavy only. A static map
+For a model whose atoms are heavy only (loaded with ``hydrogens="strip"``, or from a
+file without hydrogens). A static map
 built once at restraint-construction time says how to reconstruct each absent hydrogen
 from its parent and the parent's bonded neighbours; ``place_riding_hydrogens`` then
 produces those positions in one vectorized pass at every non-bonded evaluation and
@@ -22,7 +23,8 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
-from torchref.config import dtypes, normalize_device
+from torchref.base.coordinates.symmetry_images import is_symmetry_image
+from torchref.config import dtypes, get_int_dtype, normalize_device
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -75,24 +77,24 @@ class HydrogenTopology(DeviceMixin):
     Attributes
     ----------
     h_parent_idx : torch.Tensor
-        Heavy-atom index of each riding H's parent, ``(N_h,)`` long.
+        Heavy-atom index of each riding H's parent, ``(N_h,)`` int.
     h_bond_length : torch.Tensor
         Ideal H-parent bond length in Angstroms, ``(N_h,)``.
     h_vdw_radius : torch.Tensor
         Van der Waals radius per H (1.20 A), ``(N_h,)``.
     h_placement_type : torch.Tensor
-        Placement-geometry enum, ``(N_h,)`` long; see the module-level constants.
+        Placement-geometry enum, ``(N_h,)`` int; see the module-level constants.
     h_slot_in_parent : torch.Tensor
-        Ordinal among sibling H atoms on the same parent (0, 1, 2), ``(N_h,)`` long.
+        Ordinal among sibling H atoms on the same parent (0, 1, 2), ``(N_h,)`` int.
     parent_neighbor_idx : torch.Tensor
-        Heavy-atom neighbours of the parent, ``(N_h, MAX_HEAVY_NB)`` long, ``-1``
+        Heavy-atom neighbours of the parent, ``(N_h, MAX_HEAVY_NB)`` int, ``-1``
         padded.
     parent_neighbor_count : torch.Tensor
-        Heavy-atom neighbour count per parent, ``(N_h,)`` long.
+        Heavy-atom neighbour count per parent, ``(N_h,)`` int.
     h_chainid_enc : torch.Tensor
-        Encoded chain ID, ``(N_h,)`` long, for same-residue filtering.
+        Encoded chain ID, ``(N_h,)`` int, for same-residue filtering.
     h_resseq : torch.Tensor
-        Residue sequence number, ``(N_h,)`` long, for same-residue filtering.
+        Residue sequence number, ``(N_h,)`` int, for same-residue filtering.
     type_bounds : dict
         ``{placement_type: (start, end)}`` bounds into the type-sorted arrays.
     cand_idx_i, cand_idx_j, cand_symop_idx, cand_cell_offset : torch.Tensor
@@ -298,7 +300,7 @@ def build_hydrogen_topology(
     Parameters
     ----------
     pdb : pd.DataFrame
-        Heavy-atom DataFrame (``strip_H=True``).
+        Heavy-atom DataFrame (no hydrogen rows).
     device : torch.device
         Target device for tensors.
     verbose : int
@@ -431,17 +433,19 @@ def build_hydrogen_topology(
     fdtype = dtypes.float
 
     if n_h_total == 0:
-        topo.h_parent_idx = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: parent atom-index tensor (empty); int64 required
+        topo.h_parent_idx = torch.zeros(0, dtype=get_int_dtype(), device=device)
         topo.h_bond_length = torch.zeros(0, dtype=fdtype, device=device)
         topo.h_vdw_radius = torch.zeros(0, dtype=fdtype, device=device)
-        topo.h_placement_type = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: categorical H placement-type code (empty)
-        topo.h_slot_in_parent = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: slot index into parent (empty); int64
+        topo.h_placement_type = torch.zeros(0, dtype=get_int_dtype(), device=device)
+        topo.h_slot_in_parent = torch.zeros(0, dtype=get_int_dtype(), device=device)
         topo.parent_neighbor_idx = torch.zeros(
-            0, MAX_HEAVY_NB, dtype=torch.long, device=device  # dtype-ok: parent neighbor atom-index tensor (empty); int64 required
+            0, MAX_HEAVY_NB, dtype=get_int_dtype(), device=device
         )
-        topo.parent_neighbor_count = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: per-parent neighbor count (empty); structural int
-        topo.h_chainid_enc = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: categorical chain-id encoding (empty)
-        topo.h_resseq = torch.zeros(0, dtype=torch.long, device=device)  # dtype-ok: residue sequence id (empty); categorical
+        topo.parent_neighbor_count = torch.zeros(
+            0, dtype=get_int_dtype(), device=device
+        )
+        topo.h_chainid_enc = torch.zeros(0, dtype=get_int_dtype(), device=device)
+        topo.h_resseq = torch.zeros(0, dtype=get_int_dtype(), device=device)
         return topo
 
     # Sort all topology arrays by placement type for contiguous slicing
@@ -466,22 +470,26 @@ def build_hydrogen_topology(
             idxs = np.where(mask)[0]
             type_bounds[t] = (int(idxs[0]), int(idxs[-1]) + 1)
 
-    topo.h_parent_idx = torch.tensor(acc_parent_idx, dtype=torch.long, device=device)  # dtype-ok: parent atom-index tensor; torch indexing requires int64
+    topo.h_parent_idx = torch.tensor(
+        acc_parent_idx, dtype=get_int_dtype(), device=device
+    )
     topo.h_bond_length = torch.tensor(acc_bond_length, dtype=fdtype, device=device)
     topo.h_vdw_radius = torch.full((n_h_total,), 1.20, dtype=fdtype, device=device)
     topo.h_placement_type = torch.tensor(
-        acc_placement_type, dtype=torch.long, device=device  # dtype-ok: categorical H placement-type code; used for sort/slice
+        acc_placement_type, dtype=get_int_dtype(), device=device
     )
-    topo.h_slot_in_parent = torch.tensor(acc_slot, dtype=torch.long, device=device)  # dtype-ok: slot index into parent neighbor slots; int64
+    topo.h_slot_in_parent = torch.tensor(acc_slot, dtype=get_int_dtype(), device=device)
     topo.parent_neighbor_idx = torch.tensor(
-        np.stack(acc_nb_idx), dtype=torch.long, device=device  # dtype-ok: parent neighbor atom-index tensor; int64 required
+        np.stack(acc_nb_idx), dtype=get_int_dtype(), device=device
     )
     topo.parent_neighbor_count = torch.tensor(
-        acc_nb_count, dtype=torch.long, device=device  # dtype-ok: per-parent neighbor count; structural int metadata
+        acc_nb_count, dtype=get_int_dtype(), device=device
     )
     topo.type_bounds = type_bounds  # dict: type_code -> (start, end)
-    topo.h_chainid_enc = torch.tensor(acc_chainid_enc, dtype=torch.long, device=device)  # dtype-ok: categorical chain-id encoding
-    topo.h_resseq = torch.tensor(acc_resseq, dtype=torch.long, device=device)  # dtype-ok: residue sequence id; categorical
+    topo.h_chainid_enc = torch.tensor(
+        acc_chainid_enc, dtype=get_int_dtype(), device=device
+    )
+    topo.h_resseq = torch.tensor(acc_resseq, dtype=get_int_dtype(), device=device)
 
     if verbose > 0:
         print(f"  Hydrogen topology: {n_h_total} riding H atoms")
@@ -708,11 +716,14 @@ def build_h_candidate_pairs(
     """Precompute candidate H-involving VDW pairs from the heavy-atom pair list.
 
     From each heavy-heavy pair (A, B, symop, offset), derives the H-heavy pairs
-    where an H riding on A could reach B and vice versa, applying the exclusion and
-    same-residue filters now so the forward pass only computes distances. Mutates
-    ``h_topo`` in place, registering ``cand_idx_i``/``cand_idx_j`` (combined-array
-    atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (for the heavy atom)
-    and ``cand_min_dist`` (H + heavy radius sum).
+    where an H riding on A could reach B, and for intra-ASU pairs vice versa,
+    applying the exclusion and same-residue filters now so the forward pass only
+    computes distances. An image pair's other direction comes from its reverse
+    entry, B against A under the inverse operation, so the heavy list must hold both
+    directions of every image contact, as ``build_vdw_restraints_gpu`` emits them.
+    Mutates ``h_topo`` in place, registering ``cand_idx_i``/``cand_idx_j``
+    (combined-array atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (the
+    image of the ``cand_idx_j`` end) and ``cand_min_dist`` (H + heavy radius sum).
 
     Parameters
     ----------
@@ -736,8 +747,10 @@ def build_h_candidate_pairs(
 
     if n_h == 0:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
-            setattr(h_topo, name, torch.zeros(0, dtype=torch.long, device=device))  # dtype-ok: candidate atom/symop index tensors (empty); int64 required
-        h_topo.cand_cell_offset = torch.zeros(0, 3, dtype=torch.long, device=device)  # dtype-ok: integer cell-offset lattice vectors (empty); symmetry metadata
+            setattr(h_topo, name, torch.zeros(0, dtype=get_int_dtype(), device=device))
+        h_topo.cand_cell_offset = torch.zeros(
+            0, 3, dtype=get_int_dtype(), device=device
+        )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
@@ -769,6 +782,7 @@ def build_h_candidate_pairs(
     idx_B = heavy_indices[:, 1].cpu().numpy()
     symop_np = heavy_symop.cpu().numpy()
     offsets_np = heavy_offsets.cpu().numpy()
+    is_image_np = is_symmetry_image(heavy_symop, heavy_offsets).cpu().numpy()
 
     # Per-pair VDW radius sums are not computed here: the cand_min_dist
     # buffer is allocated as zeros below and is populated by the caller,
@@ -789,7 +803,7 @@ def build_h_candidate_pairs(
         A, B = int(idx_A[p_idx]), int(idx_B[p_idx])
         sym = int(symop_np[p_idx])
         off = offsets_np[p_idx]
-        is_intra_asu = (sym == 0) and (off == 0).all()
+        is_intra_asu = not is_image_np[p_idx]
 
         h_on_A = parent_to_h.get(A, [])
         h_on_B = parent_to_h.get(B, [])
@@ -806,15 +820,23 @@ def build_h_candidate_pairs(
             acc_offset.append(off)
 
         # --- H on B ↔ heavy A ---
-        for hi in h_on_B:
-            if is_intra_asu and _same_res(
-                h_chain_np[hi], h_resseq_np[hi], heavy_chain_np[A], heavy_resseq_np[A]
-            ):
-                continue
-            acc_idx_i.append(n_heavy + hi)
-            acc_idx_j.append(A)
-            acc_symop.append(0)
-            acc_offset.append(np.zeros(3, dtype=np.int64))
+        # Intra-ASU pairs only. An image pair -- A against B under (symop, offset)
+        # -- is listed together with B against A under the inverse operation, whose
+        # "H on A" branch above emits this contact with the image on the right atom.
+        # From here it could only carry this pair's operation, which images B, not A.
+        if is_intra_asu:
+            for hi in h_on_B:
+                if _same_res(
+                    h_chain_np[hi],
+                    h_resseq_np[hi],
+                    heavy_chain_np[A],
+                    heavy_resseq_np[A],
+                ):
+                    continue
+                acc_idx_i.append(n_heavy + hi)
+                acc_idx_j.append(A)
+                acc_symop.append(0)
+                acc_offset.append(np.zeros(3, dtype=np.int64))
 
         # --- H on A ↔ H on B  (H-H contacts) ---
         for hi_a in h_on_A:
@@ -836,24 +858,27 @@ def build_h_candidate_pairs(
 
     if not acc_idx_i:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
-            setattr(h_topo, name, torch.zeros(0, dtype=torch.long, device=device))  # dtype-ok: candidate atom/symop index tensors (empty); int64 required
-        h_topo.cand_cell_offset = torch.zeros(0, 3, dtype=torch.long, device=device)  # dtype-ok: integer cell-offset lattice vectors (empty); symmetry metadata
+            setattr(h_topo, name, torch.zeros(0, dtype=get_int_dtype(), device=device))
+        h_topo.cand_cell_offset = torch.zeros(
+            0, 3, dtype=get_int_dtype(), device=device
+        )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
-    cand_i = torch.tensor(acc_idx_i, dtype=torch.long, device=device)  # dtype-ok: combined atom-index tensor; torch indexing requires int64
-    cand_j = torch.tensor(acc_idx_j, dtype=torch.long, device=device)  # dtype-ok: combined atom-index tensor; torch indexing requires int64
-    cand_sym = torch.tensor(acc_symop, dtype=torch.long, device=device)  # dtype-ok: symmetry-operator index; int64
-    cand_off = torch.tensor(np.stack(acc_offset), dtype=torch.long, device=device)  # dtype-ok: integer cell-offset lattice vectors; symmetry-image metadata
+    cand_i = torch.tensor(acc_idx_i, dtype=get_int_dtype(), device=device)
+    cand_j = torch.tensor(acc_idx_j, dtype=get_int_dtype(), device=device)
+    cand_sym = torch.tensor(acc_symop, dtype=get_int_dtype(), device=device)
+    cand_off = torch.tensor(np.stack(acc_offset), dtype=get_int_dtype(), device=device)
 
     # Apply 1-2 / 1-3 exclusions for intra-ASU candidates
     if h_excl_hash is not None and len(h_excl_hash) > 0:
-        is_intra = (cand_sym == 0) & (cand_off == 0).all(dim=1)
+        is_intra = ~is_symmetry_image(cand_sym, cand_off)
         if is_intra.any():
             max_idx = n_heavy + n_h
             norm_i = torch.minimum(cand_i, cand_j)
             norm_j = torch.maximum(cand_i, cand_j)
-            pair_hash = norm_i * max_idx + norm_j
+            # dtype-ok: packed pair key overflows int32; searchsorted needs int64 like the table
+            pair_hash = norm_i.to(torch.int64) * max_idx + norm_j.to(torch.int64)
             ins = torch.searchsorted(h_excl_hash, pair_hash).clamp(
                 max=len(h_excl_hash) - 1
             )
@@ -864,18 +889,13 @@ def build_h_candidate_pairs(
             cand_sym = cand_sym[keep]
             cand_off = cand_off[keep]
 
-    # Deduplicate
+    # Deduplicate on whole (i, j, symop, offset) rows. No fixed-stride packed key is
+    # safe: offsets are not confined to -1..1, nor operations to a small count.
     if len(cand_i) > 0:
-        n_all = n_heavy + n_h
-        dedup_key = (
-            cand_i.long() * (n_all * 1000)
-            + cand_j.long() * 1000
-            + cand_sym.long() * 27
-            + (cand_off[:, 0] + 1) * 9
-            + (cand_off[:, 1] + 1) * 3
-            + (cand_off[:, 2] + 1)
+        rows = torch.cat(
+            [torch.stack([cand_i, cand_j, cand_sym], dim=1), cand_off], dim=1
         )
-        _, first_idx = torch.unique(dedup_key, return_inverse=True)
+        _, first_idx = torch.unique(rows, dim=0, return_inverse=True)
         # MPS does not support int64 scatter_reduce; use configured int dtype.
         _int_dtype = dtypes.int
         first_idx_i = first_idx.to(_int_dtype)
@@ -893,7 +913,7 @@ def build_h_candidate_pairs(
         cand_off = cand_off[mask]
 
     # Sort: ASU candidates first, symmetry last
-    is_asu = (cand_sym == 0) & (cand_off == 0).all(dim=1)
+    is_asu = ~is_symmetry_image(cand_sym, cand_off)
     sort_order = (~is_asu).long().argsort(stable=True)
     cand_i = cand_i[sort_order]
     cand_j = cand_j[sort_order]
@@ -911,7 +931,7 @@ def build_h_candidate_pairs(
 
     if verbose > 0:
         n_hh = ((cand_i >= n_heavy) & (cand_j >= n_heavy)).sum().item()
-        n_sym = ((cand_sym != 0) | (cand_off != 0).any(dim=1)).sum().item()
+        n_sym = (~is_asu).sum().item()
         print(
             f"  H candidate pairs: {len(cand_i)} "
             f"({n_hh} H-H, {len(cand_i)-n_hh} H-heavy, {n_sym} symmetry)"

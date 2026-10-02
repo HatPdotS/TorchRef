@@ -26,8 +26,10 @@ from .datasets import (
     CrystalDataset,
     DatasetCollection,
     FcalcDataset,
+    MergeStats,
     ReflectionData,
     ScaledDataset,
+    merge_to_spacegroup,
 )
 
 # IHM ensemble support (mapping always available; reader/writer need python-ihm)
@@ -50,6 +52,8 @@ __all__ = [
     "ScaledDataset",
     "DatasetCollection",
     "FcalcDataset",
+    "merge_to_spacegroup",
+    "MergeStats",
     # Top-level readers
     "read_mtz",
     "read_cif",

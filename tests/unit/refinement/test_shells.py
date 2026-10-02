@@ -1,4 +1,4 @@
-"""Shell helpers shared by sigma_A and sigma_D.
+"""Shell helpers used by sigma_A.
 
 Pinned: the helpers ``sigma_a`` re-imports are the same objects ``_shells`` defines, so a
 fit through either module reduces identically; ``equal_count_shells`` reproduces the

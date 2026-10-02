@@ -308,17 +308,16 @@ class Cell(_NonModuleDeviceMixin):
         """
         Reciprocal basis matrix with [a*, b*, c*] as rows.
 
+        The rows of the fractionalization matrix are the reciprocal basis vectors,
+        so this returns the same cached tensor as :attr:`inv_fractional_matrix`;
+        do not modify it in place.
+
         Returns
         -------
         torch.Tensor
-            Shape (3, 3) matrix where rows are the reciprocal basis vectors.
+            Shape (3, 3) matrix where rows are the reciprocal basis vectors, in Å⁻¹.
         """
-        self._assert_unmodified()
-        if "reciprocal_basis_matrix" not in self._cache:
-            self._cache["reciprocal_basis_matrix"] = (
-                self._compute_reciprocal_basis_matrix()
-            )
-        return self._cache["reciprocal_basis_matrix"]
+        return self.inv_fractional_matrix
 
     # =========================================================================
     # Internal computation methods
@@ -331,26 +330,8 @@ class Cell(_NonModuleDeviceMixin):
         return math_torch.get_fractional_matrix(self._data)
 
     def _compute_volume(self) -> torch.Tensor:
-        """V = abc·sqrt(1 - Σcos²angle + 2·cosα·cosβ·cosγ)."""
-        a, b, c = self._data[0], self._data[1], self._data[2]
-        angles_rad = torch.deg2rad(self._data[3:])
-        cos_alpha, cos_beta, cos_gamma = torch.cos(angles_rad)
-
-        volume_factor = torch.sqrt(
-            1
-            - cos_alpha**2
-            - cos_beta**2
-            - cos_gamma**2
-            + 2 * cos_alpha * cos_beta * cos_gamma
-        )
-
-        return a * b * c * volume_factor
-
-    def _compute_reciprocal_basis_matrix(self) -> torch.Tensor:
-        """Reciprocal basis, via ``math_torch.reciprocal_basis_matrix``."""
-        from torchref.base import math_torch
-
-        return math_torch.reciprocal_basis_matrix(self._data)
+        """V = det(B); B is upper triangular, so that is its diagonal product."""
+        return torch.diagonal(self.fractional_matrix).prod()
 
     # =========================================================================
     # Grid computation methods

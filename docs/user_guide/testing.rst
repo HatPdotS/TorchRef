@@ -168,7 +168,7 @@ free of file I/O:
             model = Model()
             model.load_cif(str(sample_cif_file))
             assert model.initialized
-            assert len(model.pdb) > 0
+            assert model.n_atoms > 0
 
 Cover the edge cases that actually bite here: empty selections, degenerate
 geometry (which is where gradients go NaN), and non-default dtype/device.
@@ -177,8 +177,8 @@ CI
 --
 
 ``tox.ini`` defines the environments: ``py310``–``py313`` against current
-dependencies, plus boundary environments pinning NumPy, Numba, PyTorch, Pandas
-and Gemmi versions and a ``lowerbounds`` pair at the declared minimums. Refer to
+dependencies, plus boundary environments pinning NumPy, PyTorch, Pandas and
+Gemmi versions and a ``lowerbounds`` pair at the declared minimums. Refer to
 the file itself for the authoritative list.
 
 .. code-block:: bash

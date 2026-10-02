@@ -12,11 +12,12 @@ Variable naming conventions:
 - f_calc/f_obs: Complex structure factors (lowercase = complex)
 """
 
-from typing import Dict, Iterable, List, Optional, Tuple, Union
-
+import math
 import warnings
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union
 
 import gemmi
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -25,10 +26,11 @@ from torchref.config import (
     canonical_device,
     get_default_device,
     get_float_dtype,
+    get_int_dtype,
     normalize_device,
 )
 from torchref.io import cif, pdb
-from torchref.model.context import ModelContext
+from torchref.model.context import AtomValues, ModelContext, own_spacegroup
 from torchref.model.parameter_wrappers import (
     CholeskyMixedTensor,
     MixedTensor,
@@ -40,37 +42,8 @@ from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.utils import sanitize_pdb_dataframe
 
-# Standard 3-letter to 1-letter amino acid code mapping
-_THREE_TO_ONE = {
-    "ALA": "A",
-    "ARG": "R",
-    "ASN": "N",
-    "ASP": "D",
-    "CYS": "C",
-    "GLN": "Q",
-    "GLU": "E",
-    "GLY": "G",
-    "HIS": "H",
-    "ILE": "I",
-    "LEU": "L",
-    "LYS": "K",
-    "MET": "M",
-    "PHE": "F",
-    "PRO": "P",
-    "SER": "S",
-    "THR": "T",
-    "TRP": "W",
-    "TYR": "Y",
-    "VAL": "V",
-    "SEC": "U",
-    "PYL": "O",
-    # Common modified residues
-    "MSE": "M",
-    "CSE": "C",
-    "SEP": "S",
-    "TPO": "T",
-    "PTR": "Y",
-}
+if TYPE_CHECKING:
+    import pandas
 
 
 class Model(DeviceMovementMixin, DebugMixin, nn.Module):
@@ -92,16 +65,18 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Verbosity level for logging. Default is 1.
     device : torch.device, optional
         Computation device. Defaults to the configured device.current.
-    strip_H : bool, optional
-        Whether to strip hydrogen atoms when loading. Default False: hydrogens are kept
-        where the file has them.
-    add_hydrogens : bool, optional
-        Generate missing hydrogens on load when True. Default False;
-        ignored when ``strip_H`` is set.
+    hydrogens : {"keep", "add", "strip"}, optional
+        What loading does with the file's hydrogens: keep them (default), also generate
+        the missing ones from the monomer templates, or remove them all.
+    hydrogen_mode : {"atoms", "riding"}, optional
+        Hydrogens as ordinary refinable atoms (default) or riding on their parents.
+        ``"riding"`` with ``hydrogens="strip"`` raises ``ValueError``.
     cif_path : str or list of str, optional
         Restraint dictionary file(s) for residues the monomer library does not know, or
         whose library entry should be overridden. Given here rather than after loading so
         that hydrogen generation on load reads the same dictionary the restraints will.
+    hydrogens_in_xray : bool, optional
+        Whether hydrogens contribute to the structure factors. Default True.
 
     Attributes
     ----------
@@ -115,12 +90,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     occupancy : OccupancyTensor
         Atomic occupancies with values in [0, 1].
     ctx : ModelContext
-        The unit cell, space group, atom table, link records, provenance and
-        configuration. The fields not forwarded below are reached through it, e.g.
-        ``model.ctx.strip_H`` and ``model.ctx.initialized``.
-    pdb : pandas.DataFrame
-        Atom table, forwarded to :attr:`ctx`. Only refreshed from the tensors by
-        :meth:`update_pdb`.
+        The unit cell, space group, atom identity (``ctx.topology``), link records,
+        provenance and configuration. The fields not forwarded below are reached
+        through it, e.g. ``model.ctx.hydrogens`` and ``model.ctx.initialized``.
+    n_atoms : int
+        Number of atoms.
     cell : Cell
         Unit cell, forwarded to :attr:`ctx`.
     spacegroup : SpaceGroup
@@ -135,38 +109,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         dtype_float=None,
         verbose=1,
         device=None,
-        strip_H: bool = False,
-        add_hydrogens: bool = False,
+        hydrogens: str = "keep",
+        hydrogen_mode: str = "atoms",
         cif_path: Optional[Union[str, List[str]]] = None,
         hydrogens_in_xray: bool = True,
     ):
-        """
-        Initialize an empty Model shell.
+        """Initialize an empty Model shell; see the class docstring for the arguments.
 
-        Creates a model shell ready for file loading via load_pdb()/load_cif()
-        or state restoration via load_state_dict().
-
-        Parameters
-        ----------
-        dtype_float : torch.dtype, optional
-            Data type for floating point tensors. Defaults to the configured dtypes.float.
-        verbose : int, optional
-            Verbosity level for logging. Default is 1.
-        device : torch.device, optional
-            Computation device. Defaults to the configured device.current.
-        strip_H : bool, optional
-            Whether to strip hydrogen atoms when loading. Default False: hydrogens are
-            kept where the file has them.
-        add_hydrogens : bool, optional
-            Generate missing hydrogens on load when True. Default False;
-            ignored when ``strip_H`` is set.
-        cif_path : str or list of str, optional
-            Restraint dictionary file(s); see the class docstring. :meth:`set_restraints_cif`
-            can still change it after loading, but generation on load only sees the value
-            given here.
-        hydrogens_in_xray : bool, optional
-            Whether hydrogens contribute to the structure factors. Default True. They
-            stay in the restraints either way; see :attr:`hydrogens_in_xray`.
+        Load a structure with :meth:`load_pdb` / :meth:`load_cif`, or restore one with
+        :meth:`create_from_state_dict`.
         """
         super().__init__()
         # Resolve dtype/device at call time (not import time) so a runtime
@@ -180,17 +131,17 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.dtype_float = dtype_float
         self.device = device
 
-        # Everything the model is loaded from and sits in, as opposed to what is
-        # refined. Populated by load() / create_from_state_dict().
+        # Settings only until a structure is loaded, which replaces the context with
+        # one built by ``ModelContext.from_atoms``.
         self.ctx = ModelContext(
             verbose=verbose,
-            strip_H=strip_H,
-            add_hydrogens=add_hydrogens,
+            hydrogens=hydrogens,
+            hydrogen_mode=hydrogen_mode,
             cif_path=cif_path,
             hydrogens_in_xray=hydrogens_in_xray,
         )
 
-        # Submodules (created during load or load_state_dict)
+        # Parameter wrappers, installed by _install_parameters.
         self.xyz = None
         self.adp = None
         self.u = None
@@ -198,9 +149,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Scattering factor parametrization (built lazily on first access)
         self._parametrization = None
-
-        # Restraints (built lazily on first access)
-        self._restraints = None
 
     def __bool__(self):
         """Return the initialization status when used in boolean context.
@@ -225,29 +173,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def hydrogens_in_xray(self, value: bool):
         self.ctx.hydrogens_in_xray = bool(value)
 
-    @property
-    def exclude_H_from_sf(self) -> bool:
-        """Inverse of :attr:`hydrogens_in_xray`.
-
-        .. deprecated::
-            Use ``hydrogens_in_xray`` instead.
-        """
-        warnings.warn(
-            "exclude_H_from_sf is deprecated; use hydrogens_in_xray",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return not self.ctx.hydrogens_in_xray
-
-    @exclude_H_from_sf.setter
-    def exclude_H_from_sf(self, value: bool):
-        warnings.warn(
-            "exclude_H_from_sf is deprecated; use hydrogens_in_xray",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.ctx.hydrogens_in_xray = not bool(value)
-
     def _sf_atom_mask(self) -> Optional[torch.Tensor]:
         """Atoms that enter Fcalc, or None when every atom does.
 
@@ -255,16 +180,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         buffer, which is dropped with the other per-atom caches when the atom set
         changes, so it never outlives the table it was built for.
         """
-        if self.ctx.hydrogens_in_xray or self.pdb is None:
+        if self.ctx.hydrogens_in_xray or self.ctx.topology is None:
             return None
         if getattr(self, "_heavy_atom_mask", None) is None:
             self.register_buffer(
                 "_heavy_atom_mask",
-                torch.tensor(
-                    (self.pdb["element"].str.strip().str.upper() != "H").values,
-                    dtype=torch.bool,
-                    device=self.device,
-                ),
+                ~self.ctx.topology.atoms.is_hydrogen.to(self.device),
             )
         return self._heavy_atom_mask
 
@@ -291,7 +212,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             (flag.data_ptr(), flag._version) if flag is not None else None,
             bool(self.ctx.hydrogens_in_xray),
             None if heavy is None else (heavy.data_ptr(), heavy._version),
-            0 if self.pdb is None else len(self.pdb),
+            self.n_atoms,
         )
         cached = getattr(self, "_sf_partition_cache", None)
         if cached is not None and self._sf_partition_fp == fp:
@@ -334,19 +255,31 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def _aniso_is_empty(self) -> bool:
         return self._sf_partition()[3]
 
-
     # =========================================================================
     # Cell, SpaceGroup, and Symmetry properties
     # =========================================================================
 
     @property
-    def pdb(self) -> Optional["pandas.DataFrame"]:
-        """Atom table. Only refreshed from the tensors by :meth:`update_pdb`."""
-        return self.ctx.pdb
+    def n_atoms(self) -> int:
+        """Number of atoms; 0 before a structure is loaded."""
+        return self.ctx.n_atoms
 
-    @pdb.setter
-    def pdb(self, value):
-        self.ctx.pdb = value
+    @property
+    def pdb(self) -> Optional["pandas.DataFrame"]:
+        """The atom table, freshly joined from identity and current values.
+
+        .. deprecated::
+            Use :meth:`to_dataframe` for output and ``model.ctx.topology`` for atom
+            identity. Each access builds a new table, so writing into it changes
+            nothing.
+        """
+        warnings.warn(
+            "Model.pdb is deprecated: use model.to_dataframe() for a table and "
+            "model.ctx.topology for atom identity",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.to_dataframe() if self.ctx.topology is not None else None
 
     @property
     def cell(self) -> Optional[Cell]:
@@ -368,22 +301,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """Set the space group from a SpaceGroup, gemmi object, name or number.
 
         The model owns its space group: an incoming ``SpaceGroup`` is copied rather
-        than shared, because ``.to()`` moves in place and would otherwise relocate
-        the caller's object. The copy lands on the model's device and float dtype.
+        than shared (see :func:`~torchref.model.context.own_spacegroup`), and lands on
+        the model's device and float dtype.
         """
-        if value is None:
-            self.ctx.spacegroup = None
-        elif isinstance(value, SpaceGroup):
-            self.ctx.spacegroup = value.copy().to(
-                device=self.device, dtype=self.dtype_float
-            )
-        else:
-            # ``device=self.device``: SpaceGroup falls back to the global
-            # default otherwise, so setting a spacegroup on a CPU-pinned Model
-            # would silently plant accelerator-resident matrices on it.
-            self.ctx.spacegroup = SpaceGroup(
-                value, dtype=self.dtype_float, device=self.device
-            )
+        self.ctx.spacegroup = own_spacegroup(value, self.dtype_float, self.device)
 
     # =========================================================================
     # Crystallographic matrix properties (delegated to Cell)
@@ -421,7 +342,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if hasattr(self, "_Z") and self._Z is not None:
             return self._Z
 
-        if not self.ctx.initialized or self.pdb is None:
+        if not self.ctx.initialized:
             raise RuntimeError(
                 "Cannot build Z tensor: model not initialized. "
                 "Load data first with load_pdb() or load_cif()."
@@ -432,10 +353,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         element_to_z = get_element_to_z_mapping()
         z_values = [
             element_to_z.get(elem.strip().capitalize(), 0)
-            for elem in self.pdb["element"]
+            for elem in self.ctx.topology.atoms.element
         ]
         self.register_buffer(
-            "_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device)  # dtype-ok: atomic-number Z categorical codes buffer; fixed int32 lookup keys
+            "_Z", torch.tensor(z_values, dtype=get_int_dtype(), device=self.device)
         )
         return self._Z
 
@@ -451,7 +372,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if self._parametrization is not None:
             return self._parametrization
 
-        if not self.ctx.initialized or self.pdb is None:
+        if not self.ctx.initialized:
             raise RuntimeError(
                 "Cannot build parametrization: model not initialized. "
                 "Load data first with load_pdb() or load_cif()."
@@ -471,7 +392,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.register_buffer("_B", B)
 
         # Legacy per-element view: one representative row per element.
-        elements = self.pdb.element.tolist()
+        elements = self.ctx.topology.atoms.element.tolist()
         unique_elements = list(set(elements))
         self._parametrization = {}
 
@@ -540,106 +461,25 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     # Restraints (Geometry Restraints)
     # =========================================================================
 
-    def set_restraints_cif(self, cif_path):
-        """
-        Set CIF path for lazy restraint building.
-
-        Parameters
-        ----------
-        cif_path : str or list of str
-            Path(s) to CIF restraints dictionary file(s).
-
-        Returns
-        -------
-        Model
-            Self, for method chaining.
-        """
-        self.ctx.cif_path = cif_path
-        # Reset restraints so they will be rebuilt on next access
-        self._restraints = None
-        return self
-
-    def _build_restraints(self):
-        """Build and cache ``Restraints`` over this model's DataFrame, wiring in
-        the live ``xyz`` / ``adp`` / ``vdw_radii`` callables.
-        """
-        if self._restraints is not None:
-            return self._restraints
-
-        if not self.ctx.initialized:
-            raise RuntimeError(
-                "Cannot build restraints: model not initialized. "
-                "Load data first with load_pdb() or load_cif()."
-            )
-
-        from torchref.topology.restraints import Restraints
-
-        if self.ctx.verbose > 0:
-            print("Building restraints...")
-
-        self._restraints = Restraints(
-            pdb=self.pdb,
-            cif_path=self.ctx.cif_path,
-            xyz_fn=self.xyz,
-            adp_fn=self.adp,
-            vdw_radii_fn=self.get_vdw_radii,
-            cell=self.ctx.cell,
-            spacegroup=self.ctx.spacegroup,
-            links=self.ctx.links,
-            verbose=self.ctx.verbose,
-        )
-
-        return self._restraints
-
     @property
     def restraints(self):
-        """Bond/angle/torsion/... restraints, built on first access from the
-        DataFrame and the CIF path given to :meth:`set_restraints_cif`.
-        """
-        return self._build_restraints()
+        """Geometry restraints over the atom table, on :attr:`ctx`.
 
-    # =========================================================================
-    # Restraint Evaluation Wrappers
-    # =========================================================================
-
-    def bond_deviations(self):
+        Built on first access over the current coordinates and cached on the context
+        until the atom table or ``ctx.cif_path`` changes. Evaluations take the
+        coordinates as an argument, e.g.
+        ``model.restraints.bond_deviations(model.xyz())``.
         """
-        Compute bond length deviations using current xyz coordinates.
-
-        Returns
-        -------
-        deviations : torch.Tensor
-            Calculated minus expected bond lengths in Angstroms.
-        sigmas : torch.Tensor
-            Standard deviations from CIF library in Angstroms.
-        """
-        return self.restraints.bond_deviations(self.xyz())
-
-    def angle_deviations(self):
-        """
-        Compute angle deviations using current xyz coordinates.
-
-        Returns
-        -------
-        deviations : torch.Tensor
-            Calculated minus expected angles in radians.
-        sigmas : torch.Tensor
-            Standard deviations in radians.
-        """
-        return self.restraints.angle_deviations(self.xyz())
-
-    def torsion_deviations_with_sigmas(self):
-        """
-        Compute torsion deviations (wrapped for periodicity) and sigmas.
-
-        Returns
-        -------
-        deviations_rad : torch.Tensor
-            Wrapped deviations in radians.
-        sigmas_deg : torch.Tensor
-            Standard deviations in degrees (for von Mises NLL).
-        """
-        return self.restraints.torsion_deviations_with_sigmas(self.xyz())
+        if self.ctx.restraints is None:
+            if not self.ctx.initialized:
+                raise RuntimeError(
+                    "Cannot build restraints: model not initialized. "
+                    "Load data first with load_pdb() or load_cif()."
+                )
+            if self.ctx.verbose > 0:
+                print("Building restraints...")
+            self.ctx.build_restraints(self.xyz())
+        return self.ctx.restraints
 
     #: Per-atom buffers built lazily on first use and cached. Each is sized to the atom
     #: table, so all of them go stale the moment the atom set changes.
@@ -666,170 +506,163 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 delattr(self, name)
         self._parametrization = None
 
-    def load(self, reader, add_hydrogens: bool = None):
+    def load(self, reader):
         """
-        Populate the model from a reader callable.
-
-        The central loader that ``load_pdb`` / ``load_cif`` /
-        ``_new_model_from_df`` funnel through: it strips hydrogens (when
-        ``strip_H``), drops rows with NaN coordinates / B-factors / occupancies,
-        builds the cell and space group, and constructs the four parameter
-        wrappers (``u`` as a :class:`CholeskyMixedTensor`, as
-        :meth:`create_from_state_dict` also does, so the parametrization
-        round-trips).
+        Populate the model from a reader callable, through
+        :meth:`ModelContext.from_atoms`; ``load_pdb`` / ``load_cif`` come through here.
 
         Parameters
         ----------
         reader : callable
             Zero-argument callable returning ``(pdb_df, cell, spacegroup)``. An
-            optional ``.links`` attribute on it is stored on ``self.ctx.links``.
-        add_hydrogens : bool, optional
-            Whether to top up missing hydrogens once the model is built. Defaults to the
-            context's setting, and is forced off for the re-entry that
-            :meth:`_add_missing_hydrogens` makes, so generation happens once per load.
+            optional ``.links`` attribute on it is kept as ``ctx.links``.
 
         Returns
         -------
         Model
             Self, for method chaining.
-
-        Notes
-        -----
-        Side effects: sets ``pdb``, ``links``, ``cell``, ``spacegroup``, the
-        ``aniso_flag`` buffer, the four wrappers, the default masks, the altloc
-        registration and ``initialized = True``.
         """
-        if add_hydrogens is None:
-            add_hydrogens = self.ctx.add_hydrogens and not self.ctx.strip_H
+        pdb, cell, spacegroup = reader()
         self._invalidate_atom_derived_caches()
-        self.pdb, cell, spacegroup = reader()
-        self.ctx.links = getattr(reader, "links", None)
-
-        self.pdb = (
-            self.pdb.loc[self.pdb["element"] != "H"].reset_index(drop=True)
-            if self.ctx.strip_H
-            else self.pdb
+        self.ctx, values = ModelContext.from_atoms(
+            pdb,
+            cell,
+            spacegroup,
+            dtype=self.dtype_float,
+            device=self.device,
+            links=getattr(reader, "links", None),
+            **self.ctx.settings(),
         )
-        self.pdb.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"], inplace=True)
-        # Reindex before deriving the ``index`` column: every consumer uses it to
-        # address length-N per-atom tensors positionally (see
-        # ``_create_occupancy_groups``), so a gapped index from the drop above sends
-        # them past the end. Only the strip_H branch reset, so a model losing rows to
-        # the dropna instead -- an atom with no coordinates or no B -- raised
-        # IndexError at load. Hit on roughly one PDB-REDO entry in six.
-        self.pdb.reset_index(drop=True, inplace=True)
-        self.pdb["index"] = self.pdb.index.to_numpy(dtype=int)
+        self._install_parameters(values)
+        return self
 
-        self.cell = Cell(cell, dtype=self.dtype_float, device=self.device)
+    def _install_parameters(
+        self, values: AtomValues, state: Optional[dict] = None, xyz=None
+    ) -> None:
+        """Build the parameter wrappers and per-atom buffers over ``ctx.topology``.
 
-        # Setter also updates symmetry.
-        self.spacegroup = spacegroup
+        The only place the wrappers are constructed: load, restore, select and every
+        derived model come through here.
+
+        Parameters
+        ----------
+        values : AtomValues
+            Starting values, row-aligned with ``ctx.topology``.
+        state : dict, optional
+            A state dict about to be loaded. Its saved refinable masks, occupancy
+            groups, riding frames and node-field ADP layout fix the wrappers' shapes,
+            and the default masks are **not** applied; ``load_state_dict`` supplies
+            the values afterwards.
+        xyz : MixedTensor, optional
+            Coordinate wrapper to install as is, instead of building one from
+            ``values``.
+        """
+        from torchref.model.riding_xyz import RidingXYZTensor
+
+        dtype = self.dtype_float
+        restoring = state is not None
+        state = {} if state is None else state
 
         self.register_buffer(
             "aniso_flag",
-            torch.tensor(
-                self.pdb["anisou_flag"].values, dtype=torch.bool, device=self.device
-            ),
+            torch.as_tensor(values.aniso, dtype=torch.bool, device=self.device),
         )
+        self.xyz = self._build_xyz(values, state) if xyz is None else xyz
+        self.adp = self._restore_adp_slot(
+            "adp", state, values, dtype, self.xyz, self.device
+        )
+        self.u = self._restore_adp_slot(
+            "u", state, values, dtype, self.xyz, self.device
+        )
+        self.occupancy = self._build_occupancy(values, state)
 
-        self.xyz = MixedTensor(
-            torch.tensor(self.pdb[["x", "y", "z"]].values, dtype=self.dtype_float),
-            name="xyz",
-            device=self.device,
-        )
-        self.adp = PositiveMixedTensor(
-            torch.tensor(self.pdb["tempfactor"].values, dtype=self.dtype_float),
-            name="adp",
-            device=self.device,
-        )
-        # Cholesky parametrization keeps U positive-definite by construction
-        # (U = L Lᵀ), so refinement cannot drive it indefinite and NaN the FFT.
-        self.u = CholeskyMixedTensor(
-            torch.tensor(
-                self.pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
-                dtype=self.dtype_float,
-            ),
-            name="aniso_U",
-            device=self.device,
-        )
+        if restoring:
+            # Placeholders: the saved masks arrive with load_state_dict, and applying
+            # the defaults here would resize the refinable sets it has to match.
+            for mask_name in ("xyz_mask", "adp_mask", "u_mask", "occupancy_mask"):
+                self.register_buffer(
+                    mask_name,
+                    torch.ones(self.n_atoms, dtype=torch.bool, device=self.device),
+                )
+            if state.get("vdw_radii") is not None:
+                self.register_buffer(
+                    "vdw_radii",
+                    torch.zeros_like(state["vdw_radii"], device=self.device),
+                )
+            return
 
-        # Residue-level sharing plus altloc sum-to-1 groups.
-        initial_occ = torch.tensor(self.pdb["occupancy"].values, dtype=self.dtype_float)
-        sharing_groups, altloc_groups, refinable_mask = self._create_occupancy_groups(
-            self.pdb, initial_occ
+        self.set_default_masks()
+        if self.ctx.hydrogen_mode == "riding" and not isinstance(
+            self.xyz, RidingXYZTensor
+        ):
+            self.xyz = RidingXYZTensor.from_mixed_tensor(
+                self.xyz, self.hydrogen_frames()
+            )
+            self._repoint_coordinate_accessors()
+
+    def _build_occupancy(self, values: AtomValues, state: dict) -> OccupancyTensor:
+        """The occupancy wrapper over ``values``, grouped as ``state`` saved it.
+
+        A saved grouping is taken as saved, never re-derived from the saved
+        occupancies: which atoms share a group depends on the values (the 0.01
+        deadband of :meth:`ModelContext.occupancy_groups`), and refinement moves them,
+        so a re-derivation can disagree with the group-space parameters being loaded.
+        Without one -- a fresh load -- the context groups the atoms.
+        """
+        initial = torch.tensor(values.occupancy, dtype=self.dtype_float)
+        settings = {
+            "dtype": self.dtype_float,
+            "device": self.device,
+            "name": "occupancy",
+        }
+        if state.get("occupancy.expansion_mask") is not None:
+            return OccupancyTensor.from_saved_groups(
+                initial, state, prefix="occupancy.", **settings
+            )
+        sharing_groups, altloc_groups, refinable_mask = self.ctx.occupancy_groups(
+            initial
         )
-        self.occupancy = OccupancyTensor(
-            initial_values=initial_occ,
+        return OccupancyTensor(
+            initial_values=initial,
             sharing_groups=sharing_groups,
             altloc_groups=altloc_groups,
             refinable_mask=refinable_mask,
-            dtype=self.dtype_float,
-            device=self.device,
-            name="occupancy",
+            **settings,
         )
 
-        self.set_default_masks()
-        self.register_alternative_conformations()
-        self.ctx.initialized = True
+    def _build_xyz(self, values: AtomValues, state: dict):
+        """The coordinate wrapper over ``values``, riding if ``state`` saved one.
 
-        if add_hydrogens:
-            self._add_missing_hydrogens()
-        return self
-
-    def _add_missing_hydrogens(self) -> None:
-        """Top up the hydrogens the atom table is missing, in place.
-
-        Per parent, not per file: a structure deposited with some hydrogens gets the
-        rest, because the plan only ever proposes a hydrogen the template names and the
-        model does not have. 1AK5 arrives with 675 of roughly 2500, and a
-        does-it-have-any test would have left it there.
-
-        Re-enters :meth:`load` on the augmented atom table, which rebuilds the parameter
-        wrappers and per-atom buffers at the new size. The re-entry is told not to
-        consider hydrogens again, so this runs once per load rather than recursing to a
-        fixed point.
-
-        Costs a restraint build that is then discarded, because the plan needs the
-        topology and the topology is built over the atoms as loaded. Loading invokes
-        this only when ``add_hydrogens=True`` is requested.
+        A saved riding wrapper is recognised by its frame buffers, never by shape: its
+        storage is ``(n_base, 3)`` and a plain wrapper's ``(n_atoms, 3)``, both 2-D.
         """
-        from torchref.topology.hydrogens import (
-            augment_atom_table,
-            optimise_free_torsions,
-            plan_hydrogens,
-        )
-
-        restraints = self.restraints
-        xyz = self.xyz().detach()
-        plan = plan_hydrogens(
-            restraints.topology, restraints.cif_dict, xyz, verbose=self.ctx.verbose
-        )
-        if self.ctx.verbose > 0 and restraints.missing_residues:
-            print(
-                "No restraint dictionary for "
-                f"{sorted(restraints.missing_residues)}: not hydrogenated. Pass one "
-                "with cif_path / --cif."
+        coords = torch.tensor(values.xyz, dtype=self.dtype_float)
+        mask = state.get("xyz.refinable_mask")
+        if state.get("xyz.h_row") is None:
+            return MixedTensor(
+                coords, refinable_mask=mask, name="xyz", device=self.device
             )
-        if plan.n_hydrogens == 0:
-            return
-        optimise_free_torsions(plan, restraints.topology, xyz)
-        augmented = augment_atom_table(self.pdb, plan, restraints.topology)
 
-        if self.ctx.verbose > 0:
-            print(f"Generated {plan.n_hydrogens} hydrogens")
+        from torchref.model.riding_xyz import RidingXYZTensor
+        from torchref.topology.hydrogens import HydrogenFrames
 
-        # The topology and every per-atom tensor are sized for the old atom set.
-        self._restraints = None
-        cell, spacegroup = self.cell, self.spacegroup
-        links = self.ctx.links
-
-        def reader():
-            return augmented, cell.data.cpu().numpy(), spacegroup
-
-        # Carried explicitly: ``load`` reads links off the reader, so a bare callable
-        # would drop the LINK records the first read resolved.
-        reader.links = links
-        self.load(reader, add_hydrogens=False)
+        frames = HydrogenFrames.from_tensors(
+            state["xyz.h_row"],
+            state["xyz.parent_row"],
+            state["xyz.n1_row"],
+            state["xyz.n2_row"],
+            state["xyz.frame_valid"],
+            state.get("xyz.torsion_group"),
+            state.get("xyz.rotation_group"),
+        )
+        return RidingXYZTensor(
+            coords,
+            frames,
+            refinable_mask=mask,
+            mask_in_base_space=True,
+            name="xyz",
+            device=self.device,
+        )
 
     def load_pdb(self, file):
         """
@@ -872,214 +705,92 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         return self.load(cif_reader)
 
-    @property
-    def chain_sequences(self) -> List[Tuple[str, str]]:
-        """Per-chain one-letter sequences, ``[(chain_id, sequence), ...]``.
+    def to_dataframe(self) -> "pandas.DataFrame":
+        """The atom table: identity from the topology, values from the wrappers.
 
-        HETATM records are excluded, numbering gaps become ``?`` and unrecognized
-        residues ``X``.
-        """
-        if self.pdb is None:
-            return []
+        Built fresh on every call and never kept, so it cannot go stale and editing it
+        changes nothing. Columns are the readers' (``ATOM``, ``serial``, ``name``,
+        ``altloc``, ``resname``, ``chainid``, ``resseq``, ``icode``, ``x``/``y``/``z``,
+        ``occupancy``, ``tempfactor``, ``element``, ``charge``, ``anisou_flag``,
+        ``u11`` ... ``u23``, ``index``); ``serial`` runs 1..N and a blank altloc is
+        ``''``. ``attrs`` carries the cell and the space group.
 
-        atom_df = self.pdb[self.pdb["ATOM"] == "ATOM"]
-        result = []
-
-        for chain in atom_df["chainid"].unique():
-            chain_df = atom_df[atom_df["chainid"] == chain]
-            residues = chain_df.drop_duplicates(subset=["resseq", "icode"]).sort_values(
-                "resseq"
-            )
-            resseqs = residues["resseq"].values
-            resnames = residues["resname"].values
-
-            seq_chars = []
-            for i, (rseq, rname) in enumerate(zip(resseqs, resnames)):
-                if i > 0:
-                    gap = int(rseq) - int(resseqs[i - 1]) - 1
-                    if gap > 0:
-                        seq_chars.extend(["?"] * gap)
-                code = _THREE_TO_ONE.get(str(rname).strip(), "X")
-                seq_chars.append(code)
-
-            result.append((str(chain), "".join(seq_chars)))
-
-        return result
-
-    def get_chain_residues(self) -> List[Tuple[str, List[str]]]:
-        """
-        Per-chain residue names as 3-letter codes (for IHM/CIF writing).
-
-        Excludes HETATM records. Unlike :attr:`chain_sequences`, returns
-        the raw 3-letter codes without gap filling.
-
-        Returns
-        -------
-        list of (str, list of str)
-            Ordered list of ``(chain_id, [resname, ...])``.
-        """
-        if self.pdb is None:
-            return []
-
-        atom_df = self.pdb[self.pdb["ATOM"] == "ATOM"]
-        result = []
-
-        for chain in atom_df["chainid"].unique():
-            chain_df = atom_df[atom_df["chainid"] == chain]
-            residues = chain_df.drop_duplicates(subset=["resseq", "icode"]).sort_values(
-                "resseq"
-            )
-            resnames = [str(r).strip() for r in residues["resname"].values]
-            result.append((str(chain), resnames))
-
-        return result
-
-    def _create_occupancy_groups(self, pdb_df, initial_occ):
-        """Build ``(sharing_groups, altloc_groups, refinable_mask)`` for
-        :class:`OccupancyTensor`.
-
-        Altloc conformations share one collapsed index each; other residues share
-        one only when their occupancies agree to within 0.01, and an occupancy is
-        refinable only if it differs from 1.0 by more than that same deadband.
-        """
-        n_atoms = len(initial_occ)
-        altloc_groups = []
-        refinable_mask = torch.zeros(n_atoms, dtype=torch.bool)
-
-        sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)  # dtype-ok: arange atom indices (sharing groups); index requires long
-        collapsed_idx = 0
-
-        # First pass: altlocs. ALL atoms of one conformation must share a collapsed
-        # index whatever their individual occupancies, or the sum-to-1
-        # normalization in OccupancyTensor.forward() acts on the wrong group.
-        pdb_with_altlocs = pdb_df[pdb_df["altloc"] != ""]
-        altloc_residues = set()
-
-        if len(pdb_with_altlocs) > 0:
-            grouped_by_residue = pdb_with_altlocs.groupby(
-                ["resname", "resseq", "chainid"]
-            )
-
-            for (resname, resseq, chainid), group in grouped_by_residue:
-                unique_altlocs = sorted(group["altloc"].unique())
-
-                if len(unique_altlocs) > 1:
-                    altloc_residues.add((resname, resseq, chainid))
-                    conformation_atom_lists = []
-
-                    for altloc in unique_altlocs:
-                        altloc_atoms = group[group["altloc"] == altloc]
-                        indices = altloc_atoms["index"].tolist()
-
-                        sharing_groups_tensor[indices] = collapsed_idx
-
-                        for idx in indices:
-                            if abs(initial_occ[idx].item() - 1.0) > 0.01:
-                                refinable_mask[idx] = True
-
-                        conformation_atom_lists.append(indices)
-                        collapsed_idx += 1
-
-                    altloc_groups.append(tuple(conformation_atom_lists))
-
-        # Second pass: non-altloc residues, sharing by occupancy similarity.
-        grouped = pdb_df.groupby(["resname", "resseq", "chainid", "altloc"])
-
-        for (resname, resseq, chainid, altloc), group in grouped:
-            if (resname, resseq, chainid) in altloc_residues:
-                continue
-
-            indices = group["index"].tolist()
-
-            if len(indices) == 0:
-                continue
-
-            residue_occs = initial_occ[indices]
-
-            occ_min = residue_occs.min().item()
-            occ_max = residue_occs.max().item()
-            occ_mean = residue_occs.mean().item()
-
-            if (occ_max - occ_min) <= 0.01:
-                sharing_groups_tensor[indices] = collapsed_idx
-                collapsed_idx += 1
-
-                if abs(occ_mean - 1.0) > 0.01:
-                    for idx in indices:
-                        refinable_mask[idx] = True
-            else:
-                # Occupancies disagree within the residue: keep atoms independent.
-                for idx in indices:
-                    if abs(initial_occ[idx].item() - 1.0) > 0.01:
-                        refinable_mask[idx] = True
-
-        # Compact to contiguous indices 0..n_collapsed-1.
-        unique_indices = torch.unique(sharing_groups_tensor, sorted=True)
-        index_map = torch.zeros(n_atoms, dtype=torch.long)  # dtype-ok: index_map atom-index remap; indexing requires long
-        for new_idx, old_idx in enumerate(unique_indices):
-            mask = sharing_groups_tensor == old_idx
-            sharing_groups_tensor[mask] = new_idx
-
-        n_collapsed = len(unique_indices)
-
-        if self.ctx.verbose > 1:
-            n_groups = n_collapsed
-            n_independent = n_atoms - n_collapsed
-            n_refinable = refinable_mask.sum().item()
-            n_altloc_groups = len(altloc_groups)
-
-            print("\nOccupancy Setup:")
-            print(f"  Total atoms: {n_atoms}")
-            print(f"  Collapsed indices: {n_collapsed}")
-            print(f"  Alternative conformation groups: {n_altloc_groups}")
-            print(f"  Refinable atoms: {n_refinable}")
-            print(f"  Compression ratio: {n_atoms / n_collapsed:.2f}x")
-
-        return sharing_groups_tensor, altloc_groups, refinable_mask
-
-    def update_pdb(self):
-        """
-        Write the current refinable parameters back into ``self.pdb``.
-
-        Copies the live values of ``xyz`` (x/y/z), ``u`` (u11..u23) and
-        ``occupancy`` from the parameter wrappers into the corresponding columns of
-        the ``self.pdb`` DataFrame. Called by every writer and by ``hydrogenate``
-        before output.
-
-        ``tempfactor`` is the equivalent isotropic B whenever any atom is
-        anisotropic, so the column agrees with the ANISOU records written beside it;
-        with no anisotropic atoms it is the isotropic wrapper directly.
+        ``tempfactor`` is the equivalent isotropic B whenever any atom is anisotropic,
+        so the column agrees with the ANISOU records written beside it: for an
+        anisotropic atom the PDB convention is B_eq = (8 pi^2 / 3) tr(U), not whatever
+        the isotropic wrapper still holds, which stops being refined the moment an atom
+        goes anisotropic.
 
         Returns
         -------
         pandas.DataFrame
-            The updated ``self.pdb`` DataFrame.
-
-        Notes
-        -----
-        This does **not** touch ``anisou_flag``: the iso/aniso classification
-        of each atom is left unchanged (see ``_apply_adp_partition`` for the
-        partition logic that owns that flag).
         """
-        self.pdb.loc[:, ["x", "y", "z"]] = self.xyz().cpu().detach().numpy()
-        self.pdb.loc[:, ["u11", "u22", "u33", "u12", "u13", "u23"]] = (
-            self.u().cpu().detach().numpy()
-        )
-        # The B column must agree with the ANISOU records beside it: for an
-        # anisotropic atom the PDB convention is B_eq = (8 pi^2 / 3) tr(U), not
-        # whatever the isotropic wrapper still happens to hold. That wrapper stops
-        # being refined the moment an atom goes anisotropic, so writing it directly
-        # emits a stale B alongside a live U.
+        import pandas as pd
+
+        identity = self.ctx.topology.columns()
+        # Detached, not under no_grad: the wrappers cache their forward, and a
+        # gradient-free result cached here would be served to the next loss.
+        xyz = self.xyz().detach().cpu().numpy()
+        u = self.u().detach().cpu().numpy()
         if getattr(self, "_aniso_is_empty", True):
-            self.pdb.loc[:, "tempfactor"] = self.adp().cpu().detach().numpy()
+            b = self.adp().detach().cpu().numpy()
         else:
             from torchref.base.targets.adp import u6_b_eq
 
-            self.pdb.loc[:, "tempfactor"] = (
-                u6_b_eq(self.adp_u6()).cpu().detach().numpy()
-            )
-        self.pdb.loc[:, "occupancy"] = self.occupancy().cpu().detach().numpy()
-        return self.pdb
+            b = u6_b_eq(self.adp_u6()).detach().cpu().numpy()
+        occupancy = self.occupancy().detach().cpu().numpy()
+        n = self.n_atoms
+        table = pd.DataFrame(
+            {
+                "ATOM": np.where(identity["is_hetatm"], "HETATM", "ATOM"),
+                "serial": np.arange(1, n + 1),
+                "name": identity["name"],
+                "altloc": np.where(identity["altloc"] == " ", "", identity["altloc"]),
+                "resname": identity["resname"],
+                "chainid": identity["chain"],
+                "resseq": identity["resseq"],
+                "icode": identity["icode"],
+                "x": xyz[:, 0],
+                "y": xyz[:, 1],
+                "z": xyz[:, 2],
+                "occupancy": occupancy,
+                "tempfactor": b,
+                "element": identity["element"],
+                "charge": identity["charge"],
+                "anisou_flag": self.aniso_flag.detach().cpu().numpy(),
+                **{
+                    column: u[:, i]
+                    for i, column in enumerate(
+                        ("u11", "u22", "u33", "u12", "u13", "u23")
+                    )
+                },
+                "index": np.arange(n),
+            }
+        )
+        if self.cell is not None:
+            # The shortest decimal that round-trips the stored precision, so a float32
+            # cell writes as 143.11 rather than 143.110001.
+            cell = self.cell.data.detach().cpu().numpy()
+            table.attrs["cell"] = [float(str(v)) for v in cell]
+        table.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
+        if self.ctx.z_value is not None:
+            table.attrs["z"] = self.ctx.z_value
+        return table
+
+    def _current_values(self) -> AtomValues:
+        """The wrappers' current values, as starting values for a derived model.
+
+        ``b`` is the isotropic wrapper's value, not the anisotropic B_eq that
+        :meth:`to_dataframe` writes.
+        """
+        # Detached rather than under no_grad; see to_dataframe.
+        return AtomValues(
+            xyz=self.xyz().detach().cpu().numpy().astype(np.float64),
+            b=self.adp().detach().cpu().numpy().astype(np.float64),
+            u=self.u().detach().cpu().numpy().astype(np.float64),
+            occupancy=self.occupancy().detach().cpu().numpy().astype(np.float64),
+            aniso=self.aniso_flag.detach().cpu().numpy().astype(bool),
+        )
 
     def get_vdw_radii(self):
         """
@@ -1092,42 +803,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         torch.Tensor
             Van der Waals radii for each atom with shape (n_atoms,).
         """
-        import os
-
-        import pandas as pd
-
-        from torchref import PATH_TORCHREF_DATA
+        from torchref.topology.nonbonded import vdw_radii_for_elements
 
         if hasattr(self, "vdw_radii"):
             return self.vdw_radii
-        elements = self.pdb.loc[:, "element"]
-        path = os.path.join(
-            PATH_TORCHREF_DATA,
-            "atomic_vdw_radii.csv",
-        )
-        vdw_df = pd.read_csv(path, comment="#")
-        vdw_df["element"] = vdw_df["element"].str.strip().str.capitalize()
-        elements = elements.str.strip().str.capitalize()
-        elements_not_in = elements[~elements.isin(vdw_df["element"])]
-        if len(elements_not_in) > 0:
-            # Add missing elements with default vdW radius 1.9 Å
-            missing = sorted(set(e.strip().capitalize() for e in elements_not_in))
-            if missing:
-                add_df = pd.DataFrame(
-                    {"element": missing, "vdW_Radius_Angstrom": [1.9] * len(missing)}
-                )
-                vdw_df = pd.concat([vdw_df, add_df], ignore_index=True)
-
-        vdw_radii = (
-            vdw_df.set_index("element").loc[elements]["vdW_Radius_Angstrom"].values
-        )
+        vdw_radii = vdw_radii_for_elements(self.ctx.topology.atoms.element)
         self.register_buffer(
             "vdw_radii",
             torch.tensor(vdw_radii, dtype=self.dtype_float, device=self.device),
         )
-        assert len(self.vdw_radii) == len(
-            self.pdb
-        ), f"vdW radii length mismatch with number of atoms {len(self.vdw_radii)} != {len(self.pdb)}"
         return self.vdw_radii
 
     def _after_device_apply(
@@ -1147,52 +831,115 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def copy(self):
         """
-        Create a deep copy of the Model.
+        Create a deep copy of the model, of the same class.
 
-        Independent in every part: the context is copied via
+        Independent in every part: the context -- restraints included -- is copied via
         :meth:`~torchref.model.context.ModelContext.copy`, buffers are cloned and each
         parameter wrapper is copied through its own ``copy`` so its parametrization
-        survives.
+        survives. Subclass settings carry over through :meth:`_subclass_kwargs`.
 
         Returns
         -------
         Model
-            A new, fully independent Model instance with copied data.
+            A new, fully independent instance with copied data.
         """
+        import copy as copy_module
+
         if not self.ctx.initialized:
             raise RuntimeError("Cannot copy an uninitialized Model. Load data first.")
 
-        model_copy = Model(
-            dtype_float=self.dtype_float,
-            verbose=self.ctx.verbose,
-            device=self.device,
-            strip_H=self.ctx.strip_H,
-        )
+        duplicate = self._spawn(self.ctx.copy())
+        for name, buffer in self._buffers.items():
+            if buffer is not None:
+                duplicate.register_buffer(name, buffer.clone().detach())
+        for name, module in self._modules.items():
+            # Submodules the constructor already built (ModelFT's engine) derive from
+            # the context and are not copied.
+            if (
+                module is None
+                or name in duplicate._modules
+                or not hasattr(module, "copy")
+            ):
+                continue
+            setattr(duplicate, name, module.copy())
+        if self._parametrization is not None:
+            duplicate._parametrization = copy_module.deepcopy(self._parametrization)
 
-        # One call carries the atom table, cell, space group, altloc groups and
-        # provenance, each deep-copied or cloned -- see ``ModelContext.copy``.
-        model_copy.ctx = self.ctx.copy()
-
-        for buffer_name, buffer_value in self._buffers.items():
-            if buffer_value is not None:
-                model_copy.register_buffer(buffer_name, buffer_value.clone())
-
-        # Parameter wrappers via their own .copy(), which preserves each
-        # wrapper's parametrization (log-space, Cholesky, collapsed logits).
-        for module_name, module in self._modules.items():
-            if module is not None and hasattr(module, "copy"):
-                setattr(model_copy, module_name, module.copy())
-
-        # Anything that borrows the coordinates -- the ADP node field, the restraints'
-        # pair-list maintenance -- carries the reference through its own ``copy`` and
-        # still points at THIS model's ``xyz``. Re-point it, or the two models silently
-        # share coordinates and the copy is not independent.
-        model_copy._repoint_coordinate_accessors()
+        # Anything that borrows the coordinates -- the ADP node field -- carries the
+        # reference through its own ``copy`` and still points at THIS model's ``xyz``.
+        duplicate._repoint_coordinate_accessors()
+        if hasattr(duplicate, "reset_cache"):
+            duplicate.reset_cache()
 
         if self.ctx.verbose > 0:
-            print(f"✓ Model copied successfully ({len(model_copy.pdb)} atoms)")
+            print(f"Copied {type(self).__name__} ({duplicate.n_atoms} atoms)")
+        return duplicate
 
-        return model_copy
+    def _spawn(self, ctx: ModelContext) -> "Model":
+        """An empty instance of this class around ``ctx``.
+
+        Carries this model's dtype, device and subclass settings
+        (:meth:`_subclass_kwargs`); the caller installs the parameters.
+        """
+        model = type(self)(
+            dtype_float=self.dtype_float,
+            verbose=ctx.verbose,
+            device=self.device,
+            **self._subclass_kwargs(),
+        )
+        model.ctx = ctx
+        return model
+
+    def _subclass_kwargs(self) -> dict:
+        """Constructor arguments a subclass adds, as this instance holds them.
+
+        :meth:`copy`, :meth:`select` and the derived-model helpers build new instances
+        through it. Model adds none.
+        """
+        return {}
+
+    def _derive(self, pdb, **overrides) -> "Model":
+        """A new, quiet model of this class built from an atom table in this crystal.
+
+        Construction, so the table is read: see :meth:`ModelContext.from_atoms`.
+
+        Parameters
+        ----------
+        pdb : pandas.DataFrame
+            Atom table for the new model.
+        **overrides
+            Context settings to change, e.g. ``hydrogens="strip"``.
+        """
+        from torchref.topology import Topology
+
+        values = AtomValues.from_table(pdb.reset_index(drop=True))
+        return self._derive_from(Topology.from_table(pdb), values, **overrides)
+
+    def _derive_from(
+        self, topology, values: AtomValues, xyz=None, **overrides
+    ) -> "Model":
+        """A new model of this class over ``topology`` and ``values`` in this crystal.
+
+        Parameters
+        ----------
+        topology : Topology
+            Node-only identity of the new atoms.
+        values : AtomValues
+            Their starting values.
+        xyz : MixedTensor, optional
+            A coordinate wrapper to install instead of one built from ``values``; only
+            valid when the hydrogen policy leaves the atom set unchanged.
+        **overrides
+            Context settings to change; ``verbose`` defaults to 0.
+        """
+        ctx, values = self.ctx.derive(topology, values, **{"verbose": 0, **overrides})
+        model = self._spawn(ctx)
+        model._install_parameters(values, xyz=xyz)
+        return model
+
+    def _kept_hydrogens(self) -> str:
+        """The policy for a table derived from this one: never generate again."""
+        return "strip" if self.ctx.hydrogens == "strip" else "keep"
 
     def write_pdb(self, filename, metadata=None):
         """Write model to PDB file with optional metadata header.
@@ -1204,10 +951,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         metadata : RefinementMetadata, optional
             Metadata to render as PDB header (REMARK 3, TITLE, etc.).
         """
-        self.update_pdb()
-        self.pdb = sanitize_pdb_dataframe(self.pdb)
-        self.pdb.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
-        pdb.write(self.pdb, filename, metadata=metadata)
+        table = sanitize_pdb_dataframe(self.to_dataframe())
+        table.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
+        pdb.write(table, filename, metadata=metadata)
 
     def write_cif(self, filename, metadata=None):
         """Write model to mmCIF file with optional metadata.
@@ -1219,10 +965,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         metadata : RefinementMetadata, optional
             Metadata to include (refinement statistics, title, etc.).
         """
-        self.update_pdb()
-        self.pdb = sanitize_pdb_dataframe(self.pdb)
-        self.pdb.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
-        cif.write_model(self.pdb, filename, metadata=metadata)
+        table = sanitize_pdb_dataframe(self.to_dataframe())
+        table.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
+        cif.write_model(table, filename, metadata=metadata)
 
     def get_iso(self):
         """
@@ -1263,10 +1008,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         B-factors), ``u_mask`` (atoms with no NaN U component), and
         ``occupancy_mask`` (occupancies below 0.999), then pushes each mask
         into the corresponding parameter wrapper via ``update_refinable_mask``.
-        Called from :meth:`load` after the wrappers are constructed.
+        Called from :meth:`_install_parameters` after the wrappers are constructed.
         """
         self.register_buffer(
-            "xyz_mask", torch.ones(len(self.pdb), dtype=torch.bool, device=self.device)
+            "xyz_mask", torch.ones(self.n_atoms, dtype=torch.bool, device=self.device)
         )
         self.xyz.update_refinable_mask(self.xyz_mask)
         self.register_buffer("adp_mask", ~self.adp().detach().isnan())
@@ -1438,7 +1183,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         which a field evaluates per atom, so the field materialises into a per-atom
         wrapper on the way out.
         """
-        if not self.ctx.initialized or self.pdb is None:
+        if not self.ctx.initialized:
             return
         if mode == "preserve":
             # Leave the ADPs exactly as loaded. Constructing a Refinement otherwise
@@ -1461,18 +1206,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 # asked for.
                 if aniso_selection is None:
                     target_mask = torch.ones(
-                        len(self.pdb), dtype=torch.bool, device=self.device
+                        self.n_atoms, dtype=torch.bool, device=self.device
                     )
                 else:
-                    from torchref.utils.utils import create_selection_mask
-
-                    target_mask = torch.as_tensor(
-                        create_selection_mask(aniso_selection, self.pdb),
-                        dtype=torch.bool,
-                    ).to(self.device)
+                    target_mask = self.get_selection_mask(aniso_selection).to(
+                        self.device
+                    )
             else:
                 target_mask = torch.zeros(
-                    len(self.pdb), dtype=torch.bool, device=self.device
+                    self.n_atoms, dtype=torch.bool, device=self.device
                 )
             self._apply_adp_partition(target_mask)
             self._install_disorder_field(
@@ -1486,15 +1228,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             return
         if mode == "isotropic":
             aniso_mask = torch.zeros(
-                len(self.pdb), dtype=torch.bool, device=self.device
+                self.n_atoms, dtype=torch.bool, device=self.device
             )
         elif mode == "anisotropic":
-            from torchref.utils.utils import create_selection_mask
-
             sel = aniso_selection or "not resname HOH and not element H"
-            aniso_mask = torch.as_tensor(
-                create_selection_mask(sel, self.pdb), dtype=torch.bool
-            ).to(self.device)
+            aniso_mask = self.get_selection_mask(sel).to(self.device)
         else:
             raise ValueError(
                 f"Unknown ADP mode: {mode!r}. Use 'isotropic', 'anisotropic', "
@@ -1602,12 +1340,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 )
             B = target
         if n_nodes is None:
-            n_nodes = max(4, int(round(len(self.pdb) / 25.0)))
+            n_nodes = max(4, int(round(self.n_atoms / 25.0)))
 
         # Anchor on density clusters, not single atoms: a node placed exactly on an atom
         # can isolate that atom by narrowing its kernel, which is per-atom refinement
         # wearing a node's clothes.
-        anchor_rows = density_anchor_rows(xyz, min(n_nodes, len(self.pdb)))
+        anchor_rows = density_anchor_rows(xyz, min(n_nodes, self.n_atoms))
 
         if mode_set is not None:
             payload = ModeCovariancePayload(mode_set)
@@ -1638,7 +1376,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         if self.ctx.verbose > 0:
             kind = mode_set if mode_set else ("aniso U" if anisotropic else "iso B")
-            was = len(self.pdb) * (6 if anisotropic else 1)
+            was = self.n_atoms * (6 if anisotropic else 1)
             print(
                 f"ADP field ({kind}): {field.n_nodes} nodes, k={k_neighbors}, "
                 f"{int(field.get_refinable_count())} refinable nodes, "
@@ -1652,7 +1390,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """Convert ADP storage to match a target anisotropic-atom mask.
 
         The body of :meth:`set_adp_mode`: rebuilds both wrappers and refreshes
-        ``aniso_flag``, the SF index cache, the masks, ``anisou_flag`` and caches.
+        ``aniso_flag`` (which the writers' ``anisou_flag`` column comes from), the SF
+        index cache, the masks and caches.
         """
         import math
 
@@ -1695,11 +1434,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.adp.update_refinable_mask(self.adp_mask)
         self.u.update_refinable_mask(self.u_mask)
 
-        # The PDB/mmCIF writers gate ANISOU on this column; update_pdb() does not
-        # touch it, so keep it in sync with the chosen parametrization.
-        if self.pdb is not None:
-            self.pdb["anisou_flag"] = aniso_mask.detach().cpu().numpy()
-
         # Anisotropy change invalidates structure-factor + wrapper forward caches.
         if hasattr(self, "reset_cache"):
             self.reset_cache()
@@ -1717,7 +1451,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Parameters
         ----------
         selection_string : str
-            Phenix-style selection string (see parse_phenix_selection docs).
+            Phenix-style selection; grammar in :mod:`torchref.utils.selection`.
         target : str
             Parameter to update: 'xyz', 'adp', 'u', or 'occupancy'.
         mode : str, optional
@@ -1739,8 +1473,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             model.update_mask_from_selection("chain A", "xyz", freeze=True)
             model.apply_mask_to_parameter("xyz")
         """
-        from torchref.utils.utils import create_selection_mask
-
         mask_map = {
             "xyz": "xyz_mask",
             "adp": "adp_mask",
@@ -1756,12 +1488,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         mask_name = mask_map[target]
         current_mask = getattr(self, mask_name)
 
-        selection_mask = create_selection_mask(
-            selection_string,
-            self.pdb,
-            current_mask=current_mask if mode != "set" else None,
-            mode=mode,
-        )
+        selected = self.get_selection_mask(selection_string).to(current_mask.device)
+        if mode == "set":
+            selection_mask = selected
+        elif mode == "add":
+            selection_mask = current_mask | selected
+        elif mode == "remove":
+            selection_mask = current_mask & ~selected
+        else:
+            raise ValueError(f"mode must be 'set', 'add' or 'remove', got {mode!r}")
 
         # Masks name the REFINABLE atoms, so freezing clears the selection.
         if freeze:
@@ -1779,7 +1514,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 f"Selection '{selection_string}' ({n_selected} atoms) {action} for {target}"
             )
             print(
-                f"  Total refinable atoms for {target}: {n_refinable}/{len(self.pdb)}"
+                f"  Total refinable atoms for {target}: {n_refinable}/{self.n_atoms}"
             )
 
     def apply_mask_to_parameter(self, target: str):
@@ -2002,39 +1737,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 )
         print("=" * 80)
 
-    def register_alternative_conformations(self):
-        """
-        Rebuild ``self.ctx.altloc_pairs`` from the ``altloc`` column.
-
-        One tuple per residue that has multiple conformations, holding one
-        index tensor per conformation (in sorted altloc order), e.g.
-        ``[(tensor([100, 101]), tensor([110, 111])), ...]``. Overwrites any
-        previous content, so call it after the atom numbering changes.
-        """
-        self.ctx.altloc_pairs = []
-
-        pdb_with_altlocs = self.pdb[self.pdb["altloc"] != ""]
-
-        if len(pdb_with_altlocs) == 0:
-            return
-
-        grouped = pdb_with_altlocs.groupby(["resname", "resseq", "chainid"])
-
-        for (resname, resseq, chainid), group in grouped:
-            unique_altlocs = sorted(group["altloc"].unique())
-
-            # A lone altloc label is not an alternative conformation.
-            if len(unique_altlocs) > 1:
-                conformation_tensors = []
-                for altloc in unique_altlocs:
-                    altloc_atoms = group[group["altloc"] == altloc]
-                    indices = torch.tensor(
-                        altloc_atoms["index"].tolist(), dtype=torch.long  # dtype-ok: altloc atom indices; indexing requires long
-                    )
-                    conformation_tensors.append(indices)
-
-                self.ctx.altloc_pairs.append(tuple(conformation_tensors))
-
     def shake_coords(self, stddev: float):
         """
         Perturb every atom's coordinates with Gaussian noise of width *stddev* (Å).
@@ -2070,166 +1772,93 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             new_adp, refinable_mask=self.adp.refinable_mask, name="adp"
         )
 
-
-    def _new_model_from_df(self, df, *, strip_H=None, add_hydrogens=False):
-        """Build a fresh model of the same class from a DataFrame.
-
-        ``add_hydrogens`` defaults to False: the caller has
-        already settled which atoms the table holds, and generating more would fight
-        that. :meth:`hydrogenate` passes an already-augmented table for the same reason.
-        """
-        import inspect
-
-        sh = self.ctx.strip_H if strip_H is None else strip_H
-        ctor_kw = dict(
-            dtype_float=self.dtype_float,
-            verbose=0,
-            device=self.device,
-            strip_H=sh,
-            add_hydrogens=add_hydrogens,
-            cif_path=self.ctx.cif_path,
-        )
-        sig = inspect.signature(self.__class__.__init__)
-        for pname, param in sig.parameters.items():
-            if pname in ("self",) or pname in ctor_kw:
-                continue
-            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-                continue
-            if pname == "gridsize":
-                # The constructor argument is the explicit override, not the
-                # derived grid a ``gridsize`` attribute would return.
-                if hasattr(self, "explicit_gridsize"):
-                    ctor_kw[pname] = self.explicit_gridsize
-                continue
-            if hasattr(self, pname):
-                ctor_kw[pname] = getattr(self, pname)
-
-        new_model = self.__class__(**ctor_kw)
-        sg_str = self.spacegroup.xhm if self.spacegroup else "P 1"
-        new_model.load(lambda: (df, self.pdb.attrs.get("cell"), sg_str))
-        return new_model
-
     def strip_altlocs(self) -> "Model":
         """Return a new model with alternate conformations removed.
 
-        For each residue that has multiple altlocs, the conformer with
-        highest average occupancy is kept (ties broken alphabetically).
-        The ``altloc`` column is cleared to ``""`` in the returned model.
-        The original model is not modified.
+        Conformers are compared within one topology residue, ``(chain, resseq,
+        icode)``, so residues 100 and 100A never compete, and alternates carrying
+        different residue names (microheterogeneity) are treated as the alternates they
+        are. In each residue with more than one altloc the conformer with the highest
+        mean current occupancy is kept (ties to the first in sorted order), together
+        with the residue's blank-altloc atoms. The returned model has no altlocs; the
+        original is not modified.
         """
-        import pandas as pd
+        from torchref.topology import Topology
 
-        pdb = self.pdb.copy()
-        has_altloc = pdb["altloc"].astype(str).str.strip() != ""
-        if not has_altloc.any():
-            return self._new_model_from_df(pdb)
+        topology = self.ctx.topology
+        occupancy = self.occupancy().detach().cpu().numpy()
+        keep = np.ones(self.n_atoms, dtype=bool)
+        resnames = topology.columns()["resname"]
+        for residue, labels, conformers in self.ctx.altloc_residues():
+            means = [occupancy[conformers[label]].mean() for label in labels]
+            best = labels[int(np.argmax(means))]
+            # Shared atoms belong to the retained chemical conformer in a model
+            # with no altlocs, even when their deposited name was the other type.
+            rows = list(topology.residues.atom_rows(residue))
+            resnames[rows] = resnames[conformers[best][0]]
+            for label in labels:
+                if label != best:
+                    keep[conformers[label]] = False
 
-        drop_idx = []
-        res_cols = ["chainid", "resseq", "icode", "resname"]
-        altloc_rows = pdb.loc[has_altloc]
-        for _, grp in altloc_rows.groupby(res_cols):
-            altlocs = sorted(grp["altloc"].unique())
-            if len(altlocs) <= 1:
-                continue
-            # Pick conformer with highest mean occupancy
-            best, best_occ = altlocs[0], -1.0
-            for al in altlocs:
-                occ = grp.loc[grp["altloc"] == al, "occupancy"].mean()
-                if occ > best_occ:
-                    best, best_occ = al, occ
-            # Drop rows belonging to non-best conformers
-            for al in altlocs:
-                if al != best:
-                    drop_idx.extend(grp.index[grp["altloc"] == al].tolist())
-
-        filtered = pdb.drop(index=drop_idx).reset_index(drop=True)
-        filtered["altloc"] = ""
-        filtered["serial"] = range(1, len(filtered) + 1)
-        filtered["index"] = range(len(filtered))
-
-        # Preserve DataFrame attrs
-        filtered.attrs = pdb.attrs.copy()
-
-        return self._new_model_from_df(filtered)
+        rows = np.nonzero(keep)[0]
+        columns = {key: value[rows] for key, value in topology.columns().items()}
+        columns["altloc"] = np.full(len(rows), " ")
+        columns["resname"] = resnames[rows]
+        return self._derive_from(
+            Topology.from_columns(columns),
+            self._current_values().gather(rows),
+            hydrogens=self._kept_hydrogens(),
+        )
 
     def strip_hydrogens(self) -> "Model":
         """Return a new model with hydrogen atoms removed.
 
-        The returned model has consistent DataFrame and tensors (xyz, adp,
-        occupancy) with H atoms excluded.  The original model is not
-        modified.
+        Built from the current parameter values with ``hydrogens="strip"`` and
+        ``hydrogen_mode="atoms"``. The original model is not modified.
 
         Returns
         -------
         Model
             New model without hydrogen atoms.
         """
-        self.update_pdb()
-        pdb = self.pdb.copy()
-        h_mask = pdb["element"].str.strip() == "H"
-        if not h_mask.any():
-            return self._new_model_from_df(pdb, strip_H=True)
+        return self._derive_from(
+            self.ctx.topology,
+            self._current_values(),
+            hydrogens="strip",
+            hydrogen_mode="atoms",
+        )
 
-        filtered = pdb[~h_mask].reset_index(drop=True)
-        filtered["index"] = range(len(filtered))
-        filtered.attrs = pdb.attrs.copy()
-        return self._new_model_from_df(filtered, strip_H=True)
+    def hydrogenate(self, verbose: int = 0) -> "Model":
+        """Return a new model with missing hydrogens added from the monomer templates.
 
-    def hydrogenate(self, verbose: int = 0, optimize: bool = True) -> "Model":
-        """Return a new model with hydrogens added from the monomer templates.
-
-        Hydrogen generation is template instantiation over the topology: each residue's
+        Built from the current parameter values with ``hydrogens="add"``: each residue's
         library template is aligned onto the heavy atoms present and its hydrogens read
-        off, and the bond graph decides how many hydrogens a parent can carry and which
-        of them have a free torsion. Missing HOH hydrogens use the water dictionary
-        geometry with a random initial orientation, controlled by ``torch.manual_seed``.
-        Existing hydrogen coordinates are retained. The original model is not modified.
+        off, and every free torsion (hydroxyl, thiol, amine, methyl) is scanned for the
+        least-clashing angle. Missing HOH hydrogens get the dictionary geometry with a
+        random orientation drawn from ``torch.manual_seed``. Existing hydrogens are
+        retained. The original model is not modified.
 
         Parameters
         ----------
         verbose : int, default 0
             Verbosity level.
-        optimize : bool, default True
-            Scan each free torsion -- hydroxyl, thiol, amine, methyl -- for the
-            least-clashing angle. The template's dihedral for those is arbitrary, so this
-            is on by default; it is a rotation about one bond and costs little.
 
         Returns
         -------
         Model
-            New model with hydrogens, built with ``strip_H=False`` so they survive the
-            load.
         """
-        from torchref.topology.hydrogens import (
-            augment_atom_table,
-            optimise_free_torsions,
-            plan_hydrogens,
+        return self._derive_from(
+            self.ctx.topology, self._current_values(), hydrogens="add", verbose=verbose
         )
-
-        self.update_pdb()
-        restraints = self.restraints  # builds the topology this reads
-        xyz = self.xyz().detach()
-
-        plan = plan_hydrogens(
-            restraints.topology, restraints.cif_dict, xyz, verbose=verbose
-        )
-        if optimize:
-            optimise_free_torsions(plan, restraints.topology, xyz)
-
-        if verbose > 0:
-            print(f"Adding {plan.n_hydrogens} hydrogens")
-        augmented = augment_atom_table(self.pdb, plan, restraints.topology)
-        return self._new_model_from_df(augmented, strip_H=False)
-
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         """
         Return a dictionary containing the complete state of the Model.
 
-        Registered buffers, the four parameter wrappers, the PDB DataFrame and the
-        metadata (space group as a string, cell as a CPU tensor, dtype, device,
-        ``strip_H``, altloc pairs). Restore with :meth:`create_from_state_dict`,
-        which is what knows how to rebuild the wrappers.
+        Registered buffers, the four parameter wrappers, the context's entries
+        (:meth:`ModelContext.state`), the atom table (:meth:`to_dataframe`), dtype and
+        device. Restore with
+        :meth:`create_from_state_dict`, which is what knows how to rebuild the wrappers.
 
         Parameters
         ----------
@@ -2249,18 +1878,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             destination=destination, prefix=prefix, keep_vars=keep_vars
         )
 
-        state[prefix + "pdb"] = self.pdb.copy() if self.pdb is not None else None
-        state[prefix + "cell"] = self.cell.data.cpu() if self.cell is not None else None
-        # As a string: gemmi.SpaceGroup is not picklable.
-        state[prefix + "spacegroup"] = self.spacegroup.xhm if self.spacegroup else None
-        state[prefix + "initialized"] = self.ctx.initialized
+        for key, value in self.ctx.state().items():
+            state[prefix + key] = value
+        # The atom table is the checkpoint format for identity and starting values;
+        # restoring is construction, so it is split again there.
+        state[prefix + "pdb"] = (
+            self.to_dataframe() if self.ctx.topology is not None else None
+        )
         state[prefix + "dtype_float"] = self.dtype_float
         state[prefix + "device"] = self.device
-        state[prefix + "strip_H"] = self.ctx.strip_H
-        state[prefix + "cif_path"] = self.ctx.cif_path
-        state[prefix + "altloc_pairs"] = self.ctx.altloc_pairs
-        state[prefix + "hydrogens_in_xray"] = self.ctx.hydrogens_in_xray
-        state[prefix + "hydrogen_mode"] = self.ctx.hydrogen_mode
 
         return state
 
@@ -2297,17 +1923,19 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         loaded = type(self).create_from_state_dict(
             state_dict, device=target_device, verbose=self.ctx.verbose
         )
-        # Adopt the fully-built model's state wholesale.
+        # Replace rather than merge: an empty model's ``None`` wrapper placeholders are
+        # plain attributes, and left in place they would shadow the restored modules.
+        self.__dict__.clear()
         self.__dict__.update(loaded.__dict__)
         if self.ctx.verbose > 0:
             print(f"Loaded model state from {path}")
 
     @staticmethod
-    def _restore_adp_slot(prefix, state_dict, pdb, saved_dtype, xyz_wrapper):
-        """Rebuild the ``adp`` or ``u`` wrapper, as a node field when the state was one.
+    def _restore_adp_slot(prefix, state_dict, values, saved_dtype, xyz_wrapper, device):
+        """Build the ``adp`` or ``u`` wrapper, as a node field when the state was one.
 
-        Built from the PDB for its shapes and masks only; ``load_state_dict`` overwrites
-        every value afterwards.
+        With an empty ``state_dict`` this is the per-atom wrapper a fresh load uses.
+        Otherwise the values are placeholders that ``load_state_dict`` overwrites.
 
         A saved :class:`~torchref.model.disorder_field.DisorderFieldTensor` is recognised
         by its ``neighbor_list``, not by the shape of its storage: the ``u`` slot holds a
@@ -2320,13 +1948,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Which slot to rebuild. ``"u"`` carries the anisotropic representation.
         state_dict : dict
             The state being restored, read but not consumed.
-        pdb : pandas.DataFrame
-            Atom table supplying the initial values.
+        values : AtomValues
+            Supplies the initial values.
         saved_dtype : torch.dtype
             Float dtype the state was saved in.
         xyz_wrapper : MixedTensor
-            The already-rebuilt coordinate wrapper; a node field derives its node
+            The already-built coordinate wrapper; a node field derives its node
             positions from it.
+        device : torch.device
         """
         from torchref.model.parameter_wrappers import (
             CholeskyMixedTensor,
@@ -2337,12 +1966,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         name = "aniso_U" if aniso else "adp"
         mask = state_dict.get(f"{prefix}.refinable_mask")
         if aniso:
-            initial = torch.tensor(
-                pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
-                dtype=saved_dtype,
-            )
+            initial = torch.tensor(values.u, dtype=saved_dtype)
         else:
-            initial = torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype)
+            initial = torch.tensor(values.b, dtype=saved_dtype)
 
         saved_nl = state_dict.get(f"{prefix}.neighbor_list")
         if saved_nl is None:
@@ -2350,7 +1976,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             # model refines it in the same positive-definite-by-construction
             # parametrization as a freshly-loaded one.
             wrapper = CholeskyMixedTensor if aniso else PositiveMixedTensor
-            return wrapper(initial, refinable_mask=mask, name=name)
+            return wrapper(initial, refinable_mask=mask, name=name, device=device)
 
         from torchref.model.disorder_field import (
             AnisotropicPayload,
@@ -2391,99 +2017,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             mask_in_node_space=True,
             name=name,
             dtype=saved_dtype,
-        )
-
-    @classmethod
-    def _rebuild_wrappers_from_pdb(cls, instance, pdb, state_dict, saved_dtype, device):
-        """Give ``instance`` parameter wrappers and per-atom buffers of the right shape.
-
-        The half of :meth:`create_from_state_dict` that every subclass needs
-        identically, so subclasses call this rather than restating it: a per-class copy
-        drifts, and a restore that rebuilds the wrong wrapper type fails on a shape
-        mismatch rather than on anything that names the real cause.
-
-        Values are placeholders throughout --- the caller's ``load_state_dict`` is what
-        puts the saved numbers in. Only shapes, masks and dtypes matter here.
-        """
-        from torchref.model.parameter_wrappers import MixedTensor, OccupancyTensor
-
-        n_atoms = len(pdb)
-
-        xyz_values = torch.tensor(pdb[["x", "y", "z"]].values, dtype=saved_dtype)
-        if state_dict.get("xyz.h_row") is not None:
-            # A saved riding wrapper is recognised by its frame buffers, never by
-            # shape: its storage is (n_base, 3), a plain wrapper's (n_atoms, 3), and
-            # both are 2-D. The frames restore from the buffers, so no topology is
-            # needed here.
-            from torchref.model.riding_xyz import RidingXYZTensor
-            from torchref.topology.hydrogens import HydrogenFrames
-
-            frames = HydrogenFrames.from_tensors(
-                state_dict["xyz.h_row"],
-                state_dict["xyz.parent_row"],
-                state_dict["xyz.n1_row"],
-                state_dict["xyz.n2_row"],
-                state_dict["xyz.frame_valid"],
-                state_dict.get("xyz.torsion_group"),
-                state_dict.get("xyz.rotation_group"),
-            )
-            instance.xyz = RidingXYZTensor(
-                xyz_values,
-                frames,
-                refinable_mask=state_dict.get("xyz.refinable_mask"),
-                mask_in_base_space=True,
-                name="xyz",
-            )
-        else:
-            instance.xyz = MixedTensor(
-                xyz_values,
-                refinable_mask=state_dict.get("xyz.refinable_mask"),
-                name="xyz",
-            )
-        instance.adp = cls._restore_adp_slot(
-            "adp", state_dict, pdb, saved_dtype, instance.xyz
-        )
-        instance.u = cls._restore_adp_slot(
-            "u", state_dict, pdb, saved_dtype, instance.xyz
-        )
-
-        initial_occ = torch.tensor(pdb["occupancy"].values, dtype=saved_dtype)
-        sharing_groups, altloc_groups, refinable_mask = (
-            instance._create_occupancy_groups(pdb, initial_occ)
-        )
-        # A saved mask is in group space; expand it back over atoms.
-        saved_occ_mask = state_dict.get("occupancy.refinable_mask")
-        if saved_occ_mask is not None:
-            if saved_occ_mask.device != sharing_groups.device:
-                saved_occ_mask = saved_occ_mask.to(sharing_groups.device)
-            refinable_mask = saved_occ_mask[sharing_groups]
-
-        instance.occupancy = OccupancyTensor(
-            initial_values=initial_occ,
-            sharing_groups=sharing_groups,
-            altloc_groups=altloc_groups,
-            refinable_mask=refinable_mask,
-            dtype=saved_dtype,
             device=device,
-            name="occupancy",
         )
-
-        if "aniso_flag" not in instance._buffers or instance.aniso_flag is None:
-            instance.register_buffer(
-                "aniso_flag",
-                torch.tensor(pdb["anisou_flag"].values, dtype=torch.bool),
-            )
-        for mask_name in ("xyz_mask", "adp_mask", "u_mask", "occupancy_mask"):
-            instance.register_buffer(
-                mask_name, torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-
-        # Note: inv_fractional_matrix, fractional_matrix and recB are properties
-        # delegating to Cell, so they are not registered as buffers.
-        if state_dict.get("vdw_radii") is not None:
-            instance.register_buffer(
-                "vdw_radii", torch.zeros_like(state_dict["vdw_radii"], device=device)
-            )
 
     @classmethod
     def create_from_state_dict(
@@ -2494,24 +2029,22 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         dtype_float: torch.dtype = None,
     ) -> "Model":
         """
-        Create a fully initialized Model from a state dictionary.
-
-        This is the recommended way to restore a Model from a saved state.
-        Creates an instance with properly initialized submodules, then loads the state.
+        Create a fully initialized model of this class from a state dictionary.
 
         Parameters
         ----------
         state_dict : dict
-            State dictionary from torch.save(model.state_dict(), ...).
+            State dictionary from ``torch.save(model.state_dict(), ...)``.
         device : torch.device, optional
             Move the restored model here once it is built. The restore itself always
             runs on CPU; ``None`` then moves it to the configured default device
             (``get_default_device()``), so a round-trip lands beside a same-config
-            model rather than stranding itself on CPU. Pass a device to override.
+            model rather than stranding itself on CPU.
         verbose : int, optional
             Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional
-            Float dtype for tensors. Defaults to the configured dtypes.float.
+            Float dtype for tensors when the state does not record one. Defaults to
+            the configured dtypes.float.
 
         Returns
         -------
@@ -2520,89 +2053,65 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Notes
         -----
-        Consumes ``state_dict``: the metadata keys are popped off it. The
-        anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, matching
-        :meth:`load`, so the positive-definite parametrization round-trips.
+        Consumes ``state_dict``: the metadata keys are popped off it. Checkpoints
+        written before the hydrogen policy existed are mapped onto it; see
+        :meth:`ModelContext.from_state`.
         """
-        # Build on CPU throughout, then move once at the end -- to the caller's device
-        # if they named one, otherwise to the configured default device, so a restore
-        # lands beside a same-config model instead of stranding itself on CPU. One
-        # device for the whole model is the invariant that matters: the wrappers are
-        # built from the atom table and land on CPU whatever is asked for, so resolving
-        # an accelerator up front splits the model rather than placing it.
+        # Build on CPU throughout, then move once: the wrappers are built from the atom
+        # table and land on CPU whatever is asked for, so resolving an accelerator up
+        # front would split the model rather than place it.
         target_device = (
             canonical_device(device) if device is not None else get_default_device()
         )
-        device = torch.device("cpu")
+        cpu = torch.device("cpu")
         if dtype_float is None:
             dtype_float = get_float_dtype()
-        pdb = state_dict.pop("pdb", None)
-        cell_tensor = state_dict.pop("cell", None)
-        spacegroup = state_dict.pop("spacegroup", None)
-        initialized = state_dict.pop("initialized", False)
         saved_dtype = state_dict.pop("dtype_float", dtype_float)
-        state_dict.pop("device", None)  # popped so it never reaches load_state_dict
-        strip_H = state_dict.pop("strip_H", True)
-        cif_path = state_dict.pop("cif_path", None)
-        altloc_pairs = state_dict.pop("altloc_pairs", [])
-        hydrogens_in_xray = state_dict.pop("hydrogens_in_xray", True)
-        hydrogen_mode = state_dict.pop("hydrogen_mode", None)
+        state_dict.pop("device", None)
 
         instance = cls(
             dtype_float=saved_dtype,
             verbose=verbose,
-            device=device,
-            strip_H=strip_H,
-            cif_path=cif_path,
-            hydrogens_in_xray=hydrogens_in_xray,
+            device=cpu,
+            **cls._pop_subclass_state(state_dict),
         )
-        if hydrogen_mode is None:
-            # Older checkpoints: riding wrappers did not exist, so any hydrogens
-            # present were free parameters.
-            hydrogen_mode = "riding" if state_dict.get("xyz.h_row") is not None else "free"
-        instance.ctx.hydrogen_mode = hydrogen_mode
+        instance.ctx, values = ModelContext.from_state(
+            state_dict, dtype=saved_dtype, device=cpu, verbose=verbose
+        )
+        if values is not None:
+            instance._install_parameters(values, state=state_dict)
+        instance.load_state_dict(instance._restorable_entries(state_dict), strict=False)
+        instance.to(target_device)
+        if hasattr(instance, "reset_cache"):
+            instance.reset_cache()
 
-        instance.pdb = pdb
-        instance.ctx.initialized = initialized
-        instance.ctx.altloc_pairs = altloc_pairs
+        if verbose > 0:
+            print(f"Created {cls.__name__} from state_dict: {instance.n_atoms} atoms")
+        return instance
 
-        # Setter also sets symmetry.
-        instance.spacegroup = spacegroup
+    @classmethod
+    def _pop_subclass_state(cls, state_dict: dict) -> dict:
+        """Pop a subclass's own metadata keys and return them as constructor kwargs."""
+        return {}
 
-        if cell_tensor is not None:
-            instance.cell = Cell(cell_tensor, dtype=saved_dtype, device=device)
+    def _restorable_entries(self, state_dict: dict) -> dict:
+        """The entries of ``state_dict`` that ``load_state_dict`` should see.
 
-        # The wrappers are built from the PDB purely to get the right shapes and
-        # masks; load_state_dict below overwrites their values.
-        if pdb is not None:
-            cls._rebuild_wrappers_from_pdb(instance, pdb, state_dict, saved_dtype, device)
-
-        # Drop only empty-in-dim-0 tensors (placeholders from an atom-less state);
-        # scalars and non-tensor entries must survive for load_state_dict.
-        state_dict = {
+        Drops tensors empty along dim 0 (placeholders from an atom-less state); scalars
+        and non-tensor entries survive.
+        """
+        return {
             k: v
             for k, v in state_dict.items()
             if not (torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] == 0)
         }
-        instance.load_state_dict(state_dict, strict=False)
-
-        # Always placed: target_device is the caller's device or the configured default,
-        # never None. Without this the restore used to stay on CPU and split a
-        # round-trip's restored model from its (default-device) source.
-        instance.to(target_device)
-
-        if verbose > 0:
-            n_atoms = len(instance.pdb) if instance.pdb is not None else 0
-            print(f"Created Model from state_dict: {n_atoms} atoms")
-
-        return instance
 
     def get_selection_mask(self, selection: str) -> torch.Tensor:
         """
         Return a boolean mask for atoms matching a Phenix-style selection.
 
-        Wraps :func:`~torchref.utils.utils.parse_phenix_selection`; the result can
-        be handed straight to ``MixedTensor.set()``.
+        Evaluated on the topology (:meth:`Topology.select`); the result can be handed
+        straight to ``MixedTensor.set()``.
 
         Parameters
         ----------
@@ -2630,21 +2139,16 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             mask = model.get_selection_mask("chain A and (resname ALA or resname GLY)")
             model.xyz.set(model.xyz()[mask] + translation, mask)
         """
-        from torchref.utils.utils import parse_phenix_selection
-
         if not self.ctx.initialized:
             raise RuntimeError(
                 "Cannot get selection mask from an uninitialized Model. Load data first."
             )
 
-        return parse_phenix_selection(selection, self.pdb)
+        return self.ctx.topology.select(selection)
 
     def select(self, selection: str) -> "Model":
         """
-        Return a new Model containing only atoms matching the Phenix-style selection.
-
-        An independent model with every per-atom tensor, buffer and metadata field
-        subsetted, built as ``type(self)`` so subclasses return their own class.
+        Return a new model of the same class holding only the atoms a selection matches.
 
         Parameters
         ----------
@@ -2654,7 +2158,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Returns
         -------
         Model
-            New instance of the same class holding only the selected atoms.
+            Built from the current parameter values, with default refinable masks. A
+            riding wrapper keeps its frames and orientations, and a hydrogen whose
+            parent is cut becomes an ordinary row. Restraints rebuild on first access.
 
         Raises
         ------
@@ -2662,126 +2168,32 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             If the model has not been initialized.
         ValueError
             If selection syntax is invalid or no atoms are selected.
-
-        Notes
-        -----
-        The subclass constructor is called with the base kwargs only, so
-        subclass-specific settings fall back to their defaults (see
-        :meth:`ModelFT.select`). ``u`` is rebuilt as a plain
-        :class:`MixedTensor`, *not* a :class:`CholeskyMixedTensor`, so the
-        selected model loses the positive-definite parametrization of its
-        anisotropic ADPs.
-
-        Examples
-        --------
-        ::
-
-            chain_a = model.select("chain A")
-            no_water = model.select("not resname HOH")
         """
-        from torchref.utils.utils import parse_phenix_selection
-
         if not self.ctx.initialized:
             raise RuntimeError(
                 "Cannot select from an uninitialized Model. Load data first."
             )
 
-        selection_mask = parse_phenix_selection(selection, self.pdb)
-
-        n_selected = selection_mask.sum().item()
+        mask = self.get_selection_mask(selection)
+        n_selected = int(mask.sum())
         if n_selected == 0:
             raise ValueError(f"Selection '{selection}' matched no atoms.")
 
-        selected_indices = torch.where(selection_mask)[0]
-
-        # type(self), so a subclass returns its own type.
-        selected_model = type(self)(
-            dtype_float=self.dtype_float,
+        rows = np.nonzero(mask.cpu().numpy())[0]
+        riding_xyz = (
+            self.xyz.select_rows(mask) if hasattr(self.xyz, "select_rows") else None
+        )
+        selected = self._derive_from(
+            self.ctx.topology.gather(rows),
+            self._current_values().gather(rows),
+            xyz=riding_xyz,
+            hydrogens=self._kept_hydrogens(),
             verbose=self.ctx.verbose,
-            device=self.device,
-            strip_H=self.ctx.strip_H,
-            cif_path=self.ctx.cif_path,
-            hydrogens_in_xray=self.ctx.hydrogens_in_xray,
         )
-
-        # ``index`` must be renumbered: the occupancy grouping below reads it.
-        mask_np = selection_mask.cpu().numpy()
-        selected_model.pdb = self.pdb.loc[mask_np].copy()
-        selected_model.pdb = selected_model.pdb.reset_index(drop=True)
-        selected_model.pdb["index"] = selected_model.pdb.index.to_numpy(dtype=int)
-
-        # The setter rebuilds a SpaceGroup, so the selection gets its own.
-        selected_model.spacegroup = self.spacegroup
-
-        # The fractional / reciprocal matrices are properties over the Cell, so
-        # cloning the Cell carries all of them.
-        if self.cell is not None:
-            selected_model.cell = self.cell.clone()
-
-        if hasattr(self, "aniso_flag") and self.aniso_flag is not None:
-            selected_model.register_buffer(
-                "aniso_flag", self.aniso_flag[selection_mask].clone()
-            )
-
-        if hasattr(self.xyz, "select_rows"):
-            # Riding wrapper: frames are remapped, a hydrogen whose parent is cut
-            # becomes an ordinary row.
-            selected_model.xyz = self.xyz.select_rows(selection_mask)
-        else:
-            selected_model.xyz = MixedTensor(
-                self.xyz()[selection_mask].clone().detach(),
-                refinable_mask=(
-                    self.xyz.refinable_mask[selection_mask]
-                    if self.xyz.refinable_mask is not None
-                    else None
-                ),
-                name="xyz",
-            )
-
-        selected_model.adp = PositiveMixedTensor(
-            self.adp()[selection_mask].clone().detach(),
-            refinable_mask=(
-                self.adp.refinable_mask[selection_mask]
-                if self.adp.refinable_mask is not None
-                else None
-            ),
-            name="adp",
-        )
-
-        selected_model.u = MixedTensor(
-            self.u()[selection_mask].clone().detach(),
-            refinable_mask=(
-                self.u.refinable_mask[selection_mask]
-                if self.u.refinable_mask is not None
-                else None
-            ),
-            name="aniso_U",
-        )
-
-        # Occupancy sharing/altloc groups must be rebuilt for the new numbering.
-        initial_occ = self.occupancy()[selection_mask].clone().detach()
-        sharing_groups, altloc_groups, refinable_mask = (
-            selected_model._create_occupancy_groups(selected_model.pdb, initial_occ)
-        )
-        selected_model.occupancy = OccupancyTensor(
-            initial_values=initial_occ,
-            sharing_groups=sharing_groups,
-            altloc_groups=altloc_groups,
-            refinable_mask=refinable_mask,
-            dtype=self.dtype_float,
-            device=self.device,
-            name="occupancy",
-        )
-
-        selected_model.set_default_masks()
-        selected_model.register_alternative_conformations()
-        selected_model.ctx.initialized = True
-        selected_model.ctx.hydrogen_mode = self.ctx.hydrogen_mode
 
         if self.ctx.verbose > 0:
-            print(f"Selected {n_selected}/{len(self.pdb)} atoms with '{selection}'")
-
-        return selected_model
+            print(f"Selected {n_selected}/{self.n_atoms} atoms with '{selection}'")
+        return selected
 
     def xyz_fractional(self) -> torch.Tensor:
         """
@@ -2916,7 +2328,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     @property
     def hydrogen_mode(self) -> str:
-        """``"riding"``, ``"free"`` or ``"none"``; see :class:`ModelContext`."""
+        """``"atoms"`` or ``"riding"``; see :class:`ModelContext`."""
         return self.ctx.hydrogen_mode
 
     def hydrogen_frames(self):
@@ -2931,9 +2343,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         if hasattr(self.xyz, "hydrogen_frames"):
             return self.xyz.hydrogen_frames()
-        frames = getattr(self, "_hydrogen_frames", None)
-        if frames is not None and frames.n_hydrogens >= 0:
-            return frames
         from torchref.topology.hydrogens import hydrogen_frames
 
         return hydrogen_frames(self.restraints.topology)
@@ -2941,190 +2350,68 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def _repoint_coordinate_accessors(self) -> None:
         """Make every borrowed coordinate accessor read the current ``xyz`` wrapper.
 
-        The restraints keep ``xyz_fn`` for pair-list maintenance and the ADP node
-        field borrows the coordinates through ``set_xyz_fn``; after the wrapper slot
-        is replaced both would otherwise keep reading a dead module.
+        The ADP node field borrows the coordinates through ``set_xyz_fn``; after the
+        wrapper slot is replaced it would otherwise keep reading a dead module.
         """
-        restraints = self._restraints
-        if restraints is not None:
-            restraints._xyz_fn = self.xyz
-            restraints._adp_fn = self.adp
-            restraints._vdw_radii_fn = self.get_vdw_radii
         for module in self._modules.values():
             if module is not None and hasattr(module, "set_xyz_fn"):
                 module.set_xyz_fn(self.xyz)
 
-    def _complete_riding_waters(self, frames):
-        """Complete HOH residues once and remap frames and refinement selections."""
-        from dataclasses import fields
-
-        import numpy as np
-
-        from torchref.topology.hydrogens import (
-            HydrogenFrames,
-            augment_atom_table_with_maps,
-            hydrogen_frames,
-            plan_hydrogens,
-        )
-
-        if not self.ctx.add_hydrogens or self.ctx.strip_H:
-            return frames
-        if not self.pdb["resname"].str.strip().eq("HOH").any():
-            return frames
-        restraints = self.restraints
-        dictionaries = {
-            key: value for key, value in restraints.cif_dict.items() if key == "HOH"
-        }
-        plan = plan_hydrogens(restraints.topology, dictionaries, self.xyz().detach())
-        if plan.n_hydrogens == 0:
-            return frames
-
-        generated = hydrogen_frames(restraints.topology, plan)
-        if frames is not None:
-            # Water groups include both existing and planned H atoms; keep custom
-            # frames for the rest of the table and give the water groups fresh IDs.
-            water = self.pdb["resname"].str.strip().eq("HOH").to_numpy()
-            keep = ~water[frames.parent_row]
-            take = water[generated.parent_row]
-            arrays = {}
-            for field in fields(HydrogenFrames):
-                existing = getattr(frames, field.name)[keep]
-                added = getattr(generated, field.name)[take].copy()
-                if field.name in ("torsion_group", "rotation_group"):
-                    added[added >= 0] += int(existing.max(initial=-1)) + 1
-                arrays[field.name] = np.concatenate((existing, added))
-            generated = HydrogenFrames(**arrays)
-
-        self.update_pdb()
-        augmented, old_rows, new_rows = augment_atom_table_with_maps(
-            self.pdb, plan, restraints.topology
-        )
-        frames = generated.remap(old_rows).fill_planned_rows(new_rows)
-        source = torch.empty(len(augmented), dtype=torch.long, device=self.device)
-        old_index = torch.as_tensor(old_rows, device=self.device)
-        new_index = torch.as_tensor(new_rows, device=self.device)
-        source[old_index] = torch.arange(len(self.pdb), device=self.device)
-        source[new_index] = torch.as_tensor(plan.parent, device=self.device)
-        xyz = (
-            self.xyz.to_mixed_tensor()
-            if hasattr(self.xyz, "to_mixed_tensor")
-            else self.xyz
-        )
-        masks = {
-            "xyz": xyz.refinable_mask[source],
-            "occupancy": self.occupancy.get_refinable_atoms()[source],
-        }
-        from torchref.model.disorder_field import DisorderFieldTensor
-
-        adp_fields = {}
-        for name in ("adp", "u"):
-            wrapper = getattr(self, name)
-            if isinstance(wrapper, DisorderFieldTensor):
-                adp_fields[name] = wrapper
-            else:
-                masks[name] = wrapper.refinable_mask[source]
-        if "u" in masks:
-            masks["u"][new_index] = False
-        gradients = {
-            name: getattr(self, name).refinable_params.requires_grad for name in masks
-        }
-        adp = self.adp().detach()
-        cell, spacegroup, links = self.cell, self.spacegroup, self.ctx.links
-
-        def reader():
-            return augmented, cell.data.cpu().numpy(), spacegroup
-
-        reader.links = links
-        strip_h = self.ctx.strip_H
-        self.ctx.strip_H = False
-        self._restraints = None
-        try:
-            self.load(reader, add_hydrogens=False)
-        finally:
-            self.ctx.strip_H = strip_h
-        if "adp" in masks:
-            self.adp[old_index] = adp
-        for name, mask in masks.items():
-            wrapper = getattr(self, name)
-            wrapper.update_refinable_mask(mask)
-            wrapper.refinable_params.requires_grad_(gradients[name])
-        for name, field in adp_fields.items():
-            field.anchor_atom = old_index[field.anchor_atom]
-            field.neighbor_list = field.neighbor_list[source]
-            field._full_shape = len(augmented)
-            field.set_xyz_fn(self.xyz)
-            setattr(self, name, field)
-        self._hydrogen_frames = frames
-        return frames
-
     def set_hydrogen_mode(self, mode: str, frames=None) -> "Model":
-        """Switch the hydrogen parametrisation of the current atom table.
+        """Switch how the hydrogen rows of the current atom table are parametrised.
 
         Parameters
         ----------
-        mode : str
+        mode : {"atoms", "riding"}
             ``"riding"``: hydrogen coordinates derive from their parents each forward;
-            rotatable groups retain shared torsion or orientation parameters.
-            Missing HOH hydrogens are completed only when ``ctx.add_hydrogens``
-            is True and ``ctx.strip_H`` is False. With hydrogen generation disabled,
-            the atom table is unchanged.
-            ``"free"``: hydrogens are ordinary refinable atoms again.
-            ``"none"`` is a different atom table; use
-            :meth:`strip_hydrogens`.
+            rotatable groups keep shared torsion or orientation parameters.
+            ``"atoms"``: hydrogens are ordinary refinable atoms.
         frames : HydrogenFrames, optional
             Riding frames for the current table; default :meth:`hydrogen_frames`.
-            Water frames are completed and row indices remapped if atoms are added.
 
         Returns
         -------
         Model
             Self, for chaining.
 
+        Raises
+        ------
+        ValueError
+            For an unknown mode, or ``"riding"`` on a model loaded with
+            ``hydrogens="strip"``.
+
         Notes
         -----
-        Replaces the ``xyz`` wrapper, so any optimizer or ``LossState`` built over the
-        old parameters is stale; :meth:`Refinement.set_hydrogen_mode` does the
-        engine-side reset. The refinable set carries over row for row (a hydrogen
-        released to ``"free"`` follows its parent's mask). Existing atom coordinates
-        are preserved. Completing waters rebuilds the per-atom wrappers and
-        restraints; new hydrogens inherit their oxygen's refinement selections.
-        Water initialization follows ``torch.manual_seed`` and never runs in forward.
+        The atom table never changes here: hydrogens a table lacks are generated only
+        at load, with ``hydrogens="add"``. Replaces the ``xyz`` wrapper, so any
+        optimizer or ``LossState`` built over the old parameters is stale;
+        :meth:`Refinement.set_hydrogen_mode` does the engine-side reset. The refinable
+        set carries over row for row (a hydrogen released to ``"atoms"`` follows its
+        parent's mask).
         """
+        from torchref.model.context import check_hydrogen_policy
         from torchref.model.riding_xyz import RidingXYZTensor
 
         if not self.ctx.initialized:
             raise RuntimeError("Load a structure before setting the hydrogen mode.")
-        if mode == "none":
-            raise ValueError(
-                "hydrogen_mode 'none' changes the atom table; use strip_hydrogens()"
-            )
-        if mode not in ("riding", "free"):
-            raise ValueError(f"unknown hydrogen_mode {mode!r}")
+        check_hydrogen_policy(self.ctx.hydrogens, mode)
 
-        if mode == "riding":
-            frames = self._complete_riding_waters(frames)
-            if isinstance(self.xyz, RidingXYZTensor) and frames is None:
-                return self
+        riding = isinstance(self.xyz, RidingXYZTensor)
+        if mode == "atoms":
+            new_xyz = self.xyz.to_mixed_tensor() if riding else self.xyz
+        elif riding and frames is None:
+            new_xyz = self.xyz
+        else:
+            base = self.xyz.to_mixed_tensor() if riding else self.xyz
             if frames is None:
                 frames = self.hydrogen_frames()
-            if isinstance(self.xyz, RidingXYZTensor):
-                current = self.xyz.to_mixed_tensor()
-            else:
-                current = self.xyz
-            new_xyz = RidingXYZTensor.from_mixed_tensor(current, frames)
-        else:
-            if isinstance(self.xyz, RidingXYZTensor):
-                frames = self.xyz.hydrogen_frames()
-                new_xyz = self.xyz.to_mixed_tensor()
-            else:
-                new_xyz = self.xyz
+            new_xyz = RidingXYZTensor.from_mixed_tensor(base, frames)
 
         if new_xyz is not self.xyz:
             # Pop first so the new wrapper registers as a fresh submodule.
             self._modules.pop("xyz")
             self.xyz = new_xyz
             self._repoint_coordinate_accessors()
-        self._hydrogen_frames = frames
         self.ctx.hydrogen_mode = mode
         if hasattr(self, "reset_cache"):
             self.reset_cache()
@@ -3137,7 +2424,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Swap ``self.xyz`` for a per-chain :class:`RigidXYZTensor`.
 
         The only refinable leaves become per-chain Euler angles and translations,
-        with chains auto-detected from ``self.pdb["chainid"]`` (waters and
+        with chains auto-detected from the topology's chain ids (waters and
         single-atom non-polymer residues are held fixed). The original container is
         stashed for :meth:`restore_xyz_from_rigid`.
 
@@ -3162,12 +2449,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         with torch.no_grad():
             current_xyz = self.xyz().detach().clone()
-        chain_ids = list(self.pdb["chainid"].values)
+        topology = self.ctx.topology
+        residue_of = topology.atoms.residue_of.cpu().numpy()
+        chain_ids = list(topology.residues.chain[residue_of])
 
         # Phenix-style polymer filter: drop waters and single-atom non-peptide
         # residues (ions), keep multi-atom HET ligands so they ride along with
         # their parent chain.
-        _WATERS = {"HOH", "WAT", "DOD", "H2O"}
         _STD_POLYMER = {
             "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
             "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
@@ -3175,12 +2463,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             "A", "C", "G", "T", "U", "I",
             "DA", "DC", "DG", "DT", "DU", "DI",
         }
-        resname = self.pdb["resname"].astype(str).str.strip()
-        is_water = resname.isin(_WATERS).values
-        is_std = resname.isin(_STD_POLYMER).values
-        residue_atom_count = (
-            self.pdb.groupby(["chainid", "resseq", "icode"])["serial"].transform("count").values
-        )
+        is_water = topology.is_water
+        is_std = np.isin(topology.residues.resname[residue_of], list(_STD_POLYMER))
+        residue_sizes = topology.residues.atom_end - topology.residues.atom_start
+        residue_atom_count = residue_sizes[residue_of]
         is_single_atom = residue_atom_count == 1
         drop = is_water | (is_single_atom & ~is_std)
         mobile_arr = ~drop
@@ -3279,7 +2565,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             xyz_mask = getattr(self, "xyz_mask", None)
             if xyz_mask is not None and xyz_mask.shape[0] == new_xyz.shape[0]:
                 self.xyz.update_refinable_mask(xyz_mask)
-            self.pdb.loc[:, ["x", "y", "z"]] = current.cpu().numpy()
         else:
             original = getattr(self, "_rigid_original_xyz_container", None)
             if original is None:

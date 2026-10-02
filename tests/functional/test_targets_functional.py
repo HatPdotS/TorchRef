@@ -154,7 +154,7 @@ class TestGeometryTargetsFunctional:
         model.load_cif(str(sample_cif_file))
 
         # Use new model-based restraints API
-        model.set_restraints_cif(str(external_monomer_library))
+        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         # Calculate bond deviations manually
@@ -191,7 +191,7 @@ class TestGeometryTargetsFunctional:
         model.load_cif(str(sample_cif_file))
 
         # Use new model-based restraints API
-        model.set_restraints_cif(str(external_monomer_library))
+        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         # Calculate angle deviations
@@ -613,7 +613,7 @@ class TestLossComponentsFunctional:
         model.load_cif(str(sample_cif_file))
 
         # Use new model-based restraints API
-        model.set_restraints_cif(str(external_monomer_library))
+        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         if 'bond' in restraints.restraints and 'intra' in restraints.restraints['bond']:
@@ -644,7 +644,7 @@ class TestLossComponentsFunctional:
         model.load_cif(str(sample_cif_file))
 
         # Use new model-based restraints API
-        model.set_restraints_cif(str(external_monomer_library))
+        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         if 'angle' in restraints.restraints and 'intra' in restraints.restraints['angle']:
@@ -695,7 +695,7 @@ class TestCombinedLossFunctional:
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
         # Use new model-based restraints API
-        model.set_restraints_cif(str(external_monomer_library))
+        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         # X-ray loss

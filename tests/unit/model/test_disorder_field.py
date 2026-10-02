@@ -14,6 +14,7 @@ import math
 import pytest
 import torch
 
+from torchref.config import get_int_dtype
 from torchref.model.disorder_field import (
     DisorderFieldTensor,
     build_neighbor_list,
@@ -52,7 +53,7 @@ def test_anchor_selection_is_deterministic(coords):
     b = farthest_point_anchors(coords, 10)
     assert torch.equal(a, b)
     assert a.shape[0] == 10
-    assert a.dtype == torch.int64
+    assert a.dtype == get_int_dtype()
     # Anchors are atom indices, and distinct.
     assert int(a.max()) < coords.shape[0]
     assert torch.unique(a).shape[0] == a.shape[0]

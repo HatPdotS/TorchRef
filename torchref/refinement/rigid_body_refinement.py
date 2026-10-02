@@ -144,16 +144,16 @@ class RigidBodyRefinementStep:
         ref = self.refinement
         original_data = ref.reflection_data
 
-        native_dmin = float(original_data.get_max_res())
+        native_dmin = float(original_data.d_min)
         cutoffs = (
             self.cutoffs
             if self.cutoffs is not None
             else self.default_cutoffs(native_dmin)
         )
 
-        # ``cut_res`` masks in place and returns ``self``, so each cutoff below
-        # stamps ``masks["resolution"]`` on the caller's own object and rebinding
-        # restores nothing. Snapshot it (or its absence) to put back.
+        # ``filter_by_resolution`` masks in place and returns ``self``, so each
+        # cutoff below stamps ``masks["resolution"]`` on the caller's own object and
+        # rebinding restores nothing. Snapshot it (or its absence) to put back.
         had_resolution_mask = "resolution" in original_data.masks
         saved_resolution_mask = (
             original_data.masks["resolution"].clone() if had_resolution_mask else None
@@ -173,7 +173,7 @@ class RigidBodyRefinementStep:
             for d_min in cutoffs:
                 xray_mode = self._xray_mode_for_cutoff(d_min)
                 self._rebind_for_data(
-                    original_data.cut_res(highres=float(d_min)),
+                    original_data.filter_by_resolution(d_min=float(d_min)),
                     xray_mode=xray_mode,
                 )
                 step_state = self._run_one_cutoff(d_min)

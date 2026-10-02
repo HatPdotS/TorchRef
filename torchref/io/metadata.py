@@ -12,6 +12,7 @@ never assume a populated result.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field, fields
 from datetime import date
 from typing import Any, Dict, List, Optional
@@ -83,7 +84,9 @@ class RefinementMetadata:
     title, authors
         Structure title and author names.
     starting_model : str, optional
-        Input model this refinement started from (path or PDB ID).
+        Input model this refinement started from (file name or PDB ID). Only
+        the file name is ever written: a local path means nothing to a reader
+        of the output and exposes the refiner's filesystem.
     rfree_selection : str, optional
         Where the free-set flags came from. Filled from
         ``ReflectionData.rfree_source``, so the values are that field's:
@@ -247,10 +250,8 @@ class RefinementMetadata:
 
         # --- B-factor statistics from model ---
         try:
-            model = refinement.model
-            model.update_pdb()
-            pdb = model.pdb
-            bvals = pdb["tempfactor"]
+            # The written B column: B_eq for anisotropic atoms, as in the file.
+            bvals = refinement.model.to_dataframe()["tempfactor"]
             meta.b_mean_overall = float(bvals.mean())
             meta.b_min = float(bvals.min())
             meta.b_max = float(bvals.max())
@@ -260,17 +261,17 @@ class RefinementMetadata:
         # --- Geometry deviations (silently skip if no restraints) ---
         try:
             model = refinement.model
-            if model.ctx.initialized and model._restraints is not None:
+            if model.ctx.initialized and model.ctx.restraints is not None:
                 restraints = model.restraints
                 if hasattr(restraints, "bond_deviations"):
                     with torch.no_grad():
-                        bond_devs, _ = restraints.bond_deviations()
+                        bond_devs, _ = restraints.bond_deviations(model.xyz())
                         meta.rmsd_bond_lengths = float(
                             torch.sqrt((bond_devs**2).mean())
                         )
                 if hasattr(restraints, "angle_deviations"):
                     with torch.no_grad():
-                        angle_devs, _ = restraints.angle_deviations()
+                        angle_devs, _ = restraints.angle_deviations(model.xyz())
                         meta.rmsd_bond_angles = float(
                             torch.sqrt((angle_devs**2).mean())
                         )
@@ -279,12 +280,10 @@ class RefinementMetadata:
 
         # --- Atom counts ---
         try:
-            pdb = refinement.model.pdb
-            meta.n_atoms_total = len(pdb)
-            protein_mask = pdb["ATOM"] == "ATOM"
-            meta.n_atoms_protein = int(protein_mask.sum())
-            solvent_mask = pdb["ATOM"] == "HETATM"
-            meta.n_atoms_solvent = int(solvent_mask.sum())
+            is_hetatm = refinement.model.ctx.topology.atoms.is_hetatm
+            meta.n_atoms_total = len(is_hetatm)
+            meta.n_atoms_protein = int((~is_hetatm).sum())
+            meta.n_atoms_solvent = int(is_hetatm.sum())
         except Exception:
             pass
 
@@ -310,7 +309,7 @@ class RefinementMetadata:
         try:
             input_file = refinement.model.ctx.input_file
             if input_file:
-                meta.starting_model = str(input_file)
+                meta.starting_model = os.path.basename(str(input_file))
         except Exception:
             pass
 
@@ -636,7 +635,7 @@ class RefinementMetadata:
             lines.append("REMARK   3")
 
         if self.starting_model:
-            lines.append(f"REMARK   3  STARTING MODEL: {self.starting_model}")
+            _wrap_starting_model(lines, os.path.basename(self.starting_model))
             lines.append("REMARK   3")
 
         # The only free text in the block, and the caller wrote all of it.
@@ -743,7 +742,7 @@ class RefinementMetadata:
         if self.rfree_selection:
             ref["_refine.pdbx_R_Free_selection_details"] = self.rfree_selection
         if self.starting_model:
-            ref["_refine.pdbx_starting_model"] = self.starting_model
+            ref["_refine.pdbx_starting_model"] = os.path.basename(self.starting_model)
         if self.refinement_method:
             ref["_refine.pdbx_method_to_determine_struct"] = self.refinement_method
         if self.output_remarks:
@@ -803,7 +802,6 @@ def _initial_model_category(starting_model: str) -> Dict[str, str]:
     alphanumerics, e.g. ``3GR5.pdb``) is reported as an accession code; anything
     else is named in ``details`` and left unaccessioned rather than guessed at.
     """
-    import os
     import re
 
     basename = os.path.basename(starting_model)
@@ -861,6 +859,23 @@ def _ident(lines: List[str], label: str, value: str) -> None:
             current = current + " " + word if current else word
     if current or prefix is head:
         lines.append(prefix + current)
+
+
+def _wrap_starting_model(lines: List[str], name: str) -> None:
+    """Append ``REMARK   3  STARTING MODEL: name``, wrapped if long.
+
+    A file name has no spaces for a word wrap to break at, so a long one would
+    overrun column 80. Overflow continues on lines indented to the value column,
+    cut mid-string; nothing of the name is dropped.
+    """
+    head = "REMARK   3  STARTING MODEL: "
+    cont = "REMARK   3" + " " * (len(head) - len("REMARK   3"))
+    width = 80 - len(head)
+    prefix, rest = head, name
+    while len(rest) > width:
+        lines.append(prefix + rest[:width])
+        prefix, rest = cont, rest[width:]
+    lines.append(prefix + rest)
 
 
 def _wrap_remark3_text(lines: List[str], text: str) -> None:

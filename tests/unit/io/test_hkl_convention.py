@@ -57,10 +57,11 @@ def anomalous_data(mtz_dir, tmp_path):
 
 
 def _model(pdb_dir, data):
-    # strip_H: what is under test is the phase convention, and the absolute check
-    # compares against a gemmi calculation that calls ``remove_hydrogens``. Letting
-    # torchref generate hydrogens would have it computing a different structure.
-    m = ModelFT(verbose=0, max_res=2.0, strip_H=True)
+    # hydrogens="strip": what is under test is the phase convention, and the absolute
+    # check compares against a gemmi calculation that calls ``remove_hydrogens``.
+    # Keeping or generating hydrogens would have torchref computing a different
+    # structure.
+    m = ModelFT(verbose=0, max_res=2.0, hydrogens="strip")
     m.load_pdb(str(pdb_dir / f"{CODE}.pdb"))
     m.cell, m.spacegroup = data.cell, data.spacegroup
     return m

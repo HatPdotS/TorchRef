@@ -4,42 +4,23 @@ PyTorch implementation of French-Wilson conversion from intensities to structure
 Reference: French, S. & Wilson, K. (1978). Acta Cryst. A34, 517-525
 Based on Phenix implementation in cctbx/french_wilson.py
 
-Usage - PyTorch Module (Recommended)::
-
-        import torch
-        from torchref.base.french_wilson import FrenchWilson
-
-        # Miller indices for your reflections
-        hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-
-        # Cell: [a, b, c, alpha, beta, gamma] in Å and degrees
-        cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
-
-        # Create module (does all preprocessing)
-        fw_module = FrenchWilson(hkl, cell, space_group='P212121')
-
-        # Apply conversion (can be called repeatedly with different I, sigma_I)
-        I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-        sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-        F, sigma_F = fw_module(I, sigma_I)
-        print(f"F = {F}")
-
-Usage - Functional API (for one-off conversions)::
+Usage::
 
         from torchref.base.french_wilson import french_wilson_auto
 
         F, sigma_F, valid = french_wilson_auto(
             I, sigma_I, hkl, d_spacings, space_group='P212121'
         )
+
+This is a plain function on purpose: the conversion runs once per dataset, and
+a cached estimator holding per-row buffers goes stale the moment the rows are
+reordered (as ``ReflectionData`` canonicalization does).
 """
 
 import torch
-import torch.nn as nn
 
-from torchref.base import math_torch
 from torchref.config import get_float_dtype
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
-from torchref.utils.device_mixin import DeviceMixin
 
 # Acentric lookup tables from French-Wilson supplement (1978)
 AC_ZJ = torch.tensor(
@@ -1194,7 +1175,7 @@ def estimate_mean_intensity_by_resolution(
 
     # Use scatter_add to compute sum of intensities per bin
     bin_sums = torch.zeros(actual_n_bins, dtype=I.dtype, device=I.device)
-    bin_counts = torch.zeros(actual_n_bins, dtype=torch.long, device=I.device)  # dtype-ok: count accumulator; scatter_add source is long ones, dtype must match
+    bin_counts = torch.zeros(actual_n_bins, dtype=bin_indices.dtype, device=I.device)
     bin_sums.scatter_add_(0, bin_indices, I_sorted)
     bin_counts.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 
@@ -1279,13 +1260,10 @@ def french_wilson_auto(
     h_min: float = -4.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Automatic French-Wilson conversion with binning and centric determination.
+    Convert intensities to amplitudes, estimating shell means and centricity.
 
-    This function automatically:
-    1. Bins reflections by resolution
-    2. Calculates mean intensity per bin
-    3. Determines centric vs acentric from Miller indices
-    4. Applies appropriate French-Wilson conversion
+    Every per-reflection input must be row-aligned: the shell mean and centric
+    flag of row ``i`` are taken from ``hkl[i]`` and ``d_spacings[i]``.
 
     Parameters
     ----------
@@ -1313,7 +1291,9 @@ def french_wilson_auto(
     sigma_F : torch.Tensor
         Standard deviations of F of shape (n_reflections,).
     valid_mask : torch.Tensor
-        Boolean mask indicating valid (not rejected) reflections.
+        Boolean mask, ``True`` = keep. ``False`` both for rows French-Wilson
+        rejects as too negative and for rows with NaN ``I`` or ``sigma_I``,
+        whose ``F`` and ``sigma_F`` are NaN.
 
     Examples
     --------
@@ -1325,191 +1305,26 @@ def french_wilson_auto(
         d_spacings = torch.tensor([2.5, 3.0, 2.8, 2.0])
         F, sigma_F, valid = french_wilson_auto(I, sigma_I, hkl, d_spacings, "P212121")
     """
-    # Step 1: Estimate mean intensity by resolution
+    F = torch.full_like(I, float("nan"))
+    sigma_F = torch.full_like(sigma_I, float("nan"))
+    # NaN rows are never converted, so they are not kept either.
+    valid_mask = torch.zeros_like(I, dtype=torch.bool)
+
+    finite = ~(torch.isnan(I) | torch.isnan(sigma_I))
+    if not finite.any():
+        return F, sigma_F, valid_mask
+
+    # NaN rows are dropped before binning, or they would poison the shell means.
     mean_intensity = estimate_mean_intensity_by_resolution(
-        I, d_spacings, n_bins=n_bins, min_per_bin=min_per_bin
+        I[finite], d_spacings[finite], n_bins=n_bins, min_per_bin=min_per_bin
     )
+    is_centric = SpaceGroup(space_group, device=hkl.device).is_centric(hkl[finite])
 
-    # Step 2: Determine centric reflections from Miller indices
-    is_centric = SpaceGroup(space_group, device=hkl.device).is_centric(hkl)
-
-    # Step 3: Apply French-Wilson conversion
-    F, sigma_F, valid_mask = french_wilson(
-        I, sigma_I, mean_intensity, is_centric=is_centric, h_min=h_min
+    F[finite], sigma_F[finite], valid_mask[finite] = french_wilson(
+        I[finite],
+        sigma_I[finite],
+        mean_intensity,
+        is_centric=is_centric,
+        h_min=h_min,
     )
-
     return F, sigma_F, valid_mask
-
-
-class FrenchWilson(DeviceMixin, nn.Module):
-    """
-    PyTorch module for French-Wilson conversion from intensities to structure factors.
-
-    Pre-computes all necessary metadata (d-spacings, centric flags, resolution bins)
-    during initialization, so forward pass only needs I and sigma_I.
-
-    Parameters
-    ----------
-    hkl : torch.Tensor
-        Miller indices of shape (n_reflections, 3), integer tensor.
-    cell : torch.Tensor
-        Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
-    space_group : str, int, or gemmi.SpaceGroup, optional
-        Space group specification (e.g., 'P21', 4, gemmi.SpaceGroup('P 21')). Default is "P1".
-    n_bins : int, optional
-        Number of resolution bins for mean intensity estimation. Default is 60.
-    min_per_bin : int, optional
-        Minimum reflections per bin. Default is 40.
-    h_min : float, optional
-        Minimum h value for rejection. Default is -4.0.
-    verbose : int, optional
-        Verbosity level (0=silent, 1=basic, 2=detailed). Default is 1.
-
-    Attributes
-    ----------
-    hkl : torch.Tensor
-        Miller indices.
-    d_spacings : torch.Tensor
-        Resolution for each reflection in Å.
-    is_centric : torch.Tensor
-        Boolean mask for centric reflections.
-    valid_mask : torch.Tensor or None
-        French-Wilson's rejection criterion from the most recent :meth:`forward`
-        (``True`` = keep). ``None`` before the first call.
-
-    Examples
-    --------
-    ::
-
-        hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-        cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
-        fw_module = FrenchWilson(hkl, cell, 'P212121')
-        I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-        sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-        F, sigma_F = fw_module(I, sigma_I)
-    """
-
-    def __init__(
-        self,
-        hkl: torch.Tensor,
-        cell: torch.Tensor,
-        space_group: SpaceGroupLike = "P1",
-        n_bins: int = 60,
-        min_per_bin: int = 40,
-        h_min: float = -4.0,
-        verbose: int = 1,
-    ):
-        super().__init__()
-
-        # Store parameters
-        self.n_reflections = len(hkl)
-        self.space_group = space_group
-        self.n_bins = n_bins
-        self.min_per_bin = min_per_bin
-        self.h_min = h_min
-        self.verbose = verbose
-
-        # Register HKL as buffer (will be moved to device with model)
-        self.register_buffer("hkl", hkl.long())
-
-        # Calculate d-spacings from cell and HKL
-        d_spacings = math_torch.get_d_spacing(hkl, cell)
-        self.register_buffer("d_spacings", d_spacings)
-
-        # Determine centric reflections
-        is_centric = SpaceGroup(space_group, device=hkl.device).is_centric(hkl)
-        self.register_buffer("is_centric", is_centric)
-
-        # Set by forward(); None until the first conversion. Not a buffer -- it
-        # is per-call output, not model state to serialize or move.
-        self.valid_mask = None
-
-        # Verbosity level 1: Basic initialization info (most important)
-        if self.verbose >= 1:
-            print("FrenchWilson initialized:")
-            print(f"  Reflections: {self.n_reflections}")
-            print(f"  Resolution: {d_spacings.min():.2f} - {d_spacings.max():.2f} Å")
-            print(f"  Space group: {space_group}")
-            print(
-                f"  Centric: {is_centric.sum()} ({100*is_centric.sum()/self.n_reflections:.1f}%)"
-            )
-
-        # Verbosity level 2: Additional detailed info (less important)
-        if self.verbose >= 2:
-            print(f"  Binning: {n_bins} bins, min {min_per_bin} reflections/bin")
-            print(f"  Rejection threshold: h_min = {h_min}")
-            print(f"  Device: {hkl.device}")
-
-    def forward(
-        self, I: torch.Tensor, sigma_I: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Apply French-Wilson conversion.
-
-        Parameters
-        ----------
-        I : torch.Tensor
-            Measured intensities of shape (n_reflections,).
-        sigma_I : torch.Tensor
-            Standard deviations of intensities of shape (n_reflections,).
-
-        Returns
-        -------
-        F : torch.Tensor
-            Structure factor amplitudes of shape (n_reflections,).
-        sigma_F : torch.Tensor
-            Standard deviations of F of shape (n_reflections,).
-
-        Notes
-        -----
-        The rejection criterion is recorded on :attr:`valid_mask` (full size,
-        ``True`` = keep, ``False`` for both NaN input and French-Wilson
-        rejections) rather than returned, so this stays a two-tuple for the
-        documented usage above. It is overwritten on each call.
-        """
-        # Check for NaN values in input
-        nan_mask = torch.isnan(I) | torch.isnan(sigma_I)
-
-        # If all values are NaN, return NaN arrays
-        if nan_mask.all():
-            self.valid_mask = torch.zeros_like(I, dtype=torch.bool)
-            return torch.full_like(I, float("nan")), torch.full_like(
-                sigma_I, float("nan")
-            )
-
-        # Filter out NaN values and corresponding metadata
-        finite_mask = ~nan_mask
-        I_clean = I[finite_mask]
-        sigma_I_clean = sigma_I[finite_mask]
-        d_spacings_clean = self.d_spacings[finite_mask]
-        is_centric_clean = self.is_centric[finite_mask]
-
-        # Estimate mean intensity by resolution (only for valid reflections)
-        mean_intensity = estimate_mean_intensity_by_resolution(
-            I_clean, d_spacings_clean, n_bins=self.n_bins, min_per_bin=self.min_per_bin
-        )
-
-        # Apply French-Wilson conversion
-        F_clean, sigma_F_clean, keep_clean = french_wilson(
-            I_clean,
-            sigma_I_clean,
-            mean_intensity,
-            is_centric=is_centric_clean,
-            h_min=self.h_min,
-        )
-
-        # Create output arrays with NaNs for invalid reflections
-        F_full = torch.full_like(I, float("nan"))
-        sigma_F_full = torch.full_like(sigma_I, float("nan"))
-
-        # Insert computed values for valid reflections
-        F_full[finite_mask] = F_clean
-        sigma_F_full[finite_mask] = sigma_F_clean
-
-        # Expand the rejection criterion back to full size. NaN rows are
-        # rejected too -- they were never converted.
-        keep_full = torch.zeros_like(I, dtype=torch.bool)
-        keep_full[finite_mask] = keep_clean
-        self.valid_mask = keep_full
-
-        return F_full, sigma_F_full

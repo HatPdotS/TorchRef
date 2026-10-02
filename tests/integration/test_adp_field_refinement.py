@@ -332,18 +332,16 @@ def test_model_copy_round_trip_on_a_bare_model():
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    reason="PRE-EXISTING and representation-independent: once a Model has been through "
-    "Refinement setup, a cache somewhere holds a graph-attached tensor and deepcopy "
-    "refuses it. Measured identically for adp_mode isotropic, anisotropic and "
-    "field_aniso, and a bare model copies fine, so the node field is not the cause -- "
-    "it means no refinement of any kind can currently be checkpointed by copy().",
-    raises=RuntimeError,
-    strict=True,
-)
-@pytest.mark.integration
-def test_copy_after_refinement_setup_is_broken_for_every_representation(field_refinement):
-    field_refinement.model.copy()
+def test_copy_after_refinement_setup(field_refinement):
+    """A model that has been through Refinement setup can still be checkpointed by copy().
+
+    This used to raise for every ADP representation: a cache held a graph-attached
+    tensor and deepcopy refused it.
+    """
+    model = field_refinement.model
+    clone = model.copy()
+    assert torch.allclose(clone.xyz().detach(), model.xyz().detach())
+    assert torch.allclose(clone.adp_u6().detach(), model.adp_u6().detach())
 
 
 # ----------------------------------------------------------------------------------
@@ -391,7 +389,6 @@ def test_cli_field_mode_end_to_end(files, tmp_path):
     assert ref.model.adp_field.n_nodes == 9
     ref.refine_adp()
     out = tmp_path / "out.pdb"
-    ref.model.update_pdb()
     ref.model.write_pdb(str(out))
     assert out.exists() and out.stat().st_size > 0
     text = out.read_text()

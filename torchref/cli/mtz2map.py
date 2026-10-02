@@ -18,13 +18,13 @@ import sys
 import numpy as np
 import torch
 
-from torchref.config import get_float_dtype
 from torchref.cli._common import (
     add_general_args,
     add_resolution_args,
     register_timing,
     parse_device_str,
 )
+from torchref.config import get_float_dtype, get_int_dtype
 
 
 def main():
@@ -66,7 +66,7 @@ def main():
         type=str,
         metavar="COL",
         help="Weight column multiplied into the amplitudes before the FFT "
-        "(e.g. W_SD, W_IVW from torchref.difference-map). Default: none.",
+        "(e.g. W_Q, W_InVa from torchref.difference-map). Default: none.",
     )
     inp.add_argument(
         "-ck",
@@ -246,7 +246,7 @@ def main():
               f"{d_spacings.max():.2f} - {d_spacings.min():.2f} A")
 
     # --- Convert to torch ---
-    hkl_t = torch.tensor(hkl, dtype=torch.int32, device=device)  # dtype-ok: hkl Miller indices fed to symmetry expand; fixed int32 crystallographic representation
+    hkl_t = torch.tensor(hkl, dtype=get_int_dtype(), device=device)
     amp_t = torch.tensor(amplitudes, dtype=get_float_dtype(), device=device)
     phi_t = torch.tensor(phases_deg, dtype=get_float_dtype(), device=device) * (np.pi / 180.0)
 

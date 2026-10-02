@@ -9,6 +9,8 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict, Tuple
 
+from torchref.base.coordinates.symmetry_images import is_symmetry_image
+from torchref.config import get_int_dtype
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -210,54 +212,47 @@ class NonBondedTarget(GeometryTarget):
                 f"  VDW rebuild: max drift {max_disp:.2f} Å > "
                 f"threshold {thresh:.2f} Å"
             )
-        r.rebuild_vdw_restraints()
+        r.rebuild_vdw_restraints(self._model.xyz().detach())
+
+    def _symmetry_tables(self) -> tuple[torch.Tensor, ...]:
+        """The model's operation table and cell matrices, as the pair kernels take them.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            ``(symop_matrices, symop_translations, fractional_matrix,
+            inv_fractional_matrix)``.
+        """
+        sg = self.model.spacegroup
+        cell = self.model.cell
+        return (
+            sg.matrices,
+            sg.translations,
+            cell.fractional_matrix,
+            cell.inv_fractional_matrix,
+        )
 
     def _compute_positions(
         self, xyz: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Per-pair ``(pos1, pos2, min_distances)`` from ASU coordinates (N, 3).
 
-        One vectorized pass. Mate positions are recomputed through the symmetry
-        transform rather than looked up, so gradients reach both atoms; intra-ASU
-        pairs (symop=0, offset=0) come out as the identity.
+        Positions come from
+        :func:`~torchref.base.targets.nonbonded.nonbonded_pair_positions`, as in the
+        prolsq kernel, so every mode and the statistics see a pair at one distance.
+        Mate positions are recomputed from ``xyz``, so gradients reach both atoms.
         """
+        from torchref.base.targets.nonbonded import nonbonded_pair_positions
+
         vdw_data = self.restraints.restraints["vdw"]
-        indices = vdw_data["indices"]
-        min_distances = vdw_data["min_distances"]
-        symop_indices = vdw_data.get("symop_indices")
-        cell_offsets = vdw_data.get("cell_offsets")
-
-        pos1 = xyz[indices[:, 0]]
-
-        has_symmetry = (
-            symop_indices is not None
-            and len(symop_indices) > 0
-            and not (symop_indices == 0).all()
+        pos1, pos2 = nonbonded_pair_positions(
+            xyz,
+            vdw_data["indices"],
+            vdw_data.get("symop_indices"),
+            vdw_data.get("cell_offsets"),
+            *self._symmetry_tables(),
         )
-
-        if not has_symmetry:
-            # Fast path: all pairs are intra-ASU.
-            pos2 = xyz[indices[:, 1]]
-            return pos1, pos2, min_distances
-
-        cell = self.model.cell
-        sg = self.model.spacegroup
-
-        mate_source = xyz[indices[:, 1]]  # (N_pairs, 3) -- gradients flow
-        frac = cell.cartesian_to_fractional(mate_source)
-
-        R = sg.matrices[symop_indices].to(frac.dtype)       # (N_pairs, 3, 3)
-        t = sg.translations[symop_indices].to(frac.dtype)   # (N_pairs, 3)
-        offsets = cell_offsets.to(frac.dtype)                # (N_pairs, 3)
-
-        # R @ frac + t + offset, batched; identity for intra-ASU pairs.
-        frac_transformed = (
-            torch.bmm(R, frac.unsqueeze(-1)).squeeze(-1) + t + offsets
-        )
-
-        pos2 = cell.fractional_to_cartesian(frac_transformed)
-
-        return pos1, pos2, min_distances
+        return pos1, pos2, vdw_data["min_distances"]
 
     def forward(self) -> torch.Tensor:
         """Summed VDW repulsion loss; 0.0 if the model has no VDW pair list."""
@@ -285,10 +280,7 @@ class NonBondedTarget(GeometryTarget):
                 vdw_data["min_distances"],
                 vdw_data.get("symop_indices"),
                 vdw_data.get("cell_offsets"),
-                self.model.spacegroup.matrices,
-                self.model.spacegroup.translations,
-                self.model.cell.fractional_matrix,
-                self.model.cell.inv_fractional_matrix,
+                *self._symmetry_tables(),
                 self._c_rep, self._r_exp,
                 self._buffer, self._sigma_vdw,
             )
@@ -346,9 +338,9 @@ class NonBondedTarget(GeometryTarget):
 
         if "vdw" not in self.restraints.restraints:
             return {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(  # dtype-ok: empty restraint index tensor; PyTorch requires int64 for indexing
-                    0, 2
-                ),
+                "indices": torch.tensor(
+                    [], dtype=get_int_dtype(), device=device
+                ).reshape(0, 2),
                 "violations": torch.tensor([], device=device),
                 "distances": torch.tensor([], device=device),
                 "min_distances": torch.tensor([], device=device),
@@ -359,9 +351,9 @@ class NonBondedTarget(GeometryTarget):
 
         if indices is None or len(indices) == 0:
             return {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(  # dtype-ok: empty restraint index tensor; PyTorch requires int64 for indexing
-                    0, 2
-                ),
+                "indices": torch.tensor(
+                    [], dtype=get_int_dtype(), device=device
+                ).reshape(0, 2),
                 "violations": torch.tensor([], device=device),
                 "distances": torch.tensor([], device=device),
                 "min_distances": torch.tensor([], device=device),
@@ -433,8 +425,7 @@ class NonBondedTarget(GeometryTarget):
         symop_indices = vdw_data.get("symop_indices")
         cell_offsets = vdw_data.get("cell_offsets")
         if symop_indices is not None and len(symop_indices) > 0:
-            is_sym = (symop_indices != 0) | (cell_offsets != 0).any(dim=-1)
-            n_sym = is_sym.sum().item()
+            n_sym = is_symmetry_image(symop_indices, cell_offsets).sum().item()
             if n_sym > 0:
                 result["n_symmetry"] = stat(n_sym, VERBOSITY_DETAILED)
 

@@ -1,47 +1,18 @@
-"""Numba-accelerated CIF-to-restraint matchers, free of Pandas in the hot loop.
+"""CIF-to-restraint matchers, free of Pandas in the hot loop.
 
-Every ``match_*_numba`` shares one calling convention: the caller pre-allocates
-the ``out_*`` arrays, the function fills entries ``[0:count]`` in place and
-returns ``count``. Anything past ``count`` is stale.
+Every ``match_*`` shares one calling convention: the caller pre-allocates the
+``out_*`` arrays, the function fills entries ``[0:count]`` in place and returns
+``count``. Anything past ``count`` is stale.
 
-Numba is optional -- without it ``njit`` degrades to a no-op decorator and
-``prange`` to ``range``, so the same code runs orders of magnitude slower rather
-than failing.
+These were Numba kernels. Each call covers one residue, so Numba's dispatch
+overhead outweighed the loop it compiled -- plain Python is faster, and it has no
+cold-cache compile (~13 s on first use per environment).
 """
 
-from typing import Any, Dict, Iterator, List, Optional, Tuple
-
 import numpy as np
-import pandas as pd
-import torch
-
-try:
-    import numba
-    from numba import njit, prange
-
-    HAS_NUMBA = True
-except ImportError:
-    HAS_NUMBA = False
-
-    # Fallback decorator that does nothing
-    def njit(*args, **kwargs):
-        def decorator(func):
-            return func
-
-        if len(args) == 1 and callable(args[0]):
-            return args[0]
-        return decorator
-
-    prange = range
 
 
-# =============================================================================
-# Numba-accelerated helper functions
-# =============================================================================
-
-
-@njit(cache=True)
-def match_bonds_numba(
+def match_bonds(
     residue_atom_names: np.ndarray,  # atom names for this residue
     residue_atom_indices: np.ndarray,  # global atom indices
     bond_atom1: np.ndarray,  # CIF bond atom1 names
@@ -100,8 +71,7 @@ def match_bonds_numba(
     return count
 
 
-@njit(cache=True)
-def match_angles_numba(
+def match_angles(
     residue_atom_names: np.ndarray,
     residue_atom_indices: np.ndarray,
     angle_atom1: np.ndarray,
@@ -158,8 +128,7 @@ def match_angles_numba(
     return count
 
 
-@njit(cache=True)
-def match_torsions_numba(
+def match_torsions(
     residue_atom_names: np.ndarray,
     residue_atom_indices: np.ndarray,
     torsion_atom1: np.ndarray,
@@ -228,8 +197,7 @@ def match_torsions_numba(
     return count
 
 
-@njit(cache=True)
-def match_chirals_numba(
+def match_chirals(
     residue_atom_names: np.ndarray,
     residue_atom_indices: np.ndarray,
     chiral_center: np.ndarray,

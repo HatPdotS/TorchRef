@@ -33,7 +33,7 @@ def test_observations_and_metadata(halves, index, test_files_dir):
     assert data.I.shape == data.I_sigma.shape == data.F.shape == (len(data),)
     assert torch.isfinite(data.I_sigma).all() and (data.I_sigma >= 0).all()
     assert (data.I < 0).any()
-    assert (data.F >= 0).all() and data._FrenchWilson is not None
+    assert (data.F >= 0).all() and data.FRENCH_WILSON_MASK_KEY in data.masks
     torch.testing.assert_close(data.cell.data, data.cell.data.new_tensor(CELL))
     assert data.spacegroup.number == 1
 

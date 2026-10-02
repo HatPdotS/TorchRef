@@ -201,7 +201,10 @@ def test_free_and_validation_changes_do_not_affect_fit(loaded_reflection_data):
         assert torch.equal(dc.hkl, dc.scaler.hkl)
         assert not dc.scaler.fit_mask[:, mismatched].any()
         results.append(dc.scaler.raw_parameters.detach().clone())
-    assert torch.equal(*results)
+    # Not bit equality: the fit's float32 reductions differ by an ulp (~3e-8) between
+    # otherwise identical runs, while filling just 30 work reflections the same way
+    # moves the parameters by ~6e-4.
+    torch.testing.assert_close(*results, rtol=0.0, atol=1e-6)
 
 
 def test_permutation_and_partial_overlap_chain(loaded_reflection_data):

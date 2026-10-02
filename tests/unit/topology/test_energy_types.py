@@ -19,7 +19,7 @@ from torchref.topology.hydrogens import template_atom_types
 
 @pytest.fixture(scope="module")
 def heavy_1daw(pdb_dir):
-    model = Model(verbose=0, strip_H=True, add_hydrogens=False)
+    model = Model(verbose=0, hydrogens="strip")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     return model
 
@@ -87,7 +87,7 @@ def test_template_h_count_and_implicit_hydrogens(heavy_1daw):
 @pytest.mark.unit
 def test_hydrogenated_model_completes_charged_amines(pdb_dir):
     """Explicit hydrogen generation fills the polymer's template hydrogen counts."""
-    model = Model(verbose=0, add_hydrogens=True)
+    model = Model(verbose=0, hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     atoms = model.restraints.topology.atoms
     missing = atoms.implicit_h_count().cpu().numpy()

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from torchref.model.context import ModelContext
 from torchref.model.model import Model
 from torchref.model.model_ft import ModelFT
 
@@ -39,10 +40,10 @@ def test_default_preserves_deposited_atoms(
     path = pdb_dir / filename
     deposited, _, _ = PDBReader(verbose=0).read(str(path))()
 
-    def unexpected_generation(self: Model) -> None:
+    def unexpected_generation(self: ModelContext, dtype) -> None:
         pytest.fail("Default loading must not generate hydrogens")
 
-    monkeypatch.setattr(Model, "_add_missing_hydrogens", unexpected_generation)
+    monkeypatch.setattr(ModelContext, "_add_missing_hydrogens", unexpected_generation)
     model = model_class(verbose=0).load_pdb(str(path))
 
     np.testing.assert_array_equal(_elements(model), deposited["element"].str.strip())
@@ -54,10 +55,10 @@ def test_default_cif_load_does_not_generate_hydrogens(
 ) -> None:
     """mmCIF loading also leaves missing hydrogens absent by default."""
 
-    def unexpected_generation(self: Model) -> None:
+    def unexpected_generation(self: ModelContext, dtype) -> None:
         pytest.fail("Default mmCIF loading must not generate hydrogens")
 
-    monkeypatch.setattr(Model, "_add_missing_hydrogens", unexpected_generation)
+    monkeypatch.setattr(ModelContext, "_add_missing_hydrogens", unexpected_generation)
     model = Model(verbose=0).load_cif(str(cif_dir / "1DAW.cif"))
     total, n_h = _counts(model)
     assert total > 0
@@ -66,16 +67,15 @@ def test_default_cif_load_does_not_generate_hydrogens(
 
 @pytest.mark.unit
 def test_context_defaults_to_no_hydrogen_generation() -> None:
-    """A standalone model context leaves hydrogen generation disabled."""
-    from torchref.model.context import ModelContext
-
-    assert ModelContext().add_hydrogens is False
+    """A standalone model context keeps the file's hydrogens as atoms."""
+    assert ModelContext().hydrogens == "keep"
+    assert ModelContext().hydrogen_mode == "atoms"
 
 
 @pytest.mark.unit
 def test_a_file_without_hydrogens_gets_them(pdb_dir):
     """1DAW ships none, so every hydrogen here is generated."""
-    model = Model(verbose=0, add_hydrogens=True)
+    model = Model(verbose=0, hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
 
     total, n_h = _counts(model)
@@ -94,11 +94,11 @@ def test_a_partially_hydrogenated_file_is_topped_up(pdb_dir):
     names and the model lacks -- so a file that already has some still gets the rest. A
     does-the-table-contain-any test would have left this structure as deposited.
     """
-    kept = Model(verbose=0, add_hydrogens=False)
+    kept = Model(verbose=0)
     kept.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
     _, n_kept = _counts(kept)
 
-    topped = Model(verbose=0, add_hydrogens=True)
+    topped = Model(verbose=0, hydrogens="add")
     topped.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
     _, n_topped = _counts(topped)
 
@@ -109,24 +109,24 @@ def test_a_partially_hydrogenated_file_is_topped_up(pdb_dir):
 
 
 @pytest.mark.unit
-def test_strip_H_still_removes_everything(pdb_dir):
+def test_strip_removes_everything(pdb_dir):
     """The opt-out is unaffected: no hydrogen survives, generated or deposited."""
     for name in ("1DAW.pdb", "7L84.pdb"):
-        model = Model(verbose=0, strip_H=True, add_hydrogens=True)
+        model = Model(verbose=0, hydrogens="strip")
         model.load_pdb(str(pdb_dir / name))
         _, n_h = _counts(model)
-        assert n_h == 0, f"{name} kept {n_h} hydrogens under strip_H"
+        assert n_h == 0, f"{name} kept {n_h} hydrogens under hydrogens='strip'"
 
 
 @pytest.mark.unit
-def test_add_hydrogens_false_keeps_the_file_as_it_is(pdb_dir):
+def test_keep_keeps_the_file_as_it_is(pdb_dir):
     """Generation off, stripping off: exactly what the reader produced."""
-    model = Model(verbose=0, add_hydrogens=False)
+    model = Model(verbose=0)
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
     total, n_h = _counts(model)
     assert n_h > 0, "7L84 ships hydrogens, so they should have been kept"
 
-    generated = Model(verbose=0, add_hydrogens=True)
+    generated = Model(verbose=0, hydrogens="add")
     generated.load_pdb(str(pdb_dir / "7L84.pdb"))
     assert _counts(generated)[0] >= total
 
@@ -140,7 +140,7 @@ def test_per_atom_buffers_are_rebuilt_for_the_new_atom_set(pdb_dir):
     place left the van der Waals radii at the heavy-atom count while the pair list
     indexed the full set, and the non-bonded build raised ``IndexError``.
     """
-    model = Model(verbose=0, add_hydrogens=True)
+    model = Model(verbose=0, hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     n_atoms = len(model.pdb)
 
@@ -157,7 +157,7 @@ def test_per_atom_buffers_are_rebuilt_for_the_new_atom_set(pdb_dir):
 @pytest.mark.unit
 def test_restraints_build_over_the_hydrogenated_model(pdb_dir):
     """Restraints cover the hydrogens, and each carries exactly one bond."""
-    model = Model(verbose=0, add_hydrogens=True)
+    model = Model(verbose=0, hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     restraints = model.restraints
 
@@ -184,14 +184,14 @@ def test_riding_hydrogens_are_not_placed_when_real_ones_exist(pdb_dir):
     because the riding builder counts bonded neighbours by distance while the generator
     reads them off the bond graph.
     """
-    model = Model(verbose=0, add_hydrogens=True)
+    model = Model(verbose=0, hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     restraints = model.restraints
 
     assert restraints.h_topo is not None
     assert restraints.h_topo.n_hydrogens == 0
 
-    stripped = Model(verbose=0, strip_H=True)
+    stripped = Model(verbose=0, hydrogens="strip")
     stripped.load_pdb(str(pdb_dir / "1DAW.pdb"))
     assert (
         stripped.restraints.h_topo.n_hydrogens > 0
@@ -225,7 +225,7 @@ def test_generation_reads_the_cif_given_at_construction(pdb_dir, renamed_glu_cif
     hydrogens are the ones the restraints know: a hydrogen generated from one
     dictionary and restrained by another has no bond edge at all.
     """
-    model = Model(verbose=0, add_hydrogens=True, cif_path=renamed_glu_cif)
+    model = Model(verbose=0, hydrogens="add", cif_path=renamed_glu_cif)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     assert model.ctx.cif_path == renamed_glu_cif
     names = _glu_hydrogen_names(model)
@@ -241,7 +241,7 @@ def test_generation_reads_the_cif_given_at_construction(pdb_dir, renamed_glu_cif
 @pytest.mark.unit
 def test_derived_models_keep_the_restraint_cif(pdb_dir, renamed_glu_cif):
     """hydrogenate, strip_hydrogens and select all carry the dictionary along."""
-    model = Model(verbose=0, add_hydrogens=False, cif_path=renamed_glu_cif)
+    model = Model(verbose=0, cif_path=renamed_glu_cif)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
 
     hydrogenated = model.hydrogenate()
@@ -258,10 +258,13 @@ def test_derived_models_keep_the_restraint_cif(pdb_dir, renamed_glu_cif):
 
 
 @pytest.mark.unit
-def test_state_dict_round_trips_the_restraint_cif(pdb_dir, renamed_glu_cif):
-    model = Model(verbose=0, cif_path=renamed_glu_cif)
+@pytest.mark.parametrize("model_class", [Model, ModelFT])
+def test_state_dict_round_trips_the_restraint_cif(
+    pdb_dir, renamed_glu_cif, model_class
+):
+    model = model_class(verbose=0, cif_path=renamed_glu_cif)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
-    restored = Model.create_from_state_dict(model.state_dict(), verbose=0)
+    restored = model_class.create_from_state_dict(model.state_dict(), verbose=0)
     assert restored.ctx.cif_path == renamed_glu_cif
 
 
@@ -271,7 +274,7 @@ def test_load_model_registers_the_cif_before_loading(pdb_dir, renamed_glu_cif):
     from torchref.cli._common import load_model
 
     model = load_model(
-        str(pdb_dir / "1DAW.pdb"), verbose=0, cif=renamed_glu_cif, add_hydrogens=True
+        str(pdb_dir / "1DAW.pdb"), verbose=0, cif=renamed_glu_cif, hydrogens="add"
     )
     assert model.ctx.cif_path == renamed_glu_cif
     assert RENAMED_GLU_H <= _glu_hydrogen_names(model)
@@ -289,7 +292,7 @@ def test_generation_reads_every_compound_of_a_multi_block_cif(pdb_dir, test_file
     blocks = [l for l in cif.read_text().splitlines() if l.startswith("data_comp_")]
     assert len(blocks) == 3, blocks  # comp_list + GLU + ASP: the fixture is really multi-block
 
-    model = Model(verbose=0, add_hydrogens=True, cif_path=str(cif))
+    model = Model(verbose=0, hydrogens="add", cif_path=str(cif))
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     pdb = model.pdb
     is_h = pdb["element"].astype(str).str.strip() == "H"

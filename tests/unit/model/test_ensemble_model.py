@@ -166,3 +166,42 @@ def test_dropout_disable_restores_full_occupancy(small_ensemble):
     assert torch.allclose(
         ens._dropout_occ_mult, torch.ones_like(ens._dropout_occ_mult)
     )
+
+
+def test_copy_carries_the_ensemble(tmp_path, small_ensemble):
+    """A copy keeps the member layout, per-member levers and single-copy table."""
+    ens = small_ensemble
+    ens.enable_population_refinement(True)
+    with torch.no_grad():
+        ens.occ_logits[0] = 1.0
+    dup = ens.copy()
+    assert type(dup) is EnsembleModel
+    assert dup.n_members == ens.n_members
+    assert dup.n_atoms_per_member == ens.n_atoms_per_member
+    assert torch.equal(dup.xyz_per_member, ens.xyz_per_member)
+    assert torch.equal(dup.member_weights(), ens.member_weights())
+    assert dup.occ_logits.requires_grad and not dup.b_raw.requires_grad
+    with torch.no_grad():
+        dup.occ_logits[1] = 2.0
+    assert ens.occ_logits[1] == 0
+    assert len(dup.pdb_single) == ens.n_atoms_per_member
+    dup.write_pdb(str(tmp_path / "copy.pdb"))
+
+
+def test_copy_keeps_a_low_rank_xyz():
+    # enable_low_rank seeds its basis with a float64 SVD, which MPS cannot run
+    ens = EnsembleModel.from_single(
+        TEST_PDB,
+        n_members=5,
+        perturb_sigma=0.2,
+        b_const=5.0,
+        seed=42,
+        verbose=0,
+        device="cpu",
+    )
+    ens.enable_low_rank(2)
+    dup = ens.copy()
+    assert torch.allclose(dup.xyz(), ens.xyz())
+    with torch.no_grad():
+        dup.xyz.amplitudes.add_(1.0)
+    assert not torch.allclose(dup.xyz(), ens.xyz())

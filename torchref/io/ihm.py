@@ -731,7 +731,7 @@ class IHMWriter:
 
         if mc.n_base_models > 0:
             model0 = mc.base_models[0]
-            for chain_id, seq_str in model0.chain_sequences:
+            for chain_id, seq_str in model0.ctx.chain_sequences:
                 seq = []
                 for char in seq_str:
                     if char == "?":
@@ -881,11 +881,7 @@ class IHMWriter:
                 break
 
             model = mc.base_models[i]
-            # Update PDB DataFrame with current refined coordinates
-            if hasattr(model, "update_pdb"):
-                model.update_pdb()
-
-            pdb_df = model.pdb
+            pdb_df = model.to_dataframe()
 
             for _, row in pdb_df.iterrows():
                 atom_name = str(row.get("name", "CA"))

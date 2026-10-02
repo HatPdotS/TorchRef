@@ -1,4 +1,4 @@
-"""Exercise hydrogen opt-in from CLI parsing through deposited-model loading."""
+"""Exercise the hydrogen flags from CLI parsing through deposited-model loading."""
 
 import sys
 from pathlib import Path
@@ -23,7 +23,7 @@ def test_cli_hydrogen_generation_is_opt_in(
     add_hydrogens: bool,
     model_format: str,
 ) -> None:
-    """The CLI flag generates missing hydrogens for PDB and mmCIF inputs."""
+    """``--hydrogens add`` generates missing hydrogens for PDB and mmCIF inputs."""
     from torchref.cli import refine
 
     loaded = []
@@ -45,14 +45,14 @@ def test_cli_hydrogen_generation_is_opt_in(
         "0",
     ]
     if add_hydrogens:
-        argv.append("--add-hydrogens")
+        argv += ["--hydrogens", "add"]
     monkeypatch.setattr(sys, "argv", argv)
 
     with pytest.raises(_ModelLoaded):
         refine.main()
 
     (model,) = loaded
-    assert model.ctx.add_hydrogens is add_hydrogens
+    assert model.ctx.hydrogens == ("add" if add_hydrogens else "keep")
     assert len(model.pdb) > 0
     n_hydrogens = int(model.pdb["element"].str.strip().eq("H").sum())
     assert (n_hydrogens > 0) is add_hydrogens
@@ -83,7 +83,8 @@ def test_cli_generates_from_the_user_cif(
         str(tmp_path / "refined"),
         "-v",
         "0",
-        "--add-hydrogens",
+        "--hydrogens",
+        "add",
         "--cif",
         cif,
     ]
@@ -100,8 +101,35 @@ def test_cli_generates_from_the_user_cif(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("add_hydrogens", [False, True])
-def test_empty_refinement_preserves_hydrogen_setting(add_hydrogens: bool) -> None:
-    """An empty refinement shell forwards the setting to its model too."""
-    refinement = LBFGSRefinement(verbose=0, add_hydrogens=add_hydrogens)
-    assert refinement.model.ctx.add_hydrogens is add_hydrogens
+@pytest.mark.parametrize("hydrogens", ["keep", "add", "strip"])
+def test_empty_refinement_preserves_hydrogen_setting(hydrogens: str) -> None:
+    """An empty refinement shell forwards the policy to its model too."""
+    refinement = LBFGSRefinement(verbose=0, hydrogens=hydrogens, hydrogen_mode="atoms")
+    assert refinement.model.ctx.hydrogens == hydrogens
+
+
+@pytest.mark.integration
+def test_cli_refuses_riding_on_stripped_hydrogens(
+    test_files_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--hydrogens strip --hydrogen-mode riding`` fails before anything loads."""
+    from torchref.cli import refine
+
+    argv = [
+        "torchref.refine",
+        "-m",
+        str(test_files_dir / "pdb" / "1DAW.pdb"),
+        "-sf",
+        str(test_files_dir / "mtz" / "1DAW.mtz"),
+        "-o",
+        str(tmp_path / "refined"),
+        "-v",
+        "0",
+        "--hydrogens",
+        "strip",
+        "--hydrogen-mode",
+        "riding",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(ValueError, match="requires hydrogens=.keep. or .add."):
+        refine.main()
