@@ -391,7 +391,9 @@ END
 
         model = ModelFT(wavelength=1.0, verbose=0)
         model.load_pdb(test_pdb_file)
-        hkl = torch.tensor([[1, 2, 3], [2, 1, 0]], dtype=torch.int32)
+        hkl = torch.tensor(
+            [[1, 2, 3], [2, 1, 0]], dtype=torch.int32, device=model.device
+        )
 
         first = model(hkl).detach().clone()
         assert model._get_anomalous_cache() is not None

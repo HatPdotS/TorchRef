@@ -26,12 +26,13 @@ _ATOL = 1e-4
 def crystal(pdb_dir):
     """1DAW (C 1 2 1, monoclinic, so B is not diagonal): coordinates, cell, group."""
     st = gemmi.read_structure(str(pdb_dir / "1DAW.pdb"))
+    c = st.cell
+    cell = Cell([c.a, c.b, c.c, c.alpha, c.beta, c.gamma])
     xyz = torch.tensor(
         [[a.pos.x, a.pos.y, a.pos.z] for ch in st[0] for r in ch for a in r][:200],
         dtype=get_float_dtype(),
+        device=cell.device,
     )
-    c = st.cell
-    cell = Cell([c.a, c.b, c.c, c.alpha, c.beta, c.gamma])
     sg = SpaceGroup(st.spacegroup_hm)
     tables = (
         sg.matrices,
@@ -42,10 +43,10 @@ def crystal(pdb_dir):
     return xyz, cell, sg, tables
 
 
-def _per_point(n_points, op, offset):
-    ops = torch.full((n_points,), op, dtype=get_int_dtype())
-    offsets = torch.tensor(offset, dtype=get_int_dtype()).expand(n_points, 3)
-    return ops, offsets
+def _per_point(xyz, op, offset):
+    ops = torch.full((len(xyz),), op, dtype=get_int_dtype(), device=xyz.device)
+    offsets = torch.tensor(offset, dtype=get_int_dtype(), device=xyz.device)
+    return ops, offsets.expand(len(xyz), 3)
 
 
 def test_matches_the_space_group_expansion(crystal):
@@ -53,16 +54,16 @@ def test_matches_the_space_group_expansion(crystal):
     expanded = sg.expand_positions(cell.cartesian_to_fractional(xyz))
     for op in range(sg.n_ops):
         for offset in ([0, 0, 0], [1, 0, -2], [-3, 2, 1]):
-            ops, offsets = _per_point(len(xyz), op, offset)
+            ops, offsets = _per_point(xyz, op, offset)
             got = symmetry_image_positions(xyz, ops, offsets, *tables)
-            shift = torch.tensor(offset, dtype=xyz.dtype)
+            shift = torch.tensor(offset, dtype=xyz.dtype, device=xyz.device)
             want = cell.fractional_to_cartesian(expanded[op] + shift)
             torch.testing.assert_close(got, want, atol=_ATOL, rtol=0)
 
 
 def test_a_pure_lattice_translation_is_an_image(crystal):
     xyz, cell, _, tables = crystal
-    ops, offsets = _per_point(len(xyz), 0, [2, -1, 1])
+    ops, offsets = _per_point(xyz, 0, [2, -1, 1])
     got = symmetry_image_positions(xyz, ops, offsets, *tables)
     shift = cell.fractional_to_cartesian(offsets[0].to(xyz.dtype))
     torch.testing.assert_close(got, xyz + shift, atol=_ATOL, rtol=0)
@@ -71,7 +72,7 @@ def test_a_pure_lattice_translation_is_an_image(crystal):
 
 def test_the_identity_returns_the_point(crystal):
     xyz, _, _, tables = crystal
-    ops, offsets = _per_point(len(xyz), 0, [0, 0, 0])
+    ops, offsets = _per_point(xyz, 0, [0, 0, 0])
     got = symmetry_image_positions(xyz, ops, offsets, *tables)
     torch.testing.assert_close(got, xyz, atol=_ATOL, rtol=0)
     assert not bool(is_symmetry_image(ops, offsets).any())
@@ -90,9 +91,13 @@ def test_is_symmetry_image_looks_at_operation_and_offset():
 
 def test_broadcasting_matches_one_entry_per_point(crystal):
     xyz, _, sg, tables = crystal
-    ops = torch.tensor([0, 1, 0, sg.n_ops - 1], dtype=get_int_dtype())
+    ops = torch.tensor(
+        [0, 1, 0, sg.n_ops - 1], dtype=get_int_dtype(), device=xyz.device
+    )
     offsets = torch.tensor(
-        [[0, 0, 0], [0, 0, 1], [-1, 2, 0], [1, 1, 1]], dtype=get_int_dtype()
+        [[0, 0, 0], [0, 0, 1], [-1, 2, 0], [1, 1, 1]],
+        dtype=get_int_dtype(),
+        device=xyz.device,
     )
     grid = symmetry_image_positions(xyz[:, None, :], ops, offsets, *tables)
     assert grid.shape == (len(xyz), len(ops), 3)
@@ -108,7 +113,7 @@ def test_broadcasting_matches_one_entry_per_point(crystal):
 def test_gradient_is_the_cartesian_rotation(crystal):
     xyz, cell, sg, tables = crystal
     op = 1
-    ops, offsets = _per_point(1, op, [1, 0, -1])
+    ops, offsets = _per_point(xyz[:1], op, [1, 0, -1])
 
     def image(x):
         return symmetry_image_positions(x[None, :], ops, offsets, *tables)[0]

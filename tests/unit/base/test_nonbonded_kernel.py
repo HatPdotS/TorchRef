@@ -39,12 +39,15 @@ def _image_pairs(path):
     """Image pairs of one deposited model from builder steps 1-4, with radius sums."""
     st = gemmi.read_structure(str(path))
     atoms = [a for ch in st[0] for r in ch for a in r]
+    # On CPU whatever the configured device: the distances are compared with gemmi's
+    # on the host, and the Triton test moves this host copy to CUDA itself.
+    cpu = torch.device("cpu")
     xyz = torch.tensor(
         [[a.pos.x, a.pos.y, a.pos.z] for a in atoms], dtype=get_float_dtype()
     )
     c = st.cell
-    cell = Cell([c.a, c.b, c.c, c.alpha, c.beta, c.gamma])
-    sg = SpaceGroup(st.spacegroup_hm)
+    cell = Cell([c.a, c.b, c.c, c.alpha, c.beta, c.gamma], device=cpu)
+    sg = SpaceGroup(st.spacegroup_hm, device=cpu)
     ops, offsets = nb.prefilter_symop_offsets(cell, sg, xyz, CUTOFF)
     identity = (~is_symmetry_image(ops, offsets)).nonzero()[0].item()
     grid_dims = torch.clamp(
