@@ -38,7 +38,7 @@ than fabricating cross-member bonds from the flat replicated DataFrame.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -283,7 +283,7 @@ def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
     Returns
     -------
     Model
-        A single-conformation model exposing ``.pdb`` / ``.update_pdb()`` /
+        A single-conformation model exposing ``.to_dataframe()`` / ``.ctx.topology`` /
         ``.xyz()`` / ``.device`` over the selected atoms.
     """
     from torchref.model.model import Model
@@ -291,7 +291,7 @@ def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
     df = ensemble._pdb_single
     if atom_idx is not None:
         df = df.iloc[np.asarray(atom_idx)]
-    chem = Model(verbose=verbose, strip_H=False, device=ensemble.device)
+    chem = Model(verbose=verbose, hydrogens="keep", device=ensemble.device)
     chem.load(
         _SyntheticPDBReader(
             df.reset_index(drop=True).copy(),
@@ -322,8 +322,10 @@ class EnsembleModel(ModelFT):
         Verbosity.
     device : torch.device
         Computation device.
-    strip_H : bool
-        Whether to strip hydrogens (inherited).
+    hydrogens : {"keep", "strip"}
+        Hydrogen policy on load (inherited). ``"add"`` is refused: the atom set is
+        the replicated single copy the factories build, and ``_finalize_ensemble``
+        reshapes by ``n_atoms_per_member``, which generated hydrogens would break.
     max_res : float
         FFT grid target resolution (inherited).
 
@@ -339,12 +341,20 @@ class EnsembleModel(ModelFT):
         dtype_float=None,
         verbose: int = 1,
         device=None,
-        strip_H: bool = True,
+        hydrogens: str = "keep",
         max_res: float = 1.0,
-        gridsize: Optional[int] = None,
-        wavelength: float = 1.0,
+        gridsize: Optional[Tuple[int, int, int]] = None,
+        wavelength: Optional[float] = None,
         anomalous_threshold: float = 0.5,
+        apply_bijvoet: bool = False,
+        cif_path=None,
+        hydrogens_in_xray: bool = True,
     ):
+        if hydrogens == "add":
+            raise ValueError(
+                "EnsembleModel cannot generate hydrogens: its atom set is the "
+                "replicated single copy; hydrogenate the input first."
+            )
         if dtype_float is None:
             dtype_float = get_float_dtype()
         if device is None:
@@ -353,11 +363,14 @@ class EnsembleModel(ModelFT):
             dtype_float=dtype_float,
             verbose=verbose,
             device=device,
-            strip_H=strip_H,
+            hydrogens=hydrogens,
             max_res=max_res,
             gridsize=gridsize,
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
+            apply_bijvoet=apply_bijvoet,
+            cif_path=cif_path,
+            hydrogens_in_xray=hydrogens_in_xray,
         )
         # Filled in by ``_finalize_ensemble`` after ``load`` returns.
         self.n_members: int = 0
@@ -388,7 +401,7 @@ class EnsembleModel(ModelFT):
         seed: Optional[int] = None,
         verbose: int = 1,
         device=None,
-        strip_H: bool = True,
+        hydrogens: str = "strip",
         max_res: float = 1.0,
         n_max: Optional[int] = None,
         **modelft_kwargs,
@@ -421,8 +434,8 @@ class EnsembleModel(ModelFT):
             Verbosity.
         device : torch.device, optional
             Computation device.
-        strip_H : bool
-            Strip hydrogens before replication (default True).
+        hydrogens : {"strip", "keep"}
+            Strip hydrogens before replication (default) or keep the file's.
         max_res : float
             FFT grid target resolution (Å), forwarded to ``ModelFT``.
         n_max : int, optional
@@ -435,7 +448,7 @@ class EnsembleModel(ModelFT):
         """
         reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
         df, cell, spacegroup = reader()
-        if strip_H:
+        if hydrogens == "strip":
             df = df.loc[df["element"].astype(str).str.strip() != "H"].reset_index(drop=True)
         # Strip alternate conformations: the ensemble IS the disorder model,
         # so per-residue altlocs would double-count atoms in OpenMM topology,
@@ -451,7 +464,9 @@ class EnsembleModel(ModelFT):
         )
 
         model = cls(
-            verbose=verbose, device=device, strip_H=False,  # already stripped
+            verbose=verbose,
+            device=device,
+            hydrogens="keep",  # already stripped, if asked
             max_res=max_res,
             **modelft_kwargs,
         )
@@ -473,7 +488,7 @@ class EnsembleModel(ModelFT):
         seed: Optional[int] = None,
         verbose: int = 1,
         device=None,
-        strip_H: bool = True,
+        hydrogens: str = "strip",
         max_res: float = 1.0,
         n_max: Optional[int] = None,
         **modelft_kwargs,
@@ -492,7 +507,7 @@ class EnsembleModel(ModelFT):
         ready for bifurcation to reactivate). Default ``n_max = n_members``
         (no spare slots; bifurcation can only reuse slots freed by deaths).
         """
-        models = _parse_multi_model_pdb(pdb_path, strip_H=strip_H)
+        models = _parse_multi_model_pdb(pdb_path, strip_H=hydrogens == "strip")
         if len(models) == 0:
             raise ValueError(f"No usable atomic models parsed from {pdb_path}")
         if n_members is None:
@@ -537,7 +552,9 @@ class EnsembleModel(ModelFT):
         replicated = pd.concat(pieces, ignore_index=True)
 
         model = cls(
-            verbose=verbose, device=device, strip_H=False,
+            verbose=verbose,
+            device=device,
+            hydrogens="keep",  # already stripped, if asked
             max_res=max_res,
             **modelft_kwargs,
         )
@@ -613,8 +630,53 @@ class EnsembleModel(ModelFT):
             try:
                 self.freeze(tgt)
             except Exception:
-                if self.verbose > 0:
+                if self.ctx.verbose > 0:
                     print(f"  EnsembleModel: freeze({tgt!r}) failed (ignored)")
+
+    def copy(self) -> "EnsembleModel":
+        """Create a deep copy of the ensemble, of the same class.
+
+        :meth:`Model.copy` carries the context, buffers and parameter wrappers.
+        This adds the state an ensemble holds outside them: the member layout,
+        the single-copy atom table, the dropout and population-refinement
+        settings, the per-member ``occ_logits`` / ``b_raw`` (``requires_grad``
+        kept), and a low-rank or PCA ``xyz``, which has no ``copy`` of its own.
+
+        Returns
+        -------
+        EnsembleModel
+            A new, fully independent ensemble.
+        """
+        import copy as copy_module
+
+        duplicate = super().copy()
+        for name in (
+            "n_members",
+            "n_atoms_per_member",
+            "dropout_active",
+            "dropout_min",
+            "dropout_max",
+            "_refine_population",
+            "_refine_member_b",
+        ):
+            if hasattr(self, name):
+                setattr(duplicate, name, getattr(self, name))
+        if self._pdb_single is not None:
+            duplicate._pdb_single = self._pdb_single.copy(deep=True)
+        for name, param in self._parameters.items():
+            if param is not None:
+                setattr(
+                    duplicate,
+                    name,
+                    torch.nn.Parameter(
+                        param.detach().clone(), requires_grad=param.requires_grad
+                    ),
+                )
+        if not hasattr(self.xyz, "copy"):
+            duplicate.xyz = copy_module.deepcopy(self.xyz)
+            duplicate._repoint_coordinate_accessors()
+        duplicate.reset_cache()
+        return duplicate
 
     # ------------------------------------------------------------------
     # Per-member occupancy + ADP + birth/death population dynamics
@@ -743,7 +805,7 @@ class EnsembleModel(ModelFT):
         K = int(K)
         max_rank = max(1, N - 1)
         if K > max_rank:
-            if self.verbose > 0:
+            if self.ctx.verbose > 0:
                 print(
                     f"  EnsembleModel.enable_low_rank: K={K} exceeds rank "
                     f"N-1={max_rank}; clamping to {max_rank}."
@@ -752,6 +814,8 @@ class EnsembleModel(ModelFT):
 
         with torch.no_grad():
             flat = self.xyz().detach()                       # (N*n_atoms, 3)
+            # dtype-ok: SVD seeding in float64 for numerical stability. Caveat: no
+            # .cpu() first, so this errors on MPS.
             X = flat.reshape(N, n_atoms * 3).to(torch.float64)
             mu = X.mean(dim=0)                               # (D,)
             Xc = X - mu.unsqueeze(0)
@@ -774,7 +838,7 @@ class EnsembleModel(ModelFT):
         self.xyz = lowrank
         self.reset_cache()
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(
                 f"  EnsembleModel.enable_low_rank: K={K} modes, "
                 f"DOF {N * n_atoms * 3} -> {N * K} "
@@ -804,7 +868,7 @@ class EnsembleModel(ModelFT):
         )
         self.xyz = pca.to(self.device)
         self.reset_cache()
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(
                 f"  EnsembleModel.enable_pca: K={self.xyz.K} modes (refine μ,A,V), "
                 f"explained variance = {self.xyz.explained_variance * 100:.2f}%"

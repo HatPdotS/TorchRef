@@ -44,14 +44,13 @@ class TestRefinementSetup:
     def test_restraints_from_model(self, sample_cif_file):
         """Test building restraints from a loaded model."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
         # Build restraints
-        restraints = Restraints(pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii)
-        restraints.build_restraints()
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
         
         # Should have some restraints
         assert restraints.restraints is not None

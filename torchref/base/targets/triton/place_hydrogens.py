@@ -1,7 +1,7 @@
 """Triton forward + analytic backward for riding-hydrogen placement.
 
 One launch each way, where the eager helper (``_place_h_jit`` in
-:mod:`torchref.restraints.hydrogen_topology`) fuses only the forward and leaves its
+:mod:`torchref.topology.riding`) fuses only the forward and leaves its
 backward to run op-by-op through autograd -- ~100 launches at 3k hydrogens, which
 dominates the non-bonded backward. The math mirrors ``_place_h_jit`` exactly:
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchref"
-version = "0.6.4"
+version = "0.7.0"
 description = "Pytorch based crystallographic refinement"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,12 +28,14 @@ authors = [
 # Both runs give an identical 1625 passed / 96 skipped, so the bumps are behaviour-neutral
 # on CPU. The CUDA/Triton and MPS kernels were NOT exercised -- the validation host had no
 # accelerator, so those paths are covered only by the GPU CI runners.
+#
+# 2026-09-27: numba dropped. It only ran the per-residue restraint matchers
+# (torchref/topology/matchers.py), which are faster as plain Python.
 dependencies = [
     "numpy>=2.0.0,<2.4.0",
     "pandas>=2.0.0,<2.4.0",
     "torch>=2.4.0,<2.14.0",
     "tqdm>=4.61.0,<4.69.0",
-    "numba>=0.59.0,<0.67.0",
     "gemmi>=0.5.0,<0.8.0",
     "scipy>=1.10.0,<1.18.0",
     "matplotlib>=3.7.0,<3.11.0",
@@ -45,11 +47,14 @@ dependencies = [
 [project.scripts]
 "torchref.refine" = "torchref.cli.refine:main"
 "torchref.difference-refine" = "torchref.cli.collection_difference_refine:main"
+"torchref.simulate-noisy-data" = "torchref.cli.simulate_noisy_data:main"
 "torchref.mtz2map" = "torchref.cli.mtz2map:main"
 "torchref.validate-ded" = "torchref.cli.validate_ded:main"
-"torchref.phased-difference-map" = "torchref.cli.phased_difference_map:main"
+"torchref.difference-map" = "torchref.cli.difference_map:main"
+"torchref.phased-difference-map" = "torchref.cli.difference_map:main"
 "torchref.add-metadata" = "torchref.cli.add_metadata:main"
 "torchref.strip-altlocs" = "torchref.cli.strip_altlocs:main"
+"torchref.uniform-rfree" = "torchref.cli.uniform_rfree:main"
 
 [project.optional-dependencies]
 

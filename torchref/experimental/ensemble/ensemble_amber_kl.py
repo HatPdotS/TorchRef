@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Dict, Optional
 import numpy as np
 import torch
 
+from torchref.config import get_int_dtype
 from torchref.experimental.targets.amber_target import AMBER14_STANDARD, AmberTarget
 
 if TYPE_CHECKING:
@@ -136,7 +137,7 @@ class EnsembleAmberTarget(AmberTarget):
             self.register_buffer(
                 "_member_atom_idx",
                 torch.as_tensor(
-                    atom_idx_np, dtype=torch.long, device=self._model.device
+                    atom_idx_np, dtype=get_int_dtype(), device=self._model.device
                 ),
             )
         else:
@@ -172,8 +173,8 @@ class EnsembleAmberTarget(AmberTarget):
     def _member_xyz(self, i: int) -> torch.Tensor:
         """Member ``i`` coordinates ``(n_chem_atoms, 3)``, subset to kept atoms.
 
-        The returned ordering matches ``self._chem_model.pdb`` (what the OpenMM
-        atom map was built on), so it can be fed straight to
+        The returned ordering matches the rows of ``self._chem_model.to_dataframe()``
+        (what the OpenMM atom map was built on), so it can be fed straight to
         :meth:`AmberTarget._energy`.
         """
         xyz = self._model.xyz_per_member[i]

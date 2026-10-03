@@ -6,7 +6,6 @@ Tests symmetry operations for crystallographic space groups.
 
 import pytest
 import torch
-import torch.nn as nn
 
 
 class TestSpaceGroupInitialization:
@@ -131,7 +130,9 @@ class TestSpaceGroupMatrices:
 
         for i in range(sg.matrices.shape[0]):
             det = torch.linalg.det(sg.matrices[i])
-            assert torch.isclose(torch.abs(det), torch.tensor(1.0, dtype=det.dtype), atol=1e-5)
+            assert torch.isclose(
+                torch.abs(det), torch.tensor(1.0, dtype=det.dtype), atol=1e-5
+            )
 
 
 class TestSpaceGroupApplication:
@@ -143,20 +144,15 @@ class TestSpaceGroupApplication:
         from torchref.symmetry import SpaceGroup
 
         sg = SpaceGroup("P1")
-        # SpaceGroup expects (N, 3) format
         coords = random_fractional_coordinates(n_atoms=10)  # Shape: (N, 3)
 
-        # Apply symmetry (P1 only has identity)
-        # Output shape is (n_atoms, 3, n_operations)
-        transformed = sg(coords)
+        # Expansions are operation-major: (n_ops, N, 3)
+        transformed = sg.expand_positions(coords)
 
-        # Should have shape (n_atoms, 3, n_operations)
-        assert transformed.shape[0] == 10  # 10 atoms
-        assert transformed.shape[1] == 3   # 3D coordinates
-        assert transformed.shape[2] == 1   # 1 operation (identity)
-        # First (and only) symmetry mate should match original
+        assert transformed.shape == (1, 10, 3)
+        # The only mate is the identity
         assert torch.allclose(
-            transformed[:, :, 0],
+            transformed[0],
             coords.to(device=transformed.device, dtype=transformed.dtype),
             atol=1e-5,
         )
@@ -169,26 +165,21 @@ class TestSpaceGroupApplication:
         sg = SpaceGroup("P21")  # 2 operations
         coords = random_fractional_coordinates(n_atoms=5)  # (N, 3) format
 
-        # Output shape is (n_atoms, 3, n_operations)
-        transformed = sg(coords)
+        transformed = sg.expand_positions(coords)
 
-        # Should have 2 symmetry operations
-        assert transformed.shape[2] == 2
+        assert transformed.shape == (2, 5, 3)
 
     @pytest.mark.unit
-    def test_spacegroup_callable(self, random_fractional_coordinates):
-        """SpaceGroup should be callable."""
+    def test_expand_to_p1_flattens(self, random_fractional_coordinates):
+        """expand_to_P1 flattens the operation axis into one coordinate list."""
         from torchref.symmetry import SpaceGroup
 
         sg = SpaceGroup("P212121")
         coords = random_fractional_coordinates(n_atoms=10)  # (N, 3) format
 
-        # Should be callable
-        # Output shape is (n_atoms, 3, n_operations)
-        result = sg(coords)
+        result = sg.expand_to_P1(coords)
 
-        assert result is not None
-        assert result.shape[2] == 4  # 4 symmetry operations
+        assert result.shape == (40, 3)  # 4 operations x 10 atoms
 
 
 class TestSpaceGroupDeviceHandling:
@@ -199,10 +190,10 @@ class TestSpaceGroupDeviceHandling:
         """Test SpaceGroup on CPU."""
         from torchref.symmetry import SpaceGroup
 
-        sg = SpaceGroup("P21", device=torch.device('cpu'))
+        sg = SpaceGroup("P21", device=torch.device("cpu"))
 
-        assert sg.matrices.device.type == 'cpu'
-        assert sg.translations.device.type == 'cpu'
+        assert sg.matrices.device.type == "cpu"
+        assert sg.translations.device.type == "cpu"
 
     @pytest.mark.unit
     @pytest.mark.gpu
@@ -230,7 +221,23 @@ class TestSpaceGroupMapping:
     """Tests for space group name mapping."""
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("sg_name", ["P1", "P21", "P212121", "C2", "P21212"])
+    @pytest.mark.parametrize(
+        "sg_name",
+        [
+            "P1",
+            "P21",
+            "P212121",
+            "C2",
+            "P21212",
+            "P 1",
+            "P 21",
+            "P 21 21 21",
+            "P 43 21 2",
+            "P 3 2 1",
+            "P 6 2 2",
+            "P 2 3",
+        ],
+    )
     def test_common_spacegroups(self, sg_name):
         """Test common crystallographic space groups."""
         from torchref.symmetry import SpaceGroup
@@ -252,24 +259,31 @@ class TestSpaceGroupMapping:
             pass  # Some case variations may not be supported
 
 
-class TestSymmetryBackwardCompat:
-    """Tests for backward compatibility with Symmetry alias."""
+class TestSymmetryBase:
+    """Tests for the crystallography-free Symmetry base class."""
 
     @pytest.mark.unit
-    def test_symmetry_alias_exists(self):
-        """Test that Symmetry alias is available."""
-        from torchref.symmetry import Symmetry, SpaceGroup
+    def test_spacegroup_is_a_symmetry(self):
+        """SpaceGroup specialises Symmetry, so ops-only code accepts either."""
+        from torchref.symmetry import SpaceGroup, Symmetry
 
-        # Symmetry should be an alias for SpaceGroup
-        assert Symmetry is SpaceGroup
+        assert issubclass(SpaceGroup, Symmetry)
+        assert isinstance(SpaceGroup("P21"), Symmetry)
 
     @pytest.mark.unit
-    def test_symmetry_alias_works(self):
-        """Test that Symmetry alias works identically to SpaceGroup."""
+    def test_symmetry_from_raw_operations(self):
+        """A Symmetry can be built from an operation list with no space group."""
+        import torch
+
         from torchref.symmetry import Symmetry
 
-        sym = Symmetry("P21")
+        matrices = torch.eye(3).unsqueeze(0).repeat(2, 1, 1)
+        matrices[1] = -matrices[1]
+        translations = torch.zeros(2, 3)
 
-        assert sym.matrices is not None
+        sym = Symmetry(matrices=matrices, translations=translations)
+
         assert sym.n_ops == 2
-        assert sym.name == "P21"
+        # An inversion pair makes every reflection centric.
+        hkl = torch.tensor([[1, 2, 3], [4, 0, 1]])
+        assert bool(sym.is_centric(hkl).all())

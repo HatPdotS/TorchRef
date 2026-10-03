@@ -16,7 +16,6 @@ import pytest
 import reciprocalspaceship as rs
 import torch
 
-from torchref.base.french_wilson import is_centric_from_hkl
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model.model_ft import ModelFT
 
@@ -68,7 +67,7 @@ class TestDualHklRepresentation:
 
     def test_centrics_not_flagged(self, anomalous_data):
         d = anomalous_data
-        centric = is_centric_from_hkl(d.hkl, d.spacegroup)
+        centric = d.spacegroup.is_centric(d.hkl)
         assert not bool((d.friedel_flags & centric).any())
 
     def test_hkl_for_sf_fallback(self):
@@ -158,10 +157,22 @@ class TestAnomalousMtzOutput:
         for absent in ("F-model", "F-model(+)", "FWT", "DELFWT", "ANOM", "PANOM"):
             assert absent not in cols
 
-    def test_display_map_is_fft_safe(self, anomalous_data, pdb_dir, tmp_path):
+    def test_display_map_missing_only_where_no_mate_is_valid(
+        self, anomalous_data, pdb_dir, tmp_path
+    ):
+        """Map columns are finite for every ASU reflection with a valid mate and
+        missing (not zero) otherwise; merged F-obs stays FFT-safe."""
         out = self._write(anomalous_data, pdb_dir, tmp_path)
+        d = anomalous_data
+        F = d.F.cpu()
+        usable = d.masks().cpu() & torch.isfinite(F) & (F > 0)
+        valid_hkl = {tuple(h) for h in d.hkl.cpu()[usable].tolist()}
+        expected = np.array([tuple(h) in valid_hkl for h in out.index.tolist()])
+        assert expected.mean() > 0.99
         for col in ["FWT", "PHWT", "DELFWT", "PHDELWT", "F-model"]:
-            assert np.isfinite(out[col].to_numpy("float32")).all()
+            finite = np.isfinite(out[col].to_numpy("float32"))
+            np.testing.assert_array_equal(finite, expected, err_msg=col)
+        assert np.isfinite(out["F-obs"].to_numpy("float32")).all()
 
     def test_anomalous_map_phase_convention(self, anomalous_data, pdb_dir, tmp_path):
         """ANOM/PANOM must encode the standard anomalous-difference Fourier.

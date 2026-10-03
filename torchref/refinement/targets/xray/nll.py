@@ -1,5 +1,6 @@
-import torch
 from typing import TYPE_CHECKING
+
+import torch
 
 from torchref.base.targets.xray_likelihoods import (
     amplitude_var_from_sigma_obs,
@@ -24,13 +25,9 @@ class NLLXrayTarget(XrayTarget):
     here that does not. Was ``GaussianXrayTarget``; the taxonomy names the row, and
     "Gaussian" named the distribution, which ``nll_beta`` shares.
 
-    **Not a** :class:`SigmaAXrayTarget`, and deliberately so. Beyond needing no estimate, it
-    reads its amplitudes through :meth:`XrayTarget.get_data`, which goes via
-    ``ReflectionData._corrected_or_raw`` and falls back to **raw** amplitudes when the scaler
-    has not run; the sigma_A path calls ``get_corrected_data()``, which raises instead.
-    Moving this target onto that path would turn a silent fallback into a hard failure on
-    unscaled data -- a behaviour change, not a refactor. It would also lose the fused Triton
-    kernel and the ``median(sigma)*0.1`` clamp, neither of which the beta-variance path has.
+    Read observations through the dataset subset accessors, which expose live
+    corrections for ScaledDataset. The target uses a fused Triton kernel where
+    available and floors uncertainties at one tenth of their median.
 
     Attributes
     ----------

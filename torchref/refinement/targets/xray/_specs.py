@@ -7,6 +7,31 @@ from the other. Frozen dataclass rows plus a table that checks its own invariant
 following :mod:`torchref.utils.backends`; string literals validated against a table, not
 enums, is the house convention.
 
+## The observable
+
+Every row shares one forward model -- the scaled complex ``F_calc`` -- and each declares
+which measured column it compares against, via ``spec.observable``:
+
+* **amplitude** ``F_obs`` vs ``|F_calc|`` (all the sigma_A rows, and ``ls``)
+* **intensity** ``I_obs`` vs ``|F_calc|**2`` (``nll_i``)
+
+The intensity rows exist because ``F_obs`` on a merged dataset is a French-Wilson posterior
+rather than a measurement: strictly positive, so it reshapes the weak tail and erases
+negative intensities. A row whose signal lives in the *quadratic* part of the data reads
+``I_obs`` directly. See :mod:`torchref.refinement.targets.xray.observable`, which is the
+whole of that axis -- one ``get_data`` override, no runtime branch anywhere.
+
+Note the axis is **not square**: there is no intensity Rice, because Rice and the folded
+normal are distributions *of an amplitude* and the intensity analogue is the exponential /
+chi-square_1 Wilson distribution -- a different primitive, not a different variance.
+R-factors stay on amplitudes for every row regardless, so they remain comparable across the
+whole table.
+
+Intensity rows are **not** admissible as scale targets:
+:data:`~torchref.scaling.scaler_base.SCALE_TARGETS` normalises its objective by
+``1/sum(F_obs**2)``, which is dimensionally wrong for an ``O(F**4)`` loss, and that tuple
+fails closed on anything it does not list.
+
 ## The sigma_A family
 
 Each is a choice of (distribution) x (variance) x (mean):
@@ -54,6 +79,7 @@ from .ml_full import MLFullXrayTarget
 from .ml_noalpha import MLNoAlphaXrayTarget
 from .nll import NLLXrayTarget
 from .nll_beta import NLLBetaXrayTarget
+from .observable import IntensityObservableMixin, NLLIntensityXrayTarget  # noqa: F401
 
 #: The mode built when none is given.
 DEFAULT_XRAY_MODE = "ml"
@@ -75,17 +101,37 @@ class XrayTargetSpec:
     aliases
         Retired spellings kept working; resolving one emits a ``DeprecationWarning``. No row
         carries one at present, so the tests exercise this with their own table.
+    observable
+        Which measured column the row fits: ``"amplitude"`` or ``"intensity"``. Declarative
+        rather than a constructor flag, because it is a property of the row -- see
+        :mod:`torchref.refinement.targets.xray.observable`. Checked here against the class,
+        so a spec and its implementation cannot disagree.
     """
 
     name: str
     target_cls: type
     doc: str
     aliases: Tuple[str, ...] = ()
+    observable: str = "amplitude"
 
     def __post_init__(self):
         if not (isinstance(self.target_cls, type) and issubclass(self.target_cls, XrayTarget)):
             raise TypeError(
                 f"{self.name}: target_cls {self.target_cls!r} is not an XrayTarget subclass"
+            )
+        if self.observable not in ("amplitude", "intensity"):
+            raise ValueError(
+                f"{self.name}: observable must be 'amplitude' or 'intensity', "
+                f"got {self.observable!r}"
+            )
+        # The class declares its own observable (the mixin sets it); the spec must agree.
+        # Otherwise a row could advertise intensities while reading `sub.F`, which no test
+        # downstream of here would notice -- the loss would simply be wrong by 2|F|.
+        declared = getattr(self.target_cls, "observable", "amplitude")
+        if declared != self.observable:
+            raise ValueError(
+                f"{self.name}: spec says observable={self.observable!r} but "
+                f"{self.target_cls.__name__} says {declared!r}"
             )
 
 
@@ -170,6 +216,13 @@ XRAY_TARGETS = XrayTargetTable(
             target_cls=NLLXrayTarget,
             doc="Gaussian amplitude NLL weighted by the experimental sigma only. No "
             "model-error term, so it does not control overfitting.",
+        ),
+        XrayTargetSpec(
+            name="nll_i",
+            target_cls=NLLIntensityXrayTarget,
+            observable="intensity",
+            doc="Gaussian NLL on the observed INTENSITIES weighted by sigma(I). As 'nll' "
+            "but skips the French-Wilson conversion, which reshapes the weak tail.",
         ),
         XrayTargetSpec(
             name="ls",

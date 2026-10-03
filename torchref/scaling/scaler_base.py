@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 
 from torchref.base.math_torch import U_to_matrix
+from torchref.scaling.basis import chebyshev_design
 from torchref.base.metrics import (
     binwise_scale,
     nll_xray,
@@ -20,7 +21,7 @@ from torchref.base.metrics import (
     rfactor_work_free,
 )
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.config import get_complex_dtype, get_float_dtype
+from torchref.config import get_complex_dtype, get_float_dtype, get_int_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
@@ -146,19 +147,16 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     def _build_iso_design(self) -> torch.Tensor:
         """``(N, n_iso_coeff)`` Chebyshev design matrix for the isotropic scale.
 
-        The abscissa is ``sqrt(s_half_sq)``, i.e. ``sin(theta)/lambda``, mapped onto
-        ``[-1, 1]``. That coordinate rather than ``s**2`` because the modulation is gentle
-        through the bulk of the resolution range but has real structure in the first few
-        percent of ``s**2``; a basis uniform in ``s**2`` spends nearly all its resolution
-        where nothing happens.
+        The abscissa is ``sqrt(s_half_sq)``, i.e. ``sin(theta)/lambda``; see
+        :func:`torchref.scaling.basis.chebyshev_design` for why that coordinate.
+
+        No explicit range: this design is built once over all reflections and
+        then *sliced* wherever a subset is needed (``forward`` does exactly
+        that), so the mapping is the same everywhere it is used.
         """
-        x = torch.sqrt(self._s_half_sq.clamp(min=0))
-        lo, hi = x.min(), x.max()
-        u = (2 * (x - lo) / (hi - lo).clamp(min=1e-12) - 1).clamp(-1.0, 1.0)
-        cols = [torch.ones_like(u), u]
-        for _ in range(2, self.n_iso_coeff):
-            cols.append(2 * u * cols[-1] - cols[-2])  # Chebyshev recurrence
-        return torch.stack(cols[: self.n_iso_coeff], dim=1)
+        return chebyshev_design(
+            torch.sqrt(self._s_half_sq.clamp(min=0)), self.n_iso_coeff,
+        )
 
     def iso_log_scale(self, design: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Per-reflection isotropic log scale ``design @ c_iso``, clamped to ``[-10, 10]``.
@@ -266,7 +264,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 initial_log_scale.detach().cpu().numpy(),
             )
         with torch.no_grad():
-            target = initial_log_scale.detach().to(self.device)[self.bins.to(torch.int64)]
+            target = initial_log_scale.detach().to(self.device)[
+                self.bins.to(get_int_dtype())
+            ]
             design = self._iso_design.to(target.dtype)
             coeff = torch.linalg.lstsq(design, target.unsqueeze(1)).solution.squeeze(1)
         self.c_iso = nn.Parameter(coeff.detach().to(self.device))
@@ -322,7 +322,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Once this exists, :meth:`forward` uses it *instead of* the solvent model's global
         ``k_sol``/``B_sol``, which then stop affecting the result.
         """
-        mean_res = self._data.mean_res_per_bin()
+        mean_res = self._data.mean_res_per_bin(self.bins, self.nbins)
 
         # Seeded from k_sol * exp(-B s^2) with Phenix-like k=0.35, B=46.
         s_per_bin = 1.0 / (2.0 * mean_res + 1e-6)  # sin(theta)/lambda
@@ -347,6 +347,34 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             with torch.no_grad():
                 return torch.exp(self.iso_log_scale().mean()).item()
         return 1.0
+
+    def multiplicative_scale(self) -> torch.Tensor:
+        """Per-reflection factor taking model amplitudes to the observed scale.
+
+        ``K_overall * b_overall * anisotropy``: every multiplicative component
+        :meth:`forward` applies and none of the additive bulk-solvent term, so dividing
+        observed amplitudes by it returns them to the model's absolute scale, electrons.
+        Components not yet set up contribute ones.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(N,)`` over the scaler's full reflection list, detached, on
+            ``self.device`` in the scale parameters' dtype.
+        """
+        c_iso = getattr(self, "c_iso", None)
+        dtype = c_iso.dtype if c_iso is not None else get_float_dtype()
+        factor = torch.ones(int(self.bins.numel()), device=self.device, dtype=dtype)
+        with torch.no_grad():
+            if hasattr(self, "U"):
+                factor = factor * self.anisotropy_correction().to(factor)
+            if c_iso is not None:
+                factor = factor * torch.exp(self.iso_log_scale(self._iso_design)).to(
+                    factor
+                )
+            if getattr(self, "bin_wise_bfactor", None) is not None:
+                factor = factor * self.bin_wise_bfactor_correction().to(factor)
+        return factor.detach()
 
     def setup_bin_wise_bfactor(self):
         """Initialize bin-wise B-factor correction parameters."""
@@ -396,6 +424,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         mean_calc_intensity = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         counts = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         counts_vals = torch.ones_like(F_calc, device=self.device, dtype=fobs.dtype)
+        # dtype-ok: scatter_add index; int64 required on torch < 2.8
         bins_sel = self.bins.to(torch.int64)[sel]
         mean_obs_intensity = torch.scatter_add(
             mean_obs_intensity, 0, bins_sel, intensities[sel]
@@ -406,7 +435,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         counts = torch.scatter_add(counts, 0, bins_sel, counts_vals[sel])
         mean_obs_intensity = mean_obs_intensity / (counts + 1e-6)
         mean_calc_intensity = mean_calc_intensity / (counts + 1e-6)
-        return mean_obs_intensity, mean_calc_intensity, self._data.mean_res_per_bin()
+        mean_res = self._data.mean_res_per_bin(self.bins, self.nbins)
+        return mean_obs_intensity, mean_calc_intensity, mean_res
 
     def screen_solvent_params(
         self,
@@ -782,9 +812,10 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Deprecated and inert -- never read. Masking follows the input shape, so
             ``use_mask=False`` does *not* disable it.
         f_sol_override : torch.Tensor, optional
-            Raw solvent structure factors replacing the cached ``_f_sol_raw`` (k_sol / B_sol
-            / phase damping still applied). **Overwrites the cache**, so it persists into
-            later calls until invalidated. Used by ``CollectionScaler``.
+            Raw solvent structure factors used instead of the cached ``_f_sol_raw`` for this
+            call only (k_sol / B_sol / phase damping still applied); the cache is left
+            untouched. Shape ``(N,)`` or ``(B, N)`` -- a batched override keeps the batch
+            axis of the result. Used by ``CollectionScaler``.
 
         Returns
         -------
@@ -814,20 +845,25 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         else:
             aniso_correction = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
 
-        if f_sol_override is not None:
-            self._f_sol_raw = f_sol_override
+        # An override is consumed locally and never displaces the cache: it may carry a
+        # leading batch axis, and it belongs to one caller's fraction mixture rather than
+        # to this scaler's solvent model.
+        f_sol_raw_local = f_sol_override
 
         if hasattr(self, "solvent") and self.solvent is not None:
             # Lazily cache raw solvent SFs (FFT of mask) — only recomputed
             # when invalidated via _f_sol_raw = None (e.g. after update_solvent)
-            if self._f_sol_raw is None:
-                # The solvent mask is real density with no anomalous term, so
-                # F_sol(-h) is exactly conj(F_sol(h)) and evaluating on the
-                # canonical index already matches the canonical fcalc below.
-                self._f_sol_raw = self.solvent.get_rec_solvent(self.hkl)
+            if f_sol_raw_local is None:
+                if self._f_sol_raw is None:
+                    # The solvent mask is real density with no anomalous term, so
+                    # F_sol(-h) is exactly conj(F_sol(h)) and evaluating on the
+                    # canonical index already matches the canonical fcalc below.
+                    self._f_sol_raw = self.solvent.get_rec_solvent(self.hkl)
+                f_sol_raw_local = self._f_sol_raw
 
+            # Index the reflection axis, which is last for both (N,) and (B, N).
             f_sol_raw = (
-                self._f_sol_raw[mask] if apply_internal_mask else self._f_sol_raw
+                f_sol_raw_local[..., mask] if apply_internal_mask else f_sol_raw_local
             )
 
             if hasattr(self, "log_kmask"):
@@ -869,10 +905,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         else:
             b_overall = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
 
+        # f_sol already carries the batch axis when it came from a batched override;
+        # only a per-reflection (N,) solvent needs one added to broadcast.
+        f_sol_expanded = f_sol if f_sol.ndim >= 2 else f_sol.unsqueeze(0)
         fcalc = (
             K_overall.unsqueeze(0)
             * b_overall.unsqueeze(0)
-            * (aniso_correction.unsqueeze(0) * fcalc + f_sol.unsqueeze(0))
+            * (aniso_correction.unsqueeze(0) * fcalc + f_sol_expanded)
         )
 
         if not batched:

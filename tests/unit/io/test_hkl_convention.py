@@ -57,7 +57,11 @@ def anomalous_data(mtz_dir, tmp_path):
 
 
 def _model(pdb_dir, data):
-    m = ModelFT(verbose=0, max_res=2.0)
+    # hydrogens="strip": what is under test is the phase convention, and the absolute
+    # check compares against a gemmi calculation that calls ``remove_hydrogens``.
+    # Keeping or generating hydrogens would have torchref computing a different
+    # structure.
+    m = ModelFT(verbose=0, max_res=2.0, hydrogens="strip")
     m.load_pdb(str(pdb_dir / f"{CODE}.pdb"))
     m.cell, m.spacegroup = data.cell, data.spacegroup
     return m
@@ -120,7 +124,8 @@ class TestWrittenPhaseConvention:
 
         # Weak reflections have numerically unstable phases and the FFT is not
         # bit-reproducible run to run, so compare where there is real signal.
-        strong = a["F-model"].to_numpy() > np.median(a["F-model"].to_numpy())
+        fm = a["F-model"].to_numpy()
+        strong = fm > np.nanmedian(fm)
         diff = _circular_diff(a[column].to_numpy()[strong], b[column].to_numpy()[strong])
         # A sign flip on ~half the rows shows up as ~2*|phase|, i.e. tens of degrees.
         assert diff.max() < 5.0, f"{column}: max {diff.max():.2f} deg"

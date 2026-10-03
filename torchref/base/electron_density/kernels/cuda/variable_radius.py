@@ -58,7 +58,7 @@ if _HAVE_TRITON:
     @triton.jit
     def _wq_grid_fwd_kernel(
         n_items,
-        grid_ptr, density_map_ptr,
+        density_map_ptr,
         xyz_ptr, b_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr, mask_ptr,
         inv_frac_ptr, frac_ptr,
@@ -177,7 +177,7 @@ if _HAVE_TRITON:
     @triton.jit
     def _wq_grid_bwd_kernel(
         n_items,
-        grid_ptr, grad_density_map_ptr,
+        grad_density_map_ptr,
         xyz_ptr, b_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr, mask_ptr,
         inv_frac_ptr, frac_ptr,
@@ -327,7 +327,7 @@ if _HAVE_TRITON:
     @triton.jit
     def _wq_grid_aniso_fwd_kernel(
         n_items,
-        grid_ptr, density_map_ptr,
+        density_map_ptr,
         xyz_ptr, u_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr, mask_ptr,
         inv_frac_ptr, frac_ptr,
@@ -461,7 +461,7 @@ if _HAVE_TRITON:
     @triton.jit
     def _wq_grid_aniso_bwd_kernel(
         n_items,
-        grid_ptr, grad_density_map_ptr,
+        grad_density_map_ptr,
         xyz_ptr, u_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr, mask_ptr,
         inv_frac_ptr, frac_ptr,
@@ -666,12 +666,12 @@ if _HAVE_TRITON:
 
 def _launch_grid_fwd(out_flat, r2cut, mask, scene_buffers, dims):
     """Isotropic grid=(n_atoms,) forward (fixed FWD_BLOCK_V/FWD_NUM_WARPS)."""
-    (grid_flat, xyz, b, A, B, occ, inv_frac, frac) = scene_buffers
+    (xyz, b, A, B, occ, inv_frac, frac) = scene_buffers
     nx, ny, nz = dims
     n_atoms = r2cut.shape[0]
     _wq_grid_fwd_kernel[(n_atoms,)](
         n_atoms,
-        grid_flat, out_flat,
+        out_flat,
         xyz, b, A, B, occ,
         r2cut, mask,
         inv_frac, frac,
@@ -682,12 +682,12 @@ def _launch_grid_fwd(out_flat, r2cut, mask, scene_buffers, dims):
 
 def _launch_grid_aniso_fwd(out_flat, r2cut, mask, scene_buffers, dims):
     """Anisotropic grid=(n_atoms,) forward (fixed FWD_BLOCK_V/FWD_NUM_WARPS)."""
-    (grid_flat, xyz, u, A, B, occ, inv_frac, frac) = scene_buffers
+    (xyz, u, A, B, occ, inv_frac, frac) = scene_buffers
     nx, ny, nz = dims
     n_atoms = r2cut.shape[0]
     _wq_grid_aniso_fwd_kernel[(n_atoms,)](
         n_atoms,
-        grid_flat, out_flat,
+        out_flat,
         xyz, u, A, B, occ,
         r2cut, mask,
         inv_frac, frac,
@@ -705,14 +705,13 @@ class WorkQueueGridDensity(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, density_map, real_space_grid, xyz, b, occ, A, B,
+    def forward(ctx, density_map, xyz, b, occ, A, B,
                 r2cut, mask, inv_frac, frac):
         # Accumulate the splat into a copy of the running density_map (out =
         # density_map + splat) so the dispatch needs no separate zeros buffer + add.
         # A clone (not in-place) keeps this autograd-trivial AND safe for the AUTO
         # fallthrough: density_map is untouched if the kernel raises.
-        nx, ny, nz = real_space_grid.shape[:3]
-        grid_flat = real_space_grid.contiguous().view(-1)
+        nx, ny, nz = density_map.shape[:3]
         xyz = xyz.contiguous(); b = b.contiguous(); occ = occ.contiguous()
         A = A.contiguous(); B = B.contiguous()
         inv_frac_flat = inv_frac.contiguous().view(-1)
@@ -720,19 +719,19 @@ class WorkQueueGridDensity(torch.autograd.Function):
         out = density_map.contiguous().clone().view(-1)
         _launch_grid_fwd(
             out, r2cut, mask,
-            (grid_flat, xyz, b, A, B, occ, inv_frac_flat, frac_flat),
+            (xyz, b, A, B, occ, inv_frac_flat, frac_flat),
             (nx, ny, nz),
         )
-        ctx.save_for_backward(real_space_grid, xyz, b, occ, A, B,
+        ctx.dims = (nx, ny, nz)
+        ctx.save_for_backward(xyz, b, occ, A, B,
                               r2cut, mask, inv_frac, frac)
         return out.view(nx, ny, nz)
 
     @staticmethod
     def backward(ctx, grad_density_map):
-        (real_space_grid, xyz, b, occ, A, B,
+        (xyz, b, occ, A, B,
          r2cut, mask, inv_frac, frac) = ctx.saved_tensors
-        nx, ny, nz = real_space_grid.shape[:3]
-        grid_flat = real_space_grid.contiguous().view(-1)
+        nx, ny, nz = ctx.dims
         grad_dm = grad_density_map.contiguous().view(-1)
         inv_frac_flat = inv_frac.contiguous().view(-1)
         frac_flat = frac.contiguous().view(-1)
@@ -741,7 +740,7 @@ class WorkQueueGridDensity(torch.autograd.Function):
         grad_occ = torch.zeros_like(occ)
         _wq_grid_bwd_kernel[(r2cut.shape[0],)](
             r2cut.shape[0],
-            grid_flat, grad_dm,
+            grad_dm,
             xyz.contiguous(), b.contiguous(), A.contiguous(), B.contiguous(), occ.contiguous(),
             r2cut, mask,
             inv_frac_flat, frac_flat,
@@ -750,8 +749,8 @@ class WorkQueueGridDensity(torch.autograd.Function):
             num_warps=BWD_NUM_WARPS,
         )
         # out = density_map + splat -> grad wrt density_map is identity.
-        # grads for: density_map, real_space_grid, xyz, b, occ, A, B, r2cut, mask, inv_frac, frac
-        return (grad_density_map, None, grad_xyz, grad_b, grad_occ, None, None,
+        # grads for: density_map, xyz, b, occ, A, B, r2cut, mask, inv_frac, frac
+        return (grad_density_map, grad_xyz, grad_b, grad_occ, None, None,
                 None, None, None, None)
 
 
@@ -762,11 +761,10 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
     ``grad_u`` (6 components) in place of ``grad_b``."""
 
     @staticmethod
-    def forward(ctx, density_map, real_space_grid, xyz, u, occ, A, B,
+    def forward(ctx, density_map, xyz, u, occ, A, B,
                 r2cut, mask, inv_frac, frac):
         # Accumulate into a copy of the running density_map (see the iso forward).
-        nx, ny, nz = real_space_grid.shape[:3]
-        grid_flat = real_space_grid.contiguous().view(-1)
+        nx, ny, nz = density_map.shape[:3]
         xyz = xyz.contiguous(); u = u.contiguous(); occ = occ.contiguous()
         A = A.contiguous(); B = B.contiguous()
         inv_frac_flat = inv_frac.contiguous().view(-1)
@@ -774,19 +772,19 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
         out = density_map.contiguous().clone().view(-1)
         _launch_grid_aniso_fwd(
             out, r2cut, mask,
-            (grid_flat, xyz, u, A, B, occ, inv_frac_flat, frac_flat),
+            (xyz, u, A, B, occ, inv_frac_flat, frac_flat),
             (nx, ny, nz),
         )
-        ctx.save_for_backward(real_space_grid, xyz, u, occ, A, B,
+        ctx.dims = (nx, ny, nz)
+        ctx.save_for_backward(xyz, u, occ, A, B,
                               r2cut, mask, inv_frac, frac)
         return out.view(nx, ny, nz)
 
     @staticmethod
     def backward(ctx, grad_density_map):
-        (real_space_grid, xyz, u, occ, A, B,
+        (xyz, u, occ, A, B,
          r2cut, mask, inv_frac, frac) = ctx.saved_tensors
-        nx, ny, nz = real_space_grid.shape[:3]
-        grid_flat = real_space_grid.contiguous().view(-1)
+        nx, ny, nz = ctx.dims
         grad_dm = grad_density_map.contiguous().view(-1)
         inv_frac_flat = inv_frac.contiguous().view(-1)
         frac_flat = frac.contiguous().view(-1)
@@ -795,7 +793,7 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
         grad_occ = torch.zeros_like(occ)
         _wq_grid_aniso_bwd_kernel[(r2cut.shape[0],)](
             r2cut.shape[0],
-            grid_flat, grad_dm,
+            grad_dm,
             xyz.contiguous(), u.contiguous(), A.contiguous(), B.contiguous(), occ.contiguous(),
             r2cut, mask,
             inv_frac_flat, frac_flat,
@@ -804,7 +802,7 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
             num_warps=BWD_NUM_WARPS,
         )
         # out = density_map + splat -> grad wrt density_map is identity.
-        return (grad_density_map, None, grad_xyz, grad_u, grad_occ, None, None,
+        return (grad_density_map, grad_xyz, grad_u, grad_occ, None, None,
                 None, None, None, None)
 
 
@@ -821,15 +819,9 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
 # wrappers do for CUDA what ``add_*_mps_var`` already did for Metal: square the
 # radius and build the coefficient mask, rather than leaving that to the caller.
 #
-# ``density_map`` is passed where the ``autograd.Function`` wants
-# ``real_space_grid``. That is exact, not a convenience: ``forward``/``backward``
-# use that argument only for ``.shape[:3]`` and for a ``grid_flat`` pointer handed
-# to the kernel as ``grid_ptr`` -- which none of the four Triton kernels ever
-# loads, because voxel coordinates are derived arithmetically from ``frac`` and the
-# grid dims. ``density_map`` has the same ``(nx, ny, nz)`` shape, so both uses are
-# satisfied. If a kernel is ever changed to actually read ``grid_ptr``, this breaks
-# and the right fix is to delete that dead parameter, not to thread a real grid
-# back through here.
+# No coordinate grid is threaded anywhere: every voxel's Cartesian position is
+# derived arithmetically in-kernel from ``frac`` and the grid dims, so ``density_map``
+# alone carries the ``(nx, ny, nz)`` shape the launch needs.
 
 
 def why_unavailable():
@@ -869,7 +861,6 @@ def add_isotropic_cuda_var(
     """
     return WorkQueueGridDensity.apply(
         density_map,
-        density_map,  # stands in for real_space_grid; see the note above
         xyz,
         adp,
         occ,
@@ -893,7 +884,6 @@ def add_anisotropic_cuda_var(
     """
     return WorkQueueGridDensityAniso.apply(
         density_map,
-        density_map,  # stands in for real_space_grid; see the note above
         xyz,
         u,
         occ,

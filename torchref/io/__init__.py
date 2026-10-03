@@ -21,33 +21,39 @@ from .cif import (
     RestraintCIFReader,
 )
 
-# Metadata
-from .metadata import RefinementMetadata
-
-# Top-level object-creation readers
-from .readers import read_cif, read_mtz, read_pdb
-
 # Dataset classes (primary API)
 from .datasets import (
     CrystalDataset,
     DatasetCollection,
-    ReflectionData,
     FcalcDataset,
+    MergeStats,
+    ReflectionData,
+    ScaledDataset,
+    merge_to_spacegroup,
 )
+
+# IHM ensemble support (mapping always available; reader/writer need python-ihm)
+from .ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMStateInfo
+
+# Metadata
+from .metadata import RefinementMetadata
 
 # Reader classes (from format modules)
 from .mtz import MTZReader
 from .pdb import PDBReader
 
-# IHM ensemble support (mapping always available; reader/writer need python-ihm)
-from .ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMStateInfo
+# Top-level object-creation readers
+from .readers import read_cif, read_mtz, read_pdb
 
 __all__ = [
     # Primary API - Datasets
     "CrystalDataset",
     "ReflectionData",
+    "ScaledDataset",
     "DatasetCollection",
     "FcalcDataset",
+    "merge_to_spacegroup",
+    "MergeStats",
     # Top-level readers
     "read_mtz",
     "read_cif",

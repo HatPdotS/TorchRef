@@ -18,8 +18,8 @@ import pandas as pd
 import pytest
 
 from torchref.io.cif_readers import RestraintCIFReader
-from torchref.restraints.library import get_library_manager
-from torchref.restraints.restraints_helper import (
+from torchref.topology.monomer.library import get_library_manager
+from torchref.topology.monomer.cif import (
     split_data_blocks,
     validate_restraint_data,
 )
@@ -230,7 +230,7 @@ class TestChiralitySpellings:
     """The CCP4 library writes both ``positive`` and the truncated ``positiv``."""
 
     def test_short_spellings_are_not_dropped(self):
-        from torchref.restraints.builders_fast import PreprocessedCIF
+        from torchref.topology.builders import PreprocessedCIF
 
         chirals = pd.DataFrame(
             {
@@ -243,7 +243,7 @@ class TestChiralitySpellings:
         )
         signs = PreprocessedCIF({})._preprocess_chirals(chirals)["volume_sign"]
 
-        # NaN here is not a rounding detail: builders_numba skips those rows, so
+        # NaN here is not a rounding detail: match_chirals skips those rows, so
         # an unrecognised spelling deletes the restraint outright.
         assert not np.isnan(signs).any()
         assert signs.tolist() == [1.0, 1.0, -1.0, 0.0]

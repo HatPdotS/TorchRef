@@ -4,7 +4,31 @@ import numpy as np
 import pytest
 import torch
 
-from torchref.symmetry.reciprocal_symmetry import canonicalize_hkl
+from torchref.symmetry import SpaceGroup
+
+
+# The HKL verbs live on the space group now. These adapters keep the assertions
+# below -- which pin the phase-sign contract -- expressed in terms of the space
+# group specifications the cases are parametrised over.
+def canonicalize_hkl(hkl, sg, include_friedel=True, device=None, sort=True):
+    return SpaceGroup(sg).canonicalize_hkl(
+        hkl, include_friedel=include_friedel, device=device, sort=sort
+    )
+
+
+def expand_hkl(hkl, sg, include_friedel=True, remove_absences=True, device=None):
+    return SpaceGroup(sg).expand_hkl(
+        hkl,
+        include_friedel=include_friedel,
+        remove_absences=remove_absences,
+        device=device,
+    )
+
+
+def reduce_hkl(hkl, sg, include_friedel=True, device=None):
+    return SpaceGroup(sg).reduce_hkl(
+        hkl, include_friedel=include_friedel, device=device
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +65,6 @@ class TestCanonicalizeHkl:
     )
     def test_equivalents_converge(self, sg):
         """All symmetry equivalents of a reflection map to the same canonical HKL."""
-        from torchref.symmetry.reciprocal_symmetry import expand_hkl
-
         # Use (1,1,5) which satisfies centering conditions for C2
         hkl_asu = torch.tensor([[1, 1, 5]], dtype=torch.int32)
         hkl_p1, _, _ = expand_hkl(hkl_asu, sg, include_friedel=True)
@@ -70,7 +92,6 @@ class TestCanonicalizeHkl:
         then verify canonicalization produces a single consistent SF.
         """
         import gemmi
-        from torchref.symmetry.spacegroup import SpaceGroup
 
         # Reference SF at canonical h
         F_ref = 10.0
@@ -237,6 +258,38 @@ class TestCanonicalizeHkl:
         hkl = torch.tensor([[-1, 0, 0]], dtype=torch.int32)
         with pytest.raises(ValueError, match="could not map"):
             canonicalize_hkl(hkl, "P1", include_friedel=False)
+
+    # One group per CCP4 reciprocal-ASU condition, plus centred settings.
+    ASU_GROUPS = ["P1", "P21", "C2", "P212121", "I222", "P4", "P41212", "I41/a",
+                  "P3", "P3121", "P3112", "R3", "P6", "P63", "P6122", "P23", "I23",
+                  "P432", "Fm-3m"]
+
+    @pytest.mark.parametrize("sg", ASU_GROUPS)
+    def test_matches_gemmi_asu(self, sg):
+        """Canonical indices agree with gemmi's own ASU mapping, row by row."""
+        import gemmi
+
+        g = torch.Generator().manual_seed(0)
+        hkl = torch.randint(-6, 7, (300, 3), generator=g, dtype=torch.int32)
+        can, _, _, _ = canonicalize_hkl(hkl, sg, sort=False)
+        group = gemmi.SpaceGroup(SpaceGroup(sg)._gemmi.xhm())
+        asu, ops = gemmi.ReciprocalAsu(group), group.operations()
+        want = torch.tensor(
+            [asu.to_asu(row, ops)[0] for row in hkl.tolist()], dtype=torch.int32
+        )
+        assert torch.equal(can, want)
+
+    @pytest.mark.parametrize("sg", ["P1", "P21", "C2", "P43212", "P63", "R3", "I23"])
+    def test_unsorted_is_sorted_output_in_input_order(self, sg):
+        """``sort=False`` returns the sorted outputs un-permuted, and no permutation."""
+        g = torch.Generator().manual_seed(1)
+        hkl = torch.randint(-8, 9, (2000, 3), generator=g, dtype=torch.int32)
+        can_s, ps_s, ff_s, si = canonicalize_hkl(hkl, sg)
+        can_u, ps_u, ff_u, none = canonicalize_hkl(hkl, sg, sort=False)
+        assert none is None
+        assert torch.equal(can_u[si], can_s)
+        assert torch.equal(ff_u[si], ff_s)
+        assert torch.equal(ps_u[si], ps_s)
 
     def test_empty_input(self):
         """Empty input should return empty tensors without error."""

@@ -50,7 +50,7 @@ class AngleTarget(GeometryTarget):
 
     def stats(self) -> Dict[str, StatEntry]:
         """Get angle restraint statistics."""
-        deviations_rad, sigmas_rad = self.restraints.angle_deviations()
+        deviations_rad, sigmas_rad = self.restraints.angle_deviations(self.model.xyz())
         if len(deviations_rad) == 0:
             return {}
 

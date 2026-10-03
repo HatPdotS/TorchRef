@@ -488,7 +488,7 @@ class EnsembleRefinement(LBFGSRefinement):
                 )
         self.model.cell = self.reflection_data.cell
         self.model.spacegroup = self.reflection_data.spacegroup
-        self.model.setup_grid(max_res=self.max_res)
+        self.model.max_res = self.max_res
 
         # Rebuild the scaler against the ensemble model.
         self.scaler = Scaler(
@@ -1708,7 +1708,7 @@ class EnsembleRefinement(LBFGSRefinement):
         if flat is None or flat.dim() != 2 or flat.shape[1] != 3:
             return None
         n_rows = int(flat.shape[0])
-        elements = self.model.pdb["element"].astype(str).str.strip().tolist()
+        elements = self.model.ctx.topology.atoms.element.tolist()
         if len(elements) != n_rows:
             return None
         import gemmi

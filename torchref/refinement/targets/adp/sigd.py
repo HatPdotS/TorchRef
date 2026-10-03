@@ -118,6 +118,7 @@ class ADPSigdTarget(ADPTarget):
         beta = float((adp - self._b_shift).clamp(min=1e-3).mean()) * (alpha - 1.0)
         # std(log B) = sqrt(trigamma(alpha)); torch.polygamma(1, .) is trigamma.
         implied_std = math.sqrt(
+            # dtype-ok: deliberate float64 for a scalar polygamma; extracted via float()
             float(torch.polygamma(1, torch.tensor(alpha, dtype=torch.float64)))
         )
 

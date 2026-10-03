@@ -7,8 +7,8 @@ backward compatibility:
 
 CollectionDifferenceTarget
     Multi-timepoint difference target (primary optimization driver).
-CollectionRiceTarget
-    Multi-timepoint Rice maximum-likelihood amplitude target.
+CollectionMLTarget
+    Read MLF at one shared Luzzati beta; the absolute channel.
 MultiModelGeometryTarget
     Geometry restraints applied to the shared base models.
 MultiModelADPTarget
@@ -28,9 +28,9 @@ from torchref.refinement.targets.base import Target
 
 # Back-compat re-exports of the relocated generic collection targets.
 from torchref.refinement.targets.collection import (  # noqa: F401
+    CollectionDifferenceIntensityTarget,
     CollectionDifferenceTarget,
     CollectionMLTarget,
-    CollectionRiceTarget,
     MultiModelADPTarget,
     MultiModelGeometryTarget,
 )

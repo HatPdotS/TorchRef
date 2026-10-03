@@ -90,17 +90,14 @@ class TestScalingCalculations:
     @pytest.mark.unit
     def test_resolution_binning_logic(self, mock_hkl_indices, mock_cell):
         """Test resolution binning creates correct number of bins."""
-        from torchref.base.reciprocal import get_s
+        from torchref.base.reciprocal import get_scattering_vectors
 
-        hkl = mock_hkl_indices(n_reflections=1000).numpy()
-        cell = mock_cell.numpy()
-        
-        # Calculate s values
-        s = get_s(hkl, cell)
-        
+        hkl = mock_hkl_indices(n_reflections=1000)
+        s = get_scattering_vectors(hkl, mock_cell).norm(dim=1)
+
         # Create bins
         nbins = 10
-        s_sorted = torch.tensor(sorted(s))
+        s_sorted = torch.sort(s).values
         bin_edges = torch.linspace(s_sorted[0], s_sorted[-1], nbins + 1)
         
         assert len(bin_edges) == nbins + 1
@@ -137,11 +134,10 @@ class TestBFactorScaling:
     @pytest.mark.unit
     def test_b_factor_debye_waller(self, mock_hkl_indices, mock_cell):
         """Test Debye-Waller factor calculation."""
-        from torchref.base.reciprocal import get_s
+        from torchref.base.reciprocal import get_scattering_vectors
 
-        hkl = mock_hkl_indices(n_reflections=100).numpy()
-        cell = mock_cell.numpy()
-        s = torch.tensor(get_s(hkl, cell))
+        hkl = mock_hkl_indices(n_reflections=100)
+        s = get_scattering_vectors(hkl, mock_cell).norm(dim=1)
         
         B_factor = 20.0  # Å²
         
@@ -155,20 +151,15 @@ class TestBFactorScaling:
     @pytest.mark.unit
     def test_b_factor_high_resolution_attenuation(self, mock_cell):
         """Higher resolution (larger s) should have more attenuation."""
-        from torchref.base.reciprocal import get_s
+        from torchref.base.reciprocal import get_scattering_vectors
 
-        cell = mock_cell.numpy()
-        
         # Low and high resolution reflections
-        hkl_low = torch.tensor([[1, 0, 0]], dtype=torch.float64).numpy()
-        hkl_high = torch.tensor([[10, 10, 10]], dtype=torch.float64).numpy()
-        
-        s_low = get_s(hkl_low, cell)[0]
-        s_high = get_s(hkl_high, cell)[0]
-        
+        hkl = torch.tensor([[1, 0, 0], [10, 10, 10]])
+        s_low, s_high = get_scattering_vectors(hkl, mock_cell).norm(dim=1)
+
         B_factor = 20.0
-        dw_low = torch.exp(torch.tensor(-B_factor * (s_low ** 2) / 4))
-        dw_high = torch.exp(torch.tensor(-B_factor * (s_high ** 2) / 4))
+        dw_low = torch.exp(-B_factor * s_low**2 / 4)
+        dw_high = torch.exp(-B_factor * s_high**2 / 4)
         
         # High resolution should be more attenuated
         assert dw_high < dw_low
@@ -201,3 +192,39 @@ class TestAnisotropicScaling:
         for i in range(5):
             mat = U_matrices[i]
             assert torch.allclose(mat, mat.T, atol=1e-6)
+
+
+class TestBinwiseMeans:
+    """The scaler's per-bin means use the scaler's own bins."""
+
+    @pytest.fixture
+    def scaler_and_data(self, mtz_dir):
+        from torchref.io import ReflectionData
+        from torchref.scaling.scaler_base import ScalerBase
+
+        data = ReflectionData(verbose=0, device="cpu").load_mtz(
+            str(mtz_dir / "1DAW.mtz")
+        )
+        return ScalerBase(data=data, nbins=10, verbose=0), data
+
+    @pytest.mark.unit
+    def test_mean_resolution_is_per_scaler_bin(self, scaler_and_data):
+        scaler, data = scaler_and_data
+        fcalc = data.F.to(torch.complex64)
+        _, _, mean_res = scaler.get_binwise_mean_intensity(fcalc)
+
+        valid = data.masks()
+        per_bin = [(scaler.bins == b) & valid for b in range(scaler.nbins)]
+        expected = torch.stack([data.resolution[sel].mean() for sel in per_bin])
+        torch.testing.assert_close(mean_res, expected)
+
+    @pytest.mark.unit
+    def test_later_binning_of_the_dataset_does_not_move_the_shells(
+        self, scaler_and_data
+    ):
+        scaler, data = scaler_and_data
+        fcalc = data.F.to(torch.complex64)
+        before = scaler.get_binwise_mean_intensity(fcalc)[2]
+        data.get_bins(n_bins=3, min_per_bin=10)
+        after = scaler.get_binwise_mean_intensity(fcalc)[2]
+        torch.testing.assert_close(after, before)

@@ -175,10 +175,6 @@ class SigmaAXrayTarget(XrayTarget):
         eps_full, dss_full = self._geom()
         eps_full = eps_full.to(F_calc_full.dtype)
         dss_full = dss_full.to(F_calc_full.dtype)
-        # ONE data path. `sub.F` / `sub.sigF` go through `_corrected_or_raw()`, which
-        # silently falls back to RAW amplitudes when the scaler has not run, while the
-        # estimator below is fed `get_corrected_data()`, which raises instead. Mixing the two
-        # can put raw amplitudes and a scaled-data variance in the same loss.
         F_obs_full, sigma_full = self._data.get_corrected_data()
         F_obs_full = F_obs_full.to(F_calc_full.dtype).reshape(-1)
         centric_full = self._data.centric

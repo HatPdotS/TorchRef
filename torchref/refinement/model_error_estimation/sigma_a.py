@@ -17,13 +17,40 @@ it *inside* the method that uses it -- stays free of an import cycle.
 
 import math
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
-from torchref.base.french_wilson import epsilon_from_hkl  # noqa: F401  (re-export)
 from torchref.config import get_float_dtype
+
+from ._shells import interp_in_dss as _interp_in_dss
+from ._shells import segment_layout as _segment_layout  # noqa: F401
+from ._shells import segsum as _segsum
+
+def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
+    """Per-reflection epsilon, tolerating a missing space group.
+
+    Thin adapter over :meth:`~torchref.symmetry.symmetry.Symmetry.epsilon`, which owns
+    the multiplicity count. It exists because reflection data may carry no space group
+    at all, and every consumer here would otherwise repeat the same guard.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices, shape ``(N, 3)``.
+    spacegroup : Symmetry or None
+        The group. ``None`` means no symmetry information, which yields ones -- the
+        same answer P1 gives.
+
+    Returns
+    -------
+    torch.Tensor
+        Multiplicities, shape ``(N,)``, at the configured float dtype, on ``hkl``'s
+        device.
+    """
+    if spacegroup is None or not hasattr(spacegroup, "epsilon"):
+        return torch.ones(hkl.shape[0], device=hkl.device, dtype=get_float_dtype())
+    return spacegroup.epsilon(hkl)
 
 # --- sigma_A estimator constants -------------------------------------------------
 #: Upper bound on the per-shell ``sigma_A``, i.e. the floor on the model-error variance at
@@ -228,47 +255,6 @@ def _rice_nll_reduced(
         + math.log(2.0)
     )
     return torch.where(centric, cen, acen)
-
-
-@lru_cache(maxsize=8)
-def _segment_layout(lengths: Tuple[int, ...], device_str: str):
-    """``(index, mask)`` placing contiguous segments on a padded ``(n_seg, max_len)`` grid.
-
-    Cached: ``_solve_sigma_a`` reduces ``n_grid * n_stages`` times over one layout.
-    ``lengths`` is a tuple so it can be a cache key.
-    """
-    device = torch.device(device_str)
-    L = torch.tensor(lengths, dtype=torch.long, device=device)
-    total = int(L.sum())
-    max_len = int(L.max()) if L.numel() else 0
-    zero = torch.zeros(1, dtype=torch.long, device=device)
-    starts = torch.cat([zero, L.cumsum(0)[:-1]])
-    ar = torch.arange(max_len, device=device).reshape(1, max_len)
-    # Clamp keeps the gather in bounds for the padding slots; `mask` zeroes them anyway.
-    index = (starts.reshape(-1, 1) + ar).clamp(max=max(total - 1, 0))
-    mask = ar < L.reshape(-1, 1)
-    return index, mask
-
-
-def _segsum(x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-    """Sum ``x`` over contiguous segments, reducing along a padded trailing axis.
-
-    Replaces ``torch.segment_reduce``, which is unimplemented on MPS. Keeps the properties
-    that op was chosen for: atomic-free, one fixed reduction order per segment, so the
-    result is bit-stable run to run and does not depend on ``scatter_add``'s CUDA atomicAdd
-    accumulation order (the original GPU non-determinism bug -- see
-    ``tests/unit/refinement/test_estimate_beta_determinism.py``).
-
-    Deliberately NOT ``cumsum[end] - cumsum[start]``, the usual contiguous-segment trick:
-    that recovers each shell sum by subtracting two running totals of the whole array,
-    reintroducing the large-minus-large this module is written to avoid.
-
-    ``x`` reduces over its last axis, so a leading batch dimension (the grid candidates)
-    is handled in one call. Segments here differ in length by at most one element, so the
-    padding overhead is at most ``n_seg`` slots.
-    """
-    index, mask = _segment_layout(tuple(int(v) for v in lengths), str(x.device))
-    return (x[..., index] * mask.to(x.dtype)).sum(dim=-1)
 
 
 def _grid_ladder(n: int, ratio: float, device, dtype) -> torch.Tensor:
@@ -523,7 +509,7 @@ def estimate_beta(
     out_dtype = F_obs.dtype
 
     dtype = torch.promote_types(get_float_dtype(), out_dtype)
-    if dtype == torch.float64 and device.type == "mps":
+    if dtype == torch.float64 and device.type == "mps":  # dtype-ok: MPS capability guard, not an allocation
         raise RuntimeError(
             "MPS has no float64; set the defaults float dtype to float32 or use CPU"
         )
@@ -708,19 +694,6 @@ def estimate_beta(
             rho_min=float((C / (Sigma_P * B).clamp(min=1e-30).sqrt()).min()),
         ),
     )
-
-
-def _interp_in_dss(dss_all, bin_dss, vals):
-    """Linear interpolation of per-bin ``vals`` (at ``bin_dss``) to all
-    reflections by their ``d_star_sq``; clamp-to-edge outside the range."""
-    n_bins = bin_dss.numel()
-    if n_bins == 1:
-        return torch.full_like(dss_all, float(vals[0]))
-    idx = torch.searchsorted(bin_dss, dss_all).clamp(1, n_bins - 1)
-    x0 = bin_dss[idx - 1]
-    x1 = bin_dss[idx]
-    wlin = ((dss_all - x0) / (x1 - x0).clamp(min=1e-30)).clamp(0.0, 1.0)
-    return (1 - wlin) * vals[idx - 1] + wlin * vals[idx]
 
 
 # =====================================================================

@@ -35,12 +35,31 @@ import pytest
 import torch
 
 from torchref.config import get_float_dtype
-from torchref.symmetry.reciprocal_symmetry import (
-    canonicalize_hkl,
-    expand_hkl,
-    reduce_hkl,
-)
-from torchref.symmetry.spacegroup import SpaceGroup
+from torchref.symmetry import SpaceGroup
+
+
+# The HKL verbs live on the space group now. These adapters keep the assertions
+# below -- which pin the phase-sign contract -- expressed in terms of the space
+# group specifications the cases are parametrised over.
+def canonicalize_hkl(hkl, sg, include_friedel=True, device=None):
+    return SpaceGroup(sg).canonicalize_hkl(
+        hkl, include_friedel=include_friedel, device=device
+    )
+
+
+def expand_hkl(hkl, sg, include_friedel=True, remove_absences=True, device=None):
+    return SpaceGroup(sg).expand_hkl(
+        hkl,
+        include_friedel=include_friedel,
+        remove_absences=remove_absences,
+        device=device,
+    )
+
+
+def reduce_hkl(hkl, sg, include_friedel=True, device=None):
+    return SpaceGroup(sg).reduce_hkl(
+        hkl, include_friedel=include_friedel, device=device
+    )
 
 # Groups spanning the three regimes above. P1 is the degenerate control (no
 # translations at all); the screw-axis groups are the ones with real signal.

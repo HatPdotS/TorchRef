@@ -608,7 +608,7 @@ def _prep(density_map, xyz, radius_per_atom, *tensors):
             f"sphere_splat is a CPU kernel; got device {density_map.device}"
         )
     dtype = density_map.dtype
-    if dtype not in (torch.float32, torch.float64):
+    if dtype not in (torch.float32, torch.float64):  # dtype-ok: validation guard, not an allocation
         raise ValueError(f"sphere_splat supports float32/float64, got {dtype}")
     for t in (xyz, radius_per_atom) + tensors:
         if t.dtype != dtype:

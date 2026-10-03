@@ -2,26 +2,29 @@ Geometry Restraints
 ===================
 
 Geometry restraints keep the model chemically reasonable during refinement.
-:class:`~torchref.restraints.Restraints` (the exported alias of
-``RestraintsNew``) builds and holds bond, angle, torsion, planarity, chirality,
-and non-bonded (VDW) restraints.
+:class:`~torchref.topology.Restraints` builds and holds bond, angle, torsion,
+planarity, chirality, and non-bonded (VDW) restraints.
 
 Restraint Setup
 ---------------
 
-You do not normally construct ``Restraints`` yourself. ``model.restraints`` is a
-lazy property that builds them from the monomer library — fetched per monomer on
-demand — on first access. Point it at extra CIF definitions *before* that first
-access:
+You do not normally construct ``Restraints`` yourself. They live on the model's
+context, ``model.ctx.restraints``, and ``model.restraints`` builds them from the
+monomer library -- fetched per monomer on demand -- on first access. Point it at
+extra CIF definitions *before* that first access:
 
 .. code-block:: python
 
-   model.set_restraints_cif("ligand.cif")     # or a list of paths; chainable
+   model.ctx.set_cif_path("ligand.cif")       # or a list of paths
    restraints = model.restraints              # built here, on first access
+   deviations, sigmas = restraints.bond_deviations(model.xyz())
 
-``Restraints.__init__`` takes a PDB DataFrame plus accessor callables
-(``pdb, cif_path, xyz_fn, adp_fn, vdw_radii_fn, cell, spacegroup, links,
-verbose``), not a model — that is what the lazy property assembles for you.
+Restraints hold no reference to the model: every evaluation takes the
+coordinates (or B-factors) it scores, and the non-bonded pair list is rebuilt
+from the coordinates the non-bonded target passes in. ``Restraints.__init__``
+takes a node-only topology (``model.ctx.topology``, or
+``Topology.from_table(table)``) and the coordinates to build over
+(``topology, cif_path, xyz, cell, spacegroup, links, verbose, nonbonded``).
 
 Residues for which no restraints could be built are frozen in ``xyz`` rather
 than refined unrestrained, so a missing ligand definition shows up as an
@@ -103,9 +106,11 @@ in the deviation from ideal:
        + \log \sigma_i + \tfrac{1}{2}\log 2\pi \right]
 
 with :math:`q` the interatomic distance or the bond angle (angles in radians,
-sigmas converted from the CIF's degrees). Torsions use a periodic von Mises NLL,
-planarity restrains a group's out-of-plane deviations, chirality preserves
-stereochemistry, and the non-bonded term is a steep PROLSQ-style repulsion
+sigmas converted from the CIF's degrees). Torsions are measured with the IUPAC sign
+the monomer library uses (the same as ``gemmi.calculate_dihedral``) and scored with
+a periodic von Mises NLL, planarity restrains a group's out-of-plane deviations,
+chirality preserves stereochemistry, and the non-bonded term is a steep PROLSQ-style
+repulsion
 (:math:`E \sim \text{violation}^4`) applied to symmetry mates as well as to the
 asymmetric unit.
 
@@ -118,8 +123,8 @@ the geometry *targets*, not off ``Restraints``:
 .. code-block:: python
 
    # Raw per-restraint deviations and their sigmas
-   deviations, sigmas = restraints.bond_deviations()
-   deviations, sigmas = restraints.angle_deviations()
+   deviations, sigmas = restraints.bond_deviations(model.xyz())
+   deviations, sigmas = restraints.angle_deviations(model.xyz())
 
    # Summary statistics, keyed by component: bond, angle, torsion, planarity,
    # chiral, nonbonded, ramachandran

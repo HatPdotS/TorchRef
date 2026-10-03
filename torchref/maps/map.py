@@ -21,9 +21,9 @@ from typing import Optional, Tuple
 
 import torch
 
+from torchref.base.fourier.coefficients import map_coefficients
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.cif import write_map
-from torchref.symmetry.grid_utils import calculate_optimal_grid_size
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
@@ -45,6 +45,11 @@ class Map(DeviceMixin):
         Default is ``"2Fo-Fc"``. Note ``"2Fo-Fc"`` is a *plain* 2Fo-Fc map
         (no figure-of-merit ``m`` and no sigma-A coefficient ``D``; i.e.
         ``m=1``, ``D=1``), not a likelihood-weighted 2mFo-DFc map.
+    units : str, optional
+        ``"normalized"`` (default) keeps the FFT's ``1/N`` normalisation;
+        ``"electrons"`` gives ``(1/V) sum_h F(h) exp(-2 pi i h.x)``, electrons per
+        cubic Angstrom, which is meaningful only when the coefficients are on the
+        absolute scale.
 
     Attributes
     ----------
@@ -73,6 +78,7 @@ class Map(DeviceMixin):
     """
 
     VALID_MAP_TYPES = ("2Fo-Fc", "Fcalc")
+    VALID_UNITS = ("normalized", "electrons")
 
     def __init__(
         self,
@@ -81,11 +87,15 @@ class Map(DeviceMixin):
         gridsize: Optional[Tuple[int, int, int]] = None,
         map_type: str = "2Fo-Fc",
         device: Optional[torch.device] = None,
+        units: str = "normalized",
     ):
         if map_type not in self.VALID_MAP_TYPES:
             raise ValueError(
                 f"map_type must be one of {self.VALID_MAP_TYPES}, got '{map_type}'"
             )
+        if units not in self.VALID_UNITS:
+            raise ValueError(f"units must be one of {self.VALID_UNITS}, got '{units}'")
+        self.units = units
         self.device = resolve_device(data, model, device=device)
         self.data = data
         self.model = model
@@ -104,10 +114,8 @@ class Map(DeviceMixin):
 
     def _determine_gridsize(self) -> Tuple[int, int, int]:
         """Determine optimal grid size from cell, resolution, and spacegroup."""
-        cell_params = self.data.cell.data
         max_res = float(self.data.resolution.min())
-        spacegroup = self.data.spacegroup.name
-        return calculate_optimal_grid_size(cell_params, max_res, spacegroup)
+        return self.data.spacegroup.optimal_grid_size(self.data.cell, max_res)
 
     def _compute_map_coefficients(
         self, fobs: torch.Tensor, fcalc: torch.Tensor
@@ -129,13 +137,8 @@ class Map(DeviceMixin):
         if self.map_type == "Fcalc":
             return fcalc
 
-        # 2Fo-Fc: (2*Fobs - |Fcalc|) * exp(i * phi_calc). Note this is a plain
-        # 2Fo-Fc map: no figure-of-merit ``m`` weights Fobs and no sigma-A
-        # coefficient ``D`` scales Fcalc (i.e. m=1, D=1), so it is not a true
-        # likelihood-weighted 2mFo-DFc map.
-        fcalc_amp = fcalc.abs()
-        phi_calc = torch.angle(fcalc)
-        return (2.0 * fobs - fcalc_amp) * torch.exp(1j * phi_calc)
+        # Plain 2Fo-Fc (m=1, D=1), not a likelihood-weighted 2mFo-DFc map.
+        return map_coefficients(fobs, fcalc)[0]
 
     def calculate(self) -> torch.Tensor:
         """Compute the electron density map.
@@ -147,8 +150,18 @@ class Map(DeviceMixin):
         """
         # Expand to P1 without Friedel mates (place_on_grid handles
         # Hermitian symmetry via enforce_hermitian=True)
-        data_p1 = self.data.expand_to_p1(include_friedel=False)
-        hkl_p1, fobs_p1, _, _ = data_p1.data_indexed()
+        if self.data.friedel_merged:
+            data_p1 = self.data.expand_to_p1(include_friedel=False)
+            hkl_p1, fobs_p1, _, _ = data_p1.data_indexed()
+        else:
+            # One amplitude per reflection: the Hermitian placement would
+            # otherwise count every measured Bijvoet pair twice.
+            valid = self.data.masks()
+            rows = self.data.bijvoet_representatives(valid)
+            fobs_rows = self.data.bijvoet_mean(self.data.F, valid)[rows]
+            sg = self.data.spacegroup
+            hkl_p1, idx, _ = sg.expand_hkl(self.data.hkl[rows], include_friedel=False)
+            fobs_p1 = fobs_rows[idx]
 
         # Compute Fcalc for P1-expanded hkl
         fcalc_p1 = self.model.get_structure_factor(hkl_p1)
@@ -169,8 +182,16 @@ class Map(DeviceMixin):
         # FFT to real space: ρ(r) = (1/N) * sum_h F(h) * exp(-2πi h·r)
         # (norm="forward" applies the 1/N normalization, N = grid points)
         self._map = torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
+        self._map = self._to_units(self._map)
 
         return self._map
+
+    def _to_units(self, real_map: torch.Tensor) -> torch.Tensor:
+        """Rescale a ``1/N``-normalised FFT map to the configured units."""
+        if self.units == "electrons":
+            volume = self.data.cell.volume.to(real_map.dtype)
+            return real_map * (real_map.numel() / volume)
+        return real_map
 
     def write(self, filepath: str) -> int:
         """Write the map to a CCP4 file.

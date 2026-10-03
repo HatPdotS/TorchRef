@@ -1,6 +1,3 @@
-"""
-Functional test fixtures.
+"""Expose module-shared read-only fixtures to functional tests."""
 
-All shared fixtures (sample files, loaded models, scalers, restraints, etc.)
-are defined in the root tests/conftest.py and are automatically available here.
-"""
+from tests.fixtures.functional import shared_model_ft  # noqa: F401

@@ -30,6 +30,7 @@ import math
 import torch
 
 from torchref.base.electron_density.radius_policy import _u6_to_u3
+from torchref.config import get_int_dtype
 
 _PI = math.pi
 _PI_SQ = _PI * _PI
@@ -51,8 +52,11 @@ def _bucket_by_radius(radius: torch.Tensor, center_1d: torch.Tensor):
         order_parts.append(idx)
         spans.append((float(r), cursor, cursor + idx.numel()))
         cursor += idx.numel()
-    order = (torch.cat(order_parts) if order_parts
-             else torch.zeros(0, dtype=torch.long, device=radius.device))
+    order = (
+        torch.cat(order_parts)
+        if order_parts
+        else torch.zeros(0, dtype=get_int_dtype(), device=radius.device)
+    )
     return order, spans
 
 
@@ -88,12 +92,13 @@ def _canonical_setup(xyz, inv_frac, frac, grid_dims, radius_per_atom, dtype):
     nx, ny, nz = grid_dims
     grid_f = torch.tensor(grid_dims, device=device, dtype=dtype)
     xyz_frac = (xyz @ inv_frac.T) % 1.0
-    center_idx = torch.round(xyz_frac * grid_f).to(torch.long)
+    center_idx = torch.round(xyz_frac * grid_f).to(get_int_dtype())
     # w0: atom position relative to its anchor node, in Cartesian. This is what
     # centres the sphere on the atom rather than on the node.
     w0 = (xyz_frac - center_idx.to(dtype) / grid_f) @ frac.T
-    center_1d = ((center_idx[:, 0] % nx) * (ny * nz)
-                 + (center_idx[:, 1] % ny) * nz + (center_idx[:, 2] % nz))
+    # dtype-ok: the flat voxel index overflows int32 above 2**31 voxels
+    c = center_idx.to(torch.int64)
+    center_1d = (c[:, 0] % nx) * (ny * nz) + (c[:, 1] % ny) * nz + (c[:, 2] % nz)
     order, spans = _bucket_by_radius(radius_per_atom, center_1d)
     return order, spans, center_idx[order], w0[order]
 
@@ -111,8 +116,9 @@ def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)
     grid_dims = (nx, ny, nz)
+    # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
     strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
-    grid_shape = torch.tensor(grid_dims, device=device, dtype=torch.long)
+    grid_shape = torch.tensor(grid_dims, device=device, dtype=get_int_dtype())
 
     order, spans, center_idx, w0 = _canonical_setup(
         xyz, inv_frac_matrix, frac_matrix, grid_dims, radius_per_atom, dtype)
@@ -151,8 +157,9 @@ def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)
     grid_dims = (nx, ny, nz)
+    # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
     strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
-    grid_shape = torch.tensor(grid_dims, device=device, dtype=torch.long)
+    grid_shape = torch.tensor(grid_dims, device=device, dtype=get_int_dtype())
 
     order, spans, center_idx, w0 = _canonical_setup(
         xyz, inv_frac_matrix, frac_matrix, grid_dims, radius_per_atom, dtype)

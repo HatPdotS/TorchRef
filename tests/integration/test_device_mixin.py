@@ -4,14 +4,17 @@ Integration tests for the unified DeviceMixin.
 The primary acceptance test exercises a CPU -> GPU -> CPU round-trip on a
 ``ModelFT`` instance: structure factors are recomputed at each leg and
 checked for the expected device placement and numerical agreement. This
-covers the ``__dict__`` walk (Cell, SfFFT, anomalous cache), the always-
-invalidate cache policy, and the post-move ``_rebuild_sf_indices`` hook.
+covers the ``__dict__`` walk (Cell, SfFFT, anomalous cache) and the always-
+invalidate cache policy. The SF index partition needs no post-move hook: it is
+keyed on its inputs and recomputed on access, so a device move invalidates it
+by changing the fingerprint rather than by being told to.
 """
 
 from __future__ import annotations
 
 import pytest
 import torch
+
 
 def _load_model_ft(pdb_file, mtz_file):
     """Helper: load a ModelFT and matching reflection data on CPU.
@@ -45,7 +48,7 @@ def test_modelft_cpu_gpu_cpu_sf_round_trip(sample_pdb_file, sample_mtz_file):
        match the original CPU result.
     """
     model, data = _load_model_ft(sample_pdb_file, sample_mtz_file)
-    hkl, *_ = data()
+    hkl = data.hkl
 
     # ---- CPU leg ---------------------------------------------------------
     assert hkl.device.type == "cpu", "test setup: hkl should start on CPU"
@@ -113,7 +116,7 @@ def test_modelft_cpu_only_recompute_after_to(sample_pdb_file, sample_mtz_file):
     it should match the first call.
     """
     model, data = _load_model_ft(sample_pdb_file, sample_mtz_file)
-    hkl, *_ = data()
+    hkl = data.hkl
     fcalc_before = model(hkl).detach().clone()
 
     model.to("cpu")  # idempotent move

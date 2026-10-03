@@ -13,8 +13,8 @@ def _ramachandran_math_eager(
     nll_surfaces: torch.Tensor,
     surface_type: torch.Tensor,
 ) -> torch.Tensor:
-    phi_deg = -torsions_from_xyz(xyz, phi_idx)
-    psi_deg = -torsions_from_xyz(xyz, psi_idx)
+    phi_deg = torsions_from_xyz(xyz, phi_idx)
+    psi_deg = torsions_from_xyz(xyz, psi_idx)
 
     phi_idx_grid = (phi_deg + 180.0) % 360.0
     psi_idx_grid = (psi_deg + 180.0) % 360.0
@@ -62,7 +62,9 @@ def ramachandran_math(
     xyz : torch.Tensor
         (N_atoms, 3) Cartesian coordinates.
     phi_idx, psi_idx : torch.Tensor
-        (N, 4) atom indices for the two backbone dihedrals.
+        (N, 4) atom indices for the two backbone dihedrals, measured by
+        :func:`~torchref.base.targets._common.torsions_from_xyz` with the IUPAC sign
+        the surfaces are tabulated in.
     nll_surfaces : torch.Tensor
         (n_surface_types, 360, 360) precomputed NLL = -log P(φ, ψ | type).
     surface_type : torch.Tensor

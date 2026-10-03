@@ -246,7 +246,9 @@ END
         assert model.wavelength is None
 
         # Create HKL reflections
-        hkl = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.int32)
+        hkl = torch.tensor(
+            [[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.int32, device=model.device
+        )
 
         # Should compute structure factors without anomalous correction
         sf = model.get_structure_factor(hkl)
@@ -260,7 +262,11 @@ END
         model = ModelFT(wavelength=1.0, anomalous_threshold=0.5, verbose=0)
         model.load_pdb(test_pdb_file)
 
-        hkl = torch.tensor([[1, 0, 0], [2, 1, 0], [1, 1, 1]], dtype=torch.int32)
+        hkl = torch.tensor(
+
+            [[1, 0, 0], [2, 1, 0], [1, 1, 1]], dtype=torch.int32, device=model.device
+
+        )
 
         # Compute with anomalous correction
         sf_with = model.get_structure_factor(
@@ -288,7 +294,11 @@ END
         model = ModelFT(wavelength=1.0, anomalous_threshold=0.5, verbose=0)
         model.load_pdb(test_pdb_file)
 
-        hkl = torch.tensor([[1, 2, 3], [2, 1, 0], [3, 3, 3]], dtype=torch.int32)
+        hkl = torch.tensor(
+
+            [[1, 2, 3], [2, 1, 0], [3, 3, 3]], dtype=torch.int32, device=model.device
+
+        )
 
         sf_plus = model.get_structure_factor(hkl, apply_anomalous=True, recalc=True)
         sf_minus = model.get_structure_factor(-hkl, apply_anomalous=True, recalc=True)
@@ -297,17 +307,11 @@ END
         # with h, so it makes F(h) != F(-h)*. f' is real and dispersive and leaves the
         # conjugate relation intact.
         #
-        # In this model f'' is gated on ``apply_bijvoet`` (``ModelFT.__init__``, applied at
-        # ``model_ft.py:951`` via ``include_fdp``), which defaults to False because merged
-        # data is the usual target and Friedel-preserving F is correct for it. So the
-        # default path deliberately does *not* break Friedel's law -- both branches are
-        # asserted here rather than only the one this test originally assumed.
-        #
-        # History: this test previously computed ``is_conjugate`` and then ended in
-        # ``pass``, asserting nothing. A first attempt to fix it asserted breakdown on the
-        # default path and failed, because that path is Friedel-preserving by design.
-        mask, _, _, _, _ = model._get_anomalous_cache()
-        assert mask.any(), (
+        # In this model f'' is gated on ``apply_bijvoet`` (``ModelFT.__init__``), which
+        # defaults to False because merged data is the usual target and
+        # Friedel-preserving F is correct for it. So the default path deliberately does
+        # *not* break Friedel's law, and both branches are asserted.
+        assert model._get_anomalous_cache() is not None, (
             "no anomalous scatterers in this structure, so neither branch below is "
             "meaningful -- pick a structure with an anomalous element"
         )
@@ -361,7 +365,11 @@ END
         model.load_pdb(test_pdb_file)
         # xyz.refinable_params should already have requires_grad=True by default
 
-        hkl = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.int32)
+        hkl = torch.tensor(
+
+            [[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.int32, device=model.device
+
+        )
 
         sf = model.get_structure_factor(hkl, apply_anomalous=True, recalc=True)
 
@@ -374,21 +382,31 @@ END
         assert model.xyz.refinable_params.grad is not None, "Gradients should flow to xyz"
 
     def test_cache_invalidation(self, test_pdb_file):
-        """Test that anomalous cache is invalidated when elements change."""
+        """A new wavelength reaches F on the next call, with no ``recalc``.
+
+        ``wavelength`` is a plain attribute, so both the anomalous terms and the
+        forward cache have to key on it rather than on parameters and buffers alone.
+        """
         from torchref.model import ModelFT
 
         model = ModelFT(wavelength=1.0, verbose=0)
         model.load_pdb(test_pdb_file)
+        hkl = torch.tensor(
+            [[1, 2, 3], [2, 1, 0]], dtype=torch.int32, device=model.device
+        )
 
-        # Access cache
-        _ = model._get_anomalous_cache()
-        original_hash = model._anomalous_elements_hash
+        first = model(hkl).detach().clone()
+        assert model._get_anomalous_cache() is not None
+        model.wavelength = 1.5418  # Cu K-alpha: Fe f' goes from +0.28 to -1.14
+        second = model(hkl).detach()
 
-        # The hash should be set
-        assert original_hash is not None
-
-        # If we modify the element list (hypothetically), the cache should be invalidated
-        # This is tested implicitly by checking the hash mechanism works
+        assert not torch.allclose(first, second), (
+            "changing the wavelength left F unchanged: a stale anomalous or forward "
+            "cache served the old f'"
+        )
+        fresh = ModelFT(wavelength=1.5418, verbose=0)
+        fresh.load_pdb(test_pdb_file)
+        torch.testing.assert_close(second, fresh(hkl).detach())
 
 
 class TestAnomalousValuesRealistic:

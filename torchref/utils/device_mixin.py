@@ -347,14 +347,14 @@ def _probe_target(fn):
     # Each axis gets its own pair, varying only along the axis it measures. Sharing one
     # pair couples them: an accelerator scratch cannot be cast to float64 on MPS, so
     # probing dtype on the device pair makes ``.double()`` unprobeable there.
-    base = run(torch.device("cpu"), torch.float32)
+    base = run(torch.device("cpu"), torch.float32)  # dtype-ok: fixed probe dtype is what the preservation test varies, not a config allocation
     if base is None:
         return None, None
 
     device = base.device
     if accel is not None:
         # Contrast pair for the device axis: same dtype, different device.
-        other = run(accel, torch.float32)
+        other = run(accel, torch.float32)  # dtype-ok: fixed probe dtype (device-axis contrast)
         if other is None:
             device = None
         elif other.device != base.device:
@@ -365,7 +365,7 @@ def _probe_target(fn):
         # Contrast pair for the dtype axis: same device, different dtype.
         # float16 rather than float64 so this stays cheap and universally
         # supported; the CPU pin means ``.double()`` remains probeable.
-        other = run(torch.device("cpu"), torch.float16)
+        other = run(torch.device("cpu"), torch.float16)  # dtype-ok: fixed probe dtype (dtype-axis contrast)
         if other is not None and other.dtype == base.dtype:
             dtype = base.dtype
 

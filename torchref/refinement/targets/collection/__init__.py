@@ -8,18 +8,38 @@ refinement. Kinetic-specific targets (e.g. ``KineticPriorTarget``) stay in
 """
 
 from ._util import _scale_fcalc
-from .base import CollectionXrayTarget
+from .base import (
+    CollectionLossInputs,
+    CollectionSigmaALossInputs,
+    CollectionSigmaDLossInputs,
+    CollectionXrayTarget,
+)
+from .intensity import CollectionTwoMomentIntensityTarget
 from .multimodel import MultiModelADPTarget, MultiModelGeometryTarget
 from .xray import (
+    CollectionDifferenceIntensityTarget,
+    CollectionDifferenceSigmaDTarget,
     CollectionDifferenceTarget,
     CollectionMLTarget,
-    CollectionRiceTarget,
+)
+from ._specs import (  # noqa: E402  (imports the rows above)
+    COLLECTION_XRAY_TARGETS,
+    CollectionXrayTargetSpec,
+    CollectionXrayTargetTable,
 )
 
 __all__ = [
+    "COLLECTION_XRAY_TARGETS",
+    "CollectionXrayTargetSpec",
+    "CollectionXrayTargetTable",
     "CollectionXrayTarget",
+    "CollectionLossInputs",
+    "CollectionSigmaALossInputs",
+    "CollectionSigmaDLossInputs",
+    "CollectionTwoMomentIntensityTarget",
     "CollectionDifferenceTarget",
-    "CollectionRiceTarget",
+    "CollectionDifferenceIntensityTarget",
+    "CollectionDifferenceSigmaDTarget",
     "CollectionMLTarget",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",

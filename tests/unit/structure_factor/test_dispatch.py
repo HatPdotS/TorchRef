@@ -45,18 +45,14 @@ def _build(scene, device, dtype, force_portable=False, aniso=False):
     """
     s = scene.to(device=device, dtype=dtype)
     dims = H._grid_dims(s)
-    grid = torch.zeros(*dims, 3, dtype=dtype, device=device)
-    voxel = torch.tensor(
-        [float(s.cell.data[i]) / dims[i] for i in range(3)], dtype=dtype, device=device
-    )
     empty1 = s.xyz.new_zeros(0)
     empty3 = s.xyz.new_zeros(0, 3)
     empty5 = s.A.new_zeros(0, 5)
     kw = dict(
-        real_space_grid=grid,
+        grid_shape=dims,
+        device=device,
         inv_frac_matrix=s.inv_frac_matrix,
         frac_matrix=s.frac_matrix,
-        voxel_size=voxel,
         dtype=dtype,
     )
     kw["force_portable"] = force_portable
@@ -393,9 +389,16 @@ def test_sfds_backend_toggle_end_to_end(scene_fine):
     s = scene_fine.to(device=cuda, dtype=torch.float32)
     obs = H.synthetic_obs(H.ds_direct(scene_fine, "eager").detach()).to(cuda, torch.float32)
 
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
     def run(force_portable):
+        ctx = ModelContext(
+            cell=s.cell,
+            spacegroup=SpaceGroup("P212121", dtype=torch.float32, device=cuda),
+        )
         sf = SfDS(
-            cell=s.cell, spacegroup="P212121", force_portable=force_portable,
+            ctx, force_portable=force_portable,
             dtype_float=torch.float32, device=cuda, max_memory_gb=2.0,
         )
         leaves = tuple(t.clone().requires_grad_(True) for t in (s.xyz, s.adp, s.occ))

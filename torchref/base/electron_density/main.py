@@ -37,7 +37,8 @@ from torchref.base.electron_density.radius_policy import (
 
 
 def build_electron_density(
-    real_space_grid: torch.Tensor,
+    grid_shape,
+    device: torch.device,
     xyz_iso: torch.Tensor,
     adp_iso: torch.Tensor,
     occ_iso: torch.Tensor,
@@ -45,7 +46,6 @@ def build_electron_density(
     B_iso: torch.Tensor,
     inv_frac_matrix: torch.Tensor,
     frac_matrix: torch.Tensor,
-    voxel_size: torch.Tensor,
     xyz_aniso: Optional[torch.Tensor] = None,
     u_aniso: Optional[torch.Tensor] = None,
     occ_aniso: Optional[torch.Tensor] = None,
@@ -61,18 +61,18 @@ def build_electron_density(
 
     Parameters
     ----------
-    real_space_grid : torch.Tensor
-        Coordinate grid, shape ``(nx, ny, nz, 3)``.
+    grid_shape : tuple of int
+        Map dimensions ``(nx, ny, nz)``. No coordinate grid is needed or built: every
+        splat derives a voxel's Cartesian position arithmetically from its index and
+        ``inv_frac_matrix``.
+    device : torch.device
+        Device to allocate the map on.
     xyz_iso, adp_iso, occ_iso : torch.Tensor
         Isotropic positions ``(n_iso, 3)``, B-factors and occupancies ``(n_iso,)``.
     A_iso, B_iso : torch.Tensor
         ITC92 coefficients, shape ``(n_iso, 5)``.
     inv_frac_matrix, frac_matrix : torch.Tensor
         Cartesian-to-fractional and fractional-to-Cartesian, shape ``(3, 3)``.
-    voxel_size : torch.Tensor
-        **Unused by every splat** -- the truncation radius comes from each atom's B/U and
-        ``torchref.sigma_cutoff_ed``, and the enumeration box from ``inv_frac_matrix``.
-        Retained because ``SfFFT`` passes it positionally.
     xyz_aniso, u_aniso, occ_aniso : torch.Tensor, optional
         Anisotropic positions ``(n_aniso, 3)``, U ``(n_aniso, 6)``, occupancies.
     A_aniso, B_aniso : torch.Tensor, optional
@@ -86,12 +86,7 @@ def build_electron_density(
     """
     if dtype is None:
         dtype = get_float_dtype()
-    device = real_space_grid.device
-    density_map = torch.zeros(
-        real_space_grid.shape[:-1],
-        dtype=dtype,
-        device=device,
-    )
+    density_map = torch.zeros(tuple(grid_shape), dtype=dtype, device=device)
 
     # --- isotropic atoms ---
     if len(xyz_iso) > 0:

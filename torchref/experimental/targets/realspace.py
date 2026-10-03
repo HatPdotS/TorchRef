@@ -19,8 +19,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 import torch
 
 from torchref.base.reciprocal.grid_operations import place_on_grid
-from torchref.symmetry.grid_utils import calculate_optimal_grid_size
-from torchref.symmetry.reciprocal_symmetry import expand_hkl
+from torchref.symmetry import SpaceGroup
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -112,19 +111,11 @@ class RealSpaceTarget(DataTarget):
         # Caches (not registered as buffers since they're lazily computed)
         self._data_p1 = None
         self._molecular_mask = None
-        self._gridsize = None
 
         # P1 expansion cache (ASU → P1 mapping)
         self._hkl_p1 = None
         self._p1_indices = None
         self._p1_phase_shifts = None
-
-    def _ensure_grid(self):
-        """Ensure model's SfFFT grid is set up."""
-        if self._model is None:
-            raise RuntimeError("No model set for RealSpaceTarget")
-        if self._model.real_space_grid is None:
-            self._model.setup_grid()
 
     def _get_data_p1(self) -> "ReflectionData":
         """Return P1-expanded ReflectionData, cached after first call."""
@@ -136,15 +127,17 @@ class RealSpaceTarget(DataTarget):
         """Compute and cache the ASU → P1 expansion mapping."""
         if self._hkl_p1 is not None:
             return
-        hkl_p1, indices, phase_shifts = expand_hkl(
-            self._data.hkl,
-            self._data.spacegroup or "P1",
+        sg = self._data.spacegroup or SpaceGroup("P1")
+        # One row per reflection; anomalous F_obs is Bijvoet-averaged below.
+        rows = self._data.bijvoet_representatives()
+        hkl_p1, indices, phase_shifts = sg.expand_hkl(
+            self._data.hkl[rows],
             include_friedel=True,
             remove_absences=True,
             device=self._data.hkl.device,
         )
         self._hkl_p1 = hkl_p1
-        self._p1_indices = indices
+        self._p1_indices = rows[indices]
         self._p1_phase_shifts = phase_shifts
 
     def _expand_to_p1(self, fcalc: torch.Tensor) -> torch.Tensor:
@@ -154,19 +147,11 @@ class RealSpaceTarget(DataTarget):
         return fcalc_p1 * torch.exp(1j * self._p1_phase_shifts)
 
     def _get_gridsize(self) -> Tuple[int, int, int]:
-        """
-        Get grid size for map computation.
-
-        Uses the model's FFT grid size to ensure compatibility with
-        the molecular mask (which is built on the model's grid).
-        """
-        if self._gridsize is not None:
-            return self._gridsize
-
-        self._ensure_grid()
-        gs = self._model.fft.gridsize
-        self._gridsize = tuple(int(x) for x in gs)
-        return self._gridsize
+        """Grid size for map computation: the model's, so it matches the
+        molecular mask built on the model's grid."""
+        if self._model is None:
+            raise RuntimeError("No model set for RealSpaceTarget")
+        return self._model.fft.grid_shape
 
     def _compute_observed_map(self) -> torch.Tensor:
         """
@@ -189,7 +174,7 @@ class RealSpaceTarget(DataTarget):
 
         # Expand Fobs to P1 using the same index mapping as Fcalc
         # (amplitudes are invariant under symmetry, no phase shift needed)
-        fobs_p1 = self._data.F[self._p1_indices]
+        fobs_p1 = self._data.bijvoet_mean(self._data.F)[self._p1_indices]
 
         # Compute and scale Fcalc at ASU level, then expand to P1
         fcalc_asu = self.get_fcalc_scaled()
@@ -244,7 +229,6 @@ class RealSpaceTarget(DataTarget):
         """
         from torchref.scaling.solvent import SolventModel
 
-        self._ensure_grid()
 
         with torch.no_grad():
             solvent = SolventModel(
@@ -609,6 +593,12 @@ class RealSpaceExtrapolatedTarget(RealSpaceTarget):
         if valid_dark is not None:
             valid_mask = valid_mask & valid_dark
 
+        F_light = self._data_light.bijvoet_mean(F_light, valid_mask)
+        F_dark = self._data_light.bijvoet_mean(F_dark, valid_mask)
+        # A Bijvoet pair is measured if either mate is (no-op for merged data).
+        as_float = valid_mask.to(F_light.dtype)
+        valid_mask = self._data_light.bijvoet_mean(as_float, valid_mask) > 0
+
         # Zero invalid values to prevent NaN propagation
         F_light = torch.where(valid_mask, F_light, torch.zeros_like(F_light))
         F_dark = torch.where(valid_mask, F_dark, torch.zeros_like(F_dark))
@@ -624,15 +614,16 @@ class RealSpaceExtrapolatedTarget(RealSpaceTarget):
             return
 
         spacegroup = self._data_light.spacegroup
-        hkl_p1, indices, phase_shifts = expand_hkl(
-            self._hkl,
-            spacegroup,
+        # One row per reflection; F_obs was Bijvoet-averaged in _setup_data.
+        rows = self._data_light.bijvoet_representatives()
+        hkl_p1, indices, phase_shifts = spacegroup.expand_hkl(
+            self._hkl[rows],
             include_friedel=True,
             remove_absences=True,
             device=self._hkl.device,
         )
         self._hkl_p1 = hkl_p1
-        self._p1_indices = indices
+        self._p1_indices = rows[indices]
         self._p1_phase_shifts = phase_shifts
 
     def _compute_observed_map(self) -> torch.Tensor:

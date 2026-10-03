@@ -4,42 +4,23 @@ PyTorch implementation of French-Wilson conversion from intensities to structure
 Reference: French, S. & Wilson, K. (1978). Acta Cryst. A34, 517-525
 Based on Phenix implementation in cctbx/french_wilson.py
 
-Usage - PyTorch Module (Recommended)::
-
-        import torch
-        from torchref.base.french_wilson import FrenchWilson
-
-        # Miller indices for your reflections
-        hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-
-        # Cell: [a, b, c, alpha, beta, gamma] in Å and degrees
-        cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
-
-        # Create module (does all preprocessing)
-        fw_module = FrenchWilson(hkl, cell, space_group='P212121')
-
-        # Apply conversion (can be called repeatedly with different I, sigma_I)
-        I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-        sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-        F, sigma_F = fw_module(I, sigma_I)
-        print(f"F = {F}")
-
-Usage - Functional API (for one-off conversions)::
+Usage::
 
         from torchref.base.french_wilson import french_wilson_auto
 
         F, sigma_F, valid = french_wilson_auto(
             I, sigma_I, hkl, d_spacings, space_group='P212121'
         )
+
+This is a plain function on purpose: the conversion runs once per dataset, and
+a cached estimator holding per-row buffers goes stale the moment the rows are
+reordered (as ``ReflectionData`` canonicalization does).
 """
 
 import torch
-import torch.nn as nn
 
-from torchref.base import math_torch
 from torchref.config import get_float_dtype
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
-from torchref.utils.device_mixin import DeviceMixin
 
 # Acentric lookup tables from French-Wilson supplement (1978)
 AC_ZJ = torch.tensor(
@@ -116,7 +97,7 @@ AC_ZJ = torch.tensor(
         2.906,
         3.004,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 AC_ZJ_SD = torch.tensor(
@@ -193,7 +174,7 @@ AC_ZJ_SD = torch.tensor(
         0.994,
         0.996,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 AC_ZF = torch.tensor(
@@ -270,7 +251,7 @@ AC_ZF = torch.tensor(
         1.676,
         1.706,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 AC_ZF_SD = torch.tensor(
@@ -347,7 +328,7 @@ AC_ZF_SD = torch.tensor(
         0.310,
         0.304,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 # Centric lookup tables from French-Wilson supplement (1978)
@@ -435,7 +416,7 @@ C_ZJ = torch.tensor(
         3.753,
         3.962,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 C_ZJ_SD = torch.tensor(
@@ -522,7 +503,7 @@ C_ZJ_SD = torch.tensor(
         1.029,
         1.028,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 C_ZF = torch.tensor(
@@ -609,7 +590,7 @@ C_ZF = torch.tensor(
         1.917,
         1.945,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 C_ZF_SD = torch.tensor(
@@ -696,7 +677,7 @@ C_ZF_SD = torch.tensor(
         0.278,
         0.272,
     ],
-    dtype=torch.float32,
+    dtype=get_float_dtype(),
 )
 
 
@@ -1146,135 +1127,6 @@ def french_wilson(
     return F, sigma_F, valid_mask
 
 
-def is_centric_from_hkl(
-    hkl: torch.Tensor, space_group: SpaceGroupLike = "P1"
-) -> torch.Tensor:
-    """
-    Determine if reflections are centric based on Miller indices and space group.
-
-    Uses symmetry operations to check if reflections are invariant under
-    inversion through the origin (Friedel mates). A reflection is centric
-    if -h,-k,-l is symmetry equivalent to h,k,l.
-
-    Parameters
-    ----------
-    hkl : torch.Tensor
-        Miller indices of shape (..., 3).
-    space_group : str, int, or gemmi.SpaceGroup, optional
-        Space group specification. Default is "P1".
-
-    Returns
-    -------
-    torch.Tensor
-        Boolean mask of shape (...), True for centric reflections.
-    """
-    original_shape = hkl.shape[:-1]
-    hkl_flat = hkl.reshape(-1, 3)
-    n_reflections = hkl_flat.shape[0]
-
-    # Get symmetry operations from the SpaceGroup class
-    float_dtype = get_float_dtype()
-    spacegroup = SpaceGroup(space_group, dtype=float_dtype, device=hkl.device)
-
-    # Convert HKL to the configured float dtype for symmetry operations
-    hkl_float = hkl_flat.to(float_dtype)  # Shape: (n_reflections, 3)
-
-    # Apply all spacegroup operations to all reflections at once
-    # For reciprocal space (Miller indices), only rotation applies, not translation
-    # hkl_float shape: (n_reflections, 3)
-    # spacegroup.apply_to_hkl returns shape: (n_reflections, 3, n_ops)
-    hkl_sym = spacegroup.apply_to_hkl(hkl_float)
-
-    # Compute Friedel mates: -h, -k, -l
-    # Shape: (n_reflections, 3, 1) to broadcast against (n_reflections, 3, n_ops)
-    friedel_hkl = -hkl_float.unsqueeze(-1)  # Shape: (n_reflections, 3, 1)
-
-    # Check if any spacegroup operation produces the Friedel mate
-    # Round to nearest integer (Miller indices should be integers)
-    hkl_sym_rounded = torch.round(hkl_sym)
-
-    # Compute difference for all reflections and all spacegroup operations
-    # Shape: (n_reflections, 3, n_ops)
-    diff = torch.abs(hkl_sym_rounded - friedel_hkl)
-
-    # A reflection is centric if ANY spacegroup operation maps it to its Friedel mate
-    # Check if all 3 components (h,k,l) match (diff < 0.5) for any operation
-    # Shape: (n_reflections, n_ops) after checking all 3 components match
-    matches = torch.all(diff < 0.5, dim=1)  # Check all 3 Miller indices match
-
-    # A reflection is centric if it matches for ANY spacegroup operation
-    # Shape: (n_reflections,)
-    is_centric = torch.any(matches, dim=1)
-
-    return is_centric.reshape(original_shape)
-
-
-def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
-    """Per-reflection epsilon: number of rotation symops mapping h -> +/-h.
-
-    Mirrors ``ReciprocalSymmetry.get_epsilon`` (Friedel-aware) but works directly
-    on the scattered HKL list. Returns ones if ``spacegroup`` is None or lacks
-    ``apply_to_hkl``.
-
-    Unlike :func:`is_centric_from_hkl` this takes a constructed space group rather
-    than a specification, because its callers already hold one.
-
-    Always returns on ``hkl.device``, whatever device the space group's symmetry
-    matrices live on: the caller multiplies this against per-reflection data
-    sitting beside ``hkl``.
-    """
-    n = hkl.shape[0]
-    float_dtype = get_float_dtype()
-    if spacegroup is None or not hasattr(spacegroup, "apply_to_hkl"):
-        return torch.ones(n, device=hkl.device, dtype=float_dtype)
-
-    with torch.no_grad():
-        # Configured float dtype, not float64: MPS has no float64 and casting
-        # there raises. Symmetry arithmetic on Miller indices is exact in
-        # float32 (integer-valued rotation matrices, small indices), so the
-        # exact `==` comparisons below remain valid.
-        #
-        # ``apply_to_hkl`` moves its input onto the matrices' device, so build
-        # ``h`` there too -- otherwise ``Hs`` and ``h0`` land on different
-        # devices and the comparisons below raise. The space group wins for the
-        # arithmetic; the result is handed back on the caller's device.
-        sym_device = getattr(spacegroup, "matrices", hkl).device
-        h = hkl.to(device=sym_device, dtype=float_dtype)
-        Hs = spacegroup.apply_to_hkl(h)  # (N,3,ops)
-        h0 = h.unsqueeze(-1)  # (N,3,1)
-        same = (Hs == h0).all(dim=1)
-        friedel = (Hs == -h0).all(dim=1)
-        eps = (same | friedel).sum(dim=1).clamp(min=1).to(float_dtype)
-    return eps.to(hkl.device)
-
-
-def get_centric_acentric_masks(
-    hkl: torch.Tensor, space_group: SpaceGroupLike = "P1"
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Get both centric and acentric masks for reflections.
-
-    Convenience function that returns both masks explicitly.
-
-    Parameters
-    ----------
-    hkl : torch.Tensor
-        Miller indices of shape (..., 3).
-    space_group : str, int, or gemmi.SpaceGroup, optional
-        Space group specification. Default is "P1".
-
-    Returns
-    -------
-    centric_mask : torch.Tensor
-        Boolean mask of shape (...), True for centric reflections.
-    acentric_mask : torch.Tensor
-        Boolean mask of shape (...), True for acentric reflections.
-    """
-    centric_mask = is_centric_from_hkl(hkl, space_group)
-    acentric_mask = ~centric_mask
-    return centric_mask, acentric_mask
-
-
 def estimate_mean_intensity_by_resolution(
     I: torch.Tensor, d_spacings: torch.Tensor, n_bins: int = 60, min_per_bin: int = 40
 ) -> torch.Tensor:
@@ -1323,7 +1175,7 @@ def estimate_mean_intensity_by_resolution(
 
     # Use scatter_add to compute sum of intensities per bin
     bin_sums = torch.zeros(actual_n_bins, dtype=I.dtype, device=I.device)
-    bin_counts = torch.zeros(actual_n_bins, dtype=torch.long, device=I.device)
+    bin_counts = torch.zeros(actual_n_bins, dtype=bin_indices.dtype, device=I.device)
     bin_sums.scatter_add_(0, bin_indices, I_sorted)
     bin_counts.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 
@@ -1408,13 +1260,10 @@ def french_wilson_auto(
     h_min: float = -4.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Automatic French-Wilson conversion with binning and centric determination.
+    Convert intensities to amplitudes, estimating shell means and centricity.
 
-    This function automatically:
-    1. Bins reflections by resolution
-    2. Calculates mean intensity per bin
-    3. Determines centric vs acentric from Miller indices
-    4. Applies appropriate French-Wilson conversion
+    Every per-reflection input must be row-aligned: the shell mean and centric
+    flag of row ``i`` are taken from ``hkl[i]`` and ``d_spacings[i]``.
 
     Parameters
     ----------
@@ -1442,7 +1291,9 @@ def french_wilson_auto(
     sigma_F : torch.Tensor
         Standard deviations of F of shape (n_reflections,).
     valid_mask : torch.Tensor
-        Boolean mask indicating valid (not rejected) reflections.
+        Boolean mask, ``True`` = keep. ``False`` both for rows French-Wilson
+        rejects as too negative and for rows with NaN ``I`` or ``sigma_I``,
+        whose ``F`` and ``sigma_F`` are NaN.
 
     Examples
     --------
@@ -1454,191 +1305,26 @@ def french_wilson_auto(
         d_spacings = torch.tensor([2.5, 3.0, 2.8, 2.0])
         F, sigma_F, valid = french_wilson_auto(I, sigma_I, hkl, d_spacings, "P212121")
     """
-    # Step 1: Estimate mean intensity by resolution
+    F = torch.full_like(I, float("nan"))
+    sigma_F = torch.full_like(sigma_I, float("nan"))
+    # NaN rows are never converted, so they are not kept either.
+    valid_mask = torch.zeros_like(I, dtype=torch.bool)
+
+    finite = ~(torch.isnan(I) | torch.isnan(sigma_I))
+    if not finite.any():
+        return F, sigma_F, valid_mask
+
+    # NaN rows are dropped before binning, or they would poison the shell means.
     mean_intensity = estimate_mean_intensity_by_resolution(
-        I, d_spacings, n_bins=n_bins, min_per_bin=min_per_bin
+        I[finite], d_spacings[finite], n_bins=n_bins, min_per_bin=min_per_bin
     )
+    is_centric = SpaceGroup(space_group, device=hkl.device).is_centric(hkl[finite])
 
-    # Step 2: Determine centric reflections from Miller indices
-    is_centric = is_centric_from_hkl(hkl, space_group=space_group)
-
-    # Step 3: Apply French-Wilson conversion
-    F, sigma_F, valid_mask = french_wilson(
-        I, sigma_I, mean_intensity, is_centric=is_centric, h_min=h_min
+    F[finite], sigma_F[finite], valid_mask[finite] = french_wilson(
+        I[finite],
+        sigma_I[finite],
+        mean_intensity,
+        is_centric=is_centric,
+        h_min=h_min,
     )
-
     return F, sigma_F, valid_mask
-
-
-class FrenchWilson(DeviceMixin, nn.Module):
-    """
-    PyTorch module for French-Wilson conversion from intensities to structure factors.
-
-    Pre-computes all necessary metadata (d-spacings, centric flags, resolution bins)
-    during initialization, so forward pass only needs I and sigma_I.
-
-    Parameters
-    ----------
-    hkl : torch.Tensor
-        Miller indices of shape (n_reflections, 3), integer tensor.
-    cell : torch.Tensor
-        Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
-    space_group : str, int, or gemmi.SpaceGroup, optional
-        Space group specification (e.g., 'P21', 4, gemmi.SpaceGroup('P 21')). Default is "P1".
-    n_bins : int, optional
-        Number of resolution bins for mean intensity estimation. Default is 60.
-    min_per_bin : int, optional
-        Minimum reflections per bin. Default is 40.
-    h_min : float, optional
-        Minimum h value for rejection. Default is -4.0.
-    verbose : int, optional
-        Verbosity level (0=silent, 1=basic, 2=detailed). Default is 1.
-
-    Attributes
-    ----------
-    hkl : torch.Tensor
-        Miller indices.
-    d_spacings : torch.Tensor
-        Resolution for each reflection in Å.
-    is_centric : torch.Tensor
-        Boolean mask for centric reflections.
-    valid_mask : torch.Tensor or None
-        French-Wilson's rejection criterion from the most recent :meth:`forward`
-        (``True`` = keep). ``None`` before the first call.
-
-    Examples
-    --------
-    ::
-
-        hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-        cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
-        fw_module = FrenchWilson(hkl, cell, 'P212121')
-        I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-        sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-        F, sigma_F = fw_module(I, sigma_I)
-    """
-
-    def __init__(
-        self,
-        hkl: torch.Tensor,
-        cell: torch.Tensor,
-        space_group: SpaceGroupLike = "P1",
-        n_bins: int = 60,
-        min_per_bin: int = 40,
-        h_min: float = -4.0,
-        verbose: int = 1,
-    ):
-        super().__init__()
-
-        # Store parameters
-        self.n_reflections = len(hkl)
-        self.space_group = space_group
-        self.n_bins = n_bins
-        self.min_per_bin = min_per_bin
-        self.h_min = h_min
-        self.verbose = verbose
-
-        # Register HKL as buffer (will be moved to device with model)
-        self.register_buffer("hkl", hkl.long())
-
-        # Calculate d-spacings from cell and HKL
-        d_spacings = math_torch.get_d_spacing(hkl, cell)
-        self.register_buffer("d_spacings", d_spacings)
-
-        # Determine centric reflections
-        is_centric = is_centric_from_hkl(hkl, space_group)
-        self.register_buffer("is_centric", is_centric)
-
-        # Set by forward(); None until the first conversion. Not a buffer -- it
-        # is per-call output, not model state to serialize or move.
-        self.valid_mask = None
-
-        # Verbosity level 1: Basic initialization info (most important)
-        if self.verbose >= 1:
-            print("FrenchWilson initialized:")
-            print(f"  Reflections: {self.n_reflections}")
-            print(f"  Resolution: {d_spacings.min():.2f} - {d_spacings.max():.2f} Å")
-            print(f"  Space group: {space_group}")
-            print(
-                f"  Centric: {is_centric.sum()} ({100*is_centric.sum()/self.n_reflections:.1f}%)"
-            )
-
-        # Verbosity level 2: Additional detailed info (less important)
-        if self.verbose >= 2:
-            print(f"  Binning: {n_bins} bins, min {min_per_bin} reflections/bin")
-            print(f"  Rejection threshold: h_min = {h_min}")
-            print(f"  Device: {hkl.device}")
-
-    def forward(
-        self, I: torch.Tensor, sigma_I: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Apply French-Wilson conversion.
-
-        Parameters
-        ----------
-        I : torch.Tensor
-            Measured intensities of shape (n_reflections,).
-        sigma_I : torch.Tensor
-            Standard deviations of intensities of shape (n_reflections,).
-
-        Returns
-        -------
-        F : torch.Tensor
-            Structure factor amplitudes of shape (n_reflections,).
-        sigma_F : torch.Tensor
-            Standard deviations of F of shape (n_reflections,).
-
-        Notes
-        -----
-        The rejection criterion is recorded on :attr:`valid_mask` (full size,
-        ``True`` = keep, ``False`` for both NaN input and French-Wilson
-        rejections) rather than returned, so this stays a two-tuple for the
-        documented usage above. It is overwritten on each call.
-        """
-        # Check for NaN values in input
-        nan_mask = torch.isnan(I) | torch.isnan(sigma_I)
-
-        # If all values are NaN, return NaN arrays
-        if nan_mask.all():
-            self.valid_mask = torch.zeros_like(I, dtype=torch.bool)
-            return torch.full_like(I, float("nan")), torch.full_like(
-                sigma_I, float("nan")
-            )
-
-        # Filter out NaN values and corresponding metadata
-        finite_mask = ~nan_mask
-        I_clean = I[finite_mask]
-        sigma_I_clean = sigma_I[finite_mask]
-        d_spacings_clean = self.d_spacings[finite_mask]
-        is_centric_clean = self.is_centric[finite_mask]
-
-        # Estimate mean intensity by resolution (only for valid reflections)
-        mean_intensity = estimate_mean_intensity_by_resolution(
-            I_clean, d_spacings_clean, n_bins=self.n_bins, min_per_bin=self.min_per_bin
-        )
-
-        # Apply French-Wilson conversion
-        F_clean, sigma_F_clean, keep_clean = french_wilson(
-            I_clean,
-            sigma_I_clean,
-            mean_intensity,
-            is_centric=is_centric_clean,
-            h_min=self.h_min,
-        )
-
-        # Create output arrays with NaNs for invalid reflections
-        F_full = torch.full_like(I, float("nan"))
-        sigma_F_full = torch.full_like(sigma_I, float("nan"))
-
-        # Insert computed values for valid reflections
-        F_full[finite_mask] = F_clean
-        sigma_F_full[finite_mask] = sigma_F_clean
-
-        # Expand the rejection criterion back to full size. NaN rows are
-        # rejected too -- they were never converted.
-        keep_full = torch.zeros_like(I, dtype=torch.bool)
-        keep_full[finite_mask] = keep_clean
-        self.valid_mask = keep_full
-
-        return F_full, sigma_F_full

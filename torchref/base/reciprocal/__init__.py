@@ -7,10 +7,7 @@ interpolators used by rotation and translation searches.
 
 from .basis import (
     reciprocal_basis_matrix,
-    reciprocal_basis_matrix_numpy,
     get_scattering_vectors,
-    get_scattering_vectors_numpy,
-    get_s,
 )
 
 from .hkl import (
@@ -33,20 +30,12 @@ from .interpolation import (
     smooth_reciprocal_grid
 )
 
-from .symmetry import (
-    compute_symmetry_equivalent_hkls,
-    compute_translation_phases,
-    extract_structure_factors_with_symmetry,
-    ReciprocalSymmetryExtractor,
-)
+from .symmetry import ReciprocalSymmetryExtractor
 
 __all__ = [
     # Basis functions
     "reciprocal_basis_matrix",
-    "reciprocal_basis_matrix_numpy",
     "get_scattering_vectors",
-    "get_scattering_vectors_numpy",
-    "get_s",
     # HKL functions
     "generate_possible_hkl",
     "get_d_spacing",
@@ -62,8 +51,5 @@ __all__ = [
     "interpolate_for_rotation",
     "smooth_reciprocal_grid",
     # Symmetry
-    "compute_symmetry_equivalent_hkls",
-    "compute_translation_phases",
-    "extract_structure_factors_with_symmetry",
     "ReciprocalSymmetryExtractor",
 ]

@@ -9,13 +9,13 @@ annotation) both store a ``torchref.symmetry.SpaceGroup`` object in it.
 
 import warnings
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import gemmi
 import torch
 
-from torchref.config import get_default_device, normalize_device
-from torchref.symmetry import Cell
+from torchref.config import get_default_device, get_float_dtype, normalize_device
+from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.device_mixin import DeviceMovementMixin
 
 if TYPE_CHECKING:
@@ -51,7 +51,6 @@ class CrystalDataset(DeviceMovementMixin):
     # reflections are carved out of BOTH the work and free sets (disjoint).
     validation_flags: Optional[torch.Tensor] = None  # (N,), bool
     resolution: Optional[torch.Tensor] = None  # Resolution per reflection (N,)
-    bin_indices: Optional[torch.Tensor] = None  # Resolution bin assignments (N,), int32
     phase: Optional[torch.Tensor] = None  # Phases in radians (N,)
     fom: Optional[torch.Tensor] = None  # Figure of merit (N,)
     _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool
@@ -67,13 +66,6 @@ class CrystalDataset(DeviceMovementMixin):
     # explicit Bijvoet pairs (separate signed-HKL rows). Gates the model's f'' term.
     friedel_merged: bool = True
 
-    # === E-value and anisotropy correction fields ===
-    E: Optional[torch.Tensor] = None  # E-values (N,)
-    E_squared: Optional[torch.Tensor] = None  # E² values (N,)
-    F_squared_corrected: Optional[torch.Tensor] = None  # Anisotropy-corrected F² (N,)
-    U_aniso: Optional[torch.Tensor] = None  # Fitted anisotropy parameters (6,)
-    radial_shell_indices: Optional[torch.Tensor] = None  # Shell assignments (N,)
-
     # === Unit cell and symmetry ===
     cell: Optional[Cell] = None  # Cell object with [a, b, c, alpha, beta, gamma]
     spacegroup: Optional[str] = None  # Space group name string
@@ -87,12 +79,6 @@ class CrystalDataset(DeviceMovementMixin):
     amplitude_source: Optional[str] = None
     intensity_source: Optional[str] = None
     phase_source: Optional[str] = None
-
-    # === Wilson B-factors ===
-    wilson_b: Optional[float] = None
-    wilson_b_structure: Optional[float] = None
-    wilson_b_solvent: Optional[float] = None
-    wilson_k_sol: Optional[float] = None
 
     # === Masks (initialized in __post_init__) ===
     # Note: masks is not a dataclass field to avoid serialization issues
@@ -125,21 +111,27 @@ class CrystalDataset(DeviceMovementMixin):
     # ========== SERIALIZATION ==========
 
     def _get_state(self) -> Dict[str, Any]:
-        """State dict of all fields, tensors on CPU, cell/device/spacegroup
-        flattened to tensor/str, plus a ``"masks"`` entry.
+        """Return observation fields and masks with tensors on CPU.
+
+        Cell/device/space group are flattened to tensors or strings. Loading
+        provenance is omitted.
         """
 
         state = {}
         for f in fields(self):
+            if f.name == "source":
+                # Loading provenance is not observation state.
+                state[f.name] = None
+                continue
             val = getattr(self, f.name)
             if isinstance(val, torch.Tensor):
-                state[f.name] = val.cpu()
+                state[f.name] = val.detach().cpu()
             elif f.name == "cell" and val is not None:
                 state[f.name] = val.data.cpu()
             elif f.name == "device":
                 state[f.name] = str(val)
             elif f.name == "spacegroup" and val is not None:
-                state[f.name] = val.xhm()  # Extended Hermann-Mauguin
+                state[f.name] = val.xhm  # Extended Hermann-Mauguin
             else:
                 state[f.name] = val
         # Masks are not a dataclass field, so handle them separately.
@@ -183,10 +175,16 @@ class CrystalDataset(DeviceMovementMixin):
         if "device" in state:
             state["device"] = torch.device(state["device"])
 
-        # Spacegroup stays a string here; subclasses that want an object rewrap.
+        if isinstance(state.get("spacegroup"), str):
+            state["spacegroup"] = SpaceGroup(state["spacegroup"], device=device)
         if "cell" in state and state["cell"] is not None:
             if isinstance(state["cell"], torch.Tensor):
-                state["cell"] = Cell(state["cell"], dtype=torch.float32, device=device)
+                # Conform the reloaded cell to the config float dtype rather than
+                # pinning float32: a dataset saved and reloaded under a float64
+                # config otherwise carries a float32 cell into reciprocal-basis math.
+                state["cell"] = Cell(
+                    state["cell"], dtype=get_float_dtype(), device=device
+                )
 
         obj = cls(**state)
 

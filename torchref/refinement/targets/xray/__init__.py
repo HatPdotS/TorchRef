@@ -15,6 +15,7 @@ from .ml_noalpha import MLNoAlphaXrayTarget
 from .nll import NLLXrayTarget
 from .nll_beta import NLLBetaXrayTarget
 from .rice import RiceXrayTarget
+from .observable import IntensityObservableMixin, NLLIntensityXrayTarget
 from .sigma_a import AlphaCentredMixin, SigmaALossInputs, SigmaAXrayTarget
 
 __all__ = [
@@ -23,6 +24,8 @@ __all__ = [
     "SigmaAXrayTarget",
     "SigmaALossInputs",
     "AlphaCentredMixin",
+    "IntensityObservableMixin",
+    "NLLIntensityXrayTarget",
     # the five selectable likelihood rows
     "NLLXrayTarget",
     "NLLBetaXrayTarget",

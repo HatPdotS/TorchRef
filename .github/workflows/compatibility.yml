@@ -21,14 +21,11 @@ on:
 
   # Also run on PRs that modify dependencies
   pull_request:
+    branches-ignore: [dev]
     paths:
       - 'pyproject.toml'
       - 'tox.ini'
       - '.github/workflows/compatibility.yml'
-
-env:
-  # Avoid numba caching issues in CI
-  NUMBA_CACHE_DIR: /tmp/numba_cache
 
 jobs:
   # ==========================================================================
@@ -62,7 +59,6 @@ jobs:
           python -c "import numpy; print(f'numpy: {numpy.__version__}')"
           python -c "import pandas; print(f'pandas: {pandas.__version__}')"
           python -c "import torch; print(f'torch: {torch.__version__}')"
-          python -c "import numba; print(f'numba: {numba.__version__}')"
           python -c "import scipy; print(f'scipy: {scipy.__version__}')"
           python -c "import gemmi; print(f'gemmi: {gemmi.__version__}')"
           python -c "import reciprocalspaceship; print(f'reciprocalspaceship: {reciprocalspaceship.__version__}')"
@@ -96,7 +92,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest pytest-cov
           # Install dependencies without upper bounds
-          pip install numpy pandas torch numba scipy matplotlib pyarrow tqdm
+          pip install numpy pandas torch scipy matplotlib pyarrow tqdm
           pip install gemmi reciprocalspaceship
           # Install package in editable mode without deps (already installed)
           pip install -e . --no-deps
@@ -107,7 +103,6 @@ jobs:
           python -c "import numpy; print(f'numpy: {numpy.__version__}')"
           python -c "import pandas; print(f'pandas: {pandas.__version__}')"
           python -c "import torch; print(f'torch: {torch.__version__}')"
-          python -c "import numba; print(f'numba: {numba.__version__}')"
           python -c "import scipy; print(f'scipy: {scipy.__version__}')"
           python -c "import gemmi; print(f'gemmi: {gemmi.__version__}')"
           python -c "import reciprocalspaceship; print(f'reciprocalspaceship: {reciprocalspaceship.__version__}')"

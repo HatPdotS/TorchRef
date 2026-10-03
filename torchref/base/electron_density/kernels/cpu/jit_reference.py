@@ -135,10 +135,14 @@ class _CpuDensityKernel(torch.nn.Module):
         # Scatter add to density map
         ny: int = density_map.shape[1]
         nz: int = density_map.shape[2]
+        # Compiled by TorchScript: no Tensor.new_tensor, no config dtype getters.
         strides = torch.tensor(
-            [ny * nz, nz, 1], device=voxel_indices.device, dtype=torch.long
+            [ny * nz, nz, 1],
+            device=voxel_indices.device,
+            # dtype-ok: int64 strides make the flat voxel index int64; scatter_add_ requires int64 on torch < 2.8
+            dtype=torch.long,
         )
-        index_flat = torch.sum(voxel_indices.to(torch.long) * strides, dim=-1).view(-1)
+        index_flat = torch.sum(voxel_indices.to(torch.long) * strides, dim=-1).view(-1)  # dtype-ok: voxel indices flattened for scatter; indexing requires long
 
         density_map.view(-1).scatter_add_(0, index_flat, density.reshape(-1))
         return density_map
@@ -231,9 +235,9 @@ class _GpuDensityKernel(torch.nn.Module):
         ny: int = density_map.shape[1]
         nz: int = density_map.shape[2]
         index_flat = (
-            voxel_indices[:, :, 0].to(torch.int64) * (ny * nz)
-            + voxel_indices[:, :, 1].to(torch.int64) * nz
-            + voxel_indices[:, :, 2].to(torch.int64)
+            voxel_indices[:, :, 0].to(torch.int64) * (ny * nz)  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
+            + voxel_indices[:, :, 1].to(torch.int64) * nz  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
+            + voxel_indices[:, :, 2].to(torch.int64)  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
         ).flatten()
 
         density_map.view(-1).scatter_add_(0, index_flat, density.flatten())
@@ -307,9 +311,9 @@ def _add_to_map_gpu_simple(
 
     ny, nz = density_map.shape[1], density_map.shape[2]
     index_flat = (
-        voxel_indices[:, :, 0].to(torch.int64) * (ny * nz)
-        + voxel_indices[:, :, 1].to(torch.int64) * nz
-        + voxel_indices[:, :, 2].to(torch.int64)
+        voxel_indices[:, :, 0].to(torch.int64) * (ny * nz)  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
+        + voxel_indices[:, :, 1].to(torch.int64) * nz  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
+        + voxel_indices[:, :, 2].to(torch.int64)  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
     ).flatten()
 
     density_map.view(-1).scatter_add_(0, index_flat, density.flatten())
