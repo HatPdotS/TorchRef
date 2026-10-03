@@ -2,9 +2,9 @@
 
 Equal-count shells over ``d*^2``, atomic-free segment sums, linear interpolation of
 per-shell values back to reflections, and DerSimonian-Laird shrinkage of noisy per-shell
-estimates toward a weighted straight line. :mod:`.sigma_a` and :mod:`.sigma_d` both
-build on these; ``estimate_beta`` keeps its own module-level aliases so that its body
-resolves the same globals it always did.
+estimates toward a weighted straight line. :mod:`.sigma_a` builds on these;
+``estimate_beta`` keeps its own module-level aliases so that its body resolves the same
+globals it always did.
 
 Plain tensors in and out. Every result lives on the device of its inputs, and float
 work happens in the dtype of the inputs, so callers control both by what they pass.
@@ -13,6 +13,8 @@ work happens in the dtype of the inputs, so callers control both by what they pa
 from functools import lru_cache
 
 import torch
+
+from torchref.config import get_int_dtype
 
 
 @lru_cache(maxsize=8)
@@ -23,12 +25,10 @@ def segment_layout(lengths: tuple[int, ...], device_str: str):
     ``lengths`` is a tuple so it can be a cache key.
     """
     device = torch.device(device_str)
-    # dtype-ok: segment lengths for cumsum offsets/gather index; PyTorch requires int64
-    L = torch.tensor(lengths, dtype=torch.long, device=device)
+    L = torch.tensor(lengths, dtype=get_int_dtype(), device=device)
     total = int(L.sum())
     max_len = int(L.max()) if L.numel() else 0
-    # dtype-ok: zero offset concatenated into gather index; PyTorch requires int64
-    zero = torch.zeros(1, dtype=torch.long, device=device)
+    zero = torch.zeros(1, dtype=get_int_dtype(), device=device)
     starts = torch.cat([zero, L.cumsum(0)[:-1]])
     ar = torch.arange(max_len, device=device).reshape(1, max_len)
     # Clamp keeps the gather in bounds for the padding slots; `mask` zeroes them anyway.

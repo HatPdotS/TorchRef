@@ -28,7 +28,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from torchref.config import get_float_dtype
+
+from torchref.config import get_float_dtype, get_int_dtype
 
 #: Standard heavy-atom valences, one of the two budgets that cap how many hydrogens a
 #: parent may take. Elements not listed fall back to 4 and are then bounded only by the
@@ -536,27 +537,27 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
     n_unplaceable = 0
     n_no_template = 0
 
+    atom_resnames = topology.columns()["resname"]
     for residue in range(residues.n_residues):
-        resname = str(residues.resname[residue]).strip()
-        template = _template(cif_dict, resname)
-        if template is None:
-            # Atoms without a dictionary cannot supply either bond geometry or
-            # hydrogen identities; leave those residues unchanged.
-            n_no_template += 1
-            continue
-
         rows = np.arange(
             int(residues.atom_start[residue]), int(residues.atom_end[residue])
         )
-        present = set(names[rows])
-        h1_alias = "H" in template["h_names"] and "H1" not in template["h_names"]
-        if h1_alias and "H1" in present:
-            present.add("H")
-        candidates = [h for h in template["h_names"] if h not in present]
-        if not candidates:
-            continue
-
         for altloc, conformer in _conformer_rows(rows, altlocs):
+            labelled = conformer[altlocs[conformer] != " "]
+            identity_row = labelled[0] if len(labelled) else conformer[0]
+            resname = str(atom_resnames[identity_row]).strip()
+            template = _template(cif_dict, resname)
+            if template is None:
+                n_no_template += 1
+                continue
+            present = set(names[conformer])
+            h1_alias = "H" in template["h_names"] and "H1" not in template["h_names"]
+            if h1_alias and "H1" in present:
+                present.add("H")
+            candidates = [h for h in template["h_names"] if h not in present]
+            if not candidates:
+                continue
+
             name_to_row = {}
             for row in conformer:
                 name = "H" if h1_alias and names[row] == "H1" else names[row]
@@ -1145,21 +1146,15 @@ class HydrogenFrames:
     def to_tensors(self, device=None) -> Dict[str, torch.Tensor]:
         """Return frame and orientation arrays as tensors, keyed by field name."""
         return {
-            "h_row": torch.as_tensor(
-                # dtype-ok: row index; int64 required
-                self.h_row, dtype=torch.int64, device=device
-            ),
+            "h_row": torch.as_tensor(self.h_row, dtype=get_int_dtype(), device=device),
             "parent_row": torch.as_tensor(
-                # dtype-ok: row index; int64 required
-                self.parent_row, dtype=torch.int64, device=device
+                self.parent_row, dtype=get_int_dtype(), device=device
             ),
             "n1_row": torch.as_tensor(
-                # dtype-ok: row index; int64 required
-                self.n1_row, dtype=torch.int64, device=device
+                self.n1_row, dtype=get_int_dtype(), device=device
             ),
             "n2_row": torch.as_tensor(
-                # dtype-ok: row index; int64 required
-                self.n2_row, dtype=torch.int64, device=device
+                self.n2_row, dtype=get_int_dtype(), device=device
             ),
             "frame_valid": torch.as_tensor(
                 self.frame_valid, dtype=torch.bool, device=device

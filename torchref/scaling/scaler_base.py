@@ -21,7 +21,7 @@ from torchref.base.metrics import (
     rfactor_work_free,
 )
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.config import get_complex_dtype, get_float_dtype
+from torchref.config import get_complex_dtype, get_float_dtype, get_int_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
@@ -264,7 +264,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 initial_log_scale.detach().cpu().numpy(),
             )
         with torch.no_grad():
-            target = initial_log_scale.detach().to(self.device)[self.bins.to(torch.int64)]  # dtype-ok: bin indices for advanced indexing; PyTorch requires int64
+            target = initial_log_scale.detach().to(self.device)[
+                self.bins.to(get_int_dtype())
+            ]
             design = self._iso_design.to(target.dtype)
             coeff = torch.linalg.lstsq(design, target.unsqueeze(1)).solution.squeeze(1)
         self.c_iso = nn.Parameter(coeff.detach().to(self.device))
@@ -320,7 +322,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Once this exists, :meth:`forward` uses it *instead of* the solvent model's global
         ``k_sol``/``B_sol``, which then stop affecting the result.
         """
-        mean_res = self._data.mean_res_per_bin()
+        mean_res = self._data.mean_res_per_bin(self.bins, self.nbins)
 
         # Seeded from k_sol * exp(-B s^2) with Phenix-like k=0.35, B=46.
         s_per_bin = 1.0 / (2.0 * mean_res + 1e-6)  # sin(theta)/lambda
@@ -422,7 +424,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         mean_calc_intensity = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         counts = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         counts_vals = torch.ones_like(F_calc, device=self.device, dtype=fobs.dtype)
-        bins_sel = self.bins.to(torch.int64)[sel]  # dtype-ok: bin indices for advanced indexing; PyTorch requires int64
+        # dtype-ok: scatter_add index; int64 required on torch < 2.8
+        bins_sel = self.bins.to(torch.int64)[sel]
         mean_obs_intensity = torch.scatter_add(
             mean_obs_intensity, 0, bins_sel, intensities[sel]
         )
@@ -432,7 +435,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         counts = torch.scatter_add(counts, 0, bins_sel, counts_vals[sel])
         mean_obs_intensity = mean_obs_intensity / (counts + 1e-6)
         mean_calc_intensity = mean_calc_intensity / (counts + 1e-6)
-        return mean_obs_intensity, mean_calc_intensity, self._data.mean_res_per_bin()
+        mean_res = self._data.mean_res_per_bin(self.bins, self.nbins)
+        return mean_obs_intensity, mean_calc_intensity, mean_res
 
     def screen_solvent_params(
         self,

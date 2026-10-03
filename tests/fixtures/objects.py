@@ -113,12 +113,10 @@ def model_with_restraints(loaded_model: Model) -> dict[str, Any]:
     from torchref.topology.restraints import Restraints
 
     restraints = Restraints(
-        pdb=loaded_model.pdb,
-        xyz_fn=loaded_model.xyz,
-        vdw_radii_fn=loaded_model.get_vdw_radii,
+        topology=loaded_model.ctx.topology,
+        xyz=loaded_model.xyz(),
         verbose=0,
     )
-    restraints.build_restraints()
     return {"model": loaded_model, "restraints": restraints}
 
 

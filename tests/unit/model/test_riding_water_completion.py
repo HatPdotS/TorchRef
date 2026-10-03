@@ -1,4 +1,9 @@
-"""Riding-mode water completion respects the model's hydrogen generation setting."""
+"""Water hydrogens are completed at load, and only when generation is asked for.
+
+``hydrogens="add"`` gives every HOH its two hydrogens when the table is settled, so a
+riding model starts with a water rotation per water. Switching modes afterwards never
+changes the atom table: with ``hydrogens="keep"`` an oxygen-only water stays oxygen-only.
+"""
 
 import pytest
 import torch
@@ -6,158 +11,79 @@ import torch
 from torchref import Model, ModelFT
 
 
+def _n_waters(model):
+    pdb = model.pdb
+    return int((pdb.resname.str.strip().eq("HOH") & pdb.element.str.strip().eq("O")).sum())
+
+
 @pytest.fixture(scope="module")
 def heavy_model(pdb_dir):
-    """Deposited 1DAW loaded without hydrogen generation."""
-    return Model(device="cpu", verbose=0, strip_H=True, add_hydrogens=False).load_pdb(
+    """Deposited 1DAW with every hydrogen stripped."""
+    return Model(device="cpu", verbose=0, hydrogens="strip").load_pdb(
         str(pdb_dir / "1DAW.pdb")
     )
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("model_class", [Model, ModelFT])
-def test_riding_completes_only_waters_and_preserves_live_atoms(
-    heavy_model, model_class
-):
-    """Water completion preserves current coordinates, ADPs, selections and links."""
-    model = model_class(device="cpu", verbose=0, add_hydrogens=False, strip_H=False)
-    model.load(
-        lambda: (heavy_model.pdb.copy(), heavy_model.cell.data, heavy_model.spacegroup)
-    )
-    with torch.no_grad():
-        model.xyz.refinable_params.add_(0.25)
-    adp = model.adp().detach().clone()
-    mask = torch.arange(len(model.pdb)) % 2 == 0
-    model.xyz.update_refinable_mask(mask)
-    model.adp.update_refinable_mask(mask)
-    model.occupancy.freeze_all()
-    before = model.xyz().detach().clone()
-    links = model.ctx.links
-    hkl = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]])
+def test_add_with_riding_completes_every_water(heavy_model, model_class):
+    """Each water gets two riding hydrogens and one rotation, and the model round-trips."""
+    table = heavy_model.pdb[heavy_model.pdb.resname.str.strip().eq("HOH")].copy()
+    model = model_class(device="cpu", verbose=0, hydrogens="add", hydrogen_mode="riding")
+    model.load(lambda: (table, heavy_model.cell.data, heavy_model.spacegroup))
+
+    is_h = model.pdb.element.str.strip().eq("H").to_numpy()
+    assert int(is_h.sum()) == 2 * len(table)
+    assert model.xyz.n_hydrogens == int(is_h.sum())
+    assert model.xyz.rotations.shape == (len(table), 3)
+    assert model.restraints.topology.n_atoms == model.xyz.shape[0]
+    heavy_rows = torch.as_tensor(~is_h)
+    expected = torch.tensor(table[["x", "y", "z"]].values, dtype=model.xyz().dtype)
+    assert torch.allclose(model.xyz()[heavy_rows], expected, atol=1e-5)
     if isinstance(model, ModelFT):
-        model(hkl)
-    model.ctx.add_hydrogens = True
-    returned = model.set_hydrogen_mode("riding")
-    assert returned is model
-    is_h = torch.as_tensor(model.pdb.element.str.strip().eq("H").to_numpy())
-    is_water = model.pdb.resname.str.strip().eq("HOH")
-    assert int(is_h.sum()) == 2 * int(
-        heavy_model.pdb.resname.str.strip().eq("HOH").sum()
-    )
-    assert is_water[is_h.numpy()].all()
-    assert torch.allclose(model.xyz()[~is_h], before, atol=1e-5)
-    assert torch.allclose(model.adp()[~is_h], adp)
-    assert torch.equal(model.xyz.full_refinable_mask[~is_h], mask)
-    assert torch.equal(model.adp.refinable_mask[~is_h], mask)
-    assert not model.occupancy.get_refinable_atoms().any()
-    assert model.ctx.links is links
-    assert model.xyz.rotations.shape[0] == int(is_h.sum()) // 2
-    assert model.restraints.xyz().shape == model.xyz.shape
-    if isinstance(model, ModelFT):
+        hkl = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]])
         assert torch.isfinite(model(hkl)).all()
+
     restored = model_class.create_from_state_dict(model.state_dict(), device="cpu")
+    assert restored.hydrogen_mode == "riding"
     assert torch.allclose(restored.xyz(), model.xyz(), atol=1e-5)
 
 
 @pytest.mark.unit
-def test_partial_water_is_completed_without_moving_existing_hydrogen(heavy_model):
-    """A deposited oxygen with one supplied hydrogen receives just its missing partner."""
-    water = (
-        heavy_model.pdb[heavy_model.pdb.resname.str.strip().eq("HOH")].iloc[:1].copy()
-    )
-    model = heavy_model._new_model_from_df(water, strip_H=False)
-    model.ctx.add_hydrogens = True
-    model.set_hydrogen_mode("riding")
-    model.update_pdb()
-    partial = model._new_model_from_df(model.pdb.iloc[:2].copy(), strip_H=False)
-    before = partial.xyz().detach().clone()
-    partial.set_hydrogen_mode("riding")
-    assert len(partial.pdb) == 2
-    assert torch.allclose(partial.xyz(), before, atol=1e-5)
-    partial.ctx.add_hydrogens = True
-    partial.set_hydrogen_mode("riding")
-    assert len(partial.pdb) == 3
-    assert torch.allclose(partial.xyz()[:2], before, atol=1e-5)
+def test_partial_water_is_completed_without_moving_its_hydrogen(heavy_model):
+    """A water that arrives with one hydrogen receives just its missing partner."""
+    table = heavy_model.to_dataframe()
+    water = table[table.resname.eq("HOH")].iloc[:1].copy()
+    complete = heavy_model._derive(water, hydrogens="add")
+    partial_table = complete.to_dataframe().iloc[:2].copy()
+
+    kept = heavy_model._derive(partial_table, hydrogens="keep")
+    assert len(kept.pdb) == 2
+    before = kept.xyz().detach().clone()
+
+    topped = heavy_model._derive(partial_table, hydrogens="add", hydrogen_mode="riding")
+    assert len(topped.pdb) == 3
+    assert torch.allclose(topped.xyz()[:2], before, atol=1e-5)
+
     with torch.no_grad():
-        partial.xyz.rotations.refinable_params.fill_(0.3)
-    wrapper = partial.xyz
-    coords = partial.xyz().detach().clone()
-    partial.set_hydrogen_mode("riding")
-    assert partial.xyz is wrapper
-    assert torch.equal(partial.xyz(), coords)
-    partial.set_hydrogen_mode("free").set_hydrogen_mode("riding")
-    assert len(partial.pdb) == 3
-    assert torch.allclose(partial.xyz(), coords, atol=1e-5)
-
-
-@pytest.mark.unit
-def test_supplied_frames_are_remapped_when_waters_are_completed(heavy_model):
-    """Explicit frames for the original atom table coexist with generated water frames."""
-    water = (
-        heavy_model.pdb[heavy_model.pdb.resname.str.strip().eq("HOH")].iloc[:2].copy()
-    )
-    model = heavy_model._new_model_from_df(water, strip_H=False)
-    frames = model.hydrogen_frames()
-    model.ctx.add_hydrogens = True
-    model.set_hydrogen_mode("riding", frames=frames)
-    assert len(model.pdb) == 6
-    assert model.xyz.n_hydrogens == 4
-    assert model.xyz.rotations.shape == (2, 3)
-
-
-@pytest.mark.unit
-def test_water_completion_preserves_adp_field(heavy_model):
-    """Adding water hydrogens retains the node parametrization and its parameters."""
-    model = heavy_model._new_model_from_df(heavy_model.pdb.copy(), strip_H=False)
-    model.set_adp_mode("field", n_nodes=8, k_neighbors=4)
-    field = model.adp
-    values = field().detach().clone()
-    parameters = field.refinable_params
-    model.ctx.add_hydrogens = True
-    model.set_hydrogen_mode("riding")
-    heavy = torch.as_tensor(~model.pdb.element.str.strip().eq("H").to_numpy())
-    assert model.adp is field
-    assert field.refinable_params is parameters
-    assert torch.allclose(field()[heavy], values, atol=1e-5)
-    assert field().shape == (len(model.pdb),)
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("generate", [False, True])
-def test_refinement_targets_follow_completed_atom_table(pdb_dir, mtz_dir, generate):
-    """Refinement adds water H and refreshes targets only when generation is enabled."""
-    from torchref.refinement.base_refinement import Refinement
-
-    refinement = Refinement(
-        pdb=str(pdb_dir / "1DAW.pdb"),
-        data_file=str(mtz_dir / "1DAW.mtz"),
-        device="cpu",
-        verbose=0,
-        max_res=3.0,
-        add_hydrogens=False,
-    )
-    previous = refinement.adp_target
-    n_atoms = len(refinement.model.pdb)
-    refinement.model.ctx.add_hydrogens = generate
-    refinement.set_hydrogen_mode("riding")
-    assert (refinement.adp_target is not previous) == generate
-    assert (len(refinement.model.pdb) > n_atoms) == generate
-    geometry = refinement.geometry_target()
-    assert torch.isfinite(geometry)
-    geometry.backward()
-    if generate:
-        gradient = refinement.model.xyz.rotations.refinable_params.grad
-        assert gradient is not None and torch.isfinite(gradient).all()
+        topped.xyz.rotations.refinable_params.fill_(0.3)
+    wrapper = topped.xyz
+    coords = topped.xyz().detach().clone()
+    topped.set_hydrogen_mode("riding")
+    assert topped.xyz is wrapper
+    topped.set_hydrogen_mode("atoms").set_hydrogen_mode("riding")
+    assert len(topped.pdb) == 3
+    assert torch.allclose(topped.xyz(), coords, atol=1e-5)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("model_class", [Model, ModelFT])
 @pytest.mark.parametrize("explicit_frames", [False, True])
-def test_disabled_generation_keeps_atom_table(
+def test_switching_to_riding_never_changes_the_atom_table(
     heavy_model, model_class, explicit_frames
 ):
-    """Riding mode leaves oxygen-only waters untouched when add_hydrogens is False."""
-    model = model_class(device="cpu", verbose=0, add_hydrogens=False)
+    """With ``hydrogens="keep"``, oxygen-only waters stay oxygen-only under riding."""
+    model = model_class(device="cpu", verbose=0)
     model.load(
         lambda: (heavy_model.pdb.copy(), heavy_model.cell.data, heavy_model.spacegroup)
     )
@@ -173,12 +99,33 @@ def test_disabled_generation_keeps_atom_table(
     assert model.xyz.rotations.shape == (0, 3)
 
 
-@pytest.mark.unit
-def test_stripping_prevents_water_completion(heavy_model):
-    """The stripping preference takes precedence even when generation is enabled."""
-    model = heavy_model._new_model_from_df(heavy_model.pdb.copy(), strip_H=True)
-    model.ctx.add_hydrogens = True
-    n_atoms = len(model.pdb)
-    model.set_hydrogen_mode("riding")
-    assert len(model.pdb) == n_atoms
-    assert model.xyz.n_hydrogens == 0
+@pytest.mark.integration
+@pytest.mark.parametrize("hydrogens", ["keep", "add"])
+def test_refinement_targets_see_the_riding_waters(pdb_dir, mtz_dir, hydrogens):
+    """Water rotations reach the geometry gradient when the waters were completed."""
+    from torchref.refinement.base_refinement import Refinement
+
+    refinement = Refinement(
+        pdb=str(pdb_dir / "1DAW.pdb"),
+        data_file=str(mtz_dir / "1DAW.mtz"),
+        device="cpu",
+        verbose=0,
+        max_res=3.0,
+        hydrogens=hydrogens,
+    )
+    n_atoms = len(refinement.model.pdb)
+    adp_target = refinement.adp_target
+    refinement.set_hydrogen_mode("riding")
+    assert len(refinement.model.pdb) == n_atoms
+    assert refinement.adp_target is adp_target
+
+    geometry = refinement.geometry_target()
+    assert torch.isfinite(geometry)
+    geometry.backward()
+    rotations = refinement.model.xyz.rotations
+    assert rotations.shape[0] == (
+        _n_waters(refinement.model) if hydrogens == "add" else 0
+    )
+    if hydrogens == "add":
+        gradient = rotations.refinable_params.grad
+        assert gradient is not None and torch.isfinite(gradient).all()

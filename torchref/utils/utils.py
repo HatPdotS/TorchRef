@@ -6,8 +6,8 @@ Core utility containers and atom-selection parsing, re-exported from ``torchref.
 - :class:`TensorDict` -- dict-like tensor container backed by ``nn.Module`` buffers.
 - :class:`TensorMasks` -- ``dict`` of boolean masks with device movement and a cached
   combined (logical-AND) mask.
-- :func:`sanitize_pdb_dataframe` -- repair duplicate atom identifiers and over-long
-  residue names in a PDB/CIF DataFrame.
+- :func:`sanitize_pdb_dataframe` -- renumber HETATM residues whose atom identifiers
+  repeat, and truncate over-long residue names, before an atom table is written.
 - :func:`parse_phenix_selection` / :func:`create_selection_mask` -- Phenix-style
   atom-selection strings to boolean masks.
 """
@@ -307,27 +307,59 @@ class TensorMasks(DeviceMovementMixin, dict):
         return f"TensorMasks({{{mask_info}}}, device={self.device})"
 
 
+#: What identifies one atom in a PDB or mmCIF file.
+_ATOM_KEY = ["chainid", "resseq", "icode", "name", "altloc"]
+
+#: What the rows of one residue share.
+_RESIDUE_KEY = ["chainid", "resseq", "icode", "resname"]
+
+
+def _residue_blocks(pdb: pd.DataFrame) -> np.ndarray:
+    """Residue index of every row, shape ``(n_atoms,)``, non-decreasing down the table.
+
+    A residue is a contiguous run of one ``(chainid, resseq, icode, resname)``, split
+    wherever an atom ``(name, altloc)`` repeats: unnumbered waters share that whole key,
+    yet each is a residue of its own.
+    """
+    keys = pdb.groupby(_RESIDUE_KEY, sort=False, dropna=False).ngroup().to_numpy()
+    names = ["name", "altloc"]
+    atoms = pdb.groupby(names, sort=False, dropna=False).ngroup().to_numpy()
+    blocks = np.empty(len(pdb), dtype=np.int64)
+    block, current, seen = -1, None, set()
+    for row, (key, atom) in enumerate(zip(keys.tolist(), atoms.tolist())):
+        if key != current or atom in seen:
+            block, current, seen = block + 1, key, set()
+        seen.add(atom)
+        blocks[row] = block
+    return blocks
+
+
 def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
     """
-    Repair a PDB/CIF DataFrame so ``(chainid, resseq, name, altloc)`` is unique.
+    Prepare an atom table for writing: unique HETATM residues, 3-character names.
 
-    Fixes duplicate ``resseq`` on HETATM records (waters are often all 0) by renumbering
-    within the chain, and truncates residue names to 3 characters. Returns a copy; the
-    input is not modified.
+    Truncates residue names to the 3 characters a PDB file holds. Then each HETATM
+    residue that repeats an atom identifier ``(chainid, resseq, icode, name, altloc)``
+    already taken by an ATOM record or an earlier residue -- typically waters all
+    numbered 0, or a ligand copied without renumbering -- gets a new ``resseq``, counting
+    up from the chain's highest. A residue is a contiguous run of rows sharing
+    ``(chainid, resseq, icode, resname)``, split where an atom ``(name, altloc)``
+    repeats, so it moves whole and a run of unnumbered waters becomes one residue per
+    water. ATOM records are never renumbered, and residues kept apart by an insertion
+    code (52 and 52A) are not duplicates. Returns a copy; the input is not modified.
 
     Parameters
     ----------
     pdb : pandas.DataFrame
-        DataFrame with PDB data (must have columns: ATOM, chainid, resseq, name, altloc,
-        resname, serial).
+        Atom table with columns ATOM, chainid, resseq, icode, resname, name and altloc.
     verbose : int, default 0
         Verbosity level (0=silent, 1=info, 2=debug).
 
     Returns
     -------
     pandas.DataFrame
-        Sanitized copy. Renumbering can fail to converge on pathological input, in which
-        case duplicates remain and a warning is printed at ``verbose > 0``.
+        Sanitized copy. Duplicated identifiers among ATOM records are left as they are,
+        with a warning printed at ``verbose > 0``.
     """
     pdb = pdb.copy()
 
@@ -335,7 +367,6 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
         print("Sanitizing PDB DataFrame...")
         print(f"  Initial atoms: {len(pdb)}")
 
-    # 1. Standardize residue names to max 3 characters
     long_resnames = pdb["resname"].str.len() > 3
     if long_resnames.any():
         n_long = long_resnames.sum()
@@ -346,256 +377,84 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
             )
         pdb.loc[long_resnames, "resname"] = pdb.loc[long_resnames, "resname"].str[:3]
 
-    # 2. Fix duplicate atom identifiers by reassigning resseq
-    dup_mask = pdb.duplicated(
-        subset=["chainid", "resseq", "name", "altloc"], keep=False
-    )
+    het = (pdb["ATOM"].astype(str).str.strip() == "HETATM").to_numpy()
+    residue = _residue_blocks(pdb)
+    # ATOM records come first, so of a polymer residue and a HETATM residue that
+    # collide it is always the HETATM one that moves.
+    order = np.argsort(het, kind="stable")
+    taken = np.empty(len(pdb), dtype=bool)
+    taken[order] = pdb.iloc[order].duplicated(subset=_ATOM_KEY).to_numpy()
+    moved = np.unique(residue[taken & het])
 
-    if dup_mask.any():
-        n_dup = dup_mask.sum()
+    if len(moved):
+        first_row = np.searchsorted(residue, moved)
+        chain = pd.Series(pdb["chainid"].to_numpy()[first_row])
+        by_chain = pdb.groupby("chainid", sort=False, dropna=False)["resseq"]
+        top = by_chain.transform("max").to_numpy()[first_row]
+        offset = chain.groupby(chain, sort=False, dropna=False).cumcount().to_numpy()
+        new = np.where(top > 0, top + 1, 1) + offset
+        rows = np.isin(residue, moved)
+        new_resseq = pd.Series(new, index=moved).loc[residue[rows]]
+        pdb.loc[rows, "resseq"] = new_resseq.to_numpy()
         if verbose > 0:
-            print(f"  Found {n_dup} atoms with duplicate identifiers")
-
-        # This ensures we only renumber within the same molecule type and chain
-        for (chainid, resname, atom_type), group in pdb.groupby(
-            ["chainid", "resname", "ATOM"]
-        ):
-            group_indices = group.index
-
-            group_dup_mask = group.duplicated(
-                subset=["chainid", "resseq", "name", "altloc"], keep=False
+            print(
+                f"  Renumbered {len(moved)} HETATM residues ({rows.sum()} atoms) "
+                "whose atom identifiers were already taken"
             )
-
-            if group_dup_mask.any():
-                chain_data = pdb[pdb["chainid"] == chainid]
-                max_resseq = chain_data["resseq"].max()
-
-                new_resseq_start = (
-                    max_resseq + 1 if pd.notna(max_resseq) and max_resseq > 0 else 1
-                )
-
-                # Group by (serial) to keep atoms of the same residue together
-                unique_serials = group["serial"].unique()
-                residue_counter = new_resseq_start
-
-                for serial in unique_serials:
-                    serial_mask = pdb["serial"] == serial
-                    pdb.loc[serial_mask, "resseq"] = residue_counter
-                    residue_counter += 1
-
-                if verbose > 1:
-                    n_fixed = len(unique_serials)
-                    print(
-                        f"    Fixed {n_fixed} {resname} residues in chain {chainid} (resseq {new_resseq_start}-{residue_counter-1})"
-                    )
-
-        final_dup_mask = pdb.duplicated(
-            subset=["chainid", "resseq", "name", "altloc"], keep=False
-        )
-        if final_dup_mask.any():
-            remaining_dups = final_dup_mask.sum()
-            if verbose > 0:
-                print(
-                    f"  WARNING: Still have {remaining_dups} duplicate identifiers after sanitization"
-                )
-                dups = pdb[final_dup_mask].sort_values(["chainid", "resseq", "name"])
-                print(
-                    dups[
-                        [
-                            "ATOM",
-                            "serial",
-                            "name",
-                            "resname",
-                            "chainid",
-                            "resseq",
-                            "altloc",
-                        ]
-                    ].head(10)
-                )
-        else:
-            if verbose > 0:
-                print("  ✓ All duplicate identifiers resolved")
-    else:
-        if verbose > 0:
-            print("  ✓ No duplicate atom identifiers found")
+        if verbose > 1:
+            for chainid, numbers in pd.Series(new).groupby(chain, dropna=False):
+                print(f"    chain {chainid}: resseq {numbers.min()}-{numbers.max()}")
+    elif verbose > 0:
+        print("  No HETATM residue needed renumbering")
 
     if verbose > 0:
+        remaining = pdb.duplicated(subset=_ATOM_KEY, keep=False)
+        if remaining.any():
+            print(
+                f"  WARNING: {remaining.sum()} ATOM records share an atom identifier "
+                "and are left as they are"
+            )
+            print(pdb.loc[remaining, ["ATOM", "resname", *_ATOM_KEY]].head(10))
         print(f"  Final atoms: {len(pdb)}")
 
     return pdb
 
 
-def _parse_with_parentheses(
-    selection_string: str, pdb_df: pd.DataFrame
-) -> torch.Tensor:
-    """
-    Helper function to handle parentheses in selection strings.
-    Recursively evaluates innermost parentheses first.
-    """
-    import re
-
-    # Find innermost parentheses
-    while True:
-        match = re.search(r"\(([^()]+)\)", selection_string)
-        if not match:
-            break
-
-        # Evaluate the innermost parenthesized expression
-        inner = match.group(1)
-        inner_mask = _parse_without_parentheses(inner, pdb_df)
-
-        # Replace with a placeholder that we'll substitute back
-        # Use a unique placeholder that won't appear in normal selection
-        placeholder = f"__MASK_{id(inner_mask)}__"
-        selection_string = (
-            selection_string[: match.start()]
-            + placeholder
-            + selection_string[match.end() :]
-        )
-
-        # Store the mask result in a temporary global dict
-        # (not ideal but works for this recursive evaluation)
-        if not hasattr(_parse_with_parentheses, "_mask_cache"):
-            _parse_with_parentheses._mask_cache = {}
-        _parse_with_parentheses._mask_cache[placeholder] = inner_mask
-
-    # Now parse the expression without parentheses, substituting cached masks
-    return _parse_without_parentheses(selection_string, pdb_df)
-
-
-def _parse_without_parentheses(
-    selection_string: str, pdb_df: pd.DataFrame
-) -> torch.Tensor:
-    """
-    Parse selection string without parentheses.
-    Handles logical operators and basic keywords.
-    """
-    import re
-
-    selection_string = selection_string.strip()
-
-    if not selection_string:
-        raise ValueError("Selection string cannot be empty")
-
-    if selection_string.startswith("__MASK_") and selection_string.endswith("__"):
-        if hasattr(_parse_with_parentheses, "_mask_cache"):
-            return _parse_with_parentheses._mask_cache.get(
-                selection_string, torch.ones(len(pdb_df), dtype=torch.bool)
-            )
-        return torch.ones(len(pdb_df), dtype=torch.bool)
-
-    if selection_string.lower() == "all":
-        return torch.ones(len(pdb_df), dtype=torch.bool)
-
-    # Priority: not > and > or
-
-    if " or " in selection_string.lower():
-        parts = re.split(r"\s+or\s+", selection_string, flags=re.IGNORECASE)
-        masks = [_parse_without_parentheses(part.strip(), pdb_df) for part in parts]
-        result = masks[0]
-        for mask in masks[1:]:
-            result = result | mask
-        return result
-
-    if " and " in selection_string.lower():
-        parts = re.split(r"\s+and\s+", selection_string, flags=re.IGNORECASE)
-        masks = [_parse_without_parentheses(part.strip(), pdb_df) for part in parts]
-        result = masks[0]
-        for mask in masks[1:]:
-            result = result & mask
-        return result
-
-    if selection_string.lower().startswith("not "):
-        inner_selection = selection_string[4:].strip()
-        return ~_parse_without_parentheses(inner_selection, pdb_df)
-
-    parts = selection_string.split(None, 1)
-    if len(parts) < 2:
-        raise ValueError(f"Invalid selection syntax: '{selection_string}'")
-
-    keyword, value = parts[0].lower(), parts[1]
-
-    mask = torch.zeros(len(pdb_df), dtype=torch.bool)
-
-    if keyword == "chain":
-        chain_id = value.strip()
-        selected = pdb_df["chainid"] == chain_id
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "resseq":
-        if ":" in value:
-            start, end = value.split(":")
-            start, end = int(start.strip()), int(end.strip())
-            selected = (pdb_df["resseq"] >= start) & (pdb_df["resseq"] <= end)
-        else:
-            resseq_num = int(value.strip())
-            selected = pdb_df["resseq"] == resseq_num
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "resname":
-        resname = value.strip().upper()
-        selected = pdb_df["resname"].str.upper() == resname
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "name":
-        atom_name = value.strip().upper()
-        selected = pdb_df["name"].str.upper() == atom_name
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "element":
-        element = value.strip().capitalize()
-        selected = pdb_df["element"].str.capitalize() == element
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    elif keyword == "altloc":
-        altloc = value.strip()
-        selected = pdb_df["altloc"] == altloc
-        mask = torch.tensor(selected.values, dtype=torch.bool)
-
-    else:
-        raise ValueError(f"Unknown selection keyword: '{keyword}'")
-
-    return mask
-
-
 def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
-    """
-    Parse Phenix-style atom selection syntax and return a boolean mask.
+    """Evaluate a Phenix-style selection against an atom table.
 
-    The grammar is the contract, so it is spelled out. Terms:
-    ``chain <id>``, ``resseq <num>``, ``resseq <start>:<end>`` (inclusive),
-    ``resname <name>``, ``name <atom>``, ``element <elem>``, ``altloc <id>``, ``all``.
-    Combined with ``not``, ``and``, ``or`` (that precedence) and ``(...)`` for grouping,
-    e.g. ``"chain A and (name CA or name CB)"``. ``resname``/``name`` match
-    case-insensitively, ``chain``/``altloc`` do not.
+    The grammar is documented in :mod:`torchref.utils.selection`; a model's own atoms
+    are selected with ``model.ctx.topology.select``.
 
     Parameters
     ----------
     selection_string : str
         Phenix-style selection string.
     pdb_df : pandas.DataFrame
-        Atomic data with columns 'chainid', 'resseq', 'resname', 'name', 'element',
-        'altloc'.
+        Atom table with ``chainid``, ``resseq``, ``resname``, ``name``, ``element`` and
+        ``altloc`` columns.
 
     Returns
     -------
     torch.Tensor
-        Boolean tensor of shape (n_atoms,), on the CPU regardless of where ``pdb_df``'s
-        consumers live.
+        Boolean tensor of shape (n_atoms,), on the CPU.
 
     Raises
     ------
     ValueError
         On an unknown keyword, an empty selection, or a bare term with no value.
     """
-    # Clear any cached masks from previous calls
-    if hasattr(_parse_with_parentheses, "_mask_cache"):
-        _parse_with_parentheses._mask_cache.clear()
+    from torchref.utils.selection import select_atoms
 
-    if "(" in selection_string:
-        return _parse_with_parentheses(selection_string, pdb_df)
-    else:
-        return _parse_without_parentheses(selection_string, pdb_df)
+    columns = {
+        "chain": pdb_df["chainid"].values.astype(str),
+        "resseq": pdb_df["resseq"].values,
+        "resname": pdb_df["resname"].values.astype(str),
+        "name": pdb_df["name"].values.astype(str),
+        "element": pdb_df["element"].values.astype(str),
+        "altloc": pdb_df["altloc"].values.astype(str),
+    }
+    return select_atoms(columns, selection_string)
 
 
 def create_selection_mask(

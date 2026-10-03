@@ -70,26 +70,26 @@ __all__ = [
 # oracle. Amplitudes are rel L2 on complex F; derivatives are of ``ls_target``:
 #
 #   fineness  spacing    gridsize        amplitude   g_xyz      g_xyz cos   HVP        HVP cos
-#   0.667     d_min/2    (30, 36, 27)    1.04e-01    1.25e+00    0.4207     2.77e-01   0.9622
-#   1.000     d_min/3    (45, 50, 40)    4.11e-03    4.30e-02    0.999077   2.06e-02   0.999814
-#   1.300     d_min/3.9  (60, 64, 54)    8.01e-04    5.86e-03    0.999983   1.16e-03   0.999999
-#   1.600     d_min/4.8  (72, 80, 64)    8.03e-04    5.87e-03    0.999983   1.16e-03   0.999999
-#   2.200     d_min/6.6  (100,108, 90)   7.98e-04    6.00e-03    0.999982   1.16e-03   0.999999
+#   0.667     d_min/2    (30, 36, 27)    9.35e-02    1.29e+00    0.5873     3.04e-01   0.9568
+#   1.000     d_min/3    (45, 50, 40)    3.63e-03    3.93e-02    0.999242   2.22e-02   0.999824
+#   1.300     d_min/3.9  (60, 64, 54)    8.94e-04    9.04e-03    0.999960   1.44e-03   0.999999
+#   1.600     d_min/4.8  (72, 80, 64)    9.01e-04    9.12e-03    0.999959   1.34e-03   0.999999
+#   2.200     d_min/6.6  (100,108, 90)   8.97e-04    9.13e-03    0.999959   1.34e-03   0.999999
 #
 # Three things follow.
 #
 # 1. **Bare Nyquist is unusable**, which is why ``NYQUIST_OVERSAMPLING`` is 3 and not 2. At
-#    oversampling 2 the xyz gradient cosine against the analytic answer collapses to 0.42
-#    and amplitudes are 10% out. The factor of 3 is buying a great deal.
+#    oversampling 2 the xyz gradient cosine against the analytic answer collapses to 0.59
+#    and amplitudes are 9% out. The factor of 3 is buying a great deal.
 # 2. **Production sits one step before convergence.** Everything is converged from fineness
-#    1.3. At production the residuals are ~5x larger in amplitude and ~7x in the xyz
+#    1.3. At production the residuals are ~4x larger in amplitude and in the xyz
 #    gradient, but direction stays excellent (cos 0.999) so the residual is predominantly
 #    magnitude. On a *real* structure the production numbers are better still -- 7L84 gives
 #    amplitude 2.28e-03 and xyz gradient 1.04e-02 -- because derivative aliasing cancels
 #    across atoms as ~1/sqrt(N). See the gate constants in ``__init__.py``; absolute
 #    accuracy gates are calibrated there rather than here.
 # 3. **The sigma cutoff is not the binding constraint at production.** Sweeping n_sigma at
-#    fineness 1.0 moves the amplitude residual 5.43e-3 -> 4.11e-3 -> 4.05e-3 and then
+#    fineness 1.0 moves the amplitude residual 5.22e-3 -> 3.63e-3 -> 3.56e-3 and then
 #    flatlines; grid sampling dominates. Tests that mean to exercise the cutoff therefore
 #    pass an explicit finer ``fineness`` -- see
 #    ``test_forward.py::test_nsigma_reduces_truncation_error``.
@@ -200,7 +200,11 @@ def _hkl_within(cell: Cell, d_min: float, dtype: torch.dtype, cap: Optional[int]
     ]
     hkl = torch.tensor(cand, dtype=dtype)
     s = get_scattering_vectors(hkl, cell.data, recB).norm(dim=1)
-    keep = (s > 0) & (s <= 1.0 / d_min)
+    # Strictly inside, by a margin far above rounding: when a reflection sits exactly on
+    # the sphere (a = 24 A with d_min = 1.6 A puts (+-15, 0, 0) there), its membership
+    # would otherwise hang on the last bit of a*, and the stride below would then shift
+    # every reflection after it.
+    keep = (s > 0) & (s < (1.0 / d_min) * (1.0 - 1e-9))
     hkl = hkl[keep]
     if cap is not None and hkl.shape[0] > cap:
         # Even stride, so the kept set still spans the full resolution range rather

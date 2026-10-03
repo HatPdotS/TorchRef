@@ -1,5 +1,6 @@
 """Miller index generation and d-spacing calculation."""
 
+import math
 from typing import Optional
 
 import torch
@@ -67,16 +68,11 @@ def generate_possible_hkl(
     cell = cell.to(device)
 
     recB = reciprocal_basis_matrix(cell)
-    a_star = torch.linalg.norm(recB[0])
-    b_star = torch.linalg.norm(recB[1])
-    c_star = torch.linalg.norm(recB[2])
 
-    # Per-axis bound ceil(s_max / a*) over-covers the sphere; the resolution
-    # filter at the end trims it back.
+    # h = s . a, so |s| <= s_max bounds |h| by s_max * |a| (likewise k by b,
+    # l by c) in any cell; the resolution filter at the end trims the box.
     s_max = 1.0 / d_min
-    h_max = int(torch.ceil(s_max / a_star).item())
-    k_max = int(torch.ceil(s_max / b_star).item())
-    l_max = int(torch.ceil(s_max / c_star).item())
+    h_max, k_max, l_max = (math.ceil(s_max * float(length)) for length in cell[:3])
 
     h_range = torch.arange(-h_max, h_max + 1, device=device, dtype=dtypes.int)
     k_range = torch.arange(-k_max, k_max + 1, device=device, dtype=dtypes.int)

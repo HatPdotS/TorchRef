@@ -32,13 +32,13 @@ def _image_table(path):
     model = Model(verbose=0, device=torch.device("cpu"))
     model.load_pdb(str(path))
     cell, sg = model.ctx.cell, model.ctx.spacegroup
-    xyz_frac = cell.cartesian_to_fractional(model.xyz().detach().to(dtypes.float))
-    op_indices, offsets = nb.prefilter_symop_offsets(cell, sg, xyz_frac, CUTOFF)
+    xyz = model.xyz().detach().to(dtypes.float)
+    op_indices, offsets = nb.prefilter_symop_offsets(cell, sg, xyz, CUTOFF)
     identity = ((op_indices == 0) & (offsets == 0).all(dim=1)).nonzero()[0].item()
     lengths = torch.stack([cell.a, cell.b, cell.c]).to(dtypes.float)
     grid_dims = torch.clamp((lengths / CUTOFF).long(), min=1)
     flat_cell, atom_idx, combo_idx, cart_pos = nb.assign_to_grid(
-        xyz_frac, cell, sg, op_indices, offsets, grid_dims
+        xyz, cell, sg, op_indices, offsets, grid_dims
     )
     # Perpendicular width of one grid cell along each axis: lattice-plane spacing
     # V / |face| over the number of cells.
@@ -50,7 +50,7 @@ def _image_table(path):
         for k, (u, v) in enumerate(faces)
     ]
     return dict(
-        n_atoms=xyz_frac.shape[0], n_combos=len(op_indices), identity=identity,
+        n_atoms=xyz.shape[0], n_combos=len(op_indices), identity=identity,
         grid_dims=grid_dims, flat_cell=flat_cell, atom_idx=atom_idx,
         combo_idx=combo_idx, cart_pos=cart_pos, min_width=min(widths),
     )

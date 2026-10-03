@@ -8,7 +8,8 @@ for distance computation. On CPU the pair search itself is a
 k-d tree instead (:func:`find_pairs_kdtree`), with the same output.
 
 All operations run under ``torch.no_grad()`` on whatever device
-the input coordinates live on (CPU or GPU).
+the input coordinates live on (CPU or GPU). :func:`vdw_radii_for_elements`
+gives the per-atom radii the contact distances are summed from.
 """
 
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
@@ -16,11 +17,53 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 import numpy as np
 import torch
 
-from torchref.config import dtypes, get_float_dtype
+from torchref.base.coordinates.symmetry_images import (
+    is_symmetry_image,
+    symmetry_image_positions,
+)
+from torchref.config import dtypes, get_float_dtype, get_int_dtype
 
 if TYPE_CHECKING:
     from torchref.symmetry.cell import Cell
     from torchref.symmetry.spacegroup import SpaceGroup
+
+#: Radius in Å for an element missing from ``atomic_vdw_radii.csv``.
+_DEFAULT_VDW_RADIUS = 1.9
+
+
+def vdw_radii_for_elements(elements) -> np.ndarray:
+    """Van der Waals radius of each atom, looked up by element.
+
+    Parameters
+    ----------
+    elements : array-like of str
+        Element symbols, one per atom; case and surrounding whitespace are ignored.
+
+    Returns
+    -------
+    numpy.ndarray
+        Radii in Å, shape ``(n_atoms,)``, float64. Elements the table does not list
+        get 1.9 Å.
+    """
+    import os
+
+    import pandas as pd
+
+    from torchref import PATH_TORCHREF_DATA
+
+    table = pd.read_csv(
+        os.path.join(PATH_TORCHREF_DATA, "atomic_vdw_radii.csv"), comment="#"
+    )
+    radius = dict(
+        zip(
+            table["element"].str.strip().str.capitalize(),
+            table["vdW_Radius_Angstrom"],
+        )
+    )
+    symbols = np.char.capitalize(np.char.strip(np.asarray(elements).astype(str)))
+    return np.array(
+        [radius.get(e, _DEFAULT_VDW_RADIUS) for e in symbols], dtype=np.float64
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -30,13 +73,18 @@ if TYPE_CHECKING:
 def prefilter_symop_offsets(
     cell: "Cell",
     sg: "SpaceGroup",
-    xyz_frac: torch.Tensor,
+    xyz: torch.Tensor,
     cutoff: float,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Select (symop, cell_offset) combos that could produce contacts.
+    """Select every (symop, cell_offset) combination whose image can reach the model.
 
-    Uses the ASU centroid and molecule radius to eliminate obviously
-    distant combinations.  Always includes identity (op=0, offset=0).
+    An image can hold an atom within ``cutoff`` of the model only if it moves the
+    centroid by at most ``2 r + cutoff``, ``r`` being the largest atom-centroid
+    distance. Every combination meeting that bound is returned, however far the
+    coordinates sit from the origin cell: the offsets are relative to ``xyz`` as
+    given, which is how :func:`assign_to_grid` and the VDW kernels form images from
+    them (:func:`~torchref.base.coordinates.symmetry_image_positions`, on unwrapped
+    coordinates). Always includes the identity (op=0, offset=0).
 
     Parameters
     ----------
@@ -44,51 +92,60 @@ def prefilter_symop_offsets(
         Crystallographic unit cell.
     sg : SpaceGroup
         Space group providing the symmetry operators.
-    xyz_frac : torch.Tensor
-        ``(N, 3)`` fractional ASU coordinates.
+    xyz : torch.Tensor
+        ``(N, 3)`` Cartesian ASU coordinates in Å.
     cutoff : float
         Cartesian cutoff in Angstrom.
 
     Returns
     -------
-    op_indices : (M,) long – symop indices for each valid combo
-    cell_offsets : (M, 3) long – integer cell translations
+    op_indices : (M,) int – symop indices for each valid combo
+    cell_offsets : (M, 3) int – integer cell translations
+        Ordered by operation, then offset, lexicographically.
     """
-    device = xyz_frac.device
-    fdtype = dtypes.float
-
-    centroid_frac = xyz_frac.mean(dim=0)
-    centroid_cart = cell.fractional_to_cartesian(xyz_frac).mean(dim=0)
-    xyz_cart = cell.fractional_to_cartesian(xyz_frac)
-    molecule_radius = (xyz_cart - centroid_cart).norm(dim=1).max().item()
-    threshold = 2.0 * molecule_radius + cutoff
+    device = xyz.device
+    fdtype = get_float_dtype()
+    int_dtype = get_int_dtype()
+    xyz = xyz.to(fdtype)
 
     B = cell.fractional_matrix.to(device=device, dtype=fdtype)
-    I_mat = torch.eye(3, dtype=fdtype, device=device)
-
+    B_inv = cell.inv_fractional_matrix.to(device=device, dtype=fdtype)
     matrices = sg.matrices.to(device=device, dtype=fdtype)
     translations = sg.translations.to(device=device, dtype=fdtype)
+    tables = (matrices, translations, B, B_inv)
 
-    valid_ops = []
-    valid_offsets = []
+    centroid = xyz.mean(dim=0)
+    reach = 2.0 * (xyz - centroid).norm(dim=1).max() + cutoff
 
-    for op_idx in range(sg.n_ops):
-        R = matrices[op_idx]
-        t = translations[op_idx]
-        for dx in range(-1, 2):
-            for dy in range(-1, 2):
-                for dz in range(-1, 2):
-                    offset = torch.tensor([dx, dy, dz], dtype=fdtype,
-                                          device=device)
-                    d_frac = (R - I_mat) @ centroid_frac + t + offset
-                    d_cart = B @ d_frac
-                    if d_cart.norm().item() <= threshold:
-                        valid_ops.append(op_idx)
-                        valid_offsets.append([dx, dy, dz])
+    n_ops = matrices.shape[0]
+    ops = torch.arange(n_ops, dtype=int_dtype, device=device)
+    no_offset = torch.zeros(n_ops, 3, dtype=int_dtype, device=device)
+    image0 = symmetry_image_positions(
+        centroid.expand(n_ops, 3), ops, no_offset, *tables
+    )
+    # Fractional centroid displacement under each operation before any lattice
+    # translation. An offset n qualifies only if |B (u + n)| <= reach, which along
+    # axis k bounds |u_k + n_k| by reach * |row k of B^-1| (reach over the spacing of
+    # the lattice planes normal to that axis), so this box holds every candidate.
+    u = (image0 - centroid) @ B_inv.T
+    half_width = reach * B_inv.norm(dim=1)
+    lo = torch.ceil(-u - half_width)
+    hi = torch.floor(-u + half_width)
 
-    op_indices = torch.tensor(valid_ops, dtype=torch.long, device=device)  # dtype-ok: symmetry-operator index tensor; int64
-    cell_offsets = torch.tensor(valid_offsets, dtype=torch.long, device=device)  # dtype-ok: integer cell-offset lattice vectors; symmetry-image metadata
-    return op_indices, cell_offsets
+    box = (hi - lo).max(dim=0).values.to(int_dtype) + 1
+    steps = torch.cartesian_prod(
+        *(torch.arange(int(k), dtype=fdtype, device=device) for k in box)
+    )
+    candidates = lo[:, None, :] + steps[None, :, :]  # (n_ops, K, 3)
+    in_box = (candidates <= hi[:, None, :]).all(dim=-1)
+    candidate_ops = ops[:, None].expand(-1, steps.shape[0])
+    offsets = candidates.to(int_dtype)
+    image = symmetry_image_positions(
+        centroid.expand_as(candidates), candidate_ops, offsets, *tables
+    )
+    keep = in_box & ((image - centroid).norm(dim=-1) <= reach)
+
+    return candidate_ops[keep], offsets[keep]
 
 
 # ------------------------------------------------------------------ #
@@ -96,7 +153,7 @@ def prefilter_symop_offsets(
 # ------------------------------------------------------------------ #
 
 def assign_to_grid(
-    xyz_frac: torch.Tensor,
+    xyz: torch.Tensor,
     cell: "Cell",
     sg: "SpaceGroup",
     op_indices: torch.Tensor,
@@ -105,13 +162,19 @@ def assign_to_grid(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute Cartesian image positions and assign to grid cells.
 
+    Images come from :func:`~torchref.base.coordinates.symmetry_image_positions`,
+    the function the VDW kernels place stored pairs with, so a pair is scored at the
+    distance it is found at here.
+
     Parameters
     ----------
-    xyz_frac : (N, 3)
+    xyz : (N, 3)
+        Cartesian ASU coordinates in Å, unwrapped, as passed to
+        :func:`prefilter_symop_offsets`.
     cell : Cell
     sg : SpaceGroup
-    op_indices : (M,) long
-    cell_offsets : (M, 3) long
+    op_indices : (M,) int
+    cell_offsets : (M, 3) int
     grid_dims : (3,) long – number of grid cells per axis
 
     Returns
@@ -121,33 +184,30 @@ def assign_to_grid(
     combo_idx : (N*M,) long – index into op_indices / cell_offsets
     cart_pos : (N*M, 3) float – Cartesian positions (reused in step 4)
     """
-    device = xyz_frac.device
-    fdtype = dtypes.float
-    N = xyz_frac.shape[0]
+    device = xyz.device
+    fdtype = get_float_dtype()
+    N = xyz.shape[0]
     M = op_indices.shape[0]
 
-    R_sel = sg.matrices[op_indices].to(dtype=fdtype)        # (M, 3, 3)
-    t_sel = sg.translations[op_indices].to(dtype=fdtype)    # (M, 3)
-    offs = cell_offsets.to(dtype=fdtype)                     # (M, 3)
+    B = cell.fractional_matrix.to(device=device, dtype=fdtype)
+    B_inv = cell.inv_fractional_matrix.to(device=device, dtype=fdtype)
+    images = symmetry_image_positions(
+        xyz.to(fdtype)[:, None, :],
+        op_indices.to(device),
+        cell_offsets.to(device),
+        sg.matrices.to(device=device, dtype=fdtype),
+        sg.translations.to(device=device, dtype=fdtype),
+        B,
+        B_inv,
+    )  # (N, M, 3)
+    cart_pos = images.reshape(-1, 3)
 
-    # (N, M, 3) = einsum over symops applied to each atom
-    frac_images = (
-        torch.einsum("mij,nj->nmi", R_sel, xyz_frac.to(fdtype))
-        + t_sel[None, :, :]
-        + offs[None, :, :]
-    )
-
-    # Cartesian positions (stored for reuse)
-    cart_pos = cell.fractional_to_cartesian(
-        frac_images.reshape(-1, 3)
-    )  # (N*M, 3)
-
-    # Wrap to [0, 1) for grid assignment
-    frac_wrapped = frac_images % 1.0
+    # Wrap to [0, 1) for grid assignment only; distances use the unwrapped images.
+    frac_wrapped = (images @ B_inv.T) % 1.0
     gd = grid_dims.to(device=device, dtype=fdtype)
     cell_ijk = (frac_wrapped * gd[None, None, :]).long()
     cell_ijk = cell_ijk.clamp(
-        min=torch.zeros(3, dtype=torch.long, device=device),  # dtype-ok: clamp min-bound for long grid-index tensor; matches int64
+        min=torch.zeros(3, dtype=get_int_dtype(), device=device),
         max=(grid_dims - 1).to(device),
     )
 
@@ -178,8 +238,8 @@ def build_cell_list(
     -------
     sort_order : (E,) long
     unique_cells : (C,) long – occupied cell indices
-    starts : (C+1,) long – CSR boundaries into sorted arrays
-    cell_lookup : (n_grid_total,) long – maps flat cell → index in
+    starts : (C+1,) int – CSR boundaries into sorted arrays
+    cell_lookup : (n_grid_total,) int – maps flat cell → index in
         unique_cells, or -1 if empty.
     """
     device = flat_cell.device
@@ -189,14 +249,12 @@ def build_cell_list(
     unique_cells, counts = torch.unique_consecutive(
         sorted_cells, return_counts=True
     )
-    starts = torch.zeros(len(unique_cells) + 1, dtype=torch.long, device=device)  # dtype-ok: CSR boundary/offset array; int64 required
+    starts = torch.zeros(len(unique_cells) + 1, dtype=get_int_dtype(), device=device)
     starts[1:] = counts.cumsum(0)
 
-    cell_lookup = torch.full(
-        (n_grid_total,), -1, dtype=torch.long, device=device  # dtype-ok: grid-cell to index lookup table; used for indexing, int64
-    )
+    cell_lookup = torch.full((n_grid_total,), -1, dtype=get_int_dtype(), device=device)
     cell_lookup[unique_cells] = torch.arange(
-        len(unique_cells), dtype=torch.long, device=device  # dtype-ok: index values written into lookup table; int64
+        len(unique_cells), dtype=get_int_dtype(), device=device
     )
 
     return sort_order, unique_cells, starts, cell_lookup
@@ -234,7 +292,7 @@ def _get_canonical_offsets_14(device: torch.device) -> torch.Tensor:
                         offsets.append([dx, dy, dz])
         assert len(offsets) == 14, f"expected 14 canonical offsets, got {len(offsets)}"
         _NEIGHBOR_OFFSETS_14 = torch.tensor(
-            offsets, dtype=torch.long, device=device  # dtype-ok: grid neighbor-cell offset deltas used to compute index; int64
+            offsets, dtype=get_int_dtype(), device=device
         )
     return _NEIGHBOR_OFFSETS_14
 
@@ -314,9 +372,9 @@ def find_pairs_periodic_grid_v2(
         ASU atom index and (symop, offset) combo index per entry.
     unique_cells : (C,) long
         Occupied flat grid-cell indices.
-    starts : (C+1,) long
+    starts : (C+1,) int
         CSR boundaries into the sorted arrays.
-    cell_lookup : (n_grid_total,) long
+    cell_lookup : (n_grid_total,) int
         Maps a flat cell index to its position in ``unique_cells`` (-1 empty).
     grid_dims : (3,) long
         Number of grid cells per axis.
@@ -394,7 +452,7 @@ def find_pairs_periodic_grid_v2(
             + nb_ijk[:, 1] * gz
             + nb_ijk[:, 2]
         )
-        nb_occ_idx = cell_lookup[nb_flat]               # (C,) long, -1 empty
+        nb_occ_idx = cell_lookup[nb_flat]               # (C,) int, -1 empty
 
         has_nb = nb_occ_idx >= 0
         nb_occ_safe = nb_occ_idx.clamp(min=0)
@@ -494,7 +552,7 @@ def find_pairs_periodic_grid_v2(
                 all_pair_combo_j.append(cj)
 
     if not all_pair_atom_i:
-        empty = torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty atom-pair index placeholder; int64 required
+        empty = torch.tensor([], dtype=get_int_dtype(), device=device)
         return empty, empty, empty
 
     return (
@@ -575,11 +633,13 @@ def exclusion_set_to_hash(
     Hash: min(i,j) * max_idx + max(i,j), sorted for searchsorted.
     """
     if not exclusion_set:
-        return torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty exclusion-hash placeholder; int64
+        # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+        return torch.tensor([], dtype=torch.long, device=device)
     arr = np.array(list(exclusion_set), dtype=np.int64)
     hashes = arr[:, 0] * max_idx + arr[:, 1]  # already (min, max)
     hashes.sort()
-    return torch.tensor(hashes, dtype=torch.long, device=device)  # dtype-ok: packed pair-hash key for searchsorted; int64 avoids overflow
+    # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
+    return torch.tensor(hashes, dtype=torch.long, device=device)
 
 
 def filter_pairs(
@@ -589,10 +649,14 @@ def filter_pairs(
     identity_combo: int,
     excl_hash: torch.Tensor,
     max_idx: int,
-    pdb,
+    topology,
     inter_residue_only: bool = True,
 ) -> torch.Tensor:
-    """Apply exclusion, residue, and altloc filters. Returns keep mask."""
+    """Apply exclusion, residue, and altloc filters. Returns keep mask.
+
+    Residues are the topology's ``(chain, resseq, icode)`` nodes, so atoms of residues
+    100 and 100A are in different residues.
+    """
     device = pair_atom_i.device
     N = len(pair_atom_i)
     keep = torch.ones(N, dtype=torch.bool, device=device)
@@ -611,29 +675,21 @@ def filter_pairs(
         keep &= ~(is_excluded & is_intra_asu)
 
     # Same-residue filter – intra-ASU only
+    ai_np = pair_atom_i.cpu().numpy()
+    aj_np = pair_atom_j.cpu().numpy()
     if inter_residue_only:
-        chainid = pdb["chainid"].values
-        resseq = pdb["resseq"].values
-        ai_np = pair_atom_i.cpu().numpy()
-        aj_np = pair_atom_j.cpu().numpy()
-        same_res = (
-            (chainid[ai_np] == chainid[aj_np])
-            & (resseq[ai_np] == resseq[aj_np])
-        )
+        residue_of = topology.atoms.residue_of.cpu().numpy()
+        same_res = residue_of[ai_np] == residue_of[aj_np]
         same_res_t = torch.tensor(same_res, dtype=torch.bool, device=device)
         keep &= ~(same_res_t & is_intra_asu)
 
     # Altloc compatibility – intra-ASU only
-    if "altloc" in pdb.columns:
-        altloc = pdb["altloc"].values.astype(str)
-        altloc = np.where(np.isin(altloc, ["", " "]), " ", altloc)
-        ai_np = pair_atom_i.cpu().numpy()
-        aj_np = pair_atom_j.cpu().numpy()
-        alt_i = altloc[ai_np]
-        alt_j = altloc[aj_np]
-        incompat = (alt_i != " ") & (alt_j != " ") & (alt_i != alt_j)
-        incompat_t = torch.tensor(incompat, dtype=torch.bool, device=device)
-        keep &= ~(incompat_t & is_intra_asu)
+    altloc = topology.atoms.altloc
+    alt_i = altloc[ai_np]
+    alt_j = altloc[aj_np]
+    incompat = (alt_i != " ") & (alt_j != " ") & (alt_i != alt_j)
+    incompat_t = torch.tensor(incompat, dtype=torch.bool, device=device)
+    keep &= ~(incompat_t & is_intra_asu)
 
     return keep
 
@@ -644,11 +700,11 @@ def filter_pairs(
 
 @torch.no_grad()
 def build_vdw_restraints_gpu(
-    xyz_fn,
-    vdw_radii_fn,
+    xyz: torch.Tensor,
+    vdw_radii: torch.Tensor,
     cell: "Cell",
     sg: "SpaceGroup",
-    pdb,
+    topology,
     exclusion_set: Set[Tuple[int, int]],
     cutoff: float = 5.0,
     sigma: float = 0.2,
@@ -659,11 +715,14 @@ def build_vdw_restraints_gpu(
 
     Parameters
     ----------
-    xyz_fn : callable  returns (N, 3) Cartesian coordinates
-    vdw_radii_fn : callable  returns (N,) VDW radii
+    xyz : torch.Tensor
+        ``(N, 3)`` Cartesian ASU coordinates in Å.
+    vdw_radii : torch.Tensor
+        ``(N,)`` van der Waals radii in Å.
     cell : Cell
     sg : SpaceGroup
-    pdb : DataFrame
+    topology : Topology
+        Residue membership and altlocs for the same-residue and altloc filters.
     exclusion_set : set of (int, int) bonded exclusion pairs
     cutoff : float
         Contact distance cutoff in Angstrom.
@@ -678,7 +737,6 @@ def build_vdw_restraints_gpu(
     """
     from torchref.symmetry.spacegroup import SpaceGroup as SG
 
-    xyz = xyz_fn()
     device = xyz.device
     fdtype = dtypes.float
     n_asu = xyz.shape[0]
@@ -687,37 +745,35 @@ def build_vdw_restraints_gpu(
         sg = SG(sg)
 
     empty_result = {
-        "indices": torch.zeros(0, 2, dtype=torch.long, device=device),  # dtype-ok: atom-pair index tensor; torch indexing requires int64
+        "indices": torch.zeros(0, 2, dtype=get_int_dtype(), device=device),
         "min_distances": torch.zeros(0, dtype=get_float_dtype(), device=device),
         "sigmas": torch.zeros(0, dtype=get_float_dtype(), device=device),
-        "symop_indices": torch.zeros(0, dtype=torch.long, device=device),  # dtype-ok: symmetry-operator index tensor; int64
-        "cell_offsets": torch.zeros(0, 3, dtype=torch.long, device=device),  # dtype-ok: integer cell-offset lattice vectors; symmetry-image metadata
+        "symop_indices": torch.zeros(0, dtype=get_int_dtype(), device=device),
+        "cell_offsets": torch.zeros(0, 3, dtype=get_int_dtype(), device=device),
     }
 
     # Step 1: prefilter symop combos
-    xyz_frac = cell.cartesian_to_fractional(xyz.detach().to(fdtype))
-    op_indices, cell_offsets_valid = prefilter_symop_offsets(
-        cell, sg, xyz_frac, cutoff
-    )
+    xyz_asu = xyz.detach().to(fdtype)
+    op_indices, cell_offsets_valid = prefilter_symop_offsets(cell, sg, xyz_asu, cutoff)
     M = len(op_indices)
 
     if verbose > 0:
         print(f"  Symmetry expansion: {M} valid (symop, offset) combos")
 
     # Find the identity combo index
-    is_identity = (
-        (op_indices == 0)
-        & (cell_offsets_valid == 0).all(dim=1)
-    )
+    is_identity = ~is_symmetry_image(op_indices, cell_offsets_valid)
     identity_indices = is_identity.nonzero(as_tuple=True)[0]
     if len(identity_indices) == 0:
         # Identity not in valid combos — should not happen, but add it
-        op_indices = torch.cat([
-            torch.zeros(1, dtype=torch.long, device=device), op_indices  # dtype-ok: identity prepended to symop-index tensor; int64
-        ])
-        cell_offsets_valid = torch.cat([
-            torch.zeros(1, 3, dtype=torch.long, device=device), cell_offsets_valid  # dtype-ok: identity prepended to cell-offset tensor; int64
-        ])
+        op_indices = torch.cat(
+            [torch.zeros(1, dtype=get_int_dtype(), device=device), op_indices]
+        )
+        cell_offsets_valid = torch.cat(
+            [
+                torch.zeros(1, 3, dtype=get_int_dtype(), device=device),
+                cell_offsets_valid,
+            ]
+        )
         identity_combo = 0
         M = len(op_indices)
     else:
@@ -733,7 +789,7 @@ def build_vdw_restraints_gpu(
     )  # (3,)
 
     flat_cell, atom_idx, combo_idx, cart_pos = assign_to_grid(
-        xyz_frac, cell, sg, op_indices, cell_offsets_valid, grid_dims
+        xyz_asu, cell, sg, op_indices, cell_offsets_valid, grid_dims
     )
 
     if device.type == "cpu":
@@ -784,7 +840,7 @@ def build_vdw_restraints_gpu(
     keep = filter_pairs(
         pair_atom_i, pair_atom_j, pair_combo_j,
         identity_combo, excl_hash, max_idx,
-        pdb, inter_residue_only,
+        topology, inter_residue_only,
     )
 
     pair_atom_i = pair_atom_i[keep]
@@ -822,8 +878,6 @@ def build_vdw_restraints_gpu(
     symop_indices = op_indices[pair_combo_j]
     pair_cell_offsets = cell_offsets_valid[pair_combo_j]
 
-    # VDW radii
-    vdw_radii = vdw_radii_fn()
     min_distances = vdw_radii[pair_atom_i] + vdw_radii[pair_atom_j]
 
     # Build output
@@ -841,231 +895,13 @@ def build_vdw_restraints_gpu(
         "valid_op_indices": op_indices,
         "valid_cell_offsets": cell_offsets_valid,
         "grid_dims": grid_dims,
-        "identity_combo": torch.tensor(identity_combo, dtype=torch.long, device=device),  # dtype-ok: combo index scalar into symop/offset arrays; int64
+        "identity_combo": torch.tensor(
+            identity_combo, dtype=get_int_dtype(), device=device
+        ),
     }
 
     if verbose > 0:
-        n_sym = (
-            (symop_indices != 0) | (pair_cell_offsets != 0).any(dim=1)
-        ).sum().item()
+        n_sym = is_symmetry_image(symop_indices, pair_cell_offsets).sum().item()
         print(f"  Built {len(indices)} VDW restraints, {n_sym} symmetry contacts")
 
     return result
-
-
-# ------------------------------------------------------------------ #
-# H-involving pair search (forward-time, called every evaluation)
-# ------------------------------------------------------------------ #
-
-@torch.no_grad()
-def find_h_vdw_pairs_gpu(
-    xyz_heavy: torch.Tensor,
-    xyz_h: torch.Tensor,
-    cell: "Cell",
-    sg: "SpaceGroup",
-    op_indices: torch.Tensor,
-    cell_offsets_valid: torch.Tensor,
-    grid_dims: torch.Tensor,
-    identity_combo: int,
-    n_heavy: int,
-    cutoff: float = 3.5,
-    h_excl_hash: Optional[torch.Tensor] = None,
-    pdb=None,
-    h_chainid_enc: Optional[torch.Tensor] = None,
-    h_resseq: Optional[torch.Tensor] = None,
-    inter_residue_only: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Find VDW pairs involving at least one hydrogen atom.
-
-    The heavy-atom search run over a combined (heavy + H) coordinate set, keeping
-    only pairs with a participant at index >= ``n_heavy``. Called on every forward
-    evaluation, so it reuses the cached grid and symop combos rather than
-    re-deriving them.
-
-    Parameters
-    ----------
-    xyz_heavy : (N_heavy, 3) Cartesian ASU heavy-atom positions
-    xyz_h : (N_h, 3) Cartesian ASU hydrogen positions
-    cell, sg : Cell, SpaceGroup
-    op_indices : (M,) cached valid symop indices
-    cell_offsets_valid : (M, 3) cached valid cell translations
-    grid_dims : (3,) cached grid dimensions
-    identity_combo : int
-    n_heavy : int
-        Number of heavy atoms (indices 0..n_heavy-1 are heavy)
-    cutoff : float
-        Cartesian cutoff (Å), tighter than heavy-atom search
-    h_excl_hash : (E,) sorted long
-        Hash tensor for H-specific 1-2/1-3 exclusions
-    pdb : DataFrame
-        Heavy-atom pdb for same-residue filtering
-    h_chainid_enc : (N_h,) long
-        Chain ID encoding for H atoms
-    h_resseq : (N_h,) long
-        Residue sequence number for H atoms
-    inter_residue_only : bool
-
-    Returns
-    -------
-    pair_atom_i, pair_atom_j, pair_combo_j : each (P,) long
-        Indices into the combined (heavy + H) array.  atom_i is always
-        from the ASU (identity combo).
-    """
-    from torchref.symmetry.spacegroup import SpaceGroup as SG
-
-    device = xyz_heavy.device
-    fdtype = dtypes.float
-
-    if not isinstance(sg, SG):
-        sg = SG(sg)
-
-    # Combine heavy + H into a single coordinate set
-    xyz_all = torch.cat([xyz_heavy, xyz_h], dim=0)  # (N_all, 3)
-    n_all = xyz_all.shape[0]
-
-    empty = torch.tensor([], dtype=torch.long, device=device)  # dtype-ok: empty index placeholder tensor; int64 required
-    if n_all == 0:
-        return empty, empty, empty
-
-    # Convert to fractional
-    xyz_frac = cell.cartesian_to_fractional(xyz_all.detach().to(fdtype))
-
-    M = op_indices.shape[0]
-
-    # Step 2: assign to grid (reusing cached grid_dims and symop combos)
-    flat_cell, atom_idx, combo_idx, cart_pos = assign_to_grid(
-        xyz_frac, cell, sg, op_indices, cell_offsets_valid, grid_dims
-    )
-
-    n_grid_total = grid_dims[0].item() * grid_dims[1].item() * grid_dims[2].item()
-
-    # Step 3: sort into cell list
-    sort_order, unique_cells, starts, cell_lookup = build_cell_list(
-        flat_cell, n_grid_total
-    )
-    cart_sorted = cart_pos[sort_order]
-    atom_idx_sorted = atom_idx[sort_order]
-    combo_idx_sorted = combo_idx[sort_order]
-
-    # Step 4: find pairs (use the canonical-14-offset fast path)
-    pair_atom_i, pair_atom_j, pair_combo_j = find_pairs_periodic_grid_v2(
-        cart_sorted, atom_idx_sorted, combo_idx_sorted,
-        unique_cells, starts, cell_lookup, grid_dims,
-        cutoff, identity_combo,
-    )
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Filter to keep only pairs involving at least one H
-    has_h = (pair_atom_i >= n_heavy) | (pair_atom_j >= n_heavy)
-    pair_atom_i = pair_atom_i[has_h]
-    pair_atom_j = pair_atom_j[has_h]
-    pair_combo_j = pair_combo_j[has_h]
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Step 5: filtering
-
-    is_intra_asu = pair_combo_j == identity_combo
-
-    # Bonded exclusions (1-2 H-parent, 1-3 H-parent_neighbor) — intra-ASU
-    if h_excl_hash is not None and len(h_excl_hash) > 0 and is_intra_asu.any():
-        max_idx = max(n_all, int(pair_atom_i.max().item()) + 1,
-                      int(pair_atom_j.max().item()) + 1)
-        norm_i = torch.minimum(pair_atom_i, pair_atom_j)
-        norm_j = torch.maximum(pair_atom_i, pair_atom_j)
-        pair_hash = norm_i * max_idx + norm_j
-        ins = torch.searchsorted(h_excl_hash, pair_hash)
-        ins = ins.clamp(max=len(h_excl_hash) - 1)
-        is_excluded = h_excl_hash[ins] == pair_hash
-        keep = ~(is_excluded & is_intra_asu)
-        pair_atom_i = pair_atom_i[keep]
-        pair_atom_j = pair_atom_j[keep]
-        pair_combo_j = pair_combo_j[keep]
-        is_intra_asu = is_intra_asu[keep]
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Same-residue filter — intra-ASU only
-    if inter_residue_only and pdb is not None:
-        pdb_chainid = pdb["chainid"].values
-        pdb_resseq = pdb["resseq"].values.astype(np.int64)
-
-        # Build combined chain/resseq arrays (heavy from pdb, H from topology)
-        if h_chainid_enc is not None and h_resseq is not None:
-            # For heavy atoms, encode chain IDs consistently
-            chain_vals = pdb_chainid.astype(str)
-            unique_chains = np.unique(chain_vals)
-            chain_to_int = {c: i for i, c in enumerate(unique_chains)}
-            heavy_chain_enc = np.array([chain_to_int.get(c, -1) for c in chain_vals],
-                                       dtype=np.int64)
-            heavy_resseq = pdb_resseq
-
-            all_chain_enc = np.concatenate([
-                heavy_chain_enc,
-                h_chainid_enc.cpu().numpy(),
-            ])
-            all_resseq = np.concatenate([
-                heavy_resseq,
-                h_resseq.cpu().numpy(),
-            ])
-        else:
-            all_chain_enc = None
-
-        if all_chain_enc is not None:
-            ai_np = pair_atom_i.cpu().numpy()
-            aj_np = pair_atom_j.cpu().numpy()
-            same_res = (
-                (all_chain_enc[ai_np] == all_chain_enc[aj_np])
-                & (all_resseq[ai_np] == all_resseq[aj_np])
-            )
-            same_res_t = torch.tensor(same_res, dtype=torch.bool, device=device)
-            keep = ~(same_res_t & is_intra_asu)
-            pair_atom_i = pair_atom_i[keep]
-            pair_atom_j = pair_atom_j[keep]
-            pair_combo_j = pair_combo_j[keep]
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Altloc compatibility — intra-ASU, only relevant for heavy atoms
-    if pdb is not None and "altloc" in pdb.columns:
-        is_intra_asu = pair_combo_j == identity_combo
-        # Only check altloc for pairs where both are heavy atoms
-        both_heavy = (pair_atom_i < n_heavy) & (pair_atom_j < n_heavy) & is_intra_asu
-        if both_heavy.any():
-            altloc = pdb["altloc"].values.astype(str)
-            altloc = np.where(np.isin(altloc, ["", " "]), " ", altloc)
-            ai_np = pair_atom_i[both_heavy].cpu().numpy()
-            aj_np = pair_atom_j[both_heavy].cpu().numpy()
-            incompat = (altloc[ai_np] != " ") & (altloc[aj_np] != " ") & (altloc[ai_np] != altloc[aj_np])
-            reject = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-            reject[both_heavy] = torch.tensor(incompat, dtype=torch.bool, device=device)
-            keep = ~reject
-            pair_atom_i = pair_atom_i[keep]
-            pair_atom_j = pair_atom_j[keep]
-            pair_combo_j = pair_combo_j[keep]
-
-    if len(pair_atom_i) == 0:
-        return empty, empty, empty
-
-    # Deduplicate
-    dedup_hash = pair_atom_i * (n_all * M) + pair_atom_j * M + pair_combo_j
-    _, inverse, counts = torch.unique(
-        dedup_hash, return_inverse=True, return_counts=True
-    )
-    # MPS does not support int64 scatter_reduce; use the configured int dtype.
-    _int_dtype = dtypes.int
-    inverse_i = inverse.to(_int_dtype)
-    perm = torch.arange(len(inverse), device=device, dtype=_int_dtype)
-    first_occ = torch.full(
-        (counts.shape[0],), len(inverse), device=device, dtype=_int_dtype
-    )
-    first_occ.scatter_reduce_(0, inverse_i, perm, reduce="amin")
-    first_mask = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-    first_mask[first_occ.long()] = True
-
-    return pair_atom_i[first_mask], pair_atom_j[first_mask], pair_combo_j[first_mask]

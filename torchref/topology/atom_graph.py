@@ -9,6 +9,10 @@ restrain every path the bond graph implies.
 Every indexing structure here is a tensor, so it moves with ``.to(device)``
 alongside the edge blocks. Only the per-atom identifiers are NumPy, because they are
 strings.
+
+The identity (names, elements, altlocs, record type, charge, residue membership) exists
+from the moment an atom table is read; the edge blocks stay empty until the graph is
+connected against the monomer dictionaries.
 """
 
 from dataclasses import dataclass, field
@@ -17,6 +21,7 @@ from typing import Dict, Optional, Set, Tuple
 import numpy as np
 import torch
 
+from torchref.config import get_int_dtype
 from torchref.topology.edges import EdgeBlock
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -27,7 +32,7 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     Parameters
     ----------
     bonds : torch.Tensor
-        Bond atom indices, shape ``(E, 2)``, dtype ``int64``.
+        Bond atom indices, shape ``(E, 2)``, integer dtype.
     n_atoms : int
         Number of atoms, so isolated trailing atoms still get an entry.
 
@@ -42,8 +47,8 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     device = bonds.device
     if bonds.numel() == 0:
         return (
-            torch.zeros(n_atoms + 1, dtype=torch.int64, device=device),  # dtype-ok: CSR indptr offset array; int64 index required
-            torch.zeros(0, dtype=torch.int64, device=device),  # dtype-ok: empty CSR neighbor index array; int64 index required
+            torch.zeros(n_atoms + 1, dtype=get_int_dtype(), device=device),
+            torch.zeros(0, dtype=get_int_dtype(), device=device),
         )
 
     src = torch.cat([bonds[:, 0], bonds[:, 1]])
@@ -55,9 +60,9 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     src, dst = pairs[:, 0], pairs[:, 1]
 
     counts = torch.bincount(src, minlength=n_atoms)
-    indptr = torch.zeros(n_atoms + 1, dtype=torch.int64, device=device)  # dtype-ok: CSR indptr offset array; int64 index required
+    indptr = torch.zeros(n_atoms + 1, dtype=get_int_dtype(), device=device)
     torch.cumsum(counts, dim=0, out=indptr[1:])
-    return indptr, dst.to(torch.int64)  # dtype-ok: CSR neighbor (dst) index array; int64 index required
+    return indptr, dst.to(get_int_dtype())
 
 
 def _extend_paths(
@@ -81,13 +86,17 @@ def _extend_paths(
     """
     device = paths.device
     if paths.numel() == 0:
-        return torch.zeros((0, paths.shape[1] + 1), dtype=torch.int64, device=device)  # dtype-ok: empty BFS path index array; int64 index required
+        return torch.zeros(
+            (0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device
+        )
 
     last, prev = paths[:, -1], paths[:, -2]
     counts = indptr[last + 1] - indptr[last]
     total = int(counts.sum())
     if total == 0:
-        return torch.zeros((0, paths.shape[1] + 1), dtype=torch.int64, device=device)  # dtype-ok: empty BFS path index array; int64 index required
+        return torch.zeros(
+            (0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device
+        )
 
     row = torch.repeat_interleave(torch.arange(len(paths), device=device), counts)
     # Offset of each slot within its own neighbour list.
@@ -110,11 +119,19 @@ class AtomGraph(DeviceMixin):
     name, element, altloc : numpy.ndarray
         Per-atom identifiers, shape ``(N,)``. Strings, so NumPy rather than tensors;
         residue-level identity is reached through ``residue_of`` rather than duplicated
-        here.
+        here. ``altloc`` is ``' '`` for atoms in no alternative conformation.
+    resname : numpy.ndarray, optional
+        Chemical residue identity per atom, shape ``(N,)``, preserving identities
+        of alternate conformers at one sequence position.
     residue_of : torch.Tensor
-        Residue index per atom, shape ``(N,)``, dtype ``int64``.
-    bonds, angles, torsions, chirals : EdgeBlock
-        Typed edge blocks. ``bonds`` also backs the adjacency.
+        Residue index per atom, shape ``(N,)``, in the configured int dtype.
+    is_hetatm : numpy.ndarray, optional
+        True for HETATM records, shape ``(N,)``. Defaults to all False.
+    charge : numpy.ndarray, optional
+        Formal charge per atom, shape ``(N,)``, integer. Defaults to zeros.
+    bonds, angles, torsions, chirals : EdgeBlock, optional
+        Typed edge blocks, empty until the graph is connected. ``bonds`` also backs the
+        adjacency.
     planes : dict
         ``{n_atoms_in_plane: EdgeBlock}`` -- planes are ragged, so they are grouped by
         atom count the way the plane restraints already are.
@@ -141,21 +158,36 @@ class AtomGraph(DeviceMixin):
     element: np.ndarray
     altloc: np.ndarray
     residue_of: torch.Tensor
-    bonds: EdgeBlock
-    angles: EdgeBlock
-    torsions: EdgeBlock
-    chirals: EdgeBlock
+    is_hetatm: Optional[np.ndarray] = None
+    charge: Optional[np.ndarray] = None
+    bonds: Optional[EdgeBlock] = None
+    angles: Optional[EdgeBlock] = None
+    torsions: Optional[EdgeBlock] = None
+    chirals: Optional[EdgeBlock] = None
     planes: Dict[int, EdgeBlock] = field(default_factory=dict)
     energy_type: Optional[np.ndarray] = None
     template_h_count: Optional[torch.Tensor] = None
     hb_type: Optional[torch.Tensor] = None
+    resname: Optional[np.ndarray] = None
 
     _adj_indptr: Optional[torch.Tensor] = field(default=None, repr=False)
     _adj_indices: Optional[torch.Tensor] = field(default=None, repr=False)
     # (element array it was parsed from, hydrogen flags); see is_hydrogen.
     _is_h_cache: Optional[Tuple[np.ndarray, np.ndarray]] = field(default=None, repr=False)
+    # (element array, symbols, atomic numbers, van der Waals radii); see _element_table.
+    _element_cache: Optional[Tuple[np.ndarray, ...]] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        n = len(self.name)
+        device = self.residue_of.device
+        if self.is_hetatm is None:
+            self.is_hetatm = np.zeros(n, dtype=bool)
+        if self.charge is None:
+            self.charge = np.zeros(n, dtype=np.int64)
+        arities = (("bonds", 2), ("angles", 3), ("torsions", 4), ("chirals", 4))
+        for edge, arity in arities:
+            if getattr(self, edge) is None:
+                setattr(self, edge, EdgeBlock.empty(arity, device=device))
         if self._adj_indptr is None:
             self.rebuild_adjacency()
 
@@ -184,13 +216,49 @@ class AtomGraph(DeviceMixin):
             cache = self._is_h_cache = (self.element, flags)
         return torch.tensor(cache[1], device=self.bonds.indices.device)
 
+    def _element_table(self) -> Tuple[np.ndarray, ...]:
+        """``(symbols, atomic numbers, vdW radii)``, parsed once per ``element``."""
+        cache = self._element_cache
+        if cache is None or cache[0] is not self.element:
+            import gemmi
+
+            from torchref.topology.nonbonded import vdw_radii_for_elements
+
+            symbols = np.char.capitalize(np.char.strip(self.element.astype(str)))
+            numbers = np.array([gemmi.Element(s).atomic_number for s in symbols])
+            cache = self._element_cache = (
+                self.element,
+                symbols,
+                numbers.astype(np.int64),
+                vdw_radii_for_elements(symbols),
+            )
+        return cache[1:]
+
+    @property
+    def symbols(self) -> np.ndarray:
+        """Element symbols normalised to ``'C'``, ``'Fe'``, ..., shape ``(N,)``."""
+        return self._element_table()[0]
+
+    @property
+    def atomic_number(self) -> np.ndarray:
+        """Atomic number per atom, shape ``(N,)``, int64; 0 for an unknown element."""
+        return self._element_table()[1]
+
+    @property
+    def vdw_radii(self) -> np.ndarray:
+        """Van der Waals radius per atom in Å, shape ``(N,)``, float64."""
+        return self._element_table()[2]
+
     def copy(self) -> "AtomGraph":
         """An independent copy sharing no storage with this one."""
         return AtomGraph(
+            resname=None if self.resname is None else self.resname.copy(),
             name=self.name.copy(),
             element=self.element.copy(),
             altloc=self.altloc.copy(),
             residue_of=self.residue_of.clone(),
+            is_hetatm=self.is_hetatm.copy(),
+            charge=self.charge.copy(),
             bonds=self.bonds.copy(),
             angles=self.angles.copy(),
             torsions=self.torsions.copy(),
@@ -215,14 +283,16 @@ class AtomGraph(DeviceMixin):
             return None
         is_h = self.is_hydrogen
         bonds = self.bonds.indices
-        present = torch.zeros(self.n_atoms, dtype=torch.int64, device=bonds.device)  # dtype-ok: bincount output; int64
+        present = torch.zeros(self.n_atoms, dtype=get_int_dtype(), device=bonds.device)
         if bonds.numel():
             heavy_of_h = torch.cat(
                 [bonds[is_h[bonds[:, 1]] & ~is_h[bonds[:, 0]], 0],
                  bonds[is_h[bonds[:, 0]] & ~is_h[bonds[:, 1]], 1]]
             )
             if heavy_of_h.numel():
-                present = torch.bincount(heavy_of_h, minlength=self.n_atoms)
+                present = torch.bincount(heavy_of_h, minlength=self.n_atoms).to(
+                    present.dtype
+                )
         known = self.template_h_count >= 0
         missing = self.template_h_count.to(present.dtype) - present
         return torch.where(known, missing.clamp(min=0), torch.zeros_like(missing))
@@ -252,10 +322,13 @@ class AtomGraph(DeviceMixin):
 
         keep_t = torch.as_tensor(keep, device=self.residue_of.device)
         return AtomGraph(
+            resname=None if self.resname is None else self.resname[keep],
             name=self.name[keep],
             element=self.element[keep],
             altloc=self.altloc[keep],
             residue_of=residue_remap[self.residue_of[keep_t]],
+            is_hetatm=self.is_hetatm[keep],
+            charge=self.charge[keep],
             bonds=self.bonds.subset(remap),
             angles=self.angles.subset(remap),
             torsions=self.torsions.subset(remap),

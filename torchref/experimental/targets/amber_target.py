@@ -309,8 +309,7 @@ class AmberTarget(ModelTarget):
         """
         # Reject models with alternate conformations — OpenMM only handles
         # a single conformation.  Call model.strip_altlocs() first.
-        altlocs = self._chem_model.pdb["altloc"].astype(str).str.strip()
-        if (altlocs != "").any():
+        if (self._chem_model.ctx.topology.atoms.altloc != " ").any():
             raise ValueError(
                 "[AmberTarget] Model contains alternate conformations. "
                 "OpenMM requires a single conformation.\n"
@@ -338,7 +337,7 @@ class AmberTarget(ModelTarget):
         self._build_context(positions_nm)
 
         self._pos_buf = positions_nm.copy()
-        self._n_model_atoms = len(self._chem_model.pdb)
+        self._n_model_atoms = self._chem_model.n_atoms
 
         if self.verbose >= 1:
             print(
@@ -356,7 +355,7 @@ class AmberTarget(ModelTarget):
         Return ``(resname, net_charge)`` for HETATM residues not in
         :data:`AMBER14_STANDARD`.  ATOM records with unknown resnames warn.
         """
-        pdb = self._chem_model.pdb
+        pdb = self._chem_model.to_dataframe()
         nonstandard: List[Tuple[str, int]] = []
         seen: set = set()
 
@@ -441,7 +440,7 @@ class AmberTarget(ModelTarget):
         Cache is checked first.  On a miss, work happens in a temp dir and
         results are atomically moved to the cache (write-then-rename).
         """
-        pdb = self._chem_model.pdb.copy()
+        pdb = self._chem_model.to_dataframe()
         pdb[["x", "y", "z"]] = self._chem_model.xyz().detach().cpu().numpy()
         res_atoms = pdb[pdb["resname"].astype(str).str.strip() == resname]
         first = res_atoms.iloc[0]
@@ -587,7 +586,7 @@ class AmberTarget(ModelTarget):
         The resulting topology must map back to every model atom, including
         hydrogens and terminal oxygens, before a context can be constructed.
         """
-        pdb = self._chem_model.pdb.copy()
+        pdb = self._chem_model.to_dataframe()
         pdb[["x", "y", "z"]] = self._chem_model.xyz().detach().cpu().numpy()
 
         mask = pdb["altloc"].astype(str).str.strip().isin(["", "A"])
@@ -633,7 +632,7 @@ class AmberTarget(ModelTarget):
         from torchref.io import pdb as pdbio
 
         self._tleap_residue_map = None
-        pdb = self._chem_model.pdb.copy()
+        pdb = self._chem_model.to_dataframe()
         xyz = self._chem_model.xyz().detach().cpu().numpy()
         pdb[["x", "y", "z"]] = xyz
         pdb["serial"] = np.arange(1, len(pdb) + 1)
@@ -718,7 +717,7 @@ class AmberTarget(ModelTarget):
 
             ligand_copies = []
             ligand_keys = []
-            pdb = self._chem_model.pdb
+            pdb = self._chem_model.to_dataframe()
             for rn in lig_names:
                 rows = pdb[pdb["resname"].astype(str).str.strip() == rn]
                 for key, _ in rows.groupby(["chainid", "resseq", "icode"], sort=False):
@@ -784,7 +783,7 @@ class AmberTarget(ModelTarget):
 
     def _build_atom_map(self) -> None:
         """Require a bijection between model rows and all OpenMM particles."""
-        pdb = self._chem_model.pdb
+        pdb = self._chem_model.to_dataframe()
         n_model = len(pdb)
         atoms = list(self._topology.atoms())
         mapping = np.full(n_model, -1, dtype=np.int32)
@@ -831,7 +830,7 @@ class AmberTarget(ModelTarget):
         """Match residue instances using heavy anchors, then names and H parents."""
         from scipy.spatial import cKDTree
 
-        pdb = self._chem_model.pdb
+        pdb = self._chem_model.to_dataframe()
         keys = [
             tuple(row)
             for row in pdb[["chainid", "resseq", "icode"]].itertuples(

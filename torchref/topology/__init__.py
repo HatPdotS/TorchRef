@@ -1,5 +1,10 @@
 """Model topology as a graph: residues over atoms, connectivity over restraints.
 
+The topology is where a model's atom identity lives -- names, elements, altlocs,
+residues, chains -- from the moment its atom table is read
+(:meth:`Topology.from_table`, :meth:`Topology.select`). Connectivity is added later,
+against the monomer dictionaries.
+
 :class:`Topology` holds two levels. :class:`ResidueGraph` is the sequence -- residues as
 template instances, inter-residue links as edges. :class:`AtomGraph` is the expansion --
 atoms as nodes, typed :class:`EdgeBlock` sets over them, and a CSR bond adjacency that
@@ -38,10 +43,12 @@ from .riding import (
 )
 from .restraint_sets import assemble_entries, max_period
 from .templates import resolve_template_keys
-from .topology import Topology
+from .topology import IDENTITY_COLUMNS, Topology, identity_columns
 
 __all__ = [
     "Topology",
+    "identity_columns",
+    "IDENTITY_COLUMNS",
     "Restraints",
     "ResidueGraph",
     "AtomGraph",

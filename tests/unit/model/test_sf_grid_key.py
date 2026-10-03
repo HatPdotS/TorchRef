@@ -49,7 +49,7 @@ def test_one_engine_and_one_spacegroup_per_load(pdb_path, monkeypatch, strip_H):
     engines = _count_calls(monkeypatch, model_ft_module.SfFFT, "__init__")
     spacegroups = _count_calls(monkeypatch, SpaceGroup, "__init__")
 
-    model = ModelFT(max_res=2.5, verbose=0, device="cpu", strip_H=strip_H)
+    model = ModelFT(max_res=2.5, verbose=0, device="cpu", hydrogens="strip" if strip_H else "keep")
     model.load_pdb(pdb_path)
     assert engines["n"] == 1
     assert spacegroups["n"] == 1

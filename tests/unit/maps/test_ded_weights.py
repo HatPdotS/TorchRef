@@ -1,15 +1,18 @@
 """The registered difference-coefficient weight schemes.
 
 Pinned: the three schemes exist with their MTZ column names; ``none`` is flat;
-``inverse_variance`` has mean one and floors a zero sigma; ``sigma_d`` gives strong
-reflections more weight than weak ones within a shell where inverse variance cannot;
-and an all-noise input falls back to inverse variance with a warning that names why.
+``inverse_variance`` has mean one and floors a zero sigma; ``q`` gives strong
+reflections more weight than weak ones where inverse variance cannot, keeps every
+reflection at or above its floor when noise dominates, and falls back to inverse
+variance with a warning that names why when too few reflections exist to fit. The SNR
+prefers intensity differences, calibrates their sigmas and is reused when supplied; the
+extrapolated shrinkage keeps every reflection and its weight does not depend on the
+occupancy.
 """
 
 import pytest
 import torch
 
-from tests.unit.refinement.test_sigma_d import synth_diff
 from torchref.maps.ded_weights import (
     DEFAULT_SCHEME,
     SCHEMES,
@@ -17,9 +20,29 @@ from torchref.maps.ded_weights import (
     DedWeightFallbackWarning,
     all_ded_weights,
     compute_ded_weights,
+    difference_snr,
     normalise_mean_one,
 )
 from torchref.symmetry import SpaceGroup
+
+
+def synth_diff(n=30000, gamma=1.0, sig_frac=1.0, seed=7, device="cpu"):
+    """Signed differences with power ``0.05 exp(-3 d*^2) (F / <F>)**gamma``.
+
+    ``F`` is Wilson-like (the modulus of a complex normal). The measurement sigma is
+    ``sig_frac`` times the rms true difference, constant across reflections so the
+    inverse-variance and q weights differ only through ``S``.
+    """
+    g = torch.Generator().manual_seed(seed)
+    dss = torch.linspace(0.02, 0.35, n)
+    f = (torch.randn(n, generator=g) ** 2 + torch.randn(n, generator=g) ** 2).sqrt()
+    f = 10.0 * f
+    s_true = 0.05 * torch.exp(-3.0 * dss) * (f / f.mean()) ** gamma
+    d_true = torch.randn(n, generator=g) * s_true.sqrt()
+    sig = torch.full((n,), float(sig_frac) * float(s_true.mean().sqrt()))
+    d_obs = d_true + torch.randn(n, generator=g) * sig
+    out = {"delta_obs": d_obs, "sigma_diff": sig, "d_star_sq": dss, "f_dark": f}
+    return {k: v.to(device) for k, v in out.items()}
 
 
 def _inputs(n=20000, sig_frac=1.0, device="cpu"):
@@ -84,7 +107,7 @@ def test_none_and_inverse_variance(any_device):
 
 
 @pytest.mark.unit
-def test_sigma_d_favours_strong_reflections_where_inverse_variance_cannot(any_device):
+def test_q_favours_strong_reflections_where_inverse_variance_cannot(any_device):
     d, hkl, cell, sg = _inputs(device=any_device)
     kw = {
         "delta_obs": d["delta_obs"],
@@ -96,33 +119,246 @@ def test_sigma_d_favours_strong_reflections_where_inverse_variance_cannot(any_de
     }
     every = all_ded_weights(**kw)
     assert set(every) == set(SCHEMES)
-    sd = every["sigma_d"]
-    assert sd.applied == "sigma_d" and abs(float(sd.weights.mean()) - 1.0) < 1e-4
-    assert 0.8 < sd.diagnostics["gamma"] < 1.2
-    assert sd.diagnostics["n_shell"] > 10 and "shells" in sd.diagnostics
-    # Within the highest-resolution tenth, the strongest reflections carry more weight.
-    order = torch.argsort(d["d_star_sq"])[-2000:]
-    f, w = d["f_dark"][order], sd.weights[order]
+    q = every["q"]
+    assert q.applied == "q" and abs(float(q.weights.mean()) - 1.0) < 1e-4
+    assert 0.8 < q.diagnostics["gamma"] < 1.2
+    assert q.diagnostics["converged"]
+    # The strong half carries more weight; inverse variance cannot tell the halves apart
+    # because the sigmas are constant. The floor compresses the weights into at most a
+    # factor three, so the margin is smaller than an unbounded Wiener weight would give.
+    f, w = d["f_dark"], q.weights
     strong, weak = f > f.median(), f <= f.median()
-    assert float(w[strong].mean()) > 1.5 * float(w[weak].mean())
-    ivw = every["inverse_variance"].weights[order]
+    assert float(w[strong].mean()) > 1.2 * float(w[weak].mean())
+    ivw = every["inverse_variance"].weights
     assert abs(float(ivw[strong].mean()) - float(ivw[weak].mean())) < 1e-4
 
 
 @pytest.mark.unit
-def test_all_noise_falls_back_to_inverse_variance_with_a_warning():
+def test_q_never_removes_a_reflection_when_noise_dominates():
     d, hkl, cell, sg = _inputs(n=5000, sig_frac=50.0)
+    q = compute_ded_weights(
+        "q",
+        delta_obs=d["delta_obs"],
+        sigma_diff=d["sigma_diff"] * 1.2,
+        hkl=hkl,
+        cell=cell,
+        spacegroup=sg,
+        f_dark=d["f_dark"],
+    )
+    assert q.applied == "q"
+    floor = q.diagnostics["snr_floor"] / (1.0 + q.diagnostics["snr_floor"])
+    assert q.diagnostics["weight_min"] >= floor - 1e-6
+    assert bool((q.weights > 0).all())
+
+
+@pytest.mark.unit
+def test_too_few_reflections_fall_back_to_inverse_variance_with_a_warning():
+    d, hkl, cell, sg = _inputs(n=5)
     kw = {
         "delta_obs": d["delta_obs"],
-        "sigma_diff": d["sigma_diff"] * 1.2,
+        "sigma_diff": d["sigma_diff"],
         "hkl": hkl,
         "cell": cell,
         "spacegroup": sg,
         "f_dark": d["f_dark"],
     }
     with pytest.warns(DedWeightFallbackWarning, match="inverse-variance"):
-        sd = compute_ded_weights("sigma_d", **kw)
-    assert sd.scheme == "sigma_d" and sd.applied == "inverse_variance"
-    assert "fallback_reason" in sd.diagnostics
+        q = compute_ded_weights("q", **kw)
+    assert q.scheme == "q" and q.applied == "inverse_variance"
+    assert "fallback_reason" in q.diagnostics
     ivw = compute_ded_weights("inverse_variance", **kw)
-    assert torch.allclose(sd.weights, ivw.weights)
+    assert torch.allclose(q.weights, ivw.weights)
+
+
+def _intensity_inputs(n=20000, inflation=1.0, seed=3):
+    """Dark/light intensities with known measurement noise, and crude amplitudes."""
+    g = torch.Generator().manual_seed(seed)
+    re, im = torch.randn(n, generator=g), torch.randn(n, generator=g)
+    f_dark = 100.0 * (re**2 + im**2).sqrt()
+    f_light = f_dark + torch.randn(n, generator=g) * 5.0
+    sig_i = 200.0 + 0.05 * f_dark**2 * torch.exp(0.3 * torch.randn(n, generator=g))
+    i_dark = f_dark**2 + torch.randn(n, generator=g) * sig_i
+    i_light = f_light**2 + torch.randn(n, generator=g) * sig_i
+    f_d_obs, f_l_obs = i_dark.clamp(min=1.0).sqrt(), i_light.clamp(min=1.0).sqrt()
+    hkl = torch.randint(-20, 21, (n, 3), generator=g)
+    return dict(
+        delta_obs=f_l_obs - f_d_obs,
+        sigma_diff=torch.full((n,), 5.0),
+        hkl=hkl,
+        cell=torch.tensor([40.0, 50.0, 60.0, 90.0, 90.0, 90.0]),
+        spacegroup=SpaceGroup("P 1"),
+        f_dark=f_d_obs,
+        delta_intensity=i_light - i_dark,
+        sigma_delta_intensity=inflation * sig_i * 2**0.5,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("inflation", [1.0, 1.5])
+def test_snr_prefers_intensities_and_calibrates_their_sigmas(inflation):
+    est = difference_snr(**_intensity_inputs(inflation=inflation))
+    assert est.source == "intensity"
+    assert est.fit.gamma == 0.0
+    assert est.fit.sigma_scale == pytest.approx(1.0 / inflation, rel=0.1)
+    assert bool((est.snr > 0).all()) and bool(torch.isfinite(est.snr).all())
+    kw = _intensity_inputs(inflation=inflation)
+    q = compute_ded_weights("q", **kw)
+    assert q.diagnostics["source"] == "intensity"
+    del kw["delta_intensity"], kw["sigma_delta_intensity"]
+    assert difference_snr(**kw).source == "amplitude"
+
+
+@pytest.mark.unit
+def test_extrapolated_shrinkage_keeps_every_reflection_and_ignores_occupancy():
+    from torchref.cli.collection_difference_refine import (
+        compute_bayes_extrapolated_amplitudes,
+    )
+
+    g = torch.Generator().manual_seed(0)
+    n = 1000
+    f_dark = 50 + 10 * torch.rand(n, generator=g)
+    f_light = f_dark + torch.randn(n, generator=g)
+    phi = torch.zeros(n)
+    snr = torch.logspace(-3, 3, n)
+    noise = torch.ones(n)
+    sig_dark = torch.full((n,), 0.5)
+    out = {
+        f: compute_bayes_extrapolated_amplitudes(
+            f_dark,
+            f_light,
+            sig_dark,
+            phi,
+            phi,
+            f,
+            snr=snr,
+            sig_light=torch.sqrt(noise**2 - sig_dark**2),
+        )
+        for f in (0.2, 0.5)
+    }
+    for f, (f_ext_b, var, w) in out.items():
+        f_ext = f_dark + (f_light - f_dark) / f
+        assert bool((w > 0).all()) and bool((w < 1).all())
+        lo, hi = torch.minimum(f_dark, f_ext), torch.maximum(f_dark, f_ext)
+        assert bool((f_ext_b >= lo - 1e-4).all()) and bool((f_ext_b <= hi + 1e-4).all())
+        assert torch.allclose(
+            var,
+            (1 - w / f) ** 2 * sig_dark**2 + (w / f) ** 2 * (noise**2 - sig_dark**2),
+        )
+        assert bool((var > 0).all())
+    assert torch.equal(out[0.2][2], out[0.5][2])
+    # The fallback after a failed fit: an infinite SNR gives the unshrunk amplitude, a
+    # zero SNR the dark one, both finite.
+    unshrunk = f_dark + (f_light - f_dark) / 0.2
+    for s_val, expect in ((float("inf"), unshrunk), (0.0, f_dark)):
+        f_ext_b, var, w = compute_bayes_extrapolated_amplitudes(
+            f_dark,
+            f_light,
+            sig_dark,
+            phi,
+            phi,
+            0.2,
+            snr=torch.full((n,), s_val),
+            sig_light=torch.sqrt(noise**2 - sig_dark**2),
+        )
+        assert bool(torch.isfinite(f_ext_b).all()) and bool(torch.isfinite(var).all())
+        assert torch.allclose(f_ext_b, expect, atol=1e-4)
+
+
+@pytest.mark.unit
+def test_q_reuses_a_supplied_snr_estimate(monkeypatch):
+    kw = _intensity_inputs(n=5000)
+    est = difference_snr(**kw)
+    from torchref.maps import ded_weights as module
+
+    def refuse(**_):
+        raise AssertionError("fitted again")
+
+    monkeypatch.setattr(module, "difference_snr", refuse)
+    reused = compute_ded_weights("q", **kw, snr_estimate=est)
+    monkeypatch.undo()
+    assert torch.allclose(reused.weights, compute_ded_weights("q", **kw).weights)
+
+
+@pytest.mark.unit
+def test_q_takes_a_failed_fit_without_retrying(monkeypatch):
+    kw = _intensity_inputs(n=5000)
+    from torchref.maps import ded_weights as module
+
+    def refuse(**_):
+        raise AssertionError("fitted again")
+
+    monkeypatch.setattr(module, "difference_snr", refuse)
+    with pytest.warns(DedWeightFallbackWarning) as record:
+        q = compute_ded_weights("q", **kw, snr_estimate=ValueError("too few"))
+    assert len(record) == 1 and "too few" in str(record[0].message)
+    assert q.applied == "inverse_variance"
+
+
+@pytest.mark.parametrize("occupancy", [0.2, 0.5, 1.0])
+@pytest.mark.parametrize("snr_value", [0.0, 0.5, 2.0, float("inf")])
+def test_extrapolation_propagates_shared_dark_noise(occupancy, snr_value):
+    """Shrinking a shared-noise difference propagates both independent measurements."""
+    from torchref.cli.collection_difference_refine import (
+        compute_bayes_extrapolated_amplitudes,
+    )
+    from torchref.config import get_float_dtype
+
+    dark, light, sd, sl, phi, snr = [
+        torch.tensor([value], dtype=get_float_dtype())
+        for value in (10.0, 12.0, 2.0, 3.0, 0.0, snr_value)
+    ]
+    amplitude, variance, w = compute_bayes_extrapolated_amplitudes(
+        dark, light, sd, phi, phi, occupancy, snr=snr, sig_light=sl
+    )
+    coefficient = w / occupancy
+    torch.testing.assert_close(amplitude, dark + coefficient * (light - dark))
+    torch.testing.assert_close(
+        variance, (1 - coefficient) ** 2 * sd**2 + coefficient**2 * sl**2
+    )
+    if occupancy == 1.0 and snr_value == float("inf"):
+        assert amplitude.item() == 12.0
+        assert variance.item() == 9.0
+
+
+def test_extrapolation_phase_derivatives_on_deposited_amplitudes(mtz_dir):
+    """Reported variance agrees with derivatives of the phase-aware shrunk amplitude."""
+    from torchref import ReflectionData
+    from torchref.cli.collection_difference_refine import (
+        compute_bayes_extrapolated_amplitudes,
+    )
+
+    data = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    dark, sd = data.get_corrected_data()
+    dark, sd = dark[:64].detach().clone().requires_grad_(), sd[:64].detach()
+    light = (dark.detach() * 1.2).requires_grad_()
+    sl = sd * 1.5
+    phi_d = torch.linspace(-1.5, 1.5, len(dark), dtype=dark.dtype)
+    phi_l = phi_d + 0.8
+    snr = torch.linspace(0.1, 3.0, len(dark), dtype=dark.dtype)
+    amp, var, _ = compute_bayes_extrapolated_amplitudes(
+        dark, light, sd, phi_d, phi_l, 0.35, snr=snr, sig_light=sl
+    )
+    jd, jl = torch.autograd.grad(amp.sum(), (dark, light))
+    torch.testing.assert_close(var, jd**2 * sd**2 + jl**2 * sl**2)
+
+
+def test_intensity_snr_controls_weight_with_amplitude_uncertainty():
+    """Intensity noise sets shrinkage while amplitude sigmas describe propagated error."""
+    from torchref.cli.collection_difference_refine import (
+        compute_bayes_extrapolated_amplitudes,
+    )
+
+    kw = _intensity_inputs(n=5000)
+    est = difference_snr(**kw)
+    assert est.source == "intensity"
+    dark = kw["f_dark"]
+    light = dark + kw["delta_obs"]
+    sd = torch.ones_like(dark)
+    sl = 2 * sd
+    phi = torch.zeros_like(dark)
+    amp, var, w = compute_bayes_extrapolated_amplitudes(
+        dark, light, sd, phi, phi, 1.0, snr=est.snr, sig_light=sl
+    )
+    torch.testing.assert_close(w, 1 / (1 + 1 / est.snr))
+    torch.testing.assert_close(var, (1 - w) ** 2 * sd**2 + w**2 * sl**2)
+    assert torch.isfinite(amp).all()

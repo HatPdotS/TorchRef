@@ -1,7 +1,7 @@
 """
 Isomorphous difference map from two datasets.
 
-Computes a difference Fourier map using DF = F_data - F_reference with
+Computes a difference Fourier map using dF = F_data - F_reference with
 phases from a model, after scaling both datasets to a common reference.
 """
 
@@ -23,7 +23,7 @@ class DifferenceMap(Map):
 
     Scales both datasets to a common reference using ``DatasetCollection``,
     then computes difference Fourier coefficients:
-    ``DF * exp(i * phi_calc)`` where ``DF = F_data - F_reference``.
+    ``dF * exp(i * phi_calc)`` where ``dF = F_data - F_reference``.
 
     Parameters
     ----------
@@ -120,9 +120,14 @@ class DifferenceMap(Map):
 
         # Combined mask: only use reflections valid in both datasets
         mask_combined = self.data_reference.masks() & self.data_perturbed.masks()
-        hkl_asu = self.data_reference.hkl[mask_combined]
-        fobs_ref = F_ref_scaled[mask_combined]
-        fobs_pert = F_pert_scaled[mask_combined]
+        delta_f = F_pert_scaled - F_ref_scaled
+        if self.scale is not None:
+            delta_f = delta_f / self.scale.to(delta_f)
+        # One difference per reflection (Bijvoet mates averaged): the Hermitian
+        # placement below adds each conjugate at -h itself.
+        rows = self.data_reference.bijvoet_representatives(mask_combined)
+        delta_f = self.data_reference.bijvoet_mean(delta_f, mask_combined)[rows]
+        hkl_asu = self.data_reference.hkl[rows]
 
         # Expand to P1 without Friedel mates (expand_to_p1() would reset
         # scaling, so expand manually via expand_hkl)
@@ -134,9 +139,6 @@ class DifferenceMap(Map):
         )
 
         # Map scaled amplitudes to P1 (amplitudes are invariant under symmetry)
-        delta_f = fobs_pert - fobs_ref
-        if self.scale is not None:
-            delta_f = delta_f / self.scale.to(delta_f)[mask_combined]
         delta_f_p1 = delta_f[orig_idx]
 
         # Compute Fcalc for P1 hkl (for phases)

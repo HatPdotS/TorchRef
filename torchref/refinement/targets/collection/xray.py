@@ -9,8 +9,8 @@ matched so each timepoint dataset meets its own mixed model:
     The same on intensities -- the whole class is one ``observable`` declaration.
 :class:`CollectionDifferenceSigmaDTarget`
     The amplitude difference centred on ``alpha * dF_calc`` with the unexplained
-    difference power ``beta_model`` added to the measurement variance, both from a
-    sigma_D fit on the free set.
+    difference power ``beta_model`` added to the measurement variance, both from one
+    shell-free fit on the free set.
 :class:`CollectionMLTarget`
     Read MLF per dataset at one shared Luzzati ``beta``, pooled over every dataset's free
     reflections and owned by the target rather than the scaler. The absolute channel.
@@ -32,13 +32,13 @@ from torchref.base.targets.xray_likelihoods import (
     gaussian_per_refl,
     rice_per_refl,
 )
+from torchref.refinement.model_error_estimation.difference_power import (
+    DifferencePowerConfig,
+    DifferencePowerEstimator,
+)
 from torchref.refinement.model_error_estimation.sigma_a import (
     SigmaAEstimator,
     epsilon_from_hkl,
-)
-from torchref.refinement.model_error_estimation.sigma_d import (
-    SigmaDConfig,
-    SigmaDEstimator,
 )
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
@@ -196,27 +196,30 @@ class CollectionDifferenceIntensityTarget(CollectionDifferenceTarget):
 
 
 class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
-    """The difference-from-mean Gaussian with a sigma_D error model.
+    """The difference-from-mean Gaussian with a fitted model-error term.
 
     The parent compares ``dF_obs`` with ``dF_calc`` under the measurement variance
     alone. Here the likelihood is centred on ``alpha * dF_calc`` and its variance is
     ``beta_model + sigma_diff**2``: ``alpha`` is the Gaussian coupling of the model
     difference to the true one and ``beta_model`` the difference power the model does
-    not explain, both per resolution shell from
-    :class:`~torchref.refinement.model_error_estimation.sigma_d.SigmaDEstimator` fitted
-    on the pooled **free** reflections of the timepoint rows, with the dark-amplitude
-    power law carried per reflection. A poor light model therefore inflates the
-    variance where it fails instead of pulling the coordinates toward noise.
+    not explain. Both come from one
+    :func:`~torchref.refinement.model_error_estimation.difference_power.
+    fit_difference_power` on the pooled **free** reflections of the timepoint rows --
+    ``alpha`` a smooth function of resolution, ``beta_model`` a smooth function of
+    resolution times the dark-amplitude power law, no resolution shells. The reported
+    sigmas are taken as calibrated (``k = 1``), as the likelihood itself uses them. A
+    poor light model therefore inflates the variance where it fails instead of pulling
+    the coordinates toward noise.
 
     At ``N = 2`` the timepoint row's difference from the mean is half the dark
-    subtraction; ``S`` and ``sigma_diff**2`` scale together, so the estimate is
-    invariant to that factor. The estimate is cached until :meth:`maintenance`, which
-    ``LossState`` calls after each optimizer-step block.
+    subtraction; ``beta_model`` and ``sigma_diff**2`` scale together and ``alpha`` is a
+    ratio, so the fit is invariant to that factor. The fit is cached until
+    :meth:`maintenance`, which ``LossState`` calls after each optimizer-step block.
 
     Parameters
     ----------
-    sigma_d_config : SigmaDConfig, optional
-        Exponent and shrinkage settings; the module defaults when omitted.
+    difference_config : DifferencePowerConfig, optional
+        Its ``gamma`` fixes the dark-amplitude exponent; fitted when omitted.
     """
 
     name: str = "difference_sigma_d_xray"
@@ -230,7 +233,7 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
         use_work_set: bool = True,
         use_set: str = None,
         verbose: int = 0,
-        sigma_d_config: SigmaDConfig = None,
+        difference_config: DifferencePowerConfig = None,
     ):
         super().__init__(
             dataset_collection,
@@ -241,20 +244,24 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
             use_set=use_set,
             verbose=verbose,
         )
-        # Constructed once; the cache lives until maintenance() resets it.
-        self._sigma_d = SigmaDEstimator(sigma_d_config)
+        # Constructed once; the cached fit lives until maintenance() resets it.
+        self._estimator = DifferencePowerEstimator(difference_config)
         self._eps_common: torch.Tensor = None
         self._dss_common: torch.Tensor = None
+        self._centric_common: torch.Tensor = None
         self._geom_key: int = None
 
     def _common_geom(self):
-        """``(epsilon, d_star_sq)`` on the common HKL, cached per dark dataset."""
+        """``(epsilon, d_star_sq, centric)`` on the common HKL, cached per dark
+        dataset."""
         data = self._dataset_collection[self._model_collection.dark_key]
         key = id(data)
         if self._eps_common is None or self._geom_key != key:
             self._eps_common, self._dss_common = common_geom(data)
+            sg = getattr(data, "spacegroup", None)
+            self._centric_common = sg.is_centric(data.hkl) if sg is not None else None
             self._geom_key = key
-        return self._eps_common, self._dss_common
+        return self._eps_common, self._dss_common, self._centric_common
 
     @staticmethod
     def _difference_terms(ctx):
@@ -269,41 +276,49 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
     def _loss_inputs(self, recalc: bool = False):
         """The parent's stack plus ``alpha`` and ``beta_model`` on the common HKL.
 
-        The estimator sees the timepoint rows only (the dark row is the reference the
+        The fit sees the timepoint rows only (the dark row is the reference the
         differences are taken against), their free reflections, and a detached model
         difference, so gradients reach the models only through ``ctx.model``.
         """
         ctx = super()._loss_inputs(recalc=recalc)
-        delta_obs, delta_calc, sigma_diff = self._difference_terms(ctx)
-        delta_calc = delta_calc.detach()
         dark = ctx.keys.index(self._model_collection.dark_key)
-        rows = [i for i in range(len(ctx.keys)) if i != dark] or [dark]
-        dc = self._dataset_collection
-        eps, dss = self._common_geom()
         dtype = ctx.obs.dtype
+        eps, dss, centric = self._common_geom()
         eps, dss = eps.to(dtype), dss.to(dtype)
         f_dark = ctx.obs[dark]
-        # The free set, independent of this target's own subset; the estimator drops
-        # non-finite observations itself.
-        fit_mask = torch.cat(
-            [dc[ctx.keys[i]].free.mask.to(ctx.mask.device) for i in rows]
+        fit = self._estimator.fit
+        if fit is None:
+            delta_obs, delta_calc, sigma_diff = self._difference_terms(ctx)
+            rows = [i for i in range(len(ctx.keys)) if i != dark] or [dark]
+            dc = self._dataset_collection
+            n_rows = len(rows)
+            # The free set, independent of this target's own subset; the fit drops
+            # non-finite observations itself.
+            fit_mask = torch.cat(
+                [dc[ctx.keys[i]].free.mask.to(ctx.mask.device) for i in rows]
+            )
+            fit = self._estimator.get(
+                torch.cat([delta_obs[i] for i in rows]),
+                torch.cat([sigma_diff[i] for i in rows]),
+                dss.repeat(n_rows),
+                epsilon=eps.repeat(n_rows),
+                f_dark=f_dark.repeat(n_rows),
+                centric=centric.repeat(n_rows) if centric is not None else None,
+                fit_mask=fit_mask,
+                delta_calc=torch.cat([delta_calc[i].detach() for i in rows]),
+                fit_sigma_scale=False,
+            )
+        # A reflection missing from the dark row has no amplitude for the power law;
+        # evaluate it at the median instead of letting a NaN reach the variance, where
+        # the masked-out branch of the loss would still turn it into a NaN gradient.
+        finite = torch.isfinite(f_dark)
+        f_eval = torch.where(
+            finite, f_dark, f_dark[finite].median() if bool(finite.any()) else 1.0
         )
-        n_rows = len(rows)
-        est = self._sigma_d.get(
-            torch.cat([delta_obs[i] for i in rows]),
-            torch.cat([sigma_diff[i] for i in rows]),
-            eps.repeat(n_rows),
-            dss.repeat(n_rows),
-            f_dark.repeat(n_rows),
-            fit_mask,
-            delta_calc=torch.cat([delta_calc[i] for i in rows]),
-            target_dss=dss,
-            out_epsilon=eps,
-            out_f_dark=f_dark,
-            out_sigma_diff=sigma_diff[rows[0]],
-        )
+        alpha = fit.alpha_at(dss)
+        beta = fit.signal_power(dss, epsilon=eps, f_dark=f_eval, centric=centric)
         return CollectionSigmaDLossInputs(
-            *ctx, alpha=est.alpha.to(dtype), beta_model=est.beta_model.to(dtype)
+            *ctx, alpha=alpha.to(dtype).detach(), beta_model=beta.to(dtype).detach()
         )
 
     def _per_refl(self, ctx) -> torch.Tensor:
@@ -322,20 +337,21 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
         return torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
 
     def maintenance(self) -> None:
-        """Invalidate the sigma_D estimate so it is refitted from the updated models on
-        the next forward (``LossState`` calls this after each optimizer-step block)."""
-        self._sigma_d.reset()
+        """Reset the estimator so it refits from the updated models on the next
+        forward (``LossState`` calls this after each optimizer-step block)."""
+        self._estimator.reset()
 
     def stats(self) -> Dict[str, StatEntry]:
-        """Base collection X-ray stats plus the sigma_D fit summary."""
+        """Base collection X-ray stats plus the difference-power fit summary."""
         out = super().stats()
-        sh = self._sigma_d.shells
-        if sh is not None:
-            out["sigma_d_gamma"] = stat(float(sh.gamma), VERBOSITY_STANDARD)
-            out["sigma_d_tau"] = stat(float(sh.tau), VERBOSITY_STANDARD)
-            out["sigma_d_shells_without_power"] = stat(
-                float(sh.diagnostics["n_s2_clamped"]), VERBOSITY_STANDARD
-            )
+        fit = self._estimator.fit
+        if fit is not None:
+            lo, hi = fit.stol_range
+            ends = (2.0 * torch.tensor([lo, hi], dtype=fit.coeffs.dtype)) ** 2
+            alpha = fit.alpha_at(ends.to(fit.coeffs.device))
+            out["difference_gamma"] = stat(float(fit.gamma), VERBOSITY_STANDARD)
+            out["difference_alpha_low_res"] = stat(float(alpha[0]), VERBOSITY_STANDARD)
+            out["difference_alpha_high_res"] = stat(float(alpha[1]), VERBOSITY_STANDARD)
         return out
 
 

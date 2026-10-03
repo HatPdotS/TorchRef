@@ -1,22 +1,25 @@
-"""Assemble a :class:`~torchref.topology.topology.Topology` from an atom table.
+"""Connect a node-only :class:`~torchref.topology.Topology` to the dictionaries.
 
-Intra-residue edges are matched here, template by template, through the matchers
-in :mod:`torchref.topology.matchers`. Inter-residue edges come from the
-``InterResidue*Builder`` classes, which already encode the link geometry and are reused
-rather than reimplemented.
+The input carries identity only (:meth:`Topology.from_table`); this module adds the
+edges. Intra-residue edges are matched template by template through the matchers in
+:mod:`torchref.topology.matchers`. Inter-residue edges come from the
+``InterResidue*Builder`` classes over the residue graph's peptide links, disulfides are
+found by SG-SG distance, and ``LINK`` records are resolved by residue identity. Every
+edge index is an atom row of the topology.
 """
 
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-import pandas as pd
 import torch
 
+from torchref.config import get_int_dtype
 from torchref.topology.builders import (
     InterResidueAngleBuilder,
     InterResidueBondBuilder,
     InterResiduePlaneBuilder,
     InterResidueTorsionBuilder,
+    PeptideResidues,
     PreprocessedCIF,
 )
 from torchref.topology.matchers import (
@@ -29,7 +32,6 @@ from torchref.topology.atom_graph import AtomGraph
 from torchref.topology.edges import EdgeBlock, assemble_origins
 from torchref.topology.residue_graph import (
     ResidueGraph,
-    build_residue_nodes,
     find_disulfide_links,
     find_peptide_links,
 )
@@ -41,37 +43,50 @@ from torchref.topology.topology import Topology
 _WORK = 64
 
 
-def _atom_columns(pdb: pd.DataFrame) -> Dict[str, np.ndarray]:
-    """Per-atom identity arrays, with altlocs normalised so blank reads as ``' '``."""
-    altloc = pdb["altloc"].values.astype(str) if "altloc" in pdb.columns else None
-    if altloc is None:
-        altloc = np.full(len(pdb), " ", dtype="<U1")
-    else:
-        altloc = np.where(altloc == "", " ", altloc)
-    icode = (
-        pdb["icode"].values.astype(str)
-        if "icode" in pdb.columns
-        else np.full(len(pdb), "", dtype="<U1")
-    )
-    return {
-        "name": pdb["name"].values.astype(str),
-        "element": (
-            pdb["element"].values.astype(str)
-            if "element" in pdb.columns
-            else np.full(len(pdb), "", dtype="<U2")
-        ),
-        "altloc": altloc,
-        "chain": pdb["chainid"].values.astype(str),
-        "resseq": pdb["resseq"].values.astype(np.int64),
-        "icode": icode,
-        "resname": pdb["resname"].values.astype(str),
-        "record": (
-            pdb["ATOM"].values.astype(str)
-            if "ATOM" in pdb.columns
-            else np.full(len(pdb), "ATOM", dtype="<U6")
-        ),
-        "index": pdb["index"].values.astype(np.int64),
-    }
+def _atom_columns(topology: Topology) -> Dict[str, np.ndarray]:
+    """Per-atom identity arrays the matchers read, ``record`` and ``index`` included.
+
+    ``index`` is the atom row: edge indices are rows of the topology.
+    """
+    cols = topology.columns()
+    cols["record"] = np.where(cols.pop("is_hetatm"), "HETATM", "ATOM")
+    cols["index"] = np.arange(topology.n_atoms, dtype=np.int64)
+    return cols
+
+
+def _chemical_nodes(cols, nodes, peptide_pairs):
+    """Expand sequence positions into chemical identities for template matching.
+
+    Blank-altloc atoms participate in every chemical conformer at their position.
+    ``index`` continues to address the original atom order, including when shared
+    atoms are duplicated in this temporary matching view.
+    """
+    rows, identities, owners, starts, ends = [], [], [], [], []
+    variants = {}
+    for r, (start, end) in enumerate(zip(nodes["atom_start"], nodes["atom_end"])):
+        source = np.arange(int(start), int(end))
+        names = list(dict.fromkeys(cols["resname"][source].tolist()))
+        variants[r] = []
+        for rn in names:
+            variants[r].append(len(owners))
+            chosen = source[
+                (cols["resname"][source] == rn) | (cols["altloc"][source] == " ")
+            ]
+            starts.append(len(rows))
+            rows.extend(chosen.tolist())
+            identities.extend([rn] * len(chosen))
+            ends.append(len(rows))
+            owners.append(r)
+    rows = np.asarray(rows, dtype=np.int64)
+    owners = np.asarray(owners, dtype=np.int64)
+    expanded = {k: v[rows] for k, v in cols.items()}
+    expanded["resname"] = np.asarray(identities)
+    chemical = {k: v[owners] for k, v in nodes.items()}
+    chemical["resname"] = expanded["resname"][starts]
+    chemical["atom_start"] = np.asarray(starts, dtype=np.int64)
+    chemical["atom_end"] = np.asarray(ends, dtype=np.int64)
+    pairs = [(a, b) for i, j in peptide_pairs for a in variants[i] for b in variants[j]]
+    return expanded, chemical, pairs, rows, owners
 
 
 def _conformers(
@@ -390,13 +405,15 @@ def _match_intra_planes(
 
 
 def _inter_residue_edges(
-    pdb: pd.DataFrame,
+    residues: PeptideResidues,
     link_dict: Optional[Dict],
     verbose: int,
 ) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, Dict], Dict[str, Dict]]:
     """Peptide edges, their values, and the Ramachandran pairing, from the builders.
 
-    Reuses ``InterResidue*Builder`` rather than reimplementing the link geometry.
+    Reuses ``InterResidue*Builder`` rather than reimplementing the link geometry. The
+    pairs are the residue graph's peptide links, so an insertion-code step (100 to
+    100A) is linked like any other.
 
     Returns
     -------
@@ -436,7 +453,7 @@ def _inter_residue_edges(
         return rows, rest
 
     bond = InterResidueBondBuilder(verbose=verbose).build(
-        pdb, trans, cpu, filter_atom_type="ATOM"
+        residues, trans, cpu
     )
     if bond:
         indices["bond"]["peptide"], values["bond"]["peptide"] = split(bond)
@@ -447,14 +464,14 @@ def _inter_residue_edges(
         # and excluded from the TRANS pass to avoid two restraints on the same atoms.
         groups = [
             ab.build(
-                pdb, trans, cpu, filter_atom_type="ATOM", exclude_next_resname="PRO"
+                residues, trans, cpu, exclude_next_resname="PRO"
             ),
             ab.build(
-                pdb, ptrans, cpu, filter_atom_type="ATOM", next_resname_filter="PRO"
+                residues, ptrans, cpu, next_resname_filter="PRO"
             ),
         ]
     else:
-        groups = [ab.build(pdb, trans, cpu, filter_atom_type="ATOM")]
+        groups = [ab.build(residues, trans, cpu)]
     parts = [split(g) for g in groups if g]
     if parts:
         indices["angle"]["peptide"] = np.concatenate([p[0] for p in parts], axis=0)
@@ -464,7 +481,7 @@ def _inter_residue_edges(
         }
 
     tors = InterResidueTorsionBuilder(verbose=verbose).build(
-        pdb, trans, cpu, filter_atom_type="ATOM"
+        residues, trans, cpu
     )
     if tors:
         for origin in ("phi", "psi", "omega"):
@@ -476,7 +493,7 @@ def _inter_residue_edges(
             extras["ramachandran"] = tors["ramachandran"]
 
     planes = InterResiduePlaneBuilder(verbose=verbose).build(
-        pdb, trans, cpu, filter_atom_type="ATOM"
+        residues, trans, cpu
     )
     if planes:
         for key, group in planes.items():
@@ -502,8 +519,7 @@ def _origins(
 
 
 def _disulfide_edges(
-    pdb: pd.DataFrame,
-    nodes: Dict[str, np.ndarray],
+    topology: Topology,
     cols: Dict[str, np.ndarray],
     residue_of_row: Dict[int, int],
     pairs: Sequence[Tuple[int, int]],
@@ -543,22 +559,15 @@ def _disulfide_edges(
     torsion_builder = InterResidueTorsionBuilder(verbose=verbose)
 
     for row_a, row_b in pairs:
-        # The edge indices are the atom table's ``index`` column, not its row number.
-        bond_builder.process_disulfide_bond(
-            int(cols["index"][row_a]), int(cols["index"][row_b]), length, sigma
-        )
+        bond_builder.process_disulfide_bond(int(row_a), int(row_b), length, sigma)
         res_a, res_b = residue_of_row[row_a], residue_of_row[row_b]
-        atoms_a = pdb.iloc[
-            int(nodes["atom_start"][res_a]) : int(nodes["atom_end"][res_a])
-        ]
-        atoms_b = pdb.iloc[
-            int(nodes["atom_start"][res_b]) : int(nodes["atom_end"][res_b])
-        ]
         if disulf.get("angles") is not None:
-            angle_builder.process_disulfide_angles(atoms_a, atoms_b, disulf["angles"])
+            angle_builder.process_disulfide_angles(
+                topology, res_a, res_b, disulf["angles"]
+            )
         if disulf.get("torsions") is not None:
             torsion_builder.process_disulfide_torsions(
-                atoms_a, atoms_b, disulf["torsions"]
+                topology, res_a, res_b, disulf["torsions"]
             )
 
     values: Dict[str, Dict[str, np.ndarray]] = {}
@@ -579,7 +588,8 @@ def _disulfide_edges(
 
 
 def _lookup_link_atom(
-    pdb: pd.DataFrame,
+    topology: Topology,
+    residue_by_key: Dict[Tuple[str, int, str], List[int]],
     chainid: str,
     resseq: int,
     icode: str,
@@ -587,40 +597,37 @@ def _lookup_link_atom(
     name: str,
     altloc: str,
 ):
-    """Resolve one ``LINK`` record's atom to a row of the atom table, or None.
+    """Resolve one ``LINK`` record's atom to a row of the topology, or None.
 
     Matches on ``(chainid, resseq, icode, name)`` with ``resname`` as a tie-breaker.
     Where a residue has alternative conformations the requested altloc wins, then the
     blank one, then ``'A'``, then whatever is left -- a LINK naming a specific conformer
     should reach that conformer, but one naming none should still resolve.
     """
-    sel = pdb[
-        (pdb["chainid"].astype(str) == str(chainid))
-        & (pdb["resseq"].astype(int) == int(resseq))
-        & (pdb["icode"].astype(str) == str(icode))
-        & (pdb["name"].astype(str).str.strip() == str(name).strip())
+    key = (str(chainid), int(resseq), str(icode).strip())
+    candidates = residue_by_key.get(key, [])
+    wanted = str(resname).strip() if resname else ""
+    rows = [
+        row
+        for r in candidates
+        for row in topology.residues.atom_rows(r)
+        if str(topology.atoms.name[row]).strip() == str(name).strip()
     ]
-    if len(sel) == 0:
+    if wanted:
+        tied = [row for row in rows if topology.resname_of_atom(row).strip() == wanted]
+        rows = tied or rows
+    if not rows:
         return None
-    if resname:
-        tied = sel[sel["resname"].astype(str).str.strip() == str(resname).strip()]
-        if len(tied) > 0:
-            sel = tied
-
-    if altloc:
-        for candidate in (altloc, ""):
-            hit = sel[sel["altloc"].astype(str) == candidate]
-            if len(hit) > 0:
-                return int(hit.iloc[0]["index"])
-    for candidate in ("", "A"):
-        hit = sel[sel["altloc"].astype(str) == candidate]
-        if len(hit) > 0:
-            return int(hit.iloc[0]["index"])
-    return int(sel.iloc[0]["index"])
-
+    altlocs = [str(topology.atoms.altloc[row]) for row in rows]
+    requested = str(altloc).strip() if altloc else ""
+    for candidate in ((requested, " ") if requested else ()) + (" ", "A"):
+        for row, alt in zip(rows, altlocs):
+            if alt == candidate:
+                return int(row)
+    return int(rows[0])
 
 def _link_record_edges(
-    pdb: pd.DataFrame,
+    topology: Topology,
     links,
     disulfide_bonds: Optional[np.ndarray],
     verbose: int,
@@ -649,12 +656,18 @@ def _link_record_edges(
         for a, b in disulfide_bonds:
             existing.add((min(int(a), int(b)), max(int(a), int(b))))
 
+    residue_by_key: Dict[Tuple[str, int, str], List[int]] = {}
+    for r in range(topology.n_residues):
+        chain, resseq, icode = topology.residues.key(r)
+        residue_by_key.setdefault((chain, resseq, icode.strip()), []).append(r)
+
     rows: List[Tuple[int, int]] = []
     lengths: List[float] = []
     n_unresolved = 0
     for _, link in links.iterrows():
         idx1 = _lookup_link_atom(
-            pdb,
+            topology,
+            residue_by_key,
             chainid=link["chainid1"],
             resseq=int(link["resseq1"]),
             icode=link["icode1"],
@@ -663,7 +676,8 @@ def _link_record_edges(
             altloc=link["altloc1"],
         )
         idx2 = _lookup_link_atom(
-            pdb,
+            topology,
+            residue_by_key,
             chainid=link["chainid2"],
             resseq=int(link["resseq2"]),
             icode=link["icode2"],
@@ -711,7 +725,7 @@ def _block_with_values(
         per_origin, arity, edge_type, payload
     )
     block = EdgeBlock(
-        indices=torch.as_tensor(indices, dtype=torch.int64, device=device),  # dtype-ok: atom index tensor for restraint edges; int64 index required
+        indices=torch.as_tensor(indices, dtype=get_int_dtype(), device=device),
         origin_bounds=bounds,
     )
     values = {
@@ -725,12 +739,12 @@ def _block_with_values(
 
 
 def build_topology(
-    pdb: pd.DataFrame,
+    topology: Topology,
     cif_dict: Dict,
+    xyz: torch.Tensor,
     link_dict: Optional[Dict] = None,
     link_list=None,
     links=None,
-    xyz: Optional[torch.Tensor] = None,
     device=None,
     verbose: int = 0,
 ) -> Topology:
@@ -740,12 +754,12 @@ def build_topology(
     half on its own, for callers that need the graph and no ideal geometry.
     """
     topology, _, _ = build_topology_with_values(
-        pdb,
+        topology,
         cif_dict,
+        xyz,
         link_dict=link_dict,
         link_list=link_list,
         links=links,
-        xyz=xyz,
         device=device,
         verbose=verbose,
     )
@@ -753,24 +767,27 @@ def build_topology(
 
 
 def build_topology_with_values(
-    pdb: pd.DataFrame,
+    topology: Topology,
     cif_dict: Dict,
+    xyz: torch.Tensor,
     link_dict: Optional[Dict] = None,
     link_list=None,
     links=None,
-    xyz: Optional[torch.Tensor] = None,
     device=None,
     verbose: int = 0,
 ) -> Tuple[Topology, Dict[str, Dict], Dict[str, Dict]]:
-    """Build a topology from an atom table and the restraint dictionaries.
+    """Connect a node-only topology against the restraint dictionaries.
 
     Parameters
     ----------
-    pdb : pandas.DataFrame
-        Atom table, with ``name``, ``element``, ``altloc``, ``chainid``, ``resseq``,
-        ``icode``, ``resname``, ``ATOM`` and ``index`` columns.
+    topology : Topology
+        Identity to connect, e.g. from :meth:`Topology.from_table`. Not modified; its
+        edges, if any, are ignored.
     cif_dict : dict
         Restraint dictionary keyed by residue name.
+    xyz : torch.Tensor
+        Cartesian coordinates in Å, shape ``(N, 3)``. Disulfides are detected by SG-SG
+        distance and proline omega classified cis or trans from them.
     link_dict : dict, optional
         Link-type definitions. Without it no inter-residue edges are built.
     link_list : pandas.DataFrame, optional
@@ -778,9 +795,6 @@ def build_topology_with_values(
     links : pandas.DataFrame, optional
         Parsed PDB ``LINK`` records. Each record that resolves to two distinct atoms and
         does not duplicate an auto-detected disulfide contributes one bond edge.
-    xyz : torch.Tensor, optional
-        Coordinates, shape ``(N, 3)``. Needed only to detect disulfide links, which are
-        found by SG-SG distance.
     device : torch.device, optional
         Where to place the edge blocks.
     verbose : int, default 0
@@ -789,7 +803,7 @@ def build_topology_with_values(
     Returns
     -------
     topology : Topology
-        The connectivity.
+        A new, connected topology over the same atoms.
     values : dict
         ``{edge_type: {origin: {property: tensor}}}`` for bonds, angles and torsions;
         ``{'chiral': {property: tensor}}`` and ``{'plane': {size: {property: tensor}}}``
@@ -797,10 +811,12 @@ def build_topology_with_values(
     extras : dict
         Products of the same pass that are not edges -- currently ``ramachandran``.
     """
-    cols = _atom_columns(pdb)
-    nodes = build_residue_nodes(
-        cols["chain"], cols["resseq"], cols["icode"], cols["resname"]
-    )
+    cols = _atom_columns(topology)
+    residue_nodes = topology.residues
+    nodes = {
+        field: getattr(residue_nodes, field)
+        for field in ("chain", "resseq", "icode", "resname", "atom_start", "atom_end")
+    }
     n_res = len(nodes["chain"])
 
     names_by_residue = [
@@ -820,57 +836,71 @@ def build_topology_with_values(
         (int(polymer_map[a]), int(polymer_map[b])) for a, b in peptide_local
     ]
 
-    comp_dict, template_key = resolve_template_keys(
-        nodes["resname"], peptide_pairs, cif_dict, link_list, verbose=verbose
+    match_cols, chemical_nodes, chemical_pairs, source_rows, owners = _chemical_nodes(
+        cols, nodes, peptide_pairs
     )
+    comp_dict, chemical_keys = resolve_template_keys(
+        chemical_nodes["resname"], chemical_pairs, cif_dict, link_list, verbose=verbose
+    )
+    template_key = np.asarray(nodes["resname"], dtype=object).copy()
+    _, first_variant = np.unique(owners, return_index=True)
+    template_key[:] = chemical_keys[first_variant]
     pp_cif = PreprocessedCIF(comp_dict)
-    match_cols = dict(cols)
-    match_cols["name"] = cols["name"].copy()
+    match_cols["name"] = match_cols["name"].copy()
     # PDB terminal H1 is the monomer dictionary's H. Resolve the alias only
     # for matching, preserving the model's atom names and row identities.
-    for r in range(n_res):
-        start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
+    for r in range(len(chemical_keys)):
+        start, end = int(chemical_nodes["atom_start"][r]), int(
+            chemical_nodes["atom_end"][r]
+        )
         names = match_cols["name"][start:end]
         if "H1" not in names or "H" in names:
             continue
-        component = comp_dict.get(str(template_key[r]), {})
+        component = comp_dict.get(str(chemical_keys[r]), {})
         atom_table = component.get("atoms")
         if atom_table is None:
             continue
         template_names = set(atom_table["atom_id"].astype(str).str.strip())
         if "H" in template_names and "H1" not in template_names:
             names[names == "H1"] = "H"
-    energy_type, template_h_count = _atom_types(
-        match_cols, nodes, template_key, comp_dict
+    chemical_energy, chemical_h_count = _atom_types(
+        match_cols, chemical_nodes, chemical_keys, comp_dict
     )
+    energy_type = np.full(topology.n_atoms, "", dtype=chemical_energy.dtype)
+    template_h_count = np.full(topology.n_atoms, -1, dtype=np.int8)
+    own_identity = match_cols["resname"] == cols["resname"][source_rows]
+    energy_type[source_rows[own_identity]] = chemical_energy[own_identity]
+    template_h_count[source_rows[own_identity]] = chemical_h_count[own_identity]
 
-    intra, intra_values = _match_intra(match_cols, nodes, template_key, pp_cif)
-    intra_planes, intra_plane_values = _match_intra_planes(
-        match_cols, nodes, template_key, pp_cif
+    intra, intra_values = _match_intra(
+        match_cols, chemical_nodes, chemical_keys, pp_cif
     )
-    inter, inter_values, extras = _inter_residue_edges(pdb, link_dict, verbose)
+    intra_planes, intra_plane_values = _match_intra_planes(
+        match_cols, chemical_nodes, chemical_keys, pp_cif
+    )
+    inter, inter_values, extras = _inter_residue_edges(
+        PeptideResidues(topology, peptide_pairs, xyz.detach().cpu().numpy()),
+        link_dict,
+        verbose,
+    )
 
     residue_of_row = {}
     for r in range(n_res):
         for row in range(int(nodes["atom_start"][r]), int(nodes["atom_end"][r])):
             residue_of_row[row] = r
 
-    disulfide_pairs: List[Tuple[int, int]] = []
-    disulfide: Dict[str, np.ndarray] = {}
-    disulfide_values: Dict[str, Dict[str, np.ndarray]] = {}
-    if xyz is not None:
-        sg_rows = [
-            row
-            for row in range(len(cols["name"]))
-            if cols["name"][row] == "SG" and cols["record"][row] == "ATOM"
-        ]
-        disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz)
-        disulfide, disulfide_values = _disulfide_edges(
-            pdb, nodes, cols, residue_of_row, disulfide_pairs, link_dict, verbose
-        )
+    sg_rows = [
+        row
+        for row in range(len(cols["name"]))
+        if cols["name"][row] == "SG" and cols["record"][row] == "ATOM"
+    ]
+    disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz)
+    disulfide, disulfide_values = _disulfide_edges(
+        topology, cols, residue_of_row, disulfide_pairs, link_dict, verbose
+    )
 
     link_edges, link_atom_pairs, link_values = _link_record_edges(
-        pdb, links, disulfide.get("bond"), verbose
+        topology, links, disulfide.get("bond"), verbose
     )
 
     # LINK edges carry ``index`` values, so lift them through that column.
@@ -989,15 +1019,18 @@ def build_topology_with_values(
     )
 
     atoms = AtomGraph(
+        resname=cols["resname"].copy(),
         name=cols["name"],
         element=cols["element"],
         altloc=cols["altloc"],
+        is_hetatm=topology.atoms.is_hetatm.copy(),
+        charge=topology.atoms.charge.copy(),
         residue_of=torch.as_tensor(
             np.repeat(
                 np.arange(n_res, dtype=np.int64),
                 nodes["atom_end"] - nodes["atom_start"],
             ),
-            dtype=torch.int64,  # dtype-ok: atom index tensor; int64 index required
+            dtype=get_int_dtype(),
             device=device,
         ),
         bonds=bond_block,
@@ -1007,8 +1040,9 @@ def build_topology_with_values(
         planes=plane_blocks,
         energy_type=energy_type,
         template_h_count=torch.as_tensor(
-            # dtype-ok: small per-atom count; int8 is AtomGraph's documented storage
-            template_h_count, dtype=torch.int8, device=device
+            template_h_count,
+            dtype=torch.int8,  # dtype-ok: small per-atom count; AtomGraph storage
+            device=device,
         ),
     )
 
@@ -1020,7 +1054,7 @@ def build_topology_with_values(
         "chiral": chiral_values.get("intra", {}),
         "plane": plane_values,
     }
-    return Topology(residues=residues, atoms=atoms), values, extras
+    return Topology(residues=residues, atoms=atoms, connected=True), values, extras
 
 
 __all__ = ["build_topology", "build_topology_with_values"]

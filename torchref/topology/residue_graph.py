@@ -10,10 +10,17 @@ Holds no tensors, so this is a plain dataclass; the atom-level tensors live on
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+
+from torchref.config import get_int_dtype
+
+#: Residue names treated as water, whichever naming convention the file follows.
+WATER_RESNAMES = frozenset(
+    {"HOH", "WAT", "DOD", "H2O", "SOL", "TIP", "TIP3", "TIP4"}
+)
 
 #: SG-SG separation below which two cysteines are taken to be disulfide-bonded.
 DISULFIDE_MAX_DISTANCE = 2.5
@@ -60,11 +67,12 @@ class ResidueGraph:
     ----------
     chain, resseq, icode, resname : numpy.ndarray
         Per-residue identity, shape ``(R,)``.
-    template_key : numpy.ndarray
-        Restraint-dictionary key per residue, shape ``(R,)``. Either the residue name
-        or a link-modified variant such as ``'ALA:DEL-HN1+DEL-OXT'``.
     atom_start, atom_end : numpy.ndarray
         Half-open row range of each residue's atoms, shape ``(R,)``.
+    template_key : numpy.ndarray, optional
+        Restraint-dictionary key per residue, shape ``(R,)``. Either the residue name
+        or a link-modified variant such as ``'ALA:DEL-HN1+DEL-OXT'``. Defaults to the
+        residue name until the graph is connected.
     link_pairs : numpy.ndarray
         Residue index pairs, shape ``(L, 2)``. For a peptide link the first entry
         donates its ``C`` and the second its ``N``.
@@ -77,13 +85,22 @@ class ResidueGraph:
     resseq: np.ndarray
     icode: np.ndarray
     resname: np.ndarray
-    template_key: np.ndarray
     atom_start: np.ndarray
     atom_end: np.ndarray
+    template_key: Optional[np.ndarray] = None
     link_pairs: np.ndarray = field(
         default_factory=lambda: np.zeros((0, 2), dtype=np.int64)
     )
     link_kind: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype="<U8"))
+
+    def __post_init__(self) -> None:
+        if self.template_key is None:
+            self.template_key = np.asarray(self.resname, dtype=object).copy()
+
+    @property
+    def is_water(self) -> np.ndarray:
+        """True for water residues (:data:`WATER_RESNAMES`), shape ``(R,)``."""
+        return np.isin(np.char.strip(self.resname.astype(str)), list(WATER_RESNAMES))
 
     @property
     def n_residues(self) -> int:
@@ -272,7 +289,7 @@ def find_disulfide_links(
     rows = list(sg_rows)
     if len(rows) < 2:
         return []
-    idx = torch.as_tensor(rows, dtype=torch.int64, device=xyz.device)  # dtype-ok: residue-atom index tensor; int64 index required
+    idx = torch.as_tensor(rows, dtype=get_int_dtype(), device=xyz.device)
     dist = torch.cdist(xyz[idx], xyz[idx])
     close = (dist > DISULFIDE_MIN_DISTANCE) & (dist < DISULFIDE_MAX_DISTANCE)
 
@@ -293,4 +310,5 @@ __all__ = [
     "find_disulfide_links",
     "DISULFIDE_MAX_DISTANCE",
     "DISULFIDE_MIN_DISTANCE",
+    "WATER_RESNAMES",
 ]

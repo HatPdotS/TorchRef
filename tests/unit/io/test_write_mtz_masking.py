@@ -33,7 +33,7 @@ def cut_data(mtz_dir):
     data = ReflectionData(verbose=0)
     data.load_mtz(str(mtz_dir / "1DAW.mtz"))
     assert data.resolution.min().item() < CUT - 0.5, "data must extend past the cut"
-    data.cut_res(CUT)
+    data.filter_by_resolution(d_min=CUT)
     return data
 
 
@@ -43,7 +43,7 @@ def cut_anomalous_data(mtz_dir, tmp_path):
     rs.read_mtz(str(mtz_dir / "1DAW.mtz")).stack_anomalous().write_mtz(str(stacked))
     data = ReflectionData(verbose=0)
     data.load_mtz(str(stacked))
-    data.cut_res(CUT)
+    data.filter_by_resolution(d_min=CUT)
     return data
 
 

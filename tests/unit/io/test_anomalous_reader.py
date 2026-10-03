@@ -126,7 +126,7 @@ def test_generated_rfree_shared_across_mates(anomalous_two_column_mtz):
     assert d.friedel_merged is False
     assert bool(d.friedel_flags.any())
 
-    d.regenerate_rfree_flags(force=True, seed=0)
+    d.generate_rfree_flags(force=True, seed=0)
     # The seed is part of the provenance: "generated" without it names a draw
     # nobody can reproduce.
     assert d.rfree_source == (
@@ -141,7 +141,7 @@ def test_generated_validation_set_shared_across_mates(anomalous_two_column_mtz):
     path, _ = anomalous_two_column_mtz
     d = ReflectionData(verbose=0)
     d.load_mtz(path)
-    d.regenerate_rfree_flags(force=True, seed=0)
+    d.generate_rfree_flags(force=True, seed=0)
     d.generate_validation_set(val_fraction_of_free=0.5, seed=0)
 
     assert bool(d.validation_flags.any())

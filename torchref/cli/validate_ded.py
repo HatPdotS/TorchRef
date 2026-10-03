@@ -1,8 +1,8 @@
 #!/usr/bin/env python3 -u
-"""Validate difference electron density (DED) by correlating DFo and DFc maps.
+"""Validate difference electron density (DED) by correlating dFo and dFc maps.
 
 Takes separate dark and light MTZ files, computes weighted difference amplitudes
-internally, then compares the weighted DFo and DFcalc maps using dark-state phases.
+internally, then compares the weighted dFo and dFcalc maps using dark-state phases.
 Phenix-style atom selections give regional correlations, e.g. around a ligand site.
 
 Examples
@@ -38,14 +38,16 @@ from torchref.cli._common import (
     add_outdir_arg,
     build_dual_column_names,
     configure_unbuffered_output,
+    difference_config_from_args,
+    intensity_difference,
     load_model,
     load_reflection_data,
     parse_device_str,
     register_timing,
-    sigma_d_config_from_args,
     validate_cif_files,
     validate_files,
 )
+from torchref.config import get_int_dtype
 from torchref.maps.ded_weights import (
     DEFAULT_SCHEME,
     DedWeightFallbackWarning,
@@ -89,7 +91,7 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
         inv_frac_matrix=inv_frac,
     )
 
-    mask = torch.zeros(grid_shape, dtype=torch.int32, device=device)  # dtype-ok: integer solvent-mask accumulator (mask>0); categorical count, not model-precision data
+    mask = torch.zeros(grid_shape, dtype=get_int_dtype(), device=device)
     mask = add_to_solvent_mask(
         surrounding_coords,
         voxel_indices,
@@ -205,11 +207,11 @@ def setup_ded_context(
     n_bins=20,
     verbose=0,
     ded_weight=DEFAULT_SCHEME,
-    sigma_d_config=None,
+    difference_config=None,
 ):
     """Load reflection data and prepare shared state for DED validation.
 
-    This sets up the observation side (weighted DFo, P1 expansion, resolution
+    This sets up the observation side (weighted dFo, P1 expansion, resolution
     bins, free/work masks) that is independent of any particular model.
 
     Parameters
@@ -251,8 +253,8 @@ def setup_ded_context(
         str(light_sf), device=device, column_names=col_light, verbose=0
     )
     if dmin is not None:
-        data_dark.cut_res(highres=dmin)
-        data_light.cut_res(highres=dmin)
+        data_dark.filter_by_resolution(d_min=dmin)
+        data_light.filter_by_resolution(d_min=dmin)
 
     collection = DatasetCollection(device=str(device))
     collection.add_dataset("dark", data_dark)
@@ -293,14 +295,17 @@ def setup_ded_context(
     # Difference Fo and the registered weights; the selected scheme is the headline.
     dfo = F_light - F_dark
     sig_diff = torch.sqrt(sig_dark**2 + sig_light**2)
+    delta_I, sig_delta_I = intensity_difference(data_dark, data_light, refl_mask)
     all_w = all_ded_weights(
         delta_obs=dfo,
         sigma_diff=sig_diff,
+        delta_intensity=delta_I,
+        sigma_delta_intensity=sig_delta_I,
         hkl=hkl,
         cell=data_dark.cell,
         spacegroup=data_dark.spacegroup,
         f_dark=F_dark,
-        sigma_d_config=sigma_d_config,
+        gamma=difference_config.gamma if difference_config is not None else None,
     )
     selected = all_w[ded_weight]
     weights = selected.weights
@@ -353,11 +358,7 @@ def setup_ded_context(
         "weights_by_scheme": weights_by_scheme,
         "ded_weight": ded_weight,
         "ded_weight_applied": selected.applied,
-        "ded_weight_diagnostics": {
-            k: v
-            for k, v in all_w["sigma_d"].diagnostics.items()
-            if k not in ("weight_sigma_d_raw", "shells")
-        },
+        "ded_weight_diagnostics": dict(all_w["q"].diagnostics),
         "d_spacing": d_spacing,
         "cell_t": cell_t,
         "cell_np": cell_np,
@@ -451,12 +452,12 @@ def compute_ded_maps(
     w_delta_fcalc = delta_fcalc * ctx["weights_p1"]
     phi_dark_p1 = torch.angle(fcalc_dark_p1)
 
-    # ASU-level weighted DFcalc
+    # ASU-level weighted dFcalc
     delta_fcalc_asu = fcalc_mixed_asu.abs() - fcalc_dark_asu.abs()
     w_delta_fcalc_asu = delta_fcalc_asu * ctx["weights"]
 
     if verbose >= 1:
-        print(f"  |DFcalc| mean: {delta_fcalc.abs().mean():.3f}")
+        print(f"  |dFcalc| mean: {delta_fcalc.abs().mean():.3f}")
         print(f"  |WDFcalc| mean: {w_delta_fcalc.abs().mean():.3f}")
 
     # Compute maps
@@ -649,7 +650,7 @@ def run_validation(args):
             n_bins=args.n_bins,
             verbose=args.verbose,
             ded_weight=args.ded_weight,
-            sigma_d_config=sigma_d_config_from_args(args),
+            difference_config=difference_config_from_args(args),
         )
     fallback_messages = [
         str(w.message)
@@ -672,8 +673,8 @@ def run_validation(args):
     )
 
     if args.verbose >= 1:
-        print(f"  Dark model: {len(model_dark.pdb)} atoms")
-        print(f"  Light model: {len(model_light.pdb)} atoms")
+        print(f"  Dark model: {model_dark.n_atoms} atoms")
+        print(f"  Light model: {model_light.n_atoms} atoms")
         print(f"  Fraction: {args.fraction}")
 
     # R-factors (verbose only, before DED computation)
@@ -728,12 +729,12 @@ def run_validation(args):
             **{
                 k: ctx["ded_weight_diagnostics"].get(k)
                 for k in (
+                    "source",
                     "gamma",
                     "gamma_fitted",
-                    "gamma_reason",
-                    "tau",
-                    "n_shell",
-                    "n_s2_clamped",
+                    "sigma_scale",
+                    "centric_factor",
+                    "snr_floor",
                     "fallback_reason",
                 )
             },
@@ -820,7 +821,7 @@ def main():
     """Entry point for ``torchref.validate-ded``; returns the exit code."""
     parser = argparse.ArgumentParser(
         description="Validate difference electron density by correlating "
-        "weighted DFo and DFcalc maps.",
+        "weighted dFo and dFcalc maps.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

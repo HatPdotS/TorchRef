@@ -1708,7 +1708,7 @@ class EnsembleRefinement(LBFGSRefinement):
         if flat is None or flat.dim() != 2 or flat.shape[1] != 3:
             return None
         n_rows = int(flat.shape[0])
-        elements = self.model.pdb["element"].astype(str).str.strip().tolist()
+        elements = self.model.ctx.topology.atoms.element.tolist()
         if len(elements) != n_rows:
             return None
         import gemmi

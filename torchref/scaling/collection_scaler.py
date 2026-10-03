@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 
 from torchref.base.metrics.rfactor import rfactor_work_free
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 from torchref.scaling.scaler_base import (
     DEFAULT_SCALE_TARGET,
     SCALE_TARGETS,
@@ -192,7 +192,8 @@ class CollectionScaler(ScalerBase):
                 pos_mask = torch.ones_like(fobs, dtype=torch.bool)
             mask = (work_mask & pos_mask).to(torch.bool)
 
-            bins = self.bins[mask].to(torch.int64)  # dtype-ok: bin indices for scatter/index_select; PyTorch requires int64
+            # dtype-ok: scatter_add index; int64 required on torch < 2.8
+            bins = self.bins[mask].to(torch.int64)
             log_ratios = (
                 torch.log(fobs_clamped[mask]) - torch.log(fcalc_amp[mask])
             ).to(self.device)
@@ -205,7 +206,7 @@ class CollectionScaler(ScalerBase):
 
         per_bin = scales / (counts + 1e-6)
         with torch.no_grad():
-            target = per_bin.detach()[self.bins.to(torch.int64)]  # dtype-ok: bin indices for advanced indexing; PyTorch requires int64
+            target = per_bin.detach()[self.bins.to(get_int_dtype())]
             design = self._iso_design.to(target.dtype)
             coeff = torch.linalg.lstsq(design, target.unsqueeze(1)).solution.squeeze(1)
         self.c_iso = nn.Parameter(coeff.detach())

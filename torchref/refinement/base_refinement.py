@@ -8,7 +8,7 @@ import math
 import torch
 from torch.nn import Module as nnModule
 
-from torchref.config import normalize_device
+from torchref.config import get_int_dtype, normalize_device
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
@@ -124,7 +124,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         nbins: int = 10,
         n_iso_coeff: int = 6,
         column_names: Optional[Dict[str, str]] = None,
-        wavelength: Optional[float] = 1.0,
+        wavelength: Optional[float] = None,
         anomalous_threshold: float = 0.5,
         french_wilson: bool = True,
         anomalous: Optional[bool] = None,
@@ -137,7 +137,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         shrink: bool = SHRINK_ENABLED,
         scale_target: str = DEFAULT_SCALE_TARGET,
         aniso_selection: Optional[str] = None,
-        add_hydrogens: bool = False,
+        hydrogens: str = "keep",
+        hydrogen_mode: str = "atoms",
         hydrogens_in_xray: bool = True,
     ):
         """Initialize Refinement, fully if ``data_file`` and ``pdb`` are given.
@@ -167,18 +168,20 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         column_names : dict, optional
             Mapping of logical column roles to MTZ column labels.
         wavelength : float, optional
-            X-ray wavelength in Angstroms for the anomalous (f'/f'') correction.
-            ``0`` means "no anomalous refinement": it disables the correction and
-            forces a Friedel-merged read, **overriding** ``anomalous`` to False.
+            X-ray wavelength of the data in Angstroms. Given, the model includes the
+            anomalous f'/f'' and the data may be read as Bijvoet pairs (see
+            ``anomalous``). Default None, as is ``0``: no anomalous scattering and a
+            Friedel-merged read.
         anomalous_threshold : float, optional
             Threshold controlling anomalous data handling. Default 0.5.
         french_wilson : bool, optional
             Derive amplitudes from intensities via French-Wilson. Set False to use
             existing ``F``/``SIGF`` columns when the MTZ also carries intensities.
         anomalous : bool, optional
-            Anomalous (Bijvoet) load preference. None auto-detects ``F(+)/F(-)``
-            (or ``I(+)/I(-)``) and loads Friedel pairs when present, enabling the
-            model's f'' term; True forces it, False forces a merged load.
+            Anomalous (Bijvoet) load preference. None (default) loads Friedel pairs
+            when a ``wavelength`` is given and the file has ``F(+)/F(-)`` (or
+            ``I(+)/I(-)``), enabling the model's f'' term; True forces it; False
+            forces a merged load.
         adp_mode : str, optional
             ADP parametrization: ``"isotropic"`` (default) refines a per-atom
             B-factor, ``"anisotropic"`` a 6-component U tensor for the atoms
@@ -207,12 +210,19 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         aniso_selection : str, optional
             Phenix-style selection of atoms refined anisotropically when
             ``adp_mode="anisotropic"``. Defaults to all non-water heavy atoms.
-        add_hydrogens : bool, optional
-            Generate missing hydrogens when loading the model. Default False.
-            Hydrogens already present in the input are retained either way.
+        hydrogens : {"keep", "add", "strip"}, optional
+            What loading the model does with its hydrogens: keep the file's (default),
+            also generate the missing ones, or remove them all.
+        hydrogen_mode : {"atoms", "riding"}, optional
+            Hydrogens as refinable atoms (default) or riding on their parents.
         hydrogens_in_xray : bool, optional
             Whether hydrogens contribute to the structure factors. Default True. They
             take part in the restraints either way.
+
+        Raises
+        ------
+        ValueError
+            If ``anomalous=True`` is given without a ``wavelength``.
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -227,14 +237,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.nbins = nbins
         self.n_iso_coeff = n_iso_coeff
         self.lr = 1e-3
-        # Wavelength drives f'/f'' anomalous scattering corrections in ModelFT.
-        # Default 1.0 preserves prior behavior; set to the experimental wavelength
-        # for anomalous (Bijvoet) refinement, or None to disable entirely.
         self.wavelength = wavelength
         self.anomalous_threshold = anomalous_threshold
         self.french_wilson = french_wilson
-        # Anomalous (Bijvoet) load preference: None auto-detects and prefers
-        # anomalous data when present; True forces it; False forces a merged load.
         self.anomalous = anomalous
         # ADP parametrization: 'isotropic' (default) refines per-atom B;
         # 'anisotropic' refines a 6-component U for atoms matched by
@@ -255,10 +260,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.xray_mode = xray_mode
         self.sigma_a_max = sigma_a_max
         self.shrink = shrink
-        # A wavelength of 0 means "no anomalous refinement": disable the f'/f''
-        # correction (model wavelength None) and force a Friedel-merged read so
-        # F(+)/F(-) are not loaded as Bijvoet pairs.
-        if self.wavelength is not None and float(self.wavelength) == 0.0:
+        # Without a wavelength there is no f'' to tell Friedel mates apart, so a
+        # Bijvoet read would only split each acentric reflection into two
+        # observations of one modelled amplitude.
+        if self.wavelength is None or float(self.wavelength) == 0.0:
+            if self.anomalous:
+                raise ValueError(
+                    "anomalous=True reads F(+)/F(-) as Bijvoet pairs for the f'' "
+                    "term, which needs the wavelength the data were collected at; "
+                    "pass wavelength=..."
+                )
             self.wavelength = None
             self.anomalous = False
 
@@ -283,7 +294,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 device=self.device,
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
-                add_hydrogens=add_hydrogens,
+                hydrogens=hydrogens,
+                hydrogen_mode=hydrogen_mode,
                 cif_path=cif,
                 hydrogens_in_xray=hydrogens_in_xray,
             )
@@ -322,17 +334,20 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     raise ValueError(f"max_res must be a float > 0, got {max_res!r}")
                 if max_res_val <= 0:
                     raise ValueError(f"max_res must be > 0, got {max_res_val}")
-                self.reflection_data = self.reflection_data.cut_res(max_res_val)
+                self.reflection_data = self.reflection_data.filter_by_resolution(
+                    d_min=max_res_val
+                )
                 self.max_res = max_res_val
             else:
-                self.max_res = self.reflection_data.get_max_res()
+                self.max_res = self.reflection_data.d_min
             self.model = ModelFT(
                 verbose=self.verbose,
                 max_res=self.max_res,
                 device=self.device,
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
-                add_hydrogens=add_hydrogens,
+                hydrogens=hydrogens,
+                hydrogen_mode=hydrogen_mode,
                 hydrogens_in_xray=hydrogens_in_xray,
                 # Before load, not after: generation on load reads this dictionary.
                 cif_path=cif,
@@ -363,7 +378,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             )
             self.setup_scaler()
             # The CIF path went in at construction; build the restraints over it now.
-            self.model._build_restraints()
+            self.model.restraints
             self._freeze_unrestrained_residues()
 
             # Initialize target functions (instantiated once, evaluated each iteration)
@@ -383,14 +398,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         are exempt; B-factors and occupancy stay refinable. Must run after restraints
         are built.
         """
-        import pandas as pd
-
         model = self.model
-        pdb = getattr(model, "pdb", None)
-        acc = getattr(getattr(model, "_restraints", None), "restraints", None)
-        if pdb is None or acc is None:
+        ctx = getattr(model, "ctx", None)
+        topology = getattr(ctx, "topology", None)
+        restraints = getattr(ctx, "restraints", None)
+        acc = None if restraints is None else restraints.restraints
+        if topology is None or acc is None:
             return
-        n = len(pdb)
+        n = topology.n_atoms
 
         # 1. atoms that appear in at least one geometry restraint
         restrained = set()
@@ -417,11 +432,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             pass
 
         # 2. group atoms into residues (positional, aligned with xyz)
-        resname = pdb["resname"].astype(str).str.strip().tolist()
-        icode = (pdb["icode"].astype(str).tolist() if "icode" in pdb.columns
-                 else [""] * n)
-        chainid = pdb["chainid"].astype(str).tolist()
-        resseq = pdb["resseq"].astype(str).tolist()
+        columns = topology.columns()
+        resname = columns["resname"].tolist()
+        icode = columns["icode"].tolist()
+        chainid = columns["chain"].tolist()
+        resseq = [str(r) for r in columns["resseq"].tolist()]
         res_atoms = {}
         for i in range(n):
             res_atoms.setdefault(
@@ -429,7 +444,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             ).append(i)
 
         # 3. residues with an unrestrained atom (skip water + single-atom residues)
-        WATER = {"HOH", "WAT", "DOD", "H2O", "SOL", "TIP", "TIP3", "TIP4"}
+        from torchref.topology.residue_graph import WATER_RESNAMES as WATER
+
         freeze_idx, frozen_res = [], []
         for (c, rs, ic, rn), atoms in res_atoms.items():
             if rn in WATER or len(atoms) <= 1:
@@ -441,7 +457,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             return
 
         # 4. freeze xyz of those atoms (same path as freeze_selection)
-        model.xyz_mask[torch.tensor(freeze_idx, dtype=torch.long)] = False  # dtype-ok: freeze index used to index xyz_mask; PyTorch requires int64
+        model.xyz_mask[torch.tensor(freeze_idx, dtype=get_int_dtype())] = False
         model.apply_mask_to_parameter("xyz")
         if self.verbose > 0:
             shown = frozen_res[:20] + (["..."] if len(frozen_res) > 20 else [])
@@ -757,8 +773,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         Parameters
         ----------
-        mode : str
-            ``"riding"`` or ``"free"``; see :meth:`Model.set_hydrogen_mode`.
+        mode : {"atoms", "riding"}
+            See :meth:`Model.set_hydrogen_mode`.
 
         Returns
         -------
@@ -771,13 +787,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         ``LossState`` are dropped and rebuilt on the next step. Call between macro
         cycles, never inside one.
         """
-        n_atoms = len(self.model.pdb)
         self.model.set_hydrogen_mode(mode)
-        if (
-            len(self.model.pdb) != n_atoms
-            and getattr(self, "adp_target", None) is not None
-        ):
-            self._init_targets()
         persistent = getattr(self, "_persistent_optimizers", None)
         if persistent is not None:
             persistent.clear()
@@ -1312,7 +1322,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     print(f"Note: Could not initialize targets: {e}")
 
         if verbose > 0:
-            n_atoms = len(instance.model.pdb) if instance.model.pdb is not None else 0
+            n_atoms = instance.model.n_atoms
             n_refl = (
                 instance.reflection_data.hkl.shape[0]
                 if instance.reflection_data.hkl is not None

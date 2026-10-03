@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
+from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import dtypes
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
@@ -78,6 +79,52 @@ class NonBondedHTarget(NonBondedTarget):
     # H-VDW loss via precomputed candidates
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _h_candidates(
+        xyz: torch.Tensor, h_topo: "HydrogenTopology"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """``[heavy | riding H]`` coordinates and the candidate pairs indexing them.
+
+        Parameters
+        ----------
+        xyz : torch.Tensor
+            Heavy-atom Cartesian coordinates in Å, ``(N_heavy, 3)``.
+        h_topo : HydrogenTopology
+            Riding topology with candidate pairs built.
+
+        Returns
+        -------
+        xyz_all : torch.Tensor
+            ``(N_heavy + N_h, 3)`` in Å; the hydrogens are placed from ``xyz`` on
+            every call, differentiably.
+        indices : torch.Tensor
+            ``(P, 2)`` contiguous candidate pairs into ``xyz_all``.
+        """
+        from torchref.topology.riding import place_riding_hydrogens
+
+        xyz_all = torch.cat([xyz, place_riding_hydrogens(xyz, h_topo)], dim=0)
+        indices = torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1)
+        return xyz_all, indices.contiguous()
+
+    def _h_pair_positions(
+        self, xyz: torch.Tensor, h_topo: "HydrogenTopology"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Both ends of every H candidate pair, ``(P, 3)`` each in Å.
+
+        From :func:`~torchref.base.targets.nonbonded.nonbonded_pair_positions`, the
+        positions the prolsq kernel scores, symmetry and lattice images included.
+        """
+        from torchref.base.targets.nonbonded import nonbonded_pair_positions
+
+        xyz_all, indices = self._h_candidates(xyz, h_topo)
+        return nonbonded_pair_positions(
+            xyz_all,
+            indices,
+            h_topo.cand_symop_idx,
+            h_topo.cand_cell_offset,
+            *self._symmetry_tables(),
+        )
+
     def _compute_h_vdw_loss(
         self,
         xyz: torch.Tensor,
@@ -86,19 +133,11 @@ class NonBondedHTarget(NonBondedTarget):
         """VDW loss over the precomputed H-heavy candidate pairs.
 
         Places riding hydrogens differentiably, so the gradient runs
-        loss -> H_pos -> ``xyz[parent_idx]`` -> model parameters. The candidate list
-        must stay sorted ASU-then-sym: the ``prolsq`` fast path hands
-        ``cand_symop_idx`` straight to
-        :func:`torchref.base.targets.nonbonded_heavy_math`, which relies on that
-        ordering to do identity and real symmetry transforms in one pass. Other modes
-        take the inline eager path below.
+        loss -> H_pos -> ``xyz[parent_idx]`` -> model parameters. The ``prolsq``
+        mode goes through :func:`torchref.base.targets.nonbonded_heavy_math` (Triton on
+        CUDA float32); the others score the positions of :meth:`_h_pair_positions`.
         """
-        from torchref.topology.riding import place_riding_hydrogens
-
         device = xyz.device
-
-        xyz_h = place_riding_hydrogens(xyz, h_topo)
-        xyz_all = torch.cat([xyz, xyz_h], dim=0)  # [heavy | H]
 
         n_cand = h_topo.cand_idx_i.shape[0]
         if n_cand == 0:
@@ -107,50 +146,19 @@ class NonBondedHTarget(NonBondedTarget):
         # Fast path: prolsq goes through the dispatcher (Triton on CUDA fp32).
         if self.mode == "prolsq":
             from torchref.base.targets.nonbonded import nonbonded_heavy_math
-            indices = torch.stack(
-                [h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1
-            ).contiguous()
+
+            xyz_all, indices = self._h_candidates(xyz, h_topo)
             return nonbonded_heavy_math(
                 xyz_all, indices, h_topo.cand_min_dist,
                 h_topo.cand_symop_idx, h_topo.cand_cell_offset,
-                self.model.spacegroup.matrices,
-                self.model.spacegroup.translations,
-                self.model.cell.fractional_matrix,
-                self.model.cell.inv_fractional_matrix,
+                *self._symmetry_tables(),
                 self._c_rep, self._r_exp,
                 float(self._buffer), self._sigma_vdw,
             )
 
-        # Slow path: gaussian / soft modes, inline eager.
-        pos_i = xyz_all[h_topo.cand_idx_i]
-        n_asu = h_topo.n_asu_candidates
-        n_sym = n_cand - n_asu
+        pos_i, pos_j = self._h_pair_positions(xyz, h_topo)
+        actual_dist = torch.sqrt(((pos_j - pos_i) ** 2).sum(dim=-1) + 1e-8)
         min_dist = h_topo.cand_min_dist
-
-        if n_asu > 0:
-            pos_j_asu = xyz_all[h_topo.cand_idx_j[:n_asu]]
-            diff_asu = pos_j_asu - pos_i[:n_asu]
-            dist_asu = torch.sqrt((diff_asu ** 2).sum(dim=-1) + 1e-8)
-
-        if n_sym > 0:
-            cell = self.model.cell
-            sg = self.model.spacegroup
-            sym_source = xyz_all[h_topo.cand_idx_j[n_asu:]]
-            frac = cell.cartesian_to_fractional(sym_source)
-            R = sg.matrices[h_topo.cand_symop_idx[n_asu:]].to(frac.dtype)
-            t = sg.translations[h_topo.cand_symop_idx[n_asu:]].to(frac.dtype)
-            offs = h_topo.cand_cell_offset[n_asu:].to(frac.dtype)
-            frac_t = torch.bmm(R, frac.unsqueeze(-1)).squeeze(-1) + t + offs
-            pos_j_sym = cell.fractional_to_cartesian(frac_t)
-            diff_sym = pos_j_sym - pos_i[n_asu:]
-            dist_sym = torch.sqrt((diff_sym ** 2).sum(dim=-1) + 1e-8)
-
-        if n_asu > 0 and n_sym > 0:
-            actual_dist = torch.cat([dist_asu, dist_sym])
-        elif n_asu > 0:
-            actual_dist = dist_asu
-        else:
-            actual_dist = dist_sym
 
         violations = torch.clamp(min_dist + self._buffer - actual_dist, min=0.0)
 
@@ -196,12 +204,9 @@ class NonBondedHTarget(NonBondedTarget):
     def get_violations(self, threshold: float = 0.0) -> Dict[str, torch.Tensor]:
         """Parent VDW violations plus ``h_*`` entries for H-involving contacts.
 
-        The H distances here ignore symmetry -- both positions are read straight out of
-        ``xyz_all`` -- so symmetry-mate H contacts are reported at their intra-ASU
-        separation, unlike in the loss.
+        H distances are taken between the positions the loss scores, symmetry and
+        lattice images included.
         """
-        from torchref.topology.riding import place_riding_hydrogens
-
         result = super().get_violations(threshold)
 
         restraints = self.restraints
@@ -211,14 +216,7 @@ class NonBondedHTarget(NonBondedTarget):
         if h_topo is None or h_topo.n_hydrogens == 0 or not h_topo.has_candidates:
             return result
 
-        xyz = self.model.xyz()
-        device = xyz.device
-        xyz_h = place_riding_hydrogens(xyz, h_topo)
-        xyz_all = torch.cat([xyz, xyz_h], dim=0)
-
-        pos_i = xyz_all[h_topo.cand_idx_i]
-        pos_j = xyz_all[h_topo.cand_idx_j]
-
+        pos_i, pos_j = self._h_pair_positions(self.model.xyz(), h_topo)
         actual_dist = torch.norm(pos_j - pos_i, dim=-1)
         violations = torch.clamp(h_topo.cand_min_dist - actual_dist, min=0.0)
 
@@ -234,8 +232,6 @@ class NonBondedHTarget(NonBondedTarget):
 
     def stats(self) -> Dict[str, any]:
         """Get statistics including H-VDW contacts."""
-        from torchref.topology.riding import place_riding_hydrogens
-
         result = super().stats()
 
         restraints = self.restraints
@@ -245,14 +241,7 @@ class NonBondedHTarget(NonBondedTarget):
         if h_topo is None or h_topo.n_hydrogens == 0 or not h_topo.has_candidates:
             return result
 
-        xyz = self.model.xyz()
-        device = xyz.device
-        xyz_h = place_riding_hydrogens(xyz, h_topo)
-        xyz_all = torch.cat([xyz, xyz_h], dim=0)
-
-        pos_i = xyz_all[h_topo.cand_idx_i]
-        pos_j = xyz_all[h_topo.cand_idx_j]
-
+        pos_i, pos_j = self._h_pair_positions(self.model.xyz(), h_topo)
         actual_dist = torch.norm(pos_j - pos_i, dim=-1)
         violations = torch.clamp(h_topo.cand_min_dist - actual_dist, min=0.0)
 
@@ -269,8 +258,8 @@ class NonBondedHTarget(NonBondedTarget):
             result["h_rms_violation"] = stat(rms, VERBOSITY_DETAILED)
             result["h_max_violation"] = stat(violations.max().item(), VERBOSITY_DEBUG)
 
-        n_sym = ((h_topo.cand_symop_idx != 0)
-                 | (h_topo.cand_cell_offset != 0).any(dim=1)).sum().item()
+        is_sym = is_symmetry_image(h_topo.cand_symop_idx, h_topo.cand_cell_offset)
+        n_sym = is_sym.sum().item()
         if n_sym > 0:
             result["h_n_symmetry"] = stat(n_sym, VERBOSITY_DETAILED)
 

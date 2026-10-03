@@ -10,9 +10,11 @@ The Wilson distribution says, in the absence of structural detail, the
 expected per-resolution-bin mean intensity of a randomly-placed atomic
 ensemble follows::
 
-    <|F|^2>(s) = K * exp(-2 * B_W * s^2)
+    <|F|^2>(d) = K * sum_f2(d) * (1 + gamma(d)) * exp(-B_W / (2 d^2))
 
-where ``s = 1/(2*d)`` and ``B_W`` is the overall Wilson B-factor. Real
+where ``sum_f2`` is the random-atom mean intensity of an average protein
+residue, ``gamma`` the empirical protein correction and ``B_W`` the overall
+Wilson B-factor (see :class:`torchref.scaling.wilson.WilsonFit`). Real
 calculated intensities should track this curve at low-to-mid resolution.
 A model that drives the work-set R-factor toward zero by absorbing noise
 into extra structural detail (e.g. a B-factor-free ensemble of many
@@ -25,10 +27,9 @@ Loss form
 
     loss = mean_bin( ( log<|F_calc|^2>_bin - log Wilson_expected(s_bin) )^2 )
 
-The reference curve is fit once from the observed data:
-``B_W = data.wilson_b`` (already computed by
-``ReflectionData._calculate_wilson_b``) and ``K`` from a single
-least-squares fit at first ``forward()`` call.
+The reference curve is fit once from the observed data, at the first
+``forward()`` call: its shape from :func:`torchref.scaling.wilson.fit_wilson_b`,
+and ``K`` from a least-squares fit to the observed bin intensities.
 
 Used as ``'regularization/wilson'`` in the ensemble refinement LossState.
 """
@@ -92,8 +93,7 @@ class WilsonPriorTarget(DataTarget):
     Parameters
     ----------
     data : ReflectionData
-        Reflection data. Must have ``wilson_b`` populated (the loader
-        already does this).
+        Reflection data; its Wilson B is fitted from ``F`` and ``resolution``.
     model : ModelFT
         Atomic model used to compute F_calc.
     scaler : Scaler
@@ -133,7 +133,7 @@ class WilsonPriorTarget(DataTarget):
         self.nbins = int(nbins)
         # ``log_K`` is fit lazily on first forward from observed bin intensities.
         self._log_K: Optional[torch.Tensor] = None
-        self._B_W: Optional[torch.Tensor] = None
+        self._wilson_fit = None  # WilsonFit, fitted with log_K
         # Cached resolution-bin assignment for the work-set reflections
         # (filled on first forward).
         self._bin_idx: Optional[torch.Tensor] = None
@@ -147,10 +147,7 @@ class WilsonPriorTarget(DataTarget):
 
     def _wilson_curve(self, mean_res: torch.Tensor) -> torch.Tensor:
         """Expected ``<|F|^2>`` per bin from the Wilson model."""
-        # s = 1/(2d) -> s^2 = 1/(4 d^2)
-        s_sq = 1.0 / (4.0 * mean_res.clamp(min=1e-3) ** 2)
-        # <|F|^2> = K * exp(-2 * B_W * s^2)
-        return torch.exp(self._log_K - 2.0 * self._B_W * s_sq)
+        return torch.exp(self._log_K) * self._wilson_fit.shape(mean_res.clamp(min=1e-3))
 
     def _build_bin_assignment(self) -> None:
         """
@@ -172,7 +169,8 @@ class WilsonPriorTarget(DataTarget):
         order = torch.argsort(res)
         n = res.numel()
         nbins = min(self.nbins, max(1, n // 50))
-        bin_assign = torch.empty(n, dtype=torch.long, device=res.device)  # dtype-ok: bin-assignment tensor used as scatter_add index; PyTorch requires int64
+        # dtype-ok: scatter_add index; int64 required on torch < 2.8
+        bin_assign = torch.empty(n, dtype=torch.long, device=res.device)
         edges = torch.linspace(0, n, nbins + 1, device=res.device).round().long()
         for b in range(nbins):
             start = int(edges[b].item())
@@ -194,12 +192,25 @@ class WilsonPriorTarget(DataTarget):
         Fit the prefactor ``K`` of the Wilson curve from observed binned
         intensities so the prior is centered on the observed scale.
         """
-        wilson_b = getattr(self._data, "wilson_b", None)
-        if wilson_b is None:
-            self._data._calculate_wilson_b()
-            wilson_b = self._data.wilson_b
-        device = self._data.device
-        self._B_W = torch.tensor(float(wilson_b), device=device)
+        from torchref.scaling.wilson import fit_wilson_b
+
+        data = self._data
+        valid = data.masks()
+        epsilon = data.spacegroup.epsilon(data.hkl).to(data.F)[valid]
+        if data.I is not None and data.I_sigma is not None:
+            fit = fit_wilson_b(data.I[valid], data.resolution[valid], epsilon=epsilon)
+        else:
+            fit = fit_wilson_b(
+                data.F[valid],
+                data.resolution[valid],
+                sigma=data.F_sigma[valid],
+                epsilon=epsilon,
+                amplitudes=True,
+            )
+        if fit is None:
+            raise ValueError("Too few reflections to fit a Wilson B for the prior.")
+        self._wilson_fit = fit
+        device = data.device
 
         F_obs = self._data.F.index_select(0, self._refl_subset_idx)
         I_obs = F_obs.float() ** 2
@@ -210,9 +221,9 @@ class WilsonPriorTarget(DataTarget):
         counts.scatter_add_(0, self._bin_idx, torch.ones_like(I_obs))
         mean_obs = mean_obs / counts.clamp(min=1.0)
 
-        s_sq = 1.0 / (4.0 * self._mean_res.clamp(min=1e-3) ** 2)
         # Solve log K from each bin and average for a robust estimate.
-        log_K_per_bin = torch.log(mean_obs.clamp(min=self.eps)) + 2.0 * self._B_W * s_sq
+        shape = fit.shape(self._mean_res.clamp(min=1e-3)).to(mean_obs)
+        log_K_per_bin = torch.log(mean_obs.clamp(min=self.eps)) - torch.log(shape)
         self._log_K = log_K_per_bin.mean().detach()
 
     # ------------------------------------------------------------------
@@ -231,7 +242,7 @@ class WilsonPriorTarget(DataTarget):
 
         if self._bin_idx is None:
             self._build_bin_assignment()
-        if self._log_K is None or self._B_W is None:
+        if self._log_K is None or self._wilson_fit is None:
             self._fit_K_from_observed()
 
         # Apply scaler to F_calc so it sits on the F_obs scale, then keep
