@@ -39,7 +39,7 @@ Unreleased
 - ``ModelFT.create_from_state_dict`` restores the restraint dictionary path (``cif_path``) as ``Model`` does, and ``Refinement.create_from_state_dict`` no longer builds a stray ``Restraints`` from the model; the restored model builds its own on first access.
 - Extrapolated amplitude sigmas propagate independent dark and light measurement errors with their shared-difference covariance and phase-aware derivatives, for finite shrinkage and unshrunk fallback alike; they describe measurement uncertainty rather than latent-difference posterior variance.
 - Integer and index tensors now take the configured int dtype (``get_int_dtype()``, ``TORCHREF_DTYPE_INT``, int32 by default) throughout the package. A hardcoded ``int64`` remains only where a torch op (``scatter``/``gather`` on torch < 2.8, ``index_copy_``), a compiled kernel, an int32 overflow, or an external library requires it, and each such site says which.
-- Fixed the 2Fo-Fc coefficients (FWT/PHWT) written to MTZ: where 2Fo < |Fc| the amplitude was made positive without flipping the phase, reversing the sign of 1-7 % of reflections on the test structures. Unmeasured (masked) reflections are now filled with Fc and get zero Fo-Fc in both layouts. ``Map`` and the MTZ writer share ``torchref.base.fourier.map_coefficients``, and the writer moved to ``torchref.io.mtz.write_reflections`` (``ReflectionData.write_mtz`` calls it)
+- Fixed the 2Fo-Fc coefficients (FWT/PHWT) written to MTZ: where 2Fo < |Fc| the amplitude was made positive without flipping the phase, reversing the sign of 1-7 % of reflections on the test structures. Map and model columns (``FWT``/``PHWT``, ``DELFWT``/``PHDELWT``, ``F-model``/``PH-model``, ``ANOM``) are written as missing, not filled, for every reflection ``masks()`` excludes -- beyond the refinement resolution cut, where F_calc is unrefined or aliased, or rejected as an outlier -- so a map from them stops at the refinement resolution; observed columns keep every reflection. ``Map`` and the MTZ writer share ``torchref.base.fourier.map_coefficients``, and the writer moved to ``torchref.io.mtz.write_reflections`` (``ReflectionData.write_mtz`` calls it)
 - Fixed ``ReflectionData.expand_to_p1`` dropping one Bijvoet mate per reflection on anomalous data (about half the reflections when one mate was unmeasured). ``SpaceGroup.expand_hkl`` now raises on symmetry-equivalent input rows instead of silently keeping one; ``SpaceGroup.equivalent_hkl`` returns every symmetry copy with its source row
 - ``Map``, ``DifferenceMap`` and the experimental real-space targets average each Bijvoet pair (``ReflectionData.bijvoet_mean`` / ``bijvoet_representatives``) before placing amplitudes on the grid, so anomalous input gives the Friedel-averaged map; maps from merged data are unchanged
 - ``torchref.scaling.wilson.fit_wilson_b`` now fits the form-factor and protein-corrected Wilson model and returns a ``WilsonFit`` or ``None`` with a warning; the previous fit was 7-10 Å² too high and returned a fixed 200 Å² on data short of 3.5 Å. Values run below ctruncate-style Wilson B (see the scaling user guide). The ensemble Wilson prior uses the fitted curve. Removed the ``wilson_b``, ``wilson_b_structure``, ``wilson_b_solvent`` and ``wilson_k_sol`` dataset fields
@@ -191,59 +191,96 @@ Unreleased
 - The rotation function no longer concatenates the antipodal copy onto either reflection set: only even harmonic degrees are computed, for which it is an exact factor of two, so it scaled the rotation function by four and changed no ranking. Raw ``RotationPeak.score`` and ``RotationSolutions.scores`` are therefore a quarter of their previous values; z-scores are unchanged
 - Kept the rotation function's relative Wilson-B fit: knocking it out was measured rank-neutral but worth only 2% of the runtime once the fit moved to the unique reflection set
 - Added ``supports_double`` / ``widest_float_dtype`` / ``widest_complex_dtype``: where precision is load-bearing the width now comes from the device rather than a hardcoded ``float64``, so a backend without it gets the working dtype instead of an error
+
 Version 0.7.0
-----------
-- Fixed cif reading bug discarding new mmCIF field for aniso ADPs 
-- Removed the stored real-space coordinate grid; ``build_electron_density`` takes a grid shape and device, and ``ModelFT.real_space_grid()`` builds one on demand
-- Fixed ``ModelFT`` restore dropping a node-field ADP representation, and added the anisotropic ``field_aniso`` case; both models now share one wrapper-rebuild path
-- Fixed the node load and node smoothness restraints being inert in ``field_aniso`` mode
-- ``create_from_state_dict`` now restores on CPU and moves only when passed a device; it previously left three of the four parameter wrappers on CPU while claiming the default device
-- Separated model configuration and provenance into ``ModelContext``. It now holds the unit cell, space group, atom table, link records, hydrogen settings, and input paths.
-- Refactored ``Symmetry`` as a crystallography-free class with transform primitives, and made ``SpaceGroup`` a specialised subclass.
-- Moved geometry predicates, HKL verbs, and grid-size helpers onto these classes as methods.
-- Rebuilt geometry restraints from the topology instead of intra-residue builders. ``torchref.restraints`` was removed, restraint dictionaries are now plain nested dicts, and residues are identified by ``(chain, resseq, icode)`` to fix insertion-code merging.
-- Reworked hydrogen generation as template instantiation over the topology. ``Model.hydrogenate`` now aligns monomer templates onto heavy atoms present, generation is the default, and ``AtomGraph.exclusions_12_13_14`` derives non-bonded exclusions from bond connectivity.
-- Added ``Topology`` as a ``ResidueGraph`` over an ``AtomGraph`` with typed edge blocks and ``subset`` / ``copy`` operations that reindex surviving edges.
-- Made ``HydrogenTopology`` a dataclass, changed ``Symmetry`` classes to dataclasses over ``DeviceMixin`` instead of ``nn.Module``, and removed unused ``Cell`` gradient plumbing and the ``ReciprocalSymmetryGrid`` / module-level expansion functions.
+-------------
+
+Breaking changes
+~~~~~~~~~~~~~~~~
+- Removed ``torchref.restraints``. Restraints are built from the new topology graph and live in ``torchref.topology`` (``restraints``, ``builders``, ``matchers``, ``nonbonded``, ``ramachandran``, ``riding``, ``monomer.cif``/``library``/``modifications``); restraint dictionaries are plain nested dicts and residues are keyed by ``(chain, resseq, icode)``
+- numba is no longer a dependency; the per-residue restraint matchers it compiled are faster as plain Python
+- Hydrogens present in the input are now kept (``strip_H`` defaults to ``False``, was ``True``) and enter the structure factors (``hydrogens_in_xray``, default on). Generating missing hydrogens stays opt-in: ``torchref.refine --add-hydrogens`` or ``add_hydrogens=True``. ``exclude_H_from_sf`` is a deprecated inverted alias of ``hydrogens_in_xray``
+- ``torchref.phased-difference-map`` is renamed ``torchref.difference-map`` (the old name remains as an alias). It defaults to the weighted amplitude difference on the dark model's phases, the map ``torchref.validate-ded`` scores, and ``-lm``/``--light-model`` is optional
+- The difference MTZ is reduced from 33 columns (46 under ``--two-moment``) to 17 standard CCP4 names grouped into named datasets (``observed``, ``difference``, ``light_model``, ``extrapolated_light``, ``two_moment``); the alternative constructions are behind ``--all-columns``. ``DELFWT`` is no longer written: the file carries unweighted ``DF``/``SIGDF`` on ``PHDELWT`` with weight columns ``W_IVW``/``W_SD`` and the scale ``KSCALE``, so build the map with ``torchref.mtz2map -csf DF -cw W_IVW -cphi PHDELWT``
+- Renamed difference MTZ columns: ``DFc_complex`` is ``DFc_phased``, and ``Fextp``/``Fextc``/``Fextb`` are ``FEXT_PHASED``/``FEXT_SCALAR``/``FEXT``
+- Refinement output no longer copies the input file's refinement header. Crystal, sample and chemistry records are carried through; ``REMARK 2``/``3``/``500``, ``AUTHOR`` and ``JRNL`` are replaced by this run's own, and the mmCIF ``_refine`` items are no longer inherited. Removed ``pdb.write(template=)`` and ``custom_remarks``
+- Model configuration and provenance (cell, space group, atom table, links, hydrogen settings, input paths) moved into ``ModelContext`` at ``model.ctx``; e.g. ``model.initialized`` is ``model.ctx.initialized``
+- ``Symmetry`` is a crystallography-free dataclass with ``SpaceGroup`` as its subclass, and geometry predicates, HKL operations and grid-size helpers are methods on them. Removed ``ReciprocalSymmetryGrid``, ``torchref.symmetry.grid_utils`` and the ``Cell`` gradient plumbing
+- ``ModelFT`` no longer stores a real-space coordinate grid: ``build_electron_density`` takes a grid shape and device, and ``ModelFT.real_space_grid()`` builds one on demand
+- ``ReflectionData`` no longer holds scale parameters, scale fitting or E-value conversion; use ``WilsonNormaliser`` for E values and the observation attributes and subset views instead of the deprecated getters or ``data()``
+- ``DatasetCollection.scale()`` fits all datasets jointly with ``DatasetScaler`` (a per-dataset log scale and anisotropy, centred over datasets so no dataset is the reference, on an inverse-variance-weighted consensus amplitude). Members become ``ScaledDataset`` views carrying live corrections, with the raw values as ``F_raw``/``I_raw``
+- ``create_from_state_dict`` restores on CPU and moves only when passed a device
+- Rigid-body refinement no longer refines the scale inside the rigid-body L-BFGS; ``refine_scaler`` fits it between cutoffs
+- ``ModelCollection`` stores populations as one shared activation fraction plus a per-timepoint branching; freezing fractions is collection-wide, and independent populations use ``set_fraction_override``
+- Removed ``CollectionRiceTarget`` (use the ``ml`` row of ``COLLECTION_XRAY_TARGETS``), renamed the kinetic ``xray_weight_rice``/``xray/rice`` weight to ``xray_weight_ml``/``xray/ml``
+
+Fixes that change results
+~~~~~~~~~~~~~~~~~~~~~~~~~
+- Fixed anisotropic ADPs being dropped from mmCIF files that store them in the standard ``_atom_site_anisotrop`` loop (every PDB and PDB-REDO mmCIF), which loaded every atom as isotropic
+- Fixed the empirical-Bayes extrapolation over-weighting the dark-state variance by ``1/(1-f)^2`` (1.64x at f = 0.22), which over-shrank every reflection; the default extrapolated map changes
+- Fixed ``DatasetCollection.scale`` fitting the inter-dataset scale on the free reflections as well as the work set
+- Fixed ``refine_rigid_body`` leaving the caller's reflection data truncated to the last cutoff for the rest of the run
+- Fixed the VDW pair search missing pairs in oblique cells, whose grid cells were narrower than the cutoff (up to 0.23 % more pairs)
+
+Other fixes
+~~~~~~~~~~~
+- Fixed mmCIF loop cells being written unquoted, which split values containing whitespace on read-back
+- Fixed PDB coordinate and B-factor columns dropping trailing zeros
+- Fixed loss aggregation ignoring the configured floating-point dtype
+- Fixed assigning a ``SpaceGroup`` object to ``Model.spacegroup`` being a silent no-op
+- Fixed ``f_sol_override`` overwriting the scaler's cached ``F_sol``, so a later call without an override read the wrong solvent
+- Fixed ``torchref.difference-refine`` crashing at ``--verbose 0``
+- Fixed ``paper/make_ded_maps.py`` pairing ``WDF`` with ``PHIC_diff``
+- ``create_from_state_dict`` no longer leaves three of the four parameter wrappers on CPU while reporting the default device, and ``ModelFT`` restores ``cif_path``
+
+New features
+~~~~~~~~~~~~
+- Riding hydrogens: ``Model.set_hydrogen_mode("riding" | "free")`` / ``Refinement.set_hydrogen_mode`` refine only heavy atoms through ``RidingXYZTensor``, with refinable methyl/hydroxyl torsions and water orientations. Hydrogen generation instantiates monomer templates over the topology and reads the user's restraint CIF (``cif_path``, ``torchref.refine --cif``); it respects ammonium nitrogen types and leaves linked hetero atoms (acetyl caps, Schiff bases, glycosylated ASN, metal-bound HIS) without displaced hydrogens
+- ``torchref.refine --add-hydrogens`` and ``--hydrogens-in-xray/--no-hydrogens-in-xray``
+- AMBER targets consume TorchRef-owned coordinates, including hydrogens and riding-orientation gradients, through a validated atom map
+- Node-field ADP representation: ``set_adp_mode`` / ``torchref.refine --adp-mode`` gain ``field``, ``field_aniso`` and ``preserve`` (keeps the loaded ADPs untouched), with ``--adp-mode-set``, ``--adp-nodes`` and ``--reflections-per-adp-parameter``, and node load and magnitude restraints
+- ``Topology``: a residue graph over an atom graph with ``subset``/``copy``; ``AtomGraph`` carries CCP4 energy types, and mmCIF models read their ``_struct_conn`` links
+- Two-moment intensity target (``CollectionTwoMomentIntensityTarget``) for crystal-to-crystal spread in activation: ``torchref.difference-refine --two-moment``/``--lambda-twin``/``--refine-lambda-twin``
+- ``sigma_D`` difference-power estimator (``torchref.refinement.model_error_estimation.sigma_d``) and the ``difference_sd`` collection target (``--difference-target difference_sd``)
+- ``--ded-weight {inverse_variance,sigma_d,none}`` (default ``inverse_variance``) and ``--sigma-d-gamma`` on ``torchref.difference-map``, ``torchref.difference-refine`` and ``torchref.validate-ded``; ``validate-ded`` reports correlations for every weighting side by side and records ``mask_source``
+- ``torchref.mtz2map`` gains ``--column-weight``/``-cw``, ``--column-scale``/``-ck`` and ``--units {sigma,electrons,raw}`` for maps in e/A^3; ``-n``/``--normalize`` is deprecated
+- ``torchref.simulate-noisy-data`` and ``FcalcDataset.add_noise``: simulate merged intensities and report R-split and CC between half-datasets
+- CrystFEL ``partialator`` ``.hkl`` reading via ``ReflectionData.load_crystfel_hkl``
+- ``--xray-mode nll_i`` (Gaussian on intensities), an ``observable`` axis on the X-ray target taxonomy, and ``COLLECTION_XRAY_TARGETS``
+- ``--output-remarks`` for author header text. The refinement header records target, optimizer, ADP model and scale target, the free-set source and seed, and the starting model by file name; mmCIF keeps the ``_software`` chain of prior refinements
+- ``WilsonNormaliser`` (absolute normalisation as a Gamma GLM), ``torchref.scaling.basis`` (shared Chebyshev basis) and ``torchref.scaling.weighting``
+- ``SpaceGroup.epsilon(hkl, friedel=)``, ``ScalerBase.multiplicative_scale()``, ``supports_double``/``widest_float_dtype``/``widest_complex_dtype``
+- Batched collection evaluation: ``compute_component_fcalcs``/``mix_component_fcalcs``, ``DatasetCollection.component_structure_factors``, ``CollectionScaler.forward_batched``, ``stack_F_obs``/``stack_I_obs``/``stack_masks``, scaled ``I``/``sigI`` views
+
+Performance
+~~~~~~~~~~~
+- The VDW pair search uses a k-d tree on CPU (5BOV with hydrogens 44 s to 0.6 s), as does the ADP-locality neighbour list (4-8x)
+- Switching to riding hydrogens is no longer quadratic in atom count (4BX9 132 s to 1.5 s)
+- Restraint building skips the pair search it discards when adding hydrogens, and no longer pays numba compilation (13.5 s cold)
+- Rigid-body angles are preconditioned by the radius of gyration, so the step converges in about half the gradient evaluations
+- Grid sizing is lazy and cached
+
+Experimental: molecular replacement
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- The pipeline is a rotation search feeding a translation search, and returns the best placement of 10 rotation candidates ranked by the translation likelihood (``rank_by``). Pose recovery on the 10-structure x 3-seed panel went from 18/30 to 30/30
+- ``rotation_search(model, data, model_error_A)`` replaces the rotation function's keyword surface; peaks exclude symmetry mates and raw scores are a quarter of their previous values (z-scores unchanged)
+- The fast translation function scores a normalised intensity covariance on one FFT grid, weighted by inverse variance, within the rotation search's resolution window (``tf_d_min``/``tf_d_max``)
+- Both searches normalise through the shared ``WilsonNormaliser`` and estimate ``sigma_A`` from the data
+- The SH-Bessel expansion is about 8x faster at L=100, with a fused C++ Legendre kernel
+- The alignment package runs on MPS without float64
+- Removed the ML rescore, post-placement re-sampling and rigid-body polish, ``DirectModelEvaluator``, ``use_llg_tf``, ``n_translation_peaks``, ``translation_grid_steps``, ``wilson_normalise``/``wilson_normalise_epsilon``, and the unreachable modules (``ball_transform``, ``clashscore``, ``distributions``, ``jax_subpixel_peaks``, ``rigid_body``, ``sampling``, ``transform``)
+- Fixed the reciprocal-space symmetry convention (``h.S``, not ``S.h``), rotation candidates being composed onto each other, the translation likelihood scoring acentric reflections at twice the intended variance, the overall-anisotropy fit having no constant term, and the rotation function contracting unconjugated coefficients on MPS
+
+Internal
+~~~~~~~~
+- Reorganised the test suite by API ownership and fixture scope, moved extra structures to the slow tier, and pinned the pair-search tests to CPU
+- Pull requests into ``dev`` run one CPU and one MPS test job
+- Every hard-coded dtype is either configured or carries a ``# dtype-ok:`` justification
+- Collection targets share the single-dataset ``_loss_inputs``/``_per_refl`` seam; the amplitude and intensity Gaussians are one implementation
 
 
 Version 0.6.4
-----------
-- ``torchref.validate-ded`` records ``mask_source`` in its results JSON; it changes the correlation and was not recoverable from the output
-- Fixed the ``--two-moment`` corrected DED coefficients using a phase-blind amplitude difference instead of the phase-aware one the uncorrected coefficients use
-- Added ``paper/make_ded_maps.py``, which writes CCP4 maps from a difference-refine results MTZ
-- ``CollectionScaler.refine_lbfgs_joint`` builds a row of ``XRAY_TARGETS`` instead of its own Rice likelihood, and takes ``scale_target`` (default ``ls``)
-- ``CollectionScaler.refine_lbfgs_joint`` normalises its objective and registers the U penalty as its own target
-- Fixed ``DatasetCollection.scale`` fitting the inter-dataset scale on the free reflections as well as the work set
-- ``DatasetCollection.scale`` normalises its objective, so L-BFGS's absolute tolerances mean something
-- Added ``COLLECTION_XRAY_TARGETS``, the collection target taxonomy, with an intensity difference row
-- Removed ``CollectionRiceTarget``, which set ``beta = sigma_obs**2``; the ``ml`` row is the absolute channel instead
-- Renamed the kinetic ``xray_weight_rice`` / ``xray/rice`` weight to ``xray_weight_ml`` / ``xray/ml``
-- ``--lambda-twin`` now requires ``--two-moment``; the activation dispersion belongs in the predicted intensity, not in a weight
-- Gave the collection targets the same ``_loss_inputs``/``_per_refl`` seam as the single-dataset ones, with the observable declared per row
-- Added ``--xray-mode nll_i``, a Gaussian on the observed intensities, and an ``observable`` column on the target taxonomy
-- Added ``DataTarget.get_I_calc_scaled``, so the observable is a choice rather than an assumption
-- Added ``gaussian_per_refl`` and ``intensity_var_from_sigma_obs``; the amplitude and intensity Gaussians are now one implementation
-- The absolute variance floor in the shared Gaussian is now opt-out, since it distorts any objective whose sigmas fall below it
-- Added a reader for CrystFEL ``partialator`` ``.hkl`` reflection lists, via ``ReflectionData.load_crystfel_hkl``
-- Added ``FcalcDataset.add_noise`` and the ``torchref.simulate-noisy-data`` CLI, which simulate merged intensities from a structure and report R-split and CC between two independent half-datasets
-- Simulated intensities keep their negative values; only the derived amplitude is clamped, since clamping the intensity biases the weak reflections upward
-- ``CollectionTwoMomentIntensityTarget`` carries a ``base_weight``, calibrated against the difference target's gradient norm so an intensity likelihood does not swamp the restraints
-- Fixed non-finite observed intensities poisoning the two-moment gradient, which silently froze refinement rather than failing
-- Added ``CollectionTwoMomentIntensityTarget``, fitting merged intensities as ``|F(alpha)|^2 + sigma_alpha^2 |dF|^2`` to account for crystal-to-crystal spread in activation
-- Added ``--two-moment`` / ``--lambda-twin`` / ``--refine-lambda-twin`` to ``torchref.difference-refine``, and the activation moments to its JSON summary
-- ``torchref.difference-refine`` writes thirteen further MTZ columns under ``--two-moment``, including decontaminated difference amplitudes and the ``DDF`` diagnostic
-- Fixed ``torchref.difference-refine`` crashing at ``--verbose 0``, where the R-factors written into the deposition metadata were only computed for printing
-- ``ModelCollection`` now stores populations as a shared activation fraction plus a per-timepoint branching, instead of free fractions per timepoint
-- Freezing and unfreezing fractions is now collection-wide; timepoints needing independent populations use ``set_fraction_override``
-- ``add_timepoint`` raises when the requested fractions imply an activation that conflicts with one already set
-- Added ``ModelCollection.sigma_alpha_sq`` and ``lambda_twin`` for the spread of activation across crystals
-- Added batched ``compute_component_fcalcs`` / ``mix_component_fcalcs`` and ``DatasetCollection.component_structure_factors``
-- Added ``CollectionScaler.forward_batched`` for scaling several mixtures in one pass
-- Added ``ReflectionData.get_corrected_intensities`` and scaled ``I``/``sigI`` subset views, with the unscaled values as ``I_raw``/``sigI_raw``
-- Added batched ``stack_F_obs`` / ``stack_I_obs`` / ``stack_masks`` accessors on ``DatasetCollection``
-- Fixed ``f_sol_override`` overwriting the scaler's cached ``F_sol``, so a later call without an override read the wrong solvent
-- Fixed a batched ``f_sol_override`` gaining a spurious leading axis, which changed the rank of the scaled structure factors
+-------------
 - Fixed the bulk-solvent ``F_sol`` staying at the starting model's mask for every refinement macrocycle
 - Fixed restraint dictionaries defining several compounds yielding restraints for only one of them
 - Fixed chirality restraints being dropped for the ``positiv``/``negativ`` spellings used by the CCP4 library

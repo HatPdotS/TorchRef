@@ -739,10 +739,16 @@ def _merged_table(data, fcalc):
         if data.validation_flags is not None and bool(data.validation_flags.any()):
             table["Validation_flag"] = (_np(data.validation_flags) != 0).astype(int)
     if fcalc is not None:
-        two_fo_fc, fo_fc = map_coefficients(data.F, fcalc, observed=data.masks())
+        valid = data.masks().to(device=fcalc.device, dtype=torch.bool)
+        two_fo_fc, fo_fc = map_coefficients(data.F, fcalc, observed=valid)
         table["FWT"], table["PHWT"] = _amplitude_phase(two_fo_fc)
         table["DELFWT"], table["PHDELWT"] = _amplitude_phase(fo_fc)
         table["F-model"], table["PH-model"] = _amplitude_phase(fcalc)
+        # Past the resolution cut F_calc is unrefined, or aliased beyond the FFT
+        # grid's Nyquist limit, so the model columns are missing there too.
+        excluded = ~_np(valid)
+        table["F-model"][excluded] = np.nan
+        table["PH-model"][excluded] = np.nan
     return pd.DataFrame(table)
 
 
@@ -805,7 +811,20 @@ def _anomalous_table(data, fcalc):
     with warnings.catch_warnings(), np.errstate(invalid="ignore"):
         warnings.simplefilter("ignore", category=RuntimeWarning)
         Fobs_disp = np.nanmean(np.vstack([Fobs_p, Fobs_m]), axis=0)
-    measured = np.isfinite(Fobs_disp)
+    # Observed columns carry every measured mate; model and map columns only the
+    # mates masks() keeps, merged over those alone so a rejected mate cannot leak
+    # into the map amplitude.
+    valid = _np(data.masks()).astype(bool)
+    valid_p, valid_m = has_plus & valid[pi], has_minus & valid[mi]
+    with warnings.catch_warnings(), np.errstate(invalid="ignore"):
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        Fobs_map = np.nanmean(
+            np.vstack(
+                [np.where(valid_p, Fobs_p, np.nan), np.where(valid_m, Fobs_m, np.nan)]
+            ),
+            axis=0,
+        )
+    usable = valid_p | valid_m
 
     uniq_np = uniq.numpy()
     table = {
@@ -823,25 +842,32 @@ def _anomalous_table(data, fcalc):
         # signed convention; conjugate_friedel is its own inverse.
         Fc_ph = np.angle(_np(data.conjugate_friedel(fcalc)), deg=True)
         fc_amp = np.abs(fc)
-        Fmod_p_out, Fmod_m_out = mirror_centric(plus_of(fc_amp), minus_of(fc_amp))
-        Phi_p_out, Phi_m_out = mirror_centric(plus_of(Fc_ph), minus_of(Fc_ph))
-        # Representative model value per reflection: the (+) row, else the (-).
-        fc_disp = np.zeros(m, dtype=complex)
-        fc_disp[has_plus] = fc[pi][has_plus]
-        only_minus = has_minus & ~has_plus
+        Fmod_p_out, Fmod_m_out = mirror_centric(
+            np.where(valid_p, plus_of(fc_amp), np.nan),
+            np.where(valid_m, minus_of(fc_amp), np.nan),
+        )
+        Phi_p_out, Phi_m_out = mirror_centric(
+            np.where(valid_p, plus_of(Fc_ph), np.nan),
+            np.where(valid_m, minus_of(Fc_ph), np.nan),
+        )
+        # Representative model value per reflection: the valid (+) row, else the
+        # valid (-); missing where neither mate is valid.
+        fc_disp = np.full(m, complex(np.nan, np.nan), dtype=complex)
+        fc_disp[valid_p] = fc[pi][valid_p]
+        only_minus = valid_m & ~valid_p
         fc_disp[only_minus] = fc[mi][only_minus]
         fc_disp_t = torch.from_numpy(fc_disp).to(fcalc.dtype)
         two_fo_fc, fo_fc = map_coefficients(
-            torch.from_numpy(np.nan_to_num(Fobs_disp, nan=0.0)),
+            torch.from_numpy(np.nan_to_num(Fobs_map, nan=0.0)),
             fc_disp_t,
-            observed=torch.from_numpy(measured),
+            observed=torch.from_numpy(usable),
         )
         ph_disp = np.angle(fc_disp, deg=True)
         # Anomalous difference Fourier, phenix convention: ANOM = |F(+) - F(-)|
         # with the sign carried by a 180° flip in PANOM, so ANOM exp(i PANOM)
         # is (F(+) - F(-)) exp(i (phi - 90°)). Centric differences are exactly
         # zero, so any measured value is noise; they are omitted, as in phenix.
-        anom = Fobs_p_out - Fobs_m_out
+        anom = np.where(valid_p & valid_m, Fobs_p - Fobs_m, np.nan)
         panom = np.where(anom < 0.0, ph_disp - 270.0, ph_disp - 90.0)
         anom = np.abs(anom)
         anom[centric] = np.nan
@@ -880,6 +906,11 @@ def write_reflections(
     with ``fcalc`` also FWT/PHWT (2Fo-Fc), DELFWT/PHDELWT (Fo-Fc) and
     F-model/PH-model -- the unweighted m = 1, D = 1 coefficients of
     :func:`~torchref.base.fourier.map_coefficients`, not 2mFo-DFc.
+
+    Map and model columns are missing (not filled) for every reflection
+    ``data.masks()`` excludes -- beyond the resolution cut or rejected as an
+    outlier -- so a map from them stops at the refinement resolution. Observed
+    columns are written for every reflection.
 
     Parameters
     ----------

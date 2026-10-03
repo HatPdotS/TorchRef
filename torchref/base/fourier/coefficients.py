@@ -30,8 +30,10 @@ def map_coefficients(
     fcalc : torch.Tensor
         Complex model structure factors on the same scale, shape (N,).
     observed : torch.Tensor, optional
-        Boolean (N,), reflections with a usable measurement. Unobserved ones get
-        ``Fc`` in 2Fo-Fc (the model fills the missing term) and zero in Fo-Fc.
+        Boolean (N,), reflections with a usable measurement. Unobserved ones are
+        NaN in both coefficients -- missing, not filled -- so a reflection past
+        the resolution cut, where ``fcalc`` is unrefined or aliased, contributes
+        nothing to a map. Callers that sum the coefficients must drop NaN rows.
         Default: all observed.
 
     Returns
@@ -46,6 +48,7 @@ def map_coefficients(
     fo_fc = (fobs - fcalc_amp) * phase
     if observed is not None:
         observed = observed.to(device=fcalc.device, dtype=torch.bool)
-        two_fo_fc = torch.where(observed, two_fo_fc, fcalc)
-        fo_fc = torch.where(observed, fo_fc, torch.zeros_like(fo_fc))
+        missing = torch.full_like(two_fo_fc, complex(float("nan"), float("nan")))
+        two_fo_fc = torch.where(observed, two_fo_fc, missing)
+        fo_fc = torch.where(observed, fo_fc, missing)
     return two_fo_fc, fo_fc
