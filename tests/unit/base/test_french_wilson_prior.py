@@ -361,3 +361,58 @@ def test_anisotropic_prior_recovers_an_ellipsoidal_fall_off():
     assert float(error_aniso.quantile(0.95)) < 0.15
     # The isotropic curve cannot follow the direction dependence at all.
     assert float(error_iso.quantile(0.95)) > 3.0 * float(error_aniso.quantile(0.95))
+
+
+# =============================================================================
+# Multiplicity and absences
+# =============================================================================
+
+
+@pytest.mark.unit
+def test_reflections_on_symmetry_axes_get_epsilon_times_the_prior(mtz_dir):
+    """Axial reflections of a deposited dataset are epsilon times stronger.
+
+    With epsilon in the fit their measured intensities match their expected
+    ones; without it they are a multiple of it.
+    """
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "4BX9.mtz"))
+    I, sigma_I, d, hkl = data.I, data.I_sigma, data.resolution, data.hkl
+    group = data.spacegroup
+    multiplicity = group.epsilon(hkl, friedel=False)
+    axial = multiplicity > multiplicity.min()
+    assert int(axial.sum()) > 50
+
+    def expected(epsilon):
+        return fit_mean_intensity(
+            I,
+            sigma_I,
+            d,
+            hkl=hkl,
+            space_group=group,
+            is_centric=group.is_centric(hkl),
+            epsilon=epsilon,
+        )
+
+    with_epsilon = float(I[axial].sum() / expected(multiplicity)[axial].sum())
+    without = float(I[axial].sum() / expected(None)[axial].sum())
+    assert 0.8 < with_epsilon < 1.3
+    assert without > 2.0
+
+
+@pytest.mark.unit
+def test_systematic_absences_do_not_inform_the_prior():
+    """Whatever an absent reflection measures, the others convert the same."""
+    hkl, d, _, I, sigma = _anisotropic_data(12)
+    absent = SpaceGroup("P 1 21 1").is_absent(hkl)
+    assert int(absent.sum()) > 5
+
+    F, sigma_F, keep = french_wilson_auto(I, sigma, hkl, d, "P 1 21 1")
+    I_moved = torch.where(absent, I + 1.0e6, I)
+    F_moved, sigma_F_moved, keep_moved = french_wilson_auto(
+        I_moved, sigma, hkl, d, "P 1 21 1"
+    )
+
+    present = ~absent
+    torch.testing.assert_close(F_moved[present], F[present])
+    torch.testing.assert_close(sigma_F_moved[present], sigma_F[present])
+    assert torch.equal(keep_moved[present], keep[present])

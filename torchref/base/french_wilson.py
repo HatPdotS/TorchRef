@@ -1483,6 +1483,7 @@ def fit_mean_intensity(
     hkl: torch.Tensor | None = None,
     space_group: SpaceGroupLike | None = None,
     is_centric: torch.Tensor | None = None,
+    epsilon: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Wilson mean intensity ``Sigma`` per reflection, as a smooth positive curve.
 
@@ -1520,9 +1521,13 @@ def fit_mean_intensity(
     ellipsoidal anisotropy, ``h^T M h`` with ``M`` restricted to what the Laue
     group allows, its isotropic part left to the radial curve (see
     :func:`_anisotropy_design`): at most five parameters, each informed by
-    every reflection. Without them
-    the curve is isotropic. Intensities are not divided by their multiplicity
-    ``epsilon``.
+    every reflection. Without them the curve is isotropic.
+
+    Given ``epsilon``, a reflection's expected intensity is ``epsilon Sigma``:
+    on a symmetry element the copies of each atom that map ``h`` onto itself
+    scatter in phase, so the symmetry concentrates the same total intensity on
+    fewer, stronger reflections. It enters the fit as a fixed offset on
+    ``log Sigma``, and the result is returned multiplied by it.
 
     Parameters
     ----------
@@ -1551,11 +1556,17 @@ def fit_mean_intensity(
         Boolean mask of shape (n,). Centric rows that inform the fit are given
         the centric variance, ``2 Sigma^2 + sbar^2``; their mean is the same
         ``Sigma``. None treats every row as acentric.
+    epsilon : torch.Tensor, optional
+        Multiplicity of shape (n,): the number of symmetry operations mapping
+        ``h`` onto itself, Friedel mates not counted (``SpaceGroup.epsilon``
+        with ``friedel=False``). A factor common to every row, such as a
+        lattice centring, cancels in the result. None means 1 everywhere.
 
     Returns
     -------
     torch.Tensor
-        ``Sigma`` of shape (n,), positive; NaN where ``d`` is not finite, and
+        The expected intensity ``epsilon Sigma`` of each reflection, shape
+        (n,), positive; NaN where ``d`` is not finite, and
         everywhere if no row can inform the fit. Detached from autograd: a
         fitted constant, not a function of ``I`` that gradients flow through.
         The fit is Fisher scoring, which reads its objective back to the host
@@ -1585,6 +1596,10 @@ def fit_mean_intensity(
         n_terms = 1
     radial = _bspline(x[usable], n_terms)
     I_fit = I[usable]
+    log_epsilon = torch.zeros_like(I)
+    if epsilon is not None:
+        log_epsilon = torch.log(epsilon.detach().to(I.dtype).clamp(min=1.0))
+    offset = log_epsilon[usable]
     kappa = torch.ones_like(I_fit)
     if is_centric is not None:
         kappa = torch.where(is_centric.to(torch.bool)[usable], 2.0, kappa)
@@ -1618,7 +1633,7 @@ def fit_mean_intensity(
     log_kappa = kappa.log()
 
     def objective(c):
-        eta = design @ c
+        eta = design @ c + offset
         terms = (I_fit / (root_kappa * noise)) * torch.atan2(
             noise, root_kappa * torch.exp(eta)
         ) + (0.5 / kappa) * torch.logaddexp(2.0 * eta + log_kappa, 2.0 * log_noise)
@@ -1626,7 +1641,7 @@ def fit_mean_intensity(
 
     # Start from a flat curve at the mean intensity, or at the noise level when
     # the data average to nothing; only the scale of the start matters.
-    level = math.log(max(float(I_fit.mean()), float(noise.median())))
+    level = math.log(max(float((I_fit / offset.exp()).mean()), float(noise.median())))
     coeff = torch.zeros(design.shape[1], dtype=I.dtype, device=I.device)
     coeff[:n_terms] = level
     loss, eta, rounding = objective(coeff)
@@ -1665,7 +1680,8 @@ def fit_mean_intensity(
     log_Sigma = _bspline(x[placed], n_terms) @ coeff[:n_terms]
     if anisotropy is not None:
         log_Sigma = log_Sigma + anisotropy[placed] @ coeff[n_terms:]
-    Sigma[placed] = torch.exp(torch.clamp(log_Sigma, min=log_floor))
+    log_Sigma = torch.clamp(log_Sigma, min=log_floor) + log_epsilon[placed]
+    Sigma[placed] = torch.exp(log_Sigma)
     return Sigma
 
 
@@ -1682,6 +1698,7 @@ def french_wilson_auto(
     n_coeff: int = DEFAULT_N_COEFF,
     exclude_from_fit: torch.Tensor | None = None,
     anisotropic: bool = True,
+    epsilon: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Convert intensities to amplitudes, fitting the Wilson prior and centricity.
@@ -1693,7 +1710,8 @@ def french_wilson_auto(
     row, centric ones with their own variance. Isotropic, it is fitted to the
     acentric rows only: a centric zone is a single plane of reciprocal space,
     and on anisotropic data its mean intensity is that of one direction, not
-    of the shell.
+    of the shell. Systematic absences never inform the prior: their intensity
+    is zero by symmetry, not a sample of the Wilson distribution.
 
     Parameters
     ----------
@@ -1723,6 +1741,12 @@ def french_wilson_auto(
         row. Ignored if it would leave no row to fit.
     anisotropic : bool, optional
         Fit an ellipsoidal anisotropy into the prior. Default True.
+    epsilon : bool, optional
+        Give each reflection the expected intensity ``epsilon Sigma``, with
+        ``epsilon`` counted from ``space_group``, which must therefore be the
+        crystal's true symmetry: a reflection on a symmetry element is that
+        much stronger whatever group the data were merged in. Default True.
+        Absences take the general value.
 
     Returns
     -------
@@ -1762,12 +1786,24 @@ def french_wilson_auto(
     if not finite.any():
         return F, sigma_F, valid_mask
 
-    is_centric = SpaceGroup(space_group, device=hkl.device).is_centric(hkl[finite])
+    group = SpaceGroup(space_group, device=hkl.device)
+    is_centric = group.is_centric(hkl[finite])
+    absent = group.is_absent(hkl[finite])
     acentric = ~is_centric
     if anisotropic or not bool(acentric.any()):
-        fit_mask = torch.ones_like(acentric)
+        fit_mask = ~absent
     else:
-        fit_mask = acentric
+        fit_mask = acentric & ~absent
+    if not bool(fit_mask.any()):
+        fit_mask = torch.ones_like(acentric)
+    multiplicity = None
+    if epsilon:
+        # The operations whose rotation is the identity are the lattice
+        # centrings; their count is epsilon for a general reflection.
+        eye = torch.eye(3, dtype=group.matrices.dtype, device=group.matrices.device)
+        centring = (group.matrices - eye).abs().amax(dim=(1, 2)) < 1e-6
+        multiplicity = group.epsilon(hkl[finite], friedel=False).to(I.dtype)
+        multiplicity = torch.where(absent, float(centring.sum()), multiplicity)
     if exclude_from_fit is not None:
         held_out = exclude_from_fit.to(device=I.device, dtype=torch.bool)
         working = fit_mask & ~held_out[finite]
@@ -1784,6 +1820,7 @@ def french_wilson_auto(
         hkl=hkl[finite] if anisotropic else None,
         space_group=space_group if anisotropic else None,
         is_centric=is_centric,
+        epsilon=multiplicity,
     )
 
     F[finite], sigma_F[finite], valid_mask[finite] = french_wilson(
