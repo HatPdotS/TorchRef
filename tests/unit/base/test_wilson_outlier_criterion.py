@@ -15,11 +15,11 @@ import torch
 
 from torchref.base.reciprocal.basis import get_scattering_vectors
 from torchref.base.wilson_outliers import (
-    _normal_quantile,
     anisotropic_correction,
     fit_anisotropic_scale,
     log_normal_cdf,
     robust_mean_intensity,
+    wilson_log_lower_tail,
     wilson_log_upper_tail,
     wilson_outlier_mask,
 )
@@ -64,14 +64,6 @@ def test_log_normal_cdf_agrees_across_devices(any_device):
     torch.testing.assert_close(got, reference, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.unit
-def test_normal_quantile_inverts_the_cdf():
-    for p in (0.5, 1e-3, 1e-7, 1e-12):
-        x = _normal_quantile(p)
-        got = float(log_normal_cdf(torch.tensor(x, dtype=torch.float64)))
-        assert got == pytest.approx(math.log(p), abs=1e-6)
-
-
 # =============================================================================
 # The predictive tail
 # =============================================================================
@@ -105,6 +97,40 @@ def test_upper_tail_matches_quadrature_of_the_convolution(I):
     assert math.exp(log_p) == pytest.approx(
         _numerical_upper_tail(I, sigma, Sigma), rel=1e-3
     )
+
+
+def _numerical_lower_tail(I, sigma, Sigma):
+    """``P(I' <= I)`` for an acentric reflection, by direct quadrature."""
+    import numpy as np
+    from scipy.special import erfc
+
+    J = np.linspace(0.0, 80.0 * Sigma, 800001)
+    prior = np.exp(-J / Sigma) / Sigma
+    below = 0.5 * erfc((J - I) / (sigma * math.sqrt(2.0)))
+    return float(np.trapezoid(prior * below, J))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "I, sigma, Sigma",
+    [
+        (-20.0, 10.0, 50.0),
+        (5.0, 10.0, 50.0),
+        (200.0, 10.0, 50.0),
+        # Prior far below the noise: the tail is that of the noise alone.
+        (0.0, 100.0, 2.0),
+        (-250.0, 100.0, 2.0),
+        # Precise measurement far below the prior mean: P = 1 - exp(-I/Sigma).
+        (0.5, 0.01, 100.0),
+    ],
+)
+def test_lower_tail_matches_quadrature_of_the_convolution(I, sigma, Sigma):
+    def one(v):
+        return torch.tensor([v], dtype=torch.float64)
+
+    got = float(wilson_log_lower_tail(one(I), one(sigma), one(Sigma))[0])
+    expected = math.log(_numerical_lower_tail(I, sigma, Sigma))
+    assert got == pytest.approx(expected, abs=2e-3)
 
 
 @pytest.mark.unit
@@ -280,6 +306,25 @@ def test_clean_wilson_data_survives_the_test():
     """Data drawn from the distribution the criterion assumes must not be
     rejected by it: the threshold is family-wise over the whole dataset."""
     hkl, d, I, sigma = _clean_dataset()
+
+    keep, info = wilson_outlier_mask(I, sigma, hkl, d, CELL, d_max=100.0)
+
+    assert info["n_tested"] > 10000
+    assert int((~keep).sum()) <= 2
+
+
+@pytest.mark.unit
+def test_noise_far_above_its_prior_is_not_flagged():
+    """A measurement whose sigma dwarfs the prior is noise, not an outlier.
+
+    Its ``h`` is far below any normal quantile, but the probability of the
+    observation is just that of the noise.
+    """
+    hkl, d, I, sigma = _clean_dataset()
+    generator = torch.Generator().manual_seed(11)
+    noisy = torch.rand(len(I), generator=generator) < 0.5
+    sigma = torch.where(noisy, torch.full_like(sigma, 15000.0), sigma)
+    I = torch.where(noisy, I + sigma * torch.randn(len(I), generator=generator), I)
 
     keep, info = wilson_outlier_mask(I, sigma, hkl, d, CELL, d_max=100.0)
 

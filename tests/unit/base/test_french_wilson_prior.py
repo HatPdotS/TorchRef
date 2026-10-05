@@ -124,21 +124,74 @@ def test_non_positive_prior_gives_no_amplitude(centric):
 @pytest.mark.unit
 @pytest.mark.parametrize("centric", [False, True])
 def test_rejection_threshold_does_not_move_the_posterior(centric):
-    """``h_min`` decides which rows are kept, not what their amplitudes are."""
+    """The cut decides which rows are kept, not what their amplitudes are."""
     I = torch.linspace(-35.0, 300.0, 400)
     sigma_I = torch.full_like(I, 10.0)
     Sigma = torch.full_like(I, 80.0)
     is_centric = torch.full_like(I, centric, dtype=torch.bool)
 
-    F, sigma_F, keep = french_wilson(I, sigma_I, Sigma, is_centric, h_min=-4.0)
+    F, sigma_F, keep = french_wilson(I, sigma_I, Sigma, is_centric)
     F_strict, sigma_F_strict, keep_strict = french_wilson(
-        I, sigma_I, Sigma, is_centric, h_min=-2.0
+        I, sigma_I, Sigma, is_centric, min_i_over_sigma=-2.0
     )
 
     torch.testing.assert_close(F_strict, F)
     torch.testing.assert_close(sigma_F_strict, sigma_F)
-    assert bool((keep_strict <= keep).all())
+    assert bool(keep.all())
     assert int(keep_strict.sum()) < int(keep.sum())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "centric, h, mean, sd",
+    [
+        # Posterior moments of F / sqrt(sigma_I) by quadrature of the truncated
+        # posterior, at 40 digits.
+        (False, -6.0, 0.3538422, 0.18242341),
+        (False, -20.0, 0.19773715, 0.1032138),
+        (True, -6.0, 0.22663359, 0.16979324),
+        (True, -20.0, 0.12596102, 0.095084145),
+    ],
+)
+def test_posterior_below_the_tables_matches_the_integral(centric, h, mean, sd):
+    sigma_I = torch.tensor([4.0])
+    # Sigma chosen so that I = 0 lands on this h.
+    Sigma = sigma_I / (-h * (2.0 if centric else 1.0))
+    F, sigma_F, keep = french_wilson(
+        torch.zeros(1), sigma_I, Sigma, torch.tensor([centric])
+    )
+    assert bool(keep[0])
+    torch.testing.assert_close(F, torch.tensor([2.0 * mean]), rtol=2e-4, atol=0)
+    torch.testing.assert_close(sigma_F, torch.tensor([2.0 * sd]), rtol=2e-3, atol=0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("centric", [False, True])
+def test_posterior_is_continuous_where_the_tables_end(centric):
+    sigma_I = torch.ones(2, dtype=torch.float64)
+    I = torch.tensor([-4.0 + 1e-6, -4.0 - 1e-6], dtype=torch.float64)
+    Sigma = torch.full_like(I, 1e300)
+    F, sigma_F, _ = french_wilson(I, sigma_I, Sigma, torch.tensor([centric] * 2))
+    assert abs(float(F[1] - F[0])) < 0.03 * float(sigma_F[0])
+    assert abs(float(sigma_F[1] - sigma_F[0])) < 0.03 * float(sigma_F[0])
+
+
+@pytest.mark.unit
+def test_noise_far_below_its_prior_is_shrunk_to_the_prior():
+    """A reflection the noise swamps keeps its row and takes the prior's value."""
+    g = torch.Generator().manual_seed(13)
+    sigma_I = torch.full((4000,), 10.0)
+    I = sigma_I * torch.randn(4000, generator=g)
+    Sigma = torch.full_like(I, 0.1)
+
+    F, sigma_F, keep = french_wilson(I, sigma_I, Sigma)
+
+    # Only what the I/sigma cut removes -- a few in 1e4 for correct sigmas.
+    assert int((~keep).sum()) == int((I / sigma_I < -3.7).sum())
+    # Mean and standard deviation of sqrt(J) for J ~ Exp(Sigma).
+    prior_F, prior_sd = 0.886227 * Sigma.sqrt(), 0.463251 * Sigma.sqrt()
+    assert float((F[keep] / prior_F[keep] - 1.0).abs().max()) < 0.02
+    assert float((sigma_F[keep] / prior_sd[keep] - 1.0).abs().max()) < 0.02
 
 
 # =============================================================================

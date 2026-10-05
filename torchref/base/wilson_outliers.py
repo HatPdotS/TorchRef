@@ -13,10 +13,11 @@ closed form,
     P(I' > I) = Q(I/sigma) + exp(sigma^2/(2 S^2) - I/S) Phi(I/sigma - sigma/S)
 
 whose ``Phi`` argument is exactly :func:`~torchref.base.french_wilson.french_wilson_h`.
-That function's ``h >= -4`` cut is the *lower* tail of the same density -- French
-and Wilson's guard against intensities too negative to be noise. Real outliers --
-zingers, ice rings, overlapped or mis-integrated spots -- are on the strong side,
-which is what the upper tail above supplies.
+The lower tail of the same density, :func:`wilson_log_lower_tail`, catches
+intensities too negative to be noise. Neither tail is a cut on ``h`` itself:
+where ``sigma/S`` is large, an observation that is plain noise has a very
+negative ``h`` and an ordinary probability. Real outliers -- zingers, ice rings,
+overlapped or mis-integrated spots -- are mostly on the strong side.
 
 Two things decide whether the test means anything, and both are about ``S``:
 
@@ -88,12 +89,30 @@ def log_normal_cdf(x: torch.Tensor) -> torch.Tensor:
     near = torch.log(0.5 * torch.erfc(-safe_near * (0.5**0.5)))
 
     tail = torch.clamp(-x, min=-_LOG_PHI_CF_BELOW)
-    fraction = torch.zeros_like(tail)
-    for term in range(_LOG_PHI_CF_TERMS, 0, -1):
-        fraction = term / (tail + fraction)
-    cf = -0.5 * tail * tail - _LOG_SQRT_2PI - torch.log(tail + fraction)
+    cf = -0.5 * tail * tail - _LOG_SQRT_2PI + _log_mills_tail(tail)
 
     return torch.where(far, cf, near)
+
+
+def _log_mills_tail(t: torch.Tensor) -> torch.Tensor:
+    """``log R(t)``, ``R(t) = (1 - Phi(t)) / phi(t)`` the Mills ratio, for ``t >= 2``.
+
+    By its continued fraction, which needs nothing but division.
+    """
+    fraction = torch.zeros_like(t)
+    for term in range(_LOG_PHI_CF_TERMS, 0, -1):
+        fraction = term / (t + fraction)
+    return -torch.log(t + fraction)
+
+
+def _log_mills(x: torch.Tensor) -> torch.Tensor:
+    """``log R(x)`` for any ``x``: through ``log Phi`` below 2, the fraction above."""
+    far = x >= -_LOG_PHI_CF_BELOW
+    x_near = torch.clamp(x, max=-_LOG_PHI_CF_BELOW)
+    near = log_normal_cdf(-x_near) + 0.5 * x_near * x_near + _LOG_SQRT_2PI
+    return torch.where(
+        far, _log_mills_tail(torch.clamp(x, min=-_LOG_PHI_CF_BELOW)), near
+    )
 
 
 def wilson_log_upper_tail(
@@ -134,9 +153,62 @@ def wilson_log_upper_tail(
     h = french_wilson_h(I, sigma, mean_intensity, is_centric)
     a = z - h
     # I/S_eff == z*a, so S_eff itself is never needed here.
-    return torch.logaddexp(
-        log_normal_cdf(-z), 0.5 * a * a - z * a + log_normal_cdf(h)
+    return torch.logaddexp(log_normal_cdf(-z), 0.5 * a * a - z * a + log_normal_cdf(h))
+
+
+def wilson_log_lower_tail(
+    I: torch.Tensor,
+    sigma: torch.Tensor,
+    mean_intensity: torch.Tensor,
+    is_centric: torch.Tensor = None,
+) -> torch.Tensor:
+    """Log probability of observing an intensity at most this large.
+
+    The lower tail of the density :func:`wilson_log_upper_tail` integrates,
+
+        P(I' <= I) = Phi(z) - exp(a^2/2 - z a) Phi(h) = Phi(z) (1 - R(-h)/R(-z))
+
+    with ``z = I/sigma``, ``h = z - a`` from
+    :func:`~torchref.base.french_wilson.french_wilson_h` and ``R`` the Mills
+    ratio. Through ``R`` the exponential and ``Phi(h)``, each of which can be
+    astronomically large or small, cancel exactly; what is left is a ratio of
+    Mills ratios. Where ``S << sigma`` it tends to ``Phi(z)``, the probability
+    of the noise alone, however negative ``h`` is.
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Measured intensities, any shape.
+    sigma : torch.Tensor
+        Their standard deviations, same shape. Must be positive.
+    mean_intensity : torch.Tensor
+        Wilson ``Sigma`` for each reflection, as for
+        :func:`wilson_log_upper_tail`. Same shape, must be positive.
+    is_centric : torch.Tensor or bool, optional
+        As for :func:`~torchref.base.french_wilson.french_wilson_h`. None treats
+        everything as acentric.
+
+    Returns
+    -------
+    torch.Tensor
+        ``log P(I' <= I)``, same shape.
+    """
+    z = I / sigma
+    h = french_wilson_h(I, sigma, mean_intensity, is_centric)
+    a = z - h
+    # log R(-h) - log R(-z). With both arguments below 2 it goes through log Phi,
+    # and the Gaussian factors' difference h^2/2 - z^2/2 is written as
+    # -a (h + z)/2: for a strong, precise reflection both squares are huge and
+    # their difference is the small number that matters.
+    near = h > _LOG_PHI_CF_BELOW
+    h_near = torch.clamp(h, min=_LOG_PHI_CF_BELOW)
+    z_near = torch.clamp(z, min=_LOG_PHI_CF_BELOW)
+    gap_near = (
+        log_normal_cdf(h_near) - log_normal_cdf(z_near) - 0.5 * a * (h_near + z_near)
     )
+    gap_far = _log_mills(-h) - _log_mills(-z)
+    gap = torch.where(near, gap_near, gap_far)
+    return log_normal_cdf(z) + torch.log(-torch.expm1(gap))
 
 
 def robust_mean_intensity(
@@ -396,8 +468,8 @@ def wilson_outlier_mask(
     keep : torch.Tensor
         Boolean keep-mask of shape ``(n,)``. True for kept.
     info : dict
-        ``n_tested``, ``n_strong``, ``n_weak``, ``log_p_threshold``, ``h_min``
-        and the fitted ``U``, for reporting and diagnostics.
+        ``n_tested``, ``n_strong``, ``n_weak``, ``log_p_threshold`` (both
+        tails) and the fitted ``U``, for reporting and diagnostics.
     """
     n = I.shape[0]
     # One working dtype for everything. The caller's tensors legitimately differ:
@@ -431,7 +503,6 @@ def wilson_outlier_mask(
         "n_strong": 0,
         "n_weak": 0,
         "log_p_threshold": float("-inf"),
-        "h_min": float("-inf"),
         "U": torch.zeros(6, dtype=I.dtype, device=I.device),
     }
     n_testable = int(testable.sum())
@@ -442,9 +513,6 @@ def wilson_outlier_mask(
         hkl.to(dtype=dtype, device=device), cell.to(dtype=dtype, device=device)
     )
     log_threshold = math.log(alpha) - math.log(n_testable)
-    # Same family-wise rate on the negative side: h is the standardized argument
-    # of the same density, so its cut is the corresponding normal quantile.
-    h_min = _normal_quantile(alpha / n_testable)
 
     I_reduced = I / epsilon
     correction = torch.ones_like(I)
@@ -476,30 +544,25 @@ def wilson_outlier_mask(
         if not bool(valid.any()):
             return keep, info
 
-        log_p = torch.full_like(I, 0.0)
-        h = torch.full_like(I, float("inf"))
-        log_p[valid] = wilson_log_upper_tail(
-            I[valid],
-            sigma[valid],
-            Sigma[valid],
-            is_centric[valid] if is_centric is not None else None,
+        centric_valid = is_centric[valid] if is_centric is not None else None
+        log_upper = torch.zeros_like(I)
+        log_lower = torch.zeros_like(I)
+        log_upper[valid] = wilson_log_upper_tail(
+            I[valid], sigma[valid], Sigma[valid], centric_valid
         )
-        h[valid] = french_wilson_h(
-            I[valid],
-            sigma[valid],
-            Sigma[valid],
-            is_centric[valid] if is_centric is not None else None,
+        log_lower[valid] = wilson_log_lower_tail(
+            I[valid], sigma[valid], Sigma[valid], centric_valid
         )
 
-        strong = valid & (log_p < log_threshold)
-        weak = valid & (h < h_min)
+        # One family-wise rate, both tails.
+        strong = valid & (log_upper < log_threshold)
+        weak = valid & (log_lower < log_threshold)
         keep = ~(strong | weak)
         info = {
             "n_tested": int(valid.sum()),
             "n_strong": int(strong.sum()),
             "n_weak": int(weak.sum()),
             "log_p_threshold": log_threshold,
-            "h_min": h_min,
             "U": U,
         }
 
@@ -507,33 +570,12 @@ def wilson_outlier_mask(
     return keep | ~testable, info
 
 
-def _normal_quantile(p: float) -> float:
-    """Inverse standard normal CDF for a scalar probability, via bisection.
-
-    A plain scalar helper: ``torch.special.ndtri`` is unavailable on MPS and this
-    is called once per dataset on a Python float, so there is nothing to
-    vectorise or accelerate.
-    """
-    if not 0.0 < p < 1.0:
-        return float("-inf") if p <= 0.0 else float("inf")
-    target = math.log(p)
-    low, high = -40.0, 10.0
-    for _ in range(200):
-        mid = 0.5 * (low + high)
-        # dtype-ok: deliberate float64 for a scalar CDF; extracted via float()
-        value = float(log_normal_cdf(torch.tensor(mid, dtype=torch.float64)))
-        if value < target:
-            low = mid
-        else:
-            high = mid
-    return 0.5 * (low + high)
-
-
 __all__ = [
     "anisotropic_correction",
     "fit_anisotropic_scale",
     "log_normal_cdf",
     "robust_mean_intensity",
+    "wilson_log_lower_tail",
     "wilson_log_upper_tail",
     "wilson_outlier_mask",
 ]
