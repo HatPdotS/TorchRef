@@ -1777,10 +1777,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
     def _set_french_wilson_mask(self, keep: Optional[torch.Tensor]) -> None:
         """Install French-Wilson's own input criterion as a keep-mask.
 
-        This is the ``h >= -4`` guard on intensities too negative to be a noisy
-        measurement of any Wilson-distributed reflection -- it protects the
-        French-Wilson posterior integral. It is not outlier rejection; see
-        :meth:`flag_wilson_outliers` for that.
+        It marks the rows French-Wilson converted: a prior to shrink towards,
+        and an intensity not too negative for its own sigma. It is not outlier
+        rejection; see :meth:`flag_wilson_outliers` for that.
 
         Raises rather than falling back when nothing survives: an all-False mask
         means every intensity is unphysical, which is a broken dataset. Silently

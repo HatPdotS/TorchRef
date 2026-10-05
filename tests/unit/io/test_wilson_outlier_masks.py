@@ -294,7 +294,6 @@ def test_refuses_to_fall_back_when_everything_is_rejected(monkeypatch):
             "n_strong": n,
             "n_weak": 0,
             "log_p_threshold": 0.0,
-            "h_min": 0.0,
             "U": torch.zeros(6),
         }
 

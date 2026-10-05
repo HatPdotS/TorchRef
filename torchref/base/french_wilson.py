@@ -11,9 +11,12 @@ The conversion has two parts:
   multiplicity ``epsilon``. It is a fit rather than a shell average, so it is
   positive everywhere and has no shell edges.
 - **The posterior.** :func:`french_wilson` turns ``I``, ``sigma_I`` and the
-  prior into posterior amplitudes through French and Wilson's tables and
-  asymptotic expansions, and :func:`french_wilson_valid_mask` is its rejection
-  rule. Both follow cctbx/french_wilson.py.
+  prior into posterior amplitudes: French and Wilson's tables, their expansion
+  for large ``h``, and the corresponding series for ``h`` below the tables, so
+  every reflection with a prior has a posterior. A weak reflection in a
+  region where the prior is far below the noise is shrunk towards the prior,
+  not discarded. :func:`french_wilson_valid_mask` rejects only intensities too
+  negative for their own sigma.
 
 :func:`french_wilson_auto` does both from ``hkl``, ``d`` and a space group.
 :func:`french_wilson_h` is the standardized argument shared by the posterior and
@@ -65,10 +68,17 @@ _CURVE_TOL = 1e-4
 _MAX_LOG_SIGMA_RATIO = 30.0
 
 #: The posterior tables start at h = -4 and step by 0.1. Above the asymptote
-#: for its class the expansion replaces the table.
+#: for its class French and Wilson's expansion replaces the table; below the
+#: origin, the series in 1/h^2 of :func:`_posterior_below_tables`.
 _TABLE_ORIGIN = -4.0
 _ACENTRIC_ASYMPTOTE = 3.0
 _CENTRIC_ASYMPTOTE = 4.0
+#: Terms of that series. Four keep it within 0.2% of the posterior mean and
+#: 1% of its standard deviation at h = -4, and it improves fast below.
+_SERIES_TERMS = 4
+#: Default lower cut on I/sigma_I: no true intensity J >= 0 makes a measurement
+#: this far below zero plausible under its own sigma.
+DEFAULT_MIN_I_OVER_SIGMA = -3.7
 
 # Posterior mean and standard deviation of F / sqrt(sigma_I) as a function of h,
 # from the French-Wilson (1978) supplement.
@@ -429,11 +439,11 @@ def french_wilson_h(
         p(I) = (1/S) exp(sigma^2/(2 S^2) - I/S) Phi(I/sigma - sigma/S)
 
     whose ``Phi`` argument is exactly the acentric ``h`` below. The centric prior
-    ``J^(-1/2) exp(-J/2S)`` yields the factor of two. Where ``sigma << S``, ``h``
-    is close to ``I/sigma`` and a cut on it is a tail-probability cut
-    (``h >= -4`` corresponds to ``p ~ 3e-5``). Where ``sigma/S`` is large the
-    exponential factor compensates for ``Phi`` and the observation is simply
-    noise, so ``h`` falls far below that meaning while ``p(I)`` does not.
+    ``J^(-1/2) exp(-J/2S)`` yields the factor of two. ``h`` is not itself a
+    tail probability: where ``sigma/S`` is large the exponential factor
+    compensates for ``Phi``, and an observation that is plain noise has a very
+    negative ``h`` and an ordinary ``p(I)``. That is why nothing here is
+    rejected on ``h``.
 
     Parameters
     ----------
@@ -453,8 +463,7 @@ def french_wilson_h(
     -------
     torch.Tensor
         ``h`` for each reflection (same shape as I). NaN wherever
-        ``mean_intensity`` is not positive, so such rows fail every cut on
-        ``h`` rather than passing one.
+        ``mean_intensity`` is not positive: such a row has no posterior.
     """
     # A centric reflection's prior has twice the variance per degree of freedom,
     # which halves the sigma/S penalty.
@@ -471,14 +480,14 @@ def french_wilson_h(
 
 
 def _keep(
-    h: torch.Tensor, I: torch.Tensor, sigma_I: torch.Tensor, h_min: float
+    h: torch.Tensor, I: torch.Tensor, sigma_I: torch.Tensor, min_i_over_sigma: float
 ) -> torch.Tensor:
-    """French-Wilson's rejection rule on an already computed ``h``."""
+    """The rejection rule on an already computed ``h``."""
     # A non-finite h means sigma_I was degenerate or the prior mean was not a
     # positive number; such a reflection has no posterior and must not be kept
     # on the strength of a NaN comparison (which is False anyway, but not by
     # intent).
-    return torch.isfinite(h) & (I / sigma_I >= h_min + 0.3) & (h >= h_min)
+    return torch.isfinite(h) & (I / sigma_I >= min_i_over_sigma)
 
 
 def french_wilson_valid_mask(
@@ -486,25 +495,25 @@ def french_wilson_valid_mask(
     sigma_I: torch.Tensor,
     mean_intensity: torch.Tensor,
     is_centric: torch.Tensor | bool | None = None,
-    h_min: float = -4.0,
+    min_i_over_sigma: float = DEFAULT_MIN_I_OVER_SIGMA,
 ) -> torch.Tensor:
     """
-    French-Wilson's own rejection criterion, as a keep-mask.
+    Which reflections French-Wilson converts, as a keep-mask.
 
-    ``True`` means the observation is explainable as a noisy measurement of a
-    Wilson-distributed reflection and should be kept. This deliberately keeps
-    negative intensities that noise accounts for -- only observations too
-    negative to be explained by *any* Wilson-distributed true intensity, given
-    their own sigma and the prior mean, are rejected.
+    A reflection is kept when it has a posterior -- a positive prior mean and
+    a usable sigma -- and its intensity is not too negative for its own sigma:
+    ``I/sigma_I >= min_i_over_sigma``. That cut asks whether *any* true
+    intensity ``J >= 0`` could have produced the measurement, so it does not
+    depend on the prior. A weak reflection whose prior lies far below the
+    noise is kept; its posterior is shrunk towards the prior.
 
     Parameters
     ----------
     I, sigma_I, mean_intensity, is_centric
         As for :func:`french_wilson_h`.
-    h_min : float, optional
-        Rejection threshold on ``h``; ``I/sigma_I`` is cut at ``h_min + 0.3``.
-        Default -4.0. Raising it does **not** find more outliers -- it discards
-        weak measurements that noise explains.
+    min_i_over_sigma : float, optional
+        Lower cut on ``I/sigma_I``. Default -3.7, a one-sided probability of
+        about 1e-4 for a correct sigma.
 
     Returns
     -------
@@ -512,7 +521,55 @@ def french_wilson_valid_mask(
         Boolean keep-mask (same shape as I).
     """
     h = french_wilson_h(I, sigma_I, mean_intensity, is_centric)
-    return _keep(h, I, sigma_I, h_min)
+    return _keep(h, I, sigma_I, min_i_over_sigma)
+
+
+def _series_coefficients(shift: float) -> dict[float, list[float]]:
+    """Coefficients of ``N_nu(h) = sum_k c_k / h^(2k)`` for nu = 0, 1/2, 1.
+
+    ``N_nu`` is the asymptotic series of ``int_0^inf u^(nu + shift) e^-u
+    e^(-u^2/(2h^2)) du``; ``shift`` is 0 acentric and -1/2 centric.
+    """
+    return {
+        nu: [
+            (-1.0) ** k
+            * math.gamma(nu + shift + 2 * k + 1)
+            / (math.factorial(k) * 2.0**k)
+            for k in range(_SERIES_TERMS + 1)
+        ]
+        for nu in (0.0, 0.5, 1.0)
+    }
+
+
+_ACENTRIC_SERIES = _series_coefficients(0.0)
+_CENTRIC_SERIES = _series_coefficients(-0.5)
+
+
+def _posterior_below_tables(
+    h: torch.Tensor, centric: bool
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Posterior mean and standard deviation of ``F / sqrt(sigma_I)`` for h < -4.
+
+    The posterior of ``t = J / sigma_I`` is ``exp(-(t - h)^2 / 2)`` on ``t >= 0``
+    (centric: times ``t^(-1/2)``). With ``t = u / |h|`` its moments are
+    ``|h|^-nu N_nu / N_0``, and the factor ``e^(-u^2/(2h^2))`` expands in
+    ``1/h^2``; the leading term is the exponential posterior of a reflection
+    whose prior lies far below the noise. ``h`` must be at most -4.
+    """
+    coefficients = _CENTRIC_SERIES if centric else _ACENTRIC_SERIES
+    x = 1.0 / (h * h)
+
+    def N(nu):
+        total = torch.zeros_like(h)
+        for c in reversed(coefficients[nu]):
+            total = total * x + c
+        return total
+
+    root = torch.rsqrt(-h)
+    zero, half, one = N(0.0), N(0.5), N(1.0)
+    mean = half / zero
+    variance = one / zero - mean * mean
+    return root * mean, root * torch.sqrt(variance)
 
 
 def _posterior_amplitude(
@@ -520,8 +577,8 @@ def _posterior_amplitude(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Posterior mean and standard deviation of F for one centricity class.
 
-    ``h`` must be finite. Below the tables' origin, ``h = -4``, the boundary
-    value is returned; any ``h_min >= -4`` rejects those rows.
+    ``h`` must be finite: the series below the tables, the tables, or French
+    and Wilson's expansion above them, by ``h``.
     """
     if centric:
         mean_table, sd_table, asymptote = (
@@ -535,17 +592,22 @@ def _posterior_amplitude(
             _ACENTRIC_SIGMA_F,
             _ACENTRIC_ASYMPTOTE,
         )
-    h = torch.clamp(h, min=_TABLE_ORIGIN)
     root = torch.sqrt(sigma_I)
     F = torch.empty_like(h)
     sigma_F = torch.empty_like(h)
 
-    tabulated = h < asymptote
+    below = h < _TABLE_ORIGIN
+    if bool(below.any()):
+        mean, sd = _posterior_below_tables(h[below], centric)
+        F[below] = mean * root[below]
+        sigma_F[below] = sd * root[below]
+
+    tabulated = ~below & (h < asymptote)
     if bool(tabulated.any()):
         F[tabulated] = _interpolate(h[tabulated], mean_table) * root[tabulated]
         sigma_F[tabulated] = _interpolate(h[tabulated], sd_table) * root[tabulated]
 
-    large = ~tabulated
+    large = h >= asymptote
     if bool(large.any()):
         h_large, root_large = h[large], root[large]
         if centric:
@@ -582,7 +644,7 @@ def french_wilson(
     sigma_I: torch.Tensor,
     mean_intensity: torch.Tensor,
     is_centric: torch.Tensor | None = None,
-    h_min: float = -4.0,
+    min_i_over_sigma: float = DEFAULT_MIN_I_OVER_SIGMA,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     French-Wilson posterior amplitudes from intensities and their prior.
@@ -599,9 +661,9 @@ def french_wilson(
     is_centric : torch.Tensor, optional
         Boolean mask of centric reflections of shape (...). If None, all are
         treated as acentric.
-    h_min : float, optional
-        Rejection threshold, as for :func:`french_wilson_valid_mask`. Default
-        -4.0.
+    min_i_over_sigma : float, optional
+        Lower cut on ``I/sigma_I``, as for :func:`french_wilson_valid_mask`.
+        Default -3.7.
 
     Returns
     -------
@@ -630,7 +692,7 @@ def french_wilson(
             F[rows], sigma_F[rows] = _posterior_amplitude(
                 h[rows], sigma_I[rows], centric=flag
             )
-    return F, sigma_F, _keep(h, I, sigma_I, h_min)
+    return F, sigma_F, _keep(h, I, sigma_I, min_i_over_sigma)
 
 
 def intensities_from_amplitudes(
@@ -1070,7 +1132,7 @@ def french_wilson_auto(
     hkl: torch.Tensor,
     d_spacings: torch.Tensor,
     space_group: SpaceGroupLike = "P1",
-    h_min: float = -4.0,
+    min_i_over_sigma: float = DEFAULT_MIN_I_OVER_SIGMA,
     *,
     n_coeff: int = DEFAULT_N_COEFF,
     exclude_from_fit: torch.Tensor | None = None,
@@ -1103,9 +1165,9 @@ def french_wilson_auto(
         (n_reflections,).
     space_group : str, int, or gemmi.SpaceGroup, optional
         Space group specification. Default is "P1".
-    h_min : float, optional
-        Rejection threshold, as for :func:`french_wilson_valid_mask`. Default
-        -4.0.
+    min_i_over_sigma : float, optional
+        Lower cut on ``I/sigma_I``, as for :func:`french_wilson_valid_mask`.
+        Default -3.7.
     n_coeff : int, optional
         B-spline coefficients in ``log Sigma``, as for
         :func:`fit_mean_intensity`.
@@ -1130,9 +1192,9 @@ def french_wilson_auto(
     sigma_F : torch.Tensor
         Standard deviations of F of shape (n_reflections,).
     valid_mask : torch.Tensor
-        Boolean mask, ``True`` = keep. ``False`` both for rows French-Wilson
-        rejects as too negative and for rows with NaN ``I`` or ``sigma_I`` or
-        a non-finite ``d``, whose ``F`` and ``sigma_F`` are NaN.
+        Boolean mask, ``True`` = keep. ``False`` both for rows too negative
+        for their own sigma and for rows with NaN ``I`` or ``sigma_I`` or a
+        non-finite ``d``, whose ``F`` and ``sigma_F`` are NaN.
 
     Examples
     --------
@@ -1195,6 +1257,6 @@ def french_wilson_auto(
         sigma_I[finite],
         mean_intensity,
         is_centric=is_centric,
-        h_min=h_min,
+        min_i_over_sigma=min_i_over_sigma,
     )
     return F, sigma_F, valid_mask
