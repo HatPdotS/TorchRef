@@ -857,24 +857,20 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     requires_grad=False,
                 )
             self.intensity_source = data_dict.get("I_col", "Unknown")
-            self.F, self.F_sigma, fw_keep = french_wilson_auto(
-                self.I,
-                self.I_sigma,
-                self.hkl,
-                self.resolution,
-                self.spacegroup or "P1",
-            )
-            # Record French-Wilson's own input criterion, evaluated on the true
-            # intensities. This is strictly better than anything reconstructible
-            # from the amplitudes afterwards: F is a positive posterior mean, so
-            # it no longer knows which intensities were inexplicably negative.
-            # Set here rather than recomputed in _post_load_cleanup so the mask
-            # is exactly the one French-Wilson applied; _canonicalize_in_place
-            # reorders masks along with everything else. Kept separate from the
-            # outlier mask -- this one guards the posterior integral against
-            # unphysical input, which is a different question from whether an
-            # observation is an outlier.
-            self._set_french_wilson_mask(fw_keep)
+            # The test set is kept out of the French-Wilson prior as it is kept
+            # out of refinement. A file's flags are known here; flags generated
+            # below do not exist yet, and the conversion is repeated once they
+            # do. A missing flag (negative) counts as held out.
+            held_out = None
+            if "R-free-flags" in data_dict:
+                held_out = (
+                    torch.as_tensor(data_dict["R-free-flags"], device=self.device) <= 0
+                )
+                if "Validation-flags" in data_dict:
+                    held_out = held_out | torch.as_tensor(
+                        data_dict["Validation-flags"], device=self.device
+                    ).to(torch.bool)
+            self._convert_intensities(held_out)
         elif "F" in data_dict:
             self.F = torch.tensor(
                 data_dict["F"],
@@ -934,8 +930,37 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # asu_group_indices / generate_rfree_flags.
         if self.rfree_flags is None:
             self.generate_rfree_flags()
+            if use_intensities:
+                self._convert_intensities(~self.rfree_flags.to(torch.bool))
+                self.sanitize_F()
 
         return self
+
+    def _convert_intensities(self, held_out: torch.Tensor | None) -> None:
+        """Set ``F``/``F_sigma`` from ``I``/``I_sigma`` by French-Wilson.
+
+        ``held_out`` marks rows kept out of the prior fit (the test set); they
+        are converted all the same.
+        """
+        self.F, self.F_sigma, fw_keep = french_wilson_auto(
+            self.I,
+            self.I_sigma,
+            self.hkl,
+            self.resolution,
+            self.spacegroup or "P1",
+            exclude_from_fit=held_out,
+        )
+        # Record French-Wilson's own input criterion, evaluated on the true
+        # intensities. This is strictly better than anything reconstructible
+        # from the amplitudes afterwards: F is a positive posterior mean, so it
+        # no longer knows which intensities were inexplicably negative. Set
+        # here rather than recomputed in _post_load_cleanup so the mask is
+        # exactly the one French-Wilson applied; _canonicalize_in_place reorders
+        # masks along with everything else. Kept separate from the outlier mask
+        # -- this one guards the posterior integral against unphysical input,
+        # which is a different question from whether an observation is an
+        # outlier.
+        self._set_french_wilson_mask(fw_keep)
 
     def _post_load_cleanup(self) -> "ReflectionData":
         """Resolution, all-valid mask, ASU canonicalization, F sanitation and

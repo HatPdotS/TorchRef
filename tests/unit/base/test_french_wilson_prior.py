@@ -1,0 +1,284 @@
+"""The Wilson prior French-Wilson converts with, and the guard on it.
+
+French-Wilson needs a positive mean intensity ``Sigma``. With ``Sigma <= 0`` the
+``-sigma/Sigma`` term of ``h`` changes sign, and an observation no Wilson
+reflection could explain is converted as a strong one with a tiny ``sigma_F``.
+These tests pin that such a row is never converted, that the fitted prior stays
+positive where a shell mean does not, and that it still follows the mean
+intensity: on deposited data, when sigma grows with the intensity, and next to
+a single reflection whose sigma dwarfs everything around it.
+"""
+
+import pytest
+import torch
+
+from torchref.base.french_wilson import (
+    estimate_mean_intensity_by_resolution,
+    fit_mean_intensity,
+    french_wilson,
+    french_wilson_auto,
+    french_wilson_h,
+    french_wilson_valid_mask,
+)
+from torchref.io.datasets.reflection_data import ReflectionData
+
+
+def _wilson_data(n, seed, sigma_of_J, d_max=20.0, d_min=2.0, signal_beyond=None):
+    """Acentric Wilson intensities measured with Gaussian error.
+
+    Reflections are sampled uniformly in reciprocal volume, as a real dataset's
+    are, and the true ``Sigma`` falls off as ``exp(-20/d^2)``. Past
+    ``signal_beyond`` (a d-spacing in Å) the true intensity is zero, so those
+    rows are pure noise.
+
+    Returns ``d`` (Å, descending), the true ``Sigma``, ``I`` and ``sigma``.
+    """
+    g = torch.Generator().manual_seed(seed)
+    u = torch.rand(n, generator=g)
+    s = (d_max**-3 + u * (d_min**-3 - d_max**-3)) ** (1.0 / 3.0)
+    d = torch.sort(1.0 / s, descending=True).values
+    Sigma = 1000.0 * torch.exp(-20.0 / d**2)
+    J = Sigma * -torch.log(torch.rand(n, generator=g))
+    if signal_beyond is not None:
+        J = torch.where(d < signal_beyond, torch.zeros_like(J), J)
+    sigma = sigma_of_J(J)
+    return d, Sigma, J + sigma * torch.randn(n, generator=g), sigma
+
+
+def _hkl(n, centric_every=None):
+    """Distinct Miller indices; every ``centric_every``-th row has k = 0.
+
+    In P 1 21 1 the h0l zone is centric, so this controls the centric fraction.
+    """
+    idx = torch.arange(n)
+    k = idx % 41 + 1
+    if centric_every is not None:
+        k = torch.where(idx % centric_every == 0, torch.zeros_like(k), k)
+    return torch.stack([idx % 37 + 1, k, idx // 37 + 1], dim=1)
+
+
+def _inconsistent(F, keep, I, sigma_I):
+    """Kept amplitudes whose square sits more than 6 sigma above the measurement.
+
+    A posterior mean cannot do that: shrinkage towards a positive prior only
+    ever pulls ``F^2`` below ``I`` once ``I`` is clear of the noise.
+    """
+    return keep & (F * F > I + 6.0 * sigma_I)
+
+
+# =============================================================================
+# The guard
+# =============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("centric", [False, True])
+def test_h_is_undefined_without_a_positive_prior(centric):
+    I = torch.tensor([-6.1, 23.3, 0.5, 40.0])
+    sigma_I = torch.tensor([14.8, 9.3, 1.0, 5.0])
+    Sigma = torch.tensor([-0.035, -0.039, 0.0, 80.0])
+
+    h = french_wilson_h(I, sigma_I, Sigma, is_centric=centric)
+
+    assert torch.isnan(h[:3]).all()
+    assert torch.isfinite(h[3])
+    assert not french_wilson_valid_mask(I, sigma_I, Sigma, centric)[:3].any()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("centric", [False, True])
+def test_non_positive_prior_gives_no_amplitude(centric):
+    """A row without a positive prior is neither kept nor given a number."""
+    I = torch.tensor([-6.1, 23.3, 0.5, 40.0])
+    sigma_I = torch.tensor([14.8, 9.3, 1.0, 5.0])
+    Sigma = torch.tensor([-0.035, -0.039, 0.0, 80.0])
+    is_centric = torch.full((4,), centric)
+
+    F, sigma_F, keep = french_wilson(I, sigma_I, Sigma, is_centric=is_centric)
+
+    assert not keep[:3].any()
+    assert torch.isnan(F[:3]).all() and torch.isnan(sigma_F[:3]).all()
+    # The row with a prior converts exactly as it does on its own.
+    F_alone, sigma_F_alone, keep_alone = french_wilson(
+        I[3:], sigma_I[3:], Sigma[3:], is_centric=is_centric[3:]
+    )
+    torch.testing.assert_close(F[3:], F_alone)
+    torch.testing.assert_close(sigma_F[3:], sigma_F_alone)
+    assert bool(keep[3]) and bool(keep_alone[0])
+
+
+# =============================================================================
+# The prior
+# =============================================================================
+
+
+@pytest.mark.unit
+def test_shell_mean_goes_negative_where_the_fitted_prior_does_not():
+    """A noise-only shell averages to about zero and half the time below it."""
+    d, _, I, sigma = _wilson_data(
+        6000, 0, lambda J: torch.full_like(J, 10.0), signal_beyond=3.0
+    )
+
+    assert bool((estimate_mean_intensity_by_resolution(I, d) <= 0).any())
+
+    Sigma = fit_mean_intensity(I, sigma, d)
+    assert bool(torch.isfinite(Sigma).all())
+    assert bool((Sigma > 0).all())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("space_group", ["P 1", "P 1 21 1"])
+def test_noise_is_never_converted_into_a_strong_amplitude(space_group):
+    """No kept amplitude sits far above its measurement, centric or not."""
+    n = 6000
+    d, _, I, sigma = _wilson_data(
+        n, 1, lambda J: torch.full_like(J, 10.0), signal_beyond=3.0
+    )
+    hkl = _hkl(n, centric_every=3)
+
+    F, _, keep = french_wilson_auto(I, sigma, hkl, d, space_group)
+
+    assert not bool(_inconsistent(F, keep, I, sigma).any())
+    # Signal is kept: the noise-free region converts.
+    assert bool(keep[d > 4.0].float().mean() > 0.99)
+    if space_group == "P 1 21 1":
+        centric = hkl[:, 1] == 0
+        assert bool((centric & (d < 3.0)).any()), "no centric noise rows tested"
+
+
+@pytest.mark.unit
+def test_prior_follows_the_mean_when_sigma_grows_with_intensity():
+    """Counting statistics make strong reflections noisier.
+
+    A fit that weighted each reflection by its own sigma would follow the weak
+    ones and come out low; this one weights a resolution's reflections alike.
+    """
+    d, Sigma_true, I, sigma = _wilson_data(
+        20000, 2, lambda J: torch.sqrt(25.0 + 2.0 * J)
+    )
+
+    ratio = fit_mean_intensity(I, sigma, d) / Sigma_true
+
+    assert 0.97 < float(ratio.median()) < 1.03
+    assert float(ratio.quantile(0.02)) > 0.88
+    assert float(ratio.quantile(0.98)) < 1.12
+
+
+@pytest.mark.unit
+def test_one_wild_reflection_does_not_drag_its_neighbours():
+    """A reflection with an enormous sigma carries almost no weight."""
+    d, Sigma_true, I, sigma = _wilson_data(5000, 3, lambda J: torch.full_like(J, 5.0))
+    wild = int(torch.argmin((d - 3.0).abs()))
+    I[wild], sigma[wild] = -3.7e5, 6.8e5
+    near = (d - 3.0).abs() < 0.15
+
+    # A shell mean is dragged far below zero by it ...
+    assert float(estimate_mean_intensity_by_resolution(I, d)[near].min()) < 0
+    # ... the fitted prior is not.
+    ratio = (fit_mean_intensity(I, sigma, d) / Sigma_true)[near]
+    assert float(ratio.min()) > 0.9
+    assert float(ratio.max()) < 1.12
+
+
+@pytest.mark.unit
+def test_prior_matches_the_shell_mean_on_deposited_data(mtz_dir):
+    """On well-measured data the fitted prior changes no amplitude materially."""
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    assert data.I is not None, "1DAW should load via the intensity path"
+    I, sigma_I, d = data.I, data.I_sigma, data.resolution
+
+    fitted = fit_mean_intensity(I, sigma_I, d)
+    binned = estimate_mean_intensity_by_resolution(I, d)
+    assert float(torch.log(fitted / binned).abs().median()) < 0.05
+
+    F_fit, _, keep_fit = french_wilson(I, sigma_I, fitted)
+    F_bin, sigma_F_bin, keep_bin = french_wilson(I, sigma_I, binned)
+    assert torch.equal(keep_fit, keep_bin)
+    shift = ((F_fit - F_bin).abs() / sigma_F_bin)[keep_bin]
+    assert float(shift.quantile(0.99)) < 0.1
+
+
+@pytest.mark.unit
+def test_amplitudes_are_the_same_in_float32_and_float64():
+    """The prior needs no double precision to give the same amplitudes.
+
+    Compared through the amplitudes rather than ``Sigma`` itself: where the
+    data hold no signal ``Sigma`` is barely determined, and it does not matter
+    there, because every reflection it touches is rejected.
+    """
+    d, _, I, sigma = _wilson_data(
+        8000, 4, lambda J: torch.full_like(J, 10.0), signal_beyond=2.5
+    )
+    single = fit_mean_intensity(I, sigma, d)
+    double = fit_mean_intensity(I.double(), sigma.double(), d.double())
+    assert single.dtype == torch.float32 and double.dtype == torch.float64
+
+    I64, sigma64 = I.double(), sigma.double()
+    F_single, _, keep_single = french_wilson(I64, sigma64, single.double())
+    F_double, sigma_F, keep_double = french_wilson(I64, sigma64, double)
+    both = keep_single & keep_double
+    assert int((keep_single ^ keep_double).sum()) <= 0.005 * len(I)
+    assert float(((F_single - F_double).abs() / sigma_F)[both].max()) < 0.1
+
+
+@pytest.mark.unit
+def test_prior_survives_degenerate_inputs():
+    d = torch.full((50,), 3.0)
+    I = 100.0 + torch.arange(50.0)
+    sigma = torch.full((50,), 5.0)
+
+    # A single resolution has no shape to fit; the curve is one positive level.
+    flat = fit_mean_intensity(I, sigma, d)
+    assert bool((flat > 0).all())
+    torch.testing.assert_close(flat, torch.full_like(flat, float(flat[0])))
+
+    # Nothing can inform the fit, so nothing gets a prior or an amplitude.
+    hkl = _hkl(50)
+    unusable = fit_mean_intensity(I, torch.zeros_like(sigma), d)
+    assert bool(torch.isnan(unusable).all())
+    _, _, keep = french_wilson_auto(I, torch.zeros_like(sigma), hkl, d, "P 1")
+    assert not bool(keep.any())
+
+
+@pytest.mark.unit
+def test_bin_arguments_are_deprecated_and_ignored():
+    n = 2000
+    d, _, I, sigma = _wilson_data(n, 5, lambda J: torch.full_like(J, 10.0))
+    hkl = _hkl(n)
+
+    reference = french_wilson_auto(I, sigma, hkl, d, "P 1")
+    with pytest.warns(DeprecationWarning, match="n_bins"):
+        binned = french_wilson_auto(I, sigma, hkl, d, "P 1", n_bins=60, min_per_bin=40)
+
+    for a, b in zip(reference, binned):
+        torch.testing.assert_close(a, b, equal_nan=True)
+
+
+# =============================================================================
+# Held-out reflections
+# =============================================================================
+
+
+@pytest.mark.unit
+def test_held_out_reflections_do_not_inform_the_prior():
+    """Whatever the test set measures, the working set converts the same."""
+    n = 6000
+    d, _, I, sigma = _wilson_data(n, 6, lambda J: torch.full_like(J, 10.0))
+    hkl = _hkl(n)
+    free = torch.arange(n) % 20 == 0
+
+    F, sigma_F, keep = french_wilson_auto(
+        I, sigma, hkl, d, "P 1", exclude_from_fit=free
+    )
+    I_moved = torch.where(free, 100.0 * I.abs() + 1000.0, I)
+    F_moved, sigma_F_moved, keep_moved = french_wilson_auto(
+        I_moved, sigma, hkl, d, "P 1", exclude_from_fit=free
+    )
+
+    work = ~free
+    torch.testing.assert_close(F_moved[work], F[work])
+    torch.testing.assert_close(sigma_F_moved[work], sigma_F[work])
+    assert torch.equal(keep_moved[work], keep[work])
+    # The held-out rows are still converted, from their own intensities.
+    assert bool(keep_moved[free].all())
+    assert bool((F_moved[free] > F[free]).all())

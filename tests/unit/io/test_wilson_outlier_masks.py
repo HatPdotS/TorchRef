@@ -22,6 +22,14 @@ from torchref.io.datasets.reflection_data import ReflectionData
 CELL = (50.0, 60.0, 70.0, 90.0, 90.0, 90.0)
 
 
+def _held_out(data):
+    """The reflections a dataset keeps out of anything fitted: free and validation."""
+    held_out = ~data.rfree_flags.to(torch.bool)
+    if data.validation_flags is not None:
+        held_out = held_out | data.validation_flags.to(torch.bool)
+    return held_out
+
+
 def _synthetic(F, F_sigma, hkl=None, device="cpu"):
     """A P1 dataset of len(F) reflections with distinct Miller indices."""
     n = len(F)
@@ -147,7 +155,12 @@ def test_intensity_path_keeps_french_wilsons_guard_under_its_own_key(mtz_dir):
     assert data.I is not None, "4BX9 should load via the intensity path"
     assert ReflectionData.FRENCH_WILSON_MASK_KEY in data.masks
     _, _, keep = french_wilson_auto(
-        data.I, data.I_sigma, data.hkl, data.resolution, data.spacegroup
+        data.I,
+        data.I_sigma,
+        data.hkl,
+        data.resolution,
+        data.spacegroup,
+        exclude_from_fit=_held_out(data),
     )
     torch.testing.assert_close(data.masks[ReflectionData.FRENCH_WILSON_MASK_KEY], keep)
     # And the outlier test still ran on top of it, rather than being skipped
@@ -166,12 +179,44 @@ def test_french_wilson_is_row_aligned_after_canonicalization(mtz_dir):
     assert data.I is not None, "6G9X should load via the intensity path"
 
     F, sigma_F, keep = french_wilson_auto(
-        data.I, data.I_sigma, data.hkl, data.resolution, data.spacegroup
+        data.I,
+        data.I_sigma,
+        data.hkl,
+        data.resolution,
+        data.spacegroup,
+        exclude_from_fit=_held_out(data),
     )
 
     torch.testing.assert_close(data.masks[ReflectionData.FRENCH_WILSON_MASK_KEY], keep)
     torch.testing.assert_close(F[keep], data.F[keep])
     torch.testing.assert_close(sigma_F[keep], data.F_sigma[keep])
+
+
+@pytest.mark.unit
+def test_french_wilson_prior_leaves_out_a_generated_test_set(mtz_dir):
+    """A test set drawn after loading is still kept out of the prior.
+
+    Generated flags only exist once the rows are canonical, after the first
+    conversion; the amplitudes must be the ones converted without them.
+    """
+    source = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    data_dict = {
+        "HKL": source.hkl.cpu().numpy(),
+        "I": source.I.cpu().numpy(),
+        "SIGI": source.I_sigma.cpu().numpy(),
+        "I_col": "I",
+    }
+    cell = source.cell.data.tolist()
+    data = ReflectionData(verbose=0).load(lambda: (data_dict, cell, source.spacegroup))
+    assert data.rfree_source.startswith("Generated")
+
+    args = (data.I, data.I_sigma, data.hkl, data.resolution, data.spacegroup)
+    F, sigma_F, keep = french_wilson_auto(*args, exclude_from_fit=_held_out(data))
+    torch.testing.assert_close(data.masks[ReflectionData.FRENCH_WILSON_MASK_KEY], keep)
+    torch.testing.assert_close(F[keep], data.F[keep])
+    torch.testing.assert_close(sigma_F[keep], data.F_sigma[keep])
+    F_all, _, _ = french_wilson_auto(*args)
+    assert not torch.equal(F_all[keep], data.F[keep])
 
 
 # =============================================================================

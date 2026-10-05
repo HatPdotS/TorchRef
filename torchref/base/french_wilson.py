@@ -2,7 +2,8 @@
 PyTorch implementation of French-Wilson conversion from intensities to structure factors.
 
 Reference: French, S. & Wilson, K. (1978). Acta Cryst. A34, 517-525
-Based on Phenix implementation in cctbx/french_wilson.py
+The lookup tables, asymptotic branches and rejection rule follow the Phenix
+implementation in cctbx/french_wilson.py; the Wilson prior does not (see below).
 
 Usage::
 
@@ -15,12 +16,48 @@ Usage::
 This is a plain function on purpose: the conversion runs once per dataset, and
 a cached estimator holding per-row buffers goes stale the moment the rows are
 reordered (as ``ReflectionData`` canonicalization does).
+
+The conversion needs a Wilson prior, the mean intensity ``Sigma`` expected at
+each reflection's resolution. :func:`fit_mean_intensity` supplies it as a smooth
+resolution-local mean intensity, positive by construction;
+:func:`french_wilson` turns ``I``, ``sigma_I`` and ``Sigma`` into
+posterior amplitudes; :func:`french_wilson_auto` does both.
+:func:`estimate_mean_intensity_by_resolution` is the plain binned mean, kept for
+comparison -- it can come out zero or negative and is not a usable prior.
 """
+
+import math
+import warnings
 
 import torch
 
 from torchref.config import get_float_dtype
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
+
+#: B-spline coefficients in ``log Sigma``. Enough to follow the low-resolution
+#: solvent deficit and the shoulder near 4-5 Å to within the scatter of shell
+#: means, which fewer smooth away; more start to follow that scatter.
+DEFAULT_N_COEFF = 16
+#: Fitted reflections per coefficient; a small dataset gets a stiffer curve
+#: rather than a noisy one.
+_ROWS_PER_COEFF = 400
+#: A reflection whose sigma exceeds this multiple of the typical sigma at its
+#: resolution is weighted by its own sigma. Below it every reflection counts the
+#: same; the spread of sigmas within a resolution range, which follows the
+#: intensity, stays well below it.
+_NOISY_SIGMA_RATIO = 10.0
+#: Step halvings allowed per Fisher-scoring iteration before the fit is taken
+#: as converged, and the iteration cap, a runaway guard that should never bind.
+_MAX_HALVINGS = 30
+_MAX_ITER = 200
+#: The fit has converged once no step moves ``log Sigma`` by more than this at
+#: any reflection where ``Sigma`` still matters (see the loop).
+_CURVE_TOL = 1e-4
+#: Floor on ``Sigma`` below the typical measurement error, as a log. Far below
+#: anything that changes a French-Wilson result -- every reflection is rejected
+#: long before it -- and it keeps ``Sigma`` representable and positive where a
+#: pure-noise region drives the fit towards zero.
+_MAX_LOG_SIGMA_RATIO = 30.0
 
 # Acentric lookup tables from French-Wilson supplement (1978)
 AC_ZJ = torch.tensor(
@@ -749,7 +786,9 @@ def french_wilson_h(
     sigma_I : torch.Tensor
         Standard deviations of intensities (same shape as I).
     mean_intensity : torch.Tensor
-        Mean intensity for each reflection's resolution bin (same shape as I).
+        Wilson mean intensity ``Sigma`` for each reflection (same shape as I).
+        Must be positive: there is no Wilson prior with a mean at or below
+        zero.
     is_centric : torch.Tensor or bool, optional
         Boolean mask of centric reflections, or a plain ``bool`` when the whole
         input is known to be one or the other (as it is for the pre-split
@@ -758,7 +797,9 @@ def french_wilson_h(
     Returns
     -------
     torch.Tensor
-        ``h`` for each reflection (same shape as I).
+        ``h`` for each reflection (same shape as I). NaN wherever
+        ``mean_intensity`` is not positive, so such rows fail every cut on
+        ``h`` rather than passing one.
     """
     # A centric reflection's prior has twice the variance per degree of freedom,
     # which halves the sigma/S penalty.
@@ -768,7 +809,10 @@ def french_wilson_h(
         denom = 2.0 * mean_intensity
     else:
         denom = torch.where(is_centric, 2.0 * mean_intensity, mean_intensity)
-    return (I / sigma_I) - (sigma_I / denom)
+    h = (I / sigma_I) - (sigma_I / denom)
+    # With S < 0 the -sigma/S term changes sign and turns an observation that no
+    # Wilson reflection could explain into an apparently strong one.
+    return torch.where(denom > 0, h, torch.full_like(h, float("nan")))
 
 
 def french_wilson_valid_mask(
@@ -805,9 +849,10 @@ def french_wilson_valid_mask(
         Boolean keep-mask (same shape as I).
     """
     h = french_wilson_h(I, sigma_I, mean_intensity, is_centric)
-    # A non-finite h means sigma_I or mean_intensity was degenerate; such a
-    # reflection carries no information and must not be kept on the strength of
-    # a NaN comparison (which is False anyway, but not by intent).
+    # A non-finite h means sigma_I was degenerate or mean_intensity was not a
+    # positive number; such a reflection has no posterior and must not be kept
+    # on the strength of a NaN comparison (which is False anyway, but not by
+    # intent).
     return torch.isfinite(h) & (I / sigma_I >= h_min + 0.3) & (h >= h_min)
 
 
@@ -874,7 +919,7 @@ def french_wilson_acentric(
     sigma_I : torch.Tensor
         Standard deviations of intensities (same shape as I).
     mean_intensity : torch.Tensor
-        Mean intensity for each reflection's resolution bin (same shape as I).
+        Wilson mean intensity ``Sigma`` for each reflection (same shape as I).
     h_min : float, optional
         Minimum h value for rejection. Default is -4.0.
     i_sig_min : float, optional
@@ -883,9 +928,10 @@ def french_wilson_acentric(
     Returns
     -------
     F : torch.Tensor
-        Structure factor amplitudes (same shape as I).
+        Structure factor amplitudes (same shape as I). NaN where
+        ``mean_intensity`` is not positive.
     sigma_F : torch.Tensor
-        Standard deviations of F (same shape as I).
+        Standard deviations of F (same shape as I), NaN where ``F`` is.
     valid_mask : torch.Tensor
         Boolean mask indicating valid (not rejected) reflections.
     """
@@ -936,6 +982,12 @@ def french_wilson_acentric(
         F[large_h_mask] = F_large
         sigma_F[large_h_mask] = sigma_F_large
 
+    # Where h is undefined (a prior mean that is not positive, or a degenerate
+    # sigma) there is no posterior, so there is no amplitude either.
+    undefined = ~torch.isfinite(h)
+    F = F.masked_fill(undefined, float("nan"))
+    sigma_F = sigma_F.masked_fill(undefined, float("nan"))
+
     # Rejection criterion, computed but not used to zero out values: the caller
     # decides what to do with it. See french_wilson_valid_mask.
     valid_mask = torch.isfinite(h) & (I / sigma_I >= i_sig_min) & (h >= h_min)
@@ -960,7 +1012,7 @@ def french_wilson_centric(
     sigma_I : torch.Tensor
         Standard deviations of intensities (same shape as I).
     mean_intensity : torch.Tensor
-        Mean intensity for each reflection's resolution bin (same shape as I).
+        Wilson mean intensity ``Sigma`` for each reflection (same shape as I).
     h_min : float, optional
         Minimum h value for rejection. Default is -4.0.
     i_sig_min : float, optional
@@ -969,9 +1021,10 @@ def french_wilson_centric(
     Returns
     -------
     F : torch.Tensor
-        Structure factor amplitudes (same shape as I).
+        Structure factor amplitudes (same shape as I). NaN where
+        ``mean_intensity`` is not positive.
     sigma_F : torch.Tensor
-        Standard deviations of F (same shape as I).
+        Standard deviations of F (same shape as I), NaN where ``F`` is.
     valid_mask : torch.Tensor
         Boolean mask indicating valid (not rejected) reflections.
     """
@@ -1032,6 +1085,12 @@ def french_wilson_centric(
         F[large_h_mask] = post_F * torch.sqrt(sigma_I_large)
         sigma_F[large_h_mask] = post_sig_F * torch.sqrt(sigma_I_large)
 
+    # Where h is undefined (a prior mean that is not positive, or a degenerate
+    # sigma) there is no posterior, so there is no amplitude either.
+    undefined = ~torch.isfinite(h)
+    F = F.masked_fill(undefined, float("nan"))
+    sigma_F = sigma_F.masked_fill(undefined, float("nan"))
+
     # Rejection criterion, computed but not used to zero out values: the caller
     # decides what to do with it. See french_wilson_valid_mask.
     valid_mask = torch.isfinite(h) & (I / sigma_I >= i_sig_min) & (h >= h_min)
@@ -1058,7 +1117,9 @@ def french_wilson(
     sigma_I : torch.Tensor
         Standard deviations of intensities of shape (...).
     mean_intensity : torch.Tensor
-        Mean intensity for each reflection's resolution bin of shape (...).
+        Wilson mean intensity ``Sigma`` for each reflection, of shape (...),
+        e.g. from :func:`fit_mean_intensity`. Rows where it is not positive have
+        no posterior: ``F`` and ``sigma_F`` are NaN and ``valid_mask`` is False.
     is_centric : torch.Tensor, optional
         Boolean mask indicating centric reflections of shape (...).
         If None, assumes all reflections are acentric.
@@ -1136,9 +1197,13 @@ def estimate_mean_intensity_by_resolution(
     Uses linear interpolation between bin centers for smooth mean intensity
     estimates.
 
-    This is an arithmetic mean, which is what the French-Wilson posterior wants
-    and the wrong thing for outlier detection: a strong outlier raises the mean
-    of its own bin and so raises its own ``Sigma``, hiding itself. Use
+    This is an unweighted arithmetic mean of every row in a bin, and **not a
+    usable French-Wilson prior**: a bin of pure noise averages to about zero
+    and comes out negative as often as not, and one reflection with a huge
+    sigma can outweigh the rest of its bin. :func:`fit_mean_intensity` is the
+    prior :func:`french_wilson_auto` uses. It is also the wrong thing for
+    outlier detection: a strong outlier raises the mean of its own bin and so
+    raises its own ``Sigma``, hiding itself. Use
     :func:`~torchref.base.wilson_outliers.robust_mean_intensity` there.
 
     Parameters
@@ -1156,6 +1221,7 @@ def estimate_mean_intensity_by_resolution(
     -------
     torch.Tensor
         Estimated mean intensity for each reflection of shape (n_reflections,).
+        Can be zero or negative.
     """
     n_reflections = len(I)
 
@@ -1249,21 +1315,235 @@ def estimate_mean_intensity_by_resolution(
     return mean_I
 
 
+def _bspline(x: torch.Tensor, n: int) -> torch.Tensor:
+    """Clamped B-spline basis on [-1, 1], shape (len(x), n).
+
+    Degree ``min(3, n - 1)`` with uniformly spaced knots, so ``n <= 4`` is the
+    Bernstein polynomial basis. The functions sum to one everywhere, so equal
+    coefficients give a constant curve.
+    """
+    degree = min(3, n - 1)
+    inner = torch.linspace(-1.0, 1.0, n - degree + 1, dtype=x.dtype, device=x.device)
+    knots = torch.cat([inner[:1].repeat(degree), inner, inner[-1:].repeat(degree)])
+    x = torch.clamp(x, -1.0, 1.0).unsqueeze(1)
+    basis = ((x >= knots[:-1]) & (x < knots[1:])).to(x.dtype)
+    # The intervals are half-open; x = 1 belongs to the last non-empty one.
+    basis[:, n - 1] = torch.where(x[:, 0] >= 1.0, 1.0, basis[:, n - 1])
+
+    def ratio(num, den):
+        return torch.where(den > 0, num / torch.where(den > 0, den, 1.0), 0.0)
+
+    for k in range(1, degree + 1):
+        m = basis.shape[1] - 1
+        lo, lo_next = knots[:m], knots[1 : 1 + m]
+        hi, hi_next = knots[k : k + m], knots[k + 1 : k + 1 + m]
+        left = ratio(x - lo, hi - lo)
+        right = ratio(hi_next - x, hi_next - lo_next)
+        basis = left * basis[:, :-1] + right * basis[:, 1:]
+    return basis
+
+
+def _solve_normal(A: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Solve the symmetric positive definite system ``A x = b`` for a vector ``b``.
+
+    Cholesky with two triangular solves, because MPS implements neither
+    ``lu_solve`` nor ``cholesky_solve``. A ridge proportional to the largest
+    diagonal element keeps it posed when a basis direction carries almost no
+    weight; if the factorisation still fails, a general solve takes over.
+    """
+    A = A + 1e-10 * torch.diagonal(A).max() * torch.eye(
+        A.shape[0], dtype=A.dtype, device=A.device
+    )
+    rhs = b.unsqueeze(-1)
+    chol = torch.linalg.cholesky_ex(A)
+    if int(chol.info) != 0:
+        return torch.linalg.solve(A, rhs).squeeze(-1)
+    y = torch.linalg.solve_triangular(chol.L, rhs, upper=False)
+    return torch.linalg.solve_triangular(chol.L.mT, y, upper=True).squeeze(-1)
+
+
+def fit_mean_intensity(
+    I: torch.Tensor,
+    sigma_I: torch.Tensor,
+    d_spacings: torch.Tensor,
+    fit_mask: torch.Tensor | None = None,
+    n_coeff: int = DEFAULT_N_COEFF,
+) -> torch.Tensor:
+    """Wilson mean intensity ``Sigma`` per reflection, as a smooth positive curve.
+
+    ``log Sigma`` is a cubic B-spline in ``s^3 = 1/d^3`` with evenly spaced
+    knots. Reflections are spread evenly over ``s^3``, so the knots are
+    equal-count, as shells are; each basis function has local support, so
+    neither end of the curve rests on a handful of reflections the way the end
+    of a single high-degree polynomial does.
+
+    It is fitted by quasi-likelihood with the first two moments of an acentric
+    Wilson intensity measured with error, ``E[I] = Sigma`` and
+    ``Var[I] = Sigma^2 + sbar^2``, where ``sbar(s)`` is the typical measurement
+    error at that resolution, a smooth least-squares fit to ``log sigma_I``.
+    The estimating equation,
+
+        sum_h  x_h (I_h - Sigma_h) Sigma_h / (Sigma_h^2 + sbar_h^2) = 0,
+
+    makes ``Sigma`` a resolution-local mean intensity, as a shell mean is, but:
+
+    - ``Sigma > 0`` everywhere. Where the local mean is zero or below, as in a
+      region of pure noise, the weight vanishes with ``Sigma`` and the fit
+      settles towards zero instead of crossing it.
+    - There are no shell edges, and one reflection's pull is spread over the
+      support of its basis functions instead of landing on its own shell.
+    - Reflections at a given resolution get the same weight. Per-reflection
+      sigmas are not used for weighting because they correlate with the
+      intensity -- counting statistics make strong reflections noisier, and
+      merging can understate the error of rarely measured ones -- and
+      weighting by them would bias the mean in whichever direction that
+      correlation runs. The exception is a reflection more than ten times
+      noisier than typical, which takes its own sigma in place of ``sbar``
+      and so cannot drag the curve with an intensity that is mostly noise.
+
+    The curve is isotropic, and intensities are not divided by their
+    multiplicity ``epsilon``.
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Intensities of shape (n,), any sign.
+    sigma_I : torch.Tensor
+        Their standard deviations, shape (n,). Rows whose ``I`` or ``sigma_I``
+        is not finite, or whose ``sigma_I`` is not positive, do not inform the
+        fit.
+    d_spacings : torch.Tensor
+        Resolution in Å, shape (n,).
+    fit_mask : torch.Tensor, optional
+        Boolean mask of shape (n,) selecting the rows that inform the fit, e.g.
+        the acentric ones. Every row with a finite ``d`` receives a ``Sigma``
+        regardless.
+    n_coeff : int, optional
+        B-spline coefficients. Reduced to one per 400 fitted reflections, so a
+        small dataset gets a stiffer curve; ``1`` gives a single mean
+        intensity.
+
+    Returns
+    -------
+    torch.Tensor
+        ``Sigma`` of shape (n,), positive; NaN where ``d`` is not finite, and
+        everywhere if no row can inform the fit. Detached from autograd: a
+        fitted constant, not a function of ``I`` that gradients flow through.
+        The fit is Fisher scoring, which reads its objective back to the host
+        on every step.
+    """
+    I = I.detach()
+    sigma_I = sigma_I.detach()
+    s3 = 1.0 / (d_spacings.detach() ** 3)
+    Sigma = torch.full_like(I, float("nan"))
+
+    placed = torch.isfinite(s3)
+    usable = placed & torch.isfinite(I) & torch.isfinite(sigma_I) & (sigma_I > 0)
+    if fit_mask is not None:
+        usable = usable & fit_mask.to(torch.bool)
+    n_fit = int(usable.sum())
+    if n_fit == 0:
+        return Sigma
+
+    # The basis spans every row that will receive a Sigma, not only the fitted
+    # ones, so nothing is evaluated outside the fitted range.
+    lo, hi = s3[placed].min(), s3[placed].max()
+    if hi > lo:
+        x = 2.0 * (s3 - lo) / (hi - lo) - 1.0
+        n_terms = max(1, min(int(n_coeff), n_fit // _ROWS_PER_COEFF))
+    else:
+        x = torch.zeros_like(s3)
+        n_terms = 1
+    design = _bspline(x[usable], n_terms)
+    I_fit = I[usable]
+
+    log_sigma = torch.log(sigma_I[usable])
+    log_sbar = design @ _solve_normal(design.T @ design, design.T @ log_sigma)
+    log_noise = torch.maximum(log_sbar, log_sigma - math.log(_NOISY_SIGMA_RATIO))
+    noise = torch.exp(log_noise)
+    variance = noise * noise
+
+    # The negated quasi-likelihood, integral of (I - t)/(t^2 + v) from the
+    # observation to Sigma with v the noise variance, Sigma-independent constant
+    # dropped. atan2(noise, Sigma) rather than pi/2 - atan(Sigma/noise) keeps the
+    # strong end, where it is the familiar exponential term I/Sigma, free of
+    # cancellation, and it stays bounded as Sigma goes to zero. Also returned:
+    # the rounding error of the sum, below which two values do not differ.
+    eps = torch.finfo(I.dtype).eps
+
+    def objective(c):
+        eta = design @ c
+        terms = (I_fit / noise) * torch.atan2(noise, torch.exp(eta)) + 0.5 * (
+            torch.logaddexp(2.0 * eta, 2.0 * log_noise)
+        )
+        return float(terms.sum()), eta, eps * float(terms.abs().sum())
+
+    # Start from a flat curve at the mean intensity, or at the noise level when
+    # the data average to nothing; only the scale of the start matters.
+    level = math.log(max(float(I_fit.mean()), float(noise.median())))
+    coeff = torch.full((n_terms,), level, dtype=I.dtype, device=I.device)
+    loss, eta, rounding = objective(coeff)
+
+    # Fisher scoring rather than a generic optimiser: each step is scaled by the
+    # information in every direction, so weakly determined directions get
+    # full-sized steps instead of stalling. A step that raises the objective by
+    # more than its rounding error is halved; a float32 sum cannot resolve the
+    # last steps, and refusing them would stop the fit short in exactly those
+    # directions. Convergence is judged on the curve, where Sigma is at least a
+    # hundredth of the noise: below that every reflection is rejected whatever
+    # Sigma is, and a region of pure noise keeps sliding towards zero long
+    # after the rest has settled.
+    for _ in range(_MAX_ITER):
+        mu = torch.exp(eta)
+        total = mu * mu + variance
+        weight = mu * mu / total
+        score = mu * (I_fit - mu) / total
+        step = _solve_normal(
+            design.T @ (design * weight.unsqueeze(1)), design.T @ score
+        )
+        for _ in range(_MAX_HALVINGS):
+            trial_loss, trial_eta, trial_rounding = objective(coeff + step)
+            if trial_loss <= loss + rounding:
+                break
+            step = step * 0.5
+        else:
+            break
+        live = mu > 0.01 * noise
+        moved = float((trial_eta - eta)[live].abs().max()) if bool(live.any()) else 0.0
+        coeff, loss, eta, rounding = coeff + step, trial_loss, trial_eta, trial_rounding
+        if moved < _CURVE_TOL:
+            break
+
+    log_floor = float(log_sbar.median()) - _MAX_LOG_SIGMA_RATIO
+    log_Sigma = _bspline(x[placed], n_terms) @ coeff
+    Sigma[placed] = torch.exp(torch.clamp(log_Sigma, min=log_floor))
+    return Sigma
+
+
 def french_wilson_auto(
     I: torch.Tensor,
     sigma_I: torch.Tensor,
     hkl: torch.Tensor,
     d_spacings: torch.Tensor,
     space_group: SpaceGroupLike = "P1",
-    n_bins: int = 60,
-    min_per_bin: int = 40,
+    n_bins: int | None = None,
+    min_per_bin: int | None = None,
     h_min: float = -4.0,
+    *,
+    n_coeff: int = DEFAULT_N_COEFF,
+    exclude_from_fit: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Convert intensities to amplitudes, estimating shell means and centricity.
+    Convert intensities to amplitudes, fitting the Wilson prior and centricity.
 
-    Every per-reflection input must be row-aligned: the shell mean and centric
-    flag of row ``i`` are taken from ``hkl[i]`` and ``d_spacings[i]``.
+    Every per-reflection input must be row-aligned: the prior and centric flag
+    of row ``i`` are taken from ``hkl[i]`` and ``d_spacings[i]``.
+
+    The prior is :func:`fit_mean_intensity`, fitted to the acentric rows,
+    whose Wilson density is the one it has in closed form; centric rows are
+    converted with the same curve. A centric-only input is fitted as if
+    acentric, which gets the mean intensity right and the shape of its
+    distribution wrong.
 
     Parameters
     ----------
@@ -1274,15 +1554,23 @@ def french_wilson_auto(
     hkl : torch.Tensor
         Miller indices of shape (n_reflections, 3).
     d_spacings : torch.Tensor
-        Resolution (d-spacing) for each reflection of shape (n_reflections,).
+        Resolution (d-spacing) in Å for each reflection of shape
+        (n_reflections,).
     space_group : str, int, or gemmi.SpaceGroup, optional
         Space group specification. Default is "P1".
-    n_bins : int, optional
-        Number of resolution bins. Default is 60.
-    min_per_bin : int, optional
-        Minimum reflections per bin. Default is 40.
+    n_bins, min_per_bin : int, optional
+        Deprecated and ignored: the prior has no resolution bins. Size it with
+        ``n_coeff``.
     h_min : float, optional
         Minimum h value for rejection. Default is -4.0.
+    n_coeff : int, optional
+        B-spline coefficients in ``log Sigma``, as for
+        :func:`fit_mean_intensity`.
+    exclude_from_fit : torch.Tensor, optional
+        Boolean mask of shape (n_reflections,) of rows that must not inform the
+        prior -- the free (test) set, so that nothing fitted has seen it. They
+        are still given a prior from the curve and converted like every other
+        row. Ignored if it would leave no row to fit.
 
     Returns
     -------
@@ -1292,8 +1580,8 @@ def french_wilson_auto(
         Standard deviations of F of shape (n_reflections,).
     valid_mask : torch.Tensor
         Boolean mask, ``True`` = keep. ``False`` both for rows French-Wilson
-        rejects as too negative and for rows with NaN ``I`` or ``sigma_I``,
-        whose ``F`` and ``sigma_F`` are NaN.
+        rejects as too negative and for rows with NaN ``I`` or ``sigma_I`` or
+        a non-finite ``d``, whose ``F`` and ``sigma_F`` are NaN.
 
     Examples
     --------
@@ -1305,6 +1593,14 @@ def french_wilson_auto(
         d_spacings = torch.tensor([2.5, 3.0, 2.8, 2.0])
         F, sigma_F, valid = french_wilson_auto(I, sigma_I, hkl, d_spacings, "P212121")
     """
+    if n_bins is not None or min_per_bin is not None:
+        warnings.warn(
+            "french_wilson_auto: n_bins and min_per_bin have no effect and will be "
+            "removed; the Wilson prior is a smooth fit sized by n_coeff "
+            "(see fit_mean_intensity).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     F = torch.full_like(I, float("nan"))
     sigma_F = torch.full_like(sigma_I, float("nan"))
     # NaN rows are never converted, so they are not kept either.
@@ -1314,11 +1610,23 @@ def french_wilson_auto(
     if not finite.any():
         return F, sigma_F, valid_mask
 
-    # NaN rows are dropped before binning, or they would poison the shell means.
-    mean_intensity = estimate_mean_intensity_by_resolution(
-        I[finite], d_spacings[finite], n_bins=n_bins, min_per_bin=min_per_bin
-    )
     is_centric = SpaceGroup(space_group, device=hkl.device).is_centric(hkl[finite])
+    acentric = ~is_centric
+    fit_mask = acentric if bool(acentric.any()) else torch.ones_like(acentric)
+    if exclude_from_fit is not None:
+        held_out = exclude_from_fit.to(device=I.device, dtype=torch.bool)
+        working = fit_mask & ~held_out[finite]
+        # A test set drawn on a tiny dataset can cover every row, and with
+        # nothing left to fit there would be no prior at all.
+        if bool(working.any()):
+            fit_mask = working
+    mean_intensity = fit_mean_intensity(
+        I[finite],
+        sigma_I[finite],
+        d_spacings[finite],
+        fit_mask=fit_mask,
+        n_coeff=n_coeff,
+    )
 
     F[finite], sigma_F[finite], valid_mask[finite] = french_wilson(
         I[finite],
