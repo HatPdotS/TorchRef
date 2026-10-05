@@ -15,7 +15,6 @@ import torch
 from torchref.base.french_wilson import (
     _anisotropy_design,
     _bspline,
-    estimate_mean_intensity_by_resolution,
     fit_mean_intensity,
     french_wilson,
     french_wilson_auto,
@@ -69,6 +68,18 @@ def _inconsistent(F, keep, I, sigma_I):
     return keep & (F * F > I + 6.0 * sigma_I)
 
 
+def _shell_means(I, d, n_shells):
+    """Unweighted mean intensity of equal-count resolution shells, per row."""
+    order = torch.argsort(d, descending=True)
+    shell = torch.empty_like(order)
+    shell[order] = torch.arange(len(d)) * n_shells // len(d)
+    sums = torch.zeros(n_shells, dtype=I.dtype).index_add_(0, shell, I)
+    counts = torch.zeros(n_shells, dtype=I.dtype).index_add_(
+        0, shell, torch.ones_like(I)
+    )
+    return (sums / counts)[shell]
+
+
 # =============================================================================
 # The guard
 # =============================================================================
@@ -110,6 +121,26 @@ def test_non_positive_prior_gives_no_amplitude(centric):
     assert bool(keep[3]) and bool(keep_alone[0])
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("centric", [False, True])
+def test_rejection_threshold_does_not_move_the_posterior(centric):
+    """``h_min`` decides which rows are kept, not what their amplitudes are."""
+    I = torch.linspace(-35.0, 300.0, 400)
+    sigma_I = torch.full_like(I, 10.0)
+    Sigma = torch.full_like(I, 80.0)
+    is_centric = torch.full_like(I, centric, dtype=torch.bool)
+
+    F, sigma_F, keep = french_wilson(I, sigma_I, Sigma, is_centric, h_min=-4.0)
+    F_strict, sigma_F_strict, keep_strict = french_wilson(
+        I, sigma_I, Sigma, is_centric, h_min=-2.0
+    )
+
+    torch.testing.assert_close(F_strict, F)
+    torch.testing.assert_close(sigma_F_strict, sigma_F)
+    assert bool((keep_strict <= keep).all())
+    assert int(keep_strict.sum()) < int(keep.sum())
+
+
 # =============================================================================
 # The prior
 # =============================================================================
@@ -122,7 +153,7 @@ def test_shell_mean_goes_negative_where_the_fitted_prior_does_not():
         6000, 0, lambda J: torch.full_like(J, 10.0), signal_beyond=3.0
     )
 
-    assert bool((estimate_mean_intensity_by_resolution(I, d) <= 0).any())
+    assert bool((_shell_means(I, d, 60) <= 0).any())
 
     Sigma = fit_mean_intensity(I, sigma, d)
     assert bool(torch.isfinite(Sigma).all())
@@ -176,7 +207,7 @@ def test_one_wild_reflection_does_not_drag_its_neighbours():
     near = (d - 3.0).abs() < 0.15
 
     # A shell mean is dragged far below zero by it ...
-    assert float(estimate_mean_intensity_by_resolution(I, d)[near].min()) < 0
+    assert float(_shell_means(I, d, 60)[near].min()) < 0
     # ... the fitted prior is not.
     ratio = (fit_mean_intensity(I, sigma, d) / Sigma_true)[near]
     assert float(ratio.min()) > 0.9
@@ -191,7 +222,7 @@ def test_prior_matches_the_shell_mean_on_deposited_data(mtz_dir):
     I, sigma_I, d = data.I, data.I_sigma, data.resolution
 
     fitted = fit_mean_intensity(I, sigma_I, d)
-    binned = estimate_mean_intensity_by_resolution(I, d)
+    binned = _shell_means(I, d, 40)
     assert float(torch.log(fitted / binned).abs().median()) < 0.05
 
     F_fit, _, keep_fit = french_wilson(I, sigma_I, fitted)
@@ -241,20 +272,6 @@ def test_prior_survives_degenerate_inputs():
     assert bool(torch.isnan(unusable).all())
     _, _, keep = french_wilson_auto(I, torch.zeros_like(sigma), hkl, d, "P 1")
     assert not bool(keep.any())
-
-
-@pytest.mark.unit
-def test_bin_arguments_are_deprecated_and_ignored():
-    n = 2000
-    d, _, I, sigma = _wilson_data(n, 5, lambda J: torch.full_like(J, 10.0))
-    hkl = _hkl(n)
-
-    reference = french_wilson_auto(I, sigma, hkl, d, "P 1")
-    with pytest.warns(DeprecationWarning, match="n_bins"):
-        binned = french_wilson_auto(I, sigma, hkl, d, "P 1", n_bins=60, min_per_bin=40)
-
-    for a, b in zip(reference, binned):
-        torch.testing.assert_close(a, b, equal_nan=True)
 
 
 # =============================================================================

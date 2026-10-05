@@ -9,7 +9,7 @@ objective.
 
 **Why this exists as one shared class.** The repo grew at least five private
 answers to the same question -- ``base/wilson_outliers.robust_mean_intensity``,
-``base/french_wilson.estimate_mean_intensity_by_resolution``,
+``base/french_wilson.fit_mean_intensity``,
 :func:`fit_wilson_b` below, the ``Sigma_N`` estimator in
 ``refinement/model_error_estimation/sigma_a``, and a per-shell one inside the
 alignment package -- differing in whether they use means or medians, whether
