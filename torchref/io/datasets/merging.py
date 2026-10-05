@@ -256,9 +256,6 @@ def merge_to_spacegroup(
     )
     stats.n_absent_obs, stats.absent_mean_i_over_sigma = n_absent_obs, absent_isig
 
-    F_m, sF_m, keep = french_wilson_auto(I_m, s_m, g_hkl, d_g, target)
-    F_m = torch.where(keep, F_m, torch.full_like(F_m, float("nan")))
-
     def _asu_any(flags: torch.Tensor) -> torch.Tensor:
         per_obs = flags.detach().cpu().to(torch.bool)[rows][src]
         hit = ReflectionData._group_any(per_obs, g_asu[gid], n_asu)
@@ -270,6 +267,17 @@ def merge_to_spacegroup(
     validation = None
     if data.validation_flags is not None:
         validation = _asu_any(data.validation_flags)
+
+    # The merged test set stays out of the French-Wilson prior.
+    held_out = None
+    if rfree is not None:
+        held_out = ~rfree
+    if validation is not None:
+        held_out = validation if held_out is None else held_out | validation
+    F_m, sF_m, keep = french_wilson_auto(
+        I_m, s_m, g_hkl, d_g, target, exclude_from_fit=held_out
+    )
+    F_m = torch.where(keep, F_m, torch.full_like(F_m, float("nan")))
 
     # Signed indices, so canonicalization inside from_tensors rebuilds
     # friedel_flags / hkl_anomalous for a separated Bijvoet pair.

@@ -452,19 +452,25 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
         return empty
 
     with torch.no_grad():
-        # Full-size, so French-Wilson estimates its shell means from every reflection.
+        # Full-size, so French-Wilson fits its prior to every working reflection.
         delta_F_full = fcalc_mixed_full - fcalc_dark_full
         variance_full = mc.sigma_alpha_sq * delta_F_full.abs() ** 2
 
         I_light_full, sig_I_full = data_light.get_corrected_intensities()
         I_corrected_full = I_light_full - variance_full
 
+        held_out = None
+        if data_light.rfree_flags is not None:
+            held_out = ~data_light.rfree_flags.to(torch.bool)
+            if data_light.validation_flags is not None:
+                held_out = held_out | data_light.validation_flags.to(torch.bool)
         F_corr_full, sig_F_corr_full, _ = french_wilson_auto(
             I_corrected_full,
             sig_I_full,
             data_light.hkl,
             data_light.resolution,
             data_light.spacegroup or "P1",
+            exclude_from_fit=held_out,
         )
 
         def _np(t):
