@@ -1362,12 +1362,127 @@ def _solve_normal(A: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.linalg.solve_triangular(chol.L.mT, y, upper=True).squeeze(-1)
 
 
+def _anisotropy_design(
+    hkl: torch.Tensor,
+    space_group: SpaceGroupLike,
+    radial: torch.Tensor,
+    s2: torch.Tensor,
+    rows: torch.Tensor,
+) -> torch.Tensor:
+    """Direction-only quadratic forms in the Miller indices the Laue group allows.
+
+    An ellipsoidal fall-off ``exp(-2 pi^2 s^T U s)`` is ``exp(h^T M h)`` with
+    the cell folded into ``M``, so it needs only ``hkl``. Averaging ``h_i h_j``
+    over the symmetry copies of each reflection leaves the forms the Laue group
+    allows. Each then loses, by least squares over ``rows``, whatever the
+    radial curve or ``s^2`` itself can represent -- ``s^2 = h^T G* h`` is the
+    isotropic form, which the radial curve does not reproduce exactly at low
+    resolution. What is left is direction only, and nothing in the fit
+    duplicates the radial columns. The result is orthonormal over ``rows``.
+
+    How many directions are left is fixed by symmetry, not by the data: it is
+    the dimension of the Laue-invariant quadratic forms, the trace of the
+    averaging operator over the group's rotations, less the isotropic one -- 5
+    for triclinic down to 0 for cubic. Reading it off the data instead would
+    let rounding in a nearly isotropic direction pass for anisotropy.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices, shape (n, 3).
+    space_group : SpaceGroupLike
+        The data's space group.
+    radial : torch.Tensor
+        The radial basis evaluated at every row, shape (n, m).
+    s2 : torch.Tensor
+        ``1/d^2`` in Å⁻², shape (n,), zero where ``d`` is not finite.
+    rows : torch.Tensor
+        Boolean mask of shape (n,) of the rows the fit uses.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape (n, r) with ``r`` between 0 and 5.
+    """
+    dtype = radial.dtype
+    group = SpaceGroup(space_group, device=hkl.device)
+    copies, _, _, _ = group.equivalent_hkl(
+        hkl, include_friedel=False, device=hkl.device
+    )
+
+    # Rotations acting on h, recovered as the images of the unit vectors. The
+    # averaging operator maps M to mean(R M R^T); in the coordinates
+    # (M00, M11, M22, M01, M02, M12) its trace counts the invariant forms.
+    unit = torch.eye(3, dtype=hkl.dtype, device=hkl.device)
+    images, _, _, _ = group.equivalent_hkl(
+        unit, include_friedel=False, device=hkl.device
+    )
+    R = images.to(dtype).cpu().reshape(-1, 3, 3)
+    trace = 0.0
+    for i, j in [(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)]:
+        E = torch.zeros(3, 3, dtype=dtype)
+        E[i, j] = E[j, i] = 1.0
+        trace += float((R @ E @ R.mT).mean(0)[i, j])
+    n_directions = round(trace) - 1
+    if n_directions < 1:
+        return torch.zeros(hkl.shape[0], 0, dtype=dtype, device=hkl.device)
+    n_ops = copies.shape[0] // hkl.shape[0]
+    h = copies.to(dtype).reshape(n_ops, hkl.shape[0], 3)
+    forms = torch.stack(
+        [
+            h[..., 0] * h[..., 0],
+            h[..., 1] * h[..., 1],
+            h[..., 2] * h[..., 2],
+            2.0 * h[..., 0] * h[..., 1],
+            2.0 * h[..., 0] * h[..., 2],
+            2.0 * h[..., 1] * h[..., 2],
+        ],
+        dim=-1,
+    ).mean(0)
+    # Unit scale before any sums: raw h_i h_j reach 1e4, and their squares
+    # summed over 1e5 rows lose the digits that separate the anisotropic part
+    # from the isotropic one in float32.
+    forms = forms / forms[rows].pow(2).mean(0).sqrt().clamp(min=1e-30)
+
+    # Two projections in turn rather than one onto [radial, s^2]: s^2 is nearly
+    # a radial function, and the joint normal equations lose in float32 the
+    # very difference that is being kept.
+    on_rows = radial[rows]
+    gram = on_rows.T @ on_rows
+
+    def off_radial(columns):
+        coefficients = torch.stack(
+            [_solve_normal(gram, on_rows.T @ col[rows]) for col in columns.T], dim=1
+        )
+        return columns - radial @ coefficients
+
+    residual = off_radial(forms)
+    s2_off = off_radial((s2 / s2[rows].pow(2).mean().sqrt()).unsqueeze(1))[:, 0]
+    w = s2_off[rows]
+    residual = residual - s2_off.unsqueeze(1) * (
+        (residual[rows].T @ w) / (w @ w).clamp(min=1e-30)
+    )
+
+    # A 6x6 eigenproblem, solved on the host: it is tiny, and MPS has no eigh.
+    # The leading directions are the anisotropic ones; what follows them is
+    # what the symmetry or the projection removed, down to rounding.
+    fitted = residual[rows]
+    values, vectors = torch.linalg.eigh((fitted.T @ fitted / fitted.shape[0]).cpu())
+    values, vectors = values[-n_directions:], vectors[:, -n_directions:]
+    basis = (vectors / values.clamp(min=1e-30).sqrt()).to(device=hkl.device)
+    return residual @ basis
+
+
 def fit_mean_intensity(
     I: torch.Tensor,
     sigma_I: torch.Tensor,
     d_spacings: torch.Tensor,
     fit_mask: torch.Tensor | None = None,
     n_coeff: int = DEFAULT_N_COEFF,
+    *,
+    hkl: torch.Tensor | None = None,
+    space_group: SpaceGroupLike | None = None,
+    is_centric: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Wilson mean intensity ``Sigma`` per reflection, as a smooth positive curve.
 
@@ -1401,8 +1516,13 @@ def fit_mean_intensity(
       noisier than typical, which takes its own sigma in place of ``sbar``
       and so cannot drag the curve with an intensity that is mostly noise.
 
-    The curve is isotropic, and intensities are not divided by their
-    multiplicity ``epsilon``.
+    Given ``hkl`` and ``space_group``, ``log Sigma`` also carries an
+    ellipsoidal anisotropy, ``h^T M h`` with ``M`` restricted to what the Laue
+    group allows, its isotropic part left to the radial curve (see
+    :func:`_anisotropy_design`): at most five parameters, each informed by
+    every reflection. Without them
+    the curve is isotropic. Intensities are not divided by their multiplicity
+    ``epsilon``.
 
     Parameters
     ----------
@@ -1422,6 +1542,15 @@ def fit_mean_intensity(
         B-spline coefficients. Reduced to one per 400 fitted reflections, so a
         small dataset gets a stiffer curve; ``1`` gives a single mean
         intensity.
+    hkl : torch.Tensor, optional
+        Miller indices of shape (n, 3). With ``space_group``, makes the prior
+        anisotropic.
+    space_group : str, int, or gemmi.SpaceGroup, optional
+        The data's space group; see ``hkl``.
+    is_centric : torch.Tensor, optional
+        Boolean mask of shape (n,). Centric rows that inform the fit are given
+        the centric variance, ``2 Sigma^2 + sbar^2``; their mean is the same
+        ``Sigma``. None treats every row as acentric.
 
     Returns
     -------
@@ -1454,34 +1583,52 @@ def fit_mean_intensity(
     else:
         x = torch.zeros_like(s3)
         n_terms = 1
-    design = _bspline(x[usable], n_terms)
+    radial = _bspline(x[usable], n_terms)
     I_fit = I[usable]
+    kappa = torch.ones_like(I_fit)
+    if is_centric is not None:
+        kappa = torch.where(is_centric.to(torch.bool)[usable], 2.0, kappa)
 
     log_sigma = torch.log(sigma_I[usable])
-    log_sbar = design @ _solve_normal(design.T @ design, design.T @ log_sigma)
+    log_sbar = radial @ _solve_normal(radial.T @ radial, radial.T @ log_sigma)
     log_noise = torch.maximum(log_sbar, log_sigma - math.log(_NOISY_SIGMA_RATIO))
     noise = torch.exp(log_noise)
     variance = noise * noise
 
-    # The negated quasi-likelihood, integral of (I - t)/(t^2 + v) from the
-    # observation to Sigma with v the noise variance, Sigma-independent constant
-    # dropped. atan2(noise, Sigma) rather than pi/2 - atan(Sigma/noise) keeps the
-    # strong end, where it is the familiar exponential term I/Sigma, free of
-    # cancellation, and it stays bounded as Sigma goes to zero. Also returned:
-    # the rounding error of the sum, below which two values do not differ.
+    anisotropy = None
+    if hkl is not None and space_group is not None:
+        radial_all = torch.zeros(len(I), n_terms, dtype=I.dtype, device=I.device)
+        radial_all[placed] = _bspline(x[placed], n_terms)
+        s2 = torch.where(placed, 1.0 / (d_spacings.detach() ** 2), 0.0).to(I.dtype)
+        anisotropy = _anisotropy_design(hkl, space_group, radial_all, s2, usable)
+    if anisotropy is not None and anisotropy.shape[1] > 0:
+        design = torch.cat([radial, anisotropy[usable]], dim=1)
+    else:
+        anisotropy, design = None, radial
+
+    # The negated quasi-likelihood, integral of (I - t)/(k t^2 + v) from the
+    # observation to Sigma, with v the noise variance and k = 1 (acentric) or 2
+    # (centric), Sigma-independent constant dropped. atan2(noise, sqrt(k) Sigma)
+    # rather than pi/2 - atan(sqrt(k) Sigma/noise) keeps the strong end, where
+    # it is the familiar exponential term I/Sigma, free of cancellation, and it
+    # stays bounded as Sigma goes to zero. Also returned: the rounding error of
+    # the sum, below which two values do not differ.
     eps = torch.finfo(I.dtype).eps
+    root_kappa = kappa.sqrt()
+    log_kappa = kappa.log()
 
     def objective(c):
         eta = design @ c
-        terms = (I_fit / noise) * torch.atan2(noise, torch.exp(eta)) + 0.5 * (
-            torch.logaddexp(2.0 * eta, 2.0 * log_noise)
-        )
+        terms = (I_fit / (root_kappa * noise)) * torch.atan2(
+            noise, root_kappa * torch.exp(eta)
+        ) + (0.5 / kappa) * torch.logaddexp(2.0 * eta + log_kappa, 2.0 * log_noise)
         return float(terms.sum()), eta, eps * float(terms.abs().sum())
 
     # Start from a flat curve at the mean intensity, or at the noise level when
     # the data average to nothing; only the scale of the start matters.
     level = math.log(max(float(I_fit.mean()), float(noise.median())))
-    coeff = torch.full((n_terms,), level, dtype=I.dtype, device=I.device)
+    coeff = torch.zeros(design.shape[1], dtype=I.dtype, device=I.device)
+    coeff[:n_terms] = level
     loss, eta, rounding = objective(coeff)
 
     # Fisher scoring rather than a generic optimiser: each step is scaled by the
@@ -1495,7 +1642,7 @@ def fit_mean_intensity(
     # after the rest has settled.
     for _ in range(_MAX_ITER):
         mu = torch.exp(eta)
-        total = mu * mu + variance
+        total = kappa * mu * mu + variance
         weight = mu * mu / total
         score = mu * (I_fit - mu) / total
         step = _solve_normal(
@@ -1515,7 +1662,9 @@ def fit_mean_intensity(
             break
 
     log_floor = float(log_sbar.median()) - _MAX_LOG_SIGMA_RATIO
-    log_Sigma = _bspline(x[placed], n_terms) @ coeff
+    log_Sigma = _bspline(x[placed], n_terms) @ coeff[:n_terms]
+    if anisotropy is not None:
+        log_Sigma = log_Sigma + anisotropy[placed] @ coeff[n_terms:]
     Sigma[placed] = torch.exp(torch.clamp(log_Sigma, min=log_floor))
     return Sigma
 
@@ -1532,6 +1681,7 @@ def french_wilson_auto(
     *,
     n_coeff: int = DEFAULT_N_COEFF,
     exclude_from_fit: torch.Tensor | None = None,
+    anisotropic: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Convert intensities to amplitudes, fitting the Wilson prior and centricity.
@@ -1539,11 +1689,11 @@ def french_wilson_auto(
     Every per-reflection input must be row-aligned: the prior and centric flag
     of row ``i`` are taken from ``hkl[i]`` and ``d_spacings[i]``.
 
-    The prior is :func:`fit_mean_intensity`, fitted to the acentric rows,
-    whose Wilson density is the one it has in closed form; centric rows are
-    converted with the same curve. A centric-only input is fitted as if
-    acentric, which gets the mean intensity right and the shape of its
-    distribution wrong.
+    The prior is :func:`fit_mean_intensity`. Anisotropic, it is fitted to every
+    row, centric ones with their own variance. Isotropic, it is fitted to the
+    acentric rows only: a centric zone is a single plane of reciprocal space,
+    and on anisotropic data its mean intensity is that of one direction, not
+    of the shell.
 
     Parameters
     ----------
@@ -1571,6 +1721,8 @@ def french_wilson_auto(
         prior -- the free (test) set, so that nothing fitted has seen it. They
         are still given a prior from the curve and converted like every other
         row. Ignored if it would leave no row to fit.
+    anisotropic : bool, optional
+        Fit an ellipsoidal anisotropy into the prior. Default True.
 
     Returns
     -------
@@ -1612,7 +1764,10 @@ def french_wilson_auto(
 
     is_centric = SpaceGroup(space_group, device=hkl.device).is_centric(hkl[finite])
     acentric = ~is_centric
-    fit_mask = acentric if bool(acentric.any()) else torch.ones_like(acentric)
+    if anisotropic or not bool(acentric.any()):
+        fit_mask = torch.ones_like(acentric)
+    else:
+        fit_mask = acentric
     if exclude_from_fit is not None:
         held_out = exclude_from_fit.to(device=I.device, dtype=torch.bool)
         working = fit_mask & ~held_out[finite]
@@ -1626,6 +1781,9 @@ def french_wilson_auto(
         d_spacings[finite],
         fit_mask=fit_mask,
         n_coeff=n_coeff,
+        hkl=hkl[finite] if anisotropic else None,
+        space_group=space_group if anisotropic else None,
+        is_centric=is_centric,
     )
 
     F[finite], sigma_F[finite], valid_mask[finite] = french_wilson(

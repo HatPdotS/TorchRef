@@ -13,6 +13,8 @@ import pytest
 import torch
 
 from torchref.base.french_wilson import (
+    _anisotropy_design,
+    _bspline,
     estimate_mean_intensity_by_resolution,
     fit_mean_intensity,
     french_wilson,
@@ -21,6 +23,7 @@ from torchref.base.french_wilson import (
     french_wilson_valid_mask,
 )
 from torchref.io.datasets.reflection_data import ReflectionData
+from torchref.symmetry import Cell, SpaceGroup
 
 
 def _wilson_data(n, seed, sigma_of_J, d_max=20.0, d_min=2.0, signal_beyond=None):
@@ -282,3 +285,79 @@ def test_held_out_reflections_do_not_inform_the_prior():
     # The held-out rows are still converted, from their own intensities.
     assert bool(keep_moved[free].all())
     assert bool((F_moved[free] > F[free]).all())
+
+
+# =============================================================================
+# Anisotropy
+# =============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "space_group, expected",
+    [
+        ("P 1", 5),
+        ("P 1 21 1", 3),
+        ("C 1 2 1", 3),
+        ("P 21 21 21", 2),
+        ("P 43 21 2", 1),
+        ("P 63", 1),
+        ("P 31 2 1", 1),
+        ("P 21 3", 0),
+    ],
+)
+def test_anisotropy_has_the_parameters_the_laue_class_allows(space_group, expected):
+    """Invariant quadratic forms less the isotropic one: 5 triclinic, 0 cubic."""
+    hkl = torch.randint(-9, 10, (400, 3), generator=torch.Generator().manual_seed(7))
+    hkl = hkl[(hkl != 0).any(dim=1)]
+    n = len(hkl)
+    radial = _bspline(torch.linspace(-1.0, 1.0, n, dtype=torch.float64), 8)
+    s2 = torch.rand(n, dtype=torch.float64, generator=torch.Generator().manual_seed(8))
+    rows = torch.ones(n, dtype=torch.bool)
+
+    design = _anisotropy_design(hkl, space_group, radial, s2, rows)
+
+    assert design.shape == (n, expected)
+
+
+def _anisotropic_data(seed):
+    """Wilson intensities in P 1 21 1 whose fall-off is 3x faster along c*."""
+    cell = Cell([60.0, 70.0, 80.0, 90.0, 100.0, 90.0])
+    hkl = torch.stack(
+        torch.meshgrid(
+            torch.arange(-25, 26),
+            torch.arange(0, 30),
+            torch.arange(-30, 31),
+            indexing="ij",
+        ),
+        dim=-1,
+    ).reshape(-1, 3)
+    s = hkl.double() @ cell.inv_fractional_matrix.double()
+    d = 1.0 / s.norm(dim=1)
+    keep = (d > 2.5) & (d < 20.0)
+    hkl, s, d = hkl[keep], s[keep], d[keep]
+    # B along c* 60 A^2, 20 A^2 across it.
+    B = 20.0 + 40.0 * (s[:, 2] / s.norm(dim=1)) ** 2
+    Sigma = 1000.0 * torch.exp(-B * (s * s).sum(dim=1) / 4.0)
+    g = torch.Generator().manual_seed(seed)
+    J = Sigma * -torch.log(torch.rand(len(d), generator=g, dtype=torch.float64))
+    sigma = torch.full_like(J, 5.0)
+    I = J + sigma * torch.randn(len(d), generator=g, dtype=torch.float64)
+    return hkl, d.float(), Sigma.float(), I.float(), sigma.float()
+
+
+@pytest.mark.unit
+def test_anisotropic_prior_recovers_an_ellipsoidal_fall_off():
+    hkl, d, Sigma_true, I, sigma = _anisotropic_data(9)
+    centric = SpaceGroup("P 1 21 1").is_centric(hkl)
+
+    aniso = fit_mean_intensity(
+        I, sigma, d, hkl=hkl, space_group="P 1 21 1", is_centric=centric
+    )
+    iso = fit_mean_intensity(I, sigma, d, fit_mask=~centric)
+
+    error_aniso = torch.log(aniso / Sigma_true).abs()
+    error_iso = torch.log(iso / Sigma_true).abs()
+    assert float(error_aniso.quantile(0.95)) < 0.15
+    # The isotropic curve cannot follow the direction dependence at all.
+    assert float(error_iso.quantile(0.95)) > 3.0 * float(error_aniso.quantile(0.95))
