@@ -146,15 +146,13 @@ class TestGeometryTargetsFunctional:
     """Functional tests for geometry restraint targets."""
 
     @pytest.mark.integration
-    def test_bond_target_with_real_structure(self, sample_cif_file, external_monomer_library):
+    def test_bond_target_with_real_structure(self, sample_cif_file):
         """Test bond target calculation with real structure."""
         from torchref.model.model import Model
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        # Use new model-based restraints API
-        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         # Calculate bond deviations manually
@@ -183,15 +181,13 @@ class TestGeometryTargetsFunctional:
             assert torch.isfinite(loss)
 
     @pytest.mark.integration
-    def test_angle_target_with_real_structure(self, sample_cif_file, external_monomer_library):
+    def test_angle_target_with_real_structure(self, sample_cif_file):
         """Test angle target calculation with real structure."""
         from torchref.model.model import Model
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        # Use new model-based restraints API
-        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         # Calculate angle deviations
@@ -605,15 +601,13 @@ class TestLossComponentsFunctional:
     """Functional tests for individual loss components."""
 
     @pytest.mark.integration
-    def test_bond_deviation_calculation(self, sample_cif_file, external_monomer_library):
+    def test_bond_deviation_calculation(self, sample_cif_file):
         """Test bond deviation calculation."""
         from torchref.model.model import Model
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        # Use new model-based restraints API
-        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         if 'bond' in restraints.restraints and 'intra' in restraints.restraints['bond']:
@@ -636,15 +630,13 @@ class TestLossComponentsFunctional:
             assert rms_deviation < 0.5  # Allow some tolerance
 
     @pytest.mark.integration
-    def test_angle_deviation_calculation(self, sample_cif_file, external_monomer_library):
+    def test_angle_deviation_calculation(self, sample_cif_file):
         """Test angle deviation calculation."""
         from torchref.model.model import Model
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        # Use new model-based restraints API
-        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         if 'angle' in restraints.restraints and 'intra' in restraints.restraints['angle']:
@@ -682,7 +674,7 @@ class TestCombinedLossFunctional:
     """Functional tests for combined loss calculations."""
 
     @pytest.mark.integration
-    def test_xray_plus_geometry_loss(self, sample_structure_pair, external_monomer_library):
+    def test_xray_plus_geometry_loss(self, sample_structure_pair):
         """Test combining X-ray and geometry losses."""
         from torchref.base.math_torch import nll_xray
         from torchref.io import ReflectionData
@@ -694,8 +686,6 @@ class TestCombinedLossFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        # Use new model-based restraints API
-        model.ctx.set_cif_path(str(external_monomer_library))
         restraints = model.restraints
         
         # X-ray loss

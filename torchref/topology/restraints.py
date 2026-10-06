@@ -232,25 +232,11 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         """Load CIF dictionaries from provided paths and monomer library."""
         if cif_path:
             if isinstance(cif_path, str):
-                try:
-                    self.cif_dict = read_cif(cif_path)
-                except ValueError as e:
-                    print("Error reading CIF file:", e)
-                    raise
-                except Exception as e:
-                    print("Error reading CIF file:", e)
-                    self.cif_dict = {}
+                self.cif_dict = read_cif(cif_path)
             elif isinstance(cif_path, list):
                 self.cif_dict = {}
                 for cif_file in cif_path:
-                    try:
-                        cif_dict_part = read_cif(cif_file)
-                        self.cif_dict.update(cif_dict_part)
-                    except ValueError as e:
-                        print("Error reading CIF file:", e)
-                        raise
-                    except Exception as e:
-                        print("Error reading CIF file:", e)
+                    self.cif_dict.update(read_cif(cif_file))
             else:
                 raise ValueError("cif_path must be a string or a list of strings")
         else:

@@ -268,3 +268,16 @@ def test_bond_free_empty_results_keep_the_input_dtype(bond_free):
     differences = restraints.adp_b_differences(adp)
     assert differences.shape == (0,) and differences.dtype == torch.float64
     assert restraints.bond_lengths(None, xyz).dtype == torch.float64
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("as_list", [False, True])
+def test_unreadable_user_cif_raises(pdb_dir, tmp_path, as_list):
+    """A restraint dictionary the caller names but that cannot be read is an error."""
+    from torchref.model.model import Model
+
+    model = Model(verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb"))
+    missing = str(tmp_path / "missing.cif")
+    model.ctx.set_cif_path([missing] if as_list else missing)
+    with pytest.raises(FileNotFoundError):
+        model.restraints
