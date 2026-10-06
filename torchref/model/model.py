@@ -2,8 +2,8 @@
 
 :class:`Model` holds coordinates, isotropic and anisotropic ADPs and occupancies as
 parameter wrappers that decide which atoms are refinable, over a
-:class:`~torchref.model.context.ModelContext` that carries what the structure was
-loaded with: cell, space group, atom identity and restraints.
+:class:`~torchref.model.context.ModelContext` that carries the loaded structure's
+cell, space group, atom identity and restraints.
 :class:`~torchref.model.model_ft.ModelFT` adds the structure factors.
 """
 
@@ -481,7 +481,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """Drop the lazily-cached per-atom buffers.
 
         Each is returned as-is once built, so a load that changes the atom count would
-        otherwise reuse buffers sized for the previous atom set.
+        otherwise reuse buffers sized for a different atom count.
         """
         for name in self._ATOM_DERIVED_BUFFERS:
             if hasattr(self, name):
@@ -1092,8 +1092,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Parameters
         ----------
         mode : {"isotropic", "anisotropic", "field", "field_aniso", "preserve"}, optional
-            ``"isotropic"`` (default) converts every atom, previously anisotropic ones
-            to ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"`` converts
+            ``"isotropic"`` (default) converts every atom, the anisotropic ones to
+            ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"`` converts
             those matching ``aniso_selection``, expanding isotropic atoms to
             ``U = (B / 8 pi^2) I``. ``"field"`` replaces the per-atom B with a
             :class:`~torchref.model.disorder_field.DisorderFieldTensor` whose node
