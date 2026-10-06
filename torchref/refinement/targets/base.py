@@ -353,34 +353,21 @@ class DataTarget(Target):
         return torch.abs(self.get_fcalc_scaled(hkl, recalc=recalc, fcalc=fcalc))
 
     def get_I_calc_scaled(self, hkl=None, recalc=False, fcalc=None):
-        """
-        Compute scaled structure factor intensities ``|F_calc|**2``.
+        """Return ``|scaler(F_calc)|**2``, the scaled model intensities.
 
-        The intensity sibling of :meth:`get_F_calc_scaled`, and the reason the observable
-        is a choice rather than an assumption: both are one line over the same complex
-        ``get_fcalc_scaled``, so nothing upstream of here knows which observable a target
-        fits.
-
-        Squaring the *scaled* amplitude is what makes this correct -- the scale and the
-        anisotropy factor both enter squared, matching
-        :meth:`~torchref.io.datasets.reflection_data.ReflectionData.get_corrected_intensities`
-        on the observation side. Squaring an unscaled ``F_calc`` and scaling afterwards
-        with the amplitude factors would be wrong by that factor, which is
-        resolution-dependent and so reads as a scale or B error rather than as a bug.
+        Scale and anisotropy enter squared, matching
+        :meth:`~torchref.io.datasets.reflection_data.ReflectionData.get_corrected_intensities`,
+        so squaring an unscaled ``F_calc`` and scaling afterwards would be wrong.
 
         Parameters
         ----------
-        hkl : torch.Tensor, optional
-            Miller indices. If None, uses data's hkl.
-        recalc : bool, optional
-            Force recalculation. Default is False.
-        fcalc : torch.Tensor, optional
-            Pre-computed structure factors. If provided, skips model computation.
+        hkl, recalc, fcalc : optional
+            As in :meth:`get_F_calc_scaled`.
 
         Returns
         -------
         torch.Tensor
-            Scaled structure factor intensities ``|F_calc|**2``.
+            One intensity per reflection of ``hkl`` (the data's by default).
         """
         return self.get_fcalc_scaled(hkl, recalc=recalc, fcalc=fcalc).abs() ** 2
 
