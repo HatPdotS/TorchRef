@@ -114,3 +114,23 @@ def test_copy_owns_its_spacegroup(cls_name, mixed_adp_path):
     assert "spacegroup" not in c._modules
     stray = [k for k in c.state_dict() if k.startswith("spacegroup.")]
     assert stray == [], f"copy registered a second space group: {stray}"
+
+
+@pytest.mark.unit
+def test_moving_the_copys_restraints_leaves_its_cell(pdb_dir):
+    """The copy's restraints hold their own crystal, so moving them never recasts the
+    copy's cell or space group."""
+    from torchref.model import Model
+
+    m = Model(verbose=0, device=torch.device("cpu")).load_pdb(str(pdb_dir / "1DAW.pdb"))
+    assert m.restraints is not None
+    c = m.copy()
+    cell, spacegroup = c.ctx.cell, c.ctx.spacegroup
+    dtype = cell.dtype
+    other = torch.float32 if dtype == torch.float64 else torch.float64
+
+    c.restraints.to(other)
+
+    assert c.ctx.cell is cell and cell.dtype == dtype
+    assert spacegroup.matrices.dtype == dtype
+    assert c.restraints._cell.dtype == other

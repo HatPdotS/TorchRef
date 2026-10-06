@@ -735,12 +735,7 @@ class ModelContext(DeviceMixin):
             **self.settings(),
         )
         if self.restraints is not None:
-            restraints = self.restraints.copy()
-            # Point at the copied crystal rather than the deep-copied duplicates, so the
-            # new context is its single owner.
-            restraints._cell = duplicate.cell
-            restraints._spacegroup = duplicate.spacegroup
-            duplicate.restraints = restraints
+            duplicate.restraints = self.restraints.copy()
         return duplicate
 
     def state(self) -> Dict[str, Any]:
