@@ -318,7 +318,10 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
                     or len(np.unique(frames.n1_row[members])) != 1
                 ):
                     raise ValueError("A torsion group must share one bonded axis")
-            self.register_buffer(name, torch.as_tensor(compact, device=self.device))
+            self.register_buffer(
+                name,
+                torch.as_tensor(compact, dtype=get_int_dtype(), device=self.device),
+            )
         self._rebuild_orientation_cache()
         requires_grad = self.refinable_params.requires_grad
         self.torsions = MixedTensor(
@@ -689,7 +692,9 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             ("rotations", frames.rotation_group),
         ):
             retained = torch.as_tensor(
-                np.unique(labels[labels >= 0]), device=self.device
+                np.unique(labels[labels >= 0]),
+                dtype=get_int_dtype(),
+                device=self.device,
             )
             getattr(result, name).update_refinable_mask(
                 getattr(self, name).refinable_mask[retained]

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import torch
 
+from torchref.config import get_int_dtype
 from torchref.model.model import Model
 from torchref.model.parameter_wrappers import MixedTensor
 from torchref.model.riding_xyz import RidingXYZTensor
@@ -200,6 +201,25 @@ def test_state_dict_round_trip(hydrogenated):
     placeholder.load_state_dict(state)
     assert placeholder.shape == riding.shape
     assert torch.equal(placeholder(), riding())
+
+
+@pytest.mark.unit
+def test_index_buffers_use_the_configured_int_dtype(hydrogenated):
+    """Every integer buffer, the orientation-group labels included, is in the
+    configured int dtype: built, cut down by select_rows, and in the empty shell a
+    restore starts from."""
+    _, frames, xyz = hydrogenated
+    riding = RidingXYZTensor(xyz, frames)
+    keep = torch.ones(xyz.shape[0], dtype=torch.bool, device=xyz.device)
+    keep[:50] = False
+    for wrapper in (riding, riding.select_rows(keep), RidingXYZTensor()):
+        ints = {
+            name: buffer.dtype
+            for name, buffer in wrapper.named_buffers(recurse=False)
+            if not buffer.is_floating_point() and buffer.dtype != torch.bool
+        }
+        assert {"torsion_group", "rotation_group"} <= set(ints)
+        assert set(ints.values()) == {get_int_dtype()}
 
 
 @pytest.mark.unit
