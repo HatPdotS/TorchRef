@@ -1661,8 +1661,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         ``B_eq = (8 pi^2 / 3) tr(U)`` from :meth:`adp_u6` when any atom is
         anisotropic, else ``adp()`` directly, which is the same number for an
-        isotropic atom without the U path. The single source for the written
-        ``tempfactor`` column and for the ADP restraints that need one B per atom.
+        isotropic atom without the U path. The written ``tempfactor`` column reads
+        it, and so should any ADP restraint that needs one B per atom.
         """
         if self._aniso_is_empty:
             return self.adp()
