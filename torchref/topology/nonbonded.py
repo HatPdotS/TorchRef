@@ -412,7 +412,6 @@ def _get_canonical_offsets_14(device: torch.device) -> torch.Tensor:
 def _build_padded_cells(
     cart_sorted: torch.Tensor,
     starts: torch.Tensor,
-    atom_idx_sorted: torch.Tensor,
     combo_idx_sorted: torch.Tensor,
     identity_combo: int,
     max_per_cell: int,
@@ -534,7 +533,6 @@ def find_pairs_periodic_grid_v2(
     padded_xyz, valid_mask, asu_mask = _build_padded_cells(
         cart_sorted=cart_sorted,
         starts=starts,
-        atom_idx_sorted=atom_idx_sorted,
         combo_idx_sorted=combo_idx_sorted,
         identity_combo=identity_combo,
         max_per_cell=max_per_cell,
