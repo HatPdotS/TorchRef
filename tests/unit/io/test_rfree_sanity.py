@@ -51,6 +51,7 @@ def test_a_deposited_free_set_loads_without_a_warning(daw):
 @pytest.mark.unit
 def test_a_column_without_work_reflections_is_replaced(daw):
     flags = np.zeros_like(daw[0]["R-free-flags"])
+    flags[::7] = -1
 
     data, messages = _load(_Reader(daw, **{"R-free-flags": flags}))
 
@@ -58,6 +59,8 @@ def test_a_column_without_work_reflections_is_replaced(daw):
     assert data.rfree_source != "_Reader FreeR"
     free = float((~data.rfree_flags.to(torch.bool)).float().mean())
     assert 0.0 < free < 0.1
+    # The dropped column masks nothing, its excluded rows included.
+    assert bool(data.masks["flagged_initial"].all())
 
 
 @pytest.mark.unit
