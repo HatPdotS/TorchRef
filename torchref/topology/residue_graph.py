@@ -25,6 +25,10 @@ WATER_RESNAMES = frozenset(
 #: SG-SG separation below which two cysteines are taken to be disulfide-bonded.
 DISULFIDE_MAX_DISTANCE = 2.5
 
+#: C(i)-N(i+1) separation below which sequence-adjacent residues are peptide-bonded:
+#: the 1.33 Å bond with a 50% margin, the margin gemmi's polymer connectivity uses.
+PEPTIDE_MAX_DISTANCE = 2.0
+
 #: Lower bound guarding against an atom being paired with itself through a
 #: coordinate duplicate.
 DISULFIDE_MIN_DISTANCE = 0.1
@@ -216,31 +220,38 @@ def build_residue_nodes(
 
 def find_peptide_links(
     nodes: Dict[str, np.ndarray],
-    names_by_residue: List[set],
+    c_rows: Sequence[Sequence[int]],
+    n_rows: Sequence[Sequence[int]],
+    xyz: torch.Tensor,
 ) -> List[Tuple[int, int]]:
     """Sequence-adjacent residue pairs carrying a C-N peptide bond.
 
     Two residues are sequence-adjacent when they are neighbours in their chain's
     ``(resseq, icode)`` ordering **and** either share a ``resseq`` -- an insertion-code
-    step such as 100 to 100A -- or differ by exactly one. The second condition is what
-    stops a chain break being bridged: residues 49 and 56 are neighbours in the ordering
-    but not in the sequence.
+    step such as 100 to 100A -- or differ by exactly one: residues 49 and 56 are
+    neighbours in the ordering but not in the sequence.
 
-    The C/N test then narrows to pairs that actually carry the bond, which is the
-    condition the link builders apply implicitly when they look the two atoms up.
+    The pair carries the bond when a ``C`` of the first lies within
+    :data:`PEPTIDE_MAX_DISTANCE` of an ``N`` of the second, whatever either residue's
+    record type. The distance is what stops a chain break numbered consecutively being
+    bridged, and an amino-acid-like ligand numbered next to a chain end being linked.
 
     Parameters
     ----------
     nodes : dict
         Output of :func:`build_residue_nodes`.
-    names_by_residue : list of set
-        Atom names present in each residue.
+    c_rows, n_rows : sequence of sequence of int
+        Per residue, the rows of its atoms named ``C`` and ``N`` (one per altloc
+        conformer that has its own).
+    xyz : torch.Tensor
+        Cartesian coordinates in Å, shape ``(N, 3)``.
 
     Returns
     -------
     list of tuple of int
         ``(residue donating C, residue donating N)`` pairs.
     """
+    coords = xyz.detach().cpu().numpy()
     by_chain: Dict[str, List[int]] = {}
     for i in range(len(nodes["chain"])):
         by_chain.setdefault(str(nodes["chain"][i]), []).append(i)
@@ -252,9 +263,10 @@ def find_peptide_links(
         )
         for a, b in zip(ordered, ordered[1:]):
             step = int(nodes["resseq"][b]) - int(nodes["resseq"][a])
-            if step not in (0, 1):
+            if step not in (0, 1) or len(c_rows[a]) == 0 or len(n_rows[b]) == 0:
                 continue
-            if "C" in names_by_residue[a] and "N" in names_by_residue[b]:
+            gap = coords[np.asarray(c_rows[a])][:, None] - coords[np.asarray(n_rows[b])]
+            if np.linalg.norm(gap, axis=-1).min() < PEPTIDE_MAX_DISTANCE:
                 pairs.append((a, b))
     return pairs
 
@@ -310,5 +322,6 @@ __all__ = [
     "find_disulfide_links",
     "DISULFIDE_MAX_DISTANCE",
     "DISULFIDE_MIN_DISTANCE",
+    "PEPTIDE_MAX_DISTANCE",
     "WATER_RESNAMES",
 ]

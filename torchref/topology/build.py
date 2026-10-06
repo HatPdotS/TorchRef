@@ -902,8 +902,9 @@ def build_topology_with_values(
     cif_dict : dict
         Restraint dictionary keyed by residue name.
     xyz : torch.Tensor
-        Cartesian coordinates in Å, shape ``(N, 3)``. Disulfides are detected by SG-SG
-        distance and proline omega classified cis or trans from them.
+        Cartesian coordinates in Å, shape ``(N, 3)``. Peptide links are detected by
+        C-N and disulfides by SG-SG distance, and each nucleotide's sugar pucker and
+        proline's cis or trans omega are chosen from them.
     link_dict : dict, optional
         Link-type definitions. Without it no inter-residue edges are built.
     link_list : pandas.DataFrame, optional
@@ -936,13 +937,13 @@ def build_topology_with_values(
     }
     n_res = len(nodes["chain"])
 
-    names_by_residue = [
-        set(cols["name"][int(nodes["atom_start"][r]) : int(nodes["atom_end"][r])])
-        for r in range(n_res)
-    ]
-    # Whatever the record type: a polymer residue written as HETATM (MSE, SEP, ...)
-    # takes the same link, patching and backbone terms as its ATOM neighbours.
-    peptide_pairs = find_peptide_links(nodes, names_by_residue)
+    spans = list(zip(nodes["atom_start"].tolist(), nodes["atom_end"].tolist()))
+    c_rows = [s + np.flatnonzero(cols["name"][s:e] == "C") for s, e in spans]
+    n_rows = [s + np.flatnonzero(cols["name"][s:e] == "N") for s, e in spans]
+    # Paired by C-N distance whatever the record type, so a polymer residue written as
+    # HETATM (MSE, SEP, ...) takes the link, patching and backbone terms of its
+    # ATOM neighbours.
+    peptide_pairs = find_peptide_links(nodes, c_rows, n_rows, xyz)
 
     match_cols, chemical_nodes, chemical_pairs, source_rows, owners = _chemical_nodes(
         cols, nodes, peptide_pairs

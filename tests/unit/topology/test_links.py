@@ -87,6 +87,43 @@ def test_link_record_duplicating_a_peptide_bond_is_dropped(tmp_path):
     assert int(atoms.degree(n_mse)) == 2
 
 
+# 6G9X chain A, GLU41 and SER45 across a real chain break (C-N 8.0 A), the SER
+# renumbered 42 so that the two are numbered consecutively.
+_CHAIN_BREAK = """\
+CRYST1  106.765  200.539   64.561  90.00  90.00  90.00 P 21 21 2     8
+ATOM    264  N   GLU A  41     102.334  20.809  17.251  1.00128.98           N
+ATOM    265  CA  GLU A  41     102.508  21.761  16.154  1.00130.11           C
+ATOM    266  C   GLU A  41     103.882  22.437  16.164  1.00124.73           C
+ATOM    267  O   GLU A  41     104.829  21.942  16.780  1.00119.88           O
+ATOM    268  CB  GLU A  41     101.404  22.806  16.190  1.00130.16           C
+ATOM    269  CG  GLU A  41     100.029  22.196  15.983  1.00131.42           C
+ATOM    270  CD  GLU A  41      98.954  23.222  15.651  1.00135.88           C
+ATOM    271  OE1 GLU A  41      99.195  24.444  15.804  1.00137.19           O
+ATOM    272  OE2 GLU A  41      97.856  22.798  15.231  1.00136.18           O
+ATOM    273  N   SER A  42     109.145  23.023  22.168  1.00100.36           N
+ATOM    274  CA  SER A  42     109.791  22.385  23.315  1.00 96.39           C
+ATOM    275  C   SER A  42     108.891  22.403  24.550  1.00103.70           C
+ATOM    276  O   SER A  42     108.166  23.370  24.782  1.00105.34           O
+ATOM    277  CB  SER A  42     111.120  23.073  23.634  1.00 99.98           C
+ATOM    278  OG  SER A  42     111.609  22.683  24.910  1.00100.07           O
+END
+"""
+
+
+@pytest.mark.unit
+def test_consecutive_numbers_across_a_chain_break_get_no_peptide_link(tmp_path):
+    """Sequence-adjacent numbering is not enough: the C-N distance must be a bond."""
+    path = tmp_path / "chain_break.pdb"
+    path.write_text(_CHAIN_BREAK)
+    model = _load(path)
+    topology = model.restraints.topology
+
+    assert len(topology.residues.links_of_kind("TRANS")) == 0
+    assert "peptide" not in topology.atoms.bonds.origin_bounds
+    assert int(topology.atoms.degree(_row(model, "A", 42, "N"))) == 1
+    assert not topology.is_polymer.any()
+
+
 @pytest.mark.unit
 def test_hetatm_amino_acid_is_peptide_linked(pdb_dir):
     """3E98's MSE65 is a HETATM residue, linked like any other.
