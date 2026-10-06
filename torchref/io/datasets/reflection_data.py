@@ -1059,7 +1059,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         F_sigma : torch.Tensor
             Amplitude uncertainties of shape (N,).
         cell : Cell
-            Unit cell parameters.
+            Unit cell, shared and moved IN PLACE to ``device``. Its six
+            parameters (a, b, c in Å; alpha, beta, gamma in degrees) as a list,
+            array or tensor are copied into a new Cell instead.
         spacegroup : SpaceGroup
             Space group.
         rfree_flags : torch.Tensor, optional
@@ -1108,7 +1110,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         data.F_sigma = _prep(F_sigma).to(device=data.device)
         data.cell = (
             cell.to(device=data.device)
-            if hasattr(cell, "to")
+            if isinstance(cell, Cell)
             else Cell(cell, device=data.device)
         )
         data.spacegroup = (
