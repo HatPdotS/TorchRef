@@ -740,19 +740,20 @@ class ModelContext(DeviceMixin):
         -------
         dict
             The cell as a CPU tensor, the space group as its extended Hermann-Mauguin
-            symbol (``gemmi.SpaceGroup`` is not picklable), the altloc groups and the
-            settings. The atom table itself is written by the model, which alone has
-            the current values; restraints are not saved, they rebuild.
+            symbol (``gemmi.SpaceGroup`` is not picklable), the altloc groups, a copy
+            of the link records and the settings other than ``verbose``. The atom
+            table itself is written by the model, which alone has the current values;
+            restraints are not saved, they rebuild.
         """
+        settings = self.settings()
+        del settings["verbose"]
         return {
             "cell": self.cell.data.cpu() if self.cell is not None else None,
             "spacegroup": self.spacegroup.xhm if self.spacegroup else None,
             "initialized": self.initialized,
-            "cif_path": self.cif_path,
             "altloc_pairs": self.altloc_pairs,
-            "hydrogens": self.hydrogens,
-            "hydrogen_mode": self.hydrogen_mode,
-            "hydrogens_in_xray": self.hydrogens_in_xray,
+            "links": _copy_links(self.links),
+            **settings,
         }
 
     @classmethod
@@ -804,6 +805,8 @@ class ModelContext(DeviceMixin):
             topology=None if table is None else Topology.from_table(table),
             cell=Cell(cell, dtype=dtype, device=device) if cell is not None else None,
             spacegroup=own_spacegroup(state.pop("spacegroup", None), dtype, device),
+            links=state.pop("links", None),
+            input_file=state.pop("input_file", None),
             initialized=state.pop("initialized", False),
             cif_path=state.pop("cif_path", None),
             altloc_pairs=state.pop("altloc_pairs", []),
