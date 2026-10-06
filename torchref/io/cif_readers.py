@@ -16,6 +16,8 @@ import warnings
 
 import pandas as pd
 
+from torchref.io.pdb import _require_elements
+
 #: Column holding the ``data_`` block a loop row was read from. Added only when
 #: ``parse_all_blocks`` is set, because that is the only mode in which rows from
 #: different blocks share a category. Dictionaries whose loops carry no
@@ -1282,6 +1284,11 @@ class ModelCIFReader:
             - x, y, z, occupancy, tempfactor
             - element, charge
             - anisou_flag, u11, u22, u33, u12, u13, u23
+
+        Raises
+        ------
+        ValueError
+            If an atom has no element (``?`` or ``.``) in _atom_site.type_symbol.
         """
         atom_df = self.cif.data["atom_site"].copy()
         result = pd.DataFrame()
@@ -1453,6 +1460,7 @@ class ModelCIFReader:
 
         # Add index column for compatibility with legacy PDB format
         result["index"] = np.arange(len(result), dtype=int)
+        _require_elements(result, self.filepath, "_atom_site.type_symbol")
         result["element"] = result["element"].str.strip().str.capitalize()
         return result
 

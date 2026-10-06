@@ -24,7 +24,7 @@ def test_blank_element_columns_raise(pdb_dir, tmp_path):
         tmp_path,
         lambda line: line[:76] if line.startswith(ATOM_RECORDS) else line,
     )
-    with pytest.raises(ValueError, match="blank element field"):
+    with pytest.raises(ValueError, match="no element in columns 77-78"):
         pdb.load_as_dataframe(path)
 
 

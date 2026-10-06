@@ -160,3 +160,20 @@ def test_torsions_keep_their_id():
 
     puckers = {f"{form}-nyu{i}" for form in ("C2e", "C3e") for i in range(5)}
     assert puckers <= set(torsions["id"])
+
+
+@pytest.mark.unit
+def test_atoms_without_a_type_symbol_raise(cif_dir, tmp_path):
+    def unknown_elements(lines):
+        edited = []
+        for line in lines:
+            tokens = line.split()
+            if tokens[:1] in (["ATOM"], ["HETATM"]) and len(tokens) == 21:
+                tokens[2] = "?"
+                line = " ".join(tokens)
+            edited.append(line)
+        return edited
+
+    path = _write_edited(cif_dir / "1DAW.cif", tmp_path, unknown_elements)
+    with pytest.raises(ValueError, match="no element in _atom_site.type_symbol"):
+        ModelCIFReader(path)

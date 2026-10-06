@@ -131,6 +131,44 @@ def read_crystallographic_info(
     return None, None, None
 
 
+def _require_elements(atoms: pd.DataFrame, source, field: str) -> None:
+    """Raise if an atom has no element symbol: blank, NaN, ``?`` or ``.``.
+
+    Shared by the PDB and mmCIF readers. The element is not guessed from the atom
+    name: an unknown element scatters as Z = 0, so a wrong guess, like a blank,
+    would load without complaint.
+
+    Parameters
+    ----------
+    atoms : pandas.DataFrame
+        Atom table with ``serial``, ``name``, ``resname`` and ``element``.
+    source : str or path-like
+        File the table was read from, for the message.
+    field : str
+        Where that format keeps the element, for the message.
+
+    Raises
+    ------
+    ValueError
+        Naming the first atoms without an element.
+    """
+    element = atoms["element"]
+    blank = element.isna() | element.astype(str).str.strip().isin(["", "?", "."])
+    if blank.any():
+        first = atoms.loc[blank].head(5)
+        listed = ", ".join(
+            f"{serial} {name} {resname}"
+            for serial, name, resname in zip(
+                first["serial"], first["name"], first["resname"]
+            )
+        )
+        raise ValueError(
+            f"{source}: {int(blank.sum())} atoms have no element in {field}, "
+            f"starting with {listed}. Add the element symbols first, e.g. with "
+            "gemmi, pdbset or phenix.pdbtools."
+        )
+
+
 def _model_numbers(filepath: str, skipheader: int, skipfooter: int) -> dict:
     """MODEL number of each atom and ANISOU record that load_as_dataframe reads.
 
@@ -193,7 +231,7 @@ def load_as_dataframe(
     Raises
     ------
     ValueError
-        If an ATOM or HETATM record has a blank element field (columns 77-78).
+        If an ATOM or HETATM record has no element in columns 77-78.
     """
     if skipheader == 0:
         skipheader = find_header_length(filepath)
@@ -341,22 +379,7 @@ def load_as_dataframe(
         .fillna(0)
         .astype(int)
     )
-    # Not guessed from the atom name: an unknown element scatters as Z = 0, so a
-    # wrong guess, like a blank, would load without complaint.
-    blank = pdb["element"].isna()
-    if blank.any():
-        first = pdb.loc[blank].head(5)
-        atoms = ", ".join(
-            f"{serial} {name} {resname}"
-            for serial, name, resname in zip(
-                first["serial"], first["name"], first["resname"]
-            )
-        )
-        raise ValueError(
-            f"{filepath}: {int(blank.sum())} atoms have a blank element field "
-            f"(columns 77-78), starting with {atoms}. Add the element symbols "
-            "first, e.g. with gemmi, pdbset or phenix.pdbtools."
-        )
+    _require_elements(pdb, filepath, "columns 77-78")
     pdb["element"] = pdb["element"].astype(str).str.strip().str.capitalize()
     pdb["index"] = np.arange(pdb.shape[0]).astype(int)
 
