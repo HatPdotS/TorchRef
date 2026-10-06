@@ -155,6 +155,7 @@ class ModelFT(CachedForwardMixin, Model):
         )
         # (key, partition, _AnomalousTerms or None); see _get_anomalous_cache.
         self._anomalous_cache = None
+        self.map = None
 
     # =========================================================================
     # Engine binding and grid inputs

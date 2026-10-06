@@ -97,6 +97,16 @@ def test_density_map_reads_the_model_context(pdb_path):
 
 
 @pytest.mark.unit
+def test_map_accessors_before_a_map_is_built(pdb_path, tmp_path):
+    """Until a map is built there is none: no statistics, and saving refuses."""
+    model = _model(pdb_path)
+    assert model.map is None
+    assert model.get_map_statistics() is None
+    with pytest.raises(ValueError, match="No map to save"):
+        model.save_map(str(tmp_path / "m.ccp4"))
+
+
+@pytest.mark.unit
 def test_explicit_gridsize_survives_every_path(pdb_path):
     explicit = (64, 32, 24)
     model = _model(pdb_path, gridsize=explicit)
