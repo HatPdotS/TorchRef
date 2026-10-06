@@ -154,3 +154,64 @@ def test_dropped_rows_leave_a_positional_index(pdb_dir, tmp_path):
     assert sorted(idx) == list(range(len(model.pdb)))
     # The occupancy grouping is what actually indexed past the end.
     assert model.occupancy().shape[0] == len(model.pdb)
+
+
+SELECTION = "resseq 10:20"
+
+
+@pytest.fixture
+def daw_model(pdb_dir):
+    """1DAW, loaded per test: the selection methods mutate the model in place."""
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    return model
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("start", ["full", "partial"])
+@pytest.mark.parametrize("freeze", [True, False])
+def test_selection_edits_the_refinable_set(daw_model, start, freeze):
+    """Freezing subtracts the selection from the set and unfreezing adds it."""
+    model = daw_model
+    if start == "partial":
+        model.xyz_mask = model.get_selection_mask("resseq 15:60").to(model.device)
+    current = model.xyz_mask.clone()
+    selected = model.get_selection_mask(SELECTION).to(model.device)
+
+    model.update_mask_from_selection(SELECTION, "xyz", freeze=freeze)
+    model.apply_mask_to_parameter("xyz")
+
+    expected = current & ~selected if freeze else current | selected
+    assert torch.equal(model.xyz_mask, expected)
+    assert model.xyz.get_refinable_count() == int(expected.sum())
+
+
+@pytest.mark.unit
+def test_unfreeze_selection_keeps_the_rest_refinable(daw_model):
+    """Unfreezing a selection never freezes the atoms outside it."""
+    model = daw_model
+    model.unfreeze_selection(SELECTION, targets="xyz")
+    assert int(model.xyz_mask.sum()) == model.n_atoms
+    assert model.xyz.get_refinable_count() == model.n_atoms
+
+
+@pytest.mark.unit
+def test_unfreeze_all_reapplies_the_set_after_a_selection(daw_model):
+    """``freeze_all`` is a toggle, so ``unfreeze_all`` brings the whole set back."""
+    model = daw_model
+    model.freeze_all()
+    model.unfreeze_selection(SELECTION, targets="xyz")
+    model.unfreeze_all()
+    assert model.xyz.get_refinable_count() == model.n_atoms
+
+
+@pytest.mark.unit
+def test_refining_only_a_selection_starts_from_an_empty_set(daw_model):
+    """The documented idiom: freeze everything by selection, then add one back."""
+    model = daw_model
+    model.freeze_selection("all", targets="xyz")
+    model.unfreeze_selection(SELECTION, targets="xyz")
+    n_selected = int(model.get_selection_mask(SELECTION).sum())
+    assert model.xyz.get_refinable_count() == n_selected

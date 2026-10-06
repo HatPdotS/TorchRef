@@ -1061,6 +1061,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Freeze (stop refining) one parameter type.
 
+        A temporary toggle: the refinable set (the mask buffer) is left as it is,
+        and :meth:`unfreeze` re-applies it.
+
         Parameters
         ----------
         target : str
@@ -1085,7 +1088,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.freeze("occupancy")
 
     def unfreeze_all(self):
-        """Unfreeze every parameter type, restoring each wrapper's default mask."""
+        """Unfreeze every parameter type, re-applying each one's refinable set."""
         self.unfreeze("xyz")
         self.unfreeze("adp")
         self.unfreeze("u")
@@ -1095,8 +1098,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Unfreeze (resume refining) one parameter type.
 
-        Restores the parameter's default refinable mask (``xyz_mask`` /
-        ``adp_mask`` / ``u_mask`` / ``occupancy_mask``).
+        Re-applies the parameter's refinable set: its mask buffer (``xyz_mask`` /
+        ``adp_mask`` / ``u_mask`` / ``occupancy_mask``), set at load and edited by
+        :meth:`freeze_selection` and :meth:`unfreeze_selection`.
 
         Parameters
         ----------
@@ -1439,13 +1443,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.reset_cache()
 
     def update_mask_from_selection(
-        self, selection_string: str, target: str, mode: str = "set", freeze: bool = True
+        self, selection_string: str, target: str, freeze: bool = True
     ):
         """
-        Update the refinable mask for a parameter using Phenix-style selection syntax.
+        Remove a Phenix-style selection from a parameter's refinable set, or add it.
 
-        Updates only the mask buffer (``xyz_mask`` / ``adp_mask`` / ``u_mask`` /
-        ``occupancy_mask``); the parameter tensors keep their old split until
+        The refinable set is the mask buffer (``xyz_mask`` / ``adp_mask`` / ``u_mask``
+        / ``occupancy_mask``) that :meth:`unfreeze` and :meth:`unfreeze_all` re-apply.
+        Only the buffer changes; the parameter tensors keep their old split until
         :meth:`apply_mask_to_parameter` is called.
 
         Parameters
@@ -1454,12 +1459,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Phenix-style selection; grammar in :mod:`torchref.utils.selection`.
         target : str
             Parameter to update: 'xyz', 'adp', 'u', or 'occupancy'.
-        mode : str, optional
-            How to combine with current mask: ``'set'`` (default) replaces,
-            ``'add'`` unions, ``'remove'`` subtracts.
         freeze : bool, optional
-            If True (default), selected atoms will be frozen (mask=False).
-            If False, selected atoms will be unfrozen (mask=True).
+            True (default) removes the selected atoms from the set, False adds them.
+            Atoms outside the selection keep their state either way.
 
         Raises
         ------
@@ -1489,25 +1491,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         current_mask = getattr(self, mask_name)
 
         selected = self.get_selection_mask(selection_string).to(current_mask.device)
-        if mode == "set":
-            selection_mask = selected
-        elif mode == "add":
-            selection_mask = current_mask | selected
-        elif mode == "remove":
-            selection_mask = current_mask & ~selected
-        else:
-            raise ValueError(f"mode must be 'set', 'add' or 'remove', got {mode!r}")
-
         # Masks name the REFINABLE atoms, so freezing clears the selection.
-        if freeze:
-            updated_mask = current_mask & ~selection_mask
-        else:
-            updated_mask = selection_mask
+        updated_mask = current_mask & ~selected if freeze else current_mask | selected
 
         setattr(self, mask_name, updated_mask)
 
         if self.ctx.verbose > 0:
-            n_selected = selection_mask.sum().item()
+            n_selected = selected.sum().item()
             n_refinable = updated_mask.sum().item()
             action = "frozen" if freeze else "unfrozen"
             print(
@@ -1560,8 +1550,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Freeze atoms matching a Phenix-style selection for specified parameters.
 
-        Convenience method that combines update_mask_from_selection() and
-        apply_mask_to_parameter() into a single call.
+        Removes them from each target's refinable set
+        (:meth:`update_mask_from_selection`) and applies the set
+        (:meth:`apply_mask_to_parameter`); atoms outside the selection keep their state.
 
         Parameters
         ----------
@@ -1578,16 +1569,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             model.freeze_selection("chain A")                     # everything
             model.freeze_selection("resseq 10:20", targets='xyz')  # coords only
         """
-        if targets == "all":
-            targets = ["xyz", "adp", "u", "occupancy"]
-        elif isinstance(targets, str):
-            targets = [targets]
-
-        for target in targets:
-            self.update_mask_from_selection(
-                selection_string, target, mode="set", freeze=True
-            )
-            self.apply_mask_to_parameter(target)
+        self._edit_refinable_sets(selection_string, targets, freeze=True)
 
     def unfreeze_selection(
         self, selection_string: str, targets: Union[str, list] = "all"
@@ -1595,8 +1577,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Unfreeze atoms matching a Phenix-style selection for specified parameters.
 
-        Convenience method that combines update_mask_from_selection() and
-        apply_mask_to_parameter() into a single call.
+        Adds them to each target's refinable set (:meth:`update_mask_from_selection`)
+        and applies the set (:meth:`apply_mask_to_parameter`); atoms outside the
+        selection keep their state. :meth:`freeze` and :meth:`freeze_all` leave the
+        sets untouched, so after them this makes the whole set refinable again, not
+        just the selection: to refine only a selection, start from
+        ``freeze_selection("all")``.
 
         Parameters
         ----------
@@ -1610,18 +1596,22 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         --------
         ::
 
-            model.unfreeze_selection("chain A")
+            model.freeze_selection("all", targets='xyz')
             model.unfreeze_selection("name CA or name C or name N", targets='xyz')
         """
+        self._edit_refinable_sets(selection_string, targets, freeze=False)
+
+    def _edit_refinable_sets(
+        self, selection_string: str, targets: Union[str, list], freeze: bool
+    ) -> None:
+        """Edit each target's refinable set by a selection, then apply the set."""
         if targets == "all":
-            targets = ["xyz", "adp", "u", "occupancy"]
+            targets = list(self.PARAM_TYPES)
         elif isinstance(targets, str):
             targets = [targets]
 
         for target in targets:
-            self.update_mask_from_selection(
-                selection_string, target, mode="set", freeze=False
-            )
+            self.update_mask_from_selection(selection_string, target, freeze=freeze)
             self.apply_mask_to_parameter(target)
 
     def get_aniso(self):
