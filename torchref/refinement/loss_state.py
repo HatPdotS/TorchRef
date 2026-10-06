@@ -390,8 +390,11 @@ class LossState(DeviceMovementMixin):
 
         The closure validates each loss for finiteness via
         :func:`torchref.utils.validate_loss` and on failure zeros the gradients and returns
-        ``+inf``, so a strong-Wolfe line search backtracks. Works with any closure-taking
-        optimizer, though it is exercised mainly with LBFGS.
+        ``+inf``, so a strong-Wolfe line search backtracks. A
+        ``torch.linalg.LinAlgError``, or any ``RuntimeError`` raised while a parameter
+        is non-finite, is rejected the same way; every other exception propagates.
+        Works with any closure-taking optimizer, though it is exercised mainly with
+        LBFGS.
 
         Leaves the loss touches but the optimizer was not constructed with get
         ``requires_grad`` disabled, so autograd prunes those subgraphs; on exit it is
@@ -418,8 +421,9 @@ class LossState(DeviceMovementMixin):
         -------
         torch.Tensor or None
             The loss from the last accepted closure call, or None if every call was non-finite.
-            Also None, without a step, when no parameter the optimizer holds has an element
-            that requires grad (a frozen group): LBFGS cannot step over zero elements.
+            Also None, without a step, when no parameter the optimizer holds has
+            an element that requires grad (a frozen group): LBFGS cannot step over
+            zero elements.
         """
 
         params = list(_optimizer_param_set(optimizer))
@@ -444,21 +448,26 @@ class LossState(DeviceMovementMixin):
             try:
                 loss = self.aggregate()
                 loss.backward()
-            except (torch._C._LinAlgError, RuntimeError) as exc:
+            except RuntimeError as exc:
                 # The value-based gate below only sees losses that are
                 # *returned*; a few linalg ops (svd/eig/cholesky/inv) instead
                 # *raise* on non-finite input. When strong-Wolfe probes an
                 # overshooting trial point that sends parameters to inf, such an
                 # op throws here, bypassing validate_loss. Treat it exactly like
                 # a non-finite loss: reject the step (+inf) so the line search
-                # backtracks, instead of letting the exception kill refinement.
+                # backtracks. Any other error raised on finite parameters is a
+                # real failure, and rejecting it would silently skip the step.
+                if not isinstance(exc, torch.linalg.LinAlgError) and all(
+                    bool(torch.isfinite(p).all()) for p in params
+                ):
+                    raise
                 if not _warned_linalg["done"]:
                     warnings.warn(
-                        f"LossState.run({context!r}): a linear-algebra op raised "
-                        f"during a trial step ({type(exc).__name__}: {exc}); the "
-                        "parameters likely diverged to non-finite values. "
-                        "Rejecting the step (+inf) so the optimizer backtracks. "
-                        "Further occurrences this step are suppressed.",
+                        f"LossState.run({context!r}): a trial step raised "
+                        f"{type(exc).__name__} ({exc}) in a linear-algebra op or "
+                        "on non-finite parameters. Rejecting the step (+inf) so "
+                        "the optimizer backtracks. Further occurrences this step "
+                        "are suppressed.",
                         RuntimeWarning,
                         stacklevel=2,
                     )

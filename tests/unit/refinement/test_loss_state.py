@@ -590,6 +590,51 @@ class TestLinalgExceptionGuard:
         assert torch.isfinite(p).all()
         assert abs(float(p.detach())) < p0  # moved toward the (p**2) minimum
 
+    @pytest.mark.unit
+    def test_other_runtime_error_on_finite_parameters_propagates(self):
+        """A RuntimeError that is not a linalg failure, raised while every parameter is
+        finite, is a real error: run() re-raises it instead of rejecting the step."""
+        from torchref.refinement.loss_state import LossState
+
+        p = torch.nn.Parameter(torch.tensor([5.0]))
+        ctl = {"broken": False}
+
+        def target():
+            if ctl["broken"]:
+                return (p * torch.ones(2) + torch.ones(3)).sum()
+            return (p**2).sum()
+
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("geometry/plane", target)
+        ctl["broken"] = True
+        opt = torch.optim.LBFGS([p], max_iter=20, line_search_fn="strong_wolfe")
+
+        with pytest.raises(RuntimeError, match="must match the size"):
+            ls.run(opt, nsteps=1, context="test_runtime_error")
+        assert p.item() == 5.0
+
+    @pytest.mark.unit
+    def test_runtime_error_on_non_finite_parameters_rejects_the_step(self):
+        """The same kind of error raised while a parameter is non-finite is rejected
+        (+inf), as a non-finite loss would be."""
+        import warnings
+
+        from torchref.refinement.loss_state import LossState
+
+        p = torch.nn.Parameter(torch.tensor([float("inf")]))
+
+        def target():
+            raise RuntimeError("simulated failure on non-finite input")
+
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("geometry/plane", target, probe=False)
+        opt = torch.optim.LBFGS([p], max_iter=5, line_search_fn="strong_wolfe")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert ls.run(opt, nsteps=1, context="test_non_finite") is None
+        assert any(issubclass(x.category, RuntimeWarning) for x in w)
+
 
 class TestFrozenParameterGroup:
     """An optimizer whose parameters hold no refinable element takes no step."""
