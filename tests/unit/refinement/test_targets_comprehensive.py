@@ -198,6 +198,16 @@ class TestNonBondedTarget:
         for key in ("violations", "distances", "min_distances"):
             assert violations[key].dtype == torch.float64, key
 
+    def test_reported_sigma_is_the_one_the_loss_uses(self, pdb_dir):
+        """``mean_sigma`` is the tolerance the PROLSQ loss is scored at, not the
+        per-pair sigmas the pair list carries."""
+        from torchref.model.model import Model
+        from torchref.refinement.targets import NonBondedTarget
+
+        model = Model(verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb"))
+        target = NonBondedTarget(model, sigma=0.25)
+        assert target.stats()["mean_sigma"].value == pytest.approx(0.25)
+
 
 @pytest.mark.unit
 class TestTotalGeometryTarget:

@@ -339,6 +339,7 @@ class NonBondedTarget(GeometryTarget):
         Reported violation counts use ``min_distances - actual_distances``
         and exclude the ``buffer`` onset that ``forward()`` penalizes, so
         when ``buffer > 0`` they differ from the pairs the loss penalizes.
+        ``mean_sigma`` is :attr:`sigma_vdw`, the tolerance the loss uses.
         """
         xyz = self.model.xyz()
         device = xyz.device
@@ -351,8 +352,6 @@ class NonBondedTarget(GeometryTarget):
 
         if indices is None or len(indices) == 0:
             return {}
-
-        sigmas = vdw_data["sigmas"]
 
         pos1, pos2, min_distances = self._compute_positions(xyz)
         actual_distances = torch.norm(pos2 - pos1, dim=-1)
@@ -378,7 +377,7 @@ class NonBondedTarget(GeometryTarget):
             "n_violations": stat(n_violations, VERBOSITY_DETAILED),
             "rms_violation": stat(rms_violation, VERBOSITY_DETAILED),
             "max_violation": stat(max_violation, VERBOSITY_DEBUG),
-            "mean_sigma": stat(sigmas.mean().item(), VERBOSITY_DEBUG),
+            "mean_sigma": stat(self.sigma_vdw, VERBOSITY_DEBUG),
         }
 
         symop_indices = vdw_data.get("symop_indices")
