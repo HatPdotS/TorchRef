@@ -409,30 +409,11 @@ class MixedModel(DeviceMovementMixin, nn.Module):
             )
         ]
 
-        # Extract cell/spacegroup from first model
-        cell = None
-        spacegroup = None
-        model0 = self.models[0]
-        if hasattr(model0, "cell") and model0.cell is not None:
-            cell_obj = model0.cell
-            if hasattr(cell_obj, "tolist"):
-                cell = cell_obj.tolist()
-            elif hasattr(cell_obj, "parameters"):
-                cell = cell_obj.parameters.tolist()
-        if hasattr(model0, "spacegroup") and model0.spacegroup is not None:
-            sg = model0.spacegroup
-            if hasattr(sg, "hm"):
-                spacegroup = sg.hm
-            elif hasattr(sg, "xhm"):
-                spacegroup = sg.xhm()
-            else:
-                spacegroup = str(sg)
-
         mapping = IHMEnsembleMapping(
             states=states,
             model_groups=groups,
-            cell=cell,
-            spacegroup=spacegroup,
+            cell=None if self.cell is None else self.cell.tolist(),
+            spacegroup=None if self.spacegroup is None else self.spacegroup.hm,
         )
 
         # Create a temporary ModelCollection-like wrapper for the writer
