@@ -252,7 +252,7 @@ class XrayTarget(DataTarget):
 
         Single source of truth for the X-ray R-factor: it uses exactly the
         scaled ``|F_calc|`` this target's loss sees (the scaler's scaling by
-        default; the detached per-bin closed-form scale for ``binwise_optimal``).
+        default; for ``ls_wunit_k1``, its detached global K fitted on the work set).
         ``R_work`` is computed on the work subset and ``R_free`` on the free
         subset — the same subsets the loss uses, so any validation reflections
         are excluded from both. All X-ray targets share this implementation;
