@@ -281,7 +281,7 @@ def build_hydrogen_topology(
     Returns
     -------
     HydrogenTopology
-        Module with registered buffer tensors.
+        Placement fields set; :func:`build_h_candidate_pairs` adds the candidate pairs.
     """
     from torchref.topology.hydrogens import _template
 
