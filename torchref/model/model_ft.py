@@ -196,15 +196,17 @@ class ModelFT(CachedForwardMixin, Model):
         return self.fft.grid_key
 
     def _fingerprint_state(self):
-        """Fold the grid key and the anomalous settings into the forward-cache key.
+        """Fold the grid key and the plain-attribute settings into the forward-cache key.
 
         Parameters and buffers alone would miss a cell, space-group or resolution
         change that leaves the grid buffers untouched until the next forward, and a
-        new ``wavelength`` or ``anomalous_threshold``, which are plain attributes.
+        new ``wavelength``, ``anomalous_threshold`` or ``hydrogens_in_xray``, which
+        are plain attributes.
         """
         return super()._fingerprint_state() + (
             self.wavelength,
             self.anomalous_threshold,
+            bool(self.ctx.hydrogens_in_xray),
             self.fft.grid_key,
         )
 

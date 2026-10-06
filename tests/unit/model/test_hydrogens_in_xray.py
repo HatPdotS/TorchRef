@@ -67,6 +67,25 @@ def test_off_matches_a_stripped_model(pdb_dir):
 
 
 @pytest.mark.unit
+def test_toggling_the_flag_recomputes_fcalc(pdb_dir):
+    """The cached F_calc is keyed on the flag, so switching it either way serves what
+    a fresh computation gives, with no parameter having changed."""
+    model = ModelFT(verbose=0, max_res=3.0)
+    model.load_pdb(str(pdb_dir / "7L84.pdb"))
+    grid = torch.arange(-3, 4)
+    hkl = torch.cartesian_prod(grid, grid, grid)
+    hkl = hkl[(hkl != 0).any(dim=1)].to(model.device)
+    with torch.no_grad():
+        with_h = model(hkl)
+        model.hydrogens_in_xray = False
+        without_h = model(hkl)
+        assert not torch.equal(without_h, with_h)
+        assert torch.allclose(without_h, model(hkl, recalc=True))
+        model.hydrogens_in_xray = True
+        assert torch.allclose(model(hkl), with_h)
+
+
+@pytest.mark.unit
 def test_setting_survives_copy_select_and_strip(with_hydrogens):
     model = with_hydrogens.copy()
     model.hydrogens_in_xray = False
