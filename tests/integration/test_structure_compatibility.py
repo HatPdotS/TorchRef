@@ -40,12 +40,22 @@ def test_compatibility_inventory(test_files_dir, directory, expected) -> None:
     "filename", [name for name in MODEL_CIF_FILES if name != "1DAW.cif"]
 )
 def test_model_cif_compatibility(cif_dir, filename) -> None:
-    """Each extra CIF loads atoms and finite symmetry operators on the default device."""
-    from torchref.model import Model
+    """Each extra CIF loads atoms and finite symmetry operators on the default device.
+
+    The two-model IHM file is an ensemble, which a Model refuses; it loads one model
+    per state through ModelCollection.from_ihm, and the last state is checked.
+    """
+    from torchref.model import Model, ModelCollection
 
     path = cif_dir / filename
     assert path.is_file()
-    model = Model(verbose=0).load_cif(str(path))
+    if filename == "test_ihm_ensemble.cif":
+        pytest.importorskip("ihm", reason="python-ihm not installed")
+        collection, _ = ModelCollection.from_ihm(str(path))
+        assert collection.n_base_models == 2
+        model = collection.base_models[-1]
+    else:
+        model = Model(verbose=0).load_cif(str(path))
     xyz = model.xyz()
     assert xyz.shape == (len(model.pdb), 3)
     assert len(xyz) > 0

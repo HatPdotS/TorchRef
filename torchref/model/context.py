@@ -339,11 +339,21 @@ class ModelContext(DeviceMixin):
         Raises
         ------
         ValueError
-            For an invalid hydrogen policy, including ``strip`` with ``riding``.
+            For an invalid hydrogen policy, including ``strip`` with ``riding``, or a
+            table whose ``model_num`` column holds more than one model.
         """
         from torchref.symmetry import Cell
         from torchref.topology import Topology
 
+        if "model_num" in pdb.columns:
+            models = sorted(int(n) for n in pdb["model_num"].dropna().unique())
+            if len(models) > 1:
+                raise ValueError(
+                    f"The atom table holds model_num {models}, every atom once per "
+                    "model, but a Model takes the rows of a single model. Select "
+                    "those first, or load an IHM ensemble with "
+                    "ModelCollection.from_ihm."
+                )
         z_value = getattr(pdb, "attrs", {}).get("z")
         ctx = cls(links=links, z_value=z_value, **settings)
         pdb = pdb.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"])
