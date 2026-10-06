@@ -21,6 +21,8 @@ from torchref.topology.builders import (
     InterResidueTorsionBuilder,
     PeptideResidues,
     PreprocessedCIF,
+    _conformer_maps,
+    _matching_conformers,
 )
 from torchref.topology.matchers import (
     match_angles,
@@ -534,7 +536,9 @@ def _disulfide_edges(
 
     Drives the ``InterResidue*Builder`` disulfide paths from the residue graph's
     ``disulf`` edges, so the link geometry comes from the ``disulf`` dictionary entry
-    rather than being restated here.
+    rather than being restated here. Each SG-SG bond takes its angles and torsion from
+    the cysteine conformers that hold its own two SG atoms, so a cysteine modelled in
+    two conformations restrains each conformer's CB once.
 
     Returns
     -------
@@ -564,15 +568,18 @@ def _disulfide_edges(
 
     for row_a, row_b in pairs:
         bond_builder.process_disulfide_bond(int(row_a), int(row_b), length, sigma)
-        res_a, res_b = residue_of_row[row_a], residue_of_row[row_b]
-        if disulf.get("angles") is not None:
-            angle_builder.process_disulfide_angles(
-                topology, res_a, res_b, disulf["angles"]
-            )
-        if disulf.get("torsions") is not None:
-            torsion_builder.process_disulfide_torsions(
-                topology, res_a, res_b, disulf["torsions"]
-            )
+        for map_a, map_b in _matching_conformers(
+            _conformer_maps(topology, residue_of_row[row_a]),
+            _conformer_maps(topology, residue_of_row[row_b]),
+        ):
+            if map_a.get("SG") != row_a or map_b.get("SG") != row_b:
+                continue
+            if disulf.get("angles") is not None:
+                angle_builder.process_disulfide_angles(map_a, map_b, disulf["angles"])
+            if disulf.get("torsions") is not None:
+                torsion_builder.process_disulfide_torsions(
+                    map_a, map_b, disulf["torsions"]
+                )
 
     values: Dict[str, Dict[str, np.ndarray]] = {}
     for edge_type, group in (

@@ -90,21 +90,6 @@ def _matching_conformers(
     ]
 
 
-def _atom_row(topology, residue: int, name: str) -> Optional[int]:
-    """Row of atom ``name`` in ``residue``: blank altloc, else ``'A'``, else first."""
-    start = int(topology.residues.atom_start[residue])
-    end = int(topology.residues.atom_end[residue])
-    hits = np.nonzero(topology.atoms.name[start:end] == name)[0]
-    if len(hits) == 0:
-        return None
-    altlocs = topology.atoms.altloc[start:end][hits]
-    for wanted in (" ", "A"):
-        chosen = hits[altlocs == wanted]
-        if len(chosen):
-            return start + int(chosen[0])
-    return start + int(hits[0])
-
-
 class PeptideResidues:
     """What the peptide-link builders read, prepared once from a topology.
 
@@ -659,9 +644,9 @@ class InterResidueAngleBuilder:
         builder = InterResidueAngleBuilder()
         result = builder.build(residues, link_dict, device)
 
-        # Or for disulfides (incremental):
+        # Or for disulfides (incremental), per pair of cysteine conformers:
         builder = InterResidueAngleBuilder()
-        builder.process_disulfide_angles(topology, res1, res2, link_angles)
+        builder.process_disulfide_angles(map_1, map_2, link_angles)
         result = builder.finalize(device)
     """
 
@@ -683,9 +668,8 @@ class InterResidueAngleBuilder:
 
     def process_disulfide_angles(
         self,
-        topology,
-        res1_atoms: int,
-        res2_atoms: int,
+        map_1: Dict[str, int],
+        map_2: Dict[str, int],
         link_angles: pd.DataFrame,
     ) -> int:
         """
@@ -693,10 +677,9 @@ class InterResidueAngleBuilder:
 
         Parameters
         ----------
-        topology : Topology
-            Supplies the two residues' atom names and altlocs.
-        res1_atoms, res2_atoms : int
-            Residue indices of the two cysteines.
+        map_1, map_2 : dict
+            ``{atom name: row}`` of the two cysteine conformers the bond joins, as
+            :func:`_conformer_maps` gives them.
         link_angles : pd.DataFrame
             Angle definitions from disulfide link.
 
@@ -707,20 +690,12 @@ class InterResidueAngleBuilder:
         """
         count = 0
         for _, angle_row in link_angles.iterrows():
-            comp1 = angle_row["atom_1_comp_id"]
-            comp2 = angle_row["atom_2_comp_id"]
-            comp3 = angle_row["atom_3_comp_id"]
-            atom1_name = angle_row["atom1"]
-            atom2_name = angle_row["atom2"]
-            atom3_name = angle_row["atom3"]
-
-            res1 = res1_atoms if comp1 == "1" else res2_atoms
-            res2 = res1_atoms if comp2 == "1" else res2_atoms
-            res3 = res1_atoms if comp3 == "1" else res2_atoms
-
-            idx1 = _atom_row(topology, res1, atom1_name)
-            idx2 = _atom_row(topology, res2, atom2_name)
-            idx3 = _atom_row(topology, res3, atom3_name)
+            maps = [
+                map_1 if angle_row[f"atom_{k}_comp_id"] == "1" else map_2
+                for k in (1, 2, 3)
+            ]
+            names = [angle_row[f"atom{k}"] for k in (1, 2, 3)]
+            idx1, idx2, idx3 = (m.get(name) for m, name in zip(maps, names))
 
             if idx1 is not None and idx2 is not None and idx3 is not None:
                 self._indices.append(np.array([[idx1, idx2, idx3]], dtype=np.int64))
@@ -869,9 +844,9 @@ class InterResidueTorsionBuilder:
         # result = {'phi': {...}, 'psi': {...}, 'omega': {...},
         #           'ramachandran': {...}}
 
-        # Or for disulfides (incremental):
+        # Or for disulfides (incremental), per pair of cysteine conformers:
         builder = InterResidueTorsionBuilder()
-        builder.process_disulfide_torsions(topology, res1, res2, link_torsions)
+        builder.process_disulfide_torsions(map_1, map_2, link_torsions)
         result = builder.finalize_disulfide(device)
     """
 
@@ -895,9 +870,8 @@ class InterResidueTorsionBuilder:
 
     def process_disulfide_torsions(
         self,
-        topology,
-        res1_atoms: int,
-        res2_atoms: int,
+        map_1: Dict[str, int],
+        map_2: Dict[str, int],
         link_torsions: pd.DataFrame,
     ) -> int:
         """
@@ -905,10 +879,9 @@ class InterResidueTorsionBuilder:
 
         Parameters
         ----------
-        topology : Topology
-            Supplies the two residues' atom names and altlocs.
-        res1_atoms, res2_atoms : int
-            Residue indices of the two cysteines.
+        map_1, map_2 : dict
+            ``{atom name: row}`` of the two cysteine conformers the bond joins, as
+            :func:`_conformer_maps` gives them.
         link_torsions : pd.DataFrame
             Torsion definitions from disulfide link.
 
@@ -919,24 +892,12 @@ class InterResidueTorsionBuilder:
         """
         count = 0
         for _, torsion_row in link_torsions.iterrows():
-            comp1 = torsion_row["atom_1_comp_id"]
-            comp2 = torsion_row["atom_2_comp_id"]
-            comp3 = torsion_row["atom_3_comp_id"]
-            comp4 = torsion_row["atom_4_comp_id"]
-            atom1_name = torsion_row["atom1"]
-            atom2_name = torsion_row["atom2"]
-            atom3_name = torsion_row["atom3"]
-            atom4_name = torsion_row["atom4"]
-
-            res1 = res1_atoms if comp1 == "1" else res2_atoms
-            res2 = res1_atoms if comp2 == "1" else res2_atoms
-            res3 = res1_atoms if comp3 == "1" else res2_atoms
-            res4 = res1_atoms if comp4 == "1" else res2_atoms
-
-            idx1 = _atom_row(topology, res1, atom1_name)
-            idx2 = _atom_row(topology, res2, atom2_name)
-            idx3 = _atom_row(topology, res3, atom3_name)
-            idx4 = _atom_row(topology, res4, atom4_name)
+            maps = [
+                map_1 if torsion_row[f"atom_{k}_comp_id"] == "1" else map_2
+                for k in (1, 2, 3, 4)
+            ]
+            names = [torsion_row[f"atom{k}"] for k in (1, 2, 3, 4)]
+            idx1, idx2, idx3, idx4 = (m.get(name) for m, name in zip(maps, names))
 
             if idx1 is None or idx2 is None or idx3 is None or idx4 is None:
                 continue

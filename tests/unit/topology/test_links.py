@@ -144,3 +144,29 @@ def test_altloc_conformers_emit_shared_restraints_once(pdb_dir, code):
 
         labels = [set(altloc[row]) - {" "} for row in group["indices"].tolist()]
         assert all(len(found) < 2 for found in labels), name
+
+
+@pytest.mark.unit
+def test_split_sg_disulfide_restrains_each_conformer(pdb_dir):
+    """3A5V CYS53 has two SG conformers, each bonded to CYS21's SG.
+
+    Each bond carries its own two CB-SG-SG angles and CB-SG-SG-CB torsion, with CB
+    from that SG's conformer, and the CB(B)..SG21 1-3 pair takes no repulsion.
+    """
+    model = _load(pdb_dir / "3A5V.pdb")
+    restraints = model.restraints
+    cb21, sg21 = _row(model, "A", 21, "CB"), _row(model, "A", 21, "SG")
+
+    for alt in ("A", "B"):
+        cb53, sg53 = _row(model, "A", 53, "CB", alt), _row(model, "A", 53, "SG", alt)
+        for edge_type, expected in (
+            ("angle", {(cb21, sg21, sg53), (sg21, sg53, cb53)}),
+            ("torsion", {(cb21, sg21, sg53, cb53)}),
+        ):
+            rows = restraints.restraints[edge_type]["disulfide"]["indices"].tolist()
+            found = [tuple(row) for row in rows if {sg21, sg53} <= set(row)]
+            assert sorted(found) == sorted(expected), (edge_type, alt)
+
+    cb53b = _row(model, "A", 53, "CB", "B")
+    vdw = restraints.restraints["vdw"]["indices"].tolist()
+    assert not any({a, b} == {cb53b, sg21} for a, b in vdw)
