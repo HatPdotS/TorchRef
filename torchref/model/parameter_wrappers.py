@@ -1169,6 +1169,16 @@ class CholeskyMixedTensor(MixedTensor):
         """Return the full U tensor (positive-definite per finite row)."""
         return self._raw6_to_u6(super().forward())
 
+    def _normalize_refinable_mask(self, new_mask: torch.Tensor) -> torch.Tensor:
+        """Coerce the mask as the base does and drop the NaN (isotropic) rows.
+
+        A NaN row has a NaN Jacobian, so refining one would leave NaN in the leaf's
+        gradient even where no loss term reads it (``0 * NaN``). Every repartition
+        path calls this hook, so no mask can make an isotropic row refinable.
+        """
+        finite = torch.isfinite(self.fixed_values).all(dim=-1)
+        return super()._normalize_refinable_mask(new_mask) & finite
+
     def _set_values(self, key, value: torch.Tensor) -> None:
         """Set U-space values at ``key``; stored internally as Cholesky params."""
         current = self._storage_values().detach()

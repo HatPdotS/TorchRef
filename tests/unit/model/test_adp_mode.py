@@ -213,3 +213,19 @@ def test_adp_u6_backward_is_nan_free(aniso_model):
     gb = m.adp.refinable_params.grad
     assert gu is not None and torch.isfinite(gu).all() and gu.abs().sum() > 0
     assert gb is not None and torch.isfinite(gb).all() and gb.abs().sum() > 0
+
+
+@pytest.mark.unit
+def test_unfreezing_everything_leaves_isotropic_u_rows_fixed(aniso_model):
+    """No mask makes a NaN U row refinable, so the u gradient stays finite."""
+    m = aniso_model
+    n_aniso = int(m.aniso_flag.sum())
+    assert 0 < n_aniso < m.n_atoms
+
+    m.unfreeze_selection("all")
+
+    assert m.u.get_refinable_count() == n_aniso
+    assert torch.isfinite(m.u.refinable_params).all()
+    m.adp_u6().sum().backward()
+    gu = m.u.refinable_params.grad
+    assert gu is not None and torch.isfinite(gu).all()
