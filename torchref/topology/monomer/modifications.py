@@ -228,10 +228,9 @@ def apply_modifications(
     Returns
     -------
     dict
-        A new dict with new DataFrames; ``comp`` is not touched. Within each
-        modification the ``delete`` rows are applied first, then ``change``, then
-        ``add``, so a modification that deletes and re-adds the same restraint
-        ends up with the added one.
+        A new dict with new DataFrames; ``comp`` is not touched. Each modification's
+        rows apply in file order, and an ``add`` of a restraint the component already
+        defines overwrites it like a ``change``.
     """
     if not mod_ids:
         return dict(comp)
