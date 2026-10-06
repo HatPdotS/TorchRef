@@ -304,10 +304,10 @@ class CollectionXrayTarget(Target):
     def residuals(self) -> torch.Tensor:
         """``_per_refl`` over every reflection, ``(N, n_hkl)``, unsummed and unmasked.
 
-        The unreduced :meth:`forward`: same observable, same model, same variance. Masked
-        reflections still get a value, so the array can be used to ask *why* one was
-        excluded rather than only reflecting the answer back, and non-finite values
-        survive because here a NaN is a finding rather than a nuisance.
+        The unreduced :meth:`forward` on its sanitised stack, meaningful only where this
+        row's mask holds. Unlike the single-dataset ``residuals``, other entries are
+        placeholders: non-finite data enter as 0 and 1, difference and two-moment rows
+        zero a masked residual, and a non-finite difference or ML loss reads ``1e6``.
         """
         keys = self._keys()
         if len(keys) < self.min_datasets:
