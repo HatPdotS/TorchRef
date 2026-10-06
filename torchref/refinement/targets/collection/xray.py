@@ -74,13 +74,11 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
 
         Var(F_i - F_mean) = σ_i²·(1 - 2/N) + (Σ_j σ_j²)/N²
 
-    At N=2 the gradients are identical to direct dark-reference subtraction; above
-    that the mean reference is the quieter one.
+    At N=2 both rows carry the same term, so loss and gradient are twice those of direct
+    dark-reference subtraction (the loss plus a constant); above that the mean reference
+    is the quieter one.
 
-    Cross-dataset-coupled, unlike its siblings: the per-reflection mean ties all
-    datasets together, so it works on aligned ``(N, n_hkl)`` stacks on the common HKL
-    grid rather than the flat concatenate-then-mask form, and a reflection counts only
-    if it is in this target's subset in **every** dataset.
+    A reflection counts only if it is in this target's subset in **every** dataset.
 
     Parameters
     ----------
