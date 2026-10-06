@@ -135,7 +135,7 @@ def test_plane_sets_match_builders(built, code):
 @pytest.mark.unit
 @pytest.mark.parametrize("code", STRUCTURES)
 def test_exclusions_reproduce_current_set(built, code):
-    """The restraint-edge exclusions equal what the non-bonded term is given today."""
+    """The outer pairs of the bond, angle and torsion edges, and nothing else."""
     topology, _ = built(code)
     from_edges = topology.atoms.exclusions_from_restraint_edges()
 
@@ -155,9 +155,8 @@ def test_exclusions_reproduce_current_set(built, code):
 def test_connectivity_exclusions_are_a_superset(built, code):
     """Connectivity-derived exclusions cover the restraint-derived ones, and then some.
 
-    The difference is the defect the connectivity path fixes: a pair that is 1-3 or 1-4
-    bonded but whose angle or torsion the monomer library does not restrain is currently
-    not excluded, so the non-bonded term pushes it apart.
+    The difference is every pair that is 1-3 or 1-4 bonded but whose angle or torsion
+    the monomer library does not restrain; the non-bonded term excludes those too.
     """
     topology, _ = built(code)
     from_edges = topology.atoms.exclusions_from_restraint_edges()

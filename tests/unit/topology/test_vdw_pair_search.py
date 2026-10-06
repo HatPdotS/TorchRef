@@ -130,3 +130,47 @@ def test_grid_is_the_kdtree_minus_its_cell_width_shortfall(table):
     assert t["min_width"] < CUTOFF, "both test cells are oblique enough to show it"
     assert np.all(_distance(only_tree, t) > t["min_width"] - 1e-4)
     assert len(only_tree) < 0.01 * len(tree)
+
+
+def _bond_ball(neighbours, start, radius):
+    """Atoms at most ``radius`` bonds from ``start``, ``start`` included."""
+    ball, frontier = {start}, {start}
+    for _ in range(radius):
+        frontier = set().union(*(neighbours[a] for a in frontier)) - ball
+        ball |= frontier
+    return ball
+
+
+def test_bonded_pairs_are_not_in_the_vdw_list(pdb_dir):
+    """No intra-ASU contact, heavy or riding-hydrogen, is within three bonds.
+
+    A 1-3 or 1-4 pair whose angle or torsion the library leaves unrestrained is still
+    bonded: 1DAW has thousands, and their riding hydrogens inherit them.
+    """
+    from torchref.base.coordinates import is_symmetry_image
+
+    model = Model(verbose=0, device=torch.device("cpu"))
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    restraints = model.restraints
+    atoms = restraints.topology.atoms
+
+    vdw = restraints.restraints["vdw"]
+    image = is_symmetry_image(vdw["symop_indices"], vdw["cell_offsets"])
+    contacts = {(min(a, b), max(a, b)) for a, b in vdw["indices"][~image].tolist()}
+    assert contacts and not contacts & atoms.exclusions_12_13_14()
+
+    h_topo = restraints.h_topo
+    assert h_topo.has_candidates
+    n_heavy = atoms.n_atoms
+    parent = h_topo.h_parent_idx.tolist()
+    neighbours = [set(atoms.neighbors(i).tolist()) for i in range(n_heavy)]
+    image = is_symmetry_image(h_topo.cand_symop_idx, h_topo.cand_cell_offset)
+    candidates = torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1)[~image]
+    bonded = 0
+    for a, b in candidates.tolist():
+        # A riding hydrogen is one bond from its parent.
+        reach = 3 - (a >= n_heavy) - (b >= n_heavy)
+        a = parent[a - n_heavy] if a >= n_heavy else a
+        b = parent[b - n_heavy] if b >= n_heavy else b
+        bonded += b in _bond_ball(neighbours, a, reach)
+    assert bonded == 0

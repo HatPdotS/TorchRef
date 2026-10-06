@@ -469,7 +469,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             cell=cell_cpu,
             sg=sg_cpu,
             topology=self.topology,
-            exclusion_set=self.topology.atoms.exclusions_from_restraint_edges(),
+            exclusion_set=self.topology.atoms.exclusions_12_13_14(),
             cutoff=cutoff,
             sigma=sigma,
             inter_residue_only=inter_residue_only,
