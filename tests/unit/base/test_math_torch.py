@@ -140,6 +140,20 @@ class TestGridFunctions:
         assert lone[1, 0, 0] == F and lone[-1, 0, 0] == F.conj()
 
 
+class TestFourierTransforms:
+    """Tests for the crystallographic fft/ifft pair."""
+
+    @pytest.mark.unit
+    def test_volume_scale_ignores_the_batch_axis(self):
+        """Each map of a (B, Nx, Ny, Nz) batch is scaled as if transformed alone."""
+        from torchref.base.fourier import fft, ifft
+
+        rho = torch.randn(3, 8, 10, 12, generator=torch.Generator().manual_seed(0))
+        F = ifft(rho, 1000.0)
+        assert torch.allclose(F[0], ifft(rho[0], 1000.0))
+        assert torch.allclose(fft(F, 1000.0)[0], fft(F[0], 1000.0))
+
+
 class TestTransformationMatrices:
     """Tests for transformation matrix operations."""
 

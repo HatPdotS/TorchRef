@@ -5,6 +5,8 @@ The crystallographic sign convention is the opposite of torch's, so
 Pass ``volume`` to both or to neither -- mixing leaves an N/V scale error.
 """
 
+import math
+
 import torch
 
 
@@ -37,7 +39,7 @@ def fft(reciprocal_grid, volume: float = None) -> torch.Tensor:
         rs = torch.fft.fftn(reciprocal_grid, dim=(0, 1, 2), norm="forward").real
 
     if volume is not None:
-        N_total = reciprocal_grid.numel()
+        N_total = math.prod(reciprocal_grid.shape[-3:])
         rs = rs * N_total / volume
 
     return rs
@@ -71,7 +73,7 @@ def ifft(real_space_map, volume: float = None) -> torch.Tensor:
         rg = torch.fft.ifftn(real_space_map, dim=(0, 1, 2), norm="forward")
 
     if volume is not None:
-        N_total = real_space_map.numel()
+        N_total = math.prod(real_space_map.shape[-3:])
         voxel_volume = volume / N_total
         rg = rg * voxel_volume
 
