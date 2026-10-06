@@ -14,7 +14,7 @@ Laue class. That is why they hang off
 Miller indices transform as ``h' = h @ R = R^T @ h`` with R the *real-space* rotation;
 :attr:`~torchref.symmetry.symmetry.Symmetry.reciprocal` already holds the transpose.
 Translations enter as phase shifts of ``-2 pi h.t``. That sign is load-bearing and a
-wrong one is invisible in P21/P212121/C2 -- see :func:`_expand_hkl` and
+wrong one is invisible in P21/P212121/C2 -- see ``_expand_hkl`` and
 ``tests/unit/symmetry/test_phase_convention.py``.
 """
 
