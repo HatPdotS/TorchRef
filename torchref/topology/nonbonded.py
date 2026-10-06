@@ -1011,7 +1011,7 @@ def build_vdw_restraints_gpu(
     pair_cell_offsets = cell_offsets_valid[pair_combo_j]
 
     # Build output
-    indices = torch.stack([pair_atom_i, pair_atom_j], dim=1)
+    indices = torch.stack([pair_atom_i, pair_atom_j], dim=1).to(get_int_dtype())
     roles = topology.atoms.hb_type
     min_distances = contact_distances(
         vdw_radii.to(device), None if roles is None else roles.to(device), indices

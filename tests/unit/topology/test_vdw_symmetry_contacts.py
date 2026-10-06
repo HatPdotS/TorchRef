@@ -16,7 +16,7 @@ import torch
 
 from torchref.base.coordinates import is_symmetry_image, symmetry_image_positions
 from torchref.base.targets.nonbonded import nonbonded_pair_positions
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 from torchref.model.model import Model
 from torchref.symmetry import SpaceGroup
 from torchref.symmetry.cell import Cell
@@ -194,6 +194,15 @@ def test_production_builder_keeps_its_contacts_under_a_lattice_shift(model_1daw)
     _assert_same_contacts(
         image_distances(xyz + cell.fractional_to_cartesian(shift)), deposited
     )
+
+
+def test_pair_indices_take_the_configured_int_dtype(model_1daw):
+    """Like the operation indices and cell offsets beside them, and every other
+    restraint index, the atom indices of the pair list are the configured int dtype."""
+    vdw = model_1daw.restraints.restraints["vdw"]
+    assert len(vdw["indices"]) > 0
+    for key in ("indices", "symop_indices", "cell_offsets"):
+        assert vdw[key].dtype == get_int_dtype(), key
 
 
 def test_no_atom_is_in_contact_with_its_own_image(model_1daw):
