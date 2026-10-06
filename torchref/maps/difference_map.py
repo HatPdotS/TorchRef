@@ -139,7 +139,7 @@ class DifferenceMap(Map):
 
         # delta_f is derived per reflection, which expand_to_p1 cannot carry: expand
         # the indices.
-        sg =self.data_reference.spacegroup or SpaceGroup("P1", device=hkl_asu.device)
+        sg = self.data_reference.spacegroup or SpaceGroup("P1", device=hkl_asu.device)
         hkl_p1, orig_idx, _ = sg.expand_hkl(
             hkl_asu,
             include_friedel=False, remove_absences=True,
