@@ -1165,7 +1165,7 @@ class ModelCIFReader:
             raise ValueError(
                 f"File {self.filepath} does not contain atomic coordinate data (_atom_site loop).\n"
                 f"This does not appear to be a model CIF file.\n"
-                f"Available data blocks: {list(self.cif.data.keys())}"
+                f"Available categories: {list(self.cif.data.keys())}"
             )
 
     def _extract_data(self):
@@ -1780,7 +1780,7 @@ class RestraintCIFReader:
         else:
             raise ValueError(
                 f"File {self.filepath} does not contain bond restraint data (_chem_comp_bond).\n"
-                f"Available data blocks: {list(self.cif.data.keys())}\n\n"
+                f"Available categories: {list(self.cif.data.keys())}\n\n"
                 f"This is not a valid restraint dictionary file."
             )
 
