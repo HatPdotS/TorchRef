@@ -21,9 +21,7 @@ class NLLXrayTarget(XrayTarget):
 
         ``NLL = 0.5*(F_obs - |F_calc|)²/σ² + log(σ) + 0.5*log(2π)``
 
-    No model-error term, so it does **not** control overfitting -- the only x-ray target
-    here that does not. Was ``GaussianXrayTarget``; the taxonomy names the row, and
-    "Gaussian" named the distribution, which ``nll_beta`` shares.
+    No model-error term, so it does **not** control overfitting.
 
     Read observations through the dataset subset accessors, which expose live
     corrections for ScaledDataset. The target uses a fused Triton kernel where
