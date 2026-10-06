@@ -23,9 +23,9 @@ class ADPLocalityTarget(ADPTarget):
     """
     Proximity-based ADP restraint over each atom's K nearest neighbours.
 
-    Built on a spatial cell-list (O(N) memory, O(N·k) time) rather than a full
-    N×N distance matrix, so it scales to arbitrarily large structures. Bonded
-    neighbours are included; SIMU
+    Built on a k-d tree rather than a full N×N distance matrix, so it scales to
+    arbitrarily large structures, and rebuilt by :meth:`maintenance` whenever the
+    coordinates have moved. Bonded neighbours are included; SIMU
     (:class:`~torchref.refinement.targets.adp.ADPSimilarityTarget`) restrains them
     separately.
 
@@ -68,10 +68,10 @@ class ADPLocalityTarget(ADPTarget):
         # analogue of log B_eq, hence the shared 0.5 scale.
         self._register_scalar("_sigma_aniso", float(sigma_aniso))
 
-        # Cache for neighbor indices and distances
+        # The k-NN list and the coordinates it was built from.
         self._neighbor_indices = None  # (N, k_neighbors)
         self._neighbor_distances = None  # (N, k_neighbors)
-        self._last_xyz_hash = None
+        self._neighbor_xyz = None  # (N, 3)
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         """Accept checkpoints that store ``_k_neighbors``/``_correlation_length`` as
@@ -116,11 +116,9 @@ class ADPLocalityTarget(ADPTarget):
     def _build_neighbor_list(self) -> None:
         """Build each atom's list of its ``k`` nearest other atoms, nearest first.
 
-        Uses a k-d tree. ``stats()`` rebuilds the list on every call, which is also what
-        keeps ``forward()``'s list current as atoms move, so this runs every time
-        metrics are collected and has to be cheap. The per-atom Python loop over a cell
-        list that it replaces was one of the largest costs of a refinement, and more so
-        with hydrogens, which double the atom count.
+        Uses a k-d tree and keeps a detached copy of the coordinates it was built from.
+        :meth:`maintenance` rebuilds the list whenever those coordinates move, after
+        every optimizer step that changes them, so this has to be cheap.
 
         Distances are recomputed from the coordinates in their own dtype, the way the
         loss sees them, rather than taken from the tree.
@@ -149,12 +147,24 @@ class ADPLocalityTarget(ADPTarget):
 
         self._neighbor_indices = torch.from_numpy(all_neighbor_idx).to(device)
         self._neighbor_distances = torch.from_numpy(all_neighbor_dist).to(device)
+        self._neighbor_xyz = xyz.detach().clone()
 
         if self.verbose > 1 and all_neighbor_dist.size:
             print(
                 f"    Built K-NN list (k-d tree): k={k}, "
                 f"mean dist={float(all_neighbor_dist.mean()):.2f}A"
             )
+
+    def maintenance(self) -> None:
+        """Rebuild the k-NN list unless it was built from the current coordinates.
+
+        Costs one device sync for the comparison; see
+        :meth:`~torchref.refinement.targets.base.Target.maintenance`.
+        """
+        xyz = self.model.xyz().detach()
+        built = self._neighbor_xyz
+        if built is None or built.device != xyz.device or not torch.equal(built, xyz):
+            self._build_neighbor_list()
 
     def forward(self, recompute_neighbors: bool = False) -> torch.Tensor:
         """
@@ -171,7 +181,8 @@ class ADPLocalityTarget(ADPTarget):
         recompute_neighbors : bool, optional
             Rebuild the k-nearest-neighbor list before evaluating the loss.
             Default is False; the list is also rebuilt automatically when no
-            cache exists or it lives on a different device than the model.
+            cache exists or it lives on a different device than the model, and by
+            :meth:`maintenance` once the coordinates move.
 
         Returns
         -------
@@ -225,7 +236,7 @@ class ADPLocalityTarget(ADPTarget):
         The ``*_log`` figures are of log B_eq; on an anisotropic model the
         fractional-anisotropy channel shows only in ``loss``.
         """
-        self._build_neighbor_list()
+        self.maintenance()
 
         if self._neighbor_indices is None:
             return {}
