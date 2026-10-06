@@ -751,8 +751,8 @@ class ModelFT(CachedForwardMixin, Model):
         state[prefix + "wavelength"] = self.wavelength
         state[prefix + "anomalous_threshold"] = self.anomalous_threshold
 
-        # Deliberately not saved, all rebuildable: _parametrization (from _A/_B),
-        # _cache, _anomalous_cache (from the element list).
+        # Deliberately not saved, all rebuildable: _cache, _anomalous_cache (from the
+        # element list).
         return state
 
     def _subclass_kwargs(self) -> dict:

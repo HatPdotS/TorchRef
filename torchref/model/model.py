@@ -141,9 +141,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.u = None
         self.occupancy = None
 
-        # Scattering factor parametrization (built lazily on first access)
-        self._parametrization = None
-
     def __bool__(self):
         """Return the initialization status when used in boolean context.
 
@@ -358,13 +355,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     # Scattering Factor Parametrization
     # =========================================================================
 
-    def _build_parametrization(self):
-        """Register the ``_A`` / ``_B`` ITC92 buffers by Z-based table lookup and
-        return the ``{element: (A, B)}`` dict. Cached; called lazily on first
-        access to :attr:`parametrization` or the scattering parameters.
+    def _build_parametrization(self) -> None:
+        """Register the ``_A`` / ``_B`` ITC92 buffers by Z-based table lookup.
+
+        Called lazily on first access to the scattering parameters; the buffers are
+        kept until the atom set changes.
         """
-        if self._parametrization is not None:
-            return self._parametrization
+        if getattr(self, "_A", None) is not None:
+            return
 
         if not self.ctx.initialized:
             raise RuntimeError(
@@ -385,31 +383,25 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.register_buffer("_A", A)
         self.register_buffer("_B", B)
 
-        # Legacy per-element view: one representative row per element.
-        elements = self.ctx.topology.atoms.element.tolist()
-        unique_elements = list(set(elements))
-        self._parametrization = {}
-
-        for elem in unique_elements:
-            idx = elements.index(elem)
-            self._parametrization[elem] = (
-                A[idx : idx + 1],  # Keep shape (1, 5)
-                B[idx : idx + 1],
-            )
-
         if self.ctx.verbose > 0:
-            print(
-                f"Parametrization built for {len(self._parametrization)} unique atom types"
-            )
-        if self.ctx.verbose > 1:
-            print("Elements with parametrization:", list(self._parametrization.keys()))
-
-        return self._parametrization
+            elements = sorted(set(self.ctx.topology.atoms.element))
+            print(f"Parametrization built for {len(elements)} unique atom types")
+            if self.ctx.verbose > 1:
+                print("Elements with parametrization:", elements)
 
     @property
-    def parametrization(self):
-        """ITC92 ``{element: (A, B)}`` dict, built on first access."""
-        return self._build_parametrization()
+    def parametrization(self) -> dict:
+        """ITC92 ``{element: (A, B)}``, each a ``(1, 5)`` row of the per-atom buffers.
+
+        Built on each access; the rows alias the ``_A`` / ``_B`` buffers, which are
+        what the structure-factor code reads.
+        """
+        self._build_parametrization()
+        elements, first = np.unique(self.ctx.topology.atoms.element, return_index=True)
+        return {
+            str(elem): (self._A[i : i + 1], self._B[i : i + 1])
+            for elem, i in zip(elements, first)
+        }
 
     def get_scattering_params_iso(self):
         """
@@ -498,7 +490,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         for name in self._ATOM_DERIVED_BUFFERS:
             if hasattr(self, name):
                 delattr(self, name)
-        self._parametrization = None
 
     def load(self, reader):
         """
@@ -833,8 +824,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Model
             A new, fully independent instance with copied data.
         """
-        import copy as copy_module
-
         if not self.ctx.initialized:
             raise RuntimeError("Cannot copy an uninitialized Model. Load data first.")
 
@@ -852,8 +841,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ):
                 continue
             setattr(duplicate, name, module.copy())
-        if self._parametrization is not None:
-            duplicate._parametrization = copy_module.deepcopy(self._parametrization)
 
         # Anything that borrows the coordinates -- the ADP node field -- carries the
         # reference through its own ``copy`` and still points at THIS model's ``xyz``.
