@@ -711,8 +711,9 @@ def reflection_table(
     Returns
     -------
     pandas.DataFrame
-        Columns keyed by the intermediate names :func:`write` maps to MTZ
-        labels (``F-obs``, ``SIGF-obs``, ``I-obs``, ``R-free-flags``, ...).
+        Columns named as they are written: :func:`write` assigns MTZ types
+        and renames nothing (``F-obs``, ``SIGF-obs``, ``I-obs``,
+        ``R-free-flags``, ...).
     """
     if fcalc is not None and not torch.is_complex(fcalc):
         raise ValueError("fcalc must be a complex tensor")
@@ -732,8 +733,8 @@ def _merged_table(data, fcalc):
         table["I-obs"] = _np(data.I)
         if data.I_sigma is not None:
             table["SIGI-obs"] = _np(data.I_sigma)
-    # FreeR_flag is 1 = work, 0 = free; the optional held-out validation set is
-    # a separate Validation_flag column so external tools keep reading FreeR.
+    # R-free-flags is 1 = work, 0 = free; the optional held-out validation set is
+    # a separate Validation_flag column so external tools keep reading R-free-flags.
     if data.rfree_flags is not None:
         table["R-free-flags"] = (_np(data.rfree_flags) != 0).astype(int)
         if data.validation_flags is not None and bool(data.validation_flags.any()):
@@ -902,10 +903,13 @@ def write_reflections(
 ) -> None:
     """Write a :class:`ReflectionData` (and optional model) to an MTZ file.
 
-    Labels on disk: FP, SIGFP, I, SIGI, FreeR_flag (1 = work), Validation_flag;
-    with ``fcalc`` also FWT/PHWT (2Fo-Fc), DELFWT/PHDELWT (Fo-Fc) and
-    F-model/PH-model -- the unweighted m = 1, D = 1 coefficients of
+    Labels on disk are the :func:`reflection_table` column names: F-obs,
+    SIGF-obs, I-obs, SIGI-obs, R-free-flags (1 = work, 0 = free) and
+    Validation_flag; with ``fcalc`` also FWT/PHWT (2Fo-Fc), DELFWT/PHDELWT
+    (Fo-Fc) and F-model/PH-model -- the unweighted m = 1, D = 1 coefficients of
     :func:`~torchref.base.fourier.map_coefficients`, not 2mFo-DFc.
+    R-free-flags is Phenix's label with the CCP4 free value 0, so tell Phenix
+    the test-flag value rather than letting it assume 1.
 
     Map and model columns are missing (not filled) for every reflection
     ``data.masks()`` excludes -- beyond the resolution cut or rejected as an
