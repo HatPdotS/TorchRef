@@ -584,7 +584,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """Move complex structure factors between the signed and canonical index.
 
         Rows flagged in :attr:`friedel_flags` are evaluated at ``-h`` by
-        :meth:`_hkl_for_sf` while :attr:`hkl` holds ``+h``; ``F(-h)`` is the
+        ``_hkl_for_sf`` while :attr:`hkl` holds ``+h``; ``F(-h)`` is the
         conjugate of ``F(h)`` up to the anomalous ``f''`` term. Conjugating
         exactly those rows re-expresses the array on the other index. The
         operation is its own inverse, so it converts in both directions.
@@ -2179,7 +2179,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         the separate boolean :attr:`validation_flags`, leaving
         :attr:`rfree_flags` untouched. The work/free/validation subsets are
         disjoint (validation is carved out of free) -- see
-        :meth:`_subset_indices` and the ``work``/``free``/``validation``
+        ``_subset_indices`` and the ``work``/``free``/``validation``
         accessors. Like :meth:`generate_rfree_flags`, the split is over whole
         ASU groups so Bijvoet mates stay together (see
         :meth:`asu_group_indices`).
