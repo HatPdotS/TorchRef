@@ -472,11 +472,6 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
         return (self._n_full, int(self.fixed_values.shape[1]))
 
     @property
-    def base_shape(self):
-        """Storage-space shape ``(N_base, 3)``."""
-        return () if self.fixed_values is None else tuple(self.fixed_values.shape)
-
-    @property
     def full_refinable_mask(self) -> torch.Tensor:
         """Refinable rows in full atom space; riding rows are never refinable."""
         return self._expand_mask(self.refinable_mask)
@@ -530,12 +525,6 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             orientation.refinable_params.zero_()
             orientation.fixed_values.zero_()
             orientation.reset_forward_cache()
-
-    def set_hydrogen_positions(self, h_xyz: torch.Tensor) -> None:
-        """Adopt new positions for the riding rows, in ``h_row`` order, ``(H, 3)``."""
-        full = self.forward().detach()
-        full[self.h_row] = h_xyz.to(dtype=self.dtype, device=self.device)
-        self.refresh_offsets(full)
 
     # ------------------------------------------------------------------
     # Mutation in full space

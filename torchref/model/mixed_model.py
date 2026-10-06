@@ -307,26 +307,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
 
         return f_mixed
 
-    def get_individual_fcalc(
-        self, hkl: torch.Tensor, recalc: bool = True
-    ) -> List[torch.Tensor]:
-        """
-        Get structure factors from each model individually.
-
-        Parameters
-        ----------
-        hkl : torch.Tensor
-            Miller indices with shape (n_reflections, 3).
-        recalc : bool, optional
-            If True, force recalculation. Default is True.
-
-        Returns
-        -------
-        List[torch.Tensor]
-            List of structure factor tensors, one per model.
-        """
-        return [model(hkl, recalc=recalc) for model in self.models]
-
     def copy(self) -> "MixedModel":
         """
         Create a deep copy of the MixedModel.

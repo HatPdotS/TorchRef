@@ -232,10 +232,6 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         """Cartesian coordinates of the first shared base model."""
         return self._base_models[0].xyz()
 
-    def get_individual_fcalc(self, hkl, recalc=True):
-        """Per-model (unweighted) structure factors, one tensor per base model."""
-        return [m(hkl, recalc=recalc) for m in self._base_models]
-
     def __repr__(self):
         fracs = self.fractions.detach().tolist()
         frac_str = ", ".join(f"{f:.3f}" for f in fracs)
@@ -458,49 +454,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         # No frozen_fractions here: the reference is the alpha = 0 evaluation of the
         # shared parametrisation, so it owns nothing that could be frozen.
         return self.add_timepoint(self._dark_key, fractions)
-
-    @classmethod
-    def from_kinetics(
-        cls,
-        base_models: List["ModelFT"],
-        occ_model,
-        timepoint_names: List[str],
-        dark_key: str = "dark",
-        verbose: int = 0,
-    ) -> "ModelCollection":
-        """
-        Create a ModelCollection from a kinetics occupancy model.
-
-        Parameters
-        ----------
-        base_models : List[ModelFT]
-            Shared structural models.
-        occ_model : occupancies_kinetics
-            Kinetic occupancy model whose forward() returns
-            shape [n_states, n_timepoints].
-        timepoint_names : List[str]
-            Names for each timepoint column (excluding dark).
-        dark_key : str
-            Key for the dark entry.
-        verbose : int
-            Verbosity level.
-
-        Returns
-        -------
-        ModelCollection
-        """
-        collection = cls(base_models, dark_key=dark_key, verbose=verbose)
-        collection.add_dark()
-
-        with torch.no_grad():
-            occ = occ_model()  # [n_states, n_timepoints]
-
-        for t_idx, name in enumerate(timepoint_names):
-            # +1 because index 0 in occ is the dark timepoint
-            fracs = occ[:, t_idx + 1].tolist()
-            collection.add_timepoint(name, fracs)
-
-        return collection
 
     @classmethod
     def from_ihm(
@@ -857,33 +810,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         """
         return torch.einsum(
             "tk,kr->tr", weights.to(component_fcalcs.dtype), component_fcalcs
-        )
-
-    def compute_all_fcalc(
-        self, hkl: torch.Tensor, recalc: bool = False
-    ) -> torch.Tensor:
-        """Mixed ``F_calc`` for every timepoint at once.
-
-        Equivalent to calling each timepoint's ``forward`` in turn, but evaluates each
-        shared base model once instead of once per timepoint. Rows follow
-        :meth:`get_fractions_matrix`, i.e. insertion order.
-
-        Parameters
-        ----------
-        hkl : torch.Tensor
-            Miller indices of shape (n_reflections, 3); see
-            :meth:`compute_component_fcalcs` on the index convention.
-        recalc : bool, optional
-            Force recomputation rather than reusing each model's cached SF.
-
-        Returns
-        -------
-        torch.Tensor
-            Complex SFs of shape ``(n_timepoints, n_reflections)``.
-        """
-        component_fcalcs = self.compute_component_fcalcs(hkl, recalc=recalc)
-        return self.mix_component_fcalcs(
-            component_fcalcs, self.get_fractions_matrix()
         )
 
     def freeze_all_fractions(self):

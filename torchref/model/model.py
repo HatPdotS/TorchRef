@@ -619,14 +619,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             return OccupancyTensor.from_saved_groups(
                 initial, state, prefix="occupancy.", **settings
             )
-        sharing_groups, altloc_groups, refinable_mask = self.ctx.occupancy_groups(
-            initial
-        )
+        sharing_groups, altloc_groups = self.ctx.occupancy_groups(initial)
         return OccupancyTensor(
             initial_values=initial,
             sharing_groups=sharing_groups,
             altloc_groups=altloc_groups,
-            refinable_mask=refinable_mask,
             **settings,
         )
 

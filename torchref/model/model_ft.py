@@ -209,7 +209,7 @@ class ModelFT(CachedForwardMixin, Model):
         )
 
     # =========================================================================
-    # Backward-compatible properties for scattering parameters
+    # ITC92 scattering parameters, built on first use
     # =========================================================================
 
     @property
@@ -328,7 +328,7 @@ class ModelFT(CachedForwardMixin, Model):
         """
         self.fft.setup_grid(max_res=max_res, gridsize=gridsize)
 
-    def build_complete_map(self, radius=None, apply_symmetry=True):
+    def build_complete_map(self, apply_symmetry=True):
         """
         Build electron density map from all atoms.
 
@@ -337,10 +337,6 @@ class ModelFT(CachedForwardMixin, Model):
 
         Parameters
         ----------
-        radius : int, optional
-            Accepted for backward compatibility but unused; the density splat
-            radius is per-atom (``torchref.sigma_cutoff_ed`` sigmas), resolved
-            inside the density builder. Default is None.
         apply_symmetry : bool, optional
             If True and space group is not P1, apply symmetry operations
             to the map. Default is True.
@@ -483,10 +479,6 @@ class ModelFT(CachedForwardMixin, Model):
         for module in self.children():
             if hasattr(module, "reset_forward_cache"):
                 module.reset_forward_cache()
-
-    def invalidate_cache(self):
-        """Alias for ``reset_cache()``."""
-        self.reset_cache()
 
     # =========================================================================
     # Anomalous scattering
@@ -698,8 +690,7 @@ class ModelFT(CachedForwardMixin, Model):
         f' and f'' are not added to F afterwards: they are folded into the atoms'
         form factors before the density is built, so the one splat and FFT apply
         each atom's isotropic or anisotropic temperature factor and the space-group
-        symmetry to them exactly as to f0. With f'' the density is complex, and so is
-        the map left in ``self.ed``.
+        symmetry to them exactly as to f0.
         """
         self._check_forward_dtype(hkl)
         iso, aniso, imaginary = self.get_iso(), self.get_aniso(), None
@@ -707,7 +698,7 @@ class ModelFT(CachedForwardMixin, Model):
             iso, aniso, imaginary = self._add_anomalous_scattering(
                 iso, aniso, include_fdp=bool(self.anomalous_bijvoet)
             )
-        sf, self.ed = self.fft.compute_structure_factors(
+        sf, _ = self.fft.compute_structure_factors(
             hkl, *iso, *aniso, apply_symmetry=True, imaginary=imaginary
         )
 

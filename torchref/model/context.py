@@ -564,8 +564,8 @@ class ModelContext(DeviceMixin):
 
     def occupancy_groups(
         self, initial_occ: torch.Tensor
-    ) -> Tuple[torch.Tensor, List[tuple], torch.Tensor]:
-        """Sharing groups, altloc groups and refinable mask for an
+    ) -> Tuple[torch.Tensor, List[tuple]]:
+        """Sharing groups and altloc groups for an
         :class:`~torchref.model.parameter_wrappers.OccupancyTensor` over these atoms.
 
         Every conformer of a residue with several altlocs is one group, whatever its
@@ -576,6 +576,8 @@ class ModelContext(DeviceMixin):
         0.01 and one group per atom otherwise. No group spans two residues; a starting
         occupancy changes only where the atoms of one group disagree (a conformer's
         atoms, or a part's within the deadband), which collapse to one shared value.
+        Which groups are refinable is not decided here but by
+        ``Model.set_default_masks`` (occupancy below 0.999).
 
         Parameters
         ----------
@@ -590,9 +592,6 @@ class ModelContext(DeviceMixin):
             :meth:`altloc_residues`.
         altloc_groups : list of tuple
             Per residue with several conformers, the atom rows of each conformer.
-        refinable_mask : torch.Tensor
-            Boolean, shape ``(n_atoms,)``: occupancy (a shared group's mean) differs
-            from 1.0 by more than 0.01.
 
         Raises
         ------
@@ -605,7 +604,6 @@ class ModelContext(DeviceMixin):
                 f"initial_occ has {n_atoms} values for a context of {self.n_atoms} atoms"
             )
         sharing_groups = torch.full((n_atoms,), -1, dtype=get_int_dtype())
-        refinable_mask = (initial_occ - 1.0).abs() > 0.01
         altloc_groups = []
         others = []
         for _, parts in self._residue_parts():
@@ -628,7 +626,6 @@ class ModelContext(DeviceMixin):
             if occ.max().item() - occ.min().item() <= 0.01:
                 sharing_groups[rows] = n_groups
                 n_groups += 1
-                refinable_mask[rows] = abs(occ.mean().item() - 1.0) > 0.01
             else:
                 sharing_groups[rows] = torch.arange(
                     n_groups, n_groups + len(rows), dtype=get_int_dtype()
@@ -640,10 +637,9 @@ class ModelContext(DeviceMixin):
             print(f"  Total atoms: {n_atoms}")
             print(f"  Collapsed indices: {n_groups}")
             print(f"  Alternative conformation groups: {len(altloc_groups)}")
-            print(f"  Refinable atoms: {refinable_mask.sum().item()}")
             print(f"  Compression ratio: {n_atoms / max(n_groups, 1):.2f}x")
 
-        return sharing_groups, altloc_groups, refinable_mask
+        return sharing_groups, altloc_groups
 
     def register_altlocs(self) -> None:
         """Rebuild :attr:`altloc_pairs` from the topology's altlocs.
@@ -699,18 +695,6 @@ class ModelContext(DeviceMixin):
         return [
             (chain, sorted(seen.values(), key=lambda item: item[0]))
             for chain, seen in chains.items()
-        ]
-
-    @property
-    def chain_residues(self) -> List[Tuple[str, List[str]]]:
-        """Per-chain residue names as 3-letter codes, ``[(chain_id, [resname, ...])]``.
-
-        Excludes HETATM records. Unlike :attr:`chain_sequences`, the raw 3-letter codes
-        without gap filling; used by the IHM and mmCIF writers.
-        """
-        return [
-            (chain, [resname for _, resname in residues])
-            for chain, residues in self._polymer_residues()
         ]
 
     def copy(self) -> "ModelContext":

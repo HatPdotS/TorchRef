@@ -266,7 +266,7 @@ class TestForwardAndGradient:
         self, two_model_collection, hkl
     ):
         mixed = two_model_collection["light"]
-        parts = mixed.get_individual_fcalc(hkl, recalc=True)
+        parts = two_model_collection.compute_component_fcalcs(hkl, recalc=True)
         w = mixed.fractions
 
         expected = w[0] * parts[0] + w[1] * parts[1]

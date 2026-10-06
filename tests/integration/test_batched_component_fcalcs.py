@@ -39,14 +39,15 @@ class TestBatchedMatchesTheLoop:
                 mixed[row], reference, rtol=1e-6, atol=1e-6
             ), f"timepoint {key!r} differs from its own mixed forward"
 
-    def test_compute_all_fcalc_agrees_on_the_signed_index(self, difference_models):
-        """``compute_all_fcalc`` takes the caller's indices verbatim, so handed the
-        signed ones it must reproduce the Friedel-corrected mixture up to the
+    def test_mixture_agrees_on_the_signed_index(self, difference_models):
+        """``compute_component_fcalcs`` takes the caller's indices verbatim, so handed
+        the signed ones its mixture must reproduce the Friedel-corrected one up to the
         conjugation that ``component_structure_factors`` applies."""
         dc, mc = difference_models
         data = dc["dark"]
 
-        direct = mc.compute_all_fcalc(data._hkl_for_sf(), recalc=True)
+        signed = mc.compute_component_fcalcs(data._hkl_for_sf(), recalc=True)
+        direct = mc.mix_component_fcalcs(signed, mc.get_fractions_matrix())
         corrected = data.conjugate_friedel(direct)
 
         stacked = dc.component_structure_factors(mc, recalc=False)
