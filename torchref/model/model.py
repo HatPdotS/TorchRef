@@ -9,9 +9,8 @@ loaded with: cell, space group, atom identity and restraints.
 
 import math
 import warnings
-from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple, Union
 
-import gemmi
 import numpy as np
 import torch
 import torch.nn as nn
