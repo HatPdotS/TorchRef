@@ -47,7 +47,7 @@ class GeometryTarget(ModelTarget):
     def _restraint_group(
         self, edge_type: str, origin: Optional[str] = None
     ) -> Optional[Dict[str, torch.Tensor]]:
-        """``restraints[edge_type][origin]``, or ``restraints[edge_type]`` itself when
+        """Return ``restraints[edge_type][origin]``, or ``restraints[edge_type]`` when
         ``origin`` is None (chirals); None when the group is absent or has no indices.
 
         A model without a restraint kind lacks the group rather than holding an empty

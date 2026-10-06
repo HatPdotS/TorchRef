@@ -47,8 +47,8 @@ class ADPTarget(ModelTarget):
         super().__init__(model, verbose, device=device)
 
     def _b_values(self) -> torch.Tensor:
-        """Per-atom B in Å², shape ``(n_atoms,)``: B_eq from the unified U6 when any
-        atom is anisotropic, else ``model.adp()``.
+        """Return per-atom B in Å², shape ``(n_atoms,)``: B_eq from the unified U6 when
+        any atom is anisotropic, else ``model.adp()``.
 
         Read B through this rather than ``model.adp()``, whose value for an anisotropic
         atom is not refined. An all-isotropic model takes the direct path and is
