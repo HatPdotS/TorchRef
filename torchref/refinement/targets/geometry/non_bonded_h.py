@@ -140,7 +140,7 @@ class NonBondedHTarget(NonBondedTarget):
 
         n_cand = h_topo.cand_idx_i.shape[0]
         if n_cand == 0:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         # Fast path: prolsq goes through the dispatcher (Triton on CUDA fp32).
         if self.mode == "prolsq":

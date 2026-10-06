@@ -255,13 +255,13 @@ class NonBondedTarget(GeometryTarget):
         device = xyz.device
 
         if "vdw" not in self.restraints.restraints:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         vdw_data = self.restraints.restraints["vdw"]
         indices = vdw_data.get("indices")
 
         if indices is None or len(indices) == 0:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         sigmas = vdw_data["sigmas"]
 
@@ -335,9 +335,9 @@ class NonBondedTarget(GeometryTarget):
                 "indices": torch.tensor(
                     [], dtype=get_int_dtype(), device=device
                 ).reshape(0, 2),
-                "violations": torch.tensor([], device=device),
-                "distances": torch.tensor([], device=device),
-                "min_distances": torch.tensor([], device=device),
+                "violations": xyz.new_zeros(0),
+                "distances": xyz.new_zeros(0),
+                "min_distances": xyz.new_zeros(0),
             }
 
         vdw_data = self.restraints.restraints["vdw"]
@@ -348,9 +348,9 @@ class NonBondedTarget(GeometryTarget):
                 "indices": torch.tensor(
                     [], dtype=get_int_dtype(), device=device
                 ).reshape(0, 2),
-                "violations": torch.tensor([], device=device),
-                "distances": torch.tensor([], device=device),
-                "min_distances": torch.tensor([], device=device),
+                "violations": xyz.new_zeros(0),
+                "distances": xyz.new_zeros(0),
+                "min_distances": xyz.new_zeros(0),
             }
 
         pos1, pos2, min_distances = self._compute_positions(xyz)
