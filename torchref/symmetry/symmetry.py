@@ -424,43 +424,18 @@ class Symmetry(DeviceMixin):
         hkl : torch.Tensor
             Miller indices, shape ``(N, 3)``.
         friedel : bool, default True
-            Whether operations mapping ``h -> -h`` count alongside ``h -> h``.
+            Also count operations mapping ``h -> -h``, the convention sigma_A
+            estimation is calibrated on. ``False`` gives the conventional
+            crystallographic count, which molecular replacement and the Wilson
+            statistics use. The two differ only on centric reflections.
 
         Returns
         -------
         torch.Tensor
             Multiplicities of shape ``(N,)`` at the configured float dtype, floored at
-            1, returned on ``hkl``'s device so it can weight data sitting beside it.
-
-        Notes
-        -----
-        The two settings answer different questions and both are wanted.
-
-        Operations mapping ``h -> h`` add coherently and set the **mean**,
-        ``<|F|^2> = eps * Sigma``. That is the conventional crystallographic epsilon,
-        and what a Wilson normalisation or a likelihood's variance budget asks for.
-        Operations mapping ``h -> -h`` leave the mean alone and instead make ``F``
-        real, changing the **distribution** from exponential to chi2_1 -- that is
-        centricity, and :meth:`is_centric` already carries it. Folding Friedel into
-        epsilon therefore mixes a mean effect with a distribution effect.
-
-        The default keeps Friedel folded in because downstream sigma_A estimation is
-        calibrated against that convention; flipping it would silently decalibrate the
-        refinement path. Pass ``friedel=False`` for the conventional count, as the
-        molecular-replacement likelihood does -- counting Friedel there doubles
-        epsilon on exactly the reflections whose distribution the Woolfson branch is
-        already handling, inflating their ``V = eps - sigma_A**2``.
-
-        The two differ on centric reflections and *only* there: measured across the
-        ten benchmark structures every disagreement was centric, and the counts are
-        not small -- 12360 reflections on 2DQ6, 7555 on 4BX9, 6680 on 3K7M.
-
-        Both settings count lattice-centring cosets, so on a centred lattice every
-        reflection carries the centring order as a factor: C2 gives 2 for general
-        reflections where a primitive lattice gives 1. That is a separate axis from
-        this switch. Being uniform per lattice it is absorbed into ``Sigma`` wherever
-        epsilon is a factor -- which is why the refinement path never saw it -- and
-        bites only where epsilon is a term.
+            1, on ``hkl``'s device. Both settings count lattice-centring cosets, so on
+            a centred lattice every reflection carries the centring order as a factor
+            (2 for general reflections in C2, where a primitive lattice gives 1).
         """
         float_dtype = get_float_dtype()
         with torch.no_grad():
