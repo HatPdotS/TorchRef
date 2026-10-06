@@ -394,7 +394,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         xyz_aniso, u_aniso, occ_aniso, A_aniso, B_aniso = self.get_aniso()
 
-        self.map = self._fft.build_density_map(
+        self.map = self.fft.build_density_map(
             xyz_iso=xyz_iso,
             adp_iso=adp_iso,
             occ_iso=occ_iso,
