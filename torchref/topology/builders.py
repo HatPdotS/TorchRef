@@ -109,13 +109,10 @@ class PeptideResidues:
     conformer_maps : dict
         ``{residue: [(altloc label or None, {atom name: row}), ...]}`` for every
         residue in a pair, as :func:`_conformer_maps` gives them.
-    resnames : numpy.ndarray
-        Residue name per residue, shape ``(R,)``.
     """
 
     def __init__(self, topology, pairs, xyz):
         self.pairs = [(int(a), int(b)) for a, b in pairs]
-        self.resnames = np.char.strip(np.asarray(topology.residues.resname).astype(str))
         self.atom_altlocs = topology.atoms.altloc
         self.atom_resnames = topology.columns()["resname"]
         self.xyz = np.asarray(xyz, dtype=np.float64)
@@ -201,8 +198,6 @@ class PreprocessedCIF:
         cif_dict : dict
             CIF dictionary with restraints per residue type.
         """
-        self.residue_types = list(cif_dict.keys())
-
         # Pre-process each restraint type
         self.bonds = {}
         self.angles = {}
@@ -501,18 +496,10 @@ class InterResidueBondBuilder:
         self._indices: List[np.ndarray] = []
         self._references: List[np.ndarray] = []
         self._sigmas: List[np.ndarray] = []
-        self._count: int = 0
-
-    def reset(self):
-        """Clear all accumulated data."""
-        self._indices.clear()
-        self._references.clear()
-        self._sigmas.clear()
-        self._count = 0
 
     def process_disulfide_bond(
         self, sg1_idx: int, sg2_idx: int, bond_length: float, bond_sigma: float
-    ) -> int:
+    ) -> None:
         """
         Process a single disulfide bond restraint.
 
@@ -526,17 +513,10 @@ class InterResidueBondBuilder:
             Target bond length in Å.
         bond_sigma : float
             Sigma for restraint in Å.
-
-        Returns
-        -------
-        int
-            Always returns 1.
         """
         self._indices.append(np.array([[sg1_idx, sg2_idx]], dtype=np.int64))
         self._references.append(np.array([bond_length], dtype=np.float64))
         self._sigmas.append(np.array([bond_sigma], dtype=np.float64))
-        self._count += 1
-        return 1
 
     def finalize(
         self, device: torch.device, sort_indices: bool = True, min_sigma: float = 1e-4
@@ -580,11 +560,6 @@ class InterResidueBondBuilder:
             ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
-
-    @property
-    def count(self) -> int:
-        """Return total number of restraints accumulated."""
-        return self._count
 
     def build(
         self,
@@ -699,21 +674,13 @@ class InterResidueAngleBuilder:
         self._indices: List[np.ndarray] = []
         self._references: List[np.ndarray] = []
         self._sigmas: List[np.ndarray] = []
-        self._count: int = 0
-
-    def reset(self):
-        """Clear all accumulated data."""
-        self._indices.clear()
-        self._references.clear()
-        self._sigmas.clear()
-        self._count = 0
 
     def process_disulfide_angles(
         self,
         map_1: Dict[str, int],
         map_2: Dict[str, int],
         link_angles: pd.DataFrame,
-    ) -> int:
+    ) -> None:
         """
         Process disulfide angle restraints.
 
@@ -724,13 +691,7 @@ class InterResidueAngleBuilder:
             :func:`_conformer_maps` gives them.
         link_angles : pd.DataFrame
             Angle definitions from disulfide link.
-
-        Returns
-        -------
-        int
-            Number of angle restraints added.
         """
-        count = 0
         for _, angle_row in link_angles.iterrows():
             maps = [
                 map_1 if angle_row[f"atom_{k}_comp_id"] == "1" else map_2
@@ -747,10 +708,6 @@ class InterResidueAngleBuilder:
                 self._sigmas.append(
                     np.array([float(angle_row["sigma"])], dtype=np.float64)
                 )
-                count += 1
-
-        self._count += count
-        return count
 
     def finalize(
         self, device: torch.device, sort_indices: bool = True, min_sigma: float = 1e-4
@@ -778,11 +735,6 @@ class InterResidueAngleBuilder:
             ),
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
-
-    @property
-    def count(self) -> int:
-        """Return total number of restraints accumulated."""
-        return self._count
 
     def build(
         self,
@@ -900,22 +852,13 @@ class InterResidueTorsionBuilder:
         self._disulfide_references: List[np.ndarray] = []
         self._disulfide_sigmas: List[np.ndarray] = []
         self._disulfide_periods: List[np.ndarray] = []
-        self._disulfide_count: int = 0
-
-    def reset(self):
-        """Clear all accumulated disulfide data."""
-        self._disulfide_indices.clear()
-        self._disulfide_references.clear()
-        self._disulfide_sigmas.clear()
-        self._disulfide_periods.clear()
-        self._disulfide_count = 0
 
     def process_disulfide_torsions(
         self,
         map_1: Dict[str, int],
         map_2: Dict[str, int],
         link_torsions: pd.DataFrame,
-    ) -> int:
+    ) -> None:
         """
         Process disulfide torsion restraints.
 
@@ -926,13 +869,7 @@ class InterResidueTorsionBuilder:
             :func:`_conformer_maps` gives them.
         link_torsions : pd.DataFrame
             Torsion definitions from disulfide link.
-
-        Returns
-        -------
-        int
-            Number of torsion restraints added.
         """
-        count = 0
         for _, torsion_row in link_torsions.iterrows():
             maps = [
                 map_1 if torsion_row[f"atom_{k}_comp_id"] == "1" else map_2
@@ -956,10 +893,6 @@ class InterResidueTorsionBuilder:
             self._disulfide_periods.append(
                 np.array([2], dtype=np.int64)
             )  # Period 2 for disulfide
-            count += 1
-
-        self._disulfide_count += count
-        return count
 
     def finalize_disulfide(
         self, device: torch.device, sort_indices: bool = True
@@ -988,11 +921,6 @@ class InterResidueTorsionBuilder:
             "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             "periods": torch.tensor(periods, dtype=get_int_dtype(), device=device),
         }
-
-    @property
-    def disulfide_count(self) -> int:
-        """Return total number of disulfide torsion restraints accumulated."""
-        return self._disulfide_count
 
     def build(
         self,
