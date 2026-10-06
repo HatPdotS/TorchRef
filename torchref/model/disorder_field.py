@@ -6,7 +6,7 @@ node count rather than atom count.
 
 This is :class:`~torchref.model.parameter_wrappers.OccupancyTensor`'s collapse-and-expand
 with a soft, distance-derived expansion in place of a fixed integer assignment: storage
-is ``(K, 2)`` per node, ``forward()`` returns one B per atom. Two index spaces therefore
+holds one row per node, ``forward()`` one B or U per atom. Two index spaces therefore
 meet in this class, and callers must not mix them --- masks handed to
 :meth:`~DisorderFieldTensor.update_refinable_mask` are in ATOM space, while
 ``refinable_mask`` and
@@ -212,10 +212,9 @@ class NodePayload:
     def contributions(self, payload, xyz, node_pos, neighbor_list):
         """``(n_atoms, k, out_width)``: what each candidate node offers each atom.
 
-        ``xyz`` and ``node_pos`` are passed even though the payloads here ignore them,
-        because a payload with an r-dependence (TLS: constant, linear and quadratic in
-        the displacement from the node) needs them, and giving it the arguments now
-        means adding one later touches no shared code.
+        ``payload`` is the ``(K, width)`` node storage and ``neighbor_list`` the
+        ``(n_atoms, k)`` candidate nodes; ``xyz`` and ``node_pos`` (Å) serve
+        position-dependent payloads such as :class:`ModeCovariancePayload`.
         """
         raise NotImplementedError
 
@@ -603,26 +602,22 @@ def payload_from_code(code: int, epsilon: float = 1e-3) -> "NodePayload":
 class DisorderFieldTensor(MixedTensor):
     """Per-atom ADPs from a small set of nodes, each atom a weighted mean of its k nearest.
 
-    Storage is ``(K, 2)``: ``[log B, log sigma]`` per node. ``forward()`` returns
-    ``(n_atoms,)`` isotropic B, so this drops into the ``model.adp`` slot and every
-    consumer of ``adp()`` keeps working unchanged.
+    Storage is ``(K, payload.width + 1)``, payload columns then ``log sigma``, with a
+    three-column offset after them when ``refine_positions``. ``forward()`` returns
+    ``(n_atoms,)`` B for a scalar payload, else ``(n_atoms, 6)`` U, both in Å².
 
     The weight of node ``j`` at atom ``i`` is ``softmax_j(-d_ij^2 / 2 sigma_j^2)`` over
-    that atom's candidate list, so weights are non-negative and sum to one and B is a
-    convex combination of positive node values --- positive for free, with no clamping.
+    that atom's candidate list, so weights are non-negative and sum to one and the ADP
+    is a convex combination of positive node values --- positive for free, no clamping.
 
-    Coordinates come from an accessor injected at construction rather than being passed
-    per call, which keeps ``forward()`` argument-free. That makes the inherited forward
-    cache incorrect on its own, since :class:`~torchref.utils.caching.CachedForwardMixin`
-    fingerprints parameters, buffers and call *arguments* --- and a borrowed accessor's
-    output is none of those. ``_fingerprint_state`` closes that by folding the
-    accessor's output into the key.
+    Coordinates come from an injected accessor, so ``_fingerprint_state`` folds its
+    output into the forward-cache key, which otherwise sees only parameters and buffers.
 
     Parameters
     ----------
     initial_values : torch.Tensor, optional
-        ``(n_atoms,)`` isotropic B to fit the field to. Omit for an empty shell ready
-        for ``load_state_dict``.
+        ``(n_atoms,)`` B, or ``(n_atoms, 6)`` U for a tensor payload, to fit the field
+        to. Omit for an empty shell ready for ``load_state_dict``.
     xyz_fn : callable, optional
         Returns the current ``(n_atoms, 3)`` coordinates. Typically ``model.xyz``. Held
         by reference and deliberately invisible to ``state_dict``, device traversal and
@@ -632,12 +627,16 @@ class DisorderFieldTensor(MixedTensor):
     k_neighbors : int, optional
         Candidate nodes per atom. Default 12. Doubles as the skin margin that makes a
         slightly stale candidate list harmless, so prefer generous over tight.
+    refine_positions : bool, optional
+        Give each node a refinable offset (Å) from its anchor centroid. Default False.
+    payload : NodePayload, optional
+        What each node carries. Default :class:`IsotropicPayload`.
     anchor_rows : tuple of torch.Tensor, optional
         ``(flat atom indices, node index per entry)`` defining each node's anchor
         neighbourhood. Omit to anchor every node at a single atom, which is what a model
         without a topology gets.
     node_values : torch.Tensor, optional
-        ``(K, 2)`` storage to adopt directly instead of fitting to ``initial_values``.
+        Node storage to adopt directly instead of fitting to ``initial_values``.
         Used by :meth:`copy`.
     refinable_mask : torch.Tensor, optional
         Boolean mask. Interpreted in ATOM space unless ``mask_in_node_space``.
@@ -1010,7 +1009,7 @@ class DisorderFieldTensor(MixedTensor):
         self.reset_forward_cache()
 
     def evaluate(self, xyz: torch.Tensor, raw: torch.Tensor) -> torch.Tensor:
-        """Per-atom B from explicit coordinates and node storage, ``(n_atoms,)``.
+        """Per-atom ADPs from explicit coordinates and node storage, as :meth:`forward`.
 
         The field's arithmetic, with no accessor and no cache in the way, so it can be
         differentiated and checked on its own. ``forward()`` is this plus the plumbing
@@ -1019,9 +1018,9 @@ class DisorderFieldTensor(MixedTensor):
         Parameters
         ----------
         xyz : torch.Tensor
-            ``(n_atoms, 3)`` coordinates.
+            ``(n_atoms, 3)`` Cartesian coordinates in Å.
         raw : torch.Tensor
-            ``(K, 2)`` node storage, ``[log b, log sigma]``.
+            Raw node storage, as :meth:`node_values` returns it.
         """
         payload, log_sigma, _ = self._split(raw)
         node_pos = self._node_positions_from(xyz, raw)
@@ -1035,7 +1034,7 @@ class DisorderFieldTensor(MixedTensor):
         return out.squeeze(-1) if self._payload.out_width == 1 else out
 
     def forward(self) -> torch.Tensor:
-        """Per-atom isotropic B, ``(n_atoms,)``.
+        """Per-atom B ``(n_atoms,)`` for a scalar payload, else U ``(n_atoms, 6)``.
 
         A convex combination of positive node values, so strictly positive without a
         clamp. Translation-invariant by construction: node positions are centroids of
@@ -1045,7 +1044,7 @@ class DisorderFieldTensor(MixedTensor):
         return self.evaluate(self._xyz_fn(), super().forward())
 
     def node_values(self) -> torch.Tensor:
-        """The assembled node storage ``(K, 2)`` in raw ``[log b, log sigma]`` space."""
+        """Raw node storage, ``(K, payload.width + 1)`` plus any offset columns."""
         return super().forward()
 
     def _fingerprint_state(self):
