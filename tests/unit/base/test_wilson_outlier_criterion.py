@@ -35,10 +35,15 @@ CELL = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
 @pytest.mark.unit
 def test_log_normal_cdf_matches_the_reference_across_the_tail():
     x = torch.linspace(-40.0, 10.0, 5001, dtype=torch.float64)
+    x32 = x.float()
+    reference32 = torch.special.log_ndtr(x32.double())
 
     error = (log_normal_cdf(x) - torch.special.log_ndtr(x)).abs()
+    error32 = (log_normal_cdf(x32).double() - reference32).abs()
 
     assert float(error.max()) < 1e-6
+    # float32 can do no better than rounding the result, ~1e-7 of its magnitude.
+    assert float((error32 / reference32.abs().clamp(min=1.0)).max()) < 3e-7
 
 
 @pytest.mark.unit

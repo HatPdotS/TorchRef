@@ -90,8 +90,8 @@ def log_normal_cdf(x: torch.Tensor) -> torch.Tensor:
     Returns
     -------
     torch.Tensor
-        ``log Phi(x)``, same shape. Agrees with ``torch.special.log_ndtr`` to
-        better than 1e-6 absolute over ``[-40, 10]`` in float32, on every device.
+        ``log Phi(x)``, same shape. Within 1e-6 of ``log_ndtr`` over ``[-40, 10]`` in
+        float64; in float32 within 3e-7 times ``max(1, |log Phi|)``, 2.4e-4 at -40.
     """
     far = x < _LOG_PHI_CF_BELOW
     # Both branches are evaluated everywhere, so each input is first clamped into
