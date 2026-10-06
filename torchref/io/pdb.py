@@ -50,9 +50,7 @@ def find_header_length(filepath: str, max_header_length: int = 100000) -> int:
     """
     Find the number of header lines in a PDB file.
 
-    Stops at the first line whose leading columns *contain* ``"ATOM"`` (cols
-    1-4) or ``"HETATM"`` (cols 1-6) -- a substring test, not a record-type
-    ``startswith``, so a header line with those letters there ends the scan.
+    Stops at the first line starting with ``ATOM`` or ``HETATM``.
 
     Parameters
     ----------
