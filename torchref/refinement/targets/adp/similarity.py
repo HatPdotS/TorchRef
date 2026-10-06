@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
@@ -8,7 +7,6 @@ from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
-    StatEntry,
     stat,
 )
 
