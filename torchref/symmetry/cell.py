@@ -33,11 +33,12 @@ class Cell(_NonModuleDeviceMixin):
     access and cached. The cache is cleared when the cell is moved to a
     different device or dtype.
 
-    Two cells compare and hash equal when their six parameters are equal
-    (:attr:`key`), independent of device and dtype, so a cell can key a dict or
-    a cache of quantities derived from it. A cell is therefore a value: editing
-    its parameter tensor in place is refused at the next derived read. Build a
-    new ``Cell`` and assign it instead.
+    Two cells compare and hash equal when their stored parameters are equal
+    (:attr:`key`), on any device, so a cell can key a dict or a cache of
+    quantities derived from it; float32 and float64 copies of a value float32
+    cannot represent exactly (e.g. 50.1 Angstroms) are not equal. A cell is
+    therefore a value: editing its parameter tensor in place is refused at the
+    next derived read. Build a new ``Cell`` and assign it instead.
 
     Examples
     --------
