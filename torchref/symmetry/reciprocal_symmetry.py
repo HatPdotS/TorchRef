@@ -96,7 +96,8 @@ def _expand_hkl(
     include_friedel: bool = True,
     remove_absences: bool = True,
     device: Optional[torch.device] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_friedel: bool = False,
+) -> Tuple[torch.Tensor, ...]:
     """Expand Miller indices under crystallographic symmetry (ASU -> P1).
 
     The low-level primitive: returns the expanded indices plus the index map and
@@ -117,6 +118,8 @@ def _expand_hkl(
         Remove systematically absent reflections.
     device : torch.device, optional
         Computation device. If None, uses hkl's device.
+    return_friedel : bool, default False
+        Also return ``is_friedel``.
 
     Returns
     -------
@@ -125,8 +128,10 @@ def _expand_hkl(
     orig_indices : torch.Tensor, shape (M,), configured int dtype
         Index mapping expanded → original: ``F_expanded = F_orig[orig_indices]``.
     phase_shifts : torch.Tensor, shape (M,), dtype=float32
-        Translation phase offsets in radians:
-        ``phase_expanded = phase_orig[orig_indices] + phase_shifts``.
+        Translation phase offsets in radians: ``phase_expanded =
+        where(is_friedel, -phase_orig, phase_orig)[orig_indices] + phase_shifts``.
+    is_friedel : torch.Tensor, shape (M,), dtype=bool
+        True for the rows that are Friedel copies; only with ``return_friedel``.
 
     Raises
     ------
@@ -166,13 +171,17 @@ def _expand_hkl(
     expanded_hkl = copies[keep]
     orig_idx_tensor = source[keep]
     phase_shifts = phase[keep]
+    friedel = is_friedel[keep]
 
     if remove_absences and sym.number != 1:
         keep_mask = ~sym.is_absent(expanded_hkl)
         expanded_hkl = expanded_hkl[keep_mask]
         phase_shifts = phase_shifts[keep_mask]
         orig_idx_tensor = orig_idx_tensor[keep_mask]
+        friedel = friedel[keep_mask]
 
+    if return_friedel:
+        return expanded_hkl, orig_idx_tensor, phase_shifts, friedel
     return expanded_hkl, orig_idx_tensor, phase_shifts
 
 

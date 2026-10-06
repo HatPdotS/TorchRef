@@ -290,6 +290,8 @@ class SpaceGroup(Symmetry):
         include_friedel: bool = True,
         remove_absences: bool = True,
         device: Optional[torch.device] = None,
+        *,
+        return_friedel: bool = False,
     ):
         """Expand Miller indices from the asymmetric unit to P1.
 
@@ -303,6 +305,9 @@ class SpaceGroup(Symmetry):
             Drop systematically absent reflections.
         device : torch.device, optional
             Computation device. Defaults to ``hkl``'s.
+        return_friedel : bool, default False
+            Also return ``is_friedel``. Expanding phases with ``include_friedel``
+            needs it: a Friedel copy carries the negated phase.
 
         Returns
         -------
@@ -312,8 +317,12 @@ class SpaceGroup(Symmetry):
             Map expanded -> original, shape ``(M,)``, in the configured int dtype:
             ``F_exp = F_orig[orig_indices]``.
         phase_shifts : torch.Tensor
-            Translation phase offsets in radians, shape ``(M,)``:
-            ``phase_exp = phase_orig[orig_indices] + phase_shifts``.
+            Translation phase offsets in radians, shape ``(M,)``: ``phase_exp =
+            where(is_friedel, -phase_orig, phase_orig)[orig_indices] + phase_shifts``.
+        is_friedel : torch.Tensor
+            Boolean, shape ``(M,)``, True for the rows that are Friedel copies of a
+            rotated index; returned only with ``return_friedel``. All False when
+            ``include_friedel`` is False.
 
         Raises
         ------
@@ -330,6 +339,7 @@ class SpaceGroup(Symmetry):
             include_friedel=include_friedel,
             remove_absences=remove_absences,
             device=device,
+            return_friedel=return_friedel,
         )
 
     def equivalent_hkl(

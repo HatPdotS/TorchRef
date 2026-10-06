@@ -46,12 +46,15 @@ def canonicalize_hkl(hkl, sg, include_friedel=True, device=None):
     )
 
 
-def expand_hkl(hkl, sg, include_friedel=True, remove_absences=True, device=None):
+def expand_hkl(
+    hkl, sg, include_friedel=True, remove_absences=True, device=None, **kwargs
+):
     return SpaceGroup(sg).expand_hkl(
         hkl,
         include_friedel=include_friedel,
         remove_absences=remove_absences,
         device=device,
+        **kwargs,
     )
 
 
@@ -123,24 +126,30 @@ def _random_hkl(n=8, seed=3):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("include_friedel", [False, True])
 @pytest.mark.parametrize("spacegroup", SPACE_GROUPS)
-def test_expand_hkl_phase_contract(spacegroup):
-    """``phi_expanded = phi_orig[indices] + phase_shifts`` must be the true phase.
+def test_expand_hkl_phase_contract(spacegroup, include_friedel):
+    """``where(friedel, -phi_orig, phi_orig)[indices] + shifts`` is the true phase.
 
-    This is the contract stated in :func:`expand_hkl`'s own docstring. Checked with
-    ``include_friedel=False``: the Friedel half cannot be expressed as an additive
-    shift at all (``phi(-h) = -phi(h)`` is a conjugation, not an offset), so the
-    documented contract only applies to the pure-rotation expansion.
+    This is the contract stated in :func:`expand_hkl`'s own docstring. A Friedel
+    copy is a conjugation (``phi(-h) = -phi(h)``), not an offset, so the rows that
+    ``return_friedel`` flags negate the source phase before the shift is added.
     """
     fcalc = _reference_model(spacegroup)
     hkl = _random_hkl()
     phi_in = np.angle(fcalc(hkl.numpy()))
 
-    hkl_p1, indices, shifts = expand_hkl(
-        hkl, spacegroup, include_friedel=False, remove_absences=True
+    hkl_p1, indices, shifts, friedel = expand_hkl(
+        hkl,
+        spacegroup,
+        include_friedel=include_friedel,
+        remove_absences=True,
+        return_friedel=True,
     )
-    got = phi_in[indices.cpu().numpy()] + shifts.cpu().numpy()
+    phi_src = phi_in[indices.cpu().numpy()]
+    got = np.where(friedel.cpu().numpy(), -phi_src, phi_src) + shifts.cpu().numpy()
     expected = np.angle(fcalc(hkl_p1.numpy()))
+    assert bool(friedel.any()) == include_friedel
 
     err = np.abs(_wrap(got - expected)).max()
     assert err < ATOL_RAD, (
