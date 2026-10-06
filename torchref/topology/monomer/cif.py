@@ -4,9 +4,7 @@ and link definitions used by the restraints module.
 
 from functools import lru_cache
 
-import numpy as np
 import pandas as pd
-import torch
 
 from torchref.io import cif
 
