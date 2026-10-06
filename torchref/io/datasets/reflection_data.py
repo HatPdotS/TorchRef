@@ -804,6 +804,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ------
         ValueError
             If unit cell parameters are missing or no amplitude/intensity data found.
+
+        Warns
+        -----
+        UserWarning
+            If the reader's R-free flags mark no measured reflection free, or more
+            free than a quarter of the work set; the flags are kept. If they mark
+            none work, they are dropped and new flags generated.
         """
 
         data_dict, cell, spacegroup = reader()
@@ -920,6 +927,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     requires_grad=False,
                 ).to(torch.bool)
                 self.rfree_source = f"{reader_name} FreeR+Validation"
+            measured = torch.isfinite(self.I if use_intensities else self.F)
+            if not self._free_set_usable(rfree, measured & ~flagged, reader_name):
+                self.rfree_flags = self.validation_flags = self.rfree_source = None
+                del self.masks["flagged_initial"]
 
         self._post_load_cleanup()
 
@@ -934,6 +945,39 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 self.sanitize_F()
 
         return self
+
+    @staticmethod
+    def _free_set_usable(
+        work: torch.Tensor, counted: torch.Tensor, source: str
+    ) -> bool:
+        """Whether a file's free set can be used, warning where it looks wrong.
+
+        ``work`` (N,) holds the flags, False for free, and only the ``counted``
+        rows, those with a measurement and a non-negative flag, count. No free
+        row, or more free rows than a quarter of the work rows (about 20% of the
+        measured reflections), is warned about but usable: a deposited set is
+        honoured whenever it can be. False only when no counted row is work.
+        """
+        n_work = int((counted & work).sum())
+        n_free = int((counted & ~work).sum())
+        if n_work == 0:
+            warnings.warn(
+                f"{source} R-free flags mark no measured reflection as work "
+                f"({n_free} free); ignoring them and generating a new free set."
+            )
+            return False
+        if n_free == 0:
+            warnings.warn(
+                f"{source} R-free flags mark no measured reflection as free "
+                f"({n_work} work); keeping them, so there is no free set."
+            )
+        elif 4 * n_free > n_work:
+            warnings.warn(
+                f"{source} R-free flags mark {n_free} measured reflections free "
+                f"against {n_work} work, more than a quarter of the work set; "
+                "keeping them."
+            )
+        return True
 
     def _convert_intensities(self, held_out: torch.Tensor | None) -> None:
         """Set ``F``/``F_sigma`` from ``I``/``I_sigma`` by French-Wilson.
