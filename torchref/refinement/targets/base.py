@@ -1,8 +1,9 @@
 """Base classes for the crystallographic refinement target (loss) functions.
 
 A target is constructed once against the objects it scores, then called each
-iteration -- directly, or via :meth:`Target.add_to_state` so its loss lands in a
-:class:`~torchref.refinement.loss_state.LossState`. :class:`ModelTarget` adds a
+iteration -- directly, or by the :class:`~torchref.refinement.loss_state.LossState`
+that :meth:`~torchref.refinement.loss_state.LossState.register_target` added it to.
+:class:`ModelTarget` adds a
 ``Model`` reference (geometry, ADP restraints); :class:`DataTarget` adds
 ``ReflectionData`` and an optional ``Scaler`` (X-ray targets). Also home to the
 shared NLL primitives :func:`gaussian_nll`, :func:`von_mises_nll` and
@@ -31,7 +32,6 @@ if TYPE_CHECKING:
     from torchref.io.datasets.collection import DatasetCollection
     from torchref.model.model import Model
     from torchref.model.model_ft import ModelFT
-    from torchref.refinement.loss_state import LossState
     from torchref.scaling.scaler_base import Scaler
 
 
@@ -130,24 +130,6 @@ class Target(DeviceMixin, nn.Module):
     def forward(self) -> torch.Tensor:
         """Compute and return the loss. Override in subclasses."""
         raise NotImplementedError
-
-    def add_to_state(self, state: "LossState") -> "LossState":
-        """
-        Compute this target's loss and add it to ``state`` under :attr:`name`.
-
-        Parameters
-        ----------
-        state : LossState
-            Current loss state with computed data.
-
-        Returns
-        -------
-        LossState
-            The same state, returned for chaining.
-        """
-        loss = self.forward()
-        state.add_loss(self.name, loss)
-        return state
 
     def maintenance(self) -> None:
         """Between-step housekeeping hook (no-op by default).

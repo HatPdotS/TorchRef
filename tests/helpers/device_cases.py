@@ -521,7 +521,6 @@ UNCOVERED: Dict[str, str] = {
     "Refinement": "abstract base; covered via LBFGSRefinement in integration",
     "PassThroughTensor": "documented non-functional stub (parameter_wrappers.py)",
     "ADPTarget": "abstract base; needs a model with ADPs",
-    "CombinedTargets": "composite container; needs its component targets",
     "CombinedModelTargets": "composite container; needs a loaded model",
     "CollectionXrayTarget": "abstract base; needs a dataset collection",
     # --- need loaded structures/data: covered by integration tests -----------

@@ -30,7 +30,6 @@ from .collection import (
     MultiModelGeometryTarget,
 )
 from .combined import (
-    CombinedTargets,
     TotalADPTarget,
     TotalGeometryTarget,
 )
@@ -107,7 +106,6 @@ __all__ = [
     "ADPSigdTarget",
     "ADPLocalityTarget",
     # Combined targets
-    "CombinedTargets",
     "TotalGeometryTarget",
     "TotalADPTarget",
     # Similarity restraint
