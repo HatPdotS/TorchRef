@@ -1776,7 +1776,7 @@ class RestraintCIFReader:
                     'ALA': {
                         'bonds': DataFrame(atom1, atom2, value, sigma),
                         'angles': DataFrame(atom1, atom2, atom3, value, sigma),
-                        'torsions': DataFrame(atom1, atom2, atom3, atom4, value, sigma, periodicity),
+                        'torsions': DataFrame(id, atom1, atom2, atom3, atom4, value, sigma, periodicity),
                         'planes': DataFrame(atom, plane_id),
                         'chirals': DataFrame(atom_centre, atom1, atom2, atom3, volume_sign)
                     },
@@ -1839,7 +1839,7 @@ class RestraintCIFReader:
                 {
                     'bonds': DataFrame(atom1, atom2, value, sigma)
                     'angles': DataFrame(atom1, atom2, atom3, value, sigma)
-                    'torsions': DataFrame(atom1, atom2, atom3, atom4, value, sigma, periodicity)
+                    'torsions': DataFrame(id, atom1, atom2, atom3, atom4, value, sigma, periodicity)
                     'planes': DataFrame(atom, plane_id)
                     'chirals': DataFrame(atom_centre, atom1, atom2, atom3, volume_sign)
                     'atoms': DataFrame(atom_id, type_symbol, charge, etc.)
@@ -1956,10 +1956,11 @@ class RestraintCIFReader:
         return result
 
     def _standardize_torsions(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize torsion restraint columns to: atom1, atom2, atom3, atom4, value, sigma, periodicity."""
+        """Standardize torsion columns to id, atom1-atom4, value, sigma, periodicity."""
         if df.empty:
             return pd.DataFrame(
                 columns=[
+                    "id",
                     "atom1",
                     "atom2",
                     "atom3",
@@ -1971,6 +1972,8 @@ class RestraintCIFReader:
             )
 
         result = pd.DataFrame()
+        # The id tells apart alternative sets on the same atoms (C2e-*/C3e-* puckers).
+        result["id"] = self._extract_col(df, ["_chem_comp_tor.id"])
         result["atom1"] = self._extract_col(
             df, ["atom_id_1", "_chem_comp_tor.atom_id_1", "atom1"]
         )

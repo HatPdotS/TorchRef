@@ -1,10 +1,15 @@
-"""The CIF readers on edited copies of deposited SF-mmCIF and mmCIF files."""
+"""The CIF readers on deposited SF-mmCIF, mmCIF and monomer files, often edited."""
 
 import numpy as np
 import pytest
 
 from torchref.io import ReflectionData
-from torchref.io.cif_readers import ModelCIFReader, ReflectionCIFReader
+from torchref.io.cif_readers import (
+    ModelCIFReader,
+    ReflectionCIFReader,
+    RestraintCIFReader,
+)
+from torchref.topology.monomer.library import get_library_manager
 
 
 def _write_edited(source, tmp_path, edit):
@@ -146,3 +151,12 @@ def test_a_one_sided_free_set_is_passed_on(cif_sf_dir, tmp_path, status, flag):
     )
 
     assert set(ReflectionCIFReader(path).data["R-free-flags"].tolist()) == {flag}
+
+
+@pytest.mark.unit
+def test_torsions_keep_their_id():
+    path = get_library_manager(verbose=0).get_cif_file("DA")
+    torsions = RestraintCIFReader(str(path)).get_all_restraints()["DA"]["torsions"]
+
+    puckers = {f"{form}-nyu{i}" for form in ("C2e", "C3e") for i in range(5)}
+    assert puckers <= set(torsions["id"])
