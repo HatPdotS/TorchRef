@@ -449,6 +449,21 @@ class CIFReader:
         )
 
 
+def _category_table(data: Dict[str, Any], category: str) -> pd.DataFrame:
+    """``category`` of :attr:`CIFReader.data` as a table of full tag names.
+
+    A loop is stored as a DataFrame of ``_category.attribute`` columns, but a
+    category written as key-value pairs -- as wwPDB and CCD files write any
+    category with a single row -- as ``{attribute: value}``. Both come back as a
+    DataFrame, the pairs as its one row, and an absent category as an empty one.
+    A loop's DataFrame is returned as stored, not copied.
+    """
+    table = data.get(category)
+    if isinstance(table, dict):
+        return pd.DataFrame([{f"_{category}.{k}": v for k, v in table.items()}])
+    return pd.DataFrame() if table is None else table
+
+
 def _free_flags(values: pd.Series, numeric: bool) -> np.ndarray:
     """R-free flags as ReflectionData.load reads them: 0 free, 1 work, -1 excluded.
 
@@ -666,7 +681,7 @@ class ReflectionCIFReader:
         -----
         Missing columns will be filled with NaN or appropriate defaults.
         """
-        refln_df = self.cif_reader["refln"].copy()
+        refln_df = _category_table(self.cif_reader.data, "refln").copy()
 
         # Standardize column names
         result = pd.DataFrame()
@@ -1207,14 +1222,9 @@ class ModelCIFReader:
         from torchref.io.pdb import LINK_COLUMNS
 
         empty = pd.DataFrame(columns=list(LINK_COLUMNS))
-        conn = self.cif.data.get("struct_conn")
-        if conn is None or len(conn) == 0:
+        conn = _category_table(self.cif.data, "struct_conn")
+        if len(conn) == 0:
             return empty
-        if isinstance(conn, dict):
-            # A file with a single connection writes it as key-value pairs rather than
-            # a loop, which the parser keeps as {attribute: value}; loops come back as a
-            # DataFrame of full tag names.
-            conn = pd.DataFrame([{f"_struct_conn.{k}": v for k, v in conn.items()}])
 
         def column(names, default=""):
             for name in names:
@@ -1294,7 +1304,7 @@ class ModelCIFReader:
         ValueError
             If an atom has no element (``?`` or ``.``) in _atom_site.type_symbol.
         """
-        atom_df = self.cif.data["atom_site"].copy()
+        atom_df = _category_table(self.cif.data, "atom_site").copy()
         result = pd.DataFrame()
 
         # Record type (ATOM or HETATM)
@@ -1387,14 +1397,13 @@ class ModelCIFReader:
         # standards-conforming file -- every PDB-REDO entry, and anything the PDB emits
         # as mmCIF -- silently loaded with no anisotropy at all and every atom marked
         # isotropic.
-        aniso_df = getattr(self.cif, "data", {}).get("atom_site_anisotrop")
+        aniso_df = _category_table(self.cif.data, "atom_site_anisotrop")
         std_cols = [f"_atom_site_anisotrop.U[{i}][{j}]"
                     for i, j in ((1, 1), (2, 2), (3, 3), (1, 2), (1, 3), (2, 3))]
         key, atom_key = "_atom_site_anisotrop.id", "_atom_site.id"
         joined = None
         if (
-            aniso_df is not None
-            and all(c in aniso_df.columns for c in std_cols)
+            all(c in aniso_df.columns for c in std_cols)
             and key in aniso_df.columns
             and atom_key in atom_df.columns
         ):
@@ -1678,7 +1687,7 @@ class RestraintCIFReader:
 
         # Check for chem_comp (eLBOW/phenix format)
         if not compounds and "chem_comp" in self.cif.data:
-            df = self.cif.data["chem_comp"]
+            df = _category_table(self.cif.data, "chem_comp")
             if "_chem_comp.id" in df.columns and len(df) > 0:
                 compounds = df["_chem_comp.id"].tolist()
             elif "id" in df.columns and len(df) > 0:
@@ -1705,8 +1714,8 @@ class RestraintCIFReader:
                 "comp_bond",
                 "chem_comp_bond",
             ):
-                df = self.cif.data.get(block)
-                if df is None or len(df) == 0:
+                df = _category_table(self.cif.data, block)
+                if len(df) == 0:
                     continue
                 id_col = next(
                     (c for c in df.columns if c == "comp_id" or c.endswith(".comp_id")),
@@ -1747,7 +1756,7 @@ class RestraintCIFReader:
         if "comp_bond" in self.cif.data:
             bond_df = self.cif.data["comp_bond"]
         elif "chem_comp_bond" in self.cif.data:
-            bond_df = self.cif.data["chem_comp_bond"]
+            bond_df = _category_table(self.cif.data, "chem_comp_bond")
 
         if bond_df is not None:
             required_cols = ["value_dist", "value_dist_esd"]
@@ -1862,7 +1871,7 @@ class RestraintCIFReader:
         # Extract and standardize each restraint type
         raw_bonds = self._filter_by_comp(
             self.cif.data.get(
-                "comp_bond", self.cif.data.get("chem_comp_bond", pd.DataFrame())
+                "comp_bond", _category_table(self.cif.data, "chem_comp_bond")
             ),
             comp_id,
         )
@@ -1870,7 +1879,7 @@ class RestraintCIFReader:
 
         raw_angles = self._filter_by_comp(
             self.cif.data.get(
-                "comp_angle", self.cif.data.get("chem_comp_angle", pd.DataFrame())
+                "comp_angle", _category_table(self.cif.data, "chem_comp_angle")
             ),
             comp_id,
         )
@@ -1878,7 +1887,7 @@ class RestraintCIFReader:
 
         raw_torsions = self._filter_by_comp(
             self.cif.data.get(
-                "comp_tor", self.cif.data.get("chem_comp_tor", pd.DataFrame())
+                "comp_tor", _category_table(self.cif.data, "chem_comp_tor")
             ),
             comp_id,
         )
@@ -1887,7 +1896,7 @@ class RestraintCIFReader:
         raw_planes = self._filter_by_comp(
             self.cif.data.get(
                 "comp_plane_atom",
-                self.cif.data.get("chem_comp_plane_atom", pd.DataFrame()),
+                _category_table(self.cif.data, "chem_comp_plane_atom"),
             ),
             comp_id,
         )
@@ -1895,7 +1904,7 @@ class RestraintCIFReader:
 
         raw_chirals = self._filter_by_comp(
             self.cif.data.get(
-                "comp_chir", self.cif.data.get("chem_comp_chir", pd.DataFrame())
+                "comp_chir", _category_table(self.cif.data, "chem_comp_chir")
             ),
             comp_id,
         )
@@ -1903,7 +1912,7 @@ class RestraintCIFReader:
 
         raw_atoms = self._filter_by_comp(
             self.cif.data.get(
-                "comp_atom", self.cif.data.get("chem_comp_atom", pd.DataFrame())
+                "comp_atom", _category_table(self.cif.data, "chem_comp_atom")
             ),
             comp_id,
         )

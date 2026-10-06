@@ -34,6 +34,21 @@ def _blank_line_after_row(row, first_tag):
     return edit
 
 
+def _first_anisotropic_atom_as_pairs(lines):
+    """An ``edit`` that cuts the ``_atom_site_anisotrop`` loop to its first row,
+    written as key-value pairs, as wwPDB writes a category with one row."""
+    start = next(
+        i for i, line in enumerate(lines) if line.strip() == "_atom_site_anisotrop.id"
+    )
+    end = start
+    while lines[end].strip().startswith("_atom_site_anisotrop."):
+        end += 1
+    tags = [line.strip() for line in lines[start:end]]
+    pairs = [f"{tag} {value}" for tag, value in zip(tags, lines[end].split())]
+    after = next(i for i in range(end, len(lines)) if lines[i].startswith("#"))
+    return lines[: start - 1] + pairs + lines[after:]
+
+
 def _rewrite_status(value, tag="_refln.status"):
     """An ``edit`` of 1DAW-sf.cif that renames the status column to ``tag`` and
     gives reflection ``row`` the token ``value(row, status)``."""
@@ -105,6 +120,19 @@ def test_a_second_load_replaces_the_first_file(cif_sf_dir):
     assert reader.data_block == "r3gr5sf"
     assert reader.keys() == fresh.keys()
     pd.testing.assert_frame_equal(reader["refln"], fresh["refln"])
+
+
+@pytest.mark.unit
+def test_one_anisotropic_atom_written_as_pairs_is_read(cif_dir, tmp_path):
+    source = cif_dir / "4BX9.cif"
+    path = _write_edited(source, tmp_path, _first_anisotropic_atom_as_pairs)
+    u = ["u11", "u22", "u33", "u12", "u13", "u23"]
+
+    original = ModelCIFReader(str(source)).dataframe
+    table = ModelCIFReader(path).dataframe
+
+    assert table["anisou_flag"].sum() == 1 and table.loc[0, "anisou_flag"]
+    pd.testing.assert_series_equal(table.loc[0, u], original.loc[0, u])
 
 
 @pytest.mark.unit
