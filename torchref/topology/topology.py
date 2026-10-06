@@ -17,7 +17,7 @@ Mutable by design; prefer :meth:`Topology.copy` over editing in place.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Mapping, Set, Tuple
+from typing import TYPE_CHECKING, Dict, Mapping, Tuple
 
 import numpy as np
 import torch
@@ -455,22 +455,6 @@ class Topology(DeviceMixin):
             "torsion": self.atoms.torsions,
             "chiral": self.atoms.chirals,
         }[edge_type]
-
-    def tuple_sets(self) -> Dict[str, Dict[str, Set[Tuple[int, ...]]]]:
-        """Every edge as ``{edge type: {origin: set of index tuples}}``.
-
-        Order-free, so this is what an equivalence check against another builder should
-        compare.
-        """
-        out: Dict[str, Dict[str, Set[Tuple[int, ...]]]] = {}
-        for name in ("bond", "angle", "torsion", "chiral"):
-            block = self.edge_block(name)
-            out[name] = {o: block.tuple_set(o) for o in block.origins()}
-        out["plane"] = {}
-        for size, block in self.atoms.planes.items():
-            for origin in block.origins():
-                out["plane"][f"{size}_atoms/{origin}"] = block.tuple_set(origin)
-        return out
 
     def __repr__(self) -> str:
         return f"Topology({self.residues!r}, {self.atoms!r})"

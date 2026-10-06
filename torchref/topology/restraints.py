@@ -727,30 +727,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
         return deviations, sigmas
 
-    def nll_bonds(self, xyz: torch.Tensor):
-        """
-        Compute negative log-likelihood for bond length restraints.
-
-        For Gaussian distribution: NLL = -log(P(x|μ,σ))
-        NLL = 0.5 * ((x - μ) / σ)^2 + log(σ) + 0.5 * log(2π)
-
-        This is the true NLL where exp(-NLL) = probability density.
-
-        Parameters
-        ----------
-        xyz : torch.Tensor
-            Cartesian coordinates in Å, shape (n_atoms, 3).
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (n_bonds,) with negative log-likelihood values.
-        """
-        from torchref.refinement.targets import gaussian_nll
-
-        deviations, sigmas = self.bond_deviations(xyz)
-        return gaussian_nll(deviations, sigmas)
-
     def angles(self, idx, xyz: torch.Tensor):
         """
         Compute current angle values for all angle restraints.
@@ -821,30 +797,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         deviations = calculated_rad - references_rad
 
         return deviations, sigmas_rad
-
-    def nll_angles(self, xyz: torch.Tensor):
-        """
-        Compute negative log-likelihood for angle restraints.
-
-        For Gaussian distribution: NLL = -log(P(x|μ,σ))
-        NLL = 0.5 * ((x - μ) / σ)^2 + log(σ) + 0.5 * log(2π)
-
-        This is the true NLL where exp(-NLL) = probability density.
-
-        Parameters
-        ----------
-        xyz : torch.Tensor
-            Cartesian coordinates in Å, shape (n_atoms, 3).
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (n_angles,) with negative log-likelihood values.
-        """
-        from torchref.refinement.targets import gaussian_nll
-
-        deviations, sigmas = self.angle_deviations(xyz)
-        return gaussian_nll(deviations, sigmas)
 
     def cat_dict(self):
         """Ensure the combined ``all`` groups are present. Idempotent.

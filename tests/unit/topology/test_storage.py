@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from torchref.model.model import Model
+from torchref.refinement.targets import gaussian_nll
 from torchref.utils.caching import ParameterFingerprint
 
 KEYED_TYPES = ("bond", "angle", "torsion")
@@ -172,7 +173,10 @@ def test_blocks_are_untouched_by_a_refinement_step(restraints):
     fingerprint = ParameterFingerprint(blocks)
 
     xyz = restraints._last_vdw_build_xyz.clone().requires_grad_(True)
-    loss = restraints.nll_bonds(xyz).sum() + restraints.nll_angles(xyz).sum()
+    loss = (
+        gaussian_nll(*restraints.bond_deviations(xyz)).sum()
+        + gaussian_nll(*restraints.angle_deviations(xyz)).sum()
+    )
     loss.backward()
 
     assert fingerprint.matches(
