@@ -147,7 +147,7 @@ class RigidBondTarget(ADPTarget):
         Returns
         -------
         dict
-            ``count``, ``mean``/``std``/``max``/``min``/``rms`` of |Δz|, and the
+            ``count``, ``mean``/``std``/``max``/``min``/``rms`` of ``|Δz|``, and the
             ``mean_z``/``rms_z`` Z-scores. All zero when there are no bonds.
         """
         adp = self.model.adp()
