@@ -394,7 +394,7 @@ class FcalcDataset(CrystalDataset):
         filepath : str
             Output MTZ filename.
         sigma_frac : float, optional
-            Sigma as a fraction of |F|. Default is 0.05 (5%).
+            Sigma as a fraction of ``|F|``. Default is 0.05 (5%).
         f_column : str, optional
             Column name for amplitudes. Default is 'F-obs'.
         sigf_column : str, optional
