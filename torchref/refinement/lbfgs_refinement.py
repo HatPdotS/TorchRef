@@ -12,9 +12,6 @@ updates between body steps move parameters the xray target reads, so retained cu
 is stale.
 """
 
-from typing import Optional
-
-import numpy as np
 import torch
 
 from torchref.refinement.base_refinement import Refinement
