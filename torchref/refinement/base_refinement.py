@@ -771,9 +771,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         only in the loss and in exposing only the scaler's parameters to the optimizer;
         see :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`.
 
-        **No-op when the scaler is ``None``** -- targets such as ``ls_wunit_k1`` in
-        ``binwise_optimal`` mode compute their own scale and leave it unset.
-
         Returns
         -------
         dict or None
@@ -795,9 +792,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         inside a macrocycle loop call :meth:`refine_scaler` instead.
         """
         if not hasattr(self, "scaler") or self.scaler is None:
-            # Targets that compute their own scale (e.g. ls_wunit_k1 in
-            # binwise_optimal mode) intentionally leave ref.scaler=None.
-            # Nothing to initialize or refit here.
             return None
         self.scaler.initialize()
         return self.refine_scaler()
@@ -1027,8 +1021,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         Delegates to the work X-ray target, the single source of truth: R is
         computed from exactly the scaled ``|F_calc|`` the target's loss sees
-        (the scaler's scaling, or the target's own closed-form per-bin scale for
-        ``binwise_optimal``). See :meth:`XrayTarget.get_rfactor
+        (the scaler's scaling, times for ``ls_wunit_k1`` the one closed-form K it
+        refits). See :meth:`XrayTarget.get_rfactor
         <torchref.refinement.targets.xray.base.XrayTarget.get_rfactor>`.
         """
         return self.xray_target_work.get_rfactor()
