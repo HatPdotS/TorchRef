@@ -575,7 +575,8 @@ class IHMWriter:
         each state links a model group (named after the timepoint) holding the
         structural state's model. Model ``n`` is the ``n``-th state in
         ``state_id`` order, ``pdbx_PDB_model_num`` ``n`` in ``_atom_site``;
-        :meth:`IHMReader.read_mapping` reads this layout back unchanged. The file
+        :meth:`IHMReader.read_mapping` reads this layout back, with the
+        fractions rounded to the three decimals python-ihm writes. The file
         is written more than once: gemmi re-reads and rewrites it to append the
         models and the multi-model ``_atom_site`` loop, plus ``_refln`` blocks
         when ``datasets`` was given.
