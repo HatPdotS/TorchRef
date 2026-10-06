@@ -119,9 +119,9 @@ class ScaledDataset(ReflectionData):
         result.source = None
         return result
 
-    def __select__(self, indices: torch.Tensor, op=None) -> "ScaledDataset":
+    def __select__(self, indices: torch.Tensor) -> "ScaledDataset":
         """Select reflection indices or a boolean mask, preserving live scaling."""
-        raw = self.raw_data().__select__(indices, op=op)
+        raw = self.raw_data().__select__(indices)
         return ScaledDataset(raw, self.scaler, self.scale_key)
 
     def copy(self) -> "ScaledDataset":

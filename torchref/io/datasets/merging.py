@@ -297,7 +297,6 @@ def merge_to_spacegroup(
         validation_flags=validation,
     )
     merged.source = data
-    merged.last_op = f"merge_to_spacegroup({target.hm})"
     if data.verbose > 0:
         print(stats)
     return merged, stats

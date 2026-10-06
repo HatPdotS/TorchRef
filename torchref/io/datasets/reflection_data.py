@@ -204,9 +204,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
     # Additional fields specific to ReflectionData (beyond CrystalDataset)
     # Note: Most fields are inherited from CrystalDataset dataclass
 
-    # Provenance: the dataset this one was derived from, and the operation.
+    # Provenance: the dataset this one was derived from.
     source: Optional["ReflectionData"] = field(default=None, repr=False)
-    last_op: Optional[str] = field(default=None, repr=False)
 
     def __post_init__(self):
         """
@@ -1595,7 +1594,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             return self.__select__(key)
         raise TypeError(f"Unsupported index type: {type(key)}")
 
-    def __select__(self, indices: torch.Tensor, op=None) -> "ReflectionData":
+    def __select__(self, indices: torch.Tensor) -> "ReflectionData":
         """
         Select reflections by boolean mask or integer indices.
 
@@ -1606,8 +1605,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ----------
         indices : torch.Tensor
             Boolean mask of shape (N,) or integer indices for selection.
-        op : str, optional
-            Operation name for tracking purposes.
 
         Returns
         -------
@@ -1630,7 +1627,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         selected.masks = self._gathered_masks(indices)
 
         selected.source = self
-        selected.last_op = op
         return selected
 
     def sanitize_F(self):
@@ -1980,7 +1976,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         index_mapping: torch.Tensor,
         phase_shifts: Optional[torch.Tensor] = None,
         spacegroup=None,
-        op_name: str = "remap",
     ) -> "ReflectionData":
         """
         Create new ReflectionData with remapped HKL set and data.
@@ -2000,8 +1995,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Phase offsets to apply (e.g., from symmetry translations).
         spacegroup : str, int, gemmi.SpaceGroup, or None
             New spacegroup. If None, keeps original.
-        op_name : str
-            Operation name for provenance tracking.
 
         Returns
         -------
@@ -2046,7 +2039,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Track provenance
         remapped.source = self
-        remapped.last_op = op_name
 
         # Add missing mask
         missing_mask = index_mapping < 0
@@ -2089,7 +2081,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             reflection. Per-reflection fields are indexed from the original,
             ``phase`` additionally gets the translation phase shift, and
             ``resolution`` is recomputed. ``hkl_anomalous`` equals ``hkl``: each
-            P1 row is its own index. ``source``/``last_op`` record the provenance.
+            P1 row is its own index. ``source`` records the provenance.
 
         Raises
         ------
@@ -2113,7 +2105,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             new_hkl=hkl_p1,
             index_mapping=indices,
             spacegroup="P1",
-            op_name=f"expand_to_p1(include_friedel={include_friedel})",
         )
         if p1.phase is not None:
             phase = p1.phase
