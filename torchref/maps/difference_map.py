@@ -137,9 +137,9 @@ class DifferenceMap(Map):
         delta_f = self.data_reference.bijvoet_mean(delta_f, mask_combined)[rows]
         hkl_asu = self.data_reference.hkl[rows]
 
-        # Expand to P1 without Friedel mates (expand_to_p1() would reset
-        # scaling, so expand manually via expand_hkl)
-        sg = self.data_reference.spacegroup or SpaceGroup("P1", device=hkl_asu.device)
+        # delta_f is derived per reflection, which expand_to_p1 cannot carry: expand
+        # the indices.
+        sg =self.data_reference.spacegroup or SpaceGroup("P1", device=hkl_asu.device)
         hkl_p1, orig_idx, _ = sg.expand_hkl(
             hkl_asu,
             include_friedel=False, remove_absences=True,
