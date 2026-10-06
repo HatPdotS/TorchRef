@@ -328,9 +328,9 @@ class CollectionXrayTarget(Target):
         Returns
         -------
         dict
-            ``{"per_dataset": {key: (rwork, rfree)},
-               "rwork_pct": {label: value}, "rfree_pct": {label: value}}``.
-            The percentile dicts are empty when no dataset contributed.
+            ``{"per_dataset": {key: (rwork, rfree)}, "rwork_pct": {label: value},
+            "rfree_pct": {label: value}}``. The percentile dicts are empty when no
+            dataset contributed.
         """
         dc = self._dataset_collection
         mc = self._model_collection
