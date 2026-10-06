@@ -1851,9 +1851,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         from torchref.base.french_wilson import intensities_from_amplitudes
         from torchref.base.wilson_outliers import wilson_outlier_mask
-        from torchref.refinement.model_error_estimation.sigma_a import (
-            epsilon_from_hkl,
-        )
 
         if self.F is None or self.F_sigma is None or self.resolution is None:
             return
@@ -1871,13 +1868,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if int(usable.sum()) == 0:
             return
 
+        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
         keep, info = wilson_outlier_mask(
             I,
             sigma_I,
             self.hkl,
             self.resolution,
             self.cell.data,
-            epsilon=epsilon_from_hkl(self.hkl, self.spacegroup),
+            epsilon=sg.epsilon(self.hkl),
             is_centric=self.centric,
             usable=usable,
             alpha=alpha,
