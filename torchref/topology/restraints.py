@@ -56,9 +56,11 @@ class Restraints(DeviceMixin, DebugMixin, Module):
     cell : Cell, optional
         Crystallographic unit cell. Together with ``spacegroup``, enables
         symmetry-aware VDW restraints (contacts with symmetry mates). Without both,
-        the pair list is searched in an isolated P1 box.
-    spacegroup : SpaceGroup or str, optional
+        the pair list is searched in an isolated P1 box. Copied, so moving these
+        restraints never moves the caller's cell.
+    spacegroup : SpaceGroup, optional
         Space group. Together with ``cell``, enables symmetry-aware VDW restraints.
+        Copied, like ``cell``.
     links : pd.DataFrame, optional
         Parsed PDB LINK records; each accepted record adds one bond restraint
         between the two named atoms.
@@ -106,9 +108,10 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         self.links = links
         self._nonbonded = bool(nonbonded)
 
-        # Store crystallographic info for symmetry VDW restraints
-        self._cell = cell
-        self._spacegroup = spacegroup
+        # Own copies: DeviceMixin moves a Cell or SpaceGroup in place, and these
+        # usually belong to the model's context.
+        self._cell = None if cell is None else cell.clone()
+        self._spacegroup = None if spacegroup is None else spacegroup.copy()
 
         # Connectivity, the values layered over it, and the non-bonded pair list, which
         # is rebuilt on displacement and so is kept apart from the rest.
@@ -445,7 +448,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         from torchref.symmetry.cell import Cell
 
         # Fresh CPU copies: Cell/SpaceGroup ``.to()`` mutates in place, which would
-        # silently relocate the model's own Cell/SG.
+        # relocate the copies this object keeps on the model's device.
         if self._cell is not None and self._spacegroup is not None:
             cell_cpu = Cell(
                 self._cell._data.detach(), device=cpu, dtype=self._cell.dtype

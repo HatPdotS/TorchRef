@@ -213,3 +213,19 @@ def test_copy_aliases_its_own_blocks(restraints):
     entry = duplicate.restraints["bond"]["all"]["indices"]
     assert entry.data_ptr() == block.data_ptr()
     assert block.data_ptr() != restraints.topology.atoms.bonds.indices.data_ptr()
+
+
+@pytest.mark.unit
+def test_moving_restraints_leaves_the_model_cell(pdb_dir):
+    """The restraints move their own copy of the crystal, never the model's."""
+    model = Model(verbose=0, device=torch.device("cpu"))
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    cell, spacegroup = model.ctx.cell, model.ctx.spacegroup
+    dtype = cell.dtype
+
+    model.restraints.to(torch.float64)
+
+    assert model.ctx.cell is cell and cell.dtype == dtype
+    assert spacegroup.matrices.dtype == dtype
+    assert model.restraints._cell.dtype == torch.float64
+    assert model.restraints._spacegroup.matrices.dtype == torch.float64
