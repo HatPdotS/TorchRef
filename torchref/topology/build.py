@@ -582,7 +582,6 @@ def _origins(
 
 def _disulfide_edges(
     topology: Topology,
-    cols: Dict[str, np.ndarray],
     residue_of_row: Dict[int, int],
     pairs: Sequence[Tuple[int, int]],
     link_dict: Optional[Dict],
@@ -1005,7 +1004,7 @@ def build_topology_with_values(
     sg_rows = [row for row in range(len(cols["name"])) if cols["name"][row] == "SG"]
     disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz)
     disulfide, disulfide_values = _disulfide_edges(
-        topology, cols, residue_of_row, disulfide_pairs, link_dict, verbose
+        topology, residue_of_row, disulfide_pairs, link_dict, verbose
     )
 
     link_edges, link_atom_pairs, link_values = _link_record_edges(
