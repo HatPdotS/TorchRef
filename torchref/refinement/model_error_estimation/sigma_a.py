@@ -11,8 +11,8 @@ fitting with the mean pinned at ``|F_calc|`` biases ``sigma_A`` high.
 Two traps. **Do not move :func:`estimate_beta` out of this module**: the out-of-repo
 estimator lab monkeypatches it as a same-module global that :meth:`SigmaAEstimator.get`
 resolves, and nothing asserts the patch took. And keep it plain-tensor in/out (no
-``ReflectionData``/``Scaler`` coupling), so :mod:`torchref.scaling` -- which must import
-it *inside* the method that uses it -- stays free of an import cycle.
+``ReflectionData``/``Scaler`` coupling): the patch must take exactly the tensors
+:meth:`SigmaAEstimator.get` passes, so a dataset or scaler argument breaks it unseen.
 """
 
 import math

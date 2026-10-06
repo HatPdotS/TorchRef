@@ -18,11 +18,10 @@ interfaces so comparing them is a first-class capability:
   shells. What the difference-map weights, the extrapolated amplitudes and the
   ``difference_sd`` collection target consume.
 
-**This ``__init__`` deliberately imports nothing.** The modules are heavy and
-``sigma_a`` is imported from inside :mod:`torchref.scaling` methods to avoid closing a
-``scaling`` <-> ``refinement`` cycle; pulling them in here would defeat that, and
-re-exporting from :mod:`torchref.refinement` would make the import an attribute lookup on
-a partially-initialised package. Import submodules by full path::
+**This ``__init__`` deliberately imports nothing.** The modules are heavy and a consumer
+needs only one of them, so importing them here would load every estimator whenever one
+is imported, and re-exporting from :mod:`torchref.refinement` would make the import an
+attribute lookup on a partially-initialised package. Import submodules by full path::
 
     from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator
 """
