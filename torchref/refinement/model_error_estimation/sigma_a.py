@@ -23,6 +23,7 @@ import torch
 
 from torchref.config import get_float_dtype
 
+from ._shells import equal_count_shells as _equal_count_shells
 from ._shells import interp_in_dss as _interp_in_dss
 from ._shells import segment_layout as _segment_layout  # noqa: F401
 from ._shells import segsum as _segsum
@@ -578,18 +579,12 @@ def estimate_beta(
         )
 
     # --- equal-count resolution shells ---------------------------------------
-    # stable=True so tied d_star_sq break identically on CPU and GPU: a non-stable CUDA
-    # argsort reshuffles ties per process, which reshuffles shell membership.
-    order = torch.argsort(dss_all[free_idx], stable=True)
+    order, seg, seg_lengths, n_bins = _equal_count_shells(
+        dss_all[free_idx], per_bin=per_bin, min_bins=min_bins, min_per_bin=min_per_bin
+    )
     sel = free_idx[order]
     fo, fc, cen = fo_all[sel], fc_all[sel], cen_all[sel]
     eps, dss, sig = eps_all[sel], dss_all[sel], sig_all[sel]
-
-    n_by_count = max(1, n_free // per_bin)
-    n_cap = max(1, n_free // min_per_bin)
-    n_bins = max(n_by_count, min(min_bins, n_cap))
-    seg = (torch.arange(n_free, device=device) * n_bins) // n_free
-    seg_lengths = torch.bincount(seg, minlength=n_bins)
 
     def segsum(x):
         # Contiguous segments (data sorted by resolution, `seg` a non-decreasing ramp),

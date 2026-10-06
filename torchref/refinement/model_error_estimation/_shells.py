@@ -1,10 +1,8 @@
-"""Resolution-shell machinery shared by the model-error estimators.
+"""Resolution-shell machinery for the model-error estimators.
 
-Equal-count shells over ``d*^2``, atomic-free segment sums, linear interpolation of
-per-shell values back to reflections, and DerSimonian-Laird shrinkage of noisy per-shell
-estimates toward a weighted straight line. :mod:`.sigma_a` builds on these;
-``estimate_beta`` keeps its own module-level aliases so that its body resolves the same
-globals it always did.
+Equal-count shells over ``d*^2``, atomic-free segment sums, and linear interpolation of
+per-shell values back to reflections. :mod:`.sigma_a` builds on these, imported under
+private aliases.
 
 Plain tensors in and out. Every result lives on the device of its inputs, and float
 work happens in the dtype of the inputs, so callers control both by what they pass.
@@ -105,83 +103,3 @@ def equal_count_shells(
     ) // n  # dtype-ok: bincount input; PyTorch requires int64
     seg_lengths = torch.bincount(seg, minlength=n_bins)
     return order, seg, seg_lengths, n_bins
-
-
-def dl_shrink_to_line(
-    y: torch.Tensor,
-    var: torch.Tensor,
-    x: torch.Tensor,
-    *,
-    slope_min: float | None = None,
-    slope_max: float | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float, float]:
-    """Shrink noisy per-shell values toward a weighted straight line in ``x``.
-
-    DerSimonian-Laird shrinkage toward a two-parameter line fitted across all shells,
-    which the two parameters determine far better than any one shell is determined::
-
-        fit    y = a + b*x, weights 1/var
-        tau^2  = DL between-shell variance about the line, weights 1/var
-        w_i    = var_i / (var_i + tau^2)
-        y_i   <- (1 - w_i)*y_i + w_i*line_i
-
-    ``tau^2`` is the size of the dataset-specific residual the line does not capture, so
-    ``w_i -> 0`` where that residual is real and large and ``w_i -> 1`` where the shell is
-    badly determined. One shot, no iteration: the target is a fixed line. Weights are
-    ``1/var``, never counts, because count weighting lets high-``var`` shells dominate
-    ``Q`` and veto shrinkage entirely.
-
-    Parameters
-    ----------
-    y, var, x : torch.Tensor
-        Per-shell value, its sampling variance and the abscissa (``d*^2``), shape
-        ``(k,)``. A shell with non-finite ``y`` or ``var`` (or ``var <= 0``) takes no part
-        in the fit and is replaced by the line outright (``w = 1``).
-    slope_min, slope_max : float, optional
-        Clamp on the fitted slope ``b``; ``a`` is refitted after the clamp so the line
-        still passes through the weighted centroid.
-
-    Returns
-    -------
-    tuple
-        ``(y_shrunk, w, tau_sq, a, b)``. With fewer than four usable shells, or when the
-        slope is unidentifiable (all shells at one ``x``), the input is returned
-        unchanged with ``w = 0``, ``tau_sq = 0`` and NaN line coefficients.
-    """
-    nan = float("nan")
-    usable = torch.isfinite(y) & torch.isfinite(var) & (var > 0)
-    k = int(usable.sum())
-    # Two fitted parameters need at least two residual degrees of freedom.
-    if k < 4:
-        return y, torch.zeros_like(y), y.new_zeros(()), nan, nan
-
-    wt = torch.where(usable, 1.0 / var.clamp(min=1e-30), torch.zeros_like(var))
-    yz = torch.where(usable, y, torch.zeros_like(y))
-    S = wt.sum()
-    Sx = (wt * x).sum()
-    Sxx = (wt * x * x).sum()
-    Sy = (wt * yz).sum()
-    Sxy = (wt * x * yz).sum()
-    det = S * Sxx - Sx * Sx
-    # Relative, not absolute: `det` is a difference of two ~`S**2 * x**2` terms, so on a
-    # degenerate input it lands at the cancellation floor, not near zero.
-    if float(det.abs()) <= 1e-12 * float((S * Sxx).abs()):
-        return y, torch.zeros_like(y), y.new_zeros(()), nan, nan
-    b = (S * Sxy - Sx * Sy) / det
-    if slope_min is not None:
-        b = b.clamp(min=slope_min)
-    if slope_max is not None:
-        b = b.clamp(max=slope_max)
-    a = (wt * (yz - b * x)).sum() / S.clamp(min=1e-30)
-    line = a + b * x
-
-    resid = torch.where(usable, yz - line, torch.zeros_like(y))
-    Q = (wt * resid * resid).sum()
-    dof = float(k - 2)  # two parameters were fitted
-    c = (S - (wt * wt).sum() / S.clamp(min=1e-30)).clamp(min=1e-30)
-    # Q < k-2 means the scatter about the line is SMALLER than the noise alone predicts,
-    # i.e. no evidence of structure the line is missing -> tau^2 = 0 -> take the line.
-    tau_sq = ((Q - dof) / c).clamp(min=0.0)
-    w = torch.where(usable, var / (var + tau_sq).clamp(min=1e-30), torch.ones_like(var))
-    out = (1.0 - w) * torch.where(usable, y, line) + w * line
-    return out, w, tau_sq, float(a), float(b)
