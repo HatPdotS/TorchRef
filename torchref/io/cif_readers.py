@@ -74,7 +74,6 @@ class CIFReader:
         self.data_block = self._requested_block = data_block
         self.parse_all_blocks = parse_all_blocks
         self.available_blocks = []
-        self.verbose = 0
         self._current_block = None
 
         if filepath:
@@ -121,17 +120,11 @@ class CIFReader:
         if self.parse_all_blocks:
             # Parse all blocks - don't filter by block name
             parse_all = True
-            if self.verbose > 0 and len(self.available_blocks) > 1:
-                print(f"Parsing all {len(self.available_blocks)} data blocks")
         else:
             parse_all = False
             if self.data_block is None and self.available_blocks:
                 # No specific block requested, use first one
                 self.data_block = self.available_blocks[0]
-
-            if self.verbose > 0 and len(self.available_blocks) > 1:
-                print(f"Multiple data blocks found: {self.available_blocks}")
-                print(f"Reading block: {self.data_block}")
 
         # Second pass: parse the target block(s)
         while i < len(lines):
@@ -544,7 +537,6 @@ class ReflectionCIFReader:
         self.verbose = verbose
         self.anomalous = anomalous
         self.cif_reader = CIFReader(filepath, data_block=data_block)
-        self.cif_reader.verbose = verbose
         self._validate()
         self._extract_data()
 
@@ -637,6 +629,10 @@ class ReflectionCIFReader:
 
         if self.verbose > 1:
             print(f"Loaded CIF file: {self.filepath}")
+            print(
+                f"  Data block: {self.cif_reader.data_block} "
+                f"of {self.cif_reader.available_blocks}"
+            )
             print(f"  Reflections: {len(refln_df)}")
             print(f"  Has F: {'F' in self.data}")
             print(f"  Has I: {'I' in self.data}")
