@@ -6,8 +6,7 @@ that :meth:`~torchref.refinement.loss_state.LossState.register_target` added it 
 :class:`ModelTarget` adds a
 ``Model`` reference (geometry, ADP restraints); :class:`DataTarget` adds
 ``ReflectionData`` and an optional ``Scaler`` (X-ray targets). Also home to the
-shared NLL primitives :func:`gaussian_nll`, :func:`von_mises_nll` and
-:func:`adp_similarity_nll`.
+shared NLL primitive :func:`gaussian_nll`.
 """
 
 from typing import TYPE_CHECKING, Dict, Tuple
@@ -15,7 +14,6 @@ from typing import TYPE_CHECKING, Dict, Tuple
 import numpy as np
 import torch
 from torch import nn
-from torch.special import i0
 
 from torchref.config import get_float_dtype, normalize_device
 from torchref.utils.device_mixin import DeviceMixin
@@ -287,11 +285,6 @@ class DataTarget(Target):
         """Access the scaler object."""
         return self._scaler
 
-    @property
-    def has_model(self) -> bool:
-        """Check if a model is available for F_calc computation."""
-        return self._model is not None
-
     def get_fcalc(self, hkl=None, recalc=False):
         """
         Compute structure factors from model.
@@ -428,95 +421,3 @@ def gaussian_nll(deviations: torch.Tensor, sigmas: torch.Tensor) -> torch.Tensor
     )
     nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
     return nll
-
-
-def von_mises_nll(
-    deviations_rad: torch.Tensor, sigmas_deg: torch.Tensor
-) -> torch.Tensor:
-    """
-    Compute von Mises negative log-likelihood for angular data.
-
-    NLL = -κ*cos(θ) + log(I₀(κ)) + log(2π)
-    where κ = 1/σ²
-
-    For numerical stability, ``log(I₀(κ))`` is evaluated directly via ``i0``
-    only for κ < 50; for κ ≥ 50 it uses the large-argument asymptotic
-    ``log I₀(κ) ≈ κ − 0.5*log(2πκ)`` rather than a literal Bessel call.
-
-    Parameters
-    ----------
-    deviations_rad : torch.Tensor
-        Angular deviations in radians.
-    sigmas_deg : torch.Tensor
-        Standard deviations in degrees.
-
-    Returns
-    -------
-    torch.Tensor
-        Tensor of NLL values (same shape as input).
-    """
-    sigmas_rad = sigmas_deg * (np.pi / 180.0)
-    kappa = torch.clamp(1.0 / (sigmas_rad**2), min=1e-3, max=1e4)
-
-    log_i0_kappa = torch.zeros_like(kappa)
-    small_kappa_mask = kappa < 50.0
-    large_kappa_mask = ~small_kappa_mask
-
-    if small_kappa_mask.any():
-        log_i0_kappa[small_kappa_mask] = torch.log(i0(kappa[small_kappa_mask]))
-
-    if large_kappa_mask.any():
-        kappa_large = kappa[large_kappa_mask]
-        log_i0_kappa[large_kappa_mask] = kappa_large - 0.5 * torch.log(
-            2.0 * np.pi * kappa_large
-        )
-
-    log_2pi = torch.log(
-        torch.tensor(2.0 * np.pi, device=sigmas_deg.device, dtype=sigmas_deg.dtype)
-    )
-    log_prob = kappa * torch.cos(deviations_rad) - log_i0_kappa - log_2pi
-
-    return -log_prob
-
-
-def adp_similarity_nll(adp_diffs: torch.Tensor, sigma: float = 2.0) -> torch.Tensor:
-    """
-    Compute ADP similarity NLL (SIMU restraint).
-
-    Parameters
-    ----------
-    adp_diffs : torch.Tensor
-        ADP differences between bonded atoms.
-    sigma : float, optional
-        Target standard deviation. Default is 2.0 Å².
-
-    Returns
-    -------
-    torch.Tensor
-        Tensor of NLL values (same shape as input).
-    """
-    log_2pi = torch.log(
-        torch.tensor(2.0 * np.pi, device=adp_diffs.device, dtype=adp_diffs.dtype)
-    )
-    nll = 0.5 * (adp_diffs / sigma) ** 2 + np.log(sigma) + 0.5 * log_2pi
-    return nll
-
-
-def detach_phases(fcalc: torch.Tensor) -> torch.Tensor:
-    """
-    Extract phases from complex structure factors with gradient detachment.
-
-    Not exported in ``targets/__init__.__all__``; treat its public-vs-private
-    status as unresolved.
-
-    Parameters
-    ----------
-    fcalc : torch.Tensor
-        Complex structure factors.
-
-    Returns
-    -------
-    torch.Tensor
-        Detached phase angles in radians.
-    """
-    return torch.angle(fcalc).detach()

@@ -15,9 +15,7 @@ from .base import (
     DataTarget,
     ModelTarget,
     Target,
-    adp_similarity_nll,
     gaussian_nll,
-    von_mises_nll,
 )
 from .collection import (
     COLLECTION_XRAY_TARGETS,
@@ -67,8 +65,6 @@ __all__ = [
     "DataTarget",
     # Utility functions
     "gaussian_nll",
-    "von_mises_nll",
-    "adp_similarity_nll",
     # X-ray targets
     "XrayTarget",
     "SigmaAXrayTarget",
