@@ -1106,11 +1106,6 @@ class CholeskyMixedTensor(MixedTensor):
     # U (6-vector) <-> Cholesky free-parameter (6-vector) transforms.
     # Both operate on (..., 6) tensors and pass NaN rows through untouched.
     # ------------------------------------------------------------------
-    @staticmethod
-    def _u6_to_matrix(U: torch.Tensor) -> torch.Tensor:
-        """Delegate to :func:`u6_to_matrix`."""
-        return u6_to_matrix(U)
-
     def _u6_to_raw6(self, U: torch.Tensor) -> torch.Tensor:
         """U components -> Cholesky free parameters. See :func:`u6_to_raw6`."""
         return u6_to_raw6(U, self.epsilon)

@@ -49,6 +49,7 @@ from torchref.base.electron_density.radius_policy import (
     per_atom_radius_iso,
 )
 from torchref.base.scattering.scattering_table import get_scattering_params_by_z
+from torchref.model.parameter_wrappers import u6_to_matrix
 from torchref.utils import use_portable
 
 pytestmark = pytest.mark.unit
@@ -136,11 +137,7 @@ def _brute_aniso(dims, xyz, u, occ, A, B, inv_frac, frac, r):
     fc = _frac_grid(dims, dtype)
     out = torch.zeros(dims[0] * dims[1] * dims[2], dtype=dtype)
     xyz_frac = xyz @ inv_frac.T
-    U3 = torch.zeros(u.shape[0], 3, 3, dtype=dtype)
-    U3[:, 0, 0], U3[:, 1, 1], U3[:, 2, 2] = u[:, 0], u[:, 1], u[:, 2]
-    U3[:, 0, 1] = U3[:, 1, 0] = u[:, 3]
-    U3[:, 0, 2] = U3[:, 2, 0] = u[:, 4]
-    U3[:, 1, 2] = U3[:, 2, 1] = u[:, 5]
+    U3 = u6_to_matrix(u.to(dtype))
     M = (B[:, :, None, None] * torch.eye(3, dtype=dtype)
          + 8 * math.pi ** 2 * U3[:, None]) / 4.0
     Minv = torch.linalg.inv(M)

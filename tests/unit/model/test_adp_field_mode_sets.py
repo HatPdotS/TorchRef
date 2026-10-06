@@ -16,6 +16,7 @@ from torchref.model.disorder_field import (
     ModeCovariancePayload,
 )
 from torchref.model.model import Model
+from torchref.model.parameter_wrappers import u6_to_matrix
 
 
 @pytest.fixture(scope="module")
@@ -79,12 +80,7 @@ def test_positive_definite_per_atom(pdb_path):
     """Every atom's U must be PD or the anisotropic B-matrix inverse blows up."""
     model = _field_model(pdb_path, "affine", n_nodes=6)
     u6 = model.adp_u6().detach()
-    M = torch.zeros(u6.shape[0], 3, 3, dtype=u6.dtype)
-    M[:, 0, 0], M[:, 1, 1], M[:, 2, 2] = u6[:, 0], u6[:, 1], u6[:, 2]
-    M[:, 0, 1] = M[:, 1, 0] = u6[:, 3]
-    M[:, 0, 2] = M[:, 2, 0] = u6[:, 4]
-    M[:, 1, 2] = M[:, 2, 1] = u6[:, 5]
-    assert float(torch.linalg.eigvalsh(M).min()) > 0.0
+    assert float(torch.linalg.eigvalsh(u6_to_matrix(u6)).min()) > 0.0
 
 
 @pytest.mark.unit

@@ -338,18 +338,6 @@ class TestPositiveMixedTensor:
         assert torch.allclose(result[0], torch.tensor(100.0), rtol=0.01)
 
 
-def _u6_matrix(u6):
-    """(...,6) [u11,u22,u33,u12,u13,u23] -> symmetric (...,3,3)."""
-    import torch as _t
-
-    M = _t.zeros(*u6.shape[:-1], 3, 3, dtype=u6.dtype)
-    M[..., 0, 0], M[..., 1, 1], M[..., 2, 2] = u6[..., 0], u6[..., 1], u6[..., 2]
-    M[..., 0, 1] = M[..., 1, 0] = u6[..., 3]
-    M[..., 0, 2] = M[..., 2, 0] = u6[..., 4]
-    M[..., 1, 2] = M[..., 2, 1] = u6[..., 5]
-    return M
-
-
 class TestCholeskyMixedTensor:
     """Tests for CholeskyMixedTensor (anisotropic U kept positive-definite)."""
 
@@ -371,7 +359,7 @@ class TestCholeskyMixedTensor:
     @pytest.mark.unit
     def test_output_is_positive_definite_for_arbitrary_params(self):
         """For ANY internal parameters, the reconstructed U must be PD."""
-        from torchref.model.parameter_wrappers import CholeskyMixedTensor
+        from torchref.model.parameter_wrappers import CholeskyMixedTensor, u6_to_matrix
 
         U = torch.tensor([[0.2, 0.2, 0.2, 0.0, 0.0, 0.0]], dtype=torch.float64)
         t = CholeskyMixedTensor(U)
@@ -383,7 +371,7 @@ class TestCholeskyMixedTensor:
                     [[-8.0, 5.0, -3.0, -50.0, 40.0, -30.0]], dtype=torch.float64
                 )
             )
-        eigs = torch.linalg.eigvalsh(_u6_matrix(t().detach()))
+        eigs = torch.linalg.eigvalsh(u6_to_matrix(t().detach()))
         assert torch.all(eigs > 0), eigs
         assert torch.isfinite(t()).all()
 
