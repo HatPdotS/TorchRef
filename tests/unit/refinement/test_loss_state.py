@@ -651,3 +651,43 @@ class TestFrozenParameterGroup:
 
         assert ls.run(opt, context="test_frozen_group") is None
         assert other.item() == 3.0
+
+
+class TestRequiresGradRestore:
+    """run() undoes exactly the requires_grad flips it makes, and no others."""
+
+    @pytest.mark.unit
+    def test_a_leaf_frozen_after_registration_stays_frozen(self):
+        from torchref.refinement.loss_state import LossState
+
+        a = torch.nn.Parameter(torch.tensor([2.0]))
+        b = torch.nn.Parameter(torch.tensor([3.0]))
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("xray", lambda: (a**2).sum() + (b**2).sum())
+        b.requires_grad_(False)
+
+        ls.run(torch.optim.LBFGS([a], line_search_fn="strong_wolfe"))
+
+        assert not b.requires_grad
+        assert a.requires_grad
+
+    @pytest.mark.unit
+    def test_a_leaf_outside_the_optimizer_is_frozen_only_for_the_step(self):
+        from torchref.refinement.loss_state import LossState
+
+        a = torch.nn.Parameter(torch.tensor([2.0]))
+        b = torch.nn.Parameter(torch.tensor([3.0]))
+        seen = []
+
+        def target():
+            seen.append(b.requires_grad)
+            return (a**2).sum() + (b**2).sum()
+
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("xray", target)
+        seen.clear()
+
+        ls.run(torch.optim.LBFGS([a], line_search_fn="strong_wolfe"))
+
+        assert seen and not any(seen)
+        assert b.requires_grad

@@ -370,10 +370,9 @@ class LossState(DeviceMovementMixin):
             module.reset_cache()
 
     def restore_loss_leaf_grads(self) -> None:
-        """Unconditionally re-enable ``requires_grad`` on every leaf in
-        ``self._loss_leaves``. Called at the end of :meth:`step` so the
-        next call sees a clean, fully-differentiable model regardless of
-        what state the previous step (or external code) left things in.
+        """Re-enable ``requires_grad`` on every leaf in ``self._loss_leaves``,
+        including leaves a caller froze. :meth:`run` does not call this: it restores
+        only the flags it disabled itself, so a caller's freeze survives a step.
         """
         for p in self._loss_leaves:
             if not p.requires_grad:
@@ -398,9 +397,9 @@ class LossState(DeviceMovementMixin):
         LBFGS.
 
         Leaves the loss touches but the optimizer was not constructed with get
-        ``requires_grad`` disabled, so autograd prunes those subgraphs; on exit it is
-        unconditionally re-enabled on every leaf in ``self._loss_leaves``, which stops state
-        bleeding between refinement methods. Every ``reset_cache``-bearing submodule is
+        ``requires_grad`` disabled, so autograd prunes those subgraphs; on exit exactly
+        those leaves are re-enabled, so a leaf the caller froze stays frozen and none of
+        run()'s own flips is left behind. Every ``reset_cache``-bearing submodule is
         reset
         **before** the step loop, so the first forward cannot be served a NaN result cached by
         a previously rejected closure. ``maintenance()`` is called on every target
@@ -497,15 +496,9 @@ class LossState(DeviceMovementMixin):
         # closure may have left a NaN/inf cached fcalc that the fingerprint
         # would otherwise serve again unchanged. This helps with robustness but "should" not be necessary.
         self.reset_caches()
-        try:
-            with _freeze_graph_extras(self, optimizer):
-                for i in range(nsteps):
-                    optimizer.step(closure)
-        finally:
-            # Re-enable grads on every loss leaf regardless of how the
-            # step exited. Defends against state bleeding between
-            # successive refinement methods.
-            self.restore_loss_leaf_grads()
+        with _freeze_graph_extras(self, optimizer):
+            for i in range(nsteps):
+                optimizer.step(closure)
 
         # Post-step maintenance hook: each target decides whether its
         # internal state is stale (e.g. NonBondedTarget rebuilds the VDW
@@ -640,15 +633,21 @@ def _optimizer_param_set(optimizer: torch.optim.Optimizer) -> Set[nn.Parameter]:
 def _freeze_graph_extras(state: "LossState", optimizer: torch.optim.Optimizer):
     """Disable ``requires_grad`` on leaves ``state`` touches but ``optimizer`` lacks.
 
-    Reads the cached leaf union; no probe forward runs here. The enclosing
-    :meth:`LossState.step` re-enables every leaf in ``_loss_leaves``, not just these, so a
-    pre-frozen leaf cannot leak into the next step.
+    Reads the cached leaf union; no probe forward runs here. On exit, however the block
+    ends, it re-enables exactly the leaves it disabled, so a leaf that was already
+    frozen stays frozen.
     """
     intended = _optimizer_param_set(optimizer)
-    for p in state.active_parameters():
-        if p not in intended and p.requires_grad:
-            p.requires_grad_(False)
-    yield
+    frozen = [
+        p for p in state.active_parameters() if p not in intended and p.requires_grad
+    ]
+    for p in frozen:
+        p.requires_grad_(False)
+    try:
+        yield
+    finally:
+        for p in frozen:
+            p.requires_grad_(True)
 
 
 def create_loss_state(
