@@ -115,8 +115,8 @@ class UnitWeightK1XrayTarget(LeastSquaresXrayTarget):
 
     ``weighting`` is **forced** to ``"unit"``, not defaulted.
 
-    Attach only scalers contributing ADDITIVE terms (e.g. bulk solvent) -- an overall
-    ``K_overall x aniso`` multiplication would double-scale ``F_calc``.
+    ``c`` rescales the attached scaler's output, absorbing its overall scale; give the
+    scaler one isotropic coefficient (``n_iso_coeff=1``), anisotropy and bulk solvent.
     """
 
     def __init__(self, *args, **kwargs):
