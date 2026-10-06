@@ -27,8 +27,8 @@ The conversion has two parts:
   the weight vanishes with ``Sigma`` and the fit settles towards zero instead
   of crossing it. Reflections at one resolution share the weight ``sbar``
   rather than taking their own sigmas, which correlate with the intensity
-  (counting statistics, merging) and would bias the mean; only a reflection
-  far noisier than typical is weighted down further.
+  (counting statistics, merging) and would bias the mean; a reflection more
+  than ten times noisier than typical takes ``sigma_I / 10`` in place of ``sbar``.
 - **The posterior.** :func:`french_wilson` turns ``I``, ``sigma_I`` and the
   prior into posterior amplitudes: French and Wilson's tables, their expansion
   for large ``h``, and the corresponding series for ``h`` below the tables, so
@@ -62,10 +62,10 @@ DEFAULT_N_COEFF = 16
 #: Fitted reflections per coefficient; a small dataset gets a stiffer curve
 #: rather than a noisy one.
 _ROWS_PER_COEFF = 400
-#: A reflection whose sigma exceeds this multiple of the typical sigma at its
-#: resolution is weighted by its own sigma. Below it every reflection counts the
-#: same; the spread of sigmas within a resolution range, which follows the
-#: intensity, stays well below it.
+#: A reflection's noise is ``max(sbar, sigma / _NOISY_SIGMA_RATIO)``, ``sbar``
+#: the typical sigma at its resolution: continuous at the threshold, and ``sbar``
+#: for all but the far noisier reflections, since the spread of sigmas within a
+#: resolution range, which follows the intensity, stays well below it.
 _NOISY_SIGMA_RATIO = 10.0
 #: Step halvings allowed per Fisher-scoring iteration before the fit is taken
 #: as converged, and the iteration cap, a runaway guard that should never bind.
