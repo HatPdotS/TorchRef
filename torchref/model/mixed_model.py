@@ -141,11 +141,10 @@ class MixedModel(DeviceMovementMixin, nn.Module):
             print(f"  Fractions frozen: {frozen_fractions}")
 
     def _validate_models(self):
-        """Check that the models agree on unit cell and space group.
+        """Raise ``ValueError`` unless the models agree on unit cell and space group.
 
-        A space-group mismatch raises ``ValueError``. The cell check is an
-        ``assert`` (1 Å / 1 % tolerance) that compares the reference model with
-        itself, so it never fires -- do not rely on cells being validated here.
+        Cells agree when every parameter lies within 1 Å (or 1°) plus 1 % of the
+        first model's; space groups when their numbers match.
         """
         if len(self.models) < 2:
             return  # Single model always compatible with itself
@@ -155,9 +154,13 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         ref_sg = ref_model.spacegroup
 
         for i, model in enumerate(self.models[1:], start=1):
-            # Check cell compatibility (allow small tolerance)
-            if ref_cell is not None and model.cell is not None:
-                assert torch.allclose( ref_model.cell.data, ref_cell.data,atol=1, rtol=0.01)
+            cell = model.cell
+            if ref_cell is not None and cell is not None:
+                if not torch.allclose(cell.data, ref_cell.data, atol=1, rtol=0.01):
+                    raise ValueError(
+                        f"Model {i} has an incompatible unit cell. "
+                        f"Reference: {ref_cell.tolist()}, Model {i}: {cell.tolist()}"
+                    )
 
             # Check spacegroup compatibility
             if ref_sg is not None and model.spacegroup is not None:
