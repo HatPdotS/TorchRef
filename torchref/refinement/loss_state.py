@@ -71,7 +71,7 @@ class LossState(DeviceMovementMixin):
 
     # Submodules attached to registered targets that expose a reset_cache
     # method (e.g. ModelFT and its CachedForwardMixin wrappers). Collected
-    # once at registration time and reset after every step() so that
+    # once at registration time and reset before run()'s step loop so that
     # validate_loss-rejected closures or stale forward-cache entries can't
     # silently poison the next forward.
     _resettable_modules: List[nn.Module] = field(default_factory=list, repr=False)
@@ -182,8 +182,8 @@ class LossState(DeviceMovementMixin):
     def _collect_resettable_modules(self, target: Callable) -> None:
         """Collect ``target``'s submodules exposing ``reset_cache``, deduplicated.
 
-        Reset after every :meth:`step` so a rejected closure's stale forward cache cannot
-        poison the next aggregate.
+        Reset before every :meth:`run`'s step loop so a rejected closure's stale forward
+        cache cannot poison the next aggregate.
         """
         if not isinstance(target, nn.Module):
             return
@@ -364,7 +364,7 @@ class LossState(DeviceMovementMixin):
 
     def reset_caches(self) -> None:
         """Call ``reset_cache()`` on every registered target's submodules
-        that expose one. Invoked automatically at the end of :meth:`step`.
+        that expose one. Invoked automatically before :meth:`run`'s step loop.
         """
         for module in self._resettable_modules:
             module.reset_cache()
