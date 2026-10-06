@@ -3,12 +3,14 @@
 The properties asserted here are the ones that make template instantiation
 trustworthy: every hydrogen lands at its library bond length, none is placed in a
 direction the geometry does not determine, the count per parent respects the valence
-left over after the graph's real bonds, and the free-torsion set is exactly the centres
-whose dihedral the template cannot know.
+left over after the graph's real bonds, the free-torsion set is exactly the centres
+whose dihedral the template cannot know, and a group whose dihedral it does fix -- the
+conjugated NH2 of ASN, GLN and ARG -- lands in its plane, generated or riding.
 """
 
 import numpy as np
 import pytest
+import torch
 
 from torchref.model.model import Model
 from torchref.topology.hydrogens import (
@@ -17,6 +19,7 @@ from torchref.topology.hydrogens import (
     optimise_free_torsions,
     plan_hydrogens,
 )
+from torchref.topology.riding import place_riding_hydrogens
 
 # 3E98 brings HETATM selenomethionines bonded through LINK records and split side chains.
 STRUCTURES = ["7L84", "1DAW", "3E98"]
@@ -116,18 +119,26 @@ def test_every_candidate_hydrogen_is_placed(built, code):
 @pytest.mark.unit
 @pytest.mark.parametrize("code", STRUCTURES)
 def test_free_torsions_are_exactly_the_single_neighbour_centres(built, code):
-    """A dihedral is free when the parent has one heavy neighbour, and only then."""
+    """A dihedral is free when the parent has one heavy neighbour and no plane
+    restraint of the template holds the parent's hydrogens, and only then."""
     _, restraints, plan = built(code)
     topology = restraints.topology
     is_h = topology.atoms.is_hydrogen
+    resnames = topology.columns()["resname"]
+
+    def planar(resname):
+        planes = restraints.cif_dict[resname].get("planes")
+        return set() if planes is None else set(planes["atom"].str.strip())
 
     for i in range(plan.n_hydrogens):
         parent = int(plan.parent[i])
         neighbours = topology.atoms.neighbors(parent)
         heavy = int((~is_h[neighbours]).sum())
-        residue = int(topology.atoms.residue_of[parent])
-        water = str(topology.residues.resname[residue]).strip() == "HOH"
-        assert (plan.group[i] >= 0) == (heavy == 1 and not water), (
+        resname = str(resnames[parent]).strip()
+        water = resname == "HOH"
+        siblings = plan.name[plan.parent == parent].tolist()
+        in_plane = not water and bool(planar(resname) & set(siblings))
+        assert (plan.group[i] >= 0) == (heavy == 1 and not water and not in_plane), (
             f"{code}: hydrogen {plan.name[i]} on atom {parent} with {heavy} heavy "
             f"neighbours has group {plan.group[i]}"
         )
@@ -390,3 +401,118 @@ def test_acetyl_cap_carbon_gets_no_hydrogen(tmp_path):
     assert _row(model, "A", 0, "C") not in by_parent
     assert len(by_parent[_row(model, "A", 0, "CH3")]) == 3
     assert by_parent[_row(model, "A", 1, "N")] == ["H"]
+
+
+#: Heavy atoms spanning each conjugated NH2 group, and the hydrogens that belong in
+#: their plane.
+_NH2_PLANES = {
+    "ASN": (("CB", "CG", "OD1", "ND2"), ("HD21", "HD22")),
+    "GLN": (("CG", "CD", "OE1", "NE2"), ("HE21", "HE22")),
+    "ARG": (("NE", "CZ", "NH1", "NH2"), ("HH11", "HH12", "HH21", "HH22")),
+}
+
+
+def _plane_distances(names, residue_of, resnames, xyz, h_rows):
+    """Distance of each hydrogen row from the least-squares plane of its NH2 group."""
+    out = []
+    for row in h_rows:
+        heavy, hydrogens = _NH2_PLANES[resnames[row]]
+        if names[row] not in hydrogens:
+            continue
+        members = np.nonzero((residue_of == residue_of[row]) & np.isin(names, heavy))
+        points = xyz[members[0]]
+        centre = points.mean(axis=0)
+        normal = np.linalg.svd(points - centre)[2][-1]
+        out.append(abs(float((xyz[row] - centre) @ normal)))
+    return np.array(out)
+
+
+@pytest.mark.unit
+def test_generated_nh2_hydrogens_lie_in_their_plane(pdb_dir):
+    """ASN, GLN and ARG NH2 hydrogens keep the template torsion: in the group plane."""
+    model = Model(verbose=0, hydrogens="add")
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    columns = model.ctx.topology.columns()
+    names = np.char.strip(columns["name"].astype(str))
+    resnames = np.char.strip(columns["resname"].astype(str))
+    residue_of = model.ctx.topology.atoms.residue_of.cpu().numpy()
+    rows = np.nonzero(np.isin(resnames, list(_NH2_PLANES)))[0]
+    xyz = model.xyz().detach().cpu().numpy()
+    distances = _plane_distances(names, residue_of, resnames, xyz, rows)
+    assert len(distances) > 20
+    assert distances.max() < 0.1
+
+
+@pytest.mark.unit
+def test_riding_hydrogens_on_single_neighbour_parents_keep_the_template_geometry(
+    built,
+):
+    """The riding reconstruction of a heavy-only model frames these hydrogens on a
+    second-shell atom too: NH2 lands in its plane, and a hydroxyl hydrogen keeps its
+    bond angle instead of pointing straight away from the carbon."""
+    model, restraints, _ = built("1DAW")
+    h_topo = restraints.h_topo
+    xyz = model.xyz().detach()
+    riding = place_riding_hydrogens(xyz, h_topo).cpu().numpy()
+    parents = h_topo.h_parent_idx.cpu().numpy()
+    topology = restraints.topology
+    columns = topology.columns()
+    names = np.char.strip(columns["name"].astype(str))
+    resnames = np.char.strip(columns["resname"].astype(str))
+    residue_of = topology.atoms.residue_of.cpu().numpy()
+    coords = xyz.cpu().numpy()
+
+    nh2 = np.isin(resnames[parents], list(_NH2_PLANES)) & np.isin(
+        names[parents], ["ND2", "NE2", "NH1", "NH2"]
+    )
+    assert nh2.sum() > 20
+    for h in np.nonzero(nh2)[0]:
+        heavy, _ = _NH2_PLANES[resnames[parents[h]]]
+        members = np.nonzero(
+            (residue_of == residue_of[parents[h]]) & np.isin(names, heavy)
+        )[0]
+        centre = coords[members].mean(axis=0)
+        normal = np.linalg.svd(coords[members] - centre)[2][-1]
+        assert abs(float((riding[h] - centre) @ normal)) < 0.1
+
+    serine = (resnames[parents] == "SER") & (names[parents] == "OG")
+    assert serine.any()
+    for h in np.nonzero(serine)[0]:
+        og = parents[h]
+        (cb,) = np.nonzero((residue_of == residue_of[og]) & (names == "CB"))[0]
+        bond = coords[cb] - coords[og]
+        to_h = riding[h] - coords[og]
+        cosine = bond @ to_h / np.linalg.norm(bond) / np.linalg.norm(to_h)
+        assert 100.0 < np.degrees(np.arccos(cosine)) < 120.0
+
+
+@pytest.mark.cuda
+def test_triton_riding_placement_matches_the_eager_kernel(built):
+    """Forward and backward agree on CUDA, framed hydrogens included."""
+    from torchref.base.targets.triton.place_hydrogens import (
+        place_riding_hydrogens_triton,
+    )
+    from torchref.topology.riding import _place_h_jit
+
+    model, restraints, _ = built("1DAW")
+    h_topo = restraints.h_topo.to(torch.device("cuda"))
+    assert bool((h_topo.h_frame_atom >= 0).any())
+    xyz = model.xyz().detach().to("cuda", torch.float32)
+    place_riding_hydrogens(xyz, h_topo)
+    inputs = (
+        h_topo.h_parent_idx,
+        h_topo._nb_idx_clamped,
+        h_topo._nb_valid,
+        h_topo._dir_coeffs,
+        h_topo._bond_len_col,
+    )
+    weights = torch.randn(h_topo.n_hydrogens, 3, device="cuda")
+    results = []
+    for kernel in (place_riding_hydrogens_triton, _place_h_jit):
+        heavy = xyz.clone().requires_grad_(True)
+        placed = kernel(heavy, *inputs)
+        (placed * weights).sum().backward()
+        results.append((placed.detach(), heavy.grad))
+    (triton_h, triton_grad), (eager_h, eager_grad) = results
+    torch.testing.assert_close(triton_h, eager_h, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(triton_grad, eager_grad, atol=1e-3, rtol=1e-3)

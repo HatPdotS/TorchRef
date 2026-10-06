@@ -59,6 +59,27 @@ def test_single_neighbour_parents_borrow_the_grandparent(hydrogenated):
 
 
 @pytest.mark.unit
+def test_torsion_groups_follow_the_free_torsion_rule(hydrogenated):
+    """A single-neighbour group carries a torsion unless a plane restraint holds it:
+    the lysine ammonium and the serine hydroxyl rotate, a conjugated NH2 does not."""
+    topology = hydrogenated.restraints.topology
+    frames = hydrogen_frames(topology)
+    columns = topology.columns()
+    names = np.char.strip(columns["name"].astype(str))[frames.parent_row]
+    resnames = np.char.strip(columns["resname"].astype(str))[frames.parent_row]
+    for free in (("LYS", "NZ"), ("SER", "OG")):
+        on = (resnames == free[0]) & (names == free[1])
+        assert on.any() and (frames.torsion_group[on] >= 0).all(), free
+    nh2 = (
+        ((resnames == "ASN") & (names == "ND2"))
+        | ((resnames == "GLN") & (names == "NE2"))
+        | ((resnames == "ARG") & np.isin(names, ["NH1", "NH2"]))
+    )
+    assert nh2.sum() > 20
+    assert (frames.torsion_group[nh2] == -1).all()
+
+
+@pytest.mark.unit
 def test_positions_round_trip_through_their_frames(hydrogenated):
     """Placed hydrogens are reproduced exactly from heavy atoms and local offsets."""
     full = hydrogenated

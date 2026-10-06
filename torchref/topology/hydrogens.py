@@ -18,9 +18,11 @@ Two things the bond graph decides that a distance criterion previously guessed a
   read the graph rather than a distance sweep, which gets a distorted or predicted model
   wrong and cannot tell a bond from two atoms that merely sit close.
 * **Which hydrogens have a free torsion.** A hydrogen whose parent has exactly one heavy
-  neighbour -- hydroxyl, thiol, amine, methyl -- can rotate about the parent-neighbour
-  axis, and the template's angle for it is arbitrary. Those get scanned; the rest are
-  fully determined by the template and are left alone.
+  neighbour -- hydroxyl, thiol, ammonium, methyl -- can rotate about the
+  parent-neighbour axis, and the template's angle for it is arbitrary. Those get
+  scanned. A plane restraint on the hydrogen -- the conjugated NH2 of ASN, GLN and ARG
+  -- fixes that angle instead, and the group is placed in the plane of its
+  neighbour's substituents.
 """
 
 from dataclasses import dataclass
@@ -29,6 +31,11 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
+from torchref.base.coordinates.local_frame import (
+    frame_is_degenerate,
+    local_frame_coordinates,
+    place_local_frame,
+)
 from torchref.config import get_float_dtype
 
 #: Standard heavy-atom valences, one of the two budgets that cap how many hydrogens a
@@ -175,6 +182,7 @@ def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
     -------
     dict or None
         None when the component is absent or its atoms carry no coordinates.
+        ``planar_h`` holds the hydrogens a plane restraint of the template contains.
     """
     component = cif_dict.get(resname)
     if component is None:
@@ -235,7 +243,16 @@ def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
         "h_count": h_count,
         "ideal_length": ideal_length,
         "heavy_adjacency": heavy_adjacency,
+        "planar_h": _planar_hydrogens(component, ids[is_h]),
     }
+
+
+def _planar_hydrogens(component: Dict, h_names) -> set:
+    """The hydrogens among ``h_names`` that a plane restraint of ``component`` holds."""
+    planes = component.get("planes")
+    if planes is None or len(planes) == 0:
+        return set()
+    return set(planes["atom"].astype(str).str.strip()).intersection(h_names)
 
 
 def _orthonormal_frame(axis: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -255,18 +272,33 @@ def _axis_frame_placement(
     parent_position: np.ndarray,
     neighbour_position: np.ndarray,
     h_names: List[str],
+    second_shell: Optional[Tuple[str, np.ndarray]] = None,
 ) -> Optional[np.ndarray]:
     """Hydrogen positions for a centre with a single heavy neighbour.
 
-    Maps the template's local geometry onto the model by carrying the parent-neighbour
-    axis across and completing the frame arbitrarily. Every bond angle at the parent is
-    preserved exactly; only the rotation about the axis is arbitrary, which is correct:
-    that is the degree of freedom the template cannot know, and
-    :func:`optimise_free_torsions` chooses it.
+    Maps the template's local geometry onto the model in the frame of the parent, its
+    neighbour and ``second_shell``, a ``(name, position)`` atom bonded to the neighbour
+    that the template also holds. That reproduces every bond angle at the parent and
+    the template's torsion about the parent-neighbour bond, turned into the plane for
+    a group a plane restraint holds (see :func:`_frame_directions`), which is what
+    puts a conjugated NH2 in its plane. Without a second-shell atom the frame is
+    completed arbitrarily: right only for a free torsion, which
+    :func:`optimise_free_torsions` then chooses.
     """
     index = template["id_to_index"]
     if parent_name not in index or neighbour_name not in index:
         return None
+    if any(name not in index for name in h_names):
+        return None
+    if second_shell is not None and second_shell[0] in index:
+        placed = _second_shell_placement(
+            template,
+            (parent_name, neighbour_name, second_shell[0]),
+            np.stack([parent_position, neighbour_position, second_shell[1]]),
+            h_names,
+        )
+        if placed is not None:
+            return placed
 
     template_axis = (
         template["coords"][index[parent_name]]
@@ -284,8 +316,6 @@ def _axis_frame_placement(
 
     positions = []
     for name in h_names:
-        if name not in index:
-            return None
         offset = (
             template["coords"][index[name]] - template["coords"][index[parent_name]]
         )
@@ -296,6 +326,80 @@ def _axis_frame_placement(
             + float(offset @ t_second) * m_second
         )
     return np.array(positions)
+
+
+def _frame_directions(
+    points: np.ndarray, hydrogens: np.ndarray, planar: bool
+) -> Optional[torch.Tensor]:
+    """Unit parent-to-hydrogen directions in the local frame of three template atoms.
+
+    Parameters
+    ----------
+    points : numpy.ndarray
+        Template positions of the parent, its heavy neighbour and an atom bonded to
+        that neighbour, shape ``(3, 3)``, in Å.
+    hydrogens : numpy.ndarray
+        Template positions of the parent's hydrogens, shape ``(H, 3)``, in Å.
+    planar : bool
+        Whether a plane restraint holds these hydrogens. They are then turned about
+        the parent-neighbour bond, bond angle kept, into the plane of the three
+        atoms: a trigonal parent with one heavy neighbour is conjugated with that
+        neighbour's substituents, which the library's ideal coordinates do not
+        always show -- its ASN, GLN and ARG templates twist the NH2 out of plane.
+
+    Returns
+    -------
+    torch.Tensor or None
+        Shape ``(H, 3)``, in the configured float dtype: components along the
+        :func:`~torchref.base.coordinates.local_frame_axes` of the three atoms. None
+        when they are collinear.
+    """
+
+    def relative(positions: np.ndarray) -> torch.Tensor:
+        return torch.as_tensor(positions - points[0], dtype=get_float_dtype())
+
+    frame = relative(points).expand(len(hydrogens), 3, 3).unbind(1)
+    if frame_is_degenerate(*frame).any():
+        return None
+    local = local_frame_coordinates(*frame, relative(hydrogens))
+    local = local / local.norm(dim=1, keepdim=True)
+    if planar:
+        side = torch.where(local[:, 1] < 0, -1.0, 1.0)
+        in_plane = side * local[:, 1:].norm(dim=1)
+        local = torch.stack([local[:, 0], in_plane, torch.zeros_like(in_plane)], 1)
+    return local
+
+
+def _second_shell_placement(
+    template: Dict,
+    frame_names: Tuple[str, str, str],
+    frame_positions: np.ndarray,
+    h_names: List[str],
+) -> Optional[np.ndarray]:
+    """Template hydrogens carried into the model's ``(parent, n1, n2)`` frame.
+
+    Each hydrogen keeps its :func:`_frame_directions` direction, so its bond angle
+    and torsion are the template's, turned into the plane where a plane restraint
+    holds it. Unit length: the caller sets the bond lengths. Positions are relative to
+    the parent until the end, which keeps single precision from rounding them against
+    absolute coordinates. None when either frame is degenerate.
+    """
+    index = template["id_to_index"]
+    directions = _frame_directions(
+        np.stack([template["coords"][index[name]] for name in frame_names]),
+        np.stack([template["coords"][index[name]] for name in h_names]),
+        bool(template["planar_h"] & set(h_names)),
+    )
+    if directions is None:
+        return None
+    relative = frame_positions - frame_positions[0]
+    target = torch.as_tensor(relative, dtype=directions.dtype)
+    p, n1, n2 = target.expand(len(h_names), 3, 3).unbind(1)
+    if frame_is_degenerate(p, n1, n2).any():
+        return None
+    valid = torch.ones(len(h_names), dtype=torch.bool)
+    placed = place_local_frame(p, n1, n2, directions, valid, torch.zeros_like(p))
+    return frame_positions[0] + placed.numpy().astype(np.float64)
 
 
 def _half_hydrogen_angle(template: Dict, parent_name: str, h_names: List[str]) -> float:
@@ -368,6 +472,7 @@ def _place_group(
     name_to_row: Dict[str, int],
     coords: np.ndarray,
     template_names_of: List[str],
+    second_shell: Optional[Tuple[str, np.ndarray]] = None,
 ) -> Optional[np.ndarray]:
     """Positions for the hydrogens on one parent, by the first strategy that applies.
 
@@ -380,7 +485,8 @@ def _place_group(
        centre whose template is missing a real substituent -- a peptide-linked backbone
        nitrogen being the common case.
     3. **Axis frame.** For a single-neighbour centre, the template geometry carried over
-       about the one bond, leaving the rotation about it for the scan to choose.
+       about the one bond, in the frame ``second_shell`` completes (see
+       :func:`_axis_frame_placement`).
 
     Returns None when none applies, so the caller can count the hydrogen as undetermined
     rather than putting it somewhere arbitrary.
@@ -462,6 +568,7 @@ def _place_group(
             parent_position,
             neighbour_positions[0],
             h_names,
+            second_shell,
         )
         if positions is None:
             return None
@@ -624,6 +731,11 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
                     n_unplaceable += len(group)
                     continue
 
+                second_shell = None
+                if heavy_bonded == 1:
+                    _, n2 = _frame_atoms(topology, parent_row, altloc)
+                    if n2 >= 0 and name_to_row.get(names[n2]) == n2:
+                        second_shell = (names[n2], coords[n2])
                 placed = _place_group(
                     template,
                     parent_name,
@@ -639,15 +751,15 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
                         for n in template["heavy_adjacency"].get(parent_name, [])
                         if n in name_to_row
                     ],
+                    second_shell=second_shell,
                 )
                 if placed is None:
                     n_unplaceable += len(group)
                     continue
 
-                # One free-torsion group per parent with a single heavy neighbour: its
-                # hydrogens rotate together about that one bond.
+                # The hydrogens of one parent rotate together, about its one bond.
                 group_id = -1
-                if heavy_bonded == 1:
+                if _free_torsion(heavy_bonded, bool(template["planar_h"] & set(group))):
                     group_id = next_group
                     next_group += 1
 
@@ -696,6 +808,29 @@ def _conformer_rows(rows: np.ndarray, altlocs: np.ndarray):
         return [("", rows)]
     shared = np.isin(residue_altlocs, ["", " "])
     return [(altloc, rows[shared | (residue_altlocs == altloc)]) for altloc in unique]
+
+
+def _free_torsion(heavy_neighbours: int, in_plane: bool) -> bool:
+    """Whether the hydrogens on a parent rotate about its bond to its one neighbour.
+
+    The one rule :func:`plan_hydrogens` (which groups to scan) and
+    :func:`hydrogen_frames` (which groups carry a refinable torsion) share.
+
+    Parameters
+    ----------
+    heavy_neighbours : int
+        Heavy atoms bonded to the parent.
+    in_plane : bool
+        Whether a plane restraint contains one of its hydrogens.
+
+    Returns
+    -------
+    bool
+        True for a single heavy neighbour without a planar hydrogen: hydroxyl, thiol,
+        methyl and ammonium rotate, while the conjugated NH2 of ASN, GLN and ARG, held
+        in its plane, does not.
+    """
+    return heavy_neighbours == 1 and not in_plane
 
 
 def _alignment_for(
@@ -1082,7 +1217,9 @@ def hydrogen_frames(topology) -> HydrogenFrames:
     arr = np.array(rows, dtype=np.int64)
     torsion = np.full(len(rows), -1, dtype=np.int64)
     rotation = np.full(len(rows), -1, dtype=np.int64)
-    elements = np.char.upper(np.char.strip(atoms.element.astype(str)))
+    planar = np.zeros(atoms.n_atoms, dtype=bool)
+    for block in atoms.planes.values():
+        planar[block.indices.cpu().numpy().ravel()] = True
     groups = {}
     for i, (h, parent, _, _) in enumerate(rows):
         groups.setdefault((parent, str(altlocs[h])), []).append(i)
@@ -1092,12 +1229,7 @@ def hydrogen_frames(topology) -> HydrogenFrames:
         is_water = str(topology.residues.resname[residue]).strip() == "HOH"
         if len(heavy) == 0 or is_water:
             rotation[members] = group
-        elif len(heavy) == 1 and (
-            (elements[parent] == "C" and len(members) == 3)
-            or elements[parent] in ("O", "S")
-        ):
-            # Planar amide NH2 groups also have one heavy neighbour, but their
-            # orientation is constrained by conjugation rather than freely rotatable.
+        elif _free_torsion(len(heavy), bool(planar[arr[members, 0]].any())):
             torsion[members] = group
     return HydrogenFrames(
         h_row=arr[:, 0],
