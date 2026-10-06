@@ -312,8 +312,8 @@ class DatasetCollection(CrystalDataset):
         data = self._datasets[key]
         if data.I_raw is None:
             raise ValueError(
-                f"Dataset {key!r} carries no intensities; its reflection file had no "
-                f"I/SIGI columns. An intensity-space target needs them on every member."
+                f"Dataset {key!r} carries no intensities (none in its file, or dropped "
+                "by load(french_wilson=False)): intensity-space targets need them."
             )
         return data
 
