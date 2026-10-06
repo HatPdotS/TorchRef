@@ -2210,8 +2210,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         rotation_matrix : torch.Tensor
             3x3 rotation matrix. Should be orthogonal (R^T @ R = I).
         center : torch.Tensor, optional
-            Center of rotation with shape (3,). Defaults to the centroid of all
-            atomic coordinates.
+            Center of rotation with shape (3,), in Å. Defaults to :meth:`get_centroid`.
 
         Returns
         -------
@@ -2223,7 +2222,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         xyz = self.xyz()
         if center is None:
-            center = xyz.mean(dim=0)
+            center = self.get_centroid()
 
         rotation_matrix = rotation_matrix.to(device=xyz.device, dtype=xyz.dtype)
         center = center.to(device=xyz.device, dtype=xyz.dtype)
@@ -2283,14 +2282,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return self
 
     def get_centroid(self) -> torch.Tensor:
-        """
-        Compute the centroid (center of mass) of all atoms.
-
-        Returns
-        -------
-        torch.Tensor
-            Centroid coordinates with shape (3,).
-        """
+        """Return the unweighted mean of all Cartesian coordinates, ``(3,)`` in Å."""
         if not self.ctx.initialized:
             raise RuntimeError("Model must be initialized to compute centroid.")
 
