@@ -75,3 +75,17 @@ def test_a_second_refine_everything_still_moves_the_coordinates(build):
     ref.refine_everything(macro_cycles=1)
 
     assert not torch.equal(ref.model.xyz(), before)
+
+
+@pytest.mark.integration
+def test_column_names_with_an_sf_mmcif_file_are_refused(cif_sf_dir, pdb_dir):
+    """A column choice cannot apply to SF-mmCIF input, so it is an error rather than
+    silently ignored."""
+    with pytest.raises(ValueError, match="column_names"):
+        LBFGSRefinement(
+            data_file=str(cif_sf_dir / "1DAW-sf.cif"),
+            pdb=str(pdb_dir / "1DAW.pdb"),
+            column_names={"F": "FP", "SIGF": "SIGFP"},
+            device=torch.device("cpu"),
+            verbose=0,
+        )

@@ -157,7 +157,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         n_iso_coeff : int, optional
             Number of Chebyshev terms in the scaler's isotropic scale. Default 6.
         column_names : dict, optional
-            Mapping of logical column roles to MTZ column labels.
+            Mapping of logical column roles to MTZ column labels. MTZ input only: an
+            SF-mmCIF ``data_file`` has no columns to choose, so it raises there.
         wavelength : float, optional
             X-ray wavelength of the data in Angstroms. Given, the model includes the
             anomalous f'/f'' and the data may be read as Bijvoet pairs (see
@@ -213,7 +214,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Raises
         ------
         ValueError
-            If ``anomalous=True`` is given without a ``wavelength``.
+            If ``anomalous=True`` is given without a ``wavelength``, or
+            ``column_names`` with a CIF ``data_file``.
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -309,6 +311,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                         anomalous=self.anomalous,
                     )
                 elif data_file.endswith(".cif"):
+                    if column_names:
+                        raise ValueError(
+                            f"column_names selects MTZ columns; {data_file} is "
+                            "SF-mmCIF, which has no column choice to override."
+                        )
                     self.reflection_data.load_cif(data_file, anomalous=self.anomalous)
                 else:
                     raise ValueError(
