@@ -137,7 +137,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         # entry; forward() blends with mobile_mask so the rotated/translated
         # result is discarded for non-mobile atoms).
         safe_idx_np = np.where(idx_list >= 0, idx_list, 0)
-        chain_indices = torch.from_numpy(safe_idx_np).to(device=device)
+        chain_indices = torch.as_tensor(
+            safe_idx_np, dtype=get_int_dtype(), device=device
+        )
 
         # Per-atom weights for the centroid (= rotation center). Defaults
         # to uniform; pass atomic Z (or true masses) to use a mass-weighted
@@ -158,7 +160,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             atom_weights_t = atom_weights_t.reshape(-1).contiguous()
 
         # Per-chain mass-weighted center: only over MOBILE atoms of each chain.
-        mobile_idx = torch.from_numpy(idx_list[mobile_arr]).to(device=device)
+        mobile_idx = torch.as_tensor(
+            idx_list[mobile_arr], dtype=get_int_dtype(), device=device
+        )
         mobile_xyz = original_xyz_t[mobile_t]
         mobile_w = atom_weights_t[mobile_t]
         chain_centers = torch.zeros((n_chains, 3), dtype=dtype, device=device)

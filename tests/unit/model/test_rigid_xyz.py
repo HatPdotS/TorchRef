@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from torchref.base.alignment.rotation import rotation_matrix_euler_xyz
+from torchref.config import get_int_dtype
 from torchref.model import ModelFT, RigidXYZTensor
 from torchref.model.parameter_wrappers import MixedTensor
 
@@ -24,6 +25,11 @@ class TestRigidXYZTensor:
         assert m is fresh_modelft
         assert isinstance(m.xyz, RigidXYZTensor)
         assert m.xyz.n_chains == n_chains_pdb
+
+    @pytest.mark.unit
+    def test_chain_indices_take_the_configured_int_dtype(self, fresh_modelft):
+        fresh_modelft.use_rigid_xyz()
+        assert fresh_modelft.xyz.chain_indices.dtype == get_int_dtype()
 
     @pytest.mark.unit
     def test_identity_reconstruction(self, fresh_modelft):
