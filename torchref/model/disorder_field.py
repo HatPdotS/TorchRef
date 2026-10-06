@@ -347,24 +347,15 @@ MODE_SETS = {
 class ModeCovariancePayload(NodePayload):
     """A node carries the covariance of its displacement modes; TLS is one mode set.
 
-    Instead of storing an ADP and averaging it, store the *displacement field* the node
-    represents and take its covariance. With ``q`` modes ``Psi(r) = [psi_1(r) ... psi_q(r)]``
-    the node's disorder is ``u(r) = Psi(r) c`` for a random coefficient vector ``c``, and
-    the ADP an atom at displacement ``r`` receives is::
+    With ``q`` modes ``Psi(r) = [psi_1(r) ... psi_q(r)]`` at displacement ``r`` from the
+    node, an atom there receives::
 
-        U(r) = Psi(r) Sigma Psi(r)^T,   Sigma = <c c^T>,   Sigma = L L^T
+        U(r) = Psi(r) Sigma Psi(r)^T,   Sigma = L L^T
 
-    Three properties follow, and they are the whole reason for the form:
-
-    * **Positive-semidefinite at every r, unconditionally**, because
-      ``U = (Psi L)(Psi L)^T``. An arbitrary polynomial in ``r`` carries no such
-      guarantee and goes indefinite somewhere --- and "somewhere" is the edge of the
-      node's region, exactly where the softmax weights have not yet decayed.
-    * **Spatial variation becomes intra-node and smooth by construction.** A constant-U
-      node can only express variation by having neighbours, so detail costs nodes, and
-      every added node is another kernel that can collapse onto a single atom. Here one
-      node's U already varies across its whole region, and it cannot spike.
-    * ``U(r)`` is **linear in Sigma**, so fitting stays a linear problem.
+    positive-semidefinite at every ``r`` by construction and linear in ``Sigma``; with
+    the rigid set it is exactly TLS, ``T + A S + S^T A^T + A L A^T`` where the columns
+    of ``A`` are ``e_i x r``. ``r`` is first divided by the median nearest-neighbour
+    node distance, detached, so the optimiser cannot rescale its own modes.
 
     Mode sets, from :data:`MODE_SETS`, with ``q(q+1)/2`` parameters per node:
 
@@ -380,26 +371,9 @@ class ModeCovariancePayload(NodePayload):
                                       shear and extension
     ==================  ===  =======  =========================================
 
-    With the rigid set this reproduces ``U(r) = T + A S + S^T A^T + A L A^T`` identically,
-    ``A`` being the matrix whose columns are ``e_i x r``: the classical TLS expression is
-    what ``Psi Sigma Psi^T`` expands to when the modes are three translations and three
-    rotations. Releasing the antisymmetry of the gradient -- the ``dilation`` and
-    ``deviatoric`` rungs -- gives domains that breathe and shear as well as rotate.
-
-    Displacements are divided by the node layout's own length scale (median
-    nearest-neighbour node distance, detached) before the modes are built. That is pure
-    conditioning: without it the gradient modes carry a factor of the domain size against
-    the translations, and the curvature ratio between them runs to several hundred. It
-    is detached and derived from the layout for the reason
-    :class:`~torchref.refinement.targets.adp.NodeSmoothnessTarget` uses the same
-    quantity: the length scale is a property of where the nodes are, not something the
-    optimiser should tune.
-
-    Memory scales as ``n_atoms * k * q^2`` for the gathered node factors, so this payload
-    is meant for the small-``K`` regime it was designed for (a handful to a few dozen
-    expressive nodes, with ``k_neighbors`` set to ``K``). At ``q = 12`` and
-    ``k = 8`` that is ~90 MB for 20k atoms; a large ``K`` *and* a large ``k`` together
-    is what to avoid.
+    Memory scales as ``n_atoms * k * q^2`` for the gathered node factors, ~90 MB for 20k
+    atoms at ``q = 12`` and ``k = 8``: keep ``K`` small (a handful to a few dozen nodes,
+    ``k_neighbors`` set to ``K``) rather than ``K`` and ``k`` both large.
 
     Parameters
     ----------
