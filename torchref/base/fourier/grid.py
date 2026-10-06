@@ -7,11 +7,8 @@ the sizing rule.
 
 import torch
 
+from torchref.base.coordinates.transforms_torch import fractional_to_cartesian_torch
 from torchref.config import dtypes, get_default_device
-from torchref.base.coordinates.transforms_torch import (
-    fractional_to_cartesian_torch,
-    get_fractional_matrix,
-)
 
 
 def get_real_grid(cell=None, fractional_matrix=None, *, gridsize, device=None):
@@ -29,7 +26,8 @@ def get_real_grid(cell=None, fractional_matrix=None, *, gridsize, device=None):
         :meth:`~torchref.symmetry.cell.Cell.compute_grid_size`.
     device : torch.device or str, optional
         Device for tensor placement. If None, inferred from ``fractional_matrix``
-        or ``cell`` (whichever tensor is provided); falls back to CPU.
+        or ``cell`` (whichever tensor is provided); falls back to torchref's default
+        device (:func:`torchref.config.get_default_device`).
 
     Returns
     -------
