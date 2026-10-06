@@ -25,6 +25,7 @@ from torchref.io.ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMSt
 if TYPE_CHECKING:
     import torch
 
+    from torchref.io.datasets.reflection_data import ReflectionData
     from torchref.model.model_collection import ModelCollection
     from torchref.model.model_ft import ModelFT
 
