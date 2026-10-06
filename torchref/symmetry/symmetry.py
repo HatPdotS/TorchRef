@@ -82,7 +82,7 @@ def find_fft_friendly_size(n: int, divisibility: int = 1) -> int:
     Returns
     -------
     int
-        131 gives 135; 131 at divisibility 2 gives 160.
+        131 gives 135; 131 at divisibility 2 gives 144.
     """
     candidate = n
     if candidate % divisibility != 0:
