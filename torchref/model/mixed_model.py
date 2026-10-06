@@ -207,12 +207,12 @@ class MixedModel(DeviceMovementMixin, nn.Module):
 
     @property
     def inv_fractional_matrix(self) -> torch.Tensor:
-        """Inverse fractionalization (orthogonalization) matrix."""
+        """``(3, 3)`` fractionalization matrix B^-1 (Cartesian -> fractional)."""
         return self.cell.inv_fractional_matrix.to(dtype=self.dtype_float)
 
     @property
     def fractional_matrix(self) -> torch.Tensor:
-        """Fractionalization matrix."""
+        """``(3, 3)`` orthogonalization matrix B (fractional -> Cartesian)."""
         return self.cell.fractional_matrix.to(dtype=self.dtype_float)
 
     def setup_grid(self, max_res=None, gridsize=None):

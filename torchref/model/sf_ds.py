@@ -120,13 +120,13 @@ class SfDS(DeviceMovementMixin, nn.Module):
 
     @property
     def fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Fractionalization matrix from the cell."""
+        """``(3, 3)`` orthogonalization matrix B (fractional -> Cartesian)."""
         cell = self.ctx.cell
         return None if cell is None else cell.fractional_matrix
 
     @property
     def inv_fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Orthogonalization matrix from the cell."""
+        """``(3, 3)`` fractionalization matrix B^-1 (Cartesian -> fractional)."""
         cell = self.ctx.cell
         return None if cell is None else cell.inv_fractional_matrix
 

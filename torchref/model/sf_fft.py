@@ -117,7 +117,8 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
     @property
     def fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Fractionalization matrix from the cell, on this module's device/dtype."""
+        """``(3, 3)`` orthogonalization matrix B (fractional -> Cartesian), on this
+        module's device/dtype."""
         cell = self.ctx.cell
         if cell is None:
             return None
@@ -128,7 +129,8 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
     @property
     def inv_fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Orthogonalization matrix from the cell, on this module's device/dtype."""
+        """``(3, 3)`` fractionalization matrix B^-1 (Cartesian -> fractional), on this
+        module's device/dtype."""
         cell = self.ctx.cell
         if cell is None:
             return None
