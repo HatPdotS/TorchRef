@@ -54,7 +54,6 @@ from .xray import (
     MLXrayTarget,
     NLLBetaXrayTarget,
     NLLXrayTarget,
-    RiceXrayTarget,
     SigmaAXrayTarget,
     UnitWeightK1XrayTarget,
     XrayTarget,
@@ -81,7 +80,6 @@ __all__ = [
     "MLFullXrayTarget",
     "LeastSquaresXrayTarget",
     "UnitWeightK1XrayTarget",
-    "RiceXrayTarget",
     "create_xray_target",
     # Collection (multi-dataset) targets
     "CollectionDifferenceTarget",

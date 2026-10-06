@@ -37,9 +37,6 @@ _DEFAULT_RTOL = 1e-3
 # (e.g. ML's polynomial Bessel) need looser bounds. The first entry is
 # atol, second is rtol.
 _TARGET_TOLERANCES: Dict[str, Tuple[float, float]] = {
-    # `xray/rice` had a loose tolerance here for the polynomial Bessel approximation. The
-    # `rice` mode is no longer selectable (it is a private target with no Triton path), so
-    # the row is gone rather than kept as a tolerance for a name nothing can produce.
     "geometry/nonbonded": (5e-3, 5e-4),      # atomic-add scatter on N pairs
     "geometry/planarity": (1e-2, 1e-3),      # SVD/eigh near-degenerate plane normals
     "geometry/ramachandran": (5e-3, 5e-4),   # bilinear interp tolerance

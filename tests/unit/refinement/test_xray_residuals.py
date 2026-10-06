@@ -19,8 +19,7 @@ from torchref.base.targets.xray_likelihoods import _masked_sum
 from torchref.refinement.targets.xray._specs import XRAY_TARGETS
 from torchref.refinement.targets.xray.factory import create_xray_target
 
-#: Every selectable row. ``rice`` is deliberately absent from the table (it is private),
-#: and is covered through :class:`RiceXrayTarget` directly below.
+#: Every selectable row.
 ALL_MODES = list(XRAY_TARGETS.names)
 
 
@@ -283,25 +282,6 @@ def test_ml_full_parity_cache_serves_both_views(refinement):
         ("work", refinement.reflection_data.work.n),
         ("all", len(refinement.reflection_data.hkl)),
     }
-
-
-@pytest.mark.integration
-def test_private_rice_row_has_residuals(refinement):
-    """``rice`` is not in the taxonomy but is still constructed directly by
-    ``experimental/alignment/rigid_body.py``, so it carries the seam too."""
-    from torchref.refinement.targets.xray.rice import RiceXrayTarget
-
-    t = RiceXrayTarget(
-        data=refinement.reflection_data,
-        model=refinement.model,
-        scaler=refinement.scaler,
-        use_set="work",
-    )
-    sub = t._subset()
-    with torch.no_grad():
-        fwd = t.forward()
-        summed = _masked_sum(t.residuals().index_select(0, sub.indices))
-    torch.testing.assert_close(summed, fwd, rtol=1e-5, atol=1e-5)
 
 
 # =====================================================================

@@ -14,7 +14,6 @@ from .ml_full import MLFullXrayTarget
 from .ml_noalpha import MLNoAlphaXrayTarget
 from .nll import NLLXrayTarget
 from .nll_beta import NLLBetaXrayTarget
-from .rice import RiceXrayTarget
 from .observable import IntensityObservableMixin, NLLIntensityXrayTarget
 from .sigma_a import AlphaCentredMixin, SigmaALossInputs, SigmaAXrayTarget
 
@@ -35,7 +34,5 @@ __all__ = [
     # least squares
     "LeastSquaresXrayTarget",
     "UnitWeightK1XrayTarget",
-    # private, non-selectable: kept for the MR aligner only (see its docstring)
-    "RiceXrayTarget",
     "create_xray_target",
 ]

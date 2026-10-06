@@ -76,19 +76,6 @@ class TestNLLXrayTarget:
         # NLL can be negative depending on normalization
 
 
-@pytest.mark.unit
-class TestRiceXrayTarget:
-    """Test RiceXrayTarget."""
-
-    def test_rice_target_initialization(self):
-        """Test RiceXrayTarget initialization."""
-        from torchref.refinement.targets import RiceXrayTarget
-
-        target = RiceXrayTarget()
-        assert target._model is None
-        assert target._data is None
-
-
 # =============================================================================
 # Geometry Target Tests
 # =============================================================================

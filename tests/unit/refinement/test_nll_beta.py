@@ -289,15 +289,15 @@ def test_rice_has_no_intensity_row():
     row pairs a Rice class with ``observable="intensity"`` it is a modelling error, not a
     new feature -- so pin it here rather than discovering it from a bad refinement.
     """
-    from torchref.refinement.targets.xray import RiceXrayTarget, SigmaAXrayTarget
+    from torchref.refinement.targets.xray import SigmaAXrayTarget
     from torchref.refinement.targets.xray._specs import XRAY_TARGETS
 
     for spec in XRAY_TARGETS.specs:
         if spec.observable != "intensity":
             continue
-        assert not issubclass(spec.target_cls, (RiceXrayTarget, SigmaAXrayTarget)), (
-            f"{spec.name} pairs an amplitude distribution with intensities"
-        )
+        assert not issubclass(
+            spec.target_cls, SigmaAXrayTarget
+        ), f"{spec.name} pairs an amplitude distribution with intensities"
 
 
 def test_only_the_estimator_backed_rows_own_an_estimator():
@@ -402,18 +402,6 @@ def test_rice_with_sigma_obs_is_not_offered():
     assert "rice" not in XRAY_TARGETS.names
     with pytest.raises(ValueError, match="Unknown X-ray target mode"):
         XRAY_TARGETS.by_name("rice")
-    # And no surviving ROW maps to the Rice-at-sigma_obs class. That class still exists --
-    # `RiceXrayTarget`, kept private for the MR aligner, which has no test coverage of its
-    # own so repointing it would be an untested numerical change -- but it must not be
-    # selectable. This replaces a check on the spec table's `distribution`/`variance`
-    # columns, which existed only to drive dispatch and were removed with it.
-    from torchref.refinement.targets.xray import RiceXrayTarget
-
-    for spec in XRAY_TARGETS.specs:
-        assert spec.target_cls is not RiceXrayTarget, (
-            f"{spec.name} makes the private Rice-at-sigma_obs target selectable again"
-        )
-        assert not issubclass(spec.target_cls, RiceXrayTarget), spec.name
 
 
 def test_finite_and_positive_variance_on_degenerate_input():
