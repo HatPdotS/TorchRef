@@ -217,6 +217,21 @@ def test_no_atom_is_in_contact_with_its_own_image(model_1daw):
     assert float((pos2 - pos1).norm(dim=1)[own].min()) > nb.SPECIAL_POSITION_CUTOFF
 
 
+def test_alternates_do_not_meet_across_a_crystal_contact(pdb_dir):
+    """3K7M models waters as alternates across crystal contacts (HOH 969 A against
+    HOH 1049 B 1.86 A away). As inside the asymmetric unit, two different altlocs are
+    never a contact, image pairs included."""
+    model = Model(verbose=0, device=torch.device("cpu"))
+    model.load_pdb(str(pdb_dir / "3K7M.pdb"))
+    vdw = model.restraints.restraints["vdw"]
+    altloc = np.char.strip(model.restraints.topology.atoms.altloc.astype(str))
+    i, j = vdw["indices"].T.cpu().numpy()
+    image = is_symmetry_image(vdw["symop_indices"], vdw["cell_offsets"]).cpu().numpy()
+    assert (image & (altloc[i] != "") & (altloc[j] != "")).any()
+    mixed = (altloc[i] != "") & (altloc[j] != "") & (altloc[i] != altloc[j])
+    assert not mixed.any()
+
+
 def test_riding_h_candidates_are_scored_near_their_heavy_contact(model_1daw):
     """An H candidate comes from a heavy pair closer than the cutoff, so with the image
     on the right atom it lies within the cutoff plus two X-H bonds."""

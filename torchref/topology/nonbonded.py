@@ -814,13 +814,13 @@ def filter_pairs(
         same_res_t = torch.tensor(same_res, dtype=torch.bool, device=device)
         keep &= ~(same_res_t & is_intra_asu)
 
-    # Altloc compatibility – intra-ASU only
+    # Two different alternates never meet, across a crystal contact either:
+    # alternates modelled there share labels, as gemmi's neighbour search assumes.
     altloc = topology.atoms.altloc
     alt_i = altloc[ai_np]
     alt_j = altloc[aj_np]
     incompat = (alt_i != " ") & (alt_j != " ") & (alt_i != alt_j)
-    incompat_t = torch.tensor(incompat, dtype=torch.bool, device=device)
-    keep &= ~(incompat_t & is_intra_asu)
+    keep &= ~torch.tensor(incompat, dtype=torch.bool, device=device)
 
     return keep
 
