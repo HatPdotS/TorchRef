@@ -493,7 +493,7 @@ class Symmetry(DeviceMixin):
         # from the float directly: 1/3 is not representable in float32, so
         # ``Fraction(float)`` would need a tolerance where this is exact.
         numerators = torch.round(
-            self.translations.detach().cpu().double() * _TRANSLATION_DENOMINATOR
+            self.translations.detach().cpu() * _TRANSLATION_DENOMINATOR
         ).to(get_int_dtype())
 
         for op_numerators in numerators.tolist():
