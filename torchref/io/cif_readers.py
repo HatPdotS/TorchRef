@@ -24,6 +24,11 @@ import pandas as pd
 #: :meth:`RestraintCIFReader._filter_by_comp`, so it never reaches a caller.
 _SOURCE_BLOCK_COLUMN = "_source_block"
 
+#: Tags read as sigma(F), in order of preference, for merged and Bijvoet-pair
+#: amplitudes alike. ``F_squared_sigma`` is sigma(F^2) and is read with the
+#: intensities.
+_SIGMA_F_TAGS = ("_refln.F_meas_sigma_au", "_refln.F_meas_sigma", "_refln.SIGF-obs")
+
 
 class CIFReader:
     """
@@ -703,14 +708,7 @@ class ReflectionCIFReader:
                 )
             else:
                 sigF, sigma_F_obs_key = self._extract_numeric(
-                    refln_df,
-                    [
-                        "_refln.F_meas_sigma_au",
-                        "_refln.F_meas_sigma",
-                        "_refln.F_squared_sigma",
-                        "_refln.SIGF-obs",
-                    ],
-                    target_type="float",
+                    refln_df, _SIGMA_F_TAGS, target_type="float"
                 )
                 # Same sigma for both mates when per-mate sigmas are unavailable.
                 result["_sigF_plus"] = sigF
@@ -739,20 +737,12 @@ class ReflectionCIFReader:
                     "_refln.F_meas",
                     "_refln.pdbx_F_plus",
                     "_refln.F-obs",
-                    "_refln.F_squared_meas",
                 ],
                 target_type="float",
             )
             result["F_obs_key"] = F_obs_key
             result["sigma_F_obs"], sigma_F_obs_key = self._extract_numeric(
-                refln_df,
-                [
-                    "_refln.F_meas_sigma_au",
-                    "_refln.F_meas_sigma",
-                    "_refln.F_squared_sigma",
-                    "_refln.SIGF-obs",
-                ],
-                target_type="float",
+                refln_df, _SIGMA_F_TAGS, target_type="float"
             )
             result["sigma_F_obs_key"] = sigma_F_obs_key
 
@@ -803,6 +793,7 @@ class ReflectionCIFReader:
                     refln_df,
                     [
                         "_refln.intensity_sigma",
+                        "_refln.F_squared_sigma",
                         "_refln.I_sigma",
                         "_refln.SIGI-obs",
                         "_refln.pdbx_I_sigma",
@@ -831,6 +822,7 @@ class ReflectionCIFReader:
                 refln_df,
                 [
                     "_refln.intensity_meas",
+                    "_refln.F_squared_meas",
                     "_refln.I_meas",
                     "_refln.pdbx_I_plus",
                     "_refln.I-obs",
@@ -843,6 +835,7 @@ class ReflectionCIFReader:
                 refln_df,
                 [
                     "_refln.intensity_sigma",
+                    "_refln.F_squared_sigma",
                     "_refln.I_sigma",
                     "_refln.pdbx_I_plus_sigma",
                     "_refln.SIGI-obs",
