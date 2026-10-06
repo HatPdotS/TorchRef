@@ -754,6 +754,12 @@ def exclusion_set_to_hash(
     return torch.tensor(hashes, dtype=torch.long, device=device)
 
 
+#: An atom whose own symmetry image lies closer than this, in Å, sits on a special
+#: position: the image is the atom itself, not a contact. gemmi's ContactSearch
+#: ``special_pos_cutoff`` defaults to the same value.
+SPECIAL_POSITION_CUTOFF = 0.8
+
+
 def filter_pairs(
     pair_atom_i: torch.Tensor,
     pair_atom_j: torch.Tensor,
@@ -761,13 +767,18 @@ def filter_pairs(
     identity_combo: int,
     excl_hash: torch.Tensor,
     max_idx: int,
+    cart_pos: torch.Tensor,
+    n_combos: int,
     topology,
     inter_residue_only: bool = True,
 ) -> torch.Tensor:
-    """Apply exclusion, residue, and altloc filters. Returns keep mask.
+    """Apply exclusion, residue, altloc and special-position filters. Returns keep mask.
 
     Residues are the topology's ``(chain, resseq, icode)`` nodes, so atoms of residues
-    100 and 100A are in different residues.
+    100 and 100A are in different residues. ``cart_pos`` is the atom-major image table
+    of :func:`assign_to_grid` (entry ``atom * n_combos + combo``), from which an atom's
+    distance to its own image is read: below :data:`SPECIAL_POSITION_CUTOFF` that pair
+    is dropped.
     """
     device = pair_atom_i.device
     N = len(pair_atom_i)
@@ -785,6 +796,14 @@ def filter_pairs(
         ins = ins.clamp(max=len(excl_hash) - 1)
         is_excluded = excl_hash[ins] == pair_hash
         keep &= ~(is_excluded & is_intra_asu)
+
+    # An atom against its own image within the cutoff: the atom on a special position.
+    self_image = (pair_atom_i == pair_atom_j) & ~is_intra_asu
+    if bool(self_image.any()):
+        rows = self_image.nonzero(as_tuple=True)[0]
+        entry = pair_atom_i[rows] * n_combos
+        shift = cart_pos[entry + pair_combo_j[rows]] - cart_pos[entry + identity_combo]
+        keep[rows[shift.norm(dim=1) < SPECIAL_POSITION_CUTOFF]] = False
 
     # Same-residue filter – intra-ASU only
     ai_np = pair_atom_i.cpu().numpy()
@@ -953,7 +972,7 @@ def build_vdw_restraints_gpu(
     keep = filter_pairs(
         pair_atom_i, pair_atom_j, pair_combo_j,
         identity_combo, excl_hash, max_idx,
-        topology, inter_residue_only,
+        cart_pos, M, topology, inter_residue_only,
     )
 
     pair_atom_i = pair_atom_i[keep]

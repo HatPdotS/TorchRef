@@ -196,6 +196,27 @@ def test_production_builder_keeps_its_contacts_under_a_lattice_shift(model_1daw)
     )
 
 
+def test_no_atom_is_in_contact_with_its_own_image(model_1daw):
+    """HOH 392 sits on a two-fold: its image is the atom itself, not a 0 A clash. Only
+    an atom's genuine contacts with its own images, beyond gemmi's 0.8 A
+    special-position cutoff, stay in the list."""
+    vdw = model_1daw.restraints.restraints["vdw"]
+    cell, sg = model_1daw.cell, model_1daw.spacegroup
+    pos1, pos2 = nonbonded_pair_positions(
+        model_1daw.xyz().detach(),
+        vdw["indices"],
+        vdw["symop_indices"],
+        vdw["cell_offsets"],
+        sg.matrices,
+        sg.translations,
+        cell.fractional_matrix,
+        cell.inv_fractional_matrix,
+    )
+    own = vdw["indices"][:, 0] == vdw["indices"][:, 1]
+    assert own.sum() > 10
+    assert float((pos2 - pos1).norm(dim=1)[own].min()) > nb.SPECIAL_POSITION_CUTOFF
+
+
 def test_riding_h_candidates_are_scored_near_their_heavy_contact(model_1daw):
     """An H candidate comes from a heavy pair closer than the cutoff, so with the image
     on the right atom it lies within the cutoff plus two X-H bonds."""
