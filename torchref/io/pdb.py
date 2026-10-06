@@ -11,6 +11,7 @@ not in columns, so a DataFrame rebuilt from scratch loses them and
 :func:`write` then emits no CRYST1 record.
 """
 
+import re
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -271,8 +272,9 @@ def load_as_dataframe(
         "charge",
     ]
 
-    # serial and resseq stay text until decoded below, so that a hybrid-36 value
-    # cannot give the ATOM and ANISOU merge keys different dtypes.
+    # serial, resseq and charge stay text until decoded below, so that a hybrid-36
+    # value cannot give the ATOM and ANISOU merge keys different dtypes and a charge
+    # column holding only sign-first values ('-1') is not read as floats.
     pdb = pd.read_fwf(
         filepath,
         names=names,
@@ -281,7 +283,7 @@ def load_as_dataframe(
         skipfooter=skipfooter,
         keep_default_na=False,
         na_values=[""],
-        dtype={"serial": str, "resseq": str},
+        dtype={"serial": str, "resseq": str, "charge": str},
     )
     pdb["anisou_flag"] = False
 
@@ -369,16 +371,7 @@ def load_as_dataframe(
         ["x", "y", "z", "occupancy", "tempfactor"]
     ].astype(float)
     pdb[["altloc", "icode"]] = pdb[["altloc", "icode"]].fillna("")
-    pdb["charge"] = (
-        pdb["charge"]
-        .astype(str)
-        .str.strip("+")
-        .str.replace("1-", "-1")
-        .str.replace("2-", "-2")
-        .astype(float)
-        .fillna(0)
-        .astype(int)
-    )
+    pdb["charge"] = [_parse_charge(text) for text in pdb["charge"]]
     _require_elements(pdb, filepath, "columns 77-78")
     pdb["element"] = pdb["element"].astype(str).str.strip().str.capitalize()
     pdb["index"] = np.arange(pdb.shape[0]).astype(int)
@@ -656,9 +649,30 @@ def _hy36_decode(text: str, width: int) -> int:
 
 
 def _format_charge(charge) -> str:
-    """Formal charge for columns 79-80: blank when neutral, else ``+1`` / ``-2``."""
+    """Formal charge for columns 79-80: blank when neutral, else ``2+`` / ``1-``."""
     charge = 0 if pd.isna(charge) else int(charge)
-    return f"{charge:+d}" if charge else ""
+    return f"{abs(charge)}{'-' if charge < 0 else '+'}" if charge else ""
+
+
+def _parse_charge(text) -> int:
+    """Formal charge in columns 79-80; inverse of :func:`_format_charge`.
+
+    Reads the wwPDB digit-then-sign form (``2-``) and, as gemmi does, the
+    sign-first ``-2`` and an unsigned ``2``; a blank field is neutral.
+
+    Raises
+    ------
+    ValueError
+        If the field holds anything else.
+    """
+    text = _text(text)
+    match = re.fullmatch(r"([+-]?)(\d)([+-]?)", text)
+    if match is None:
+        if text:
+            raise ValueError(f"{text!r} is not a formal charge")
+        return 0
+    before, digit, after = match.groups()
+    return -int(digit) if "-" in before + after else int(digit)
 
 
 def _format_atom_identity(row) -> str:

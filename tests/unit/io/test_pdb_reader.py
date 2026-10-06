@@ -125,3 +125,27 @@ def test_overflowing_serials_and_residue_numbers_are_written_in_hybrid_36(
     assert tuple(back[["serial", "resseq"]].iloc[-1]) == (100000, 10000)
     water = gemmi.read_structure(path)[0][-1][-1]
     assert (water[0].serial, water.seqid.num) == (100000, 10000)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["3-", "-3"])
+def test_charges_are_read_in_either_sign_order(pdb_dir, tmp_path, field):
+    path = _write_edited(
+        pdb_dir,
+        tmp_path,
+        lambda line: line[:78] + field if line.startswith(LAST_ATOM) else line,
+    )
+    assert pdb.load_as_dataframe(path)["charge"].iloc[-1] == -3
+
+
+@pytest.mark.unit
+def test_charges_are_written_digit_first(pdb_dir, tmp_path):
+    table = pdb.load_as_dataframe(str(pdb_dir / "1DAW.pdb"))
+    table.loc[table.index[-1], "charge"] = -1
+    path = str(tmp_path / "charged.pdb")
+    pdb.write(table, path)
+
+    with open(path) as f:
+        last = [line for line in f if line.startswith(("ATOM", "HETATM"))][-1]
+    assert last[78:80] == "1-"
+    assert pdb.load_as_dataframe(path)["charge"].iloc[-1] == -1
