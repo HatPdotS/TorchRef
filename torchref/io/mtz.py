@@ -682,6 +682,20 @@ def _np(t: Optional[torch.Tensor]) -> Optional[np.ndarray]:
     return None if t is None else t.detach().cpu().numpy()
 
 
+def _rfree_column(data: "ReflectionData") -> np.ndarray:
+    """The R-free flags as written, per row: 1 = work, 0 = free, -1 = excluded.
+
+    Excluded rows are those whose input flag was negative or missing
+    (``masks["flagged_initial"]`` False); written as free, they would join the
+    test set on the next read.
+    """
+    flags = (_np(data.rfree_flags) != 0).astype(int)
+    flagged_initial = data.masks.get("flagged_initial")
+    if flagged_initial is not None:
+        flags[~_np(flagged_initial)] = -1
+    return flags
+
+
 def _amplitude_phase(coeff: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
     """``|c|`` and ``arg(c)`` in degrees: a negative coefficient becomes a 180° flip."""
     return _np(coeff.abs()), _np(torch.rad2deg(torch.angle(coeff)))
@@ -733,10 +747,10 @@ def _merged_table(data, fcalc):
         table["I-obs"] = _np(data.I)
         if data.I_sigma is not None:
             table["SIGI-obs"] = _np(data.I_sigma)
-    # R-free-flags is 1 = work, 0 = free; the optional held-out validation set is
-    # a separate Validation_flag column so external tools keep reading R-free-flags.
+    # The optional held-out validation set is a separate Validation_flag column
+    # so external tools keep reading R-free-flags.
     if data.rfree_flags is not None:
-        table["R-free-flags"] = (_np(data.rfree_flags) != 0).astype(int)
+        table["R-free-flags"] = _rfree_column(data)
         if data.validation_flags is not None and bool(data.validation_flags.any()):
             table["Validation_flag"] = (_np(data.validation_flags) != 0).astype(int)
     if fcalc is not None:
@@ -886,10 +900,8 @@ def _anomalous_table(data, fcalc):
             plus_of(sig), minus_of(sig)
         )
     if data.rfree_flags is not None:
-        rfree = _np(data.rfree_flags).astype(int)
-        rf = np.zeros(m, dtype=int)
-        rf[has_minus] = rfree[mi][has_minus]
-        rf[has_plus] = rfree[pi][has_plus]  # both mates share a flag
+        rf = np.full(m, -1, dtype=int)
+        rf[inverse.numpy()] = _rfree_column(data)  # both mates share a flag
         table["R-free-flags"] = rf
     return pd.DataFrame(table)
 
@@ -904,10 +916,11 @@ def write_reflections(
     """Write a :class:`ReflectionData` (and optional model) to an MTZ file.
 
     Labels on disk are the :func:`reflection_table` column names: F-obs,
-    SIGF-obs, I-obs, SIGI-obs, R-free-flags (1 = work, 0 = free) and
-    Validation_flag; with ``fcalc`` also FWT/PHWT (2Fo-Fc), DELFWT/PHDELWT
-    (Fo-Fc) and F-model/PH-model -- the unweighted m = 1, D = 1 coefficients of
-    :func:`~torchref.base.fourier.map_coefficients`, not 2mFo-DFc.
+    SIGF-obs, I-obs, SIGI-obs, R-free-flags (1 = work, 0 = free, -1 = excluded
+    by the input's flags) and Validation_flag; with ``fcalc`` also FWT/PHWT
+    (2Fo-Fc), DELFWT/PHDELWT (Fo-Fc) and F-model/PH-model -- the unweighted
+    m = 1, D = 1 coefficients of :func:`~torchref.base.fourier.map_coefficients`,
+    not 2mFo-DFc.
     R-free-flags is Phenix's label with the CCP4 free value 0, so tell Phenix
     the test-flag value rather than letting it assume 1.
 

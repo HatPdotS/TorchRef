@@ -416,6 +416,35 @@ class TestIHMWriter:
         back = IHMReader(str(out), verbose=0).read_mapping()
         _assert_fixture_timepoints(back)
 
+    def test_refln_status_marks_excluded_reflections(self, mtz_dir, tmp_path):
+        """A reflection the input's flags exclude is written as status x, not f."""
+        import gemmi
+        import numpy as np
+        import reciprocalspaceship as rs
+        import torch
+
+        from torchref.io.datasets.reflection_data import ReflectionData
+        from torchref.io.ihm import IHMReader, IHMWriter
+
+        ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+        flags = ds["FreeR_flag"].to_numpy().copy()
+        flags[:100] = -1
+        ds["FreeR_flag"] = rs.DataSeries(flags, index=ds.index).astype("I")
+        ds.write_mtz(str(tmp_path / "excluded.mtz"))
+        data = ReflectionData(verbose=0)
+        data.load_mtz(str(tmp_path / "excluded.mtz"))
+
+        mc, mapping = IHMReader(str(TEST_IHM_FILE), verbose=0)(
+            max_res=3.0, device=torch.device("cpu")
+        )
+        out = tmp_path / "with_data.cif"
+        IHMWriter(mc, mapping=mapping, datasets={"dark": data}, verbose=0).write(
+            str(out)
+        )
+        status = list(gemmi.cif.read(str(out))["dark"].find_values("_refln.status"))
+        assert status.count("x") == 100
+        assert status.count("f") == np.count_nonzero(flags == 0)
+
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
         import torch

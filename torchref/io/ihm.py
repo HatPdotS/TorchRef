@@ -897,6 +897,8 @@ class IHMWriter:
         Each dataset gets its own CIF data block with cell, spacegroup,
         and a ``_refln`` loop containing HKL, F, σF, and R-free status.
         """
+        from torchref.io.mtz import _rfree_column
+
         doc = gemmi.cif.read(str(filepath))
 
         datasets = self.datasets
@@ -943,7 +945,7 @@ class IHMWriter:
             sigF_np = dataset.F_sigma.detach().cpu().numpy() if has_sigF else None
             I_np = dataset.I.detach().cpu().numpy() if has_I else None
             sigI_np = dataset.I_sigma.detach().cpu().numpy() if has_sigI else None
-            rfree_np = dataset.rfree_flags.detach().cpu().numpy() if has_rfree else None
+            rfree_np = _rfree_column(dataset) if has_rfree else None
 
             # Build tag list
             tags = ["index_h", "index_k", "index_l"]
@@ -971,8 +973,8 @@ class IHMWriter:
                 if has_sigI:
                     row.append(f"{sigI_np[i]:.4f}")
                 if has_rfree:
-                    # CIF convention: 'f'=free, 'o'=working
-                    row.append("f" if int(rfree_np[i]) == 0 else "o")
+                    # _refln.status: o = work, f = free, x = excluded
+                    row.append({1: "o", 0: "f", -1: "x"}[int(rfree_np[i])])
                 loop.add_row(row)
 
             if self.verbose > 0:

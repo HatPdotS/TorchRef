@@ -38,6 +38,24 @@ def cut_data(mtz_dir):
 
 
 @pytest.fixture
+def excluded_mtz(mtz_dir, tmp_path):
+    """1DAW.mtz with FreeR_flag -1 (excluded) on 500 rows."""
+    ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+    flags = ds["FreeR_flag"].to_numpy().copy()
+    flags[np.random.default_rng(0).choice(len(ds), 500, replace=False)] = -1
+    ds["FreeR_flag"] = rs.DataSeries(flags, index=ds.index).astype("I")
+    path = tmp_path / "excluded.mtz"
+    ds.write_mtz(str(path))
+    return path
+
+
+def _load(path):
+    data = ReflectionData(verbose=0)
+    data.load_mtz(str(path))
+    return data
+
+
+@pytest.fixture
 def cut_anomalous_data(mtz_dir, tmp_path):
     stacked = tmp_path / "anom_in.mtz"
     rs.read_mtz(str(mtz_dir / "1DAW.mtz")).stack_anomalous().write_mtz(str(stacked))
@@ -124,3 +142,25 @@ class TestAnomalousLayout:
         np.testing.assert_allclose(
             row["FWT"], abs(2 * F_plus - row["F-model"]), rtol=1e-4
         )
+
+
+class TestExcludedFlags:
+    """Reflections the input's flags exclude stay excluded, not free."""
+
+    @pytest.mark.parametrize("anomalous", [False, True])
+    def test_excluded_rows_survive_a_round_trip(
+        self, excluded_mtz, tmp_path, anomalous
+    ):
+        source = excluded_mtz
+        if anomalous:
+            source = tmp_path / "excluded_anomalous.mtz"
+            rs.read_mtz(str(excluded_mtz)).stack_anomalous().write_mtz(str(source))
+        data = _load(source)
+        n_excluded = int((~data.masks["flagged_initial"]).sum())
+        assert n_excluded >= 500
+
+        out_path = tmp_path / "out.mtz"
+        data.write_mtz(str(out_path), anomalous=anomalous)
+        reloaded = _load(out_path)
+        assert int((~reloaded.masks["flagged_initial"]).sum()) == n_excluded
+        assert reloaded.free.n == data.free.n
