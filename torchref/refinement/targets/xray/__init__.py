@@ -1,9 +1,7 @@
 """X-ray targets: one class per selectable ``--xray-mode``.
 
 The taxonomy and the name-to-class registry are in :mod:`._specs`; the construction entry
-point is :func:`.factory.create_xray_target`. Until 2026-08 four of these rows shared one
-parameterised class that branched on a spec row at runtime; they are now five independent
-classes over three shared loss primitives.
+point is :func:`.factory.create_xray_target`.
 """
 
 from .base import XrayTarget

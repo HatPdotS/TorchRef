@@ -159,7 +159,7 @@ class XrayTargetTable:
                     f"{spec.name} and {by_cls[spec.target_cls].name} both map to "
                     f"{spec.target_cls.__name__}. One class per mode is the invariant this "
                     f"table exists to enforce: a class serving two modes has to branch on "
-                    f"something at runtime, which is what the 2026-08 refactor removed."
+                    f"something at runtime."
                 )
             by_cls[spec.target_cls] = spec
         object.__setattr__(self, "_by_name", lookup)
