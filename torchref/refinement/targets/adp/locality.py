@@ -25,7 +25,10 @@ class ADPLocalityTarget(ADPTarget):
     Proximity-based ADP restraint over each atom's K nearest neighbours.
 
     Built on a spatial cell-list (O(N) memory, O(N·k) time) rather than a full
-    N×N distance matrix, so it scales to arbitrarily large structures.
+    N×N distance matrix, so it scales to arbitrarily large structures. Bonded
+    neighbours are included; SIMU
+    (:class:`~torchref.refinement.targets.adp.ADPSimilarityTarget`) restrains them
+    separately.
 
     Parameters
     ----------
@@ -36,15 +39,10 @@ class ADPLocalityTarget(ADPTarget):
     correlation_length : float, optional
         Weight-decay distance scale (Å), default 5.0. Used **only** by ``stats()``;
         ``forward()`` weights by inverse distance instead.
-    scale : float, optional
-        Default 5.0, and informational only -- ``forward()`` does **not** multiply
-        the loss by it, so it is not a loss-magnitude lever.
     sigma_aniso : float, optional
         Sigma for the deviatoric (anisotropy) channel, used only when anisotropic
         atoms are present. Default 0.5, dimensionless and on the same scale as the
         magnitude channel's fixed 0.5 log-sigma.
-    exclude_bonded : bool, optional
-        Exclude directly bonded atoms. Default is True.
     verbose : int, optional
         Verbosity level. Default is 0.
     """
@@ -56,9 +54,7 @@ class ADPLocalityTarget(ADPTarget):
         model: "Model" = None,
         k_neighbors: int = 50,
         correlation_length: float = 5.0,
-        scale: float = 5.0,
         sigma_aniso: float = 0.5,
-        exclude_bonded: bool = True,
         verbose: int = 0,
         device=None,
     ):
@@ -68,12 +64,10 @@ class ADPLocalityTarget(ADPTarget):
         # sync per access.
         self._k_neighbors = int(k_neighbors)
         self._correlation_length = float(correlation_length)
-        self._scale = float(scale)
-        # This one *is* a buffer, unlike the three above: adp_locality_aniso_math
+        # This one *is* a buffer, unlike the two above: adp_locality_aniso_math
         # takes it as a tensor. It restrains fractional anisotropy dev/B_eq, the
         # analogue of log B_eq, hence the shared 0.5 scale.
         self._register_scalar("_sigma_aniso", float(sigma_aniso))
-        self.exclude_bonded = exclude_bonded
 
         # Cache for neighbor indices and distances
         self._neighbor_indices = None  # (N, k_neighbors)
@@ -81,18 +75,15 @@ class ADPLocalityTarget(ADPTarget):
         self._last_xyz_hash = None
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-        """Absorb ``_k_neighbors``/``_correlation_length``/``_scale`` from older
-        checkpoints. All three are host-side scalars now, so a ``strict=True`` load
-        would reject them as unexpected keys; restore the values instead.
+        """Accept checkpoints that store ``_k_neighbors``/``_correlation_length`` as
+        tensors, restoring their values, and drop a stored ``_scale``, which nothing
+        reads; a ``strict=True`` load would otherwise reject them as unexpected keys.
         """
-        for legacy, cast in (
-            ("_k_neighbors", int),
-            ("_correlation_length", float),
-            ("_scale", float),
-        ):
-            saved = state_dict.pop(prefix + legacy, None)
+        for key, cast in (("_k_neighbors", int), ("_correlation_length", float)):
+            saved = state_dict.pop(prefix + key, None)
             if saved is not None:
-                setattr(self, legacy, cast(saved.item()))
+                setattr(self, key, cast(saved.item()))
+        state_dict.pop(prefix + "_scale", None)
         return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     @property
@@ -110,14 +101,6 @@ class ADPLocalityTarget(ADPTarget):
     @correlation_length.setter
     def correlation_length(self, value: float):
         self._correlation_length = float(value)
-
-    @property
-    def scale(self) -> float:
-        return self._scale
-
-    @scale.setter
-    def scale(self, value: float):
-        self._scale = float(value)
 
     @property
     def sigma_aniso(self) -> float:
@@ -271,7 +254,6 @@ class ADPLocalityTarget(ADPTarget):
             "max_deviation_log": stat(diff.abs().max().item(), VERBOSITY_DETAILED),
             "k_neighbors": stat(self.k_neighbors, VERBOSITY_DEBUG),
             "correlation_length": stat(self.correlation_length, VERBOSITY_DEBUG),
-            "scale": stat(self.scale, VERBOSITY_DEBUG),
             "avg_neighbor_dist": stat(distances.mean().item(), VERBOSITY_DEBUG),
             "max_neighbor_dist": stat(distances.max().item(), VERBOSITY_DEBUG),
             "avg_weight": stat(weights.mean().item(), VERBOSITY_DEBUG),
