@@ -841,16 +841,9 @@ def _alignment_for(
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """Template-to-model transform for one hydrogen-bearing centre.
 
-    Fitted over the parent and its **immediate** heavy neighbours only. That set is the
-    rigid unit which fixes the hydrogen directions: the bond lengths and angles at the
-    parent are library constants, while anything further out sits across a rotatable
-    torsion whose value is the model's, not the template's.
-
-    Reaching one bond further -- as a whole-residue or two-shell fit does -- makes the
-    rotation compromise between the real local geometry and a torsion the model does not
-    share, which lands hydrogens well off their parent. Measured on 7L84 the two-shell
-    fit around ``CB`` aligned to 0.75 A RMSD and put 12% of side-chain hydrogens beyond
-    1.5 A of the atom they belong to.
+    Fitted over the parent and its **immediate** heavy neighbours only: that set is the
+    rigid unit which fixes the hydrogen directions, while anything further out sits
+    across a rotatable torsion whose value is the model's, not the template's.
 
     Returns None when fewer than three neighbours match, which leaves the rotation
     undetermined; the caller then constructs the direction from the bond graph instead.
