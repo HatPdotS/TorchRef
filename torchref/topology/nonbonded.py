@@ -8,10 +8,15 @@ for distance computation. On CPU the pair search itself is a
 k-d tree instead (:func:`find_pairs_kdtree`), with the same output.
 
 All operations run under ``torch.no_grad()`` on whatever device
-the input coordinates live on (CPU or GPU). :func:`vdw_radii_for_elements`
-gives the per-atom radii the contact distances are summed from.
+the input coordinates live on (CPU or GPU).
+
+The contact distance each pair is scored against is :func:`contact_distances`: the sum
+of two per-atom radii (``AtomGraph.vdw_radii``, from :func:`energy_type_table` or, for
+an atom without a typed radius, :func:`vdw_radii_for_elements`), or a hydrogen-bond
+distance where ``AtomGraph.hb_type`` makes the pair a hydrogen bond.
 """
 
+from functools import lru_cache
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -64,6 +69,113 @@ def vdw_radii_for_elements(elements) -> np.ndarray:
     return np.array(
         [radius.get(e, _DEFAULT_VDW_RADIUS) for e in symbols], dtype=np.float64
     )
+
+
+#: Hydrogen-bond roles, as bit flags in ``AtomGraph.hb_type``: ener_lib's ``D`` is a
+#: donor, ``A`` an acceptor and ``B`` both; :data:`HB_HYDROGEN` marks a hydrogen on a
+#: donor, the end of a hydrogen bond that meets the acceptor.
+HB_DONOR = 1
+HB_ACCEPTOR = 2
+HB_HYDROGEN = 4
+
+#: Contact distance in Å of a donor-acceptor pair and of a polar hydrogen against an
+#: acceptor: the energy-minimum distances of ener_lib's ``_lib_hbond`` table for the
+#: backbone pair (``NH1``-``O`` and ``HNH1``-``O``). A radius sum would score every
+#: hydrogen bond as a clash.
+HBOND_DISTANCE = 2.85
+HBOND_H_DISTANCE = 1.85
+
+_HB_ROLES = {"D": HB_DONOR, "A": HB_ACCEPTOR, "B": HB_DONOR | HB_ACCEPTOR}
+
+
+@lru_cache(maxsize=None)
+def energy_type_table() -> Dict[str, Tuple[int, float, float]]:
+    """Contact properties of every CCP4 energy type, from ener_lib.
+
+    Read once from ``torchref/data/ener_lib_atoms.csv``; the returned dict is shared,
+    so do not modify it.
+
+    Returns
+    -------
+    dict
+        ``{energy type: (role, vdw_radius, vdwh_radius)}``: the ``HB_*`` flags of the
+        type's ``hb_type``, its contact radius in Å, and the radius in Å with its
+        hydrogens folded in. A radius ener_lib does not give is NaN.
+    """
+    import csv
+    import os
+
+    from torchref import PATH_TORCHREF_DATA
+
+    table: Dict[str, Tuple[int, float, float]] = {}
+    path = os.path.join(PATH_TORCHREF_DATA, "ener_lib_atoms.csv")
+    with open(path, newline="") as handle:
+        rows = csv.DictReader(line for line in handle if not line.startswith("#"))
+        for row in rows:
+            radii = (float(row[key] or "nan") for key in ("vdw_radius", "vdwh_radius"))
+            table.setdefault(row["type"], (_HB_ROLES.get(row["hb_type"], 0), *radii))
+    return table
+
+
+def hydrogen_roles(parent_roles: torch.Tensor) -> torch.Tensor:
+    """Hydrogen-bond role of hydrogens, from the roles of the atoms they are bonded to.
+
+    ener_lib gives every hydrogen the one type ``H``, so whether a hydrogen bonds is
+    read off its parent: one on a donor is :data:`HB_HYDROGEN`, any other has no role.
+
+    Parameters
+    ----------
+    parent_roles : torch.Tensor
+        ``HB_*`` flags of each hydrogen's parent, shape ``(H,)``, integer.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(H,)``, in ``parent_roles``' dtype.
+    """
+    polar = (parent_roles & HB_DONOR) != 0
+    return torch.where(polar, HB_HYDROGEN, 0).to(parent_roles.dtype)
+
+
+def contact_distances(
+    radii: torch.Tensor, roles: Optional[torch.Tensor], pairs: torch.Tensor
+) -> torch.Tensor:
+    """Minimum contact distance of each atom pair.
+
+    The sum of the two contact radii, except for a hydrogen bond: a donor against an
+    acceptor is held to :data:`HBOND_DISTANCE`, a polar hydrogen against an acceptor to
+    :data:`HBOND_H_DISTANCE`.
+
+    Parameters
+    ----------
+    radii : torch.Tensor
+        Contact radius per atom in Å, shape ``(N,)``.
+    roles : torch.Tensor or None
+        ``HB_*`` flags per atom, shape ``(N,)``, integer; None scores every pair by its
+        radius sum.
+    pairs : torch.Tensor
+        Atom indices into ``radii``, shape ``(P, 2)``.
+
+    Returns
+    -------
+    torch.Tensor
+        Distances in Å, shape ``(P,)``, in ``radii``'s dtype.
+    """
+    i, j = pairs[:, 0], pairs[:, 1]
+    distances = radii[i] + radii[j]
+    if roles is None:
+        return distances
+    role_i, role_j = roles[i], roles[j]
+    accepts_i = (role_i & HB_ACCEPTOR) != 0
+    accepts_j = (role_j & HB_ACCEPTOR) != 0
+
+    def bonds_to_acceptor(flag: int) -> torch.Tensor:
+        return (((role_i & flag) != 0) & accepts_j) | (
+            accepts_i & ((role_j & flag) != 0)
+        )
+
+    distances = torch.where(bonds_to_acceptor(HB_DONOR), HBOND_DISTANCE, distances)
+    return torch.where(bonds_to_acceptor(HB_HYDROGEN), HBOND_H_DISTANCE, distances)
 
 
 # ------------------------------------------------------------------ #
@@ -718,11 +830,12 @@ def build_vdw_restraints_gpu(
     xyz : torch.Tensor
         ``(N, 3)`` Cartesian ASU coordinates in Å.
     vdw_radii : torch.Tensor
-        ``(N,)`` van der Waals radii in Å.
+        ``(N,)`` contact radii in Å.
     cell : Cell
     sg : SpaceGroup
     topology : Topology
-        Residue membership and altlocs for the same-residue and altloc filters.
+        Residue membership and altlocs for the same-residue and altloc filters, and
+        the hydrogen-bond roles (``atoms.hb_type``) :func:`contact_distances` reads.
     exclusion_set : set of (int, int) bonded exclusion pairs
     cutoff : float
         Contact distance cutoff in Angstrom.
@@ -878,10 +991,12 @@ def build_vdw_restraints_gpu(
     symop_indices = op_indices[pair_combo_j]
     pair_cell_offsets = cell_offsets_valid[pair_combo_j]
 
-    min_distances = vdw_radii[pair_atom_i] + vdw_radii[pair_atom_j]
-
     # Build output
     indices = torch.stack([pair_atom_i, pair_atom_j], dim=1)
+    roles = topology.atoms.hb_type
+    min_distances = contact_distances(
+        vdw_radii.to(device), None if roles is None else roles.to(device), indices
+    )
 
     result = {
         "indices": indices,

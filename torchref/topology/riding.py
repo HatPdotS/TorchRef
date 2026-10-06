@@ -923,3 +923,41 @@ def build_h_candidate_pairs(
             f"  H candidate pairs: {len(cand_i)} "
             f"({n_hh} H-H, {len(cand_i)-n_hh} H-heavy, {n_sym} symmetry)"
         )
+
+
+def candidate_contact_distances(
+    h_topo: HydrogenTopology,
+    heavy_radii: torch.Tensor,
+    heavy_roles: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """Minimum contact distance of every candidate pair, for ``cand_min_dist``.
+
+    :func:`~torchref.topology.nonbonded.contact_distances` over the combined
+    ``[heavy | riding H]`` atoms the candidate indices address: each riding hydrogen
+    takes its ``h_vdw_radius``, and the polar-hydrogen role when its parent is a
+    hydrogen-bond donor, so an N-H...O hydrogen bond is not scored as a clash.
+
+    Parameters
+    ----------
+    h_topo : HydrogenTopology
+        Riding topology with candidate pairs built.
+    heavy_radii : torch.Tensor
+        Contact radius per heavy atom in Å, shape ``(N_heavy,)``.
+    heavy_roles : torch.Tensor or None
+        ``AtomGraph.hb_type`` of the heavy atoms, shape ``(N_heavy,)``; None scores
+        every pair by its radius sum.
+
+    Returns
+    -------
+    torch.Tensor
+        Distances in Å, shape ``(P,)``, in ``heavy_radii``' dtype.
+    """
+    from torchref.topology.nonbonded import contact_distances, hydrogen_roles
+
+    radii = torch.cat([heavy_radii, h_topo.h_vdw_radius.to(heavy_radii)])
+    roles = None
+    if heavy_roles is not None:
+        riding = hydrogen_roles(heavy_roles[h_topo.h_parent_idx])
+        roles = torch.cat([heavy_roles, riding])
+    pairs = torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1)
+    return contact_distances(radii, roles, pairs)

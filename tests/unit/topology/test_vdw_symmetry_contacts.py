@@ -218,3 +218,50 @@ def test_riding_h_candidates_are_scored_near_their_heavy_contact(model_1daw):
     assert bool(image.any())
     reach = CUTOFF + 2.0 * float(h_topo.h_bond_length.max()) + _DIST_ATOL
     assert float((pos_j - pos_i).norm(dim=1).max()) < reach
+
+
+def test_hydrogen_bonds_are_held_to_the_hydrogen_bond_distance(model_1daw):
+    """A backbone N...O=C contact, and its riding N-H against the O, are hydrogen
+    bonds: they get the ener_lib hydrogen-bond distance, not a radius sum, so the
+    deposited amide hydrogen bonds carry almost no overlap."""
+    from torchref.topology.nonbonded import HBOND_DISTANCE, HBOND_H_DISTANCE
+    from torchref.topology.riding import candidate_contact_distances
+
+    restraints = model_1daw.restraints
+    atoms = restraints.topology.atoms
+    kinds = atoms.energy_type.astype(str)
+    vdw = restraints.restraints["vdw"]
+    i, j = vdw["indices"].T.cpu().numpy()
+    amide = ((kinds[i] == "NH1") & (kinds[j] == "O")) | (
+        (kinds[i] == "O") & (kinds[j] == "NH1")
+    )
+    assert amide.sum() > 100
+    np.testing.assert_allclose(vdw["min_distances"][amide].cpu(), HBOND_DISTANCE)
+
+    h_topo = restraints.h_topo
+    radii = torch.as_tensor(atoms.vdw_radii, dtype=get_float_dtype())
+    minimum = candidate_contact_distances(h_topo, radii, atoms.hb_type)
+    n_heavy = atoms.n_atoms
+    cand_i, cand_j = h_topo.cand_idx_i.numpy(), h_topo.cand_idx_j.numpy()
+    riding = cand_i >= n_heavy
+    parent = h_topo.h_parent_idx.numpy()[np.where(riding, cand_i - n_heavy, 0)]
+    heavy_j = np.where(cand_j < n_heavy, cand_j, 0)
+    amide_h = riding & (cand_j < n_heavy) & (kinds[parent] == "NH1")
+    amide_h &= kinds[heavy_j] == "O"
+    assert amide_h.sum() > 100
+    np.testing.assert_allclose(minimum[amide_h], HBOND_H_DISTANCE)
+
+    xyz = model_1daw.xyz().detach()
+    cell, sg = model_1daw.cell, model_1daw.spacegroup
+    pos_i, pos_j = nonbonded_pair_positions(
+        torch.cat([xyz, place_riding_hydrogens(xyz, h_topo)]),
+        torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1),
+        h_topo.cand_symop_idx,
+        h_topo.cand_cell_offset,
+        sg.matrices,
+        sg.translations,
+        cell.fractional_matrix,
+        cell.inv_fractional_matrix,
+    )
+    overlap = (minimum - (pos_j - pos_i).norm(dim=1)).clamp(min=0)
+    assert float(overlap[amide_h].max()) < 0.2

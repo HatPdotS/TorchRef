@@ -137,15 +137,19 @@ class AtomGraph(DeviceMixin):
         atom count the way the plane restraints already are.
     energy_type : numpy.ndarray, optional
         CCP4 energy type per atom (``NH1``, ``OC``, ``CH3``, ...), shape ``(N,)``,
-        ``''`` where the template does not say. Keys the contact radii and the
-        hydrogen-bond roles.
+        ``''`` where the template does not say. Keys the contact radii
+        (:attr:`vdw_radii`) and the hydrogen-bond roles (``hb_type``).
     template_h_count : torch.Tensor, optional
         How many hydrogens the atom carries in its template, shape ``(N,)``,
         ``int8``; ``-1`` where unknown. Together with the bonded hydrogens actually
         present this gives :meth:`implicit_h_count`.
     hb_type : torch.Tensor, optional
-        Hydrogen-bond role code per atom, shape ``(N,)``, ``int8``; see the contact
-        policy for the enumeration. None until assigned.
+        Hydrogen-bond role per atom, shape ``(N,)``, in the configured int dtype: the
+        ``HB_*`` flags of :mod:`torchref.topology.nonbonded`, read from the ener_lib
+        ``hb_type`` of the energy type, or ``HB_HYDROGEN`` for a hydrogen bonded to a
+        donor; 0 where there is no role or no type. Derived from ``energy_type`` and
+        the bonds at construction when not given; None for a graph without energy
+        types.
 
     Notes
     -----
@@ -190,6 +194,8 @@ class AtomGraph(DeviceMixin):
                 setattr(self, edge, EdgeBlock.empty(arity, device=device))
         if self._adj_indptr is None:
             self.rebuild_adjacency()
+        if self.hb_type is None and self.energy_type is not None:
+            self.hb_type = self._hydrogen_bond_roles()
 
     @property
     def device(self) -> torch.device:
@@ -246,8 +252,49 @@ class AtomGraph(DeviceMixin):
 
     @property
     def vdw_radii(self) -> np.ndarray:
-        """Van der Waals radius per atom in Å, shape ``(N,)``, float64."""
-        return self._element_table()[2]
+        """Contact radius per atom in Å, shape ``(N,)``, float64.
+
+        The ener_lib radius of the atom's energy type: ``vdwh_radius``, which folds the
+        atom's own hydrogens in, where :meth:`implicit_h_count` is positive, otherwise
+        ``vdw_radius``. Only a graph that carries hydrogens has implicit ones; a graph
+        without any gets them back as riding hydrogens
+        (:mod:`torchref.topology.riding`), whose own contacts carry their sterics. An
+        atom without a typed radius -- no energy type, or none in ener_lib -- takes its
+        element radius (:func:`~torchref.topology.nonbonded.vdw_radii_for_elements`).
+        """
+        element_radii = self._element_table()[2]
+        if self.energy_type is None:
+            return element_radii
+        from torchref.topology.nonbonded import energy_type_table
+
+        table, none = energy_type_table(), (0, np.nan, np.nan)
+        typed = np.array(
+            [table.get(str(kind).strip(), none)[1:] for kind in self.energy_type],
+            dtype=np.float64,
+        ).reshape(-1, 2)
+        radii = np.where(np.isfinite(typed[:, 0]), typed[:, 0], element_radii)
+        implicit = self.implicit_h_count()
+        if implicit is None or not bool(self.is_hydrogen.any()):
+            return radii
+        folded = (implicit.cpu().numpy() > 0) & np.isfinite(typed[:, 1])
+        return np.where(folded, typed[:, 1], radii)
+
+    def _hydrogen_bond_roles(self) -> torch.Tensor:
+        """``hb_type`` from the energy types and, for hydrogens, from their parents."""
+        from torchref.topology.nonbonded import energy_type_table, hydrogen_roles
+
+        table = energy_type_table()
+        roles = torch.tensor(
+            [table.get(str(kind).strip(), (0,))[0] for kind in self.energy_type],
+            dtype=get_int_dtype(),
+            device=self.residue_of.device,
+        )
+        is_h = self.is_hydrogen.to(roles.device)
+        bonds = self.bonds.indices.to(roles.device)
+        for h, parent in ((bonds[:, 0], bonds[:, 1]), (bonds[:, 1], bonds[:, 0])):
+            polar = is_h[h] & ~is_h[parent]
+            roles[h[polar]] = hydrogen_roles(roles[parent[polar]])
+        return roles
 
     def copy(self) -> "AtomGraph":
         """An independent copy sharing no storage with this one."""
@@ -276,8 +323,8 @@ class AtomGraph(DeviceMixin):
 
         ``template_h_count`` minus the bonded hydrogens actually present, floored at
         zero; ``0`` where the template count is unknown. None when the graph carries
-        no template counts. What decides whether an atom takes its with-hydrogen
-        contact radius.
+        no template counts. In a graph that carries hydrogens, what decides whether an
+        atom takes its with-hydrogen contact radius (:attr:`vdw_radii`).
         """
         if self.template_h_count is None:
             return None
