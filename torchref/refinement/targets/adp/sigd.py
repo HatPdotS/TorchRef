@@ -27,17 +27,15 @@ class ADPSigdTarget(ADPTarget):
     Masmaliyeva & Murshudov (2019), *Acta Cryst.* D **75**, 505-518, and
     Masmaliyeva, Babai & Murshudov (2020), *Acta Cryst.* D **76**, 926-937,
     showed both theoretically and empirically that macromolecular B values follow
-    a shifted inverse-gamma distribution (SIGD). This target restrains the
-    B-factor distribution toward that form, replacing an earlier term that used a
-    Gaussian in ``log(B)`` (i.e. a log-normal), which fits deposited structures
-    measurably worse.
+    a shifted inverse-gamma distribution (SIGD), which fits deposited structures
+    measurably better than a log-normal (a Gaussian in ``log(B)``). This target
+    restrains the B-factor distribution toward that form.
 
-    The shape parameter ``alpha`` plays exactly the role the log-normal's sigma
-    did -- it fixes the log-width via ``std(log B) = sqrt(trigamma(alpha))``,
-    independent of the scale -- while the scale ``beta`` is set from the detached
-    mean B each call, the analogue of the detached mean in the term this
-    replaces. The restraint therefore constrains only the *shape* of the
-    distribution and never drives the overall B level.
+    The shape parameter ``alpha`` fixes the log-width via
+    ``std(log B) = sqrt(trigamma(alpha))``, independent of the scale, while the
+    scale ``beta`` is set from the detached mean B each call. The restraint
+    therefore constrains only the *shape* of the distribution and never drives the
+    overall B level.
 
     Parameters
     ----------
