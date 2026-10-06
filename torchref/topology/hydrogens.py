@@ -29,7 +29,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from torchref.config import get_float_dtype, get_int_dtype
+from torchref.config import get_float_dtype
 
 #: Standard heavy-atom valences, one of the two budgets that cap how many hydrogens a
 #: parent may take. Elements not listed fall back to 4 and are then bounded only by the
@@ -893,110 +893,12 @@ __all__ = [
     "HydrogenFrames",
     "plan_hydrogens",
     "optimise_free_torsions",
-    "augment_atom_table",
-    "augment_atom_table_with_maps",
     "hydrogen_frames",
     "template_atom_types",
     "STANDARD_VALENCE",
     "MAX_PLACEMENT_DISTANCE",
     "TORSION_SCAN_STEPS",
 ]
-
-
-def augment_atom_table(pdb, plan: HydrogenPlan, topology):
-    """Insert a plan's hydrogens into an atom table.
-
-    Each hydrogen is inserted immediately after the residue it belongs to, not appended
-    at the end: the residue partition is built from contiguous runs of
-    ``(chain, resseq, icode)``, so appending would split every hydrogenated residue into
-    two nodes.
-
-    Rows are copied from the parent, then the hydrogen's own name, element and position
-    are written over them. Everything else -- chain, residue, altloc, occupancy,
-    B-factor, record type -- is inherited, so a hydrogen starts from its parent's
-    displacement parameter and refines from there.
-
-    Parameters
-    ----------
-    pdb : pandas.DataFrame
-        Atom table to extend.
-    plan : HydrogenPlan
-    topology : Topology
-        Supplies the residue partition the insertion points come from.
-
-    Returns
-    -------
-    pandas.DataFrame
-        A new table with ``serial`` and ``index`` renumbered.
-    """
-    return augment_atom_table_with_maps(pdb, plan, topology)[0]
-
-
-def augment_atom_table_with_maps(pdb, plan: HydrogenPlan, topology):
-    """:func:`augment_atom_table` plus the row maps the insertion implies.
-
-    Parameters
-    ----------
-    pdb : pandas.DataFrame
-        Atom table to extend.
-    plan : HydrogenPlan
-    topology : Topology
-        Supplies the residue partition the insertion points come from.
-
-    Returns
-    -------
-    augmented : pandas.DataFrame
-        The extended table, ``serial`` and ``index`` renumbered.
-    old_to_new : numpy.ndarray
-        New row of every old row, shape ``(N_old,)``. Existing rows are never dropped,
-        so every entry is valid.
-    plan_to_new : numpy.ndarray
-        New row of every planned hydrogen, shape ``(plan.n_hydrogens,)``.
-    """
-    import pandas as pd
-
-    n_old = len(pdb)
-    if plan.n_hydrogens == 0:
-        return pdb.copy(), np.arange(n_old, dtype=np.int64), np.zeros(0, dtype=np.int64)
-
-    by_residue: Dict[int, List[int]] = {}
-    for i, residue in enumerate(plan.residue.tolist()):
-        by_residue.setdefault(residue, []).append(i)
-
-    old_to_new = np.full(n_old, -1, dtype=np.int64)
-    plan_to_new = np.full(plan.n_hydrogens, -1, dtype=np.int64)
-    pieces = []
-    offset = 0
-    for residue in range(topology.n_residues):
-        start = int(topology.residues.atom_start[residue])
-        end = int(topology.residues.atom_end[residue])
-        pieces.append(pdb.iloc[start:end])
-        old_to_new[start:end] = offset + np.arange(end - start)
-        offset += end - start
-
-        members = by_residue.get(residue)
-        if not members:
-            continue
-        rows = pdb.loc[pdb.index[plan.parent[members]]].copy()
-        rows["name"] = plan.name[members]
-        rows["element"] = plan.element[members]
-        rows["altloc"] = plan.altloc[members]
-        rows[["x", "y", "z"]] = plan.position[members]
-        if "anisou_flag" in rows.columns:
-            rows["anisou_flag"] = False
-        for column in ("u11", "u22", "u33", "u12", "u13", "u23"):
-            if column in rows.columns:
-                rows[column] = float("nan")
-        pieces.append(rows)
-        plan_to_new[members] = offset + np.arange(len(members))
-        offset += len(members)
-
-    augmented = pd.concat(pieces, ignore_index=True)
-    augmented["index"] = augmented.index.to_numpy(dtype=int)
-    if "serial" in augmented.columns:
-        augmented["serial"] = augmented.index.to_numpy(dtype=int) + 1
-    augmented.attrs = dict(pdb.attrs)
-    return augmented, old_to_new, plan_to_new
 
 
 @dataclass
@@ -1017,8 +919,7 @@ class HydrogenFrames:
     Parameters
     ----------
     h_row, parent_row, n1_row, n2_row : numpy.ndarray
-        ``int64`` rows, shape ``(H,)``. ``h_row`` is ``-1`` for a planned hydrogen
-        that has not been inserted into a table yet; :meth:`fill_planned_rows` sets it.
+        ``int64`` rows, shape ``(H,)``.
     frame_valid : numpy.ndarray
         Boolean ``(H,)``; False where the frame is incomplete.
     torsion_group, rotation_group : numpy.ndarray, optional
@@ -1060,11 +961,6 @@ class HydrogenFrames:
         """How many hydrogens ride."""
         return len(self.h_row)
 
-    @property
-    def n_planned(self) -> int:
-        """How many entries still await a row from :meth:`fill_planned_rows`."""
-        return int((self.h_row < 0).sum())
-
     def remap(self, old_to_new: np.ndarray) -> "HydrogenFrames":
         """The frames over a reindexed table.
 
@@ -1077,8 +973,7 @@ class HydrogenFrames:
         -------
         HydrogenFrames
             Entries whose hydrogen or parent was dropped are removed; a lost ``n1`` or
-            ``n2`` leaves the entry with ``frame_valid`` False. Planned entries
-            (``h_row == -1``) are kept as planned.
+            ``n2`` leaves the entry with ``frame_valid`` False.
         """
         table = np.asarray(old_to_new, dtype=np.int64)
 
@@ -1089,11 +984,10 @@ class HydrogenFrames:
             return out
 
         h = follow(self.h_row)
-        h[self.h_row < 0] = -1
         parent = follow(self.parent_row)
         n1 = follow(self.n1_row)
         n2 = follow(self.n2_row)
-        keep = (parent >= 0) & ((h >= 0) | (self.h_row < 0))
+        keep = (parent >= 0) & (h >= 0)
         return HydrogenFrames(
             h_row=h[keep],
             parent_row=parent[keep],
@@ -1103,65 +997,6 @@ class HydrogenFrames:
             torsion_group=np.where(n1[keep] >= 0, self.torsion_group[keep], -1),
             rotation_group=self.rotation_group[keep],
         )
-
-    def fill_planned_rows(self, rows: np.ndarray) -> "HydrogenFrames":
-        """Give the planned entries their table rows, in plan order.
-
-        Parameters
-        ----------
-        rows : numpy.ndarray
-            New row of each planned hydrogen, shape ``(n_planned,)``.
-        """
-        rows = np.asarray(rows, dtype=np.int64)
-        planned = self.h_row < 0
-        if int(planned.sum()) != len(rows):
-            raise ValueError(
-                f"{int(planned.sum())} planned hydrogens but {len(rows)} rows given"
-            )
-        h = self.h_row.copy()
-        h[planned] = rows
-        return HydrogenFrames(
-            h,
-            self.parent_row.copy(),
-            self.n1_row.copy(),
-            self.n2_row.copy(),
-            self.frame_valid.copy(),
-            self.torsion_group.copy(),
-            self.rotation_group.copy(),
-        )
-
-    def sorted_by_row(self) -> "HydrogenFrames":
-        """The same frames ordered by ``h_row``."""
-        order = np.argsort(self.h_row, kind="stable")
-        return HydrogenFrames(
-            self.h_row[order],
-            self.parent_row[order],
-            self.n1_row[order],
-            self.n2_row[order],
-            self.frame_valid[order],
-            self.torsion_group[order],
-            self.rotation_group[order],
-        )
-
-    def to_tensors(self, device=None) -> Dict[str, torch.Tensor]:
-        """Return frame and orientation arrays as tensors, keyed by field name."""
-        return {
-            "h_row": torch.as_tensor(self.h_row, dtype=get_int_dtype(), device=device),
-            "parent_row": torch.as_tensor(
-                self.parent_row, dtype=get_int_dtype(), device=device
-            ),
-            "n1_row": torch.as_tensor(
-                self.n1_row, dtype=get_int_dtype(), device=device
-            ),
-            "n2_row": torch.as_tensor(
-                self.n2_row, dtype=get_int_dtype(), device=device
-            ),
-            "frame_valid": torch.as_tensor(
-                self.frame_valid, dtype=torch.bool, device=device
-            ),
-            "torsion_group": torch.as_tensor(self.torsion_group, device=device),
-            "rotation_group": torch.as_tensor(self.rotation_group, device=device),
-        }
 
     @classmethod
     def from_tensors(
@@ -1174,7 +1009,7 @@ class HydrogenFrames:
         torsion_group: Optional[torch.Tensor] = None,
         rotation_group: Optional[torch.Tensor] = None,
     ) -> "HydrogenFrames":
-        """Rebuild from the tensors :meth:`to_tensors` produced."""
+        """Rebuild from integer row tensors, e.g. a riding tensor's buffers."""
         as_np = lambda t: np.asarray(t.detach().cpu().numpy(), dtype=np.int64)
         return cls(
             as_np(h_row),
@@ -1189,7 +1024,7 @@ class HydrogenFrames:
     def __repr__(self) -> str:
         return (
             f"HydrogenFrames(n_hydrogens={self.n_hydrogens}, "
-            f"planned={self.n_planned}, rigid={int((~self.frame_valid).sum())})"
+            f"rigid={int((~self.frame_valid).sum())})"
         )
 
 
@@ -1210,8 +1045,8 @@ def _frame_atoms(topology, parent_row: int, altloc: str) -> Tuple[int, int]:
     return n1, (int(grand[0]) if len(grand) else -1)
 
 
-def hydrogen_frames(topology, plan: Optional[HydrogenPlan] = None) -> HydrogenFrames:
-    """Riding frames for every hydrogen the table has, plus the ones a plan adds.
+def hydrogen_frames(topology) -> HydrogenFrames:
+    """Riding frames for every hydrogen the table has.
 
     Read off the bond graph, not off distances, so a stretched or predicted model
     still frames each hydrogen on its bonded parent.
@@ -1220,17 +1055,12 @@ def hydrogen_frames(topology, plan: Optional[HydrogenPlan] = None) -> HydrogenFr
     ----------
     topology : Topology
         Connectivity of the table the frames index into.
-    plan : HydrogenPlan, optional
-        Hydrogens about to be inserted. Their entries carry ``h_row == -1`` until
-        :meth:`HydrogenFrames.fill_planned_rows` is given the rows the insertion made;
-        their parent and frame atoms are rows of the *current* table, to be carried
-        through :meth:`HydrogenFrames.remap` with everything else.
 
     Returns
     -------
     HydrogenFrames
-        Deposited hydrogens first, in row order, then planned ones in plan order. A
-        hydrogen bonded to no heavy atom is left out: nothing can carry it.
+        Hydrogens in row order. A hydrogen bonded to no heavy atom is left out:
+        nothing can carry it.
     """
     atoms = topology.atoms
     is_h = atoms.is_hydrogen.cpu().numpy()
@@ -1247,12 +1077,6 @@ def hydrogen_frames(topology, plan: Optional[HydrogenPlan] = None) -> HydrogenFr
         n1, n2 = _frame_atoms(topology, parent, altloc)
         rows.append((h, parent, n1, n2))
 
-    if plan is not None:
-        for k in range(plan.n_hydrogens):
-            parent = int(plan.parent[k])
-            n1, n2 = _frame_atoms(topology, parent, str(plan.altloc[k]).strip())
-            rows.append((-1, parent, n1, n2))
-
     if not rows:
         return HydrogenFrames.empty()
     arr = np.array(rows, dtype=np.int64)
@@ -1260,10 +1084,8 @@ def hydrogen_frames(topology, plan: Optional[HydrogenPlan] = None) -> HydrogenFr
     rotation = np.full(len(rows), -1, dtype=np.int64)
     elements = np.char.upper(np.char.strip(atoms.element.astype(str)))
     groups = {}
-    n_existing = len(rows) - (0 if plan is None else plan.n_hydrogens)
     for i, (h, parent, _, _) in enumerate(rows):
-        altloc = str(altlocs[h]) if h >= 0 else str(plan.altloc[i - n_existing]).strip()
-        groups.setdefault((parent, altloc), []).append(i)
+        groups.setdefault((parent, str(altlocs[h])), []).append(i)
     for group, ((parent, altloc), members) in enumerate(groups.items()):
         heavy, _ = _split_neighbours(topology, parent, altloc)
         residue = int(atoms.residue_of[parent])

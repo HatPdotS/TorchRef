@@ -75,9 +75,6 @@ class NonBondedTarget(GeometryTarget):
         list. Default 1.0; that method gives the bound this must respect.
     verbose : int, optional
         Verbosity level. Default is 0.
-    scale : float, optional
-        Stored as ``self.scale`` (default 10.0) but **not** consumed by
-        ``forward()`` -- it does not scale the loss.
     """
 
     name: str = "geometry/nonbonded"
@@ -92,13 +89,11 @@ class NonBondedTarget(GeometryTarget):
         buffer: float = 0.0,
         rebuild_threshold: float = 1.0,
         verbose: int = 0,
-        scale: float = 10.0,
         device=None,
     ):
         """Initialize non-bonded target; see the class docstring for parameters."""
         super().__init__(model, verbose, device=device)
         self.mode = mode
-        self.scale = scale
         # Tunables that reach the kernel must be buffers on the target's device
         # and float dtype: the prolsq branch hands these straight to a Triton
         # kernel, where a CPU tensor is a host pointer, not a promotable scalar.

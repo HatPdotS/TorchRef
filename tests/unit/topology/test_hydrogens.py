@@ -14,7 +14,6 @@ from torchref.model.model import Model
 from torchref.topology.hydrogens import (
     STANDARD_VALENCE,
     _template,
-    augment_atom_table,
     optimise_free_torsions,
     plan_hydrogens,
 )
@@ -233,26 +232,18 @@ def test_scan_reduces_clash(built):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("code", STRUCTURES)
-def test_augmented_table_keeps_residues_contiguous(built, code):
+def test_inserted_hydrogens_keep_residues_contiguous(built, code):
     """Hydrogens are inserted into their residue, not appended after everything.
 
     The residue partition is built from contiguous runs of ``(chain, resseq, icode)``,
     so appending hydrogens at the end would split every hydrogenated residue in two.
     """
-    model, restraints, plan = built(code)
-    augmented = augment_atom_table(model.pdb, plan, restraints.topology)
+    model, _, plan = built(code)
+    before = model.ctx.topology
+    after, _, _, _ = before.with_hydrogens(plan)
 
-    assert len(augmented) == len(model.pdb) + plan.n_hydrogens
-    assert (augmented["index"].values == np.arange(len(augmented))).all()
-
-    key = (
-        augmented[["chainid", "resseq", "icode"]]
-        .astype(str)
-        .agg("|".join, axis=1)
-        .values
-    )
-    runs = 1 + int((key[1:] != key[:-1]).sum())
-    assert runs == len(set(key)), "a residue was split into non-adjacent runs"
+    assert after.n_atoms == before.n_atoms + plan.n_hydrogens
+    assert after.n_residues == before.n_residues, "a residue was split in two"
 
 
 @pytest.mark.unit

@@ -98,11 +98,9 @@ class HydrogenTopology(DeviceMixin):
     type_bounds : dict
         ``{placement_type: (start, end)}`` bounds into the type-sorted arrays.
     cand_idx_i, cand_idx_j, cand_symop_idx, cand_cell_offset : torch.Tensor
-        Precomputed H candidate pairs, sorted so the asymmetric-unit ones come first.
+        Precomputed H candidate pairs.
     cand_min_dist : torch.Tensor
         Per-pair minimum-distance scratch buffer, ``(P,)``.
-    n_asu_candidates : int
-        How many leading candidate pairs lie inside the asymmetric unit.
     """
 
     device: Optional[torch.device] = None
@@ -123,7 +121,6 @@ class HydrogenTopology(DeviceMixin):
     cand_symop_idx: Optional[torch.Tensor] = None
     cand_cell_offset: Optional[torch.Tensor] = None
     cand_min_dist: Optional[torch.Tensor] = None
-    n_asu_candidates: int = 0
 
     # Derived at first placement and reused across steps; see reset_cache.
     _dir_coeffs: Optional[torch.Tensor] = field(default=None, repr=False)
@@ -912,26 +909,16 @@ def build_h_candidate_pairs(
         cand_sym = cand_sym[mask]
         cand_off = cand_off[mask]
 
-    # Sort: ASU candidates first, symmetry last
-    is_asu = ~is_symmetry_image(cand_sym, cand_off)
-    sort_order = (~is_asu).long().argsort(stable=True)
-    cand_i = cand_i[sort_order]
-    cand_j = cand_j[sort_order]
-    cand_sym = cand_sym[sort_order]
-    cand_off = cand_off[sort_order]
-    n_asu_cand = is_asu.sum().item()
-
     h_topo.cand_idx_i = cand_i
     h_topo.cand_idx_j = cand_j
     h_topo.cand_symop_idx = cand_sym
     h_topo.cand_cell_offset = cand_off
-    h_topo.n_asu_candidates = n_asu_cand
 
     h_topo.cand_min_dist = torch.zeros(len(cand_i), dtype=dtypes.float, device=device)
 
     if verbose > 0:
         n_hh = ((cand_i >= n_heavy) & (cand_j >= n_heavy)).sum().item()
-        n_sym = (~is_asu).sum().item()
+        n_sym = is_symmetry_image(cand_sym, cand_off).sum().item()
         print(
             f"  H candidate pairs: {len(cand_i)} "
             f"({n_hh} H-H, {len(cand_i)-n_hh} H-heavy, {n_sym} symmetry)"

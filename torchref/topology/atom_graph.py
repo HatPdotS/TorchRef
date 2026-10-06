@@ -431,29 +431,6 @@ class AtomGraph(DeviceMixin):
             | self._pair_set(p4[:, (0, 3)])
         )
 
-    def hydrogen_parents(self) -> Dict[int, torch.Tensor]:
-        """``{hydrogen atom: heavy neighbours of its bonded parent}``.
-
-        Taken from bond connectivity, so it does not depend on current coordinates the
-        way a distance criterion does.
-
-        Returns
-        -------
-        dict
-            Empty when the graph carries no hydrogens.
-        """
-        is_h = self.is_hydrogen
-        out: Dict[int, torch.Tensor] = {}
-        for h in torch.nonzero(is_h, as_tuple=False).flatten().tolist():
-            nb = self.neighbors(h)
-            heavy = nb[~is_h[nb]]
-            if heavy.numel() == 0:
-                continue
-            parent = int(heavy[0])
-            parent_nb = self.neighbors(parent)
-            out[h] = parent_nb[~is_h[parent_nb] & (parent_nb != h)]
-        return out
-
     def __repr__(self) -> str:
         return (
             f"AtomGraph(n_atoms={self.n_atoms}, bonds={self.bonds.n_edges}, "
