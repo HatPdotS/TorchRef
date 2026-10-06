@@ -245,11 +245,12 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
 
 class ModelCollection(DeviceMovementMixin, nn.Module):
     """
-    Named dictionary of MixedModel instances at different timepoints.
+    Timepoint-keyed ``_SharedMixedModel`` views over shared base models.
 
-    All timepoint models share the same base structural models (ModelFT
-    objects stored once in an nn.ModuleList). Each timepoint gets its own
-    independent fraction parameters via _SharedMixedModel.
+    The ModelFT base models are stored once, in an ``nn.ModuleList``; the collection
+    owns the populations, ``w(t) = (1 - alpha) e_ref + alpha q(t)`` with one ``alpha``
+    shared by every timepoint (see the module docstring). Timepoints with independent
+    populations go through ``set_fraction_override`` instead.
 
     Keys should match DatasetCollection keys so that collection-aware
     targets can automatically pair datasets with models.
