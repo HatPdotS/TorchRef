@@ -28,16 +28,7 @@ class NLLXrayTarget(XrayTarget):
     Read observations through the dataset subset accessors, which expose live
     corrections for ScaledDataset. The target uses a fused Triton kernel where
     available and floors uncertainties at one tenth of their median.
-
-    Attributes
-    ----------
-    target_value : float
-        Reference value carried for the generic ``Target`` machinery. Note the
-        loss returned by ``forward`` is a summed (not per-reflection normalized)
-        NLL, so this value is not a tight per-reflection target.
     """
-
-    target_value: float = 1.0
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """

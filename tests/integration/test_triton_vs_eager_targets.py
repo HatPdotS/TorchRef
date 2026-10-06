@@ -117,8 +117,6 @@ def _run_target_capture_grads(target, refinement):
     # Reset the SF cache so model.forward recomputes — keeps the two
     # halves of the comparison from accidentally hitting stale caches.
     refinement.model.reset_cache()
-    if hasattr(target, "reset_get_data_cache"):
-        target.reset_get_data_cache()
 
     loss = target()
     if loss.requires_grad:

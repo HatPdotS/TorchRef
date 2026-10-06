@@ -52,15 +52,6 @@ class MultiModelGeometryTarget(Target):
             total = total + target()
         return total
 
-    def register_to_state(self, state):
-        """
-        Register each base model's geometry sub-targets into ``state`` individually,
-        named ``model_<i>/<sub>``. Returns the state for chaining.
-        """
-        for i, target in enumerate(self._targets):
-            state.register_target("geometry", target, prefix=f"model_{i}")
-        return state
-
     def items(self):
         """Expose sub-targets for LossState auto-expansion."""
         result = {}
@@ -104,12 +95,6 @@ class MultiModelADPTarget(Target):
         for target in self._targets:
             total = total + target()
         return total
-
-    def register_to_state(self, state):
-        """Register per-model ADP sub-targets into LossState."""
-        for i, target in enumerate(self._targets):
-            state.register_target("adp", target, prefix=f"model_{i}")
-        return state
 
     def items(self):
         """Sub-targets as ``("model_<i>/<sub>", target)`` for LossState expansion."""

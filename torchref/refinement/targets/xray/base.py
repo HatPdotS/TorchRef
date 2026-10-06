@@ -123,13 +123,6 @@ class XrayTarget(DataTarget):
             self._geom_dataid = dataid
         return self._eps_cache, self._dss_cache
 
-    def reset_get_data_cache(self):
-        """Deprecated no-op, kept for compatibility: the subset indices and scaled
-        ``(F, F_sigma)`` now live on the :class:`ReflectionData` and self-invalidate
-        by fingerprint, so there is nothing here to reset.
-        """
-        pass
-
     def _subset(self):
         """The ``_ReflectionSubset`` view for this target's ``use_set``. Single
         source of truth for the selection -- both :meth:`get_data` and the subclass

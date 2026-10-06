@@ -115,8 +115,6 @@ class NLLIntensityXrayTarget(IntensityObservableMixin, XrayTarget):
     expression by construction rather than by test.
     """
 
-    target_value: float = 1.0
-
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """Summed Gaussian NLL of the observed intensities on this target's set."""
         return _masked_sum(self._per_refl(self._loss_inputs(fcalc=fcalc)))

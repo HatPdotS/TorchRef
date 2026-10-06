@@ -89,9 +89,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
     scaler : ScalerBase
         Single scaler applied to all F_calc (uses ``forward_mixed``
         with per-model fractions when available).
-    normalize : bool
-        Unused placeholder. ``forward`` always returns the unnormalised summed
-        NLL regardless of this flag.
     use_work_set : bool
         Legacy bool; superseded by ``use_set``. If True, loss on the work set.
     use_set : str, optional
@@ -110,7 +107,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         dataset_collection: "DatasetCollection",
         model_collection: "ModelCollection",
         scaler: "ScalerBase" = None,
-        normalize: bool = True,
         use_work_set: bool = True,
         use_set: str = None,
         verbose: int = 0,
@@ -123,7 +119,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
             use_set=use_set,
             verbose=verbose,
         )
-        self.normalize = normalize
 
     def _loss_inputs(self, recalc: bool = False):
         """The base's stack, with the mask narrowed across datasets.
@@ -229,7 +224,6 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
         dataset_collection: "DatasetCollection",
         model_collection: "ModelCollection",
         scaler: "ScalerBase" = None,
-        normalize: bool = True,
         use_work_set: bool = True,
         use_set: str = None,
         verbose: int = 0,
@@ -239,7 +233,6 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
             dataset_collection,
             model_collection,
             scaler=scaler,
-            normalize=normalize,
             use_work_set=use_work_set,
             use_set=use_set,
             verbose=verbose,
@@ -383,9 +376,6 @@ class CollectionMLTarget(CollectionXrayTarget):
     model_collection : ModelCollection
     scaler : ScalerBase
         Scaling layer applied to F_calc (``forward_mixed`` when available).
-    normalize : bool
-        Unused placeholder, as on the other two collection targets.
-        TODO: remove from all three.
     use_work_set : bool
         Legacy bool; superseded by ``use_set``. If True, loss on the work set.
     use_set : str, optional
@@ -411,7 +401,6 @@ class CollectionMLTarget(CollectionXrayTarget):
         dataset_collection: "DatasetCollection",
         model_collection: "ModelCollection",
         scaler: "ScalerBase" = None,
-        normalize: bool = True,
         use_work_set: bool = True,
         use_set: str = None,
         verbose: int = 0,
@@ -425,7 +414,6 @@ class CollectionMLTarget(CollectionXrayTarget):
             use_set=use_set,
             verbose=verbose,
         )
-        self.normalize = normalize
         self.base_weight = (
             self.DEFAULT_BASE_WEIGHT if base_weight is None else float(base_weight)
         )
