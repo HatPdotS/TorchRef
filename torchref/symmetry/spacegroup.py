@@ -317,7 +317,8 @@ class SpaceGroup(Symmetry):
             Map expanded -> original, shape ``(M,)``, in the configured int dtype:
             ``F_exp = F_orig[orig_indices]``.
         phase_shifts : torch.Tensor
-            Translation phase offsets in radians, shape ``(M,)``: ``phase_exp =
+            Translation phase offsets in radians, shape ``(M,)``, in the configured
+            float dtype: ``phase_exp =
             where(is_friedel, -phase_orig, phase_orig)[orig_indices] + phase_shifts``.
         is_friedel : torch.Tensor
             Boolean, shape ``(M,)``, True for the rows that are Friedel copies of a
@@ -411,16 +412,17 @@ class SpaceGroup(Symmetry):
         Returns
         -------
         canonical_hkl : torch.Tensor
-            Remapped indices, shape ``(N, 3)``; sorted lexicographically when
-            ``sort``.
+            Remapped indices, shape ``(N, 3)``, in ``hkl``'s dtype; sorted
+            lexicographically when ``sort``.
         phase_shifts : torch.Tensor
-            Additive phase correction in radians, shape ``(N,)``, same row order.
+            Additive phase correction in radians, shape ``(N,)``, in the configured
+            float dtype, same row order.
         friedel_flags : torch.Tensor
             Boolean, shape ``(N,)``, True where Friedel conjugation was applied,
             same row order.
         sort_indices : torch.Tensor or None
-            Permutation from original to sorted order, shape ``(N,)``; ``None``
-            when ``sort=False``.
+            Permutation from original to sorted order, shape ``(N,)``, int64;
+            ``None`` when ``sort=False``.
 
         Notes
         -----

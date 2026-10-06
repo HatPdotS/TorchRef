@@ -14,7 +14,7 @@ Laue class. That is why they hang off
 Miller indices transform as ``h' = h @ R = R^T @ h`` with R the *real-space* rotation;
 :attr:`~torchref.symmetry.symmetry.Symmetry.reciprocal` already holds the transpose.
 Translations enter as phase shifts of ``-2 pi h.t``. That sign is load-bearing and a
-wrong one is invisible in P21/P212121/C2 -- see ``_expand_hkl`` and
+wrong one is invisible in P21/P212121/C2 -- see ``_equivalent_hkl`` and
 ``tests/unit/symmetry/test_phase_convention.py``.
 """
 
@@ -33,35 +33,7 @@ def _equivalent_hkl(
     include_friedel: bool = True,
     device: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Every symmetry copy of every input row, without deduplication.
-
-    Copies are ordered by operation, then row: all rows under operation 0,
-    all under operation 1, ..., then (with ``include_friedel``) the Friedel
-    copies in the same order. Callers that keep the first copy per index
-    therefore prefer a real measurement over a Friedel copy.
-
-    Parameters
-    ----------
-    sym : SpaceGroup
-        The space group whose operations are applied.
-    hkl : torch.Tensor, shape (N, 3)
-        Input Miller indices.
-    include_friedel : bool, default True
-        Append the Friedel copy ``-h'`` of every rotated index.
-    device : torch.device, optional
-        Output device. Defaults to ``hkl``'s.
-
-    Returns
-    -------
-    copies : torch.Tensor, shape (M, 3), configured int dtype
-        ``M = n_ops * N``, doubled with ``include_friedel``.
-    source : torch.Tensor, shape (M,), configured int dtype
-        Input row of each copy.
-    phase_shifts : torch.Tensor, shape (M,)
-        Translation phase offset in radians of each copy.
-    is_friedel : torch.Tensor, shape (M,), dtype=bool
-        True for the Friedel copies.
-    """
+    """Back ``SpaceGroup.equivalent_hkl``, which holds the contract."""
     if device is None:
         device = hkl.device
     hkl_float = hkl.to(dtype=get_float_dtype(), device=device)
@@ -98,48 +70,11 @@ def _expand_hkl(
     device: Optional[torch.device] = None,
     return_friedel: bool = False,
 ) -> Tuple[torch.Tensor, ...]:
-    """Expand Miller indices under crystallographic symmetry (ASU -> P1).
+    """Back ``SpaceGroup.expand_hkl``, which holds the contract.
 
-    The low-level primitive: returns the expanded indices plus the index map and
-    phase offsets needed to expand any associated per-reflection data. Each P1
-    index takes its first copy in :func:`_equivalent_hkl` order, so a rotated
-    measurement wins over a Friedel copy -- which is what lets signed Bijvoet
-    rows (``+h`` and ``-h`` as separate rows) expand without colliding.
-
-    Parameters
-    ----------
-    sym : SpaceGroup
-        The space group whose asymmetric unit convention applies.
-    hkl : torch.Tensor, shape (N, 3)
-        Input Miller indices, no two of them symmetry-equivalent.
-    include_friedel : bool, default True
-        Include Friedel mates (-h, -k, -l).
-    remove_absences : bool, default True
-        Remove systematically absent reflections.
-    device : torch.device, optional
-        Computation device. If None, uses hkl's device.
-    return_friedel : bool, default False
-        Also return ``is_friedel``.
-
-    Returns
-    -------
-    expanded_hkl : torch.Tensor, shape (M, 3), configured int dtype
-        All unique expanded Miller indices, in order of first occurrence.
-    orig_indices : torch.Tensor, shape (M,), configured int dtype
-        Index mapping expanded → original: ``F_expanded = F_orig[orig_indices]``.
-    phase_shifts : torch.Tensor, shape (M,), dtype=float32
-        Translation phase offsets in radians: ``phase_expanded =
-        where(is_friedel, -phase_orig, phase_orig)[orig_indices] + phase_shifts``.
-    is_friedel : torch.Tensor, shape (M,), dtype=bool
-        True for the rows that are Friedel copies; only with ``return_friedel``.
-
-    Raises
-    ------
-    ValueError
-        If two different input rows produce the same P1 index by the same kind
-        of copy (rotation, or Friedel), i.e. the input holds symmetry-equivalent
-        rows. Keeping either would silently discard the other: merge them first,
-        or expand anomalous data from its signed indices.
+    Each P1 index keeps its first copy in ``_equivalent_hkl`` order, so a rotation
+    copy wins over a Friedel copy and signed Bijvoet rows expand without colliding;
+    two input rows reaching one index by the same kind of copy raise.
     """
     if device is None:
         device = hkl.device
@@ -238,43 +173,11 @@ def _canonicalize_hkl(
     device: Optional[torch.device] = None,
     sort: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Map Miller indices to canonical CCP4 ASU representatives.
+    """Back ``SpaceGroup.canonicalize_hkl``, which holds the contract.
 
-    Selects one representative per reflection under the standard CCP4 asymmetric
-    unit convention. Runs on CPU/numpy regardless of ``device`` (the ASU lookup
-    tables are numpy-backed), returning tensors on ``device``. Raises
-    ``ValueError`` if any reflection has no ASU representative, which happens for
-    the Friedel half of reciprocal space when ``include_friedel=False``.
-
-    Parameters
-    ----------
-    sym : SpaceGroup
-        The space group whose asymmetric unit convention applies.
-    hkl : torch.Tensor, shape (N, 3), integer dtype
-        Input Miller indices.
-    include_friedel : bool, default True
-        Whether Friedel mates are considered equivalent.
-    device : torch.device, optional
-        Computation device. If None, uses hkl's device.
-    sort : bool, default True
-        Return the rows sorted lexicographically by canonical (h, k, l). With
-        ``False`` the rows stay in input order and no permutation is formed.
-
-    Returns
-    -------
-    canonical_hkl : torch.Tensor, shape (N, 3), dtype of ``hkl``
-        Remapped indices, sorted lexicographically by (h, k, l) when ``sort``.
-    phase_shifts : torch.Tensor, shape (N,), configured float dtype
-        Additive phase correction in radians, in the same row order.
-    friedel_flags : torch.Tensor, shape (N,), dtype bool
-        True where Friedel conjugation was applied, in the same row order.
-    sort_indices : torch.Tensor or None, shape (N,), dtype int64
-        Permutation from original to sorted order; ``None`` when ``sort=False``.
-
-    Notes
-    -----
-    ``phase_shifts`` assumes the caller conjugates first — the contract is
-    ``phi_new = torch.where(friedel_flags, -phi_old, phi_old) + phase_shifts``.
+    Runs on CPU with torch ops whatever device ``sym`` or ``hkl`` is on. The phase
+    shift is ``-2 pi h.t`` (input ``h``, translation ``t`` of the mapping operation),
+    with the sign flipped on Friedel-conjugated rows.
     """
     import gemmi
 
