@@ -155,26 +155,6 @@ class SfDS(DeviceMovementMixin, nn.Module):
             self._recB_key = cell.key
         return self._recB
 
-    def _compute_scattering_factors(
-        self, s: torch.Tensor, A: torch.Tensor, B: torch.Tensor
-    ) -> torch.Tensor:
-        """``f(s) = sum_i A_i exp(-B_i s^2 / 4)``, shape ``(N_refl, N_atoms)``.
-
-        Unused by the production path: the active backends
-        (``ds_iso``/``ds_aniso``, dispatched from :meth:`_compute_p1_sf`) work
-        from raw A/B and never materialize this ``(N_refl, N_atoms)`` array.
-        """
-        s_sq = (s.reshape(-1, 1, 1) ** 2) / 4  # (N_refl, 1, 1)
-        B_expanded = B.unsqueeze(0)  # (1, N_atoms, 5)
-        A_expanded = A.unsqueeze(0)  # (1, N_atoms, 5)
-
-        exp_terms = torch.exp(-B_expanded * s_sq)  # (N_refl, N_atoms, 5)
-
-        # Sum over Gaussian components: (N_refl, N_atoms)
-        f = torch.sum(A_expanded * exp_terms, dim=-1)
-
-        return f
-
     def _cartesian_to_fractional(self, xyz_cartesian: torch.Tensor) -> torch.Tensor:
         """``(N, 3)`` Cartesian coordinates to fractional; needs a cell whose
         dtype matches ``self.dtype_float``.
