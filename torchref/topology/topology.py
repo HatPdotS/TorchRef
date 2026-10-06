@@ -105,8 +105,8 @@ class Topology(DeviceMixin):
     Notes
     -----
     Holds no refinable parameters, so this is a dataclass rather than an ``nn.Module``.
-    Edge indices are ``int64`` constants and no gradient reaches them; gradients reach
-    the coordinates that the indices gather.
+    Edge indices are ``get_int_dtype()`` constants (int32 by default) and no gradient
+    reaches them; gradients reach the coordinates that the indices gather.
     """
 
     residues: ResidueGraph
