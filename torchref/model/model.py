@@ -1085,58 +1085,45 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Repartitions atoms between isotropic (a single B in ``adp``) and
         anisotropic (a 6-component U in ``u``), *converting* the stored values and
-        refreshing everything keyed off the split: ``aniso_flag``, the cached SF
-        index arrays, the refinable masks, the PDB ``anisou_flag`` column (which
-        gates ANISOU output) and the forward caches.
-
-        A true conversion, not a freeze: an anisotropic atom's structure factor
-        uses only its ``u``, so freezing ``u`` instead would leave most atoms' ADPs
-        merely fixed rather than isotropic.
+        refreshing everything keyed off the split: ``aniso_flag`` (which decides the
+        ANISOU records written), the cached SF index arrays, the refinable masks and the
+        forward caches.
 
         Parameters
         ----------
         mode : {"isotropic", "anisotropic", "field", "field_aniso", "preserve"}, optional
-            ``"isotropic"`` (default) converts every atom, previously anisotropic
-            ones to ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"``
-            converts those matching ``aniso_selection``, expanding isotropic atoms
-            to ``U = (B / 8 pi^2) I``. ``"field"`` replaces the per-atom isotropic B
-            with a :class:`~torchref.model.disorder_field.DisorderFieldTensor`, whose
-            node values are least-squares fitted to the B it replaces, so the atom
-            count stops setting the ADP parameter count. ``"field_aniso"`` is the same
-            representation carrying a full U per node, which takes over ``u`` rather
-            than ``adp``. ``"preserve"`` is a no-op: the ADPs stay exactly as the file
-            supplied them, anisotropic where the file was anisotropic.
+            ``"isotropic"`` (default) converts every atom, previously anisotropic ones
+            to ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"`` converts
+            those matching ``aniso_selection``, expanding isotropic atoms to
+            ``U = (B / 8 pi^2) I``. ``"field"`` replaces the per-atom B with a
+            :class:`~torchref.model.disorder_field.DisorderFieldTensor` whose node
+            values are least-squares fitted to it; ``"field_aniso"`` does the same with
+            a full U per node, in ``u``. ``"preserve"`` is a no-op: the ADPs stay
+            exactly as the file supplied them.
         aniso_selection : str, optional
-            Phenix-style selection for ``mode="anisotropic"``, default
-            ``"not resname HOH and not element H"``; ignored otherwise.
+            Phenix-style selection of the anisotropic atoms: ``"anisotropic"`` defaults
+            to ``"not resname HOH and not element H"``, ``"field_aniso"`` to every atom.
         n_nodes : int, optional
-            Nodes for ``mode="field"``. Defaults to one per 25 atoms, floored at 4.
+            Nodes for either field mode; default one per 25 atoms, floored at 4.
         k_neighbors : int, optional
-            Candidate nodes per atom for ``mode="field"``. Default 12.
+            Candidate nodes per atom for either field mode. Default 12.
         refine_node_positions : bool, optional
             Give each node a refinable offset from its anchor centroid, at three extra
             parameters per node. On by default: it is what lets the load-balancing
             restraint move a node toward atoms instead of only widening its kernel.
         init : {"fit", "flat"}, optional
-            What a field mode fits its nodes to: ``"fit"`` (default) the model's current
-            per-atom ADPs, ``"flat"`` a single level with their spatial structure
-            discarded. See ``_install_disorder_field``.
+            What a field mode fits to: ``"fit"`` (default) the current per-atom ADPs,
+            ``"flat"`` their median level with the spatial structure discarded.
         mode_set : str, optional
             For ``mode="field_aniso"``, a key of
-            :data:`~torchref.model.disorder_field.MODE_SETS` --- ``"rigid"`` is TLS,
-            ``"affine"`` adds shear and extension. The node then stores the covariance
-            of its displacement modes, so the U it gives an atom depends on where that
-            atom sits inside the node's region rather than being constant across it.
-            Default ``None`` keeps the constant-U payload.
+            :data:`~torchref.model.disorder_field.MODE_SETS` (``"rigid"`` is TLS,
+            ``"affine"`` adds shear and extension) for a node U that varies across the
+            node's region. Default ``None`` keeps the constant-U payload.
 
         Notes
         -----
         Run once at model setup, before scaling / restraints / targets. The
         isotropic result matches a freshly-loaded isotropic-only model.
-
-        Leaving ``"field"`` needs no special case: the conversion reads ``adp()``,
-        which a field evaluates per atom, so the field materialises into a per-atom
-        wrapper on the way out.
         """
         if not self.ctx.initialized:
             return
