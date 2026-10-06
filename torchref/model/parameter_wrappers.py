@@ -94,28 +94,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         device: Optional[torch.device] = None,
         name: Optional[str] = None,
     ):
-        """
-        Initialize a MixedTensor.
-
-        With ``initial_values``, fully initializes; without, creates a shell ready
-        for ``load_state_dict``.
-
-        Parameters
-        ----------
-        initial_values : torch.Tensor, optional
-            Initial tensor values for all elements. Optional for empty init.
-        refinable_mask : torch.Tensor, optional
-            Boolean mask indicating which elements can be refined.
-            If None, all elements are refinable.
-        requires_grad : bool, optional
-            Whether refinable parameters should have gradients. Default is True.
-        dtype : torch.dtype, optional
-            Data type for the tensor. Default is same as initial_values.
-        device : torch.device, optional
-            Device for the tensor. Default is same as initial_values.
-        name : str, optional
-            Optional name for this parameter (useful for debugging/logging).
-        """
+        """Initialize with values or as an empty shell; see the class docstring."""
         super().__init__()
 
         self._name = name
@@ -670,7 +649,8 @@ class PositiveMixedTensor(MixedTensor):
         Optional name for this parameter.
     epsilon : float, optional
         Clamp floor applied before the log; also the effective lower bound on the
-        output. Default is 1e-1.
+        output. Default is 1e-1. Non-positive inputs are clamped up to it rather than
+        rejected.
     """
 
     def __init__(
@@ -683,31 +663,7 @@ class PositiveMixedTensor(MixedTensor):
         name: Optional[str] = None,
         epsilon: float = 1e-1,
     ):
-        """
-        Initialize a PositiveMixedTensor.
-
-        With ``initial_values``, fully initializes; without, creates a shell ready
-        for ``load_state_dict``.
-
-        Parameters
-        ----------
-        initial_values : torch.Tensor, optional
-            Initial tensor values in NORMAL space. Optional for empty init.
-        refinable_mask : torch.Tensor, optional
-            Boolean mask indicating which elements can be refined.
-        requires_grad : bool, optional
-            Whether refinable parameters should have gradients. Default is True.
-        dtype : torch.dtype, optional
-            Data type for the tensor.
-        device : torch.device, optional
-            Device for the tensor.
-        name : str, optional
-            Optional name for this parameter.
-        epsilon : float, optional
-            Clamp floor applied before the log; also the effective lower bound on
-            the output. Default is 1e-1. Non-positive inputs are clamped up to it
-            rather than rejected.
-        """
+        """Initialize with values or as an empty shell; see the class docstring."""
         self.epsilon = epsilon
 
         if initial_values is None:
@@ -1221,13 +1177,20 @@ class OccupancyTensor(MixedTensor):
     Parameters
     ----------
     initial_values : torch.Tensor, optional
-        Occupancies for ALL atoms, in [0, 1]. Omit for an empty shell.
+        Occupancies for ALL atoms, in [0, 1]; with ``use_sigmoid``, values outside are
+        clamped with a warning (deposited PDBs do carry them), not rejected. Omit for
+        an empty shell.
     sharing_groups : torch.Tensor, optional
         ``(n_atoms,)`` collapsed index per atom; ``None`` = one per atom.
+        ``tensor([0, 0, 0, 1, 1, 2])`` = atoms 0-2 share one occupancy, 3-4 another,
+        5 independent.
     altloc_groups : list of tuple, optional
-        One tuple per altloc set, holding the atom indices of each conformation.
+        One tuple per altloc set, holding the atom indices of each conformation:
+        ``[([10, 11], [12, 13])]`` = atoms 10-11 (conf A) and 12-13 (conf B), whose
+        occupancies sum to 1.0.
     refinable_mask : torch.Tensor, optional
-        Boolean mask of refinable ATOMS (full space), collapsed internally.
+        Boolean mask of refinable ATOMS (full space), collapsed internally: any
+        refinable atom makes its whole group refinable.
     requires_grad : bool, optional
         Whether refinable parameters should have gradients. Default is True.
     dtype, device : optional
@@ -1273,35 +1236,7 @@ class OccupancyTensor(MixedTensor):
         name: Optional[str] = None,
         use_sigmoid: bool = True,
     ):
-        """
-        Initialize an OccupancyTensor with collapsed storage and altloc support.
-
-        With ``initial_values``, fully initializes; without, creates a shell for
-        ``load_state_dict``. Occupancies outside [0, 1] are clamped with a warning
-        (deposited PDBs do carry them), not rejected.
-
-        Parameters
-        ----------
-        initial_values : torch.Tensor, optional
-            Occupancies for ALL atoms. Omit for an empty shell.
-        sharing_groups : torch.Tensor, optional
-            ``(n_atoms,)`` collapsed index per atom. ``tensor([0, 0, 0, 1, 1, 2])``
-            = atoms 0-2 share one occupancy, 3-4 another, 5 independent.
-        altloc_groups : list of tuple, optional
-            ``[([10, 11], [12, 13])]`` = atoms 10-11 (conf A) and 12-13 (conf B)
-            are altlocs whose occupancies sum to 1.0.
-        refinable_mask : torch.Tensor, optional
-            Boolean mask of refinable ATOMS (full space); any refinable atom makes
-            its whole group refinable.
-        requires_grad : bool, optional
-            Whether refinable parameters should have gradients. Default is True.
-        dtype, device : optional
-            Dtype and device for the tensors.
-        name : str, optional
-            Optional name for this parameter. Defaults to ``"occupancy"``.
-        use_sigmoid : bool, optional
-            Bound values to [0, 1] via sigmoid. Default True.
-        """
+        """Initialize with values or as an empty shell; see the class docstring."""
         self.use_sigmoid = use_sigmoid
 
         # Must precede any register_buffer call.
