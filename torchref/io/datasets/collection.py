@@ -56,9 +56,7 @@ class DatasetCollection(CrystalDataset):
     _dataset_order: List[str] = field(default_factory=list, repr=False)
     _reference_dataset: Optional[str] = field(default=None, repr=False)
     _common_hkl: Optional[torch.Tensor] = field(default=None, repr=False)
-    _cell: Optional[torch.Tensor] = field(default=None, repr=False)
     _spacegroup: Optional[str] = field(default=None, repr=False)
-    _resolution: Optional[torch.Tensor] = field(default=None, repr=False)
     scaler: Optional["DatasetScaler"] = field(default=None, repr=False)
     scaling_metrics: dict = field(default_factory=dict, repr=False)
 
@@ -101,7 +99,6 @@ class DatasetCollection(CrystalDataset):
             )
         if not self._dataset_order or set_as_reference:
             self._reference_dataset = name
-            self._cell = raw.cell.clone() if raw.cell is not None else None
             self._spacegroup = members[name].spacegroup
         self._dataset_order.append(name)
         union_hkl = torch.unique(
@@ -179,17 +176,6 @@ class DatasetCollection(CrystalDataset):
     def __contains__(self, name: str) -> bool:
         """Check if dataset exists in collection."""
         return name in self._datasets
-
-    def _calculate_resolution(self) -> None:
-        """Calculate resolution for common HKL."""
-        from torchref.base import math_torch
-
-        if self._common_hkl is None or self._cell is None:
-            return
-
-        s = math_torch.get_scattering_vectors(self._common_hkl, self._cell)
-        resolution = 1.0 / torch.linalg.norm(s, axis=1)
-        self._resolution = resolution
 
     def scale(self, nsteps: int = 10, max_iter: int = 100) -> "DatasetCollection":
         """Jointly scale observations and expose live ScaledDataset members.
