@@ -6,8 +6,8 @@ Everything else lives here: one estimator, one estimator call, one compaction, o
 ``maintenance``.
 
 **No code in this module branches on which mode is running**, and none should: the three
-differences are the :meth:`SigmaAXrayTarget._model_error`, :meth:`SigmaAXrayTarget._mean` and
-:meth:`SigmaAXrayTarget._per_refl` overrides, so a new row is a new class rather than a new
+differences are the ``SigmaAXrayTarget._model_error``, ``SigmaAXrayTarget._mean`` and
+``SigmaAXrayTarget._per_refl`` overrides, so a new row is a new class rather than a new
 ``elif``. One class per mode is checked at import by
 :class:`~torchref.refinement.targets.xray._specs.XrayTargetTable`.
 
@@ -47,11 +47,11 @@ class SigmaALossInputs:
     F_obs
         Compact corrected amplitudes, from the SAME full-size array the estimator was fed.
     F_calc
-        Compact scaled amplitude, **already centred** by :meth:`SigmaAXrayTarget._mean`:
+        Compact scaled amplitude, **already centred** by ``SigmaAXrayTarget._mean``:
         ``|F_c|``, or ``alpha*|F_c|`` for the rows whose mean says so.
     Sigma
         Compact **complex** variance -- what a Rice denominator takes, ``epsilon`` times
-        whatever :meth:`SigmaAXrayTarget._model_error` selected. ``nll_beta`` converts it to
+        whatever ``SigmaAXrayTarget._model_error`` selected. ``nll_beta`` converts it to
         an amplitude variance itself; that conversion is the large-signal limit and is the
         one place the two variance conventions must not be confused.
     centric
@@ -61,7 +61,7 @@ class SigmaALossInputs:
         so compacting here would be work the other three rows discard. Call :meth:`compact`.
     est
         The whole estimate, full-size, for a hook needing a field this context does not name
-        (:meth:`SigmaAXrayTarget._mean` reads ``est.alpha``).
+        (``SigmaAXrayTarget._mean`` reads ``est.alpha``).
     sub
         The ``_ReflectionSubset`` view. ``ml_full`` needs it for its parity cache key.
     """
@@ -236,7 +236,7 @@ class AlphaCentredMixin:
     """Centre the likelihood on ``alpha*|F_calc|`` instead of ``|F_calc|``.
 
     A mixin rather than a copied override so ``sub.select(alpha)`` stays in exactly one
-    place (:meth:`SigmaAXrayTarget._alpha_centred`).
+    place (``SigmaAXrayTarget._alpha_centred``).
     """
 
     def _mean(self, F_calc, est, sub):

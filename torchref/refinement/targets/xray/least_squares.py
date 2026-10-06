@@ -87,10 +87,10 @@ class LeastSquaresXrayTarget(XrayTarget):
 
     def _per_refl(self, ctx) -> torch.Tensor:
         """The eager twin of :meth:`forward`'s fused kernel; see
-        :meth:`~torchref.refinement.targets.xray.nll.NLLXrayTarget._per_refl`.
+        ``NLLXrayTarget._per_refl``.
 
-        Goes through :meth:`_scaled_F_calc_full` rather than
-        :meth:`_scaled_amplitudes` because the two disagree for the ``ls_wunit_k1``
+        Goes through ``_scaled_F_calc_full`` rather than
+        ``_scaled_amplitudes`` because the two disagree for the ``ls_wunit_k1``
         row, whose closed-form scale is fit on **whatever view it is handed**. On the
         full-reflection view that would fit the scale to the free set as well, which
         is neither what the loss saw nor what the R-factor uses.

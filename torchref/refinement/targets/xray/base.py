@@ -4,9 +4,9 @@
 ``get_data`` view every subclass' ``forward`` consumes, the model-independent
 per-reflection geometry, and the one R-factor implementation
 (:meth:`XrayTarget.get_rfactor`). Subclasses supply only the likelihood -- and, if
-they own their own scale, :meth:`_scaled_F_calc_full`.
+they own their own scale, ``_scaled_F_calc_full``.
 
-The likelihood is supplied **per reflection**, as :meth:`_per_refl`, so that both
+The likelihood is supplied **per reflection**, as ``_per_refl``, so that both
 the summed loss (``forward``) and the unsummed one (:meth:`~XrayTarget.residuals`) come
 from one expression and cannot encode different objectives. ``residuals`` is what
 lets anything outside the target ask which reflections the model fails to explain,
@@ -192,7 +192,7 @@ class XrayTarget(DataTarget):
     # sum, so the two can never drift apart into different objectives.
 
     def _loss_inputs(self, fcalc: torch.Tensor = None, sub=None):
-        """Everything this row's :meth:`_per_refl` reads, restricted to ``sub``.
+        """Everything this row's ``_per_refl`` reads, restricted to ``sub``.
 
         The default is :meth:`get_data`'s 5-tuple. The sigma_A family overrides it
         with a :class:`~.sigma_a.SigmaALossInputs`, which additionally carries the
@@ -256,7 +256,7 @@ class XrayTarget(DataTarget):
         ``R_work`` is computed on the work subset and ``R_free`` on the free
         subset — the same subsets the loss uses, so any validation reflections
         are excluded from both. All X-ray targets share this implementation;
-        only the *scale* (:meth:`_scaled_F_calc_full`) varies by target.
+        only the *scale* (``_scaled_F_calc_full``) varies by target.
 
         Parameters
         ----------

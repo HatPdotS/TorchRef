@@ -43,7 +43,7 @@ _R_PCT_LABELS = ("p10", "p25", "p50", "p75", "p90")
 
 
 class CollectionLossInputs(NamedTuple):
-    """What a collection row's :meth:`CollectionXrayTarget._per_refl` reads.
+    """What a collection row's ``CollectionXrayTarget._per_refl`` reads.
 
     Every tensor is ``(N, n_hkl)`` on the collection's common HKL grid, with ``N`` the
     number of matched datasets in ``keys`` order -- full size rather than compact, because
@@ -251,7 +251,7 @@ class CollectionXrayTarget(Target):
         :class:`CollectionLossInputs` for the shapes and the NaN discipline.
 
         Rows narrow the mask here (the difference targets require a reflection to be in
-        the subset of every dataset) rather than inside :meth:`_per_refl`, so that
+        the subset of every dataset) rather than inside ``_per_refl``, so that
         :meth:`forward`'s sum and :meth:`residuals`' array agree on which reflections
         count.
         """
@@ -280,7 +280,7 @@ class CollectionXrayTarget(Target):
         raise NotImplementedError
 
     def forward(self) -> torch.Tensor:
-        """Masked sum of :meth:`_per_refl`, with ``base_weight`` on the work set only.
+        """Masked sum of ``_per_refl``, with ``base_weight`` on the work set only.
 
         Cache reset first: a preceding no-grad ``stats()`` or ``get_rfactor()`` call can
         leave a detached tensor in a base model's cache, which would silently kill the
@@ -302,7 +302,7 @@ class CollectionXrayTarget(Target):
         return total
 
     def residuals(self) -> torch.Tensor:
-        """:meth:`_per_refl` over every reflection, ``(N, n_hkl)``, unsummed and unmasked.
+        """``_per_refl`` over every reflection, ``(N, n_hkl)``, unsummed and unmasked.
 
         The unreduced :meth:`forward`: same observable, same model, same variance. Masked
         reflections still get a value, so the array can be used to ask *why* one was

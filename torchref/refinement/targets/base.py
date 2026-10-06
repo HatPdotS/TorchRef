@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 class Target(DeviceMixin, nn.Module):
     """Abstract base class for all target functions.
 
-    Register tunables as buffers (see :meth:`_register_scalar`) so they are
+    Register tunables as buffers (see ``_register_scalar``) so they are
     reachable by state_dict path. ``Target()`` with no arguments is a valid empty
     shell for ``load_state_dict``.
 
@@ -74,7 +74,7 @@ class Target(DeviceMixin, nn.Module):
             Verbosity level. Default is 0.
         device : torch.device, optional
             Where this target allocates. Defaults to the configured default;
-            :meth:`_adopt_device` refines it from whatever model / data /
+            ``_adopt_device`` refines it from whatever model / data /
             scaler the subclass is given.
         """
         super().__init__()

@@ -126,7 +126,7 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         A reflection counts only if it is in this target's subset in **every** dataset:
         the per-reflection mean ties them together, so a reflection missing from one
         member would silently shift the reference for all the others. Narrowed here
-        rather than inside :meth:`_per_refl` so ``forward``'s sum and ``residuals``'
+        rather than inside ``_per_refl`` so ``forward``'s sum and ``residuals``'
         array agree on which reflections count.
         """
         ctx = super()._loss_inputs(recalc=recalc)

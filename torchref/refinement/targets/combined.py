@@ -33,7 +33,7 @@ class CombinedModelTargets(ModelTarget):
     """Combined-target base for components that need only a Model.
 
     Sums geometry or ADP restraint components held in a ModuleDict; subclasses
-    override :meth:`_create_targets`. Components are reachable by name
+    override ``_create_targets``. Components are reachable by name
     (``self['bond']``) and through ``keys``/``values``/``items``. Not listed in
     ``targets/__init__.__all__``.
 
