@@ -142,6 +142,22 @@ class TestReflectionDataProperties:
 
         assert data.amplitude_source is None
 
+    @pytest.mark.unit
+    def test_space_group_identity_of_loaded_data_and_collection(self, mtz_dir):
+        """The name, H-M symbol and number come from the stored SpaceGroup."""
+        from torchref.io import DatasetCollection, FcalcDataset, ReflectionData
+
+        data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+        collection = DatasetCollection(verbose=0).add_dataset("1DAW", data)
+        fcalc = FcalcDataset.from_cell_and_resolution(
+            data.cell, data.spacegroup, d_min=4.0
+        )
+
+        for dataset in (data, collection, fcalc):
+            assert dataset.spacegroup_name == "C2"
+            assert dataset.spacegroup_hm == "C 1 2 1"
+            assert dataset.spacegroup_number == 5
+
 
 class TestMockReflectionData:
     """Tests using mock reflection data."""

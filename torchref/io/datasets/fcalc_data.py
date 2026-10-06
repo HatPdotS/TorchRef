@@ -487,24 +487,3 @@ class FcalcDataset(CrystalDataset):
             f"{self.__class__.__name__}(n_reflections={n_refl}, "
             f"spacegroup='{sg}', fcalc={has_fcalc}, device={self.device})"
         )
-
-    @property
-    def spacegroup_name(self) -> Optional[str]:
-        """Get space group name as string (short form, e.g., 'P212121')."""
-        if self.spacegroup is None:
-            return None
-        return self.spacegroup.name
-
-    @property
-    def spacegroup_hm(self) -> Optional[str]:
-        """Get space group Hermann-Mauguin name with spaces (e.g., 'P 21 21 21')."""
-        if self.spacegroup is None:
-            return None
-        return self.spacegroup.hm
-
-    @property
-    def spacegroup_number(self) -> Optional[int]:
-        """Get space group number (1-230)."""
-        if self.spacegroup is None:
-            return None
-        return self.spacegroup.number

@@ -11,7 +11,6 @@ import warnings
 from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
-import gemmi
 import torch
 
 from torchref.config import get_default_device, get_float_dtype, normalize_device
@@ -252,18 +251,18 @@ class CrystalDataset(DeviceMovementMixin):
         """Get space group name as string (short form, e.g., 'P212121')."""
         if self.spacegroup is None:
             return None
-        return gemmi.SpaceGroup(self.spacegroup).short_name()
+        return self.spacegroup.name
 
     @property
     def spacegroup_hm(self) -> Optional[str]:
         """Get space group Hermann-Mauguin name with spaces (e.g., 'P 21 21 21')."""
         if self.spacegroup is None:
             return None
-        return gemmi.SpaceGroup(self.spacegroup).hm
+        return self.spacegroup.hm
 
     @property
     def spacegroup_number(self) -> Optional[int]:
         """Get space group number (1-230)."""
         if self.spacegroup is None:
             return None
-        return gemmi.SpaceGroup(self.spacegroup).number
+        return self.spacegroup.number
