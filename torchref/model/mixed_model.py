@@ -66,6 +66,9 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         Default is False.
     verbose : int, optional
         Verbosity level. Default is 0.
+    device : torch.device, optional
+        Device to place the model and parameters on. If None, infers from
+        the first model's device.
 
     Attributes
     ----------
@@ -73,6 +76,12 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         Constituent ModelFT objects (proper submodule registration).
     fraction_params : nn.Parameter
         Raw parameters for fraction computation (softmax applied).
+
+    Raises
+    ------
+    ValueError
+        If models list is empty, fractions don't match model count, are
+        negative or don't sum to 1, or models have incompatible parameters.
     """
 
     def __init__(
@@ -83,29 +92,7 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         verbose: int = 0,
         device: Optional[torch.device] = None,
     ):
-        """
-        Initialize MixedModel.
-
-        Parameters
-        ----------
-        models : List[ModelFT]
-            List of ModelFT objects to combine.
-        initial_fractions : List[float], optional
-            Initial population fractions. Must sum to 1.0.
-        frozen_fractions : bool, optional
-            If True, fractions are frozen. Default is False.
-        verbose : int, optional
-            Verbosity level. Default is 0.
-        device : torch.device, optional
-            Device to place the model and parameters on. If None, infers from
-            the first model's device.
-
-        Raises
-        ------
-        ValueError
-            If models list is empty, fractions don't match model count, are
-            negative or don't sum to 1, or models have incompatible parameters.
-        """
+        """Initialize a MixedModel; see the class docstring for the arguments."""
         super().__init__()
 
         if not models:

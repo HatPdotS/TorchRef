@@ -53,6 +53,8 @@ class ModelFT(CachedForwardMixin, Model):
     ----------
     max_res : float, optional
         Maximum resolution for grid spacing in Angstroms. Default is 1.0.
+        (The splat radius is *not* set here: each atom is truncated at its own
+        ``torchref.sigma_cutoff_ed * sigma_eff``.)
     gridsize : tuple of int, optional
         Explicit grid size (nx, ny, nz). If None, computed from cell and max_res.
     wavelength : float or None, optional
@@ -64,6 +66,12 @@ class ModelFT(CachedForwardMixin, Model):
         Significance threshold for anomalous scattering in electrons.
         Atoms with ``|f'| > threshold`` or ``|f''| > threshold`` will have
         anomalous corrections applied. Default is 0.5.
+    apply_bijvoet : bool, optional
+        Apply the imaginary f'' (Bijvoet) term, which breaks Friedel's law
+        (``F(+h) != F(-h)``). Default False, and correct only for
+        Friedel-unmerged data -- on merged data f'' cannot affect the
+        Friedel-mean amplitude. The dispersive f' is applied whenever a
+        wavelength is set. Bound from ``ReflectionData.friedel_merged``.
     *args
         Additional positional arguments passed to parent Model class.
     **kwargs
@@ -95,38 +103,7 @@ class ModelFT(CachedForwardMixin, Model):
         apply_bijvoet: bool = False,
         **kwargs,
     ):
-        """
-        Initialize an empty ModelFT shell.
-
-        Creates a model shell ready for file loading via load_pdb()/load_cif()
-        or state restoration via load_state_dict().
-
-        Parameters
-        ----------
-        max_res : float, optional
-            Maximum resolution for grid spacing in Angstroms. Default is 1.0.
-            (The splat radius is *not* set here: each atom is truncated at its own
-            ``torchref.sigma_cutoff_ed * sigma_eff``.)
-        gridsize : tuple of int, optional
-            Explicit grid size tuple (nx, ny, nz). If None, computed automatically.
-        wavelength : float or None, optional
-            X-ray wavelength of the data in Angstroms, which sets the anomalous
-            f' and f''. Default None: no anomalous scattering, f0 only.
-        anomalous_threshold : float, optional
-            Significance threshold for anomalous scattering in electrons.
-            Atoms with ``|f'| > threshold`` or ``|f''| > threshold`` will have
-            anomalous corrections applied. Default is 0.5.
-        apply_bijvoet : bool, optional
-            Apply the imaginary f'' (Bijvoet) term, which breaks Friedel's law
-            (``F(+h) != F(-h)``). Default False, and correct only for
-            Friedel-unmerged data -- on merged data f'' cannot affect the
-            Friedel-mean amplitude. The dispersive f' is applied whenever a
-            wavelength is set. Bound from ``ReflectionData.friedel_merged``.
-        *args
-            Passed to parent Model class.
-        **kwargs
-            Passed to parent Model class.
-        """
+        """Initialize an empty ModelFT; see the class docstring for the arguments."""
         super().__init__(*args, **kwargs)
 
         # The engine reads cell and space group off ``self.ctx`` as they are set;
