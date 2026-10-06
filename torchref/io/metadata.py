@@ -46,6 +46,25 @@ _KEEP_CIF_CATEGORIES = (
     "_chem_comp", "_struct_ref", "_struct_ref_seq", "_exptl",
 )
 
+#: Category prefixes of an input CIF's refinement record, the counterpart of
+#: REMARK 3: carried only by ``from_cif_file(supersede_refinement=False)``.
+_REFINEMENT_CIF_PREFIXES = ("_refine", "_pdbx_refine", "_pdbx_initial_refinement_model")
+
+#: Fields that describe the input entry rather than a refinement of it.
+#: Metadata that sets no other field is an annotation, which keeps the input's
+#: own refinement record instead of generating one.
+_ANNOTATION_FIELDS = {
+    "program",
+    "title",
+    "authors",
+    "cell",
+    "spacegroup",
+    "software_chain",
+    "passthrough_pdb_remarks",
+    "passthrough_pdb_records",
+    "passthrough_cif_categories",
+}
+
 #: Width of the label field in a REMARK 3 line, so the colons line up. Matches
 #: the longest label we emit ("RESOLUTION RANGE HIGH (ANGSTROMS)").
 _REMARK3_LABEL_WIDTH = 33
@@ -401,18 +420,26 @@ class RefinementMetadata:
         return meta
 
     @classmethod
-    def from_cif_file(cls, filepath: str) -> RefinementMetadata:
+    def from_cif_file(
+        cls, filepath: str, *, supersede_refinement: bool = True
+    ) -> RefinementMetadata:
         """Extract the carry-through metadata of an existing mmCIF file.
 
-        Captures ``_struct.title``, the entity/sequence/connectivity categories
-        in ``_KEEP_CIF_CATEGORIES``, and the ``_software`` loop -- the last so
-        this refinement can append itself to the chain of programs rather than
-        presenting itself as the only one.
+        Captures ``_struct.title``, the categories in ``_KEEP_CIF_CATEGORIES``
+        and the ``_software`` loop, which this refinement appends itself to.
+        Values are stored unquoted, so they are quoted once when written.
 
-        The input's ``_refine`` category is deliberately NOT captured. It holds
-        the previous program's R-factors and resolution, which this refinement
-        supersedes; carrying them forward is the mmCIF form of the duplicated
-        REMARK 3 that ``from_pdb_file`` used to produce.
+        Parameters
+        ----------
+        filepath : str
+            Path to the mmCIF file.
+        supersede_refinement : bool, optional
+            Whether this file's refinement is about to be replaced -- the
+            default, and the case for refinement output: the input's
+            refinement record (``_refine`` and the other categories in
+            ``_REFINEMENT_CIF_PREFIXES``) is not captured. Pass ``False`` when
+            annotating a file without re-refining it, to keep that record and
+            the ``_audit_author`` names.
         """
         meta = cls()
         try:
@@ -445,6 +472,20 @@ class RefinementMetadata:
                             entry[key] = val
                 chain.append(entry)
             meta.software_chain = chain
+            if not supersede_refinement:
+                meta.authors = [
+                    gemmi.cif.as_string(name)
+                    for name in block.find_values("_audit_author.name")
+                ]
+
+            def carried(category: str) -> bool:
+                return category in _KEEP_CIF_CATEGORIES or (
+                    not supersede_refinement
+                    and category.startswith(_REFINEMENT_CIF_PREFIXES)
+                )
+
+            def unquoted(token: str) -> str:
+                return token if gemmi.cif.is_null(token) else gemmi.cif.as_string(token)
 
             # Entity, sequence and connectivity categories, in whichever form
             # the input used them (loop or key-value).
@@ -452,19 +493,19 @@ class RefinementMetadata:
             for item in block:
                 if item.loop is not None:
                     tags = list(item.loop.tags)
-                    if tags[0].split(".")[0] not in _KEEP_CIF_CATEGORIES:
+                    if not carried(tags[0].split(".")[0]):
                         continue
                     cats[tags[0].split(".")[0]] = {
                         tag: [
-                            item.loop[r, c] for r in range(item.loop.length())
+                            unquoted(item.loop[r, c]) for r in range(item.loop.length())
                         ]
                         for c, tag in enumerate(tags)
                     }
                 elif item.pair is not None:
                     tag, val = item.pair
                     category = tag.split(".")[0]
-                    if category in _KEEP_CIF_CATEGORIES:
-                        cats.setdefault(category, {})[tag] = val
+                    if carried(category):
+                        cats.setdefault(category, {})[tag] = unquoted(val)
             meta.passthrough_cif_categories = cats
 
         except Exception:
@@ -538,7 +579,10 @@ class RefinementMetadata:
         entry-level records, then REMARKs in ascending numeric order with ours
         slotted in at 3, then sequence, chemistry and connectivity. Only the
         REMARK 3 block is generated; everything else is either carried through
-        from the input or supplied by the caller.
+        from the input or supplied by the caller. Metadata that sets no
+        refinement field annotates the input instead, and keeps the input's
+        own REMARK 3 when ``from_pdb_file(supersede_refinement=False)``
+        collected one.
         """
         lines: List[str] = []
         records = self.passthrough_pdb_records
@@ -566,7 +610,11 @@ class RefinementMetadata:
 
         passthrough = sorted(self.passthrough_pdb_remarks, key=_remark_number)
         lines.extend(r for r in passthrough if _remark_number(r) < 3)
-        lines.extend(self._render_remark3())
+        remark3 = [r for r in passthrough if _remark_number(r) == 3]
+        if remark3 and self._is_annotation():
+            lines.extend(remark3)
+        else:
+            lines.extend(self._render_remark3())
         lines.extend(r for r in passthrough if _remark_number(r) > 3)
 
         # -- sequence, chemistry, connectivity ---------------------------- #
@@ -575,6 +623,10 @@ class RefinementMetadata:
               "SSBOND", "LINK", "CISPEP", "SITE")
 
         return "\n".join(lines) + "\n"
+
+    def _is_annotation(self) -> bool:
+        """Whether only ``_ANNOTATION_FIELDS`` are set (no refinement field)."""
+        return set(self.to_dict()) <= _ANNOTATION_FIELDS
 
     def _render_remark3(self) -> List[str]:
         """Build the REMARK 3 block: this refinement, and only this one."""
@@ -656,6 +708,9 @@ class RefinementMetadata:
 
         Returns a dict of dicts keyed by mmCIF category, with item names
         as keys and string values. Uses official PDBx/mmCIF field names.
+        Metadata that sets no refinement field annotates the input: it adds no
+        ``_software`` row for this program and keeps the input's refinement
+        categories, which ``from_cif_file(supersede_refinement=False)`` carries.
 
         Returns
         -------
@@ -687,17 +742,21 @@ class RefinementMetadata:
             ours["version"] = self.program_version
         if description:
             ours["description"] = description
-        chain.append(ours)
+        # An annotation credits no program with a refinement it did not run.
+        annotation = self._is_annotation()
+        if not annotation:
+            chain.append(ours)
         columns = [
             key
             for key in ("pdbx_ordinal", "name", "version", "classification",
                         "description")
             if any(key in entry for entry in chain)
         ]
-        cats["_software"] = {
-            f"_software.{key}": [entry.get(key, "?") for entry in chain]
-            for key in columns
-        }
+        if chain:
+            cats["_software"] = {
+                f"_software.{key}": [entry.get(key, "?") for entry in chain]
+                for key in columns
+            }
 
         # _struct
         if self.title:
@@ -782,10 +841,14 @@ class RefinementMetadata:
                 hist["_refine_hist.number_atoms_solvent"] = str(self.n_atoms_solvent)
             cats["_refine_hist"] = hist
 
-        # Pass-through CIF categories
+        # Pass-through CIF categories. The input's refinement record stands
+        # only for an annotation; a refinement replaces all of it.
         for cat_name, items in self.passthrough_cif_categories.items():
-            if cat_name not in cats:
-                cats[cat_name] = items
+            if cat_name in cats or (
+                cat_name.startswith(_REFINEMENT_CIF_PREFIXES) and not annotation
+            ):
+                continue
+            cats[cat_name] = items
 
         return cats
 

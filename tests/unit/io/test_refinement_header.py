@@ -17,6 +17,7 @@ previous program's output.
 
 from pathlib import Path
 
+import gemmi
 import pandas as pd
 import pytest
 
@@ -26,6 +27,10 @@ from torchref.io.metadata import RefinementMetadata
 # 3GR5 was refined with REFMAC 5.1.24 and carries a full deposition header:
 # 420 lines including REMARK 2/3/500, JRNL, AUTHOR, SEQRES, SSBOND and SITE.
 INPUT_PDB = str(Path(__file__).resolve().parents[2] / "files" / "pdb" / "3GR5.pdb")
+
+# 1DAW was refined with REFMAC; both its PDB and its mmCIF carry the record.
+PDB_1DAW = str(Path(__file__).resolve().parents[2] / "files" / "pdb" / "1DAW.pdb")
+CIF_1DAW = str(Path(__file__).resolve().parents[2] / "files" / "cif" / "1DAW.cif")
 
 #: PDB record order, abridged to the records this writer can emit. The format
 #: mandates this sequence; TITLE used to be written *after* REMARK 900.
@@ -452,3 +457,56 @@ def test_refinement_output_supersedes_by_default():
     numbers = {_remark_number(r) for r in meta.passthrough_pdb_remarks}
     assert not ({2, 3, 500} & numbers)
     assert meta.authors == []
+
+
+@pytest.mark.unit
+def test_annotation_keeps_the_input_remark_3():
+    """A title alone does not replace the REFMAC record with a TORCHREF one."""
+    meta = RefinementMetadata.from_pdb_file(PDB_1DAW, supersede_refinement=False)
+    meta.title = "Annotated"
+    header = meta.render_pdb_header().splitlines()
+    with open(PDB_1DAW) as handle:
+        remark3 = [
+            line.rstrip("\n") for line in handle if line.startswith("REMARK   3")
+        ]
+    assert [line for line in header if line.startswith("REMARK   3")] == remark3
+    assert not any("PROGRAM     : TORCHREF" in line for line in header)
+
+
+@pytest.mark.unit
+def test_a_statistic_turns_annotation_into_our_record():
+    meta = RefinementMetadata.from_pdb_file(PDB_1DAW, supersede_refinement=False)
+    meta.r_work = 0.2
+    header = meta.render_pdb_header()
+    assert "PROGRAM     : TORCHREF" in header
+    assert "PROGRAM     : REFMAC" not in header
+
+
+@pytest.mark.unit
+def test_carried_cif_values_are_quoted_once(tmp_path):
+    """Values carried from an mmCIF input are re-quoted once, so the file parses."""
+    out = tmp_path / "carried.cif"
+    meta = RefinementMetadata.from_cif_file(CIF_1DAW)
+    cif.write_model(_atom_df(), str(out), metadata=meta)
+
+    block = gemmi.cif.read(str(out)).sole_block()
+    assert "'PROTEIN KINASE CK2'" in list(block.find_values("_entity.pdbx_description"))
+
+
+@pytest.mark.unit
+def test_cif_annotation_keeps_the_input_refinement():
+    """The mmCIF counterpart: _refine and the authors stay, TORCHREF is not added."""
+    meta = RefinementMetadata.from_cif_file(CIF_1DAW, supersede_refinement=False)
+    meta.title = "Annotated"
+    cats = meta.render_cif_categories()
+    assert cats["_refine"]["_refine.ls_R_factor_R_work"] == "0.2120000"
+    assert "_refine_hist" in cats
+    assert cats["_software"]["_software.name"][0] == "REFMAC"
+    assert "TORCHREF" not in cats["_software"]["_software.name"]
+    assert meta.authors
+
+    meta.r_work = 0.2
+    cats = meta.render_cif_categories()
+    assert cats["_refine"] == {"_refine.ls_R_factor_R_work": "0.2000"}
+    assert "_refine_hist" not in cats
+    assert cats["_software"]["_software.name"][-1] == "TORCHREF"
