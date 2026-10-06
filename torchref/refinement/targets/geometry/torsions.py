@@ -34,42 +34,6 @@ def _von_mises_nll(deviations_rad, sigmas_deg):
     return -log_prob
 
 
-def _omega_mixture_nll(omega_rad, sigmas_deg, is_proline,
-                       w_cis_proline=0.05, w_cis_general=0.0005):
-    """Per-restraint cis/trans von Mises mixture NLL for omega torsions.
-
-    ``P(ω) = w_trans·VM(ω; 180°, κ) + w_cis·VM(ω; 0°, κ)``, and since
-    ``cos(ω − π) = −cos(ω)`` this is
-    ``log 2π + log I₀(κ) − logsumexp(log w_trans − κ cos ω, log w_cis + κ cos ω)``.
-
-    ``omega_rad`` in radians, ``sigmas_deg`` in degrees (monomer library, typically 5°),
-    ``is_proline`` True where the NEXT residue is proline. The cis priors default to the
-    PDB frequencies: ~5% pre-proline, ~0.05% elsewhere.
-    """
-    sigmas_rad = sigmas_deg * (np.pi / 180.0)
-    kappa = torch.clamp(1.0 / (sigmas_rad**2), min=1e-3, max=1e4)
-
-    log_i0_kappa = torch.log(torch.special.i0e(kappa)) + kappa
-    log_2pi = torch.log(
-        torch.tensor(2.0 * np.pi, device=kappa.device, dtype=kappa.dtype)
-    )
-    log_norm = log_2pi + log_i0_kappa
-
-    w_cis = torch.where(
-        is_proline,
-        torch.tensor(w_cis_proline, device=kappa.device, dtype=kappa.dtype),
-        torch.tensor(w_cis_general, device=kappa.device, dtype=kappa.dtype),
-    )
-    w_trans = 1.0 - w_cis
-
-    cos_omega = torch.cos(omega_rad)
-    log_p_trans = torch.log(w_trans) - kappa * cos_omega
-    log_p_cis = torch.log(w_cis) + kappa * cos_omega
-
-    log_mixture = torch.logsumexp(torch.stack([log_p_trans, log_p_cis]), dim=0)
-    return log_norm - log_mixture
-
-
 class TorsionTarget(GeometryTarget):
     """
     Torsion angle restraint target.
@@ -172,7 +136,6 @@ class TorsionTarget(GeometryTarget):
             deviations_deg = deviations_rad * (180.0 / np.pi)
             sigmas_rad = sigmas_deg * (np.pi / 180.0)
             z_scores = deviations_rad / sigmas_rad
-            nll = _von_mises_nll(deviations_rad, sigmas_deg)
 
             result["n"] = stat(len(deviations_rad), VERBOSITY_DEBUG)
             result["rms_delta"] = stat(
