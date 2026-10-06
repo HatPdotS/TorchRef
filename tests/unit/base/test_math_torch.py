@@ -206,6 +206,26 @@ class TestSmallestDiff:
     """Tests for periodic boundary difference calculations."""
 
     @pytest.mark.unit
+    def test_smallest_diff_aniso_leaves_its_input_alone(self):
+        """(9, 0, 0) in a 10 Å cube maps to (-1, 0, 0); the input is left as it was."""
+        from torchref.base.coordinates import (
+            get_fractional_matrix,
+            get_inv_fractional_matrix_torch,
+            smallest_diff,
+            smallest_diff_aniso,
+        )
+
+        cell = torch.tensor([10.0, 10.0, 10.0, 90.0, 90.0, 90.0])
+        inv_frac = get_inv_fractional_matrix_torch(cell)
+        frac = get_fractional_matrix(cell)
+        diff = torch.tensor([[9.0, 0.0, 0.0]])
+
+        image = smallest_diff_aniso(diff, inv_frac, frac)
+        assert torch.allclose(image, torch.tensor([[-1.0, 0.0, 0.0]]), atol=1e-5)
+        assert torch.equal(diff, torch.tensor([[9.0, 0.0, 0.0]]))
+        assert torch.allclose(smallest_diff(diff, inv_frac, frac), torch.ones(1))
+
+    @pytest.mark.unit
     def test_smallest_diff_no_wrap(self, mock_cell):
         """Test smallest difference without wrapping."""
         from torchref.base.math_torch import smallest_diff

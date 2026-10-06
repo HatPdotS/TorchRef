@@ -29,12 +29,7 @@ def smallest_diff(
     torch.Tensor
         Squared distances with shape (...).
     """
-    diff_shape = diff.shape
-    diff = diff.reshape(-1, 3)
-    diff_frac = torch.matmul(inv_frac_matrix, diff.T)
-    translation = torch.round(diff_frac)
-    diff = diff - torch.matmul(frac_matrix, translation).T
-    return torch.sum(diff**2, axis=-1).reshape(diff_shape[:-1])
+    return smallest_diff_aniso(diff, inv_frac_matrix, frac_matrix).pow(2).sum(-1)
 
 
 def smallest_diff_aniso(
@@ -55,21 +50,12 @@ def smallest_diff_aniso(
     Returns
     -------
     torch.Tensor
-        Signed difference vectors with shape (..., 3), for downstream
-        anisotropic use.
-
-    Notes
-    -----
-    Unlike :func:`smallest_diff` (which returns squared distances), this
-    returns the *signed* minimum-image vectors. The sign is required because
-    anisotropic calculations form a quadratic form with the off-diagonal
-    terms of the ADP ``U`` tensor (e.g. ``sᵀ U s`` in the anisotropic
-    structure factor), where the cross terms depend on the sign of the
-    components.
+        Signed minimum-image vectors with shape (..., 3), in Å; the anisotropic
+        Gaussian needs the vector, not just its length.
     """
     diff_shape = diff.shape
     diff = diff.reshape(-1, 3)
     diff_frac = torch.matmul(inv_frac_matrix, diff.T)
     translation = torch.round(diff_frac)
-    diff -= torch.matmul(frac_matrix, translation).T
+    diff = diff - torch.matmul(frac_matrix, translation).T
     return diff.reshape(diff_shape)
