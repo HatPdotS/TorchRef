@@ -150,6 +150,7 @@ class NonBondedHTarget(NonBondedTarget):
             self._r_exp,
             float(self._buffer),
             self._sigma_vdw,
+            h_topo.cand_weight,
         )
 
     # ------------------------------------------------------------------

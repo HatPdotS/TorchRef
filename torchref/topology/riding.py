@@ -28,6 +28,7 @@ import torch
 from torchref.base.coordinates.local_frame import frame_is_degenerate
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import dtypes, get_int_dtype, normalize_device
+from torchref.topology.nonbonded import IMAGE_PAIR_WEIGHT
 from torchref.topology.residue_graph import build_residue_nodes
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
@@ -111,6 +112,10 @@ class HydrogenTopology(DeviceMixin):
         Precomputed H candidate pairs.
     cand_min_dist : torch.Tensor
         Per-pair minimum-distance scratch buffer, ``(P,)``.
+    cand_weight : torch.Tensor
+        Loss weight per candidate pair, ``(P,)``:
+        :data:`~torchref.topology.nonbonded.IMAGE_PAIR_WEIGHT` for an H-H crystal
+        contact, which the list holds from both of its ends, 1 otherwise.
     """
 
     device: Optional[torch.device] = None
@@ -131,6 +136,7 @@ class HydrogenTopology(DeviceMixin):
     cand_symop_idx: Optional[torch.Tensor] = None
     cand_cell_offset: Optional[torch.Tensor] = None
     cand_min_dist: Optional[torch.Tensor] = None
+    cand_weight: Optional[torch.Tensor] = None
 
     # Derived at first placement and reused across steps; see reset_cache.
     _dir_coeffs: Optional[torch.Tensor] = field(default=None, repr=False)
@@ -817,7 +823,8 @@ def build_h_candidate_pairs(
     directions of every image contact, as ``build_vdw_restraints_gpu`` emits them.
     Mutates ``h_topo`` in place, registering ``cand_idx_i``/``cand_idx_j``
     (combined-array atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (the
-    image of the ``cand_idx_j`` end) and ``cand_min_dist`` (H + heavy radius sum).
+    image of the ``cand_idx_j`` end), ``cand_weight`` and ``cand_min_dist`` (H + heavy
+    radius sum).
 
     Parameters
     ----------
@@ -847,6 +854,7 @@ def build_h_candidate_pairs(
             0, 3, dtype=get_int_dtype(), device=device
         )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
+        h_topo.cand_weight = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
     heavy_indices = vdw_data["indices"]  # (P, 2)
@@ -921,11 +929,9 @@ def build_h_candidate_pairs(
                 acc_offset.append(np.zeros(3, dtype=np.int64))
 
         # --- H on A ↔ H on B  (H-H contacts) ---
+        # An intra-ASU heavy pair is listed once, so each of its H-H contacts is too.
         for hi_a in h_on_A:
             for hi_b in h_on_B:
-                # For intra-ASU, only keep hi_a < hi_b to avoid double-counting
-                if is_intra_asu and hi_a >= hi_b:
-                    continue
                 acc_idx_i.append(n_heavy + hi_a)
                 acc_idx_j.append(n_heavy + hi_b)
                 acc_symop.append(sym)
@@ -938,6 +944,7 @@ def build_h_candidate_pairs(
             0, 3, dtype=get_int_dtype(), device=device
         )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
+        h_topo.cand_weight = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
     cand_i = torch.tensor(acc_idx_i, dtype=get_int_dtype(), device=device)
@@ -994,9 +1001,18 @@ def build_h_candidate_pairs(
 
     h_topo.cand_min_dist = torch.zeros(len(cand_i), dtype=dtypes.float, device=device)
 
+    # An H-H crystal contact comes from an image heavy pair and from its reverse, so
+    # it is listed from both ends; an H-heavy one only from its hydrogen's end, since
+    # the reverse heavy pair gives the other atom's hydrogens instead.
+    image = is_symmetry_image(cand_sym, cand_off)
+    both_h = (cand_i >= n_heavy) & (cand_j >= n_heavy)
+    h_topo.cand_weight = torch.where(image & both_h, IMAGE_PAIR_WEIGHT, 1.0).to(
+        dtypes.float
+    )
+
     if verbose > 0:
-        n_hh = ((cand_i >= n_heavy) & (cand_j >= n_heavy)).sum().item()
-        n_sym = is_symmetry_image(cand_sym, cand_off).sum().item()
+        n_hh = both_h.sum().item()
+        n_sym = image.sum().item()
         print(
             f"  H candidate pairs: {len(cand_i)} "
             f"({n_hh} H-H, {len(cand_i)-n_hh} H-heavy, {n_sym} symmetry)"

@@ -42,8 +42,10 @@ class NonBondedTarget(GeometryTarget):
     near the classical ``c_rep=16, r_exp=4`` (:math:`\sigma \approx 0.354`).
 
     With cell and spacegroup on the model, ASU-to-symmetry-mate contacts are
-    included; mate positions are recomputed from current ASU coordinates each
-    call, so gradients reach both atoms of a pair.
+    included, each at half weight: the pair list holds a crystal contact from both
+    of its ends, so it counts once, as a contact inside the ASU does. Mate positions
+    are recomputed from current ASU coordinates each call, so gradients reach both
+    atoms of a pair.
 
     Reference: cctbx/geometry_restraints/nonbonded.h, PROLSQ documentation,
     MolProbity clash criterion (Davis et al., NAR 2007).
@@ -268,6 +270,7 @@ class NonBondedTarget(GeometryTarget):
             self._r_exp,
             self._buffer,
             self._sigma_vdw,
+            vdw_data["weights"],
         )
 
     def get_violations(self, threshold: float = 0.0) -> Dict[str, torch.Tensor]:

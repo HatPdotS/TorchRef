@@ -829,6 +829,14 @@ def filter_pairs(
 # Orchestrator
 # ------------------------------------------------------------------ #
 
+#: Loss weight of a pair whose partner is a symmetry or lattice image. Such a row is one
+#: end of a crystal contact; the other end is the partner's row against the inverse
+#: image (the same row, for an atom and its image across a two-fold). Each end carries
+#: half, so a crystal contact counts once in the energy of the asymmetric unit, as a
+#: contact inside it does.
+IMAGE_PAIR_WEIGHT = 0.5
+
+
 @torch.no_grad()
 def build_vdw_restraints_gpu(
     xyz: torch.Tensor,
@@ -882,6 +890,7 @@ def build_vdw_restraints_gpu(
         "sigmas": torch.zeros(0, dtype=get_float_dtype(), device=device),
         "symop_indices": torch.zeros(0, dtype=get_int_dtype(), device=device),
         "cell_offsets": torch.zeros(0, 3, dtype=get_int_dtype(), device=device),
+        "weights": torch.zeros(0, dtype=get_float_dtype(), device=device),
     }
 
     # Step 1: prefilter symop combos
@@ -1016,6 +1025,7 @@ def build_vdw_restraints_gpu(
     min_distances = contact_distances(
         vdw_radii.to(device), None if roles is None else roles.to(device), indices
     )
+    image = is_symmetry_image(symop_indices, pair_cell_offsets)
 
     result = {
         "indices": indices,
@@ -1025,6 +1035,7 @@ def build_vdw_restraints_gpu(
         ),
         "symop_indices": symop_indices,
         "cell_offsets": pair_cell_offsets,
+        "weights": torch.where(image, IMAGE_PAIR_WEIGHT, 1.0).to(get_float_dtype()),
         # Cached data for forward-time H-VDW pair search
         "valid_op_indices": op_indices,
         "valid_cell_offsets": cell_offsets_valid,
@@ -1035,7 +1046,7 @@ def build_vdw_restraints_gpu(
     }
 
     if verbose > 0:
-        n_sym = is_symmetry_image(symop_indices, pair_cell_offsets).sum().item()
+        n_sym = image.sum().item()
         print(f"  Built {len(indices)} VDW restraints, {n_sym} symmetry contacts")
 
     return result

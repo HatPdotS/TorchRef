@@ -7,6 +7,7 @@ the full space group. 6G9X (P 21 21 2, centroid at fractional x = 1.08) and 3E98
 runs the production builder and the riding-hydrogen candidates.
 """
 
+import math
 from collections import defaultdict
 
 import gemmi
@@ -263,6 +264,95 @@ def test_riding_h_candidates_are_scored_near_their_heavy_contact(model_1daw):
     assert bool(image.any())
     reach = CUTOFF + 2.0 * float(h_topo.h_bond_length.max()) + _DIST_ATOL
     assert float((pos_j - pos_i).norm(dim=1).max()) < reach
+
+
+def _prolsq(pos1, pos2, minimum, target):
+    """Per-pair PROLSQ NLL as the kernels score it, sqrt epsilon included, float64."""
+    distance = torch.sqrt(((pos2 - pos1).double() ** 2).sum(dim=1) + 1e-8)
+    overlap = (minimum.double() - distance).clamp(min=0)
+    constant = math.log(target.sigma_vdw) + 0.5 * math.log(2.0 * math.pi)
+    return target.c_rep * overlap**target.r_exp + constant
+
+
+def test_a_crystal_contact_counts_once(model_1daw):
+    """Both pair lists hold a crystal contact from both of its ends, so the loss takes
+    half of every image pair: the intra-ASU pairs plus half the image pairs, heavy
+    atoms and riding H-H contacts alike. An H-heavy candidate is listed from its
+    hydrogen's end only and counts in full."""
+    from torchref.refinement.targets import NonBondedHTarget, NonBondedTarget
+
+    restraints = model_1daw.restraints
+    cell, sg = model_1daw.cell, model_1daw.spacegroup
+    tables = (
+        sg.matrices,
+        sg.translations,
+        cell.fractional_matrix,
+        cell.inv_fractional_matrix,
+    )
+    xyz = model_1daw.xyz().detach()
+    target = NonBondedHTarget(model_1daw)
+
+    vdw = restraints.restraints["vdw"]
+    positions = nonbonded_pair_positions(
+        xyz, vdw["indices"], vdw["symop_indices"], vdw["cell_offsets"], *tables
+    )
+    nll = _prolsq(*positions, vdw["min_distances"], target)
+    image = is_symmetry_image(vdw["symop_indices"], vdw["cell_offsets"])
+    heavy = nll[~image].sum() + 0.5 * nll[image].sum()
+
+    h_topo = restraints.h_topo
+    n_heavy = restraints.topology.n_atoms
+    cand = torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1)
+    positions = nonbonded_pair_positions(
+        torch.cat([xyz, place_riding_hydrogens(xyz, h_topo)]),
+        cand,
+        h_topo.cand_symop_idx,
+        h_topo.cand_cell_offset,
+        *tables,
+    )
+    nll = _prolsq(*positions, h_topo.cand_min_dist, target)
+    both_ends = is_symmetry_image(h_topo.cand_symop_idx, h_topo.cand_cell_offset)
+    both_ends &= (cand >= n_heavy).all(dim=1)
+    riding = nll[~both_ends].sum() + 0.5 * nll[both_ends].sum()
+
+    assert bool(image.any()) and bool(both_ends.any())
+    with torch.no_grad():
+        heavy_loss = float(NonBondedTarget(model_1daw).forward())
+        total_loss = float(target.forward())
+    assert heavy_loss == pytest.approx(float(heavy), rel=1e-4)
+    assert total_loss == pytest.approx(float(heavy + riding), rel=1e-4)
+
+
+def test_every_riding_h_pair_on_a_contact_between_residues_is_listed_once(
+    model_1daw,
+):
+    """Each pair of riding hydrogens on the two atoms of an intra-ASU contact between
+    two residues is an H-H candidate, and only once."""
+    restraints = model_1daw.restraints
+    h_topo = restraints.h_topo
+    n_heavy = restraints.topology.n_atoms
+    residue_of = restraints.topology.atoms.residue_of.tolist()
+    riding = defaultdict(list)
+    for h, parent in enumerate(h_topo.h_parent_idx.tolist()):
+        riding[parent].append(n_heavy + h)
+
+    vdw = restraints.restraints["vdw"]
+    intra = ~is_symmetry_image(vdw["symop_indices"], vdw["cell_offsets"])
+    expected = {
+        frozenset((h_a, h_b))
+        for a, b in vdw["indices"][intra].tolist()
+        if residue_of[a] != residue_of[b]
+        for h_a in riding[a]
+        for h_b in riding[b]
+    }
+
+    i, j = h_topo.cand_idx_i, h_topo.cand_idx_j
+    hh = ~is_symmetry_image(h_topo.cand_symop_idx, h_topo.cand_cell_offset)
+    hh &= (i >= n_heavy) & (j >= n_heavy)
+    listed = [frozenset(pair) for pair in zip(i[hh].tolist(), j[hh].tolist())]
+    assert len(expected) > 1000
+    assert len(listed) == len(set(listed))
+    assert set(listed) == expected
 
 
 def test_hydrogen_bonds_are_held_to_the_hydrogen_bond_distance(model_1daw):
