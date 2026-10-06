@@ -433,7 +433,7 @@ def _match_intra_planes(
             continue
         start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
         for names, indices in _conformers(cols, start, end):
-            # Last-wins on a duplicate name, matching PlaneRestraintBuilder.
+            # Last-wins on a duplicate name.
             name_to_idx = dict(zip(names, indices))
             for plane in pp_cif.planes[key]:
                 present = []
