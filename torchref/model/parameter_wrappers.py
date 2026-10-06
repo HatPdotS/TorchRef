@@ -421,13 +421,15 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     def update_fixed_values(self, new_values: torch.Tensor):
         """Replace the whole ``fixed_values`` buffer, leaving
         ``refinable_params`` untouched -- so only the fixed positions actually
-        change what ``forward()`` returns. Raises ``ValueError`` on a shape
-        mismatch.
+        change what ``forward()`` returns. ``new_values`` is written as given, so it
+        is in storage space with the shape of ``fixed_values``, not of :attr:`shape`;
+        any other shape raises ``ValueError``.
         """
-        if new_values.shape != self.shape:
+        stored = tuple(getattr(self.fixed_values, "shape", ()))
+        if tuple(new_values.shape) != stored:
             raise ValueError(
-                f"new_values shape {new_values.shape} must match "
-                f"tensor shape {self.shape}"
+                f"new_values shape {tuple(new_values.shape)} must match the stored "
+                f"shape {stored}"
             )
         self.fixed_values = new_values.to(dtype=self.dtype, device=self.device).detach()
 
@@ -515,6 +517,19 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         """
         self._build_index_cache()
 
+    def _selection_mask(self, selection) -> torch.Tensor:
+        """Storage-space boolean mask of a :meth:`refine` / :meth:`fix` selection."""
+        if isinstance(selection, torch.Tensor) and selection.dtype == torch.bool:
+            if selection.ndim != 1 or selection.shape[0] != self._storage_rows:
+                raise ValueError(
+                    f"Boolean selection shape {tuple(selection.shape)} must be "
+                    f"({self._storage_rows},), one entry per stored row"
+                )
+            return selection.to(device=self.device)
+        mask = torch.zeros_like(self.refinable_mask)
+        mask[selection] = True
+        return mask
+
     def refine(
         self, selection: Union[slice, torch.Tensor, tuple], reset_values: bool = False
     ):
@@ -524,7 +539,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         Parameters
         ----------
         selection : slice, torch.Tensor, or tuple
-            Boolean mask (1-D over the first dimension), slice, integer indices,
+            Boolean mask (1-D over the stored rows), slice, integer indices,
             or index tuple.
         reset_values : bool, optional
             If True, re-baseline ``fixed_values`` to the current values first.
@@ -532,35 +547,9 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         """
         current_full = self._storage_values().detach()
 
-        # Union of the current refinable mask with the new selection.
-        new_mask = self.refinable_mask.clone()
-
-        if isinstance(selection, torch.Tensor):
-            if selection.dtype == torch.bool:
-                if len(self.shape) > 1:
-                    if selection.shape[0] != self._storage_rows or len(selection.shape) != 1:
-                        raise ValueError(
-                            f"Boolean selection shape {selection.shape} must be 1D "
-                            f"matching first dimension {self.shape[0]} for multi-dimensional "
-                            f"tensor with shape {self.shape}"
-                        )
-                else:
-                    if selection.shape != self.shape:
-                        raise ValueError(
-                            f"Boolean selection shape {selection.shape} must match "
-                            f"tensor shape {self.shape}"
-                        )
-                new_mask |= selection.to(device=self.device)
-            else:
-                temp_mask = torch.zeros_like(new_mask)
-                temp_mask[selection] = True
-                new_mask |= temp_mask
-        else:
-            temp_mask = torch.zeros_like(new_mask)
-            temp_mask[selection] = True
-            new_mask |= temp_mask
-
-        new_mask = self._normalize_refinable_mask(new_mask)
+        new_mask = self._normalize_refinable_mask(
+            self.refinable_mask | self._selection_mask(selection)
+        )
         self.refinable_mask = new_mask
         self.fixed_mask = ~new_mask
 
@@ -585,7 +574,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         Parameters
         ----------
         selection : slice, torch.Tensor, or tuple
-            Boolean mask (1-D over the first dimension), slice, integer indices,
+            Boolean mask (1-D over the stored rows), slice, integer indices,
             or index tuple.
         freeze_at_current : bool, optional
             If True (default), freeze at the current values; if False, the
@@ -593,35 +582,9 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         """
         current_full = self._storage_values().detach()
 
-        # Current refinable mask minus the selection.
-        new_mask = self.refinable_mask.clone()
-
-        if isinstance(selection, torch.Tensor):
-            if selection.dtype == torch.bool:
-                if len(self.shape) > 1:
-                    if selection.shape[0] != self._storage_rows or len(selection.shape) != 1:
-                        raise ValueError(
-                            f"Boolean selection shape {selection.shape} must be 1D "
-                            f"matching first dimension {self.shape[0]} for multi-dimensional "
-                            f"tensor with shape {self.shape}"
-                        )
-                else:
-                    if selection.shape != self.shape:
-                        raise ValueError(
-                            f"Boolean selection shape {selection.shape} must match "
-                            f"tensor shape {self.shape}"
-                        )
-                new_mask &= ~selection.to(device=self.device)
-            else:
-                temp_mask = torch.zeros_like(new_mask)
-                temp_mask[selection] = True
-                new_mask &= ~temp_mask
-        else:
-            temp_mask = torch.zeros_like(new_mask)
-            temp_mask[selection] = True
-            new_mask &= ~temp_mask
-
-        new_mask = self._normalize_refinable_mask(new_mask)
+        new_mask = self._normalize_refinable_mask(
+            self.refinable_mask & ~self._selection_mask(selection)
+        )
         self.refinable_mask = new_mask
         self.fixed_mask = ~new_mask
 

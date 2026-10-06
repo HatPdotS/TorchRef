@@ -897,8 +897,17 @@ class DisorderFieldTensor(MixedTensor):
 
     @property
     def shape(self):
-        """Shape of the FULL per-atom tensor, not the node storage."""
-        return (self._full_shape,)
+        """Shape of the per-atom output, ``(n_atoms,)`` or ``(n_atoms, 6)``.
+
+        The node storage has :attr:`node_shape`.
+        """
+        if self.out_width == 1:
+            return (self._full_shape,)
+        return (self._full_shape, self.out_width)
+
+    def _storage_values(self) -> torch.Tensor:
+        """The node storage, so the inherited storage-space edits act on nodes."""
+        return self.node_values()
 
     @property
     def node_shape(self):
