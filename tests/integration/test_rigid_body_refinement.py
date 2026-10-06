@@ -13,6 +13,7 @@ import torch
 
 from torchref.base.alignment.rotation import rotation_matrix_euler_zyz
 from torchref.refinement.lbfgs_refinement import LBFGSRefinement
+from torchref.scaling.scaler import Scaler
 
 
 def _build_refinement(pdb_dir, mtz_dir, name):
@@ -150,3 +151,22 @@ class TestScaleDegreesOfFreedom:
         step._rebind_for_data(ref.reflection_data, xray_mode="ml")
 
         assert ref.scaler.n_iso_coeff == ref.n_iso_coeff > 1
+
+
+class TestRebindCost:
+    @pytest.mark.integration
+    def test_each_cutoff_cold_starts_one_scaler(self, pdb_dir, mtz_dir, monkeypatch):
+        """One Scaler is built and initialized per cutoff, and none after the last."""
+        ref = _build_refinement(pdb_dir, mtz_dir, "1DAW")
+        calls = []
+        initialize = Scaler.initialize
+
+        def counting(self, *args, **kwargs):
+            calls.append(self)
+            return initialize(self, *args, **kwargs)
+
+        monkeypatch.setattr(Scaler, "initialize", counting)
+        cutoffs = [8.0, float(ref.reflection_data.d_min)]
+        ref.refine_rigid_body(cutoffs=cutoffs, iterations_per_step=2)
+
+        assert len(calls) == len(cutoffs)

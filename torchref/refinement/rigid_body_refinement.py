@@ -143,7 +143,6 @@ class RigidBodyRefinementStep:
     def _run(self):
         ref = self.refinement
         original_data = ref.reflection_data
-        original_mode = ref.xray_mode
 
         native_dmin = float(original_data.d_min)
         cutoffs = (
@@ -180,16 +179,10 @@ class RigidBodyRefinementStep:
                 step_state = self._run_one_cutoff(d_min)
                 history.append((float(d_min), step_state))
         finally:
-            # Before rebinding, so the scaler and targets are built against the
-            # data the caller has.
             restore_resolution_mask()
-            self._rebind_for_data(original_data, original_mode)
 
         if self.commit:
-            # Bake rigid coords into a fresh MixedTensor and re-bind
-            # scaler/targets/loss-state against the per-atom xyz.
             ref.model.restore_xyz_from_rigid(commit=True)
-            self._rebind_for_data(original_data, original_mode)
 
         return history
 
@@ -197,7 +190,7 @@ class RigidBodyRefinementStep:
     # Internal helpers
     # -----------------------------------------------------------------------
     def _rebind_for_data(self, data, xray_mode, model=None):
-        """Point scaler, ``xray_mode`` targets and loss state at ``data``.
+        """Point a new scaler and the ``xray_mode`` targets at ``data``.
 
         For ``ls_wunit_k1`` cutoffs the Scaler is built with ``nbins=1`` -- the mask-based
         bulk-solvent term is added to F_calc and the LS target's closed-form ``c[bins]``
@@ -220,12 +213,11 @@ class RigidBodyRefinementStep:
             verbose=ref.verbose,
             device=ref.device,
         )
-        ref.scaler.initialize()
         # Only the x-ray half of _init_targets: the step optimizes against x-ray data
         # alone, and TotalGeometryTarget / TotalADPTarget would be constructed here
         # purely to be left unused -- NonBondedTarget's pair list among them.
-        # get_scales() still runs, because the x-ray target reads the scaler's
-        # parameters.
+        # get_scales() still runs: it cold-starts the new scaler, whose parameters the
+        # x-ray target reads.
         ref._build_xray_targets(xray_mode)
         ref.get_scales()
         model.reset_cache()
