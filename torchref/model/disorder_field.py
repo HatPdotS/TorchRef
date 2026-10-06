@@ -174,10 +174,10 @@ def _wrap_accessor(xyz_fn):
     """Hold a coordinate accessor without registering it as a submodule.
 
     ``model.xyz`` is itself an ``nn.Module``, so a plain assignment would enrol it in
-    this wrapper's module tree and drag it into ``state_dict``, ``.to()`` and
-    ``deepcopy``. :class:`~torchref.utils.utils.ModuleReference` exists for exactly that
-    and is what the device-conformance walker already knows how to follow. A bare
-    callable needs no wrapping.
+    this wrapper's module tree and drag it into ``state_dict`` and ``.to()``.
+    :class:`~torchref.utils.utils.ModuleReference` exists for exactly that and is what
+    the device-conformance walker already knows how to follow. A bare callable needs
+    no wrapping.
     """
     if isinstance(xyz_fn, nn.Module):
         return ModuleReference(xyz_fn)
