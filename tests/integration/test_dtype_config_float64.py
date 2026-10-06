@@ -83,3 +83,23 @@ def test_occupancy_floor_density_matmul_float64(double_cpu, sample_structure_pai
     assert density.dtype == torch.float64
     assert density.shape[0] == positions.shape[0]
     assert torch.isfinite(density).all()
+
+
+@pytest.mark.integration
+def test_disulfide_values_keep_float64(double_cpu, pdb_dir):
+    """Disulfide targets reach the float64 restraints unrounded."""
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "3A5V.pdb"))
+    entries = model.restraints.restraints
+
+    for edge_type, reference, sigma in (
+        ("bond", 2.031, 0.020),
+        ("angle", 103.8, 1.8),
+        ("torsion", 90.0, 10.0),
+    ):
+        group = entries[edge_type]["disulfide"]
+        assert group["references"].dtype == torch.float64
+        assert float((group["references"] - reference).abs().max()) < 1e-12
+        assert float((group["sigmas"] - sigma).abs().max()) < 1e-12

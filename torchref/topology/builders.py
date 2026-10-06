@@ -491,8 +491,8 @@ class InterResidueBondBuilder:
             Always returns 1.
         """
         self._indices.append(np.array([[sg1_idx, sg2_idx]], dtype=np.int64))
-        self._references.append(np.array([bond_length], dtype=np.float32))
-        self._sigmas.append(np.array([bond_sigma], dtype=np.float32))
+        self._references.append(np.array([bond_length], dtype=np.float64))
+        self._sigmas.append(np.array([bond_sigma], dtype=np.float64))
         self._count += 1
         return 1
 
@@ -700,10 +700,10 @@ class InterResidueAngleBuilder:
             if idx1 is not None and idx2 is not None and idx3 is not None:
                 self._indices.append(np.array([[idx1, idx2, idx3]], dtype=np.int64))
                 self._references.append(
-                    np.array([float(angle_row["value"])], dtype=np.float32)
+                    np.array([float(angle_row["value"])], dtype=np.float64)
                 )
                 self._sigmas.append(
-                    np.array([float(angle_row["sigma"])], dtype=np.float32)
+                    np.array([float(angle_row["sigma"])], dtype=np.float64)
                 )
                 count += 1
 
@@ -906,10 +906,10 @@ class InterResidueTorsionBuilder:
                 np.array([[idx1, idx2, idx3, idx4]], dtype=np.int64)
             )
             self._disulfide_references.append(
-                np.array([float(torsion_row["value"])], dtype=np.float32)
+                np.array([float(torsion_row["value"])], dtype=np.float64)
             )
             self._disulfide_sigmas.append(
-                np.array([float(torsion_row["sigma"])], dtype=np.float32)
+                np.array([float(torsion_row["sigma"])], dtype=np.float64)
             )
             self._disulfide_periods.append(
                 np.array([2], dtype=np.int64)
