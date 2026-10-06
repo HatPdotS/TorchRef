@@ -1225,29 +1225,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     ):
         """Replace a per-atom ADP wrapper with a node field fitted to it.
 
-        The field lands in the slot its payload feeds: an isotropic payload takes over
-        ``adp`` and leaves the model isotropic, an anisotropic one takes over ``u`` and
-        the model refines every selected atom anisotropically. Both expect the partition
-        to have run first, which :meth:`set_adp_mode` arranges.
-
-        ``mode_set`` selects a displacement-mode payload in place of the constant-U one,
-        which is the difference between a node holding a single ADP and a node holding a
-        motion whose ADP varies across its region.
-
-        ``init`` chooses what the field is fitted to:
-
-        ``"fit"``
-            The per-atom ADPs the model currently holds. Right when those mean something
-            --- a deposited or already-refined model --- because the field then starts
-            from a state whose R-factor is known.
-        ``"flat"``
-            A single value, the median of those ADPs. Right when they do not mean
-            anything. An AlphaFold model's B values come from a pLDDT conversion, and
-            fitting a smooth basis to them spends the field's parameters reproducing
-            structure it cannot hold and that is not worth holding: measured on 2A25, the
-            fitted field starts 0.025 R-free WORSE than a flat one, before any
-            refinement. The level is kept because it is close to right and the scaler
-            owns it anyway; only the spatial structure is discarded.
+        An isotropic payload takes over ``adp``; an anisotropic one, or the
+        displacement-mode payload ``mode_set`` selects (a U that varies across the
+        node's region), takes over ``u``. Either way the iso/aniso partition must have
+        run first, which :meth:`set_adp_mode` arranges. ``init="fit"`` fits the nodes
+        to the per-atom ADPs the model holds; ``"flat"`` fits them to the median of
+        those ADPs, keeping the level and discarding the spatial structure, for B
+        values that carry none (an AlphaFold model's pLDDT-derived ones).
         """
         from torchref.model.disorder_field import (
             AnisotropicPayload,
