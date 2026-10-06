@@ -47,7 +47,9 @@ class MultiModelGeometryTarget(Target):
 
     def forward(self) -> torch.Tensor:
         """Geometry loss summed over the collection's base models."""
-        total = torch.tensor(0.0, device=self._model_collection.device)
+        total = torch.zeros(
+            (), device=self._model_collection.device, dtype=self.dtype_float
+        )
         for target in self._targets:
             total = total + target()
         return total
@@ -91,7 +93,9 @@ class MultiModelADPTarget(Target):
 
     def forward(self) -> torch.Tensor:
         """ADP restraint loss summed over the collection's base models."""
-        total = torch.tensor(0.0, device=self._model_collection.device)
+        total = torch.zeros(
+            (), device=self._model_collection.device, dtype=self.dtype_float
+        )
         for target in self._targets:
             total = total + target()
         return total

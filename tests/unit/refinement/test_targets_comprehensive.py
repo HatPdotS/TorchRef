@@ -177,6 +177,42 @@ class TestTotalGeometryTarget:
         assert target._model is None
 
 
+@pytest.mark.unit
+def test_empty_losses_follow_the_configured_float_dtype(double_cpu):
+    """A combined, multi-model or collection target with nothing to sum returns zeros
+    in the configured float dtype, so a float64 run stays float64."""
+    from types import SimpleNamespace
+
+    from torchref.refinement.targets import (
+        CollectionDifferenceTarget,
+        MultiModelADPTarget,
+        MultiModelGeometryTarget,
+    )
+    from torchref.refinement.targets.combined import CombinedModelTargets
+
+    class NoComponents(CombinedModelTargets):
+        def _create_targets(self):
+            return {}
+
+    class NoDatasets:
+        hkl = torch.zeros((4, 3), dtype=torch.int32)
+
+        def __contains__(self, key):
+            return False
+
+    no_models = SimpleNamespace(base_models=[], device=torch.device("cpu"))
+    no_members = SimpleNamespace(dark_key="dark", timepoint_names=[])
+    collection = CollectionDifferenceTarget(NoDatasets(), no_members)
+    zeros = {
+        "combined": NoComponents()(),
+        "multi_model_geometry": MultiModelGeometryTarget(no_models)(),
+        "multi_model_adp": MultiModelADPTarget(no_models)(),
+        "collection_forward": collection(),
+        "collection_residuals": collection.residuals(),
+    }
+    assert {k: v.dtype for k, v in zeros.items()} == dict.fromkeys(zeros, torch.float64)
+
+
 # =============================================================================
 # ADP Target Tests
 # =============================================================================

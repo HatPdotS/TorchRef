@@ -287,7 +287,9 @@ class CollectionXrayTarget(Target):
         """
         keys = self._keys()
         if len(keys) < self.min_datasets:
-            return torch.zeros((), device=self._dataset_collection.hkl.device)
+            return torch.zeros(
+                (), device=self._dataset_collection.hkl.device, dtype=self.dtype_float
+            )
 
         self._reset_model_caches()
         ctx = self._loss_inputs(recalc=False)
@@ -309,7 +311,9 @@ class CollectionXrayTarget(Target):
         keys = self._keys()
         if len(keys) < self.min_datasets:
             dc = self._dataset_collection
-            return torch.zeros((0, len(dc.hkl)), device=dc.hkl.device)
+            return torch.zeros(
+                (0, len(dc.hkl)), device=dc.hkl.device, dtype=self.dtype_float
+            )
         return self._per_refl(self._loss_inputs(recalc=True))
 
     def get_rfactor(self) -> Dict[str, object]:

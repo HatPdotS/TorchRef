@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Dict
 import torch
 from torch import nn
 
-from torchref.config import get_default_device
 from torchref.refinement.targets.base import Target, ModelTarget
 from torchref.refinement.targets.geometry import (
     BondTarget, AngleTarget, TorsionTarget, PlanarityTarget,
@@ -96,10 +95,7 @@ class CombinedModelTargets(ModelTarget):
         """Compute total combined target loss."""
         losses = list(self.target_losses().values())
         if not losses:
-            return torch.tensor(
-                0.0,
-                device=self.model.xyz().device if self.model else get_default_device(),
-            )
+            return torch.zeros((), device=self.device, dtype=self.dtype_float)
         return torch.stack(losses).sum()
 
     def stats(self) -> Dict[str, any]:
