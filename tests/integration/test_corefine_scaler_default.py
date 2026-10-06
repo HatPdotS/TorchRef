@@ -1,9 +1,9 @@
 """Regression test: corefine_scaler default consistency.
 
 _scaler_body_params() used getattr(self, "corefine_scaler", True) while the
-constructor default is False. An instance built without __init__ (e.g.
-create_from_state_dict) therefore silently co-refined the scaler. The getattr
-fallback now matches the constructor default (False). See TORCHREF_AUDIT.md.
+constructor default is False. An instance built without __init__ therefore
+silently co-refined the scaler. The getattr fallback now matches the
+constructor default (False). See TORCHREF_AUDIT.md.
 """
 
 import pytest
@@ -24,7 +24,7 @@ def test_scaler_body_params_default_holds_scaler_fixed(pdb_dir, mtz_dir):
     assert ref.corefine_scaler is False
     assert ref._scaler_body_params() == []
 
-    # Missing attr (the create_from_state_dict path) must match the default,
+    # Missing attr (an instance built without __init__) must match the default,
     # not silently co-refine. This is the regression: fallback was True.
     del ref.corefine_scaler
     assert ref._scaler_body_params() == []

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 import torch
 from torch.nn import Module as nnModule
 
-from torchref.config import get_int_dtype, normalize_device
+from torchref.config import get_int_dtype
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
@@ -79,18 +79,13 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     """
     Refinement class to handle the overall crystallographic refinement process.
 
-    Supports two initialization patterns:
-
-    1. Empty initialization (for state_dict loading)::
-
-        refinement = Refinement()  # Creates empty shell with submodules
-        refinement.load_state_dict(torch.load('refinement.pt'))
-
-    2. Full initialization with file paths::
+    Built from file paths::
 
         refinement = Refinement(data_file='data.mtz', pdb='model.pdb')
 
-    Constructor parameters are documented on :meth:`__init__`.
+    A :meth:`save_state` checkpoint is restored by building from the same files and
+    calling :meth:`load_state`. Constructor parameters are documented on
+    :meth:`__init__`.
 
     Attributes
     ----------
@@ -139,8 +134,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     ):
         """Initialize Refinement, fully if ``data_file`` and ``pdb`` are given.
 
-        Without them this is an empty init: a shell with empty submodules, ready
-        for :meth:`load_state_dict`.
+        Without them this is an empty shell: empty submodules and no data, scaler
+        parameters or targets, so it cannot take a checkpoint.
 
         Parameters
         ----------
@@ -278,9 +273,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # to a different BaseWeighting to change the scheme.
         self.weighting = ManualWeighting(DEFAULT_GROUP_WEIGHTS)
 
-        # Empty initialization - create empty submodules for state_dict loading
         if data_file is None and pdb is None:
-            # Create empty submodules so state_dict keys exist
             self.reflection_data = ReflectionData(
                 verbose=self.verbose, device=self.device
             )
@@ -466,8 +459,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         **Keep this the only place the kwargs are spelled out.** Both construction
         paths go through it; a second build site silently reverts whatever it forgets
         to pass, which once made five CLI flags no-ops. The ``getattr`` fallbacks are
-        required: the ensemble and ``create_from_state_dict`` paths build targets
-        before these attributes exist.
+        required: the ensemble path builds targets before these attributes exist.
         """
         return dict(
             model=self.model,
@@ -1108,127 +1100,33 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         if self.verbose > 0:
             print(f"Saved refinement state to {path}")
 
-    def load_state(self, path: str, strict: bool = True):
-        """Load a saved state dict from ``path`` into this instance.
+    def load_state(self, path: str):
+        """Load a :meth:`save_state` checkpoint into this instance.
 
-        Requires submodules that already match the checkpoint's structure; to build
-        one from scratch use :meth:`create_from_state_dict`. ``strict`` enforces an
-        exact key match.
-        """
-        state_dict = torch.load(path, map_location=self.device, weights_only=False)
-        self.load_state_dict(state_dict, strict=strict)
-        if self.verbose > 0:
-            print(f"Loaded refinement state from {path}")
-
-    @classmethod
-    def create_from_state_dict(
-        cls,
-        state_dict: dict,
-        device: torch.device = None,
-        verbose: int = 1,
-    ) -> "Refinement":
-        """Rebuild a fully initialized Refinement from a saved state dict.
-
-        The recommended restore path: it rebuilds reflection data, model and scaler
-        through their own factories before calling ``load_state_dict``, which
-        :meth:`load_state` cannot do. Restraints are not persisted; the
-        restored model rebuilds them on first access to ``model.restraints``.
+        The checkpoint holds no reflection data, so the only restore path is to build
+        the refinement from the same input files and settings as the saved one and then
+        call this. Checkpoint entries that are not a parameter or buffer here (the
+        model's cell, atom table and other metadata) are ignored.
 
         Parameters
         ----------
-        state_dict : dict
-            From ``torch.save(refinement.state_dict(), ...)`` or a checkpoint file.
-        device : torch.device, optional
-            Device to place tensors on. Defaults to the configured default device.
-        verbose : int, optional
-            Verbosity level. Default 1.
+        path : str
+            File written by :meth:`save_state`. Read with ``weights_only=False``, so
+            only load files you trust.
 
-        Returns
-        -------
-        Refinement
-            Fully initialized instance with restored state.
+        Raises
+        ------
+        RuntimeError
+            If a parameter or buffer of this instance is missing from the checkpoint or
+            has a different shape there.
         """
-
-        device = normalize_device(device)
-
-        # Helper to extract submodule state from flattened state_dict
-        def extract_submodule_state(state_dict: dict, prefix: str) -> dict:
-            """Extract keys starting with prefix and strip the prefix."""
-            result = {}
-            prefix_with_dot = prefix + "."
-            for key, value in state_dict.items():
-                if key.startswith(prefix_with_dot):
-                    result[key[len(prefix_with_dot) :]] = value
-            return result
-
-        # Extract submodule states from flattened keys
-        model_state = extract_submodule_state(state_dict, "model")
-        reflection_data_state = extract_submodule_state(state_dict, "reflection_data")
-        scaler_state = extract_submodule_state(state_dict, "scaler")
-
-        if verbose > 0:
-            print(
-                f"Extracted state dict sizes: model={len(model_state)}, data={len(reflection_data_state)}, "
-                f"scaler={len(scaler_state)}"
+        state_dict = torch.load(path, map_location=self.device, weights_only=False)
+        missing = self.load_state_dict(state_dict, strict=False).missing_keys
+        if missing:
+            raise RuntimeError(
+                f"{path} lacks {len(missing)} parameter(s)/buffer(s) of this "
+                f"refinement, e.g. {missing[:5]}; build the refinement from the same "
+                "input files and settings as the saved one."
             )
-
-        # Create submodules using their factory methods
-        # These properly set up structure before loading values
-        # ReflectionData is now a dataclass with _from_state() method
-        reflection_data = ReflectionData._from_state(
-            reflection_data_state, device=str(device)
-        )
-
-        model = ModelFT.create_from_state_dict(
-            model_state, device=device, verbose=verbose
-        )
-
-        # Create Scaler with model and data (required for proper setup)
-        scaler = Scaler(model, reflection_data, verbose=verbose, device=device)
-
-        # Create empty instance
-        instance = cls.__new__(cls)
-        nnModule.__init__(instance)
-
-        # Set basic attributes
-        instance.device = device
-        instance.verbose = verbose
-        instance.data_file = None
-        instance.pdb = None
-        instance.history = {}
-        instance.max_res = model_state.get("_metadata_max_res", None)
-        instance.nbins = 10
-        instance.n_iso_coeff = 6
-
-        # Register the properly created submodules
-        instance.reflection_data = reflection_data
-        instance.model = model
-        instance.scaler = scaler
-
-        # Now load the state dict - PyTorch's default will fill in values
-        # Use strict=False since we may have metadata keys and properly created submodules
-        instance.load_state_dict(state_dict, strict=False)
-
-        # Reconnect model and data to scaler after loading
-        instance.scaler.set_model_and_data(instance.model, instance.reflection_data)
-
-        # Initialize targets if model is available
-        if instance.model is not None and instance.model.ctx.initialized:
-            try:
-                instance._init_targets()
-            except Exception as e:
-                if verbose > 0:
-                    print(f"Note: Could not initialize targets: {e}")
-
-        if verbose > 0:
-            n_atoms = instance.model.n_atoms
-            n_refl = (
-                instance.reflection_data.hkl.shape[0]
-                if instance.reflection_data.hkl is not None
-                else 0
-            )
-            print(
-                f"Created Refinement from state_dict: {n_atoms} atoms, {n_refl} reflections"
-            )
-
-        return instance
+        if self.verbose > 0:
+            print(f"Loaded refinement state from {path}")

@@ -196,10 +196,8 @@ class LBFGSRefinement(Refinement):
         Non-empty only with ``corefine_scaler`` (opt-in, default False): co-refining a few
         high-leverage scaler params in the same LBFGS as thousands of xyz params is
         ill-conditioned and can drive the ML-NLL down while R goes up. The ``getattr``
-        fallback
-        matches the default so an instance built without ``__init__``
-        (``create_from_state_dict``)
-        behaves the same.
+        fallback matches the default so an instance built without ``__init__`` behaves
+        the same.
         """
         if getattr(self, "corefine_scaler", False):
             return list(self.scaler.parameters())
