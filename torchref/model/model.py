@@ -1,15 +1,10 @@
-"""
-A base model class for atomic structure models using PyTorch.
+"""The atomic model: refinable parameters over a loaded structure.
 
-Space groups are stored as gemmi.SpaceGroup objects for consistency
-and direct access to symmetry operations.
-
-Variable naming conventions:
-- adp: Atomic displacement parameters (model-level, replaces b_factor)
-- xyz: Cartesian coordinates
-- xyz_fractional: Fractional coordinates
-- F_calc/F_obs: Structure factor amplitudes (uppercase = amplitudes)
-- f_calc/f_obs: Complex structure factors (lowercase = complex)
+:class:`Model` holds coordinates, isotropic and anisotropic ADPs and occupancies as
+parameter wrappers that decide which atoms are refinable, over a
+:class:`~torchref.model.context.ModelContext` that carries what the structure was
+loaded with: cell, space group, atom identity and restraints.
+:class:`~torchref.model.model_ft.ModelFT` adds the structure factors.
 """
 
 import math
