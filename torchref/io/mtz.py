@@ -763,7 +763,7 @@ def _anomalous_table(data, fcalc):
     flag = data.friedel_flags.detach().cpu()
     inverse, m = data.asu_group_indices()
     inverse = inverse.cpu()
-    uniq = hkl[data._group_representative_rows(inverse, m)]
+    uniq = hkl[data._group_representative_rows(inverse)]
 
     # A mate counts as present only if it is a real, positive observation:
     # stacked input carries a NaN row for every absent mate, which French-Wilson

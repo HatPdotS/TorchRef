@@ -741,7 +741,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 return torch.arange(len(self.hkl), device=self.device)
             return torch.nonzero(valid).squeeze(-1)
         group_id, n_groups = self.asu_group_indices()
-        rows = self._group_representative_rows(group_id, n_groups)
+        rows = self._group_representative_rows(group_id)
         if valid is not None:
             rows = rows[self._group_any(valid, group_id, n_groups)]
         return torch.sort(rows).values
@@ -762,9 +762,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         return counts > 0
 
     @staticmethod
-    def _group_representative_rows(
-        group_id: torch.Tensor, n_groups: int
-    ) -> torch.Tensor:
+    def _group_representative_rows(group_id: torch.Tensor) -> torch.Tensor:
         """One row index per ASU group, ordered by group id.
 
         The lowest-numbered row of each group, via a stable sort. Used for
@@ -1335,7 +1333,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
             group_valid = torch.ones_like(group_valid)
 
-        group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
+        group_bin = bin_indices[self._group_representative_rows(group_id)]
         group_free = self._stratified_group_draw(
             group_valid,
             group_bin,
@@ -2270,7 +2268,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         group_free = self._group_any(free_mask, group_id, n_groups)
 
         bin_indices, n_bins = self.get_bins(n_bins=20, min_per_bin=20)
-        group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
+        group_bin = bin_indices[self._group_representative_rows(group_id)]
         group_val = self._stratified_group_draw(
             group_free,
             group_bin,
