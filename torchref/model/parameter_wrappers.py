@@ -1517,14 +1517,6 @@ class OccupancyTensor(MixedTensor):
 
         return collapsed
 
-    def _collapse_values(self, full_values: torch.Tensor) -> torch.Tensor:
-        """Alias for :meth:`_collapse_values_vectorized`."""
-        return self._collapse_values_vectorized(full_values)
-
-    def _collapse_mask(self, full_mask: torch.Tensor) -> torch.Tensor:
-        """Alias for :meth:`_collapse_mask_vectorized`."""
-        return self._collapse_mask_vectorized(full_mask)
-
     def _expand_values(self, collapsed_values: torch.Tensor) -> torch.Tensor:
         """Collapsed (per-group) -> full (per-atom), via ``expansion_mask``."""
         return collapsed_values[self.expansion_mask]
