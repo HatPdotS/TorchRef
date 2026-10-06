@@ -11,7 +11,9 @@ than shipped as another data file: the rewrite is then visible, and it is obviou
 nothing but the numbering changed.
 """
 
+import numpy as np
 import pytest
+import torch
 
 from torchref.model.model import Model
 from torchref.topology import build_topology
@@ -215,3 +217,43 @@ def test_peptide_edges_run_through_the_insertion(inserted):
     middle = residues[1]
     assert any(row[1] == _atom(topology, middle, "N") for row in phi)
     assert any(row[0] == _atom(topology, middle, "N") for row in psi)
+
+
+def _riding_candidates_within(restraints, rows):
+    """Riding-H candidates as ``(i, j, op, *offset)`` tuples whose two ends both sit on
+    a heavy atom in ``rows``, a hydrogen through its parent."""
+    h_topo = restraints.h_topo
+    n_heavy = restraints.topology.n_atoms
+    parent = h_topo.h_parent_idx.cpu().numpy()
+    ends = torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1).cpu().numpy()
+    heavy = np.where(ends >= n_heavy, parent[np.clip(ends - n_heavy, 0, None)], ends)
+    table = np.column_stack(
+        [
+            ends,
+            h_topo.cand_symop_idx.cpu().numpy(),
+            h_topo.cand_cell_offset.cpu().numpy(),
+        ]
+    )
+    return {tuple(row) for row in table[np.isin(heavy, rows).all(axis=1)].tolist()}
+
+
+@pytest.mark.unit
+def test_riding_contacts_between_the_inserted_residues_are_kept(inserted, pdb_dir):
+    """The riding-hydrogen contacts between 23, 23A and 23B are those between 23, 24
+    and 25 under the original numbering: the riding builder, like the topology, keeps
+    residues apart by insertion code."""
+    _, restraints, _, _ = inserted
+    original = Model(verbose=0, hydrogens="strip")
+    original.load_pdb(str(pdb_dir / f"{BASE}.pdb"))
+
+    residues = original.restraints.topology.residues
+    rows = np.concatenate(
+        [
+            np.arange(residues.atom_start[i], residues.atom_end[i])
+            for i in range(residues.n_residues)
+            if int(residues.resseq[i]) in STRETCH
+        ]
+    )
+    expected = _riding_candidates_within(original.restraints, rows)
+    assert len(expected) > 100
+    assert _riding_candidates_within(restraints, rows) == expected

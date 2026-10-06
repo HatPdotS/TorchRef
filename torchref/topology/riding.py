@@ -28,8 +28,9 @@ import torch
 from torchref.base.coordinates.local_frame import frame_is_degenerate
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import dtypes, get_int_dtype, normalize_device
-from torchref.utils.device_resolution import resolve_device
+from torchref.topology.residue_graph import build_residue_nodes
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.device_resolution import resolve_device
 
 # ---------------------------------------------------------------------------
 # Placement-type constants
@@ -104,10 +105,6 @@ class HydrogenTopology(DeviceMixin):
         :func:`~torchref.base.coordinates.local_frame_axes`, read off the template,
         so the hydrogen keeps the template's bond angle and torsion (turned into the
         plane where a plane restraint holds it). ``(N_h, 3)``.
-    h_chainid_enc : torch.Tensor
-        Encoded chain ID, ``(N_h,)`` int, for same-residue filtering.
-    h_resseq : torch.Tensor
-        Residue sequence number, ``(N_h,)`` int, for same-residue filtering.
     type_bounds : dict
         ``{placement_type: (start, end)}`` bounds into the type-sorted arrays.
     cand_idx_i, cand_idx_j, cand_symop_idx, cand_cell_offset : torch.Tensor
@@ -127,8 +124,6 @@ class HydrogenTopology(DeviceMixin):
     parent_neighbor_count: Optional[torch.Tensor] = None
     h_frame_atom: Optional[torch.Tensor] = None
     h_frame_direction: Optional[torch.Tensor] = None
-    h_chainid_enc: Optional[torch.Tensor] = None
-    h_resseq: Optional[torch.Tensor] = None
     type_bounds: Dict[int, tuple] = field(default_factory=dict)
 
     cand_idx_i: Optional[torch.Tensor] = None
@@ -386,13 +381,6 @@ def build_hydrogen_topology(
     model_elem = pdb["element"].astype(str).str.strip().values
     model_heavy_mask = np.array([e.upper() != "H" for e in model_elem])
 
-    # Encode chain IDs as integers for fast same-residue comparison
-    chain_vals = pdb["chainid"].values.astype(str)
-    unique_chains = np.unique(chain_vals)
-    chain_to_int = {c: i for i, c in enumerate(unique_chains)}
-    model_chainid_enc = np.array([chain_to_int[c] for c in chain_vals], dtype=np.int64)
-    model_resseq = pdb["resseq"].values.astype(np.int64)
-
     # Group residues
     group_cols = ["chainid", "resseq", "icode", "resname"]
     group_keys = pdb[group_cols].values
@@ -415,8 +403,6 @@ def build_hydrogen_topology(
     acc_nb_count = []
     acc_frame_atom = []
     acc_frame_direction = []
-    acc_chainid_enc = []
-    acc_resseq = []
 
     for gi in range(len(group_starts)):
         s, e = group_starts[gi], group_ends[gi]
@@ -424,9 +410,6 @@ def build_hydrogen_topology(
         info = cache.get(rn)
         if info is None:
             continue
-
-        chainid_enc = model_chainid_enc[s]
-        resseq = model_resseq[s]
 
         names_in_model = set(model_names[s:e])
         h_to_add_mask = np.array(
@@ -507,8 +490,6 @@ def build_hydrogen_topology(
                 acc_nb_count.append(nb_count)
                 acc_frame_atom.append(frame_atom)
                 acc_frame_direction.append(directions[slot])
-                acc_chainid_enc.append(chainid_enc)
-                acc_resseq.append(resseq)
 
     # Seed the tracker with the device its buffers are about to be built on,
     # so a later ``resolve_device(h_topo, ...)`` sees the truth.
@@ -530,8 +511,6 @@ def build_hydrogen_topology(
         )
         topo.h_frame_atom = torch.zeros(0, dtype=get_int_dtype(), device=device)
         topo.h_frame_direction = torch.zeros(0, 3, dtype=fdtype, device=device)
-        topo.h_chainid_enc = torch.zeros(0, dtype=get_int_dtype(), device=device)
-        topo.h_resseq = torch.zeros(0, dtype=get_int_dtype(), device=device)
         return topo
 
     # Sort all topology arrays by placement type for contiguous slicing
@@ -546,8 +525,6 @@ def build_hydrogen_topology(
     acc_nb_count = [acc_nb_count[i] for i in sort_order]
     acc_frame_atom = [acc_frame_atom[i] for i in sort_order]
     acc_frame_direction = [acc_frame_direction[i] for i in sort_order]
-    acc_chainid_enc = [acc_chainid_enc[i] for i in sort_order]
-    acc_resseq = [acc_resseq[i] for i in sort_order]
 
     # Compute type boundaries: type_bounds[t] = (start, end) slice
     sorted_types = np.array(acc_placement_type, dtype=np.int64)
@@ -580,10 +557,6 @@ def build_hydrogen_topology(
         np.stack(acc_frame_direction), dtype=fdtype, device=device
     )
     topo.type_bounds = type_bounds  # dict: type_code -> (start, end)
-    topo.h_chainid_enc = torch.tensor(
-        acc_chainid_enc, dtype=get_int_dtype(), device=device
-    )
-    topo.h_resseq = torch.tensor(acc_resseq, dtype=get_int_dtype(), device=device)
 
     if verbose > 0:
         print(f"  Hydrogen topology: {n_h_total} riding H atoms")
@@ -853,7 +826,8 @@ def build_h_candidate_pairs(
         Output of ``build_vdw_restraints_gpu`` (keys: indices, symop_indices,
         cell_offsets, etc.).
     pdb : DataFrame
-        Heavy-atom DataFrame.
+        Heavy-atom table in the order of the pair list's atom indices; its
+        ``chainid``, ``resseq``, ``icode`` and ``resname`` columns give the residues.
     h_excl_hash : (E,) long
         Sorted exclusion hash tensor for H-specific 1-2/1-3 pairs.
     device : torch.device
@@ -881,8 +855,6 @@ def build_h_candidate_pairs(
 
     parent_idx_np = h_topo.h_parent_idx.cpu().numpy()  # (N_h,)
     h_vdw_np = h_topo.h_vdw_radius.cpu().numpy()  # (N_h,)
-    h_chain_np = h_topo.h_chainid_enc.cpu().numpy()  # (N_h,)
-    h_resseq_np = h_topo.h_resseq.cpu().numpy()  # (N_h,)
 
     # Build parent → H index mapping
     parent_to_h = {}
@@ -890,14 +862,13 @@ def build_h_candidate_pairs(
         p = int(parent_idx_np[hi])
         parent_to_h.setdefault(p, []).append(hi)
 
-    # Heavy atom chain/resseq for same-residue filter
-    chain_vals = pdb["chainid"].values.astype(str)
-    unique_chains = np.unique(chain_vals)
-    chain_to_int = {c: i for i, c in enumerate(unique_chains)}
-    heavy_chain_np = np.array(
-        [chain_to_int.get(c, -1) for c in chain_vals], dtype=np.int64
+    # The topology's residues, keyed (chain, resseq, icode): 100 and 100A are two.
+    nodes = build_residue_nodes(
+        *(pdb[column].values for column in ("chainid", "resseq", "icode", "resname"))
     )
-    heavy_resseq_np = pdb["resseq"].values.astype(np.int64)
+    residue_of = np.repeat(
+        np.arange(len(nodes["chain"])), nodes["atom_end"] - nodes["atom_start"]
+    )
 
     idx_A = heavy_indices[:, 0].cpu().numpy()
     idx_B = heavy_indices[:, 1].cpu().numpy()
@@ -917,24 +888,21 @@ def build_h_candidate_pairs(
     acc_symop = []
     acc_offset = []
 
-    def _same_res(chain_a, resseq_a, chain_b, resseq_b):
-        return chain_a == chain_b and resseq_a == resseq_b
-
     for p_idx in range(len(idx_A)):
         A, B = int(idx_A[p_idx]), int(idx_B[p_idx])
         sym = int(symop_np[p_idx])
         off = offsets_np[p_idx]
         is_intra_asu = not is_image_np[p_idx]
+        # A hydrogen is in its parent's residue, so every candidate an intra-ASU
+        # same-residue pair would give is a same-residue contact.
+        if is_intra_asu and residue_of[A] == residue_of[B]:
+            continue
 
         h_on_A = parent_to_h.get(A, [])
         h_on_B = parent_to_h.get(B, [])
 
         # --- H on A ↔ heavy B ---
         for hi in h_on_A:
-            if is_intra_asu and _same_res(
-                h_chain_np[hi], h_resseq_np[hi], heavy_chain_np[B], heavy_resseq_np[B]
-            ):
-                continue
             acc_idx_i.append(n_heavy + hi)
             acc_idx_j.append(B)
             acc_symop.append(sym)
@@ -947,13 +915,6 @@ def build_h_candidate_pairs(
         # From here it could only carry this pair's operation, which images B, not A.
         if is_intra_asu:
             for hi in h_on_B:
-                if _same_res(
-                    h_chain_np[hi],
-                    h_resseq_np[hi],
-                    heavy_chain_np[A],
-                    heavy_resseq_np[A],
-                ):
-                    continue
                 acc_idx_i.append(n_heavy + hi)
                 acc_idx_j.append(A)
                 acc_symop.append(0)
@@ -962,13 +923,6 @@ def build_h_candidate_pairs(
         # --- H on A ↔ H on B  (H-H contacts) ---
         for hi_a in h_on_A:
             for hi_b in h_on_B:
-                if is_intra_asu and _same_res(
-                    h_chain_np[hi_a],
-                    h_resseq_np[hi_a],
-                    h_chain_np[hi_b],
-                    h_resseq_np[hi_b],
-                ):
-                    continue
                 # For intra-ASU, only keep hi_a < hi_b to avoid double-counting
                 if is_intra_asu and hi_a >= hi_b:
                     continue
