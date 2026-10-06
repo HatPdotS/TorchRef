@@ -9,16 +9,13 @@ annotation) both store a ``torchref.symmetry.SpaceGroup`` object in it.
 
 import warnings
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import Any, Dict, Optional
 
 import torch
 
 from torchref.config import get_default_device, get_float_dtype, normalize_device
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.device_mixin import DeviceMovementMixin
-
-if TYPE_CHECKING:
-    pass
 
 
 @dataclass
@@ -94,18 +91,6 @@ class CrystalDataset(DeviceMovementMixin):
 
         if not hasattr(self, "masks") or self.masks is None:
             self.masks = TensorMasks(device=self.device)
-
-    # ========== DEVICE MANAGEMENT ==========
-
-    def _tensor_fields(self):
-        """Yield ``(name, tensor)`` for every tensor field.
-
-        ``Cell`` objects are NOT included -- ``to()`` moves those separately.
-        """
-        for f in fields(self):
-            val = getattr(self, f.name)
-            if isinstance(val, torch.Tensor):
-                yield f.name, val
 
     # ========== SERIALIZATION ==========
 
