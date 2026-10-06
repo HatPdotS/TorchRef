@@ -387,29 +387,6 @@ def read(filepath: str, verbose: int = 0) -> PDBReader:
     return PDBReader(verbose=verbose).read(filepath)
 
 
-def extract_pdb_headers(filepath: str) -> list:
-    """Read all header lines (before first ATOM/HETATM) from a PDB file.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the PDB file.
-
-    Returns
-    -------
-    list of str
-        Header lines (without trailing newlines).
-    """
-    headers = []
-    with open(filepath, "r") as f:
-        for line in f:
-            record = line[:6].strip()
-            if record in ("ATOM", "HETATM"):
-                break
-            headers.append(line.rstrip("\n"))
-    return headers
-
-
 #: Columns of the LINK-record table that ``Model.load`` reads off a reader's ``.links``.
 #: Shared by the PDB and mmCIF readers so the topology builder sees one schema.
 LINK_COLUMNS = (
@@ -746,11 +723,3 @@ def write_multi_model(
             f.write("ENDMDL\n")
 
         f.write("END\n")
-
-
-# Deprecated aliases kept for backwards compatibility; prefer the canonical
-# names (PDBReader, find_header_length, load_as_dataframe). Slated for removal
-# in a future release. These are public symbols.
-PDB = PDBReader
-find_header_length_pdb_file = find_header_length
-load_pdb_as_pd = load_as_dataframe

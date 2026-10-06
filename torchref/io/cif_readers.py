@@ -393,53 +393,6 @@ class CIFReader:
         else:
             self.data[key] = value
 
-    def write(self, filepath: str):
-        """Write the parsed data back out as CIF."""
-        with open(filepath, "w") as f:
-            f.write("data_structure\n")
-            f.write("#\n")
-
-            # Write single key-value pairs first
-            for category, content in sorted(self.data.items()):
-                if isinstance(content, dict):
-                    for key, value in sorted(content.items()):
-                        # Handle multiline values
-                        if "\n" in str(value):
-                            f.write(f"_{category}.{key}\n")
-                            f.write(";\n")
-                            f.write(str(value))
-                            f.write("\n;\n")
-                        else:
-                            # Quote values with spaces
-                            if " " in str(value):
-                                f.write(f"_{category}.{key} '{value}'\n")
-                            else:
-                                f.write(f"_{category}.{key} {value}\n")
-                    f.write("#\n")
-
-            # Write loops (DataFrames)
-            for category, content in sorted(self.data.items()):
-                if isinstance(content, pd.DataFrame):
-                    f.write("loop_\n")
-
-                    # Write column names
-                    for col in content.columns:
-                        f.write(f"{col}\n")
-
-                    # Write data rows
-                    for _, row in content.iterrows():
-                        row_values = []
-                        for val in row:
-                            val_str = str(val)
-                            # Quote values with spaces or special characters
-                            if " " in val_str or any(c in val_str for c in ['"', "'"]):
-                                row_values.append(f"'{val_str}'")
-                            else:
-                                row_values.append(val_str)
-                        f.write(" ".join(row_values) + "\n")
-
-                    f.write("#\n")
-
     # Dictionary-like interface
     def __getitem__(self, key: str) -> Union[pd.DataFrame, Dict, Any]:
         """Get item by key."""
@@ -485,20 +438,6 @@ class CIFReader:
             f"key-value_groups={len(dicts)})"
         )
 
-    def summary(self):
-        """Print a summary of the CIF contents."""
-        print(f"CIF File: {self.filepath}")
-        print(f"Total categories: {len(self.data)}")
-        print("\nLoops (DataFrames):")
-        for key, value in sorted(self.items()):
-            if isinstance(value, pd.DataFrame):
-                print(f"  {key}: {len(value)} rows × {len(value.columns)} columns")
-
-        print("\nKey-Value Groups (Dictionaries):")
-        for key, value in sorted(self.items()):
-            if isinstance(value, dict):
-                print(f"  {key}: {len(value)} items")
-
 
 class ReflectionCIFReader:
     """
@@ -509,11 +448,6 @@ class ReflectionCIFReader:
     Calling the instance gives the same unpack order as ``MTZReader.__call__``::
 
         data_dict, cell, spacegroup = ReflectionCIFReader('7JI4-sf.cif')()
-
-    Mind the two naming schemes: the :meth:`get_reflection_data` DataFrame uses
-    ``F_obs``/``sigma_F_obs`` and ``I_obs``/``sigma_I_obs``, while the standalone
-    :meth:`get_amplitudes` / :meth:`get_intensities` dicts use ``'F'``/
-    ``'sigma_F'`` and ``'I'``/``'sigma_I'``.
     """
 
     def __init__(
@@ -666,12 +600,6 @@ class ReflectionCIFReader:
             print(f"  Cell: {self.cell}")
             print(f"  Spacegroup: {self.spacegroup}")
 
-    def read(self, filepath: str = None):
-        """Re-read ``filepath`` (default: the init path); returns ``self``."""
-        if filepath is not None:
-            self.__init__(filepath, verbose=self.verbose)
-        return self
-
     def __call__(self) -> Tuple[Dict[str, np.ndarray], np.ndarray, str]:
         """
         Get data in legacy MTZ-compatible format.
@@ -689,12 +617,7 @@ class ReflectionCIFReader:
         spacegroup : str
             Space group Hermann-Mauguin name (e.g. "P 1").
         """
-        try:
-            return self.data, self.cell, self.spacegroup
-        except AttributeError as e:
-            raise ValueError(
-                "Data not loaded. Call read() first or provide filepath in __init__"
-            ) from e
+        return self.data, self.cell, self.spacegroup
 
     def get_reflection_data(self) -> pd.DataFrame:
         """
@@ -1116,92 +1039,6 @@ class ReflectionCIFReader:
         # Return NaN series
         return pd.Series([np.nan] * len(df)), "None"
 
-    def has_miller_indices(self) -> bool:
-        """Check if file contains Miller indices."""
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        h_cols = ["_refln.index_h", "_refln.h"]
-        return any(col in df.columns for col in h_cols)
-
-    def has_amplitudes(self) -> bool:
-        """Check if file contains structure factor amplitudes.
-
-        Notes
-        -----
-        This counts *calculated* amplitudes (``_refln.F_calc``) as well as
-        observed ones, so it is not equivalent to "has observed amplitudes".
-        A calc-only file returns ``True`` here but is still rejected by the
-        loader (``_extract_data``), which uses only measured F/I as
-        observations.
-        """
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        f_cols = [
-            "_refln.F_meas_au",
-            "_refln.F_meas",
-            "_refln.pdbx_F_plus",
-            "_refln.F_calc",
-            "_refln.F-obs",
-        ]
-        return any(col in df.columns for col in f_cols)
-
-    def has_intensities(self) -> bool:
-        """Check if file contains intensity measurements."""
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        i_cols = [
-            "_refln.intensity_meas",
-            "_refln.I_meas",
-            "_refln.pdbx_I_plus",
-            "_refln.I-obs",
-            "_refln.pdbx_I",
-        ]
-        return any(col in df.columns for col in i_cols)
-
-    def has_phases(self) -> bool:
-        """Check if file contains phase information."""
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        phase_cols = ["_refln.phase_meas", "_refln.phase_calc", "_refln.pdbx_PHIB"]
-        return any(col in df.columns for col in phase_cols)
-
-    def has_rfree_flags(self) -> bool:
-        """Check if file contains R-free flags."""
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        flag_cols = ["_refln.status", "_refln.pdbx_r_free_flag", "_refln.free_flag"]
-        return any(col in df.columns for col in flag_cols)
-
-    def get_miller_indices(self) -> Optional[np.ndarray]:
-        """Miller indices as an (N, 3) array, or None if absent."""
-        data = self.get_reflection_data()
-        if data is None or "h" not in data.columns:
-            return None
-        return data[["h", "k", "l"]].values
-
-    def get_amplitudes(self) -> Optional[Dict[str, np.ndarray]]:
-        """``{'F': ..., 'sigma_F': ...}``, or None if absent."""
-        data = self.get_reflection_data()
-        if data is None or "F_obs" not in data.columns:
-            return None
-        if data["F_obs"].isna().all():
-            return None
-        return {"F": data["F_obs"].values, "sigma_F": data["sigma_F_obs"].values}
-
-    def get_intensities(self) -> Optional[Dict[str, np.ndarray]]:
-        """``{'I': ..., 'sigma_I': ...}``, or None if absent."""
-        data = self.get_reflection_data()
-        if data is None or "I_obs" not in data.columns:
-            return None
-        if data["I_obs"].isna().all():
-            return None
-        return {"I": data["I_obs"].values, "sigma_I": data["sigma_I_obs"].values}
-
     def get_cell_parameters(self) -> Optional[List[float]]:
         """Unit cell ``[a, b, c, alpha, beta, gamma]`` as 6 floats, or None."""
         if "cell" not in self.cif_reader:
@@ -1404,12 +1241,6 @@ class ModelCIFReader:
             print(f"_struct_conn: kept {len(out)} of {len(conn)} rows as links")
         return out[list(LINK_COLUMNS)].reset_index(drop=True)
 
-    def read(self, filepath: str = None):
-        """Re-read ``filepath`` (default: the init path); returns ``self``."""
-        if filepath is not None:
-            self.__init__(filepath, verbose=self.verbose)
-        return self
-
     def __call__(self) -> Tuple[pd.DataFrame, List[float], str]:
         """
         Get data in legacy PDB-compatible format.
@@ -1425,12 +1256,7 @@ class ModelCIFReader:
         spacegroup : str
             Space group Hermann-Mauguin name (e.g. "P 1").
         """
-        try:
-            return self.dataframe, self.cell, self.spacegroup
-        except AttributeError as e:
-            raise ValueError(
-                "Data not loaded. Call read() first or provide filepath in __init__"
-            ) from e
+        return self.dataframe, self.cell, self.spacegroup
 
     def get_atom_data(self) -> pd.DataFrame:
         """
@@ -1779,73 +1605,6 @@ class ModelCIFReader:
                 if key in data:
                     return data[key]
         return default
-
-    # Convenience methods for testing
-    def has_coordinates(self) -> bool:
-        """Check if atomic coordinates are available."""
-        return "atom_site" in self.cif.data
-
-    def has_cell_parameters(self) -> bool:
-        """Check if unit cell parameters are available."""
-        return "cell" in self.cif.data
-
-    def has_space_group(self) -> bool:
-        """Check if space group information is available."""
-        return "symmetry" in self.cif.data
-
-    def has_occupancy(self) -> bool:
-        """Check if occupancy data is available."""
-        if "atom_site" not in self.cif.data:
-            return False
-        return "_atom_site.occupancy" in self.cif.data["atom_site"].columns
-
-    def has_bfactor(self) -> bool:
-        """Check if B-factor/temperature factor data is available."""
-        if "atom_site" not in self.cif.data:
-            return False
-        return "_atom_site.B_iso_or_equiv" in self.cif.data["atom_site"].columns
-
-    def has_anisotropic_data(self) -> bool:
-        """Check if anisotropic displacement parameters are available."""
-        if "atom_site" not in self.cif.data:
-            return False
-        aniso_cols = [
-            "_atom_site.aniso_U[1][1]",
-            "_atom_site.aniso_U[2][2]",
-            "_atom_site.aniso_U[3][3]",
-        ]
-        aniso_df = self.cif.data.get("atom_site_anisotrop")
-        if aniso_df is not None and all(
-            f"_atom_site_anisotrop.U[{i}][{j}]" in aniso_df.columns
-            for i, j in ((1, 1), (2, 2), (3, 3), (1, 2), (1, 3), (2, 3))
-        ):
-            return True
-        return all(col in self.cif.data["atom_site"].columns for col in aniso_cols)
-
-    def get_coordinates(self) -> Optional[np.ndarray]:
-        """Coordinates as an (N, 3) array of [x, y, z], or None if absent."""
-        if not self.has_coordinates():
-            return None
-
-        atom_data = self.get_atom_data()
-        return atom_data[["x", "y", "z"]].values
-
-    def get_atom_info(self) -> pd.DataFrame:
-        """Atom names, residue info and elements, without the coordinates."""
-        atom_data = self.get_atom_data()
-        return atom_data[
-            [
-                "serial",
-                "name",
-                "altloc",
-                "resname",
-                "chainid",
-                "resseq",
-                "icode",
-                "element",
-                "charge",
-            ]
-        ]
 
 
 class RestraintCIFReader:
@@ -2377,54 +2136,9 @@ class RestraintCIFReader:
             .copy()
         )
 
-    def get_bond_restraints(self, comp_id: str) -> pd.DataFrame:
-        """
-        Get bond restraints with standardized column names.
-
-        Returns
-        -------
-        pandas.DataFrame
-            DataFrame with columns:
-                - atom1, atom2: Atom names
-                - value: Ideal bond length (Å)
-                - sigma: Estimated standard deviation (Å)
-        """
-        restraints = self.get_compound_restraints(comp_id)
-        return restraints["bonds"]
-
     def _extract_col(self, df: pd.DataFrame, possible_cols: List[str]) -> pd.Series:
         """Extract column trying multiple names."""
         for col in possible_cols:
             if col in df.columns:
                 return df[col]
         return pd.Series([None] * len(df))
-
-    # Convenience methods for testing
-    def get_compound_id(self) -> str:
-        """Get the primary compound ID from this file."""
-        if self.compounds:
-            return self.compounds[0]
-        return self.filepath.stem
-
-    def has_bond_restraints(self) -> bool:
-        """Check if bond restraints are available."""
-        return "comp_bond" in self.cif.data or "chem_comp_bond" in self.cif.data
-
-    def has_angle_restraints(self) -> bool:
-        """Check if angle restraints are available."""
-        return "comp_angle" in self.cif.data or "chem_comp_angle" in self.cif.data
-
-    def has_torsion_restraints(self) -> bool:
-        """Check if torsion restraints are available."""
-        return "comp_tor" in self.cif.data or "chem_comp_tor" in self.cif.data
-
-    def has_plane_restraints(self) -> bool:
-        """Check if plane restraints are available."""
-        return (
-            "comp_plane_atom" in self.cif.data
-            or "chem_comp_plane_atom" in self.cif.data
-        )
-
-    def has_chirality_restraints(self) -> bool:
-        """Check if chirality definitions are available."""
-        return "comp_chir" in self.cif.data or "chem_comp_chir" in self.cif.data

@@ -2,50 +2,25 @@
 CIF/mmCIF reading and writing: reflections, coordinates, restraint
 dictionaries and CCP4 maps.
 
-Thin wrappers over the readers in :mod:`torchref.io.cif_readers`. The ``read_*``
-functions return a *reader object*, not the data -- call it (or one of its
-``get_*`` methods) to get the parsed content::
+Re-exports the readers of :mod:`torchref.io.cif_readers`. A reader parses its
+file on construction; call it (or ``get_all_restraints`` on a restraint reader)
+for the parsed content::
 
-    data_dict, cell, spacegroup = cif.read_reflections('structure-sf.cif')()
+    data_dict, cell, spacegroup = cif.ReflectionCIFReader('structure-sf.cif')()
     df, cell, spacegroup = cif.read_model('structure.cif')()
-    restraints = cif.read_restraints('ALA.cif').get_all_restraints()
+    restraints = cif.RestraintCIFReader('ALA.cif').get_all_restraints()
 """
-
-from typing import List, Optional
 
 import numpy as np
 import torch
 
-# Import all CIF reader classes from the existing module
-from torchref.io.cif_readers import (
+# Re-exported for torchref.io and the cif.<Reader> callers; unused here.
+from torchref.io.cif_readers import (  # noqa: F401
     CIFReader,
     ModelCIFReader,
     ReflectionCIFReader,
     RestraintCIFReader,
 )
-
-
-def read_reflections(
-    filepath: str, data_block: Optional[str] = None, verbose: int = 0
-) -> ReflectionCIFReader:
-    """
-    Read reflection data from a CIF file.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the structure factor CIF file.
-    data_block : str, optional
-        Name of the data block to read. If None, uses the first block.
-    verbose : int, optional
-        Verbosity level. Default is 0.
-
-    Returns
-    -------
-    ReflectionCIFReader
-        Reader object; call it for ``(data_dict, cell, spacegroup)``.
-    """
-    return ReflectionCIFReader(filepath, verbose=verbose, data_block=data_block)
 
 
 def read_model(filepath: str, verbose: int = 0) -> ModelCIFReader:
@@ -65,41 +40,6 @@ def read_model(filepath: str, verbose: int = 0) -> ModelCIFReader:
         Reader object; call it for ``(df, cell, spacegroup)``.
     """
     return ModelCIFReader(filepath, verbose=verbose)
-
-
-def read_restraints(filepath: str) -> RestraintCIFReader:
-    """
-    Read restraint dictionary from a CIF file.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the restraint dictionary CIF file.
-
-    Returns
-    -------
-    RestraintCIFReader
-        Reader object; use ``get_all_restraints()`` to extract them.
-    """
-    return RestraintCIFReader(filepath)
-
-
-def list_data_blocks(filepath: str) -> List[str]:
-    """
-    List available data blocks in a CIF file.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the CIF file.
-
-    Returns
-    -------
-    list of str
-        Names of available data blocks, in file order.
-    """
-    reader = CIFReader(filepath)
-    return reader.available_blocks
 
 
 def write_map(data, cell, filepath: str, spacegroup: str = "P1") -> int:
@@ -394,7 +334,3 @@ def write_model(df, filepath: str, metadata=None) -> None:
         st = dataframe_to_gemmi_structure(df, cell, spacegroup)
         doc = st.make_mmcif_document()
         doc.write_file(filepath)
-
-
-# Convenience aliases
-read = read_reflections  # Default read is for reflections
