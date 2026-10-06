@@ -730,9 +730,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         cycles, never inside one.
         """
         self.model.set_hydrogen_mode(mode)
-        persistent = getattr(self, "_persistent_optimizers", None)
-        if persistent is not None:
-            persistent.clear()
         self.reset_loss_state()
         return self
 

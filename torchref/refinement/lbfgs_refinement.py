@@ -78,43 +78,6 @@ class LBFGSRefinement(Refinement):
         # in the same LBFGS as thousands of body params is ill-conditioned.
         self.corefine_scaler = corefine_scaler
 
-        # Lazy persistent optimizers. Built on first access by
-        # _lbfgs_for_types so that LBFGSRefinement instances without a
-        # loaded model can still be constructed.
-        self._persistent_optimizers: dict = {}
-
-    # =========================================================================
-    # Persistent optimizer machinery
-    # =========================================================================
-
-    def _lbfgs_for_types(self, types: tuple) -> torch.optim.LBFGS:
-        """The persistent LBFGS over ``types`` (any of ``"xyz"``, ``"adp"``, ``"u"``,
-        ``"occupancy"``), cached by that tuple and reused across calls.
-
-        **Callers must clear curvature via :meth:`_reset_lbfgs_history` before each use.**
-        """
-        key = tuple(types)
-        opt = self._persistent_optimizers.get(key)
-        if opt is None:
-            params = self.model.parameters_of_types(types)
-            if not params:
-                raise RuntimeError(
-                    f"No parameters found for types={types}; cannot build LBFGS."
-                )
-            opt = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
-            self._persistent_optimizers[key] = opt
-        return opt
-
-    @staticmethod
-    def _reset_lbfgs_history(optimizer: torch.optim.Optimizer) -> None:
-        """Drop LBFGS curvature state so the next step starts from steepest descent.
-
-        The two-loop recursion needs ``(s, y)`` pairs from the *same* landscape; between
-        refine_xyz and refine_adp the active parameter set changes, and between any two body
-        calls the scaler has moved parameters the xray target reads.
-        """
-        optimizer.state.clear()
-
     # =========================================================================
     # Refinement Methods
     # =========================================================================
@@ -226,8 +189,8 @@ class LBFGSRefinement(Refinement):
         immediately beforehand; this method therefore touches only body parameters.
         """
         state = self.complete_loss_state()
-        optimizer = self._lbfgs_for_types(("xyz", "adp", "u", "occupancy"))
-        self._reset_lbfgs_history(optimizer)
+        body = self.model.parameters_of_types(("xyz", "adp", "u", "occupancy"))
+        optimizer = torch.optim.LBFGS(body, **self.LBFGS_DEFAULTS)
         state.run(
             optimizer,
             nsteps=nsteps,

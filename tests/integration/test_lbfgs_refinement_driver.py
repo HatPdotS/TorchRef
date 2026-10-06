@@ -61,3 +61,17 @@ def test_refine_xyz_with_xyz_frozen_leaves_coordinates_alone(build):
     ref.refine_xyz()
 
     assert torch.equal(ref.model.xyz(), before)
+
+
+@pytest.mark.integration
+def test_a_second_refine_everything_still_moves_the_coordinates(build):
+    """Each refine_everything call optimizes the model's current parameters, not the
+    ones an earlier call's optimizer was built over."""
+    ref = build()
+    ref.LBFGS_DEFAULTS = dict(ref.LBFGS_DEFAULTS, max_iter=3)
+    ref.refine_everything(macro_cycles=1)
+    before = ref.model.xyz().detach().clone()
+
+    ref.refine_everything(macro_cycles=1)
+
+    assert not torch.equal(ref.model.xyz(), before)

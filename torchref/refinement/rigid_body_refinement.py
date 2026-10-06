@@ -228,11 +228,6 @@ class RigidBodyRefinementStep:
         # parameters.
         ref._build_xray_targets(xray_mode)
         ref.get_scales()
-
-        # Clear cached LBFGS optimizers (they were built over the old model's
-        # parameters and would now point at stale leaves).
-        if hasattr(ref, "_persistent_optimizers"):
-            ref._persistent_optimizers.clear()
         model.reset_cache()
 
     def _run_one_cutoff(self, d_min: float):
