@@ -221,7 +221,7 @@ class TestSmallestDiff:
 
     @pytest.mark.unit
     def test_smallest_diff_aniso_leaves_its_input_alone(self):
-        """(9, 0, 0) in a 10 Å cube maps to (-1, 0, 0); the input is left as it was."""
+        """(9, 0, 0) in a 10 Å cube maps to (-1, 0, 0); the input is not modified."""
         from torchref.base.coordinates import (
             get_fractional_matrix,
             get_inv_fractional_matrix_torch,
