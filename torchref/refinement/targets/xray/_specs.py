@@ -48,7 +48,7 @@ mode           distribution              mean          variance
 
 ``ml`` is the default and centres on ``alpha*|F_calc|``; ``ml_noalpha`` is the same
 likelihood with the coupling pinned at 1, which is the correct choice for a **scale** fit,
-where ``alpha`` is degenerate with the per-bin scale being optimised -- an ``alpha``-centred
+where ``alpha`` is degenerate with the isotropic scale being optimised -- an ``alpha``-centred
 row drives the scale to absorb ``1/alpha`` and inflates every R-factor computed from
 ``k*|F_calc|``. That constraint is enforced, not advised:
 :data:`~torchref.scaling.scaler_base.SCALE_TARGETS` admits only ``nll`` and ``ml_noalpha``,

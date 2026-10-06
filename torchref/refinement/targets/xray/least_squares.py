@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 class LeastSquaresXrayTarget(XrayTarget):
     """``--xray-mode ls``: ``L = 0.5 * sum w_i * (|F_obs| - k*|F_calc|)**2``, unit weights.
 
-    ``k`` belongs to the attached :class:`~torchref.scaling.scaler.Scaler` (per-bin
-    scales, anisotropy, bulk solvent), fit separately from this target.
+    ``k`` belongs to the attached :class:`~torchref.scaling.scaler.Scaler` (Chebyshev
+    isotropic scale, anisotropy, bulk solvent), fit separately from this target.
 
     The unit weights are what make this a distinct objective: at ``w_i = 1/sigma_i**2``
     this target is :class:`~torchref.refinement.targets.xray.nll.NLLXrayTarget` minus a
