@@ -71,7 +71,7 @@ class CIFReader:
         """See the class docstring for the parameters."""
         self.data = {}
         self.filepath = None
-        self.data_block = data_block
+        self.data_block = self._requested_block = data_block
         self.parse_all_blocks = parse_all_blocks
         self.available_blocks = []
         self.verbose = 0
@@ -93,6 +93,10 @@ class CIFReader:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
+        # The first block of an earlier file is no block of this one; only a block
+        # named at construction carries over.
+        self.data, self.available_blocks = {}, []
+        self.data_block = self._requested_block
         self._parse(content)
 
     def _parse(self, content: str):

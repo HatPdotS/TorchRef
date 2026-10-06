@@ -1,10 +1,12 @@
 """The CIF readers on deposited SF-mmCIF, mmCIF and monomer files, often edited."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from torchref.io import ReflectionData
 from torchref.io.cif_readers import (
+    CIFReader,
     ModelCIFReader,
     ReflectionCIFReader,
     RestraintCIFReader,
@@ -90,6 +92,19 @@ def test_blank_line_inside_a_loop_keeps_the_rows_after_it(
 
     assert len(ReflectionCIFReader(reflections).data["HKL"]) == 23356
     assert len(ModelCIFReader(atoms).dataframe) == 3051
+
+
+@pytest.mark.unit
+def test_a_second_load_replaces_the_first_file(cif_sf_dir):
+    second = str(cif_sf_dir / "3GR5-sf.cif")
+    reader = CIFReader(str(cif_sf_dir / "1DAW-sf.cif"))
+    reader.load(second)
+    fresh = CIFReader(second)
+
+    assert reader.available_blocks == fresh.available_blocks == ["r3gr5sf"]
+    assert reader.data_block == "r3gr5sf"
+    assert reader.keys() == fresh.keys()
+    pd.testing.assert_frame_equal(reader["refln"], fresh["refln"])
 
 
 @pytest.mark.unit
