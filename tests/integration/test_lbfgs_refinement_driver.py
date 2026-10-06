@@ -130,6 +130,31 @@ def test_geometry_accessors_evaluate_their_component(build):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("given", ["data_file", "pdb"])
+def test_one_input_file_alone_is_refused(given, mtz_dir, pdb_dir):
+    """data_file and pdb come as a pair; one alone builds neither a refinement nor
+    the empty shell."""
+    path = {"data_file": mtz_dir / "1DAW.mtz", "pdb": pdb_dir / "1DAW.pdb"}[given]
+    with pytest.raises(ValueError, match="together"):
+        LBFGSRefinement(**{given: str(path)}, device=torch.device("cpu"), verbose=0)
+
+
+@pytest.mark.integration
+def test_path_objects_are_accepted_as_input_files(mtz_dir, pdb_dir):
+    """pathlib paths load the same files as their string forms."""
+    ref = LBFGSRefinement(
+        data_file=mtz_dir / "1DAW.mtz",
+        pdb=pdb_dir / "1DAW.pdb",
+        device=torch.device("cpu"),
+        verbose=0,
+    )
+
+    assert ref.data_file == str(mtz_dir / "1DAW.mtz")
+    assert ref.pdb == str(pdb_dir / "1DAW.pdb")
+    assert len(ref.reflection_data) > 0 and ref.model.xyz().shape[0] > 0
+
+
+@pytest.mark.integration
 def test_column_names_with_an_sf_mmcif_file_are_refused(cif_sf_dir, pdb_dir):
     """A column choice cannot apply to SF-mmCIF input, so it is an error rather than
     silently ignored."""

@@ -2,6 +2,7 @@
 Base class for crystallographic refinement.
 """
 
+import os
 from typing import Any, Dict, Optional
 
 import torch
@@ -106,8 +107,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     def __init__(
         self,
-        data_file: str = None,
-        pdb: str = None,
+        data_file: str | os.PathLike | None = None,
+        pdb: str | os.PathLike | None = None,
         cif=None,
         verbose: int = 1,
         max_res: float = None,
@@ -132,16 +133,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         hydrogen_mode: str = "atoms",
         hydrogens_in_xray: bool = True,
     ):
-        """Initialize Refinement, fully if ``data_file`` and ``pdb`` are given.
+        """Initialize Refinement, fully if ``data_file`` and ``pdb`` are both given.
 
         Without them this is an empty shell: empty submodules and no data, scaler
         parameters or targets, so it cannot take a checkpoint.
 
         Parameters
         ----------
-        data_file : str, optional
+        data_file : str or os.PathLike, optional
             Path to the MTZ or CIF file holding reflection data.
-        pdb : str, optional
+        pdb : str or os.PathLike, optional
             Path to the PDB or CIF file holding the initial model.
         cif : str or list of str, optional
             Restraint dictionary file(s) for residues the monomer library lacks. Given to
@@ -215,9 +216,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Raises
         ------
         ValueError
-            If ``anomalous=True`` is given without a ``wavelength``, or
-            ``column_names`` with a CIF ``data_file``.
+            If only one of ``data_file`` and ``pdb`` is given, ``anomalous=True``
+            without a ``wavelength``, or ``column_names`` with a CIF ``data_file``.
         """
+        if (data_file is None) != (pdb is None):
+            raise ValueError(
+                "data_file and pdb must be given together, or both left out for an "
+                f"empty shell; got data_file={data_file!r}, pdb={pdb!r}"
+            )
+        if data_file is not None:
+            data_file, pdb = os.fspath(data_file), os.fspath(pdb)
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
         # there is nothing to reconcile yet — ``resolve_device`` with no
@@ -300,28 +308,27 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # Full initialization with file paths
         try:
             self.to(self.device)
-            if isinstance(data_file, str):
-                self.reflection_data = ReflectionData(
-                    verbose=self.verbose, device=self.device
+            self.reflection_data = ReflectionData(
+                verbose=self.verbose, device=self.device
+            )
+            if data_file.endswith(".mtz"):
+                self.reflection_data.load_mtz(
+                    data_file,
+                    column_names=column_names,
+                    french_wilson=self.french_wilson,
+                    anomalous=self.anomalous,
                 )
-                if data_file.endswith(".mtz"):
-                    self.reflection_data.load_mtz(
-                        data_file,
-                        column_names=column_names,
-                        french_wilson=self.french_wilson,
-                        anomalous=self.anomalous,
-                    )
-                elif data_file.endswith(".cif"):
-                    if column_names:
-                        raise ValueError(
-                            f"column_names selects MTZ columns; {data_file} is "
-                            "SF-mmCIF, which has no column choice to override."
-                        )
-                    self.reflection_data.load_cif(data_file, anomalous=self.anomalous)
-                else:
+            elif data_file.endswith(".cif"):
+                if column_names:
                     raise ValueError(
-                        f"Unsupported data file format: {data_file}. Supported formats are .mtz and .cif"
+                        f"column_names selects MTZ columns; {data_file} is "
+                        "SF-mmCIF, which has no column choice to override."
                     )
+                self.reflection_data.load_cif(data_file, anomalous=self.anomalous)
+            else:
+                raise ValueError(
+                    f"Unsupported data file format: {data_file}. Supported formats are .mtz and .cif"
+                )
             if max_res is not None:
                 try:
                     max_res_val = float(max_res)
