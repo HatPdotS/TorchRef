@@ -848,7 +848,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             k_range = torch.arange(max_period, device=device).unsqueeze(
                 0
             )  # (1, max_period)
-            periods_expanded = periods_flat.unsqueeze(1).float()  # (n_angles, 1)
+            periods_expanded = periods_flat.unsqueeze(1).to(diff_rad.dtype)
 
             # Offsets for each angle: k * 2π/period
             offsets = k_range * (
