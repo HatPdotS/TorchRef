@@ -186,6 +186,10 @@ class PeptideResidues:
 class PreprocessedCIF:
     """
     Pre-processed CIF restraints as NumPy arrays per residue type.
+
+    ``torsions`` holds every torsion except a template's alternative sugar-pucker
+    sets, which ``puckers`` keeps as ``{residue type: {id prefix: arrays}}`` so that a
+    residue can be matched against one of them.
     """
 
     def __init__(self, cif_dict: Dict):
@@ -203,6 +207,7 @@ class PreprocessedCIF:
         self.bonds = {}
         self.angles = {}
         self.torsions = {}
+        self.puckers = {}
         self.planes = {}
         self.chirals = {}
 
@@ -214,7 +219,11 @@ class PreprocessedCIF:
             if "torsions" in data and len(data["torsions"]) > 0:
                 result = self._preprocess_torsions(data["torsions"])
                 if result is not None:
-                    self.torsions[restype] = result
+                    common, puckers = self._split_puckers(result)
+                    if len(common["atom1"]):
+                        self.torsions[restype] = common
+                    if puckers:
+                        self.puckers[restype] = puckers
             if "planes" in data and len(data["planes"]) > 0:
                 self.planes[restype] = self._preprocess_planes(data["planes"])
             if "chirals" in data and len(data["chirals"]) > 0:
@@ -280,9 +289,42 @@ class PreprocessedCIF:
             "atom2": torsions_df["atom2"].values.astype(str),
             "atom3": torsions_df["atom3"].values.astype(str),
             "atom4": torsions_df["atom4"].values.astype(str),
+            "id": (
+                torsions_df["id"].values.astype(str)
+                if "id" in torsions_df.columns
+                else np.full(len(torsions_df), "")
+            ),
             "value": torsions_df["value"].values.astype(np.float64),
             "sigma": torsions_df["sigma"].values.astype(np.float64),
             "period": periods,
+        }
+
+    #: ``_chem_comp_tor.id`` prefixes of the C2'-endo and C3'-endo sugar torsion sets
+    #: the monomer library gives every nucleotide. They restrain the same ring torsions
+    #: to incompatible values, so a residue is matched against one set only.
+    SUGAR_PUCKERS = ("C2e", "C3e")
+
+    @classmethod
+    def _split_puckers(
+        cls, torsions: Dict[str, np.ndarray]
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict[str, np.ndarray]]]:
+        """Split a template's alternative sugar-pucker sets off its torsions.
+
+        Returns
+        -------
+        common : dict
+            The torsion arrays without the pucker sets.
+        puckers : dict
+            ``{id prefix: torsion arrays}`` per :data:`SUGAR_PUCKERS` set; empty, and
+            ``common`` unchanged, unless the template carries more than one set.
+        """
+        prefix = np.array([tid.split("-", 1)[0] for tid in torsions["id"].tolist()])
+        present = [p for p in cls.SUGAR_PUCKERS if (prefix == p).any()]
+        if len(present) < 2:
+            return torsions, {}
+        common = ~np.isin(prefix, present)
+        return {k: v[common] for k, v in torsions.items()}, {
+            p: {k: v[prefix == p] for k, v in torsions.items()} for p in present
         }
 
     def _preprocess_planes(self, planes_df: pd.DataFrame) -> List[Dict]:

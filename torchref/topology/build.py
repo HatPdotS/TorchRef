@@ -13,7 +13,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from torchref.config import get_int_dtype
+from torchref.base.targets._common import torsions_from_xyz
+from torchref.config import get_float_dtype, get_int_dtype
 from torchref.topology.builders import (
     InterResidueAngleBuilder,
     InterResidueBondBuilder,
@@ -166,18 +167,55 @@ def _atom_types(
     return energy, counts
 
 
+def _torsion_misfit(
+    xyz: torch.Tensor,
+    rows: np.ndarray,
+    references: np.ndarray,
+    sigmas: np.ndarray,
+    periods: np.ndarray,
+) -> float:
+    """Mean squared z-score of torsion restraints at ``xyz``.
+
+    Parameters
+    ----------
+    xyz : torch.Tensor
+        Cartesian coordinates in Å, shape ``(N, 3)``.
+    rows : numpy.ndarray
+        Atom rows of each torsion, shape ``(T, 4)``.
+    references, sigmas : numpy.ndarray
+        Ideal torsions and sigmas in degrees, shape ``(T,)``.
+    periods : numpy.ndarray
+        Periodicity of each torsion, shape ``(T,)``; each deviation is folded to the
+        nearest of its ``period`` equivalent minima, 0 counting as 1.
+
+    Returns
+    -------
+    float
+    """
+    measured = torsions_from_xyz(
+        xyz, torch.as_tensor(rows, dtype=get_int_dtype(), device=xyz.device)
+    )
+    step = 360.0 / np.maximum(periods, 1)
+    deviation = (measured.cpu().numpy() - references + step / 2) % step - step / 2
+    return float(np.mean((deviation / np.maximum(sigmas, 1e-4)) ** 2))
+
+
 def _match_intra(
     cols: Dict[str, np.ndarray],
     nodes: Dict[str, np.ndarray],
     template_key: np.ndarray,
     pp_cif: PreprocessedCIF,
+    xyz: torch.Tensor,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict[str, np.ndarray]]]:
     """Intra-residue edges and the ideal values that belong to them.
 
     Keyed ``bonds`` / ``angles`` / ``torsions`` / ``chirals``.
 
     Emitted only where every named atom of a library restraint is present in the
-    conformation, which is the condition the matchers apply.
+    conformation, which is the condition the matchers apply. Of a template's
+    alternative sugar-pucker torsion sets (:attr:`PreprocessedCIF.puckers`), each
+    conformation keeps the one its coordinates ``xyz`` (Cartesian, Å, ``(N, 3)``)
+    fit best, so the pucker is fixed at build time, as a proline's cis or trans is.
 
     Returns
     -------
@@ -203,6 +241,34 @@ def _match_intra(
     work["f2"] = np.zeros(_WORK, dtype=np.float64)
     size = _WORK
 
+    def matched_torsions(names, indices, t):
+        """``(rows, references, sigmas, periods)`` of torsion set ``t`` in a conformer."""
+        n = match_torsions(
+            names,
+            indices,
+            t["atom1"],
+            t["atom2"],
+            t["atom3"],
+            t["atom4"],
+            t["value"],
+            t["sigma"],
+            t["period"],
+            work["i1"],
+            work["i2"],
+            work["i3"],
+            work["i4"],
+            work["f1"],
+            work["f2"],
+            work["per"],
+        )
+        rows = np.column_stack([work[k][:n].copy() for k in ("i1", "i2", "i3", "i4")])
+        return (
+            rows,
+            work["f1"][:n].copy(),
+            work["f2"][:n].copy(),
+            work["per"][:n].copy(),
+        )
+
     for r in range(len(nodes["chain"])):
         key = str(template_key[r])
         start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
@@ -211,6 +277,7 @@ def _match_intra(
             len(pp_cif.angles.get(key, {}).get("atom1", ())),
             len(pp_cif.torsions.get(key, {}).get("atom1", ())),
             len(pp_cif.chirals.get(key, {}).get("atom1", ())),
+            *(len(t["atom1"]) for t in pp_cif.puckers.get(key, {}).values()),
         )
         if needed == 0:
             continue
@@ -267,40 +334,30 @@ def _match_intra(
                     )
                     val["angles"]["references"].append(work["f1"][:n].copy())
                     val["angles"]["sigmas"].append(work["f2"][:n].copy())
+            torsion_sets = []
             if key in pp_cif.torsions:
-                t = pp_cif.torsions[key]
-                n = match_torsions(
-                    names,
-                    indices,
-                    t["atom1"],
-                    t["atom2"],
-                    t["atom3"],
-                    t["atom4"],
-                    t["value"],
-                    t["sigma"],
-                    t["period"],
-                    work["i1"],
-                    work["i2"],
-                    work["i3"],
-                    work["i4"],
-                    work["f1"],
-                    work["f2"],
-                    work["per"],
+                torsion_sets.append(
+                    matched_torsions(names, indices, pp_cif.torsions[key])
                 )
-                if n:
-                    acc["torsions"].append(
-                        np.column_stack(
-                            [
-                                work["i1"][:n].copy(),
-                                work["i2"][:n].copy(),
-                                work["i3"][:n].copy(),
-                                work["i4"][:n].copy(),
-                            ]
-                        )
+            if key in pp_cif.puckers:
+                candidates = [
+                    found
+                    for found in (
+                        matched_torsions(names, indices, t)
+                        for t in pp_cif.puckers[key].values()
                     )
-                    val["torsions"]["references"].append(work["f1"][:n].copy())
-                    val["torsions"]["sigmas"].append(work["f2"][:n].copy())
-                    val["torsions"]["periods"].append(work["per"][:n].copy())
+                    if len(found[0])
+                ]
+                if candidates:
+                    torsion_sets.append(
+                        min(candidates, key=lambda found: _torsion_misfit(xyz, *found))
+                    )
+            for rows, references, sigmas, periods in torsion_sets:
+                if len(rows):
+                    acc["torsions"].append(rows)
+                    val["torsions"]["references"].append(references)
+                    val["torsions"]["sigmas"].append(sigmas)
+                    val["torsions"]["periods"].append(periods)
             if key in pp_cif.chirals:
                 c = pp_cif.chirals[key]
                 n = match_chirals(
@@ -924,7 +981,11 @@ def build_topology_with_values(
     template_h_count[source_rows[own_identity]] = chemical_h_count[own_identity]
 
     intra, intra_values = _match_intra(
-        match_cols, chemical_nodes, chemical_keys, pp_cif
+        match_cols,
+        chemical_nodes,
+        chemical_keys,
+        pp_cif,
+        torch.as_tensor(xyz.detach().cpu(), dtype=get_float_dtype()),
     )
     intra_planes, intra_plane_values = _match_intra_planes(
         match_cols, chemical_nodes, chemical_keys, pp_cif

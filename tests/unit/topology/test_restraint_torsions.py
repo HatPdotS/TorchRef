@@ -89,3 +89,75 @@ def test_cis_proline_takes_the_cis_surface(pdb_dir):
     is_cis = kind[proline].numpy() == TYPE_CIS_PROLINE
     assert is_cis.any() and not is_cis.all()
     np.testing.assert_array_equal(is_cis, np.abs(omega) < 90.0)
+
+
+def _nucleotide(code):
+    """One nucleotide at its dictionary's ideal coordinates.
+
+    Returns the atom table, the restraint dictionary with each torsion's
+    ``_chem_comp_tor.id`` (which names the sugar-pucker set it belongs to), and
+    ``{torsion id: (atom rows, ideal value)}``.
+    """
+    from pathlib import Path
+
+    import gemmi
+    import pandas as pd
+
+    from torchref import PATH_TORCHREF_DATA
+    from torchref.topology.monomer.cif import read_cif
+
+    path = Path(PATH_TORCHREF_DATA, "monomer_library", code[0].lower(), f"{code}.cif")
+    block = gemmi.cif.read(str(path)).find_block(f"comp_{code}")
+    atoms = block.find("_chem_comp_atom.", ["atom_id", "type_symbol", "x", "y", "z"])
+    names = [gemmi.cif.as_string(row[0]) for row in atoms]
+    table = pd.DataFrame(
+        {
+            "name": names,
+            "element": [row[1] for row in atoms],
+            "x": [float(row[2]) for row in atoms],
+            "y": [float(row[3]) for row in atoms],
+            "z": [float(row[4]) for row in atoms],
+        }
+    ).assign(chainid="A", resseq=1, resname=code)
+
+    tags = ["id", "atom_id_1", "atom_id_2", "atom_id_3", "atom_id_4", "value_angle"]
+    torsions = {
+        row[0]: (
+            tuple(names.index(gemmi.cif.as_string(row[k])) for k in (1, 2, 3, 4)),
+            float(row[5]),
+        )
+        for row in block.find("_chem_comp_tor.", tags)
+    }
+    cif_dict = read_cif(str(path))
+    cif_dict[code]["torsions"]["id"] = list(torsions)
+    return table, cif_dict, torsions
+
+
+@pytest.mark.parametrize("code, pucker", [("DA", "C2e"), ("A", "C3e")])
+def test_each_nucleotide_keeps_one_sugar_pucker(code, pucker):
+    """One sugar-pucker torsion set per residue, the one its starting geometry has.
+
+    The dictionaries restrain the same ring torsions to C2'-endo and to C3'-endo
+    values; DNA's ideal coordinates are C2'-endo and RNA's C3'-endo.
+    """
+    from torchref.topology.build import build_topology_with_values
+    from torchref.topology.topology import Topology
+
+    table, cif_dict, torsions = _nucleotide(code)
+    xyz = torch.as_tensor(table[["x", "y", "z"]].values)
+    topology, values, _ = build_topology_with_values(
+        Topology.from_table(table), cif_dict, xyz
+    )
+    references = {}
+    for row, reference in zip(
+        topology.atoms.torsions.origin("intra").tolist(),
+        values["torsion"]["intra"]["references"].tolist(),
+    ):
+        references.setdefault(tuple(row), []).append(reference)
+
+    ring = [tid for tid in torsions if tid.startswith(f"{pucker}-nyu")]
+    assert len(ring) == 5
+    for tid in ring:
+        atoms, value = torsions[tid]
+        assert references[atoms] == pytest.approx([value], abs=1e-3), tid
+    assert all(len(found) == 1 for found in references.values())
