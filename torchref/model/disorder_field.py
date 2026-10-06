@@ -9,7 +9,9 @@ with a soft, distance-derived expansion in place of a fixed integer assignment: 
 is ``(K, 2)`` per node, ``forward()`` returns one B per atom. Two index spaces therefore
 meet in this class, and callers must not mix them --- masks handed to
 :meth:`~DisorderFieldTensor.update_refinable_mask` are in ATOM space, while
-``refinable_mask`` and :meth:`get_refinable_count` are in NODE space.
+``refinable_mask`` and
+:meth:`~torchref.model.parameter_wrappers.MixedTensor.get_refinable_count` are in
+NODE space.
 
 A node's position is anchored, not free: it is the centroid of the atoms in its anchor
 cluster, plus an optional refinable offset. Anchoring keeps a node inside the molecule
@@ -613,7 +615,7 @@ class DisorderFieldTensor(MixedTensor):
     per call, which keeps ``forward()`` argument-free. That makes the inherited forward
     cache incorrect on its own, since :class:`~torchref.utils.caching.CachedForwardMixin`
     fingerprints parameters, buffers and call *arguments* --- and a borrowed accessor's
-    output is none of those. :meth:`_fingerprint_state` closes that by folding the
+    output is none of those. ``_fingerprint_state`` closes that by folding the
     accessor's output into the key.
 
     Parameters
@@ -875,7 +877,7 @@ class DisorderFieldTensor(MixedTensor):
 
     @property
     def out_width(self) -> int:
-        """Components of the per-atom output: 1 for isotropic B, 6 for a U tensor."""
+        """Components of the per-atom output, 1 for isotropic B and 6 for a U tensor."""
         return self._payload.out_width
 
     def _split(self, raw):

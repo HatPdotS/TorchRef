@@ -509,7 +509,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def load(self, reader):
         """
         Populate the model from a reader callable, through
-        :meth:`ModelContext.from_atoms`; ``load_pdb`` / ``load_cif`` come through here.
+        :meth:`~torchref.model.context.ModelContext.from_atoms`; ``load_pdb`` /
+        ``load_cif`` come through here.
 
         Parameters
         ----------
@@ -836,7 +837,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Independent in every part: the context -- restraints included -- is copied via
         :meth:`~torchref.model.context.ModelContext.copy`, buffers are cloned and each
         parameter wrapper is copied through its own ``copy`` so its parametrization
-        survives. Subclass settings carry over through :meth:`_subclass_kwargs`.
+        survives. Subclass settings carry over through ``_subclass_kwargs``.
 
         Returns
         -------
@@ -1008,7 +1009,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         B-factors), ``u_mask`` (atoms with no NaN U component), and
         ``occupancy_mask`` (occupancies below 0.999), then pushes each mask
         into the corresponding parameter wrapper via ``update_refinable_mask``.
-        Called from :meth:`_install_parameters` after the wrappers are constructed.
+        Called from ``_install_parameters`` after the wrappers are constructed.
         """
         self.register_buffer(
             "xyz_mask", torch.ones(self.n_atoms, dtype=torch.bool, device=self.device)
@@ -1024,7 +1025,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     PARAM_TYPES: Tuple[str, ...] = ("xyz", "adp", "u", "occupancy")
 
     def parameters_of_types(self, types: Iterable[str]) -> List[nn.Parameter]:
-        """Return the leaf ``nn.Parameter``s for the named parameter types.
+        """Return the leaf ``nn.Parameter`` objects for the named parameter types.
 
         Used by refinement entry points (``refine_xyz``, ``refine_adp``, ...)
         to construct an optimizer over only the leaves the caller intends to
@@ -1154,7 +1155,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         init : {"fit", "flat"}, optional
             What a field mode fits its nodes to: ``"fit"`` (default) the model's current
             per-atom ADPs, ``"flat"`` a single level with their spatial structure
-            discarded. See :meth:`_install_disorder_field`.
+            discarded. See ``_install_disorder_field``.
         mode_set : str, optional
             For ``mode="field_aniso"``, a key of
             :data:`~torchref.model.disorder_field.MODE_SETS` --- ``"rigid"`` is TLS,
@@ -1681,9 +1682,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return (p for p in super().parameters(recurse) if p.numel() > 0)
 
     def named_mixed_tensors(self):
-        """Yield ``(name, wrapper)`` for every :class:`MixedTensor` submodule.
+        """Yield ``(name, wrapper)`` for every ``MixedTensor`` submodule.
 
-        Subclasses of ``MixedTensor`` are included; ``RigidXYZTensor`` is not.
+        Subclasses of :class:`~torchref.model.parameter_wrappers.MixedTensor` are
+        included; ``RigidXYZTensor`` is not.
         """
         for name, module in self.named_modules():
             if isinstance(module, MixedTensor) and module != self:
@@ -1823,8 +1825,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Return a dictionary containing the complete state of the Model.
 
         Registered buffers, the four parameter wrappers, the context's entries
-        (:meth:`ModelContext.state`), the atom table (:meth:`to_dataframe`), dtype and
-        device. Restore with
+        (:meth:`~torchref.model.context.ModelContext.state`), the atom table
+        (:meth:`to_dataframe`), dtype and device. Restore with
         :meth:`create_from_state_dict`, which is what knows how to rebuild the wrappers.
 
         Parameters
@@ -2022,7 +2024,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         -----
         Consumes ``state_dict``: the metadata keys are popped off it. Checkpoints
         written before the hydrogen policy existed are mapped onto it; see
-        :meth:`ModelContext.from_state`.
+        :meth:`~torchref.model.context.ModelContext.from_state`.
         """
         # Build on CPU throughout, then move once: the wrappers are built from the atom
         # table and land on CPU whatever is asked for, so resolving an accelerator up
@@ -2077,7 +2079,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Return a boolean mask for atoms matching a Phenix-style selection.
 
-        Evaluated on the topology (:meth:`Topology.select`); the result can be handed
+        Evaluated on the topology
+        (:meth:`~torchref.topology.topology.Topology.select`); the result can be handed
         straight to ``MixedTensor.set()``.
 
         Parameters
@@ -2295,7 +2298,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     @property
     def hydrogen_mode(self) -> str:
-        """``"atoms"`` or ``"riding"``; see :class:`ModelContext`."""
+        """``"atoms"`` or ``"riding"``, as held by the context.
+
+        See :class:`~torchref.model.context.ModelContext`.
+        """
         return self.ctx.hydrogen_mode
 
     def hydrogen_frames(self):
@@ -2352,9 +2358,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         The atom table never changes here: hydrogens a table lacks are generated only
         at load, with ``hydrogens="add"``. Replaces the ``xyz`` wrapper, so any
         optimizer or ``LossState`` built over the old parameters is stale;
-        :meth:`Refinement.set_hydrogen_mode` does the engine-side reset. The refinable
-        set carries over row for row (a hydrogen released to ``"atoms"`` follows its
-        parent's mask).
+        :meth:`~torchref.refinement.base_refinement.Refinement.set_hydrogen_mode`
+        does the engine-side reset. The refinable set carries over row for row (a
+        hydrogen released to ``"atoms"`` follows its parent's mask).
         """
         from torchref.model.context import check_hydrogen_policy
         from torchref.model.riding_xyz import RidingXYZTensor
@@ -2388,7 +2394,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def use_rigid_xyz(self) -> "Model":
         """
-        Swap ``self.xyz`` for a per-chain :class:`RigidXYZTensor`.
+        Swap ``self.xyz`` for a per-chain
+        :class:`~torchref.model.rigid_xyz.RigidXYZTensor`.
 
         The only refinable leaves become per-chain Euler angles and translations,
         with chains auto-detected from the topology's chain ids (waters and
@@ -2502,7 +2509,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ----------
         commit : bool, optional
             If ``True`` (default), bake the current rotated/translated
-            coordinates into a fresh :class:`MixedTensor` and install that
+            coordinates into a fresh
+            :class:`~torchref.model.parameter_wrappers.MixedTensor` and install that
             as ``self.xyz``. If ``False``, restore the original container
             untouched (discarding the rigid transform).
 

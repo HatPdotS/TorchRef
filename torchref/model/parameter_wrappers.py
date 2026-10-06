@@ -233,7 +233,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         Three paths: all atoms refinable (``refinable_params`` straight through,
         no scatter), none refinable (a clone of ``fixed_values`` -- detached, but
         cloned so callers cannot mutate the buffer), or mixed, via
-        :class:`_AssembleMixedTensor` for the cheap gather backward.
+        ``_AssembleMixedTensor`` for the cheap gather backward.
         """
         if self._all_refinable:
             # `.clone()` turns the Parameter into a plain Tensor, without which
@@ -1261,9 +1261,9 @@ class OccupancyTensor(MixedTensor):
     conformations are normalized to sum to 1.0 on the way out.
 
     Two index spaces meet here and callers must not mix them: masks passed to
-    :meth:`freeze` / :meth:`unfreeze` / :meth:`set` are in FULL atom space, while
-    ``refinable_mask`` and the counts from :meth:`get_refinable_count` are in
-    COLLAPSED group space. Freezing or unfreezing any atom of a group applies to
+    :meth:`freeze` / :meth:`unfreeze` / :meth:`~MixedTensor.set` are in FULL atom
+    space, while ``refinable_mask`` and the counts from :meth:`get_refinable_count`
+    are in COLLAPSED group space. Freezing or unfreezing any atom of a group applies to
     the whole group.
 
     Parameters
