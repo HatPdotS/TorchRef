@@ -452,37 +452,42 @@ def _inter_residue_edges(
         }
         return rows, rest
 
-    bond = InterResidueBondBuilder(verbose=verbose).build(
-        residues, trans, cpu
-    )
-    if bond:
-        indices["bond"]["peptide"], values["bond"]["peptide"] = split(bond)
+    def per_link(builder):
+        """One builder's groups, X-Pro pairs from PTRANS and the rest from TRANS.
 
-    ab = InterResidueAngleBuilder(verbose=verbose)
-    if ptrans is not None:
-        # PTRANS carries the extra C(i-1)-N-CD angle, so proline pairs are built from it
-        # and excluded from the TRANS pass to avoid two restraints on the same atoms.
-        groups = [
-            ab.build(
-                residues, trans, cpu, exclude_next_resname="PRO"
-            ),
-            ab.build(
-                residues, ptrans, cpu, next_resname_filter="PRO"
-            ),
+        PTRANS carries the X-Pro C-N length, the C(i-1)-N-CD angle and the
+        C(i-1)-N-CA-CD plane, so proline pairs are excluded from the TRANS pass rather
+        than restrained by both.
+        """
+        if ptrans is None:
+            return [builder.build(residues, trans, cpu)]
+        return [
+            builder.build(residues, trans, cpu, exclude_next_resname="PRO"),
+            builder.build(residues, ptrans, cpu, next_resname_filter="PRO"),
         ]
-    else:
-        groups = [ab.build(residues, trans, cpu)]
-    parts = [split(g) for g in groups if g]
-    if parts:
-        indices["angle"]["peptide"] = np.concatenate([p[0] for p in parts], axis=0)
-        shared = set.intersection(*(set(p[1]) for p in parts))
-        values["angle"]["peptide"] = {
-            prop: np.concatenate([p[1][prop] for p in parts]) for prop in shared
-        }
 
-    tors = InterResidueTorsionBuilder(verbose=verbose).build(
-        residues, trans, cpu
-    )
+    def joined(groups):
+        """Builder groups as one ``(indices array, {property: array})``, or None."""
+        parts = [split(g) for g in groups if g]
+        if not parts:
+            return None
+        shared = set.intersection(*(set(p[1]) for p in parts))
+        return (
+            np.concatenate([p[0] for p in parts], axis=0),
+            {prop: np.concatenate([p[1][prop] for p in parts]) for prop in shared},
+        )
+
+    for edge_type, builder in (
+        ("bond", InterResidueBondBuilder),
+        ("angle", InterResidueAngleBuilder),
+    ):
+        group = joined(per_link(builder(verbose=verbose)))
+        if group is not None:
+            indices[edge_type]["peptide"], values[edge_type]["peptide"] = group
+
+    # One TRANS pass: the PTRANS torsions are the same, and the Ramachandran pairing
+    # needs each residue's phi and psi from a single pass.
+    tors = InterResidueTorsionBuilder(verbose=verbose).build(residues, trans, cpu)
     if tors:
         for origin in ("phi", "psi", "omega"):
             if origin in tors:
@@ -492,12 +497,11 @@ def _inter_residue_edges(
         if "ramachandran" in tors:
             extras["ramachandran"] = tors["ramachandran"]
 
-    planes = InterResiduePlaneBuilder(verbose=verbose).build(
-        residues, trans, cpu
-    )
-    if planes:
-        for key, group in planes.items():
-            indices["plane"][key], values["plane"][key] = split(group)
+    planes = [g for g in per_link(InterResiduePlaneBuilder(verbose=verbose)) if g]
+    for key in sorted({key for group in planes for key in group}):
+        indices["plane"][key], values["plane"][key] = joined(
+            [group.get(key) for group in planes]
+        )
     return indices, values, extras
 
 

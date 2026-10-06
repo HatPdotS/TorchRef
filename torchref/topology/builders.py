@@ -565,6 +565,8 @@ class InterResidueBondBuilder:
         link_dict: Dict,
         device: torch.device,
         sort_indices: bool = True,
+        next_resname_filter: Optional[str] = None,
+        exclude_next_resname: Optional[str] = None,
     ) -> Optional[Dict[str, torch.Tensor]]:
         """
         Build all inter-residue bond restraints.
@@ -579,6 +581,9 @@ class InterResidueBondBuilder:
             Target device.
         sort_indices : bool
             Whether to sort output by first atom index.
+        next_resname_filter, exclude_next_resname : str, optional
+            Select pairs by the second residue's name, as
+            :meth:`PeptideResidues.conformer_pairs` does.
 
         Returns
         -------
@@ -604,7 +609,10 @@ class InterResidueBondBuilder:
         bonds = link_data.bonds
         n_bonds = len(bonds["atom1"])
 
-        for _, _, map_i, map_next in residues.conformer_pairs():
+        for _, _, map_i, map_next in residues.conformer_pairs(
+            next_resname_filter=next_resname_filter,
+            exclude_next_resname=exclude_next_resname,
+        ):
             for b in range(n_bonds):
                 comp1, comp2 = bonds["comp1"][b], bonds["comp2"][b]
                 atom1_name, atom2_name = bonds["atom1"][b], bonds["atom2"][b]
@@ -780,13 +788,9 @@ class InterResidueAngleBuilder:
             Target device for tensors.
         sort_indices : bool, optional
             Sort output by first atom index (default True).
-        next_resname_filter : str, optional
-            If set, only build angles for pairs where the second (next)
-            residue has this residue name (e.g. "PRO" for proline links).
-        exclude_next_resname : str, optional
-            If set, skip pairs where the second (next) residue has this
-            residue name.  Useful for excluding PRO from TRANS angles
-            when PTRANS is handled separately.
+        next_resname_filter, exclude_next_resname : str, optional
+            Select pairs by the second residue's name, as
+            :meth:`PeptideResidues.conformer_pairs` does.
         """
         if "angles" not in link_dict or link_dict["angles"] is None:
             return None
@@ -1228,8 +1232,14 @@ class InterResiduePlaneBuilder:
         link_dict: Dict,
         device: torch.device,
         sort_indices: bool = True,
+        next_resname_filter: Optional[str] = None,
+        exclude_next_resname: Optional[str] = None,
     ) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
-        """Build all inter-residue plane restraints, grouped by atom count."""
+        """Build all inter-residue plane restraints, grouped by atom count.
+
+        ``next_resname_filter`` and ``exclude_next_resname`` select pairs by the second
+        residue's name, as :meth:`PeptideResidues.conformer_pairs` does.
+        """
         if "planes" not in link_dict or link_dict["planes"] is None:
             return None
 
@@ -1243,7 +1253,10 @@ class InterResiduePlaneBuilder:
         # Group planes by atom count
         planes_by_size: Dict[int, List[Tuple[np.ndarray, np.ndarray]]] = {}
 
-        for _, _, map_i, map_next in residues.conformer_pairs():
+        for _, _, map_i, map_next in residues.conformer_pairs(
+            next_resname_filter=next_resname_filter,
+            exclude_next_resname=exclude_next_resname,
+        ):
             for plane_data in link_data.planes:
                 comp_ids = plane_data["comp_ids"]
                 atom_names = plane_data["atoms"]
