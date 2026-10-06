@@ -515,8 +515,17 @@ class LossState(DeviceMovementMixin):
 
         return last_loss["val"]
 
-    def step(self, optimizer: torch.optim.Optimizer, *args, **kwargs) -> "LossState":
-        """:meth:`run` with ``nsteps=1``; extra arguments are forwarded."""
+    def step(
+        self, optimizer: torch.optim.Optimizer, *args, **kwargs
+    ) -> Optional[torch.Tensor]:
+        """:meth:`run` with ``nsteps=1``; extra arguments are forwarded.
+
+        Returns
+        -------
+        torch.Tensor or None
+            The loss from the accepted closure call, or None if every call was
+            non-finite or the optimizer holds nothing refinable; see :meth:`run`.
+        """
         return self.run(optimizer, *args, nsteps=1, **kwargs)
 
     # =========================================================================
