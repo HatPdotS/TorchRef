@@ -11,8 +11,7 @@ import pytest
 
 from torchref.model.model import Model
 
-# 3E98 chain A, LEU72 - MSE73: the MSE is a HETATM residue, so its peptide bonds come
-# only from LINK records.
+# 3E98 chain A, LEU72 - MSE73, the MSE a HETATM residue.
 _LEU_MSE = """\
 CRYST1   53.841   88.114   60.963  90.00 107.92  90.00 P 1 21 1      4
 {links}
@@ -60,7 +59,9 @@ def _load(path):
 def test_repeated_link_record_contributes_one_edge(tmp_path):
     """The parser keeps both records; the graph carries one bond and one restraint."""
     path = tmp_path / "dup_link.pdb"
-    path.write_text(_LEU_MSE.format(links=_LINK + "\n" + _LINK))
+    text = _LEU_MSE.format(links=_LINK + "\n" + _LINK)
+    # MSE renumbered 75: no peptide link forms, so the C-N bond comes from LINK alone.
+    path.write_text(text.replace("MSE A  73", "MSE A  75"))
     model = _load(path)
     restraints = model.restraints
     atoms = restraints.topology.atoms
@@ -68,8 +69,60 @@ def test_repeated_link_record_contributes_one_edge(tmp_path):
     assert len(restraints.links) == 2
     link_rows = atoms.bonds.origin("link")
     assert len(link_rows) == 1
-    n_mse = _row(model, "A", 73, "N")
+    n_mse = _row(model, "A", 75, "N")
     assert int(atoms.degree(n_mse)) == 2  # CA and the previous C
+
+
+@pytest.mark.unit
+def test_link_record_duplicating_a_peptide_bond_is_dropped(tmp_path):
+    """The HETATM MSE is peptide-linked, and its LINK record adds no second bond."""
+    path = tmp_path / "peptide_link.pdb"
+    path.write_text(_LEU_MSE.format(links=_LINK))
+    model = _load(path)
+    atoms = model.restraints.topology.atoms
+    c_leu, n_mse = _row(model, "A", 72, "C"), _row(model, "A", 73, "N")
+
+    assert "link" not in atoms.bonds.origin_bounds
+    assert atoms.bonds.origin("peptide").tolist() == [[c_leu, n_mse]]
+    assert int(atoms.degree(n_mse)) == 2
+
+
+@pytest.mark.unit
+def test_hetatm_amino_acid_is_peptide_linked(pdb_dir):
+    """3E98's MSE65 is a HETATM residue, linked like any other.
+
+    GLU64-MSE65-ARG66 carry peptide bonds, angles, planes, omega, phi/psi and the
+    Ramachandran pair; MSE65 is patched for both links and counts as polymer, and the
+    LINK records for those two bonds add nothing.
+    """
+    model = _load(pdb_dir / "3E98.pdb")
+    restraints = model.restraints
+    entries = restraints.restraints
+    topology = restraints.topology
+    c64, n65 = _row(model, "A", 64, "C"), _row(model, "A", 65, "N")
+    c65, n66 = _row(model, "A", 65, "C"), _row(model, "A", 66, "N")
+
+    bonds = {tuple(row) for row in entries["bond"]["peptide"]["indices"].tolist()}
+    assert {(c64, n65), (c65, n66)} <= bonds
+    assert "link" not in topology.atoms.bonds.origin_bounds
+    angles = entries["angle"]["peptide"]["indices"].tolist()
+    omega = entries["torsion"]["omega"]["indices"].tolist()
+    planes = entries["plane"]["4_atoms"]["indices"].tolist()
+    for c, n in ((c64, n65), (c65, n66)):
+        assert sum({c, n} <= set(row) for row in angles) >= 3
+        assert any(row[1:3] == [c, n] for row in omega)
+        assert any({c, n} <= set(row) for row in planes)
+
+    phi = entries["torsion"]["phi"]["indices"].tolist()
+    psi = entries["torsion"]["psi"]["indices"].tolist()
+    assert any(row[:2] == [c64, n65] for row in phi)
+    assert any(row[0] == n65 and row[3] == n66 for row in psi)
+    rama_phi = restraints._rama_phi_indices.tolist()
+    assert any(row[:2] == [c64, n65] for row in rama_phi)
+
+    mse65 = int(topology.atoms.residue_of[n65])
+    assert topology.residues.template_key[mse65] == "MSE:DEL-HN1+DEL-OXT"
+    assert topology.is_polymer[n65]
 
 
 @pytest.mark.unit
@@ -89,6 +142,8 @@ def test_shared_atom_degree_counts_each_partner_once(pdb_dir):
 
 def _link_identities(model):
     atoms = model.restraints.topology.atoms
+    if "link" not in atoms.bonds.origin_bounds:
+        return set()
     pdb = model.pdb
     key = lambda i: (
         str(pdb["chainid"].iloc[i]),

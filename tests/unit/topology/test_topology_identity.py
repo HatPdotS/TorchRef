@@ -106,7 +106,12 @@ def test_water_and_polymer_masks(pdb_dir):
     df = _table(pdb_dir, "1DAW")
     nodes = Topology.from_table(df)
     np.testing.assert_array_equal(nodes.is_water, (df.resname == "HOH").to_numpy())
-    np.testing.assert_array_equal(nodes.is_polymer, (df.ATOM == "ATOM").to_numpy())
+    # Polymer means peptide-linked, which only the connected topology knows.
+    assert not nodes.is_polymer.any()
+    connected = Model(verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb")).restraints
+    np.testing.assert_array_equal(
+        connected.topology.is_polymer, (df.ATOM == "ATOM").to_numpy()
+    )
     np.testing.assert_array_equal(
         nodes.atoms.is_hydrogen.cpu().numpy(),
         (df.element.str.strip() == "H").to_numpy(),

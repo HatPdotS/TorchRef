@@ -46,12 +46,11 @@ _WORK = 64
 
 
 def _atom_columns(topology: Topology) -> Dict[str, np.ndarray]:
-    """Per-atom identity arrays the matchers read, ``record`` and ``index`` included.
+    """Per-atom identity arrays the matchers read, ``index`` included.
 
     ``index`` is the atom row: edge indices are rows of the topology.
     """
     cols = topology.columns()
-    cols["record"] = np.where(cols.pop("is_hetatm"), "HETATM", "ATOM")
     cols["index"] = np.arange(topology.n_atoms, dtype=np.int64)
     return cols
 
@@ -640,14 +639,15 @@ def _lookup_link_atom(
 def _link_record_edges(
     topology: Topology,
     links,
-    disulfide_bonds: Optional[np.ndarray],
+    linked_bonds: Sequence[np.ndarray],
     verbose: int,
 ) -> Tuple[np.ndarray, List[Tuple[int, int]], Dict[str, np.ndarray]]:
     """Bond edges for the accepted ``LINK`` records, and the atom pairs they join.
 
-    A record duplicating an auto-detected disulfide is dropped, since that link already
-    contributed its bond, angles and torsions; so is a record repeating an earlier one,
-    which would otherwise add a second bond edge and a second restraint on the same pair.
+    A record duplicating an auto-detected peptide or disulfide bond (``linked_bonds``,
+    ``(E, 2)`` atom rows each) is dropped, since that link already contributed its bond,
+    angles and torsions; so is a record repeating an earlier one, which would otherwise
+    add a second bond edge and a second restraint on the same pair.
 
     Returns
     -------
@@ -662,10 +662,11 @@ def _link_record_edges(
     if links is None or len(links) == 0:
         return np.zeros((0, 2), dtype=np.int64), [], {}
 
-    existing = set()
-    if disulfide_bonds is not None:
-        for a, b in disulfide_bonds:
-            existing.add((min(int(a), int(b)), max(int(a), int(b))))
+    existing = {
+        (min(int(a), int(b)), max(int(a), int(b)))
+        for bonds in linked_bonds
+        for a, b in bonds
+    }
 
     residue_by_key: Dict[Tuple[str, int, str], List[int]] = {}
     for r in range(topology.n_residues):
@@ -852,7 +853,8 @@ def build_topology_with_values(
         Link table used to resolve which modifications a peptide link applies.
     links : pandas.DataFrame, optional
         Parsed PDB ``LINK`` records. Each record that resolves to two distinct atoms and
-        does not duplicate an auto-detected disulfide contributes one bond edge.
+        does not duplicate an auto-detected peptide or disulfide bond contributes one
+        bond edge.
     device : torch.device, optional
         Where to place the edge blocks.
     verbose : int, default 0
@@ -881,18 +883,9 @@ def build_topology_with_values(
         set(cols["name"][int(nodes["atom_start"][r]) : int(nodes["atom_end"][r])])
         for r in range(n_res)
     ]
-    is_polymer = np.array(
-        [cols["record"][int(nodes["atom_start"][r])] == "ATOM" for r in range(n_res)],
-        dtype=bool,
-    )
-
-    polymer_nodes = {k: v[is_polymer] for k, v in nodes.items()}
-    polymer_map = np.nonzero(is_polymer)[0]
-    polymer_names = [names_by_residue[r] for r in polymer_map]
-    peptide_local = find_peptide_links(polymer_nodes, polymer_names)
-    peptide_pairs = [
-        (int(polymer_map[a]), int(polymer_map[b])) for a, b in peptide_local
-    ]
+    # Whatever the record type: a polymer residue written as HETATM (MSE, SEP, ...)
+    # takes the same link, patching and backbone terms as its ATOM neighbours.
+    peptide_pairs = find_peptide_links(nodes, names_by_residue)
 
     match_cols, chemical_nodes, chemical_pairs, source_rows, owners = _chemical_nodes(
         cols, nodes, peptide_pairs
@@ -947,18 +940,21 @@ def build_topology_with_values(
         for row in range(int(nodes["atom_start"][r]), int(nodes["atom_end"][r])):
             residue_of_row[row] = r
 
-    sg_rows = [
-        row
-        for row in range(len(cols["name"]))
-        if cols["name"][row] == "SG" and cols["record"][row] == "ATOM"
-    ]
+    sg_rows = [row for row in range(len(cols["name"])) if cols["name"][row] == "SG"]
     disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz)
     disulfide, disulfide_values = _disulfide_edges(
         topology, cols, residue_of_row, disulfide_pairs, link_dict, verbose
     )
 
     link_edges, link_atom_pairs, link_values = _link_record_edges(
-        topology, links, disulfide.get("bond"), verbose
+        topology,
+        links,
+        [
+            bonds
+            for bonds in (inter["bond"].get("peptide"), disulfide.get("bond"))
+            if bonds is not None
+        ],
+        verbose,
     )
 
     # LINK edges carry ``index`` values, so lift them through that column.

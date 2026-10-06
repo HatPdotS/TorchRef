@@ -256,13 +256,15 @@ class Topology(DeviceMixin):
 
     @property
     def is_polymer(self) -> np.ndarray:
-        """True for atoms of polymer residues, shape ``(N,)``.
+        """True for atoms of peptide-linked residues, shape ``(N,)``.
 
-        A residue is polymer when its first atom is an ATOM record, the same rule the
-        peptide-link search uses.
+        A residue is polymer when a peptide link joins it to a sequence neighbour,
+        whatever its record type, so a selenomethionine written as HETATM counts.
+        Peptide links are made when the topology is connected; on a node-only topology
+        (:meth:`from_table`) no residue is polymer yet.
         """
-        first = self.residues.atom_start.astype(np.int64)
-        per_residue = ~self.atoms.is_hetatm[first] if len(first) else np.zeros(0, bool)
+        per_residue = np.zeros(self.n_residues, dtype=bool)
+        per_residue[self.residues.links_of_kind("TRANS").ravel()] = True
         return per_residue[self.atoms.residue_of.cpu().numpy()]
 
     def with_hydrogens(
