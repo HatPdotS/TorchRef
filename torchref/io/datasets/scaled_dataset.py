@@ -51,7 +51,7 @@ class ScaledDataset(ReflectionData):
     Notes
     -----
     F/F_sigma (amplitude units) and I/I_sigma (intensity units), shape (N,),
-    are corrected read-only expressions. Explicit *_raw properties expose the
+    are corrected read-only expressions. Explicit ``*_raw`` properties expose the
     stored measurements. Selection/copy preserves the shared scaler; moving a
     view also moves the shared scaler. Raw source datasets remain unchanged.
     """

@@ -2124,9 +2124,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         Get scattering vectors (s-vectors) from hkl and cell.
 
-        The s-vector for a reflection hkl is defined as:
-            s = B* @ hkl
-        where B* is the reciprocal basis matrix.
+        The s-vector for a reflection hkl is defined as ``s = B* @ hkl``, where
+        B* is the reciprocal basis matrix.
 
         Returns
         -------
