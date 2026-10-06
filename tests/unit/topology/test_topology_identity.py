@@ -186,3 +186,20 @@ def test_charges_are_coerced(pdb_dir):
     df.loc[1, "charge"] = 2
     charge = Topology.from_table(df).atoms.charge
     assert charge.dtype == np.int64 and charge[0] == 0 and charge[1] == 2
+
+
+@pytest.mark.unit
+def test_generated_hydrogens_carry_no_charge(pdb_dir, tmp_path):
+    """Hydrogens added to a charged atom carry no formal charge of their own."""
+    lines = (pdb_dir / "1DAW.pdb").read_text().splitlines()
+    lines = [
+        line[:78] + "1+" if line[12:26] == " NZ  LYS A   8" else line for line in lines
+    ]
+    path = tmp_path / "charged.pdb"
+    path.write_text("\n".join(lines) + "\n")
+
+    df = Model(verbose=0, hydrogens="add").load_pdb(str(path)).to_dataframe()
+    lys = df[(df["chainid"] == "A") & (df["resseq"] == 8)]
+    charge = dict(zip(lys["name"], lys["charge"]))
+    assert charge["NZ"] == 1
+    assert [charge[name] for name in ("HZ1", "HZ2", "HZ3")] == [0, 0, 0]

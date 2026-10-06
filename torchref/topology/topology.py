@@ -274,8 +274,9 @@ class Topology(DeviceMixin):
 
         Each residue's planned hydrogens go immediately after its own atoms, never at
         the end: residues are contiguous runs, so appending would split every
-        hydrogenated residue into two nodes. A hydrogen inherits its parent's identity
-        and takes the plan's ``name``, ``element`` and ``altloc``.
+        hydrogenated residue into two nodes. A hydrogen inherits its parent's identity,
+        takes the plan's ``name``, ``element`` and ``altloc``, and carries no formal
+        charge: the PDB convention puts a group's charge on its heavy atom.
 
         Parameters
         ----------
@@ -325,6 +326,7 @@ class Topology(DeviceMixin):
             ("name", np.asarray(plan.name).astype(str)),
             ("element", np.asarray(plan.element).astype(str)),
             ("altloc", np.where(np.char.strip(altloc) == "", " ", altloc)),
+            ("charge", np.zeros(plan.n_hydrogens, dtype=np.int64)),
         ):
             column = columns[key].astype(
                 np.result_type(columns[key].dtype, values.dtype)
