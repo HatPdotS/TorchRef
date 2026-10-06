@@ -22,8 +22,9 @@ def cartesian_to_fractional_torch(xyz, cell, B_inv=None):
         Cartesian coordinates of shape (N, 3).
     cell : array-like
         Unit cell parameters [a, b, c, alpha, beta, gamma].
-    B_inv: torch.Tensor, optional
-        Inverse fractionalization matrix. If None, it will be calculated from cell.
+    B_inv : torch.Tensor, optional
+        Fractionalization matrix B^-1 (Cartesian -> fractional). If None, it will
+        be calculated from cell.
 
     Returns
     -------
@@ -49,8 +50,9 @@ def fractional_to_cartesian_torch(xyz_fractional, cell, B=None):
         Fractional coordinates of shape (N, 3).
     cell : array-like
         Unit cell parameters [a, b, c, alpha, beta, gamma].
-    B: torch.Tensor, optional
-        Fractionalization matrix. If None, it will be calculated from cell.
+    B : torch.Tensor, optional
+        Orthogonalization matrix B (fractional -> Cartesian). If None, it will be
+        calculated from cell.
 
     Returns
     -------

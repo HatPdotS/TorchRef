@@ -23,7 +23,7 @@ def get_real_grid(cell=None, fractional_matrix=None, *, gridsize, device=None):
     cell : torch.Tensor
         Unit cell parameters [a, b, c, alpha, beta, gamma].
     fractional_matrix : torch.Tensor, optional
-        Pre-computed fractionalization matrix.
+        Pre-computed orthogonalization matrix B (fractional -> Cartesian).
     gridsize : torch.Tensor or array-like
         Grid dimensions [nx, ny, nz], e.g. from
         :meth:`~torchref.symmetry.cell.Cell.compute_grid_size`.

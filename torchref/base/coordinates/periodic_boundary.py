@@ -20,9 +20,9 @@ def smallest_diff(
     diff : torch.Tensor
         Difference vectors of shape (..., 3).
     inv_frac_matrix : torch.Tensor
-        Inverse fractionalization matrix of shape (3, 3).
+        Fractionalization matrix B^-1 (Cartesian -> fractional) of shape (3, 3).
     frac_matrix : torch.Tensor
-        Fractionalization matrix of shape (3, 3).
+        Orthogonalization matrix B (fractional -> Cartesian) of shape (3, 3).
 
     Returns
     -------
@@ -48,9 +48,9 @@ def smallest_diff_aniso(
     diff : torch.Tensor
         Difference vectors of shape (..., 3).
     inv_frac_matrix : torch.Tensor
-        Inverse fractionalization matrix of shape (3, 3).
+        Fractionalization matrix B^-1 (Cartesian -> fractional) of shape (3, 3).
     frac_matrix : torch.Tensor
-        Fractionalization matrix of shape (3, 3).
+        Orthogonalization matrix B (fractional -> Cartesian) of shape (3, 3).
 
     Returns
     -------
