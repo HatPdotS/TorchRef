@@ -64,7 +64,7 @@ class ModelFT(CachedForwardMixin, Model):
         wavelength the data were collected at, not a nominal one.
     anomalous_threshold : float, optional
         Significance threshold for anomalous scattering in electrons.
-        Atoms with |f'| > threshold or |f''| > threshold will have
+        Atoms with ``|f'| > threshold`` or ``|f''| > threshold`` will have
         anomalous corrections applied. Default is 0.5.
     *args
         Additional positional arguments passed to parent Model class.
@@ -116,7 +116,7 @@ class ModelFT(CachedForwardMixin, Model):
             f' and f''. Default None: no anomalous scattering, f0 only.
         anomalous_threshold : float, optional
             Significance threshold for anomalous scattering in electrons.
-            Atoms with |f'| > threshold or |f''| > threshold will have
+            Atoms with ``|f'| > threshold`` or ``|f''| > threshold`` will have
             anomalous corrections applied. Default is 0.5.
         apply_bijvoet : bool, optional
             Apply the imaginary f'' (Bijvoet) term, which breaks Friedel's law
