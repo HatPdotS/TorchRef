@@ -273,6 +273,21 @@ def test_header_lines_fit_the_format():
 
 
 @pytest.mark.unit
+def test_long_statistic_values_wrap_rather_than_overflow():
+    """A generated free set's provenance is wider than the statistics column."""
+    meta = _refined_metadata()
+    meta.rfree_selection = "Generated (resolution-binned, ASU-grouped, seed 0)"
+    lines = meta.render_pdb_header().splitlines()
+    assert [line for line in lines if len(line) > 80] == []
+    head = next(
+        i for i, line in enumerate(lines) if "FREE R VALUE TEST SET SELECTION" in line
+    )
+    assert lines[head + 1].startswith("REMARK   3" + " " * 37 + ": ")
+    joined = " ".join(line.split(" : ", 1)[1] for line in lines[head : head + 2])
+    assert joined == meta.rfree_selection
+
+
+@pytest.mark.unit
 def test_long_identification_values_wrap_rather_than_overflow():
     """Naming cycles, mode, ADP model and scale target overruns column 80."""
     meta = _refined_metadata()

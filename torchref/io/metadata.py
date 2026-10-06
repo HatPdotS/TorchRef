@@ -901,7 +901,7 @@ def _initial_model_category(starting_model: str) -> Dict[str, str]:
 def _remark3(
     lines: List[str], label: str, value: Any, fmt: str = ""
 ) -> None:
-    """Append a REMARK 3 ``label : value`` line.
+    """Append a REMARK 3 ``label : value`` line, wrapped as :func:`_ident` does.
 
     The line is always emitted; when ``value`` is None it is rendered as
     the literal ``NULL`` rather than being skipped.
@@ -910,17 +910,16 @@ def _remark3(
         formatted = f"{value:{fmt}}"
     else:
         formatted = "NULL"
-    # Pad the label so the colons align down the block. Callers used to have to
-    # pre-pad their own labels, and the ones that forgot rendered ragged.
-    lines.append(f"REMARK   3   {label:<{_REMARK3_LABEL_WIDTH}} : {formatted}")
+    _ident(lines, label, formatted, label_width=_REMARK3_LABEL_WIDTH + 1)
 
 
-def _ident(lines: List[str], label: str, value: str) -> None:
+def _ident(lines: List[str], label: str, value: str, label_width: int = 12) -> None:
     """Append a ``REMARK   3   LABEL      : value`` line, wrapped if long.
 
-    Overflow continues on a further line whose label field is blank and whose
-    colon stays in the same column, which is what REFMAC does with its own
-    long values::
+    The label is padded to ``label_width`` characters, so the colon follows
+    in a fixed column. Overflow continues on a further line whose label field
+    is blank and whose colon stays in the same column, which is what REFMAC
+    does with its own long values::
 
         REMARK   3   AUTHORS     : MURSHUDOV,SKUBAK,LEBEDEV,PANNU,STEINER,
         REMARK   3               : NICHOLLS,WINN,LONG,VAGIN
@@ -928,8 +927,8 @@ def _ident(lines: List[str], label: str, value: str) -> None:
     Without this an optimizer description naming the cycles, mode, ADP model and
     scale target runs past column 80.
     """
-    head = f"REMARK   3   {label:<12}: "
-    cont = f"REMARK   3   {'':<12}: "
+    head = f"REMARK   3   {label:<{label_width}}: "
+    cont = f"REMARK   3   {'':<{label_width}}: "
     width = 80 - len(head)
     prefix, current = head, ""
     for word in value.split():
