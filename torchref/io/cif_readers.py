@@ -608,7 +608,7 @@ class ReflectionCIFReader:
             raise ValueError(error_msg)
 
     def _extract_data(self):
-        """Extract data in legacy MTZ-compatible format."""
+        """Fill ``data``, ``cell`` and ``spacegroup``, keyed as MTZReader keys them."""
         self.data = {}
 
         # Extract reflection data
@@ -690,7 +690,7 @@ class ReflectionCIFReader:
 
     def __call__(self) -> Tuple[Dict[str, np.ndarray], np.ndarray, str]:
         """
-        Get data in legacy MTZ-compatible format.
+        Return ``(data, cell, spacegroup)``, the contract shared with MTZReader.
 
         Returns
         -------
@@ -1163,7 +1163,7 @@ class ModelCIFReader:
             )
 
     def _extract_data(self):
-        """Extract data in legacy PDB-compatible format."""
+        """Fill ``dataframe``, ``cell``, ``spacegroup`` and ``links`` like PDBReader."""
         # Get atom data as DataFrame
         self.dataframe = self.get_atom_data()
 
@@ -1177,7 +1177,7 @@ class ModelCIFReader:
         self.spacegroup = self.get_space_group()
         self.links = self.get_link_records()
 
-        # Store as DataFrame attributes (like legacy PDB reader)
+        # Where pdb.load_as_dataframe keeps them and pdb.write reads CRYST1 from.
         self.dataframe.attrs["cell"] = self.cell
         self.dataframe.attrs["spacegroup"] = self.spacegroup
         self.dataframe.attrs["z"] = None  # CIF files typically don't have Z value
@@ -1265,7 +1265,7 @@ class ModelCIFReader:
 
     def __call__(self) -> Tuple[pd.DataFrame, List[float], str]:
         """
-        Get data in legacy PDB-compatible format.
+        Return ``(dataframe, cell, spacegroup)``, the contract shared with PDBReader.
 
         Returns
         -------
@@ -1385,12 +1385,8 @@ class ModelCIFReader:
             "_atom_site.aniso_U[2][3]",
         ]
 
-        # The standard mmCIF home for anisotropic ADPs is the SEPARATE
-        # ``_atom_site_anisotrop`` loop, keyed by ``.id`` against ``_atom_site.id``.
-        # Only the legacy in-line ``_atom_site.aniso_U[i][j]`` form was read here, so a
-        # standards-conforming file -- every PDB-REDO entry, and anything the PDB emits
-        # as mmCIF -- silently loaded with no anisotropy at all and every atom marked
-        # isotropic.
+        # ANISOU lives in the separate _atom_site_anisotrop loop, joined on id; the
+        # in-line _atom_site.aniso_U[i][j] form is a fallback.
         aniso_df = _category_table(self.cif.data, "atom_site_anisotrop")
         std_cols = [f"_atom_site_anisotrop.U[{i}][{j}]"
                     for i, j in ((1, 1), (2, 2), (3, 3), (1, 2), (1, 3), (2, 3))]
@@ -1465,7 +1461,7 @@ class ModelCIFReader:
             result["u23"] = np.nan
             result["anisou_flag"] = False
 
-        # Add index column for compatibility with legacy PDB format
+        # 0-based row positions, the ``index`` column pdb.load_as_dataframe adds too.
         result["index"] = np.arange(len(result), dtype=int)
         _require_elements(result, self.filepath, "_atom_site.type_symbol")
         result["element"] = result["element"].str.strip().str.capitalize()
@@ -2053,16 +2049,7 @@ class RestraintCIFReader:
         return result
 
     def _filter_by_comp(self, df: pd.DataFrame, comp_id: str) -> pd.DataFrame:
-        """Rows of ``df`` belonging to ``comp_id``.
-
-        The index is reset because the caller assembles its result column by
-        column: :meth:`_extract_col` preserves this frame's index for a column it
-        finds but returns a fresh ``RangeIndex`` for one it does not, so a
-        non-zero-based index makes those two disagree and pandas aligns the
-        mismatch away to NaN -- dropping values that are present. Rows only reach
-        a non-zero index once several blocks are concatenated, i.e. exactly on the
-        multi-compound dictionaries this reader now supports.
-        """
+        """Rows of ``df`` belonging to ``comp_id``, with a fresh RangeIndex."""
         if df.empty:
             return df.drop(columns=[_SOURCE_BLOCK_COLUMN], errors="ignore")
 
@@ -2096,6 +2083,8 @@ class RestraintCIFReader:
         if selected is None:
             selected = df
 
+        # _extract_col fills an absent column on a RangeIndex; on any other index the
+        # columns it finds would align against it to NaN.
         return (
             selected.drop(columns=[_SOURCE_BLOCK_COLUMN], errors="ignore")
             .reset_index(drop=True)
