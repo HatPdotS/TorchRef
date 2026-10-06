@@ -7,6 +7,7 @@ those masses. No crystallography / OpenMM needed — pure integrator math.
 
 import math
 
+import pytest
 import torch
 
 from torchref.refinement.optimizers.langevin_sa import LangevinSA
@@ -111,3 +112,27 @@ def test_baoab_equipartition_free_particle():
     measured = sum(kes) / len(kes)
     rel = abs(measured - expected) / expected
     assert rel < 0.1, f"equipartition off: measured {measured:.1f} vs {expected:.1f} (rel {rel:.3f})"
+
+
+@pytest.mark.parametrize("offset", [1000.0, -1000.0])
+def test_a_constant_offset_does_not_freeze_the_dynamics(offset):
+    """The rollback guard reacts to a loss rise, not to the sign of the loss.
+
+    On a harmonic well shifted far below zero, three times the best loss lies below
+    every loss the dynamics can reach; the guard must still let every step move.
+    """
+    torch.manual_seed(3)
+    p = torch.full((20, 3), 3.0, requires_grad=True)
+    opt = _make(p)
+
+    def closure():
+        p.grad = None
+        loss = 0.5 * ((p - 1.0) ** 2).sum() + offset
+        loss.backward()
+        return loss
+
+    previous = p.detach().clone()
+    for step in range(20):
+        opt.step(closure)
+        assert not torch.equal(p.detach(), previous), f"step {step} did not move"
+        previous = p.detach().clone()

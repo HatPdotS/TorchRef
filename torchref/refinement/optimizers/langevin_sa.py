@@ -180,10 +180,11 @@ class LangevinSA(Optimizer):
     def step(self, closure):
         """Perform one BAOAB Langevin dynamics step.
 
-        Tracks the best-loss configuration and rolls back to it when the
-        loss becomes non-finite or exceeds 3x the best loss seen so far.
-        This prevents the dynamics from permanently damaging the structure
-        while still allowing uphill exploration.
+        Tracks the best-loss configuration and rolls back to it, zeroing the
+        velocities, when the loss becomes non-finite or rises above the best loss
+        seen so far by more than twice that loss's magnitude
+        (``loss - best > 2 * |best|``). This prevents the dynamics from permanently
+        damaging the structure while still allowing uphill exploration.
 
         Args:
             closure: A callable that re-evaluates the model and returns the
@@ -264,8 +265,10 @@ class LangevinSA(Optimizer):
         if not torch.isfinite(loss):
             rollback = True
         elif hasattr(self, "_best_loss"):
-            # Rollback if loss explodes beyond 3x best
-            if loss.item() > 3.0 * self._best_loss:
+            # A rise measured in units of the best loss's magnitude. For best > 0 this
+            # is ``loss > 3 * best``; written that way it holds for every reachable loss
+            # once best < 0, and every step would roll back.
+            if loss.item() - self._best_loss > 2.0 * abs(self._best_loss):
                 rollback = True
 
         if rollback:
