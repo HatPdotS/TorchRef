@@ -229,3 +229,13 @@ def test_unfreezing_everything_leaves_isotropic_u_rows_fixed(aniso_model):
     m.adp_u6().sum().backward()
     gu = m.u.refinable_params.grad
     assert gu is not None and torch.isfinite(gu).all()
+
+
+@pytest.mark.unit
+def test_written_b_is_the_equivalent_isotropic_b(aniso_model):
+    """``tempfactor`` is (8 pi^2 / 3) tr(U) for every atom of a mixed model."""
+    m = aniso_model
+    u6 = m.adp_u6().detach().cpu()
+    b_eq = (EIGHT_PI_SQ / 3.0) * (u6[:, 0] + u6[:, 1] + u6[:, 2])
+    written = torch.as_tensor(m.to_dataframe()["tempfactor"].to_numpy())
+    torch.testing.assert_close(written, b_eq)

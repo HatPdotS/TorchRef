@@ -733,12 +733,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # gradient-free result cached here would be served to the next loss.
         xyz = self.xyz().detach().cpu().numpy()
         u = self.u().detach().cpu().numpy()
-        if getattr(self, "_aniso_is_empty", True):
-            b = self.adp().detach().cpu().numpy()
-        else:
-            from torchref.base.targets.adp import u6_b_eq
-
-            b = u6_b_eq(self.adp_u6()).detach().cpu().numpy()
+        b = self._b_eq().detach().cpu().numpy()
         occupancy = self.occupancy().detach().cpu().numpy()
         n = self.n_atoms
         table = pd.DataFrame(
@@ -1660,6 +1655,20 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         u_from_b = (B / (8.0 * math.pi**2)).unsqueeze(-1) * diag
         flag = self.aniso_flag.to(B.device).unsqueeze(-1)
         return torch.where(flag, torch.nan_to_num(U), u_from_b)
+
+    def _b_eq(self) -> torch.Tensor:
+        """Per-atom equivalent isotropic B in Å², ``(N,)``, differentiable.
+
+        ``B_eq = (8 pi^2 / 3) tr(U)`` from :meth:`adp_u6` when any atom is
+        anisotropic, else ``adp()`` directly, which is the same number for an
+        isotropic atom without the U path. The single source for the written
+        ``tempfactor`` column and for the ADP restraints that need one B per atom.
+        """
+        if self._aniso_is_empty:
+            return self.adp()
+        from torchref.base.targets.adp import u6_b_eq
+
+        return u6_b_eq(self.adp_u6())
 
     def parameters(self, recurse: bool = True):
         """
