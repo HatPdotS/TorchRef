@@ -820,8 +820,6 @@ class RefinementMetadata:
             ref["_refine.pdbx_R_Free_selection_details"] = self.rfree_selection
         if self.starting_model:
             ref["_refine.pdbx_starting_model"] = os.path.basename(self.starting_model)
-        if self.refinement_method:
-            ref["_refine.pdbx_method_to_determine_struct"] = self.refinement_method
         if self.output_remarks:
             ref["_refine.details"] = self.output_remarks
         if ref:

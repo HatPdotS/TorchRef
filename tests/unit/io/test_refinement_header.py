@@ -437,6 +437,15 @@ def test_input_refine_statistics_are_not_carried_into_cif(tmp_path):
 
 
 @pytest.mark.unit
+def test_refinement_method_is_not_a_structure_determination_method():
+    """pdbx_method_to_determine_struct holds the phasing method (SAD, MR, ...)."""
+    meta = RefinementMetadata(refinement_method="difference-refine")
+    cats = meta.render_cif_categories()
+    assert "_refine.pdbx_method_to_determine_struct" not in cats.get("_refine", {})
+    assert cats["_software"]["_software.description"] == ["difference-refine"]
+
+
+@pytest.mark.unit
 def test_starting_model_is_recorded_as_an_accession(tmp_path):
     cats = _refined_metadata().render_cif_categories()
     initial = cats["_pdbx_initial_refinement_model"]
