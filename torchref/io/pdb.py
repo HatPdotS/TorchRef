@@ -131,6 +131,33 @@ def read_crystallographic_info(
     return None, None, None
 
 
+def _model_numbers(filepath: str, skipheader: int, skipfooter: int) -> dict:
+    """MODEL number of each atom and ANISOU record that load_as_dataframe reads.
+
+    Records outside any MODEL record are model 1, as in ModelCIFReader. The number
+    is the first field after MODEL, or the count of MODEL records if it has none.
+
+    Returns
+    -------
+    dict
+        ``"ATOM"`` (ATOM and HETATM records) and ``"ANISOU"``: lists of model
+        numbers, one per record in file order.
+    """
+    with open(filepath, "r") as f:
+        lines = f.readlines()
+    numbers = {"ATOM": [], "ANISOU": []}
+    current, n_models = 1, 0
+    for i, line in enumerate(lines[: len(lines) - skipfooter]):
+        record = line[:6].strip()
+        if record == "MODEL":
+            n_models += 1
+            fields = line[6:].split()
+            current = int(fields[0]) if fields and fields[0].isdigit() else n_models
+        elif i >= skipheader and record in ("ATOM", "HETATM", "ANISOU"):
+            numbers["ANISOU" if record == "ANISOU" else "ATOM"].append(current)
+    return numbers
+
+
 def load_as_dataframe(
     filepath: str, skipheader: int = 0, skipfooter: int = 0
 ) -> pd.DataFrame:
@@ -154,8 +181,10 @@ def load_as_dataframe(
     pd.DataFrame
         DataFrame whose columns include (among others, in no contractual
         order): ATOM, serial, name, altloc, resname, chainid, resseq, icode,
-        x, y, z, occupancy, tempfactor, element, charge, anisou_flag, u11,
-        u22, u33, u12, u13, u23, index.
+        x, y, z, occupancy, tempfactor, element, charge, model_num,
+        anisou_flag, u11, u22, u33, u12, u13, u23, index. ``model_num`` is the
+        MODEL record number, 1 throughout a file without MODEL records; the
+        models of a multi-model file are concatenated in file order.
         DataFrame attributes include 'cell', 'spacegroup', and 'z'.
 
     Raises
@@ -254,13 +283,27 @@ def load_as_dataframe(
         keep_default_na=False,
         na_values=[""],
     )
-    anisou = anisou.loc[anisou["ATOM"] == "ANISOU"]
-    pdb = pdb.loc[(pdb["ATOM"] == "ATOM") | (pdb["ATOM"] == "HETATM")]
+    models = _model_numbers(filepath, skipheader, skipfooter)
+    anisou = anisou.loc[anisou["ATOM"] == "ANISOU"].assign(model_num=models["ANISOU"])
+    pdb = pdb.loc[(pdb["ATOM"] == "ATOM") | (pdb["ATOM"] == "HETATM")].assign(
+        model_num=models["ATOM"]
+    )
 
     anisou.drop(columns=["ATOM"], inplace=True)
+    # Every model repeats the same atom identities, so ANISOU records are matched
+    # within their own model.
     pdb = pdb.merge(
         anisou,
-        on=["serial", "name", "altloc", "resname", "chainid", "resseq", "element"],
+        on=[
+            "serial",
+            "name",
+            "altloc",
+            "resname",
+            "chainid",
+            "resseq",
+            "element",
+            "model_num",
+        ],
         how="left",
     )
     pdb.loc[pdb["u11"].notnull(), "anisou_flag"] = True
