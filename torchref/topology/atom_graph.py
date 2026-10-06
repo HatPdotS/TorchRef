@@ -431,14 +431,9 @@ class AtomGraph(DeviceMixin):
         """1-2, 1-3 and 1-4 pairs taken from the bond, angle and torsion **edges**.
 
         1-2 from every bond, 1-3 from each angle's outer pair, 1-4 from each torsion's
-        outer pair. Reproduces exactly the set the non-bonded term has always been
-        given.
-
-        This is *not* the same as :meth:`exclusions_12_13_14`: a pair that is 1-3 bonded
-        but whose angle the monomer library does not restrain appears there and not
-        here, and so takes a repulsion it should not. Kept because switching the
-        non-bonded term to the connectivity-derived set changes its value and wants its
-        own measurement.
+        outer pair. Not the same as :meth:`exclusions_12_13_14`: a pair that is 1-3
+        bonded but whose angle the monomer library does not restrain appears there and
+        not here, so a non-bonded term excluding this set repels it.
 
         Returns
         -------
@@ -461,7 +456,7 @@ class AtomGraph(DeviceMixin):
         Walks the adjacency two and three steps out, so the result does not depend on
         which angles and torsions the monomer library happens to restrain. This is the
         physically correct exclusion set; :meth:`exclusions_from_restraint_edges` is the
-        one currently wired into the non-bonded term.
+        one wired into the non-bonded term.
 
         Returns
         -------
