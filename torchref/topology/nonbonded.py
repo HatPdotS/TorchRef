@@ -850,7 +850,10 @@ def build_vdw_restraints_gpu(
     inter_residue_only: bool = True,
     verbose: int = 0,
 ) -> Dict[str, torch.Tensor]:
-    """Build VDW restraints using GPU-native periodic grid search.
+    """Build the VDW pair list: every contact closer than ``cutoff``, images included.
+
+    The pairs come from the grid search (:func:`find_pairs_periodic_grid_v2`) on an
+    accelerator and from the k-d tree (:func:`find_pairs_kdtree`) on CPU.
 
     Parameters
     ----------
@@ -873,7 +876,14 @@ def build_vdw_restraints_gpu(
 
     Returns
     -------
-    dict with keys: indices, min_distances, sigmas, symop_indices, cell_offsets
+    dict
+        ``indices`` ``(P, 2)``: the ASU atom and the atom imaged; ``symop_indices``
+        ``(P,)`` and ``cell_offsets`` ``(P, 3)``: the operation and fractional lattice
+        shift of that image (0 inside the ASU); ``min_distances`` ``(P,)``: the contact
+        distance in Å; ``sigmas`` ``(P,)``: ``sigma`` in Å; ``weights`` ``(P,)``:
+        :data:`IMAGE_PAIR_WEIGHT` for an image pair, else 1. Integer arrays in
+        ``get_int_dtype()``, float ones in ``get_float_dtype()``. An intra-ASU pair is
+        listed once, a crystal contact from both of its ends.
     """
     from torchref.symmetry.spacegroup import SpaceGroup as SG
 
@@ -1036,13 +1046,6 @@ def build_vdw_restraints_gpu(
         "symop_indices": symop_indices,
         "cell_offsets": pair_cell_offsets,
         "weights": torch.where(image, IMAGE_PAIR_WEIGHT, 1.0).to(get_float_dtype()),
-        # Cached data for forward-time H-VDW pair search
-        "valid_op_indices": op_indices,
-        "valid_cell_offsets": cell_offsets_valid,
-        "grid_dims": grid_dims,
-        "identity_combo": torch.tensor(
-            identity_combo, dtype=get_int_dtype(), device=device
-        ),
     }
 
     if verbose > 0:
