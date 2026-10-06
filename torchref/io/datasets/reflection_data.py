@@ -536,10 +536,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         n_flipped = int(friedel_flags.sum())
         if n_flipped:
-            print(
-                f"  Reindexed {n_flipped}/{len(self.hkl)} reflections to the "
-                f"CCP4 ASU (output is written on that index, not the input one)."
-            )
+            if self.verbose > 0:
+                print(
+                    f"  Reindexed {n_flipped}/{len(self.hkl)} reflections to the "
+                    f"CCP4 ASU (output is written on that index, not the input one)."
+                )
             # A row needing conjugation to reach the ASU does NOT by itself mean
             # the data are Bijvoet-unmerged: a merged dataset indexed in another
             # convention flags rows while carrying no mate at all. Real mates

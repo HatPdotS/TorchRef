@@ -142,8 +142,6 @@ class FcalcDataset(CrystalDataset):
             hkl = hkl[mask]
             resolution = resolution[mask]
 
-        print(f"Generated dataset with {len(hkl)} reflections.")
-
         return FcalcDataset(
             hkl=hkl,
             resolution=resolution,
