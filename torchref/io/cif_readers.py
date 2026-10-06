@@ -443,6 +443,45 @@ class CIFReader:
         )
 
 
+def _free_flags(values: pd.Series, numeric: bool) -> np.ndarray:
+    """R-free flags as ReflectionData.load reads them: 0 free, 1 work, -1 excluded.
+
+    Status letters map ``o`` to work and ``f`` to free; every other letter
+    (``x``, ``<``, ``-``, ``h``, ``l``) and a missing value exclude the row, as
+    :func:`torchref.io.rfree.excluded_rows` does. A numeric column such as
+    ``pdbx_r_free_flag`` is read by :func:`torchref.io.rfree.read_free_set`, which
+    tells CCP4 ``0..K`` (0 = free) from a binary column whose majority value is
+    work (Phenix: 1 = free). The free set is passed on unjudged.
+
+    Parameters
+    ----------
+    values : pandas.Series
+        One flag column as text, shape (N,).
+    numeric : bool
+        Whether the column holds numbers rather than status letters.
+
+    Returns
+    -------
+    numpy.ndarray
+        int32 flags, shape (N,).
+    """
+    if not numeric:
+        letters = values.str.lower().map({"o": 1, "f": 0})
+        return letters.fillna(-1).to_numpy(dtype=np.int32)
+    import reciprocalspaceship as rs
+
+    from torchref.io.rfree import read_free_set
+
+    numbers = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    flags = np.full(len(numbers), -1, dtype=np.int32)
+    # read_free_set refuses a column without a usable value; all rows stay excluded.
+    if (numbers >= 0).any():
+        free_set = read_free_set(rs.DataSet({"flag": numbers}), "flag")
+        flags[~free_set["excluded"]] = 1
+        flags[free_set["free"]] = 0
+    return flags
+
+
 class ReflectionCIFReader:
     """
     Reader for structure factor CIF files (e.g. ``*-sf.cif`` from the PDB):
@@ -557,32 +596,12 @@ class ReflectionCIFReader:
                 f"_refln.F_calc are not used as observations."
             )
 
-        # Store R-free flags if available (standardized keys matching MTZ reader)
-        if refln_df["free_flag"].notna().any():
-            rfree_characters = (
-                refln_df["free_flag"].str.lower().map({"f": 0, "x": -1, "o": 1})
+        flag_tag = self._source_tags["R-free-source"]
+        if flag_tag != "None":
+            self.data["R-free-flags"] = _free_flags(
+                refln_df["free_flag"], numeric=flag_tag != "_refln.status"
             )
-            percentage_work = (
-                (rfree_characters == 1).sum() / len(rfree_characters) * 100.0
-            )
-            percentage_test = (
-                (rfree_characters == 0).sum() / len(rfree_characters) * 100.0
-            )
-            if percentage_work < 0.9:
-                if self.verbose > 0:
-                    print(
-                        f"WARNING: R-free flags indicate only {percentage_work:.2f}% work reflections. Skipping R-free flags. >90% expected. Generating new Rfree flags"
-                    )
-                self.data["R-free-source"] = "None"
-            elif percentage_test < 0.01:
-                if self.verbose > 0:
-                    print(
-                        f"WARNING: R-free flags indicate only {percentage_test:.2f}% test reflections. Skipping R-free flags. >1% expected. Generating new Rfree flags"
-                    )
-                self.data["R-free-source"] = "None"
-            else:
-                self.data["R-free-flags"] = rfree_characters.to_numpy().astype(np.int32)
-                self.data["R-free-source"] = self._source_tags["R-free-source"]
+            self.data["R-free-source"] = flag_tag
 
         # Extract cell and spacegroup
         self.cell = self.get_cell_parameters()
@@ -615,7 +634,7 @@ class ReflectionCIFReader:
             - 'HKL': Nx3 int32 array of Miller indices (plus 'HKL_key')
             - 'F', 'SIGF': Amplitudes and sigmas (if available)
             - 'I', 'SIGI': Intensities and sigmas (if available)
-            - 'R-free-flags': R-free test set flags (if available)
+            - 'R-free-flags': int32, 0 free, 1 work, -1 excluded (if available)
         cell : numpy.ndarray
             Cell parameters [a, b, c, alpha, beta, gamma].
         spacegroup : str
@@ -857,7 +876,8 @@ class ReflectionCIFReader:
             refln_df, ["_refln.fom", "_refln.pdbx_FOM"], target_type="float"
         )
 
-        # R-free flags
+        # Status letters win over a numeric column: they mark the rows the depositor's
+        # test set holds, where numbers leave the CCP4/Phenix convention to be inferred.
         result["free_flag"], free_flag_key = self._extract_numeric(
             refln_df,
             ["_refln.status", "_refln.pdbx_r_free_flag", "_refln.free_flag"],
