@@ -211,3 +211,15 @@ class TestRestraintNumericStability:
         angle = torch.acos(cos_angle) * 180 / torch.pi
         
         assert torch.isfinite(angle)
+
+
+@pytest.mark.unit
+def test_link_definitions_are_read_silently(capsys):
+    """Reading the bundled link library writes nothing to stdout."""
+    from torchref.topology.monomer.cif import read_link_definitions
+
+    read_link_definitions.cache_clear()
+    link_dict, link_list = read_link_definitions()
+
+    assert "TRANS" in link_dict and link_list is not None
+    assert capsys.readouterr().out == ""

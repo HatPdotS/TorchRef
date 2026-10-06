@@ -175,7 +175,6 @@ def read_link_definitions():
             # Strip CIF prefixes from column names
             df.columns = [c.split(".")[-1] for c in df.columns]
             link_list = df
-            print(f"Found {len(link_list)} link definitions")
 
     # --- Parse each individual link block ---
     link_dict = {}
