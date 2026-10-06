@@ -935,8 +935,3 @@ def write_reflections(
         print(f"✓ Wrote {layout} MTZ: {filepath}")
         print(f"  Reflections: {len(df)}")
         print(f"  Columns: {', '.join(df.columns)}")
-
-
-# Deprecated alias kept for backwards compatibility; prefer MTZReader.
-# Slated for removal in a future release. This is a public symbol.
-MTZ = MTZReader

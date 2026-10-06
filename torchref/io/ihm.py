@@ -527,10 +527,7 @@ class IHMReader:
         # Add timepoints from model groups
         dark_name = mapping.identify_dark_group()
         for group in sorted(mapping.model_groups, key=lambda g: g.group_id):
-            state_ids = mapping.get_state_ids()
-            fractions = [
-                group.state_fractions.get(sid, 0.0) for sid in state_ids
-            ]
+            fractions = mapping.get_fractions_for_group(group.name)
 
             # Normalize fractions
             total = sum(fractions)
@@ -1064,68 +1061,6 @@ class IHMWriter:
                 print(f"  Dataset '{name}': {n_refln} reflections")
 
         doc.write_file(str(filepath))
-
-    # ------------------------------------------------------------------
-    # Convenience for building mapping from ModelCollection + metadata
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def mapping_from_kinetic_refinement(
-        model_collection: "ModelCollection",
-        state_names: Optional[List[str]] = None,
-        time_delays: Optional[Dict[str, float]] = None,
-    ) -> IHMEnsembleMapping:
-        """
-        Build an ``IHMEnsembleMapping`` from a ``ModelCollection`` with
-        optional kinetic metadata.
-
-        Parameters
-        ----------
-        model_collection : ModelCollection
-            The refined model collection.
-        state_names : list of str, optional
-            Names for each base model / state. Default: state_1, state_2, ...
-        time_delays : dict, optional
-            Mapping of timepoint name -> time delay in seconds.
-
-        Returns
-        -------
-        IHMEnsembleMapping
-        """
-        mc = model_collection
-
-        # States
-        states = []
-        for i in range(mc.n_base_models):
-            name = state_names[i] if state_names and i < len(state_names) else f"state_{i + 1}"
-            states.append(
-                IHMStateInfo(
-                    state_id=i + 1,
-                    name=name,
-                    model_num=i + 1,
-                )
-            )
-
-        # Model groups from timepoints
-        state_ids = [s.state_id for s in states]
-        model_groups = []
-        for group_id, (name, mixed) in enumerate(mc, start=1):
-            fracs = mixed.fractions.detach().cpu().tolist()
-            state_fractions = dict(zip(state_ids, fracs))
-            delay = time_delays.get(name) if time_delays else None
-            model_groups.append(
-                IHMModelGroupInfo(
-                    group_id=group_id,
-                    name=name,
-                    state_fractions=state_fractions,
-                    time_delay=delay,
-                )
-            )
-
-        return IHMEnsembleMapping(
-            states=states,
-            model_groups=model_groups,
-        )
 
 
 class _MixedModelAdapter:

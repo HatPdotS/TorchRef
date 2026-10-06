@@ -59,17 +59,11 @@ class IHMModelGroupInfo:
     state_fractions : Dict[int, float]
         Mapping of ``state_id`` -> population fraction for this group.
         Fractions should sum to 1.0.
-    time_delay : float, optional
-        Time delay in ``time_delay_units`` (for time-resolved experiments).
-    time_delay_units : str, optional
-        Units for ``time_delay``. Default ``"s"`` (seconds).
     """
 
     group_id: int
     name: str
     state_fractions: Dict[int, float] = field(default_factory=dict)
-    time_delay: Optional[float] = None
-    time_delay_units: str = "s"
 
 
 @dataclass
