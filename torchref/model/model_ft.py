@@ -7,14 +7,12 @@ same density as f0 rather than a separate sum, so every term of F_calc gets the 
 temperature factors and symmetry expansion (see :meth:`ModelFT.forward`).
 """
 
-import math
 from typing import NamedTuple, Optional, Tuple
 
 import gemmi
 import numpy as np
 import torch
 
-from torchref.base.fourier import fft, ifft
 from torchref.config import dtypes
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
