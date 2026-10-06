@@ -20,8 +20,10 @@ def cartesian_to_fractional_torch(xyz, cell, B_inv=None):
     ----------
     xyz : torch.Tensor
         Cartesian coordinates of shape (N, 3).
-    cell : array-like
-        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma] of shape (6,), lengths in
+        Angstroms and angles in degrees. The matrix derived from it takes ``xyz``'s
+        dtype and device.
     B_inv : torch.Tensor, optional
         Fractionalization matrix B^-1 (Cartesian -> fractional). If None, it will
         be calculated from cell.
@@ -48,8 +50,10 @@ def fractional_to_cartesian_torch(xyz_fractional, cell, B=None):
     ----------
     xyz_fractional : torch.Tensor
         Fractional coordinates of shape (N, 3).
-    cell : array-like
-        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma] of shape (6,), lengths in
+        Angstroms and angles in degrees. The matrix derived from it takes
+        ``xyz_fractional``'s dtype and device.
     B : torch.Tensor, optional
         Orthogonalization matrix B (fractional -> Cartesian). If None, it will be
         calculated from cell.
@@ -60,7 +64,9 @@ def fractional_to_cartesian_torch(xyz_fractional, cell, B=None):
         Cartesian coordinates of shape (N, 3).
     """
     if B is None:
-        B = get_fractional_matrix(cell)
+        B = get_fractional_matrix(cell).to(
+            dtype=xyz_fractional.dtype, device=xyz_fractional.device
+        )
     xyz = torch.einsum("ik,kj->ij", xyz_fractional, B.T)
     return xyz
 

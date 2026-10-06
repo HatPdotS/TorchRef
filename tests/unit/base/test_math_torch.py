@@ -78,6 +78,23 @@ class TestCoordinateTransformations:
         assert torch.allclose(coords, cart_back, rtol=1e-5, atol=1e-5)
 
     @pytest.mark.unit
+    def test_fractional_to_cartesian_takes_the_coordinates_dtype(self):
+        """A cell-derived B is cast to the fractional coordinates' dtype."""
+        from torchref.base.math_torch import (
+            fractional_to_cartesian_torch,
+            get_fractional_matrix,
+        )
+
+        cell = torch.tensor([50.1, 60.2, 70.3, 80.0, 95.0, 100.0], dtype=torch.float64)
+        frac = torch.tensor([[0.1, 0.2, 0.3], [0.7, -0.4, 1.2]], dtype=torch.float32)
+
+        cart = fractional_to_cartesian_torch(frac, cell)
+
+        assert cart.dtype == torch.float32
+        B = get_fractional_matrix(cell).to(torch.float32)
+        torch.testing.assert_close(cart, frac @ B.T)
+
+    @pytest.mark.unit
     @pytest.mark.gpu
     def test_coordinate_transforms_gpu(self, mock_cell, random_coordinates, gpu_device):
         """Test coordinate transformations on GPU."""
