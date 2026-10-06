@@ -12,14 +12,10 @@ from torchref.io import cif
 def validate_restraint_data(residue_data, cif_path):
     """Raise ``ValueError`` unless every compound carries a usable bond section.
 
-    Rejects structure-only CIFs: a compound must have a bond section, and that
-    section must carry ``value`` and ``sigma`` columns.
-
-    A section that has those columns but *no rows* is reported and allowed
-    through. It is not malformed -- a dictionary may legitimately define a
-    single-atom compound -- but it is also what a reader that quietly loses
-    restraints looks like from here, and the residue ends up unrestrained either
-    way, so it is worth saying out loud rather than passing over in silence.
+    Rejects a dictionary with no compounds, and any compound with no data, no bond
+    section, or no ``value`` and ``sigma`` bond columns (a structure-only CIF). A
+    compound whose bond section has no rows, such as a single-atom one, is only
+    reported on stdout and stays unrestrained.
     """
     if not residue_data:
         raise ValueError(f"CIF file {cif_path} contains no compound definitions")
