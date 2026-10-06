@@ -33,9 +33,8 @@ def validate_restraint_data(residue_data, cif_path):
                 f"This may be a structure-only CIF file without restraint parameters."
             )
 
-        if "bonds" in data or "bond" in data:
-            bond_key = "bonds" if "bonds" in data else "bond"
-            bond_df = data[bond_key]
+        if "bonds" in data:
+            bond_df = data["bonds"]
             required_cols = ["value", "sigma"]
             missing_cols = [col for col in required_cols if col not in bond_df.columns]
 
@@ -72,8 +71,8 @@ def read_cif(cif_path):
     """
     Read a restraint CIF into ``{comp_id: {section: DataFrame}}``.
 
-    Sections are the standardized keys ``bond``, ``angle``, ``torsion``, ``plane``,
-    ``chiral`` and ``atom``. Runs :func:`validate_restraint_data`, so a
+    Sections are the standardized keys ``bonds``, ``angles``, ``torsions``,
+    ``planes``, ``chirals`` and ``atoms``. Runs :func:`validate_restraint_data`, so a
     structure-only CIF raises ``ValueError`` here rather than yielding empty
     restraints later.
     """
