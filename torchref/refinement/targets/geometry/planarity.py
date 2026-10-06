@@ -104,7 +104,7 @@ class PlanarityTarget(GeometryTarget):
             all_sigmas.append(sigmas.flatten())
 
         if not all_deviations:
-            return {"n": 0, "rms_delta": 0.0, "rms_z": 0.0, "mean_sigma": 0.0}
+            return {}
 
         all_deviations = torch.cat(all_deviations)
         all_sigmas = torch.cat(all_sigmas)

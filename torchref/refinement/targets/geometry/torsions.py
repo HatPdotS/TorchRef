@@ -73,13 +73,6 @@ class TorsionTarget(GeometryTarget):
         self.w_cis_proline = w_cis_proline
         self.w_cis_general = w_cis_general
 
-    def _get_omega_data(self):
-        """Get omega restraint data from the model's restraints."""
-        restraints = self.restraints.restraints
-        if "torsion" not in restraints or "omega" not in restraints["torsion"]:
-            return None
-        return restraints["torsion"]["omega"]
-
     def forward(self) -> torch.Tensor:
         """Summed torsion NLL: unimodal for ordinary torsions, cis/trans for omega."""
         from torchref.base.targets.torsion import torsion_omega_math
@@ -90,29 +83,29 @@ class TorsionTarget(GeometryTarget):
         total = torch.zeros((), device=device, dtype=xyz.dtype)
 
         # --- Intra-residue + disulfide torsions (unimodal von Mises) ---
-        if use_triton(xyz):
+        tdata = self._restraint_group("torsion", "all")
+        if tdata is not None and use_triton(xyz):
             from torchref.base.targets.triton.torsion import (
                 torsion_unimodal_full_math_triton,
             )
-            if "all" not in self.restraints.restraints["torsion"]:
-                self.restraints.cat_dict()
-            tdata = self.restraints.restraints["torsion"]["all"]
-            if len(tdata["indices"]) > 0:
-                total = total + torsion_unimodal_full_math_triton(
-                    xyz, tdata["indices"], tdata["references"],
-                    tdata["sigmas"], tdata["periods"],
-                )
-        else:
+
+            total = total + torsion_unimodal_full_math_triton(
+                xyz,
+                tdata["indices"],
+                tdata["references"],
+                tdata["sigmas"],
+                tdata["periods"],
+            )
+        elif tdata is not None:
             deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas(
                 xyz
             )
-            if len(deviations_rad) > 0:
-                total = total + _von_mises_nll(deviations_rad, sigmas_deg).sum()
+            total = total + _von_mises_nll(deviations_rad, sigmas_deg).sum()
 
         # --- Omega torsions (cis/trans mixture) — dispatch through
         # torsion_omega_math, which routes to Triton on CUDA fp32.
-        omega_data = self._get_omega_data()
-        if omega_data is not None and len(omega_data["indices"]) > 0:
+        omega_data = self._restraint_group("torsion", "omega")
+        if omega_data is not None:
             total = total + torsion_omega_math(
                 self.model.xyz(),
                 omega_data["indices"],
@@ -129,10 +122,10 @@ class TorsionTarget(GeometryTarget):
         result = {}
 
         # --- Intra-residue + disulfide stats ---
-        deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas(
-            self.model.xyz()
-        )
-        if len(deviations_rad) > 0:
+        if self._restraint_group("torsion", "all") is not None:
+            deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas(
+                self.model.xyz()
+            )
             deviations_deg = deviations_rad * (180.0 / np.pi)
             sigmas_rad = sigmas_deg * (np.pi / 180.0)
             z_scores = deviations_rad / sigmas_rad
@@ -146,8 +139,8 @@ class TorsionTarget(GeometryTarget):
             )
 
         # --- Omega stats ---
-        omega_data = self._get_omega_data()
-        if omega_data is not None and len(omega_data["indices"]) > 0:
+        omega_data = self._restraint_group("torsion", "omega")
+        if omega_data is not None:
             with torch.no_grad():
                 indices = omega_data["indices"]
                 is_proline = omega_data["is_proline"]
