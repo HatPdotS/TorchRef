@@ -717,15 +717,6 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
         """Alias for :meth:`clone`."""
         return self.clone()
 
-    def clip(self, min_value=None, max_value=None) -> "RidingXYZTensor":
-        """Clip the full table; riding rows re-derive from the clipped heavy atoms."""
-        full = self.forward().detach()
-        if min_value is not None:
-            full = torch.clamp(full, min=min_value)
-        if max_value is not None:
-            full = torch.clamp(full, max=max_value)
-        return self.with_values(full)
-
     def _after_load(self, module, incompatible_keys):
         self._build_index_cache()
         self.reset_forward_cache()
