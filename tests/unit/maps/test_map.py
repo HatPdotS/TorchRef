@@ -9,6 +9,7 @@ import torch
 from torchref.io import ReflectionData
 from torchref.maps import DifferenceMap, Map
 from torchref.model.model_ft import ModelFT
+from torchref.scaling import Scaler
 
 
 @pytest.fixture(scope="module")
@@ -21,6 +22,16 @@ def model_ft_and_data(sample_structure_pair):
     data.load_mtz(str(sample_structure_pair["reflections"]))
 
     return model, data, sample_structure_pair
+
+
+@pytest.fixture(scope="module")
+def scaler(model_ft_and_data):
+    """One fitted Scaler for the shared pair, so each map need not fit its own."""
+    model, data, _ = model_ft_and_data
+    fitted = Scaler(model, data, verbose=0)
+    fitted.initialize()
+    fitted.refine_lbfgs(verbose=False)
+    return fitted
 
 
 class TestMap:
@@ -43,9 +54,9 @@ class TestMap:
         with pytest.raises(ValueError, match="map_type must be one of"):
             Map(data, model, map_type="invalid")
 
-    def test_calculate_2fo_fc(self, model_ft_and_data):
+    def test_calculate_2fo_fc(self, model_ft_and_data, scaler):
         model, data, _ = model_ft_and_data
-        m = Map(data, model)
+        m = Map(data, model, scaler=scaler)
         result = m.calculate()
 
         assert isinstance(result, torch.Tensor)
@@ -54,43 +65,45 @@ class TestMap:
         assert m.map_data is not None
         assert torch.equal(result, m.map_data)
 
-    def test_calculate_fcalc(self, model_ft_and_data):
+    def test_calculate_fcalc(self, model_ft_and_data, scaler):
         model, data, _ = model_ft_and_data
-        m = Map(data, model, map_type="Fcalc")
+        m = Map(data, model, map_type="Fcalc", scaler=scaler)
         result = m.calculate()
 
         assert isinstance(result, torch.Tensor)
         assert result.ndim == 3
         assert result.is_floating_point()
 
-    def test_different_map_types_give_different_results(self, model_ft_and_data):
+    def test_different_map_types_give_different_results(
+        self, model_ft_and_data, scaler
+    ):
         model, data, _ = model_ft_and_data
-        m1 = Map(data, model, map_type="2Fo-Fc")
-        m2 = Map(data, model, map_type="Fcalc")
+        m1 = Map(data, model, map_type="2Fo-Fc", scaler=scaler)
+        m2 = Map(data, model, map_type="Fcalc", scaler=scaler)
         r1 = m1.calculate()
         r2 = m2.calculate()
 
         assert not torch.allclose(r1, r2)
 
-    def test_explicit_gridsize(self, model_ft_and_data):
+    def test_explicit_gridsize(self, model_ft_and_data, scaler):
         model, data, _ = model_ft_and_data
         gridsize = (32, 36, 40)
-        m = Map(data, model, gridsize=gridsize, map_type="Fcalc")
+        m = Map(data, model, gridsize=gridsize, map_type="Fcalc", scaler=scaler)
         result = m.calculate()
 
         assert result.shape == gridsize
 
-    def test_auto_gridsize(self, model_ft_and_data):
+    def test_auto_gridsize(self, model_ft_and_data, scaler):
         model, data, _ = model_ft_and_data
-        m = Map(data, model, map_type="Fcalc")
+        m = Map(data, model, map_type="Fcalc", scaler=scaler)
         result = m.calculate()
 
         for dim in result.shape:
             assert dim > 0
 
-    def test_write_ccp4(self, model_ft_and_data):
+    def test_write_ccp4(self, model_ft_and_data, scaler):
         model, data, _ = model_ft_and_data
-        m = Map(data, model, map_type="Fcalc")
+        m = Map(data, model, map_type="Fcalc", scaler=scaler)
 
         with tempfile.NamedTemporaryFile(suffix=".ccp4", delete=False) as f:
             filepath = f.name
@@ -103,9 +116,9 @@ class TestMap:
         finally:
             os.unlink(filepath)
 
-    def test_write_auto_calculates(self, model_ft_and_data):
+    def test_write_auto_calculates(self, model_ft_and_data, scaler):
         model, data, _ = model_ft_and_data
-        m = Map(data, model, map_type="Fcalc")
+        m = Map(data, model, map_type="Fcalc", scaler=scaler)
         assert m.map_data is None
 
         with tempfile.NamedTemporaryFile(suffix=".ccp4", delete=False) as f:
@@ -116,6 +129,20 @@ class TestMap:
             assert m.map_data is not None
         finally:
             os.unlink(filepath)
+
+
+class TestMapScale:
+    """F_calc enters every map on the observed amplitudes' scale."""
+
+    def test_2fo_fc_correlates_with_the_model_map_on_raw_data(self, model_ft_and_data):
+        """Without a scaler, Map fits one: raw 1DAW amplitudes sit far below the
+        model's absolute scale, and an unscaled 2Fo-Fc map is an inverted Fcalc
+        map."""
+        model, data, _ = model_ft_and_data
+        two_fo_fc = Map(data, model).calculate()
+        fcalc = Map(data, model, map_type="Fcalc").calculate()
+        cc = torch.corrcoef(torch.stack([two_fo_fc.flatten(), fcalc.flatten()]))
+        assert cc[0, 1] > 0.5
 
 
 class TestDifferenceMap:
@@ -207,8 +234,22 @@ class TestAnomalousInput:
         merged, anom = _merged_and_anomalous(data)
         grid = Map(merged, model, map_type="2Fo-Fc")._determine_gridsize()
 
-        expected = Map(merged, model, gridsize=grid, map_type="2Fo-Fc").calculate()
-        result = Map(anom, model, gridsize=grid, map_type="2Fo-Fc").calculate()
+        # Unfitted scalers are the identity: a scale fitted to each row set would
+        # differ slightly, and the comparison is about the Bijvoet averaging.
+        expected = Map(
+            merged,
+            model,
+            gridsize=grid,
+            map_type="2Fo-Fc",
+            scaler=Scaler(model, merged, verbose=0),
+        ).calculate()
+        result = Map(
+            anom,
+            model,
+            gridsize=grid,
+            map_type="2Fo-Fc",
+            scaler=Scaler(model, anom, verbose=0),
+        ).calculate()
 
         torch.testing.assert_close(result, expected, rtol=1e-4, atol=1e-5)
 

@@ -11,6 +11,7 @@ import torch
 from torchref.io import ReflectionData
 from torchref.maps import DifferenceMap, Map
 from torchref.model.model_ft import ModelFT
+from torchref.scaling import Scaler
 
 
 @pytest.fixture(scope="module")
@@ -25,8 +26,12 @@ def model_ft_and_data(sample_structure_pair):
 @pytest.mark.unit
 def test_electrons_is_the_volume_normalised_synthesis(model_ft_and_data):
     model, data = model_ft_and_data
-    normalized = Map(data, model, map_type="Fcalc").calculate()
-    electrons = Map(data, model, map_type="Fcalc", units="electrons").calculate()
+    # One scaler for both maps (unfitted, the identity): the units are compared.
+    scaler = Scaler(model, data, verbose=0)
+    normalized = Map(data, model, map_type="Fcalc", scaler=scaler).calculate()
+    electrons = Map(
+        data, model, map_type="Fcalc", units="electrons", scaler=scaler
+    ).calculate()
     volume = data.cell.volume.to(normalized.dtype)
     assert torch.allclose(
         electrons, normalized * (normalized.numel() / volume), rtol=1e-5, atol=1e-6

@@ -24,6 +24,8 @@ import torch
 from torchref.base.fourier.coefficients import map_coefficients
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.cif import write_map
+from torchref.scaling.scaler import Scaler
+from torchref.symmetry import SpaceGroup
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
@@ -50,6 +52,12 @@ class Map(DeviceMixin):
         ``"electrons"`` gives ``(1/V) sum_h F(h) exp(-2 pi i h.x)``, electrons per
         cubic Angstrom, which is meaningful only when the coefficients are on the
         absolute scale.
+    scaler : Scaler, optional
+        A fitted :class:`~torchref.scaling.Scaler` for ``(data, model)``, e.g. a
+        refinement's ``scaler``. Every map type uses ``scaler(F_calc)``, with bulk
+        solvent and anisotropic scale, so F_calc is on ``data.F``'s scale. If None,
+        :meth:`calculate` fits the standard one (``initialize()`` then
+        ``refine_lbfgs()``) on each call.
 
     Attributes
     ----------
@@ -88,6 +96,7 @@ class Map(DeviceMixin):
         map_type: str = "2Fo-Fc",
         device: Optional[torch.device] = None,
         units: str = "normalized",
+        scaler: Optional[Scaler] = None,
     ):
         if map_type not in self.VALID_MAP_TYPES:
             raise ValueError(
@@ -101,6 +110,7 @@ class Map(DeviceMixin):
         self.model = model
         self.gridsize = gridsize
         self.map_type = map_type
+        self.scaler = scaler
         self._map: Optional[torch.Tensor] = None
 
     def reset_cache(self) -> None:
@@ -127,7 +137,7 @@ class Map(DeviceMixin):
         fobs : torch.Tensor
             Observed amplitudes, shape (N,).
         fcalc : torch.Tensor
-            Complex structure factors from model, shape (N,).
+            Complex model structure factors on ``fobs``'s scale, shape (N,).
 
         Returns
         -------
@@ -148,26 +158,18 @@ class Map(DeviceMixin):
         torch.Tensor
             3D real-space map tensor.
         """
-        # Expand to P1 without Friedel mates (place_on_grid handles
-        # Hermitian symmetry via enforce_hermitian=True)
-        if self.data.friedel_merged:
-            data_p1 = self.data.expand_to_p1(include_friedel=False)
-            hkl_p1, fobs_p1, _, _ = data_p1.data_indexed()
-        else:
-            # One amplitude per reflection: the Hermitian placement would
-            # otherwise count every measured Bijvoet pair twice.
-            valid = self.data.masks()
-            rows = self.data.bijvoet_representatives(valid)
-            fobs_rows = self.data.bijvoet_mean(self.data.F, valid)[rows]
-            sg = self.data.spacegroup
-            hkl_p1, idx, _ = sg.expand_hkl(self.data.hkl[rows], include_friedel=False)
-            fobs_p1 = fobs_rows[idx]
+        # One amplitude per reflection: the Hermitian placement would otherwise
+        # count every measured Bijvoet pair twice.
+        valid = self.data.masks()
+        rows = self.data.bijvoet_representatives(valid)
+        fobs = self.data.bijvoet_mean(self.data.F, valid)[rows]
+        coefficients = self._compute_map_coefficients(fobs, self._scaled_fcalc()[rows])
 
-        # Compute Fcalc for P1-expanded hkl
-        fcalc_p1 = self.model.get_structure_factor(hkl_p1)
-
-        # Compute map coefficients
-        coefficients_p1 = self._compute_map_coefficients(fobs_p1, fcalc_p1)
+        # The coefficients exist on the data's own rows, so they are expanded with
+        # their phase shifts; place_on_grid adds the Friedel half.
+        sg = self.data.spacegroup or SpaceGroup("P1", device=self.data.device)
+        hkl_p1, idx, shifts = sg.expand_hkl(self.data.hkl[rows], include_friedel=False)
+        coefficients_p1 = coefficients[idx] * torch.exp(1j * shifts)
 
         # Determine grid size
         if self.gridsize is not None:
@@ -185,6 +187,20 @@ class Map(DeviceMixin):
         self._map = self._to_units(self._map)
 
         return self._map
+
+    def _scaled_fcalc(self) -> torch.Tensor:
+        """``scaler(F_calc)``, shape (N,), row-aligned with ``data.hkl``.
+
+        The model is evaluated with ``cached=False`` so this no-grad pass leaves
+        no detached tensor in its forward cache.
+        """
+        scaler = self.scaler
+        if scaler is None:
+            scaler = Scaler(self.model, self.data, verbose=0, device=self.device)
+            scaler.initialize()
+            scaler.refine_lbfgs(verbose=False)
+        with torch.no_grad():
+            return scaler(self.data.structure_factors(self.model, cached=False))
 
     def _to_units(self, real_map: torch.Tensor) -> torch.Tensor:
         """Rescale a ``1/N``-normalised FFT map to the configured units."""
