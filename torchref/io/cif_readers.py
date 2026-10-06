@@ -211,10 +211,9 @@ class CIFReader:
             line = lines[i]
             stripped = line.strip()
 
-            # Check if we've reached the end of the loop
+            # A blank line is whitespace in CIF; only a tag, loop or block ends a loop.
             if not in_multiline and (
-                not stripped
-                or stripped.startswith("_")
+                stripped.startswith("_")
                 or stripped.startswith("loop_")
                 or stripped.startswith("data_")
             ):
