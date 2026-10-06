@@ -11,12 +11,12 @@ throws them away again. The positions are a function of the heavy atoms, so grad
 reach the heavy coordinates through them by ordinary autograd.
 
 Contrast :mod:`torchref.topology.hydrogens`, which *adds* hydrogens to the model as
-real atoms with their own parameters. That is the default, and where both apply it is
-the better answer: the hydrogen has a refinable position instead of one reconstructed
-each step, and it contributes to the structure factors. Riding hydrogens are what is
-left for the heavy-atom-only mode, and the two must not run together -- riding
-placement alongside real hydrogens puts phantom atoms in the structure that push the
-real ones around.
+real atoms with their own parameters (``hydrogens="add"``), the better answer where
+both apply: the hydrogen has a refinable position instead of one reconstructed each
+step, and it contributes to the structure factors. Riding hydrogens serve a model
+without any -- the default ``hydrogens="keep"`` on a heavy-only file, or ``"strip"`` --
+and the two must not run together: riding placement alongside real hydrogens puts
+phantom atoms in the structure that push the real ones around.
 """
 
 from dataclasses import dataclass, field
