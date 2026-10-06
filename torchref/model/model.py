@@ -795,14 +795,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self, old_device, new_device, old_dtype, new_dtype, *,
         device_changed, dtype_changed,
     ):
-        """Report the move.
-
-        This used to regenerate the iso/aniso index tensors, which a device move
-        would otherwise leave on the old device. It no longer has to: the
-        partition is derived on access and keyed on ``aniso_flag``'s identity,
-        and ``nn.Module._apply`` replaces the buffer rather than mutating it, so
-        the move invalidates the cache by itself.
-        """
+        """Report the move when verbose."""
         if self.ctx.verbose > 0:
             print(f"Model moved to device: {self.device}")
 
