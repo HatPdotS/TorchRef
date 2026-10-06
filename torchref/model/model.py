@@ -480,12 +480,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def _invalidate_atom_derived_caches(self) -> None:
         """Drop the lazily-cached per-atom buffers.
 
-        Each is guarded by ``hasattr`` and returned as-is once built, so a load that
-        changes the atom count would otherwise hand back a buffer sized for the previous
-        one. That surfaced when hydrogen generation began extending the table in place:
-        the van der Waals radii stayed at the heavy-atom count while the pair list
-        indexed the full set, and the non-bonded build raised ``IndexError``. Rebuilding
-        a new model each time had hidden it.
+        Each is returned as-is once built, so a load that changes the atom count would
+        otherwise reuse buffers sized for the previous atom set.
         """
         for name in self._ATOM_DERIVED_BUFFERS:
             if hasattr(self, name):
