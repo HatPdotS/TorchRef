@@ -243,8 +243,8 @@ def _standardize_link_columns(df, section_type):
             df = df.rename(columns={"atom_id": "atom"})
         if "dist_esd" in df.columns:
             df = df.rename(columns={"dist_esd": "sigma"})
-            # Clip sigma: default 0.02 Å, minimum 0.001 Å (consistent with
-            # monomer CIF reader in cif_readers.py:_standardize_planes)
+            # A missing sigma defaults to 0.02 Å (component planes default to 0.01 Å)
+            # and every sigma is floored at 0.001 Å.
             df["sigma"] = (
                 pd.to_numeric(df["sigma"], errors="coerce").fillna(0.02).clip(lower=0.001)
             )
