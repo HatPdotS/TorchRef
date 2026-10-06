@@ -82,6 +82,23 @@ def test_a_second_refine_everything_still_moves_the_coordinates(build):
 
 
 @pytest.mark.integration
+def test_refine_everything_refits_the_scale_warm(build, monkeypatch):
+    """Each cycle refits the scaler from where the previous one left it: the bulk
+    solvent model stays the same object and the scaler is never cold-started."""
+    ref = build()
+    ref.LBFGS_DEFAULTS = dict(ref.LBFGS_DEFAULTS, max_iter=3)
+    solvent = ref.scaler.solvent
+
+    def cold_start(*args, **kwargs):
+        raise AssertionError("refine_everything cold-started the scaler")
+
+    monkeypatch.setattr(ref.scaler, "initialize", cold_start)
+    ref.refine_everything(macro_cycles=2)
+
+    assert ref.scaler.solvent is solvent
+
+
+@pytest.mark.integration
 def test_column_names_with_an_sf_mmcif_file_are_refused(cif_sf_dir, pdb_dir):
     """A column choice cannot apply to SF-mmCIF input, so it is an error rather than
     silently ignored."""

@@ -186,8 +186,9 @@ class LBFGSRefinement(Refinement):
     def _refine_everything_lbfgs_single_cycle(self, nsteps: int = 1):
         """Joint LBFGS over xyz + adp + u + occupancy for one macro cycle.
 
-        Used by :meth:`refine_everything`, which fits the scaler via ``get_scales()``
-        immediately beforehand; this method therefore touches only body parameters.
+        Used by :meth:`refine_everything`, which refits the scaler warm via
+        :meth:`_refresh_scales` immediately beforehand; this method therefore touches
+        only body parameters.
         """
         state = self.complete_loss_state()
         body = self.model.parameters_of_types(("xyz", "adp", "u", "occupancy"))
@@ -198,6 +199,18 @@ class LBFGSRefinement(Refinement):
             context="lbfgs_refinement._refine_everything_lbfgs_single_cycle",
         )
         return state
+
+    def _refresh_scales(self):
+        """Rebuild the solvent mask at the current coordinates, then refit the scaler.
+
+        The per-cycle scale update of :meth:`refine` and :meth:`refine_everything`. Warm:
+        the scale, anisotropy and solvent refined in the previous cycle are the starting
+        point, where :meth:`~torchref.refinement.base_refinement.Refinement.get_scales`
+        would reseed them.
+        """
+        if self.scaler is not None:
+            self.scaler.update_solvent()
+        return self.refine_scaler()
 
     def refine(self, macro_cycles=5):
         """Run ``macro_cycles`` cycles of ``refine_scaler`` -> ``refine_xyz`` ->
@@ -238,11 +251,9 @@ class LBFGSRefinement(Refinement):
                 before_scaling = self.collect_metrics()
                 cycle_dict["before_scaling"] = before_scaling
 
-            if self.scaler is not None:
-                self.scaler.update_solvent()
             # Before the `after_scaling` metrics below, so that label describes this cycle's
             # scaler rather than the previous one's.
-            self.refine_scaler()
+            self._refresh_scales()
 
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
@@ -318,7 +329,7 @@ class LBFGSRefinement(Refinement):
                 print(f"LBFGS Refinement Everything - Cycle {cycle+1}/{macro_cycles}")
                 print(f"{'='*60}")
 
-            self.get_scales()
+            self._refresh_scales()
 
             self.logger.record(label="after_scaling")
             with torch.no_grad():
