@@ -16,6 +16,7 @@ previous program's output.
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import gemmi
 import pandas as pd
@@ -292,6 +293,23 @@ def test_long_identification_values_wrap_rather_than_overflow():
         if " : " in line
     )
     assert "RIGID BODY 5 ITERATIONS" in joined
+
+
+@pytest.mark.unit
+def test_reflection_statistics_cover_the_reflections_refined(mtz_dir):
+    """A resolution cut shows in the reported range and counts."""
+    from torchref.io.datasets.reflection_data import ReflectionData
+
+    data = ReflectionData(verbose=0)
+    data.load_mtz(str(mtz_dir / "1DAW.mtz"))
+    data.filter_by_resolution(d_min=2.5)
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(reflection_data=data))
+
+    assert meta.resolution_high == pytest.approx(2.5, abs=0.01)
+    assert meta.n_reflections_work == data.work.n
+    assert meta.n_reflections_test == data.free.n
+    assert meta.n_reflections_all == data.work.n + data.free.n
+    assert meta.n_reflections_all < len(data.hkl)
 
 
 # ====================================================================== #

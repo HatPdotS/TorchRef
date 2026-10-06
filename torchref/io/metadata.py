@@ -240,30 +240,9 @@ class RefinementMetadata:
         except Exception:
             pass
 
-        # --- Resolution from reflection data ---
+        # --- Resolution and reflection counts ---
         try:
-            rd = refinement.reflection_data
-            if rd.resolution is not None:
-                meta.resolution_high = float(rd.resolution.min())
-                meta.resolution_low = float(rd.resolution.max())
-        except Exception:
-            pass
-
-        # --- Reflection counts ---
-        try:
-            rd = refinement.reflection_data
-            with torch.no_grad():
-                hkl, fobs, sigma, rfree_flags = rd.hkl, rd.F, rd.F_sigma, rd.rfree_flags
-            n_all = len(fobs)
-            n_test = int(rfree_flags.sum().item()) if rfree_flags.dtype == torch.bool else int((~rfree_flags.bool()).sum().item())
-            n_work = n_all - n_test
-            # In torchref, rfree_flags=True means WORK set
-            n_work = int(rfree_flags.sum().item())
-            n_test = n_all - n_work
-            meta.n_reflections_all = n_all
-            meta.n_reflections_work = n_work
-            meta.n_reflections_test = n_test
-            meta.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
+            meta._set_reflection_statistics(refinement.reflection_data)
         except Exception:
             pass
 
@@ -350,6 +329,30 @@ class RefinementMetadata:
             pass
 
         return meta
+
+    def _set_reflection_statistics(self, data) -> None:
+        """Set the resolution range and reflection counts from ``data``.
+
+        Both cover only the reflections the refinement scored, those
+        ``data.masks()`` keeps: a resolution cut, missing data and excluded
+        free-set flags are left out, as in ``get_rfactor``. The counts are
+        ``data.work.n`` and ``data.free.n``; ``n_reflections_all`` is their sum.
+
+        Parameters
+        ----------
+        data : ReflectionData
+            The refined dataset; its ``resolution`` is in Å.
+        """
+        if data.resolution is not None:
+            self.resolution_high = data.d_min
+            self.resolution_low = float(data.resolution[data.masks()].max())
+        if data.rfree_flags is not None:
+            n_work, n_test = data.work.n, data.free.n
+            n_all = n_work + n_test
+            self.n_reflections_work = n_work
+            self.n_reflections_test = n_test
+            self.n_reflections_all = n_all
+            self.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
 
     # ------------------------------------------------------------------ #
     #  Construction from input files (pass-through)
