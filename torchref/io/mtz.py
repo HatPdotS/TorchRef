@@ -313,9 +313,10 @@ class MTZReader:
             file, and may include: ``"HKL"`` (int32 Miller indices); ``"F"`` /
             ``"SIGF"`` and/or ``"I"`` / ``"SIGI"`` (float32 data, with
             ``"*_col"`` provenance keys recording the source column names);
-            ``"R-free-flags"`` (int32: ``0`` = free, positive = work,
-            negative = excluded; a column whose majority value is ``0`` is
-            flipped to this convention) and ``"R-free-source"``;
+            ``"R-free-flags"`` (int32: ``1`` = work, ``0`` = free, ``-1`` =
+            excluded, as :func:`~torchref.io.rfree.read_free_set` reads the
+            column -- CCP4 ``0..K`` with ``0`` free, or a binary column whose
+            majority value is work) and ``"R-free-source"``;
             ``"Validation-flags"`` (a **bool** mask) and ``"Validation-source"``;
             and ``"friedel_merged"`` (bool) indicating the Bijvoet state of the
             returned data (False when anomalous F(+)/F(-) pairs were stacked).
@@ -411,7 +412,14 @@ class MTZReader:
                     self.data["SIGF_col"] = sigma_col
 
     def _extract_rfree_flags(self) -> None:
-        """Extract R-free flags from the dataset."""
+        """Extract R-free flags from the first integer ``RFREE_FLAG_NAMES`` column.
+
+        The column is interpreted by :func:`~torchref.io.rfree.read_free_set`,
+        the rule SF-mmCIF flags are read with too.
+        """
+        # rfree imports this module for its flag names.
+        from torchref.io.rfree import read_free_set
+
         available_cols = set(self.mtz_data.columns)
 
         for col in self.RFREE_FLAG_NAMES:
@@ -419,36 +427,15 @@ class MTZReader:
                 dtype = str(self.mtz_data.dtypes[col])
                 if "int" in dtype.lower() or "flag" in dtype.lower() or "I" in dtype:
                     try:
-                        flags = self.mtz_data[col].to_numpy()
-
-                        if flags.dtype == object or not np.issubdtype(
-                            flags.dtype, np.integer
-                        ):
-                            flags = pd.to_numeric(flags, errors="coerce")
-                            flags = np.nan_to_num(flags, nan=-1).astype(np.int32)
-                        else:
-                            flags = flags.astype(np.int32)
-
-                        rfree_flags = np.array(flags, dtype=np.int32)
-                        n_free = (rfree_flags == 0).sum()
-                        free_pct = (
-                            100.0 * n_free / len(rfree_flags)
-                            if len(rfree_flags) > 0
-                            else 0
-                        )
-
-                        # Flip convention if needed
-                        if free_pct > 50.0:
-                            flipped = np.zeros_like(rfree_flags)
-                            flipped[rfree_flags == 0] = 1
-                            flipped[rfree_flags > 0] = 0
-                            flipped[rfree_flags < 0] = -1
-                            rfree_flags = flipped
-
-                            if self.verbose > 0:
-                                n_free = (rfree_flags == 0).sum()
-                                free_pct = 100.0 * n_free / len(rfree_flags)
-                                print(f"   After flip: free={n_free} ({free_pct:.1f}%)")
+                        free_set = read_free_set(self.mtz_data, col)
+                        rfree_flags = np.where(free_set["free"], 0, 1).astype(np.int32)
+                        rfree_flags[free_set["excluded"]] = -1
+                        if self.verbose > 0:
+                            print(
+                                f"   R-free flags from '{col}': "
+                                f"{free_set['convention']}, "
+                                f"free={int(free_set['free'].sum())}"
+                            )
 
                         # keep int: -1 (excluded) is masked by ReflectionData.load
                         self.data["R-free-flags"] = rfree_flags
