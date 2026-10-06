@@ -84,16 +84,9 @@ class IntensityObservableMixin:
     def _sigma_floor(self) -> torch.Tensor:
         """The intensity-sigma floor, taken from THIS target's own fitted subset.
 
-        Computed here rather than inside the variance builder so it does not depend on
-        which reflections a particular call happens to pass. ``forward`` evaluates on the
-        target's subset while ``residuals`` evaluates on every reflection; a floor derived
-        from the argument therefore differs between them, and the same reflection scores
-        differently in the two -- 0.09% on a 1DAW work set, 1.8% on its free set, because
-        sigma(I) spans orders of magnitude where sigma(F) does not.
-
-        Detached: it is a numerical safeguard, not a fitted quantity, and letting a
-        gradient run back through a median would make the loss depend on the ordering of
-        near-equal sigmas.
+        Not from the reflections a call passes, so ``forward`` (this subset) and
+        ``residuals`` (every reflection) floor alike. Detached: a numerical safeguard,
+        not a fitted quantity.
         """
         sigma = self._subset().sigI
         if sigma is None or sigma.numel() == 0:
