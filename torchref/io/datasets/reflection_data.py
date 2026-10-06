@@ -1556,7 +1556,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
             valid = self.masks().sum().item()
             print(
                 f"Filtering: {mask.sum()}/{len(mask)} reflections in range "
-                f"[{d_max if d_max else 'inf'} - {d_min if d_min else 'inf'}] "
+                f"[{d_max if d_max is not None else 'inf'} - "
+                f"{d_min if d_min is not None else 0}] "
                 f"\u00c5 ({valid} valid after all masks)"
             )
 
