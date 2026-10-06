@@ -77,17 +77,11 @@ class LBFGSRefinement(Refinement):
         # update it via refine_scaler(). Co-refining a few high-leverage scaler params
         # in the same LBFGS as thousands of body params is ill-conditioned.
         self.corefine_scaler = corefine_scaler
-        # Targets are already built for this mode by super().__init__(); no rebuild.
-        self.target_mode = target_mode
 
         # Lazy persistent optimizers. Built on first access by
         # _lbfgs_for_types so that LBFGSRefinement instances without a
         # loaded model can still be constructed.
         self._persistent_optimizers: dict = {}
-
-    def xray_loss(self):
-        """X-ray loss on the work set, from the instantiated target."""
-        return self.xray_loss_work()
 
     # =========================================================================
     # Persistent optimizer machinery

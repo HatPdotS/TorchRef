@@ -22,17 +22,9 @@ import torch
 from torch import nn
 
 from torchref.config import canonical_device, get_default_device, get_float_dtype
-from torchref.utils.autograd_introspection import collect_loss_leaves, _iter_roots
+from torchref.utils.autograd_introspection import collect_loss_leaves
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.loss_validation import validate_loss
-
-
-class LossStateWarning(UserWarning):
-    """Performance hints emitted by :class:`LossState`.
-
-    Subclassed from ``UserWarning`` so it shows up by default, but exposed
-    as a distinct category so callers can silence/escalate it independently.
-    """
 
 
 @dataclass
@@ -54,8 +46,6 @@ class LossState(DeviceMovementMixin):
         Group ('geometry') or component ('geometry/bond') weights.
     history : List[Dict]
         Log of computed values per aggregation call.
-    meta : Dict[str, Any]
-        Model-level data (rwork, rfree, n_atoms, ...) populated by refinement.
     """
 
     device: torch.device = field(default_factory=get_default_device)
@@ -72,12 +62,6 @@ class LossState(DeviceMovementMixin):
     # Cache for computed losses (cleared on each aggregate)
     _losses: Dict[str, torch.Tensor] = field(default_factory=dict, repr=False)
 
-    # Set of target keys marked as compilable
-    _compilable: Set[str] = field(default_factory=set, repr=False)
-
-    # Cached compiled callable; None until compile_aggregate() is called
-    _compiled_aggregate: Optional[Callable] = field(default=None, repr=False)
-
     # Union of leaf nn.Parameters that registered targets' backward will
     # accumulate into. Populated incrementally during register_target via a
     # one-shot probe forward + autograd graph walk. Used by step()/run() to
@@ -92,33 +76,23 @@ class LossState(DeviceMovementMixin):
     # silently poison the next forward.
     _resettable_modules: List[nn.Module] = field(default_factory=list, repr=False)
 
-    # Model-level data for weighting schemes
-    meta: Dict[str, Any] = field(default_factory=dict)
-
     # =========================================================================
-    # Item Access (meta and _losses)
+    # Item Access (_losses)
     # =========================================================================
 
     def __getitem__(self, key: str) -> Any:
-        """Look ``key`` up in ``meta`` first, then ``_losses``; ``KeyError`` if in
-        neither."""
-        if key in self.meta:
-            return self.meta[key]
+        """The cached loss for ``key``; ``KeyError`` if none is cached."""
         if key in self._losses:
             return self._losses[key]
-        raise KeyError(f"Key '{key}' not found in meta or _losses")
+        raise KeyError(f"Key '{key}' not found in _losses")
 
     def __contains__(self, key: str) -> bool:
-        """Check if key exists in meta or _losses."""
-        return key in self.meta or key in self._losses
+        """Check if a loss is cached under ``key``."""
+        return key in self._losses
 
     def get(self, key: str, default: Any = None) -> Any:
         """As :meth:`__getitem__` but returning ``default`` instead of raising."""
-        if key in self.meta:
-            return self.meta[key]
-        if key in self._losses:
-            return self._losses[key]
-        return default
+        return self._losses.get(key, default)
 
     def cache_losses(self, force: bool = False) -> "LossState":
         """Evaluate registered targets into ``_losses`` and return self.
@@ -135,11 +109,6 @@ class LossState(DeviceMovementMixin):
 
         return self
 
-    def update_meta(self, data: Dict[str, Any]) -> "LossState":
-        """Merge ``data`` into ``meta``; returns self for chaining."""
-        self.meta.update(data)
-        return self
-
     # =========================================================================
     # Target Registration
     # =========================================================================
@@ -149,7 +118,6 @@ class LossState(DeviceMovementMixin):
         name: str,
         target: Callable,
         prefix: str = None,
-        compile: bool = False,
         probe: bool = True,
     ) -> "LossState":
         """Register one target, or auto-expand a combined target into its components.
@@ -163,9 +131,6 @@ class LossState(DeviceMovementMixin):
             expanded into its components.
         prefix : str, optional
             Prepended to the name, for registering several models into one state.
-        compile : bool
-            Mark this target (and any sub-targets) eligible for the compiled aggregate closure
-            built by :meth:`compile_aggregate`.
         probe : bool
             If True (default), run the target's forward once and merge the autograd graph's
             leaves into ``self._loss_leaves`` -- so **the target's dependencies (model loaded,
@@ -177,22 +142,16 @@ class LossState(DeviceMovementMixin):
         LossState
             Self for chaining.
         """
-        self._compiled_aggregate = None  # invalidate stale compiled closure
-
         # Check if target is a combined/dictionary-like target with .items()
         # This handles CombinedTargets, TotalGeometryTarget, TotalADPTarget, etc.
         if hasattr(target, "items") and callable(getattr(target, "items", None)):
             # Use name as prefix to maintain hierarchy (e.g., "geometry" -> "geometry/bond")
             combined_prefix = f"{prefix}/{name}" if prefix else name
-            return self.register_targets(
-                target, prefix=combined_prefix, compile=compile, probe=probe
-            )
+            return self.register_targets(target, prefix=combined_prefix, probe=probe)
 
         # Normal single target registration
         key = f"{prefix}/{name}" if prefix else name
         self.targets[key] = target
-        if compile:
-            self._compilable.add(key)
         if probe:
             self._probe_and_merge_leaves(target)
         self._collect_resettable_modules(target)
@@ -253,7 +212,6 @@ class LossState(DeviceMovementMixin):
         self,
         targets,
         prefix: str = None,
-        compile: bool = False,
         probe: bool = True,
     ) -> "LossState":
         """Register many targets from a component target or dict.
@@ -263,16 +221,14 @@ class LossState(DeviceMovementMixin):
         cannot (e.g.
         ``"model_0/bond"`` from the MultiModel targets), and without honouring it every base
         model's leaf targets collapse onto one key and all but the last are dropped.
-        ``prefix``, ``compile`` and ``probe`` are forwarded to :meth:`register_target`.
+        ``prefix`` and ``probe`` are forwarded to :meth:`register_target`.
         """
         for name, target in targets.items():
             # Honor hierarchical dict keys (from MultiModel expansion); they
             # carry the per-model index that the leaf target's fixed .name
             # would otherwise discard, causing model-to-model key collisions.
             target_name = name if "/" in name else getattr(target, "name", name)
-            self.register_target(
-                target_name, target, prefix=prefix, compile=compile, probe=probe
-            )
+            self.register_target(target_name, target, prefix=prefix, probe=probe)
         return self
 
     # =========================================================================
@@ -282,9 +238,6 @@ class LossState(DeviceMovementMixin):
     def set_weight(self, name: str, weight: float) -> "LossState":
         """Set a group ('geometry') or component ('geometry/bond') weight; returns self."""
         self.weights[name] = weight
-        self._compiled_aggregate = (
-            None  # invalidate stale compiled closure (weights baked in)
-        )
         return self
 
     def set_weights(self, weights: Dict[str, float]) -> "LossState":
@@ -312,55 +265,6 @@ class LossState(DeviceMovementMixin):
             effective *= self.weights.get(path, 1.0)
 
         return effective
-
-    # =========================================================================
-    # Compiled Aggregate
-    # =========================================================================
-
-    def mark_compilable(self, names: List[str]) -> "LossState":
-        """Mark already-registered ``names`` eligible for the compiled aggregate."""
-        for name in names:
-            if name in self.targets:
-                self._compilable.add(name)
-        self._compiled_aggregate = None
-        return self
-
-    def compile_aggregate(self, **compile_kwargs) -> "LossState":
-        """Build and cache a ``torch.compile``'d closure over all compilable targets.
-
-        Call after every target and weight is registered, and re-call (or
-        :meth:`reset_compiled_aggregate`) if either changes. ``**compile_kwargs`` go to
-        ``torch.compile``; ``fullgraph=False`` by default so partial-graph fallback is
-        allowed.
-        """
-        compile_kwargs.setdefault("fullgraph", False)
-
-        active = [
-            (self.targets[n], self.get_effective_weight(n))
-            for n in self.targets
-            if n in self._compilable and self.get_effective_weight(n) != 0.0
-        ]
-        if not active:
-            self._compiled_aggregate = None
-            return self
-
-        fns, weights = zip(*active)
-        fns, weights = list(fns), list(weights)
-        device = self.device
-
-        def _compiled_fn():
-            total = torch.tensor(0.0, dtype=get_float_dtype(), device=device)
-            for fn, w in zip(fns, weights):
-                total = total + w * fn()
-            return total
-
-        self._compiled_aggregate = torch.compile(_compiled_fn, **compile_kwargs)
-        return self
-
-    def reset_compiled_aggregate(self) -> "LossState":
-        """Clear the cached compiled closure (e.g. after changing weights)."""
-        self._compiled_aggregate = None
-        return self
 
     # =========================================================================
     # History Logging
@@ -397,11 +301,8 @@ class LossState(DeviceMovementMixin):
     def aggregate(self, log_values: bool = False) -> torch.Tensor:
         """Evaluate all targets and return the weighted sum.
 
-        With :meth:`compile_aggregate` called and ``log_values=False``, compilable
-        targets run
-        through the single compiled closure; ``log_values=True`` forces every target
-        eager so
-        per-target losses land in ``_losses`` and history.
+        Targets with a zero effective weight are skipped. Per-target losses land in
+        ``_losses``; ``log_values=True`` also records them in history.
         """
         if log_values:
             self.new_entry()
@@ -409,32 +310,7 @@ class LossState(DeviceMovementMixin):
         self._losses.clear()
         total = torch.tensor(0.0, dtype=get_float_dtype(), device=self.device)
 
-        # --- compiled group ---
-        # Skipped when log_values=True: the fused closure does not expose
-        # per-target losses needed for logging.
-        if self._compiled_aggregate is not None and not log_values:
-            total = total + self._compiled_aggregate()
-        else:
-            # Run compilable targets eagerly (log_values path or no compiled fn)
-            for name in self._compilable:
-                if name not in self.targets:
-                    continue
-                weight = self.get_effective_weight(name)
-                if weight == 0.0:
-                    continue
-                loss = self.targets[name]()
-                self._losses[name] = loss
-                weighted = weight * loss
-                total = total + weighted
-                if log_values:
-                    self.log(f"loss/{name}", loss)
-                    self.log(f"weight/{name}", weight)
-                    self.log(f"weighted/{name}", weighted)
-
-        # --- eager group (non-compilable) ---
         for name, target in self.targets.items():
-            if name in self._compilable:
-                continue  # already handled above
             weight = self.get_effective_weight(name)
             if weight == 0.0:
                 continue
@@ -740,8 +616,7 @@ class LossState(DeviceMovementMixin):
         n_targets = len(self.targets)
         n_weights = len(self.weights)
         n_history = len(self.history)
-        n_meta = len(self.meta)
-        return f"LossState(device={self.device}, targets={n_targets}, weights={n_weights}, meta={n_meta}, history={n_history})"
+        return f"LossState(device={self.device}, targets={n_targets}, weights={n_weights}, history={n_history})"
 
 
 def _optimizer_param_set(optimizer: torch.optim.Optimizer) -> Set[nn.Parameter]:

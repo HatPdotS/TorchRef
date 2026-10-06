@@ -714,18 +714,11 @@ class SigmaAEstimator:
 
     def __init__(self):
         self._cache = None  # (beta_per_refl, epsilon) detached
-        self._alpha = None  # alpha_per_refl, detached
         self._beta_per_bin = None  # diagnostics
-        self._alpha_per_bin = None  # diagnostics
 
     def reset(self) -> None:
         """Invalidate the cache so the next :meth:`get` re-estimates ``beta``."""
         self._cache = None
-        self._alpha = None
-
-    def alpha_per_bin(self):
-        """Last-estimated per-bin Luzzati ``alpha`` (diagnostics)."""
-        return self._alpha_per_bin
 
     @property
     def beta_per_bin(self):
@@ -779,9 +772,7 @@ class SigmaAEstimator:
                 F_obs, F_calc_scaled, centric, epsilon, d_star_sq, free_mask,
                 sigma_obs=sigma_obs, **kwargs,
             )
-            self._shells = sh
             self._beta_per_bin = sh.beta
-            self._alpha_per_bin = sh.alpha
 
             grid = (
                 target_dss.reshape(-1)
@@ -810,7 +801,6 @@ class SigmaAEstimator:
                 ratio = torch.exp(log_sn - log_sp).clamp(max=RATIO_MAX)
                 alpha = (sigma_a * ratio.sqrt()).clamp(min=ALPHA_FLOOR)
 
-            self._alpha = alpha.detach()
             eps_ret = out_epsilon if out_epsilon is not None else epsilon
             eps_ret = eps_ret.detach() if torch.is_tensor(eps_ret) else eps_ret
             self._cache = SigmaAEstimate(

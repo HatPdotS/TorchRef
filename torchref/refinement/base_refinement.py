@@ -4,7 +4,6 @@ Base class for crystallographic refinement.
 
 from typing import Any, Dict, Optional
 
-import math
 import torch
 from torch.nn import Module as nnModule
 
@@ -108,9 +107,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     weighting : BaseWeighting
         Loss weighting scheme holding the data/prior group weights. Defaults to
         ``ManualWeighting(DEFAULT_GROUP_WEIGHTS)``; reassign to change the scheme.
-    weighter : None
-        Vestigial state-dict placeholder, always ``None``; the live weighting knob
-        is :attr:`weighting`.
     """
 
     def __init__(
@@ -236,7 +232,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.max_res = max_res
         self.nbins = nbins
         self.n_iso_coeff = n_iso_coeff
-        self.lr = 1e-3
         self.wavelength = wavelength
         self.anomalous_threshold = anomalous_threshold
         self.french_wilson = french_wilson
@@ -304,7 +299,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 n_iso_coeff=self.n_iso_coeff,
             )
             # Restraints are now lazy-loaded via model.restraints property
-            self.weighter = None
             return
 
         # Full initialization with file paths
@@ -550,50 +544,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         n_work = int(self.data.work.n)
         budget = n_work / float(reflections_per_parameter)
         return max(2, int(round(budget / per_node)))
-
-    def flatten_adp_field(self) -> bool:
-        """Discard the field's spatial structure, keeping its level. Returns whether it ran.
-
-        A node field fits its structure once, at the moment it is installed, and then only
-        refines from there. Early in a refinement that structure is derived against
-        coordinates that are still wrong, and nothing later re-derives it -- the same shape
-        of mistake as fitting bulk solvent to the starting model and never revisiting it,
-        which cost 11.5% error by cycle 4. Calling this between macro cycles throws away
-        the accumulated structure so the data rebuilds it against the coordinates as they
-        now are.
-
-        The level is preserved: only the spatial variation is reset. Deliberately a hard
-        reset rather than a pull toward flat, because a soft version is another weight to
-        tune and the point is to test whether re-deriving helps at all.
-
-        No-op when the model is not in field mode, so a driver can call it unconditionally.
-        """
-        field = self.model.adp_field
-        if field is None:
-            return False
-        with torch.no_grad():
-            per_atom = field().detach()
-            if per_atom.ndim == 2:
-                # A U6 field. Flatten through the equivalent isotropic B, NOT by taking a
-                # median over all six components: setting the off-diagonals to the same
-                # value as the diagonals gives a matrix with eigenvalues (3L, 0, 0), which
-                # is singular, and the Cholesky encode of it is NaN. refit lifts a 1-D B
-                # target to U_iso * I, which is the flat U that is actually meant.
-                b = (8.0 * math.pi**2 / 3.0) * per_atom[:, :3].sum(dim=1)
-            else:
-                b = per_atom
-            finite = torch.isfinite(b)
-            if not bool(finite.any()):
-                return False
-            level = b[finite].median()
-            target = torch.where(finite, level.expand_as(b), b)
-        # refit replaces refinable_params, so any cached leaf set or optimizer state
-        # referring to the old tensor is stale.
-        field.refit(target)
-        self.reset_loss_state()
-        if self.verbose > 0:
-            print(f"Flattened the ADP field to a level of {float(level):.2f}")
-        return True
 
     def set_adp_representation(
         self,
@@ -966,10 +916,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         """X-ray loss on the work set."""
         return self.xray_target_work()
 
-    def xray_loss_test(self) -> torch.Tensor:
-        """X-ray loss on the test set."""
-        return self.xray_target_test()
-
     def bond_loss(self) -> torch.Tensor:
         """Bond-length NLL component of the geometry target."""
         return self.geometry_target.target_losses()["bond_target"]
@@ -1037,14 +983,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         state.cache_losses()
         return state
 
-    def xray_loss(self):
-        """Alias for :meth:`xray_loss_work`."""
-        return self.xray_loss_work()
-
-    def restraints_loss(self):
-        """Alias for :meth:`geometry_loss`."""
-        return self.geometry_loss()
-
     def collect_metrics(self) -> Dict[str, Any]:
         """R-factors, geometry and ADP stats for logging, unfiltered.
 
@@ -1075,19 +1013,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         return metrics
 
-    def add_target_info_to_state(self, state: "LossState") -> "LossState":
-        """Deprecated no-op that returns ``state`` unchanged; use
-        :meth:`complete_loss_state`, which does all state setup in one call."""
-        import warnings
-
-        warnings.warn(
-            "add_target_info_to_state is deprecated and is a no-op. "
-            "Use complete_loss_state() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return state
-
     def get_rfactor(self):
         """``(R_work, R_free)`` for the current model.
 
@@ -1097,28 +1022,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         ``binwise_optimal``). See :meth:`XrayTarget.get_rfactor`.
         """
         return self.xray_target_work.get_rfactor()
-
-    def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
-        """Scatter-plot calculated vs observed amplitudes, saved as a PNG at
-        ``outpath``."""
-        import matplotlib.pyplot as plt
-
-        with torch.no_grad():
-            F_obs = self.reflection_data.get_corrected_data()[0]
-            self.rfree_flags = self.reflection_data.rfree_flags
-            F_calc = self.get_F_calc()
-            F_obs_amp = torch.abs(F_obs).cpu().numpy()
-            F_calc_amp = torch.abs(F_calc).cpu().numpy()
-            plt.figure(figsize=(8, 8))
-            plt.scatter(F_obs_amp, F_calc_amp, alpha=0.5)
-            plt.plot(
-                [0, max(F_obs_amp)], [0, max(F_obs_amp)], color="red", linestyle="--"
-            )
-            plt.xlabel("Observed |F|")
-            plt.ylabel("Calculated |F|")
-            plt.title("F_calc vs F_obs")
-            plt.grid()
-            plt.savefig(outpath)
 
     def write_out_mtz(self, out_mtz_path="refined_output.mtz", anomalous=None):
         """Write refined map coefficients to an MTZ file.
@@ -1262,7 +1165,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         model_state = extract_submodule_state(state_dict, "model")
         reflection_data_state = extract_submodule_state(state_dict, "reflection_data")
         scaler_state = extract_submodule_state(state_dict, "scaler")
-        weighter_state = extract_submodule_state(state_dict, "weighter")
 
         if verbose > 0:
             print(
@@ -1297,14 +1199,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         instance.max_res = model_state.get("_metadata_max_res", None)
         instance.nbins = 10
         instance.n_iso_coeff = 6
-        instance.lr = 1e-3
-        instance.effective_weights = {}
 
         # Register the properly created submodules
         instance.reflection_data = reflection_data
         instance.model = model
         instance.scaler = scaler
-        instance.weighter = None
 
         # Now load the state dict - PyTorch's default will fill in values
         # Use strict=False since we may have metadata keys and properly created submodules

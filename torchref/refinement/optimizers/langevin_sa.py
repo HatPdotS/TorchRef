@@ -15,9 +15,6 @@ class LangevinSA(Optimizer):
     invariance across all parameter types (xyz, B-factors, occupancies,
     torsions, etc.).
 
-    Call :meth:`calibrate` before the main loop to probe parameter stiffness
-    and warm up the adaptive masses without moving the structure.
-
     Args:
         params: Iterable of parameters or param groups.
         dt: Integration timestep.
@@ -79,7 +76,6 @@ class LangevinSA(Optimizer):
         super().__init__(params, defaults)
 
         self._current_step = 0
-        self._calibrated = False
 
     # ------------------------------------------------------------------
     # Temperature schedule
@@ -132,129 +128,13 @@ class LangevinSA(Optimizer):
         return ke
 
     # ------------------------------------------------------------------
-    # Calibration: probe stiffness then rollback
-    # ------------------------------------------------------------------
-
-    @torch.no_grad()
-    def calibrate(self, closure, n_steps=10):
-        """Probe parameter stiffness over n_steps, then rollback.
-
-        Runs small random perturbations to collect gradient statistics,
-        sets the adaptive masses from the observed grad², then restores
-        all parameters to their original values and initialises velocities
-        from Maxwell-Boltzmann with correctly scaled masses.
-
-        Args:
-            closure: Same closure as for ``step()`` — must zero_grad,
-                compute loss, call backward, and return loss.
-            n_steps: Number of probing steps.
-        """
-        # --- snapshot ---
-        snapshots = {}
-        for group in self.param_groups:
-            for p in group["params"]:
-                snapshots[id(p)] = p.data.clone()
-
-        # --- accumulate grad² ---
-        grad_sq_sum = {}
-        n_valid = {}
-        for group in self.param_groups:
-            for p in group["params"]:
-                grad_sq_sum[id(p)] = torch.zeros_like(p.data)
-                n_valid[id(p)] = 0
-
-        for i in range(n_steps):
-            # Perturb via data assignment (not in-place add) so that
-            # data_ptr changes and CachedForwardMixin sees a cache miss.
-            for group in self.param_groups:
-                for p in group["params"]:
-                    p.data = p.data + torch.randn_like(p.data) * 1e-3
-
-            with torch.enable_grad():
-                loss = closure()
-
-            if torch.isfinite(loss):
-                for group in self.param_groups:
-                    for p in group["params"]:
-                        if p.grad is not None:
-                            grad_sq_sum[id(p)].add_(p.grad.detach() ** 2)
-                            n_valid[id(p)] += 1
-
-            # Restore via assignment to change data_ptr (cache invalidation).
-            for group in self.param_groups:
-                for p in group["params"]:
-                    p.data = snapshots[id(p)].clone()
-
-        # --- compute masses from calibration ---
-        T = self._get_temperature()
-
-        # First pass: compute raw masses and collect all nonzero elements
-        all_nonzero_masses = []
-        for group in self.param_groups:
-            eps = group["mass_eps"]
-            for p in group["params"]:
-                pid = id(p)
-                state = self.state[p]
-                n = max(n_valid[pid], 1)
-                avg_grad_sq = grad_sq_sum[pid] / n
-                state["grad_sq_avg"] = avg_grad_sq
-                m = avg_grad_sq.sqrt() + eps
-                state["mass"] = m
-                # Collect elements that actually got gradient signal
-                nonzero = m[avg_grad_sq > 0]
-                if nonzero.numel() > 0:
-                    all_nonzero_masses.append(nonzero)
-
-        # Compute global median of informed masses → use as floor
-        if all_nonzero_masses:
-            median_mass = torch.cat(all_nonzero_masses).median().item()
-        else:
-            median_mass = 1.0
-        mass_floor = 0.01 * median_mass  # 1% of median
-
-        # Second pass: clamp per-element masses and init velocities
-        n_clamped = 0
-        for group in self.param_groups:
-            for p in group["params"]:
-                state = self.state[p]
-                m = state["mass"]
-                below = m < mass_floor
-                n_clamped += below.sum().item()
-                m.clamp_(min=mass_floor)
-
-                # Maxwell-Boltzmann velocity with correct masses
-                state["velocity"] = torch.randn_like(p.data) * (T / m).sqrt()
-                state["prev_grad"] = None
-
-        self._calibrated = True
-        total_elements = sum(
-            p.numel() for g in self.param_groups for p in g["params"]
-        )
-        print(
-            f"LangevinSA calibrated over {n_steps} steps. "
-            f"Median mass={median_mass:.2e}, floor={mass_floor:.2e}, "
-            f"clamped {int(n_clamped)}/{total_elements} elements. "
-            f"Mass range per param:"
-        )
-        for group in self.param_groups:
-            for p in group["params"]:
-                m = self.state[p]["mass"]
-                print(
-                    f"  [{p.shape}] mass: "
-                    f"min={m.min().item():.2e}, "
-                    f"median={m.median().item():.2e}, "
-                    f"max={m.max().item():.2e}"
-                )
-
-    # ------------------------------------------------------------------
     # Physical-mass seeding (genuine thermostatted MD)
     # ------------------------------------------------------------------
 
     @torch.no_grad()
     def set_physical_masses(self, mass_by_param, T=None):
         """Seed externally supplied (e.g. physical atomic) masses and
-        initialise Maxwell-Boltzmann velocities, bypassing the grad²
-        :meth:`calibrate` path.
+        initialise Maxwell-Boltzmann velocities.
 
         Use this for a genuine thermostatted MD where the masses are physical
         atomic masses rather than the adaptive grad²-derived preconditioner.
@@ -291,7 +171,6 @@ class LangevinSA(Optimizer):
                 else:
                     state["mass"] = None
                     state["velocity"] = torch.randn_like(p.data) * math.sqrt(T)
-        self._calibrated = True
 
     # ------------------------------------------------------------------
     # BAOAB step
@@ -345,7 +224,6 @@ class LangevinSA(Optimizer):
                     if adaptive:
                         state["grad_sq_avg"] = torch.ones_like(p.data)
                     state["mass"] = None
-                    # Velocity: if calibrated, already set; otherwise init now
                     state["velocity"] = torch.randn_like(p.data) * math.sqrt(T)
 
                 v = state["velocity"]

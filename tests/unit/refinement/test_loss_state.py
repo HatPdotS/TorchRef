@@ -9,7 +9,7 @@ import torch
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("mode", ["empty", "disabled", "disabled_compilable"])
+@pytest.mark.parametrize("mode", ["empty", "disabled"])
 @pytest.mark.parametrize("log_values", [False, True])
 def test_zero_aggregate_uses_configured_dtype_and_device(
     mode: str, log_values: bool
@@ -27,11 +27,9 @@ def test_zero_aggregate_uses_configured_dtype_and_device(
         state.register_target(
             "geometry/bond",
             disabled_target,
-            compile=mode == "disabled_compilable",
             probe=False,
         )
         state.set_weight("geometry", 0.0)
-        state.compile_aggregate()
 
     total = state.aggregate(log_values=log_values)
 
@@ -42,11 +40,8 @@ def test_zero_aggregate_uses_configured_dtype_and_device(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("compiled", [False, True])
-def test_aggregate_ignores_torch_default_dtype(
-    monkeypatch: pytest.MonkeyPatch, compiled: bool
-) -> None:
-    """Eager and compiled sums use TorchRef's dtype, not PyTorch's default."""
+def test_aggregate_ignores_torch_default_dtype(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sum uses TorchRef's dtype, not PyTorch's default."""
     from torchref.config import device, dtypes, get_float_dtype
     from torchref.refinement.loss_state import LossState
 
@@ -54,13 +49,11 @@ def test_aggregate_ignores_torch_default_dtype(
     monkeypatch.setattr(dtypes, "float", torch.float32)
     state = LossState()
     value = torch.tensor(2.0, dtype=get_float_dtype(), device=state.device)
-    state.register_target("geometry/bond", lambda: value, compile=compiled)
+    state.register_target("geometry/bond", lambda: value)
     state.set_weight("geometry", 3.0)
     previous_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(torch.float64)
-        if compiled:
-            state.compile_aggregate(backend="eager")
         total = state.aggregate()
     finally:
         torch.set_default_dtype(previous_dtype)
