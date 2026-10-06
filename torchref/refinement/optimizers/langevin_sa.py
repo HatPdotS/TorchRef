@@ -28,7 +28,7 @@ class LangevinSA(Optimizer):
         mass_eps: Floor for adaptive masses (numerical stability).
         gradient_clip: Optional max gradient norm (per-parameter).
         max_step_size: Maximum displacement per element per full step.
-            Velocities are clamped so |v * dt| <= max_step_size.
+            Velocities are clamped so ``|v * dt| <= max_step_size``.
     """
 
     def __init__(
