@@ -132,7 +132,7 @@ def read_crystallographic_info(
 
 
 def load_as_dataframe(
-    filepath: str, skipheader: int = 0, skipfooter: int = 1
+    filepath: str, skipheader: int = 0, skipfooter: int = 0
 ) -> pd.DataFrame:
     """
     Load a PDB file into a pandas DataFrame.
@@ -146,7 +146,8 @@ def load_as_dataframe(
     skipheader : int, optional
         Number of header lines to skip. If 0, automatically detected.
     skipfooter : int, optional
-        Number of footer lines to skip. Default is 1.
+        Number of lines to skip at the end of the file. Default is 0; END, TER
+        and MASTER records are dropped with every other non-atom record.
 
     Returns
     -------

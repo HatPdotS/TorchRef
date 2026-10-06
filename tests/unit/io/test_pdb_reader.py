@@ -25,3 +25,13 @@ def test_blank_element_columns_raise(pdb_dir, tmp_path):
     )
     with pytest.raises(ValueError, match="blank element field"):
         pdb.load_as_dataframe(path)
+
+
+@pytest.mark.unit
+def test_last_atom_is_read_without_an_end_record(pdb_dir, tmp_path):
+    path = _write_edited(
+        pdb_dir,
+        tmp_path,
+        lambda line: line if line.startswith(("CRYST1", "ATOM", "HETATM")) else None,
+    )
+    assert len(pdb.load_as_dataframe(path)) == 3051
