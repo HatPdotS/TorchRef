@@ -106,8 +106,11 @@ class LBFGSRefinement(Refinement):
             inner-cycle path this is per *inner* cycle, so the total is
             ``n_inner * iterations_per_step``.
         commit : bool, optional
-            If True (default), bake the final coordinates back into a regular ``ModelFT`` so
-            subsequent refinement uses per-atom xyz.
+            If True (default), bake the final coordinates into a per-atom xyz container
+            on the same model so subsequent refinement uses per-atom xyz. False leaves
+            the rigid xyz installed and ``adp``, ``u`` and ``occupancy`` frozen until
+            :meth:`~torchref.model.model.Model.restore_xyz_from_rigid` is called
+            (``commit=True`` there keeps the transform).
 
         Returns
         -------

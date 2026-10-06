@@ -33,8 +33,11 @@ class RigidBodyRefinementStep:
         inner-cycle path this is per *inner* cycle, so total rigid-body iterations are
         ``n_inner * iterations_per_step``.
     commit : bool, optional
-        If True (default), bake the final coordinates into a plain ``ModelFT`` so later
-        refinement sees normal per-atom xyz; False leaves the rigid model installed.
+        If True (default), bake the final coordinates into a per-atom xyz container on
+        the same model so later refinement sees normal per-atom xyz. False leaves the
+        rigid xyz installed and ``adp``, ``u`` and ``occupancy`` frozen until
+        :meth:`~torchref.model.model.Model.restore_xyz_from_rigid` is called
+        (``commit=True`` there keeps the transform).
     """
 
     DEFAULT_LBFGS_KWARGS = dict(
