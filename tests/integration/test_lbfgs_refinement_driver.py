@@ -99,6 +99,24 @@ def test_refine_everything_refits_the_scale_warm(build, monkeypatch):
 
 
 @pytest.mark.integration
+def test_complete_loss_state_evaluates_no_target(build):
+    """complete_loss_state hands back the persistent state as it is: after an aggregate
+    it does not go on to evaluate the zero-weight targets the aggregate skipped."""
+    ref = build()
+    state = ref.loss_state
+    assert state.get_effective_weight("geometry/ramachandran") == 0.0
+
+    def unreachable():
+        raise AssertionError("complete_loss_state evaluated a target")
+
+    state.targets["geometry/ramachandran"] = unreachable
+    with torch.no_grad():
+        state.aggregate()
+
+    assert ref.complete_loss_state() is state
+
+
+@pytest.mark.integration
 def test_column_names_with_an_sf_mmcif_file_are_refused(cif_sf_dir, pdb_dir):
     """A column choice cannot apply to SF-mmCIF input, so it is an error rather than
     silently ignored."""

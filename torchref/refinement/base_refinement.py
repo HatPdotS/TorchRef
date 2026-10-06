@@ -974,16 +974,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return self._create_loss_state()
 
     def complete_loss_state(self) -> "LossState":
-        """Refresh the persistent LossState's cached losses and return it.
+        """Return the persistent :attr:`loss_state` without evaluating any target.
 
-        The cached active-parameter leaf set is *not* refreshed. A stale leaf is
+        Per-target values come from :meth:`LossState.aggregate
+        <torchref.refinement.loss_state.LossState.aggregate>`. The cached
+        active-parameter leaf set is *not* refreshed either. A stale leaf is
         only wasted backward work, never a wrong answer -- but after calling
         ``Model.freeze``/``unfreeze`` mid-run, call ``state.refresh_loss_leaves()``
         yourself.
         """
-        state = self.loss_state
-        state.cache_losses()
-        return state
+        return self.loss_state
 
     def collect_metrics(self) -> Dict[str, Any]:
         """R-factors, geometry and ADP stats for logging, unfiltered.
