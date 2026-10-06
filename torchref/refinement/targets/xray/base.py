@@ -20,20 +20,13 @@ import torch
 from torchref.base.metrics.rfactor import rfactor_work_free
 from torchref.base.reciprocal import get_scattering_vectors
 from torchref.refinement.model_error_estimation.sigma_a import epsilon_from_hkl
-from torchref.utils.stats import (
-    VERBOSITY_DEBUG,
-    VERBOSITY_DETAILED,
-    VERBOSITY_STANDARD,
-    StatEntry,
-    stat,
-)
+from torchref.utils.stats import VERBOSITY_DEBUG, VERBOSITY_STANDARD, StatEntry, stat
 
 from ..base import DataTarget
 
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
     from torchref.model.model import Model
-    from torchref.model.model_ft import ModelFT
     from torchref.scaling.scaler_base import Scaler
 
 

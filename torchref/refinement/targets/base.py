@@ -9,7 +9,7 @@ that :meth:`~torchref.refinement.loss_state.LossState.register_target` added it 
 shared NLL primitive :func:`gaussian_nll`.
 """
 
-from typing import TYPE_CHECKING, Dict, Tuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -18,18 +18,10 @@ from torch import nn
 from torchref.config import get_float_dtype, normalize_device
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
-from torchref.utils.stats import (
-    VERBOSITY_DEBUG,
-    VERBOSITY_DETAILED,
-    VERBOSITY_STANDARD,
-    StatEntry,
-    stat,
-)
+
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
-    from torchref.io.datasets.collection import DatasetCollection
     from torchref.model.model import Model
-    from torchref.model.model_ft import ModelFT
     from torchref.scaling.scaler_base import Scaler
 
 

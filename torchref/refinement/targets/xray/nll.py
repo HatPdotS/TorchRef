@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING
-
 import torch
 
 from torchref.base.targets.xray_likelihoods import (
@@ -9,11 +7,6 @@ from torchref.base.targets.xray_likelihoods import (
 from torchref.base.targets.xray_nll import nll_sigma_obs_math
 
 from .base import XrayTarget
-
-if TYPE_CHECKING:
-    from torchref.io import ReflectionData
-    from torchref.model.model import Model
-    from torchref.scaling.scaler_base import Scaler
 
 
 class NLLXrayTarget(XrayTarget):

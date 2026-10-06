@@ -26,7 +26,6 @@ from torchref.refinement.targets.adp import (
 
 if TYPE_CHECKING:
     from torchref.model.model import Model
-    from torchref.refinement.base_refinement import Refinement
 
 
 class CombinedModelTargets(ModelTarget):
