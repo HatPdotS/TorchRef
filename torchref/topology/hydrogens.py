@@ -590,8 +590,8 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
     Parameters
     ----------
     topology : Topology
-        Supplies the residue partition, the per-residue template key and the bond graph
-        the valence cap and the free-torsion test read.
+        Supplies the residue partition, the residue names templates are looked up by,
+        and the bond graph and energy types the valence cap and free-torsion test read.
     cif_dict : dict
         Restraint dictionary, keyed by residue name; must carry an ``atoms`` section
         with coordinates for a residue to be hydrogenated.
