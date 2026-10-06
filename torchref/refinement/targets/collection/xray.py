@@ -359,10 +359,10 @@ class CollectionMLTarget(CollectionXrayTarget):
     serves all datasets. The estimator belongs to this target, not the scaler, which
     owns scaling only.
 
-    Per-dataset loss is the Read MLF form (``mean = |Fc|``, variance ``epsilon*beta``)
-    from :func:`torchref.base.targets.xray_likelihoods.rice_math`, and since those sums
-    are independent the datasets are concatenated and masked once. ``beta`` is detached,
-    so gradients reach the models only through ``F_calc``.
+    Read MLF per reflection (``mean = |Fc|``, variance ``epsilon*beta``) via
+    :func:`~torchref.base.targets.xray_likelihoods.rice_per_refl` on the ``(N, n_hkl)``
+    stack, with ``beta`` broadcast over datasets; the base ``forward`` masks and sums it.
+    ``beta`` is detached, so gradients reach the models only through ``F_calc``.
 
     Parameters
     ----------
