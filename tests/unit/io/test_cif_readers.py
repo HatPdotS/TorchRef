@@ -136,6 +136,34 @@ def test_one_anisotropic_atom_written_as_pairs_is_read(cif_dir, tmp_path):
 
 
 @pytest.mark.unit
+def test_space_group_is_read_from_the_space_group_category(
+    cif_dir, cif_sf_dir, tmp_path
+):
+    def rename(lines):
+        old, new = "_symmetry.space_group_name_H-M", "_space_group.name_H-M_alt"
+        return [line.replace(old, new) for line in lines]
+
+    reflections = _write_edited(cif_sf_dir / "1DAW-sf.cif", tmp_path, rename)
+    atoms = _write_edited(cif_dir / "1DAW.cif", tmp_path, rename)
+
+    assert ReflectionCIFReader(reflections).spacegroup == "C 1 2 1"
+    assert ModelCIFReader(atoms).spacegroup == "C 1 2 1"
+
+
+@pytest.mark.unit
+def test_a_cell_without_all_three_lengths_is_not_read(cif_dir, cif_sf_dir, tmp_path):
+    def drop_b(lines):
+        return [line for line in lines if not line.startswith("_cell.length_b")]
+
+    reflections = _write_edited(cif_sf_dir / "1DAW-sf.cif", tmp_path, drop_b)
+    atoms = _write_edited(cif_dir / "1DAW.cif", tmp_path, drop_b)
+
+    with pytest.raises(ValueError, match="Unit cell parameters not found"):
+        ReflectionCIFReader(reflections)
+    assert ModelCIFReader(atoms).cell is None
+
+
+@pytest.mark.unit
 def test_provenance_keys_are_tag_names(cif_sf_dir):
     path = str(cif_sf_dir / "3GR5-sf.cif")
     data = ReflectionCIFReader(path).data

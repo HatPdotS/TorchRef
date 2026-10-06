@@ -457,6 +457,54 @@ def _category_table(data: Dict[str, Any], category: str) -> pd.DataFrame:
     return pd.DataFrame() if table is None else table
 
 
+def _first_value(data: Dict[str, Any], tag: str) -> Any:
+    """Value of ``tag`` (``_category.attribute``) in its category's first row.
+
+    None when the tag is absent; ``?`` and ``.`` are returned as written.
+    """
+    table = _category_table(data, tag[1:].split(".", 1)[0])
+    return table[tag].iloc[0] if tag in table.columns and len(table) else None
+
+
+def _cell_parameters(data: Dict[str, Any]) -> Optional[List[float]]:
+    """Unit cell ``[a, b, c, alpha, beta, gamma]`` in Å and degrees, or None.
+
+    Read from :attr:`CIFReader.data`. None unless all three lengths are numbers;
+    an absent angle, or one written ``.``, takes the mmCIF dictionary default of
+    90 degrees.
+    """
+    lengths = [_first_value(data, f"_cell.length_{axis}") for axis in "abc"]
+    angles = [
+        _first_value(data, f"_cell.angle_{name}") for name in ("alpha", "beta", "gamma")
+    ]
+    try:
+        return [float(length) for length in lengths] + [
+            90.0 if angle in (None, ".") else float(angle) for angle in angles
+        ]
+    except (TypeError, ValueError):
+        return None
+
+
+def _space_group(data: Dict[str, Any]) -> str:
+    """Hermann-Mauguin space group name in :attr:`CIFReader.data`.
+
+    Taken from ``_symmetry.space_group_name_H-M``, else from the DDL2
+    ``_space_group.name_H-M_alt``: the first name gemmi accepts, with or without
+    its spaces, and ``"P 1"`` when there is none.
+    """
+    for tag in ("_symmetry.space_group_name_H-M", "_space_group.name_H-M_alt"):
+        name = _first_value(data, tag)
+        if name is None:
+            continue
+        for candidate in (name, name.replace(" ", "")):
+            try:
+                gemmi.SpaceGroup(candidate)
+                return candidate
+            except ValueError:
+                continue
+    return "P 1"
+
+
 def _free_flags(values: pd.Series, numeric: bool) -> np.ndarray:
     """R-free flags as ReflectionData.load reads them: 0 free, 1 work, -1 excluded.
 
@@ -1069,65 +1117,15 @@ class ReflectionCIFReader:
         return pd.Series([np.nan] * len(df)), "None"
 
     def get_cell_parameters(self) -> Optional[List[float]]:
-        """Unit cell ``[a, b, c, alpha, beta, gamma]`` as 6 floats, or None."""
-        if "cell" not in self.cif_reader:
-            return None
+        """Unit cell ``[a, b, c, alpha, beta, gamma]`` (Å, degrees), or None.
 
-        cell_data = self.cif_reader["cell"]
-        try:
-            a = float(self._get_value(cell_data, ["_cell.length_a", "length_a"], "1.0"))
-            b = float(self._get_value(cell_data, ["_cell.length_b", "length_b"], "1.0"))
-            c = float(self._get_value(cell_data, ["_cell.length_c", "length_c"], "1.0"))
-            alpha = float(
-                self._get_value(cell_data, ["_cell.angle_alpha", "angle_alpha"], "90.0")
-            )
-            beta = float(
-                self._get_value(cell_data, ["_cell.angle_beta", "angle_beta"], "90.0")
-            )
-            gamma = float(
-                self._get_value(cell_data, ["_cell.angle_gamma", "angle_gamma"], "90.0")
-            )
-            return [a, b, c, alpha, beta, gamma]
-        except Exception:
-            return None
+        None unless all three lengths are given; a missing angle is 90 degrees.
+        """
+        return _cell_parameters(self.cif_reader.data)
 
     def get_space_group(self) -> str:
         """Hermann-Mauguin space group name, falling back to ``"P 1"``."""
-        sg_name = "P 1"
-        if "symmetry" in self.cif_reader:
-            sym_data = self.cif_reader["symmetry"]
-            sg_name = self._get_value(
-                sym_data,
-                [
-                    "_symmetry.space_group_name_H-M",
-                    "space_group_name_H-M",
-                    "_space_group.name_H-M_alt",
-                ],
-                "P 1",
-            )
-
-        # Validate the name by trying to parse it
-        try:
-            gemmi.SpaceGroup(sg_name)
-            return sg_name
-        except Exception:
-            try:
-                gemmi.SpaceGroup(sg_name.replace(" ", ""))
-                return sg_name.replace(" ", "")
-            except Exception:
-                return "P 1"
-
-    def _get_value(self, data, possible_keys: List[str], default: Any = None) -> Any:
-        """Get value from DataFrame or dict, trying multiple keys."""
-        if isinstance(data, pd.DataFrame):
-            for key in possible_keys:
-                if key in data.columns and len(data) > 0:
-                    return data[key].iloc[0]
-        elif isinstance(data, dict):
-            for key in possible_keys:
-                if key in data:
-                    return data[key]
-        return default
+        return _space_group(self.cif_reader.data)
 
 
 class ModelCIFReader:
@@ -1561,79 +1559,15 @@ class ModelCIFReader:
         return pd.Series([default] * len(df))
 
     def get_cell_parameters(self) -> Optional[List[float]]:
-        """Extract unit cell parameters [a, b, c, alpha, beta, gamma]."""
-        if "cell" not in self.cif.data:
-            return None
+        """Unit cell ``[a, b, c, alpha, beta, gamma]`` (Å, degrees), or None.
 
-        cell_data = self.cif.data["cell"]
-        try:
-            a = float(
-                self._get_first_value(cell_data, ["_cell.length_a", "length_a"], "1.0")
-            )
-            b = float(
-                self._get_first_value(cell_data, ["_cell.length_b", "length_b"], "1.0")
-            )
-            c = float(
-                self._get_first_value(cell_data, ["_cell.length_c", "length_c"], "1.0")
-            )
-            alpha = float(
-                self._get_first_value(
-                    cell_data, ["_cell.angle_alpha", "angle_alpha"], "90.0"
-                )
-            )
-            beta = float(
-                self._get_first_value(
-                    cell_data, ["_cell.angle_beta", "angle_beta"], "90.0"
-                )
-            )
-            gamma = float(
-                self._get_first_value(
-                    cell_data, ["_cell.angle_gamma", "angle_gamma"], "90.0"
-                )
-            )
-            return [a, b, c, alpha, beta, gamma]
-        except Exception:
-            return None
+        None unless all three lengths are given; a missing angle is 90 degrees.
+        """
+        return _cell_parameters(self.cif.data)
 
     def get_space_group(self) -> str:
         """Hermann-Mauguin space group name, falling back to ``"P 1"``."""
-        sg_name = "P 1"
-        if "symmetry" in self.cif.data:
-            sym_data = self.cif.data["symmetry"]
-            sg_name = self._get_first_value(
-                sym_data,
-                [
-                    "_symmetry.space_group_name_H-M",
-                    "space_group_name_H-M",
-                    "_space_group.name_H-M_alt",
-                ],
-                "P 1",
-            )
-
-        # Validate the name by trying to parse it
-        try:
-            gemmi.SpaceGroup(sg_name)
-            return sg_name
-        except Exception:
-            try:
-                gemmi.SpaceGroup(sg_name.replace(" ", ""))
-                return sg_name.replace(" ", "")
-            except Exception:
-                return "P 1"
-
-    def _get_first_value(
-        self, data, possible_keys: List[str], default: Any = None
-    ) -> Any:
-        """Get value from DataFrame or dict, trying multiple keys."""
-        if isinstance(data, pd.DataFrame):
-            for key in possible_keys:
-                if key in data.columns and len(data) > 0:
-                    return data[key].iloc[0]
-        elif isinstance(data, dict):
-            for key in possible_keys:
-                if key in data:
-                    return data[key]
-        return default
+        return _space_group(self.cif.data)
 
 
 class RestraintCIFReader:
