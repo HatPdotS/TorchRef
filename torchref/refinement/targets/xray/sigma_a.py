@@ -15,11 +15,8 @@ The likelihood hook is **per reflection**. Summing is
 :meth:`SigmaAXrayTarget.forward`'s job and happens once, here, so the summed and unsummed
 forms cannot encode different objectives.
 
-``nll`` is deliberately *not* a subclass: it needs no estimate, and it reads amplitudes
-through :meth:`XrayTarget.get_data`, which falls back to **raw** amplitudes when the scaler
-has not run, where this path calls ``get_corrected_data()`` and raises. Moving it here would
-turn that silent fallback into a hard failure and lose its fused Triton kernel and its
-``median(sigma)*0.1`` clamp.
+``nll`` is deliberately *not* a subclass: it needs no estimate, and it keeps its own
+fused Triton kernel (``nll_sigma_obs_math``) and ``median(sigma)*0.1`` sigma clamp.
 """
 
 from dataclasses import dataclass
