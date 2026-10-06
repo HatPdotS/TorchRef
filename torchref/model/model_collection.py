@@ -342,7 +342,9 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             (then renormalized); ``ValueError`` otherwise. If None, uses equal
             fractions.
         frozen_fractions : bool
-            If True, fractions are not updated during optimization.
+            If True, call :meth:`freeze_all_fractions`, which freezes every timepoint.
+            Populations start frozen regardless, as does each row added later; refine
+            them with :meth:`unfreeze_all_fractions` after the last ``add_timepoint``.
 
         Returns
         -------
