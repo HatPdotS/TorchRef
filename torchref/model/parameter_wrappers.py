@@ -135,7 +135,6 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
                 requires_grad=requires_grad,
             )
             self._has_refinable = False
-            self._refinable_indices = None
             return
 
         if dtype is None:
@@ -206,23 +205,18 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         ):
             self._has_refinable = bool(self.refinable_mask.any().item())
             if self._has_refinable:
-                # Keep the legacy tuple form for callers that read
-                # ``_refinable_indices`` directly (used by ``__setitem__`` etc).
-                self._refinable_indices = self.refinable_mask.nonzero(as_tuple=True)
                 # Pre-compute a 1-D int64 index tensor for the fast path —
                 # ``index_copy_`` / ``index_select`` take a 1-D LongTensor.
-                self._refinable_idx_1d = self._refinable_indices[0]
+                self._refinable_idx_1d = self.refinable_mask.nonzero(as_tuple=True)[0]
                 self._all_refinable = bool(
                     self.refinable_mask.numel()
                     == int(self.refinable_params.shape[0])
                 )
             else:
-                self._refinable_indices = None
                 self._refinable_idx_1d = None
                 self._all_refinable = False
         else:
             self._has_refinable = False
-            self._refinable_indices = None
             self._refinable_idx_1d = None
             self._all_refinable = False
 
@@ -510,10 +504,10 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     def _after_device_apply(self, *args, device_changed, dtype_changed, **kwargs):
         """Rebuild the index cache after a real device/dtype change.
 
-        ``_refinable_indices`` / ``_refinable_idx_1d`` are plain attributes holding
-        tensors, so they must be regenerated on the new device. The movement hook
-        (not ``to()``, which ``_apply`` bypasses; not ``reset_cache()``, which
-        fires every optimizer step) is the right place.
+        ``_refinable_idx_1d`` is a plain attribute holding a tensor, so it must be
+        regenerated on the new device. The movement hook (not ``to()``, which
+        ``_apply`` bypasses; not ``reset_cache()``, which fires every optimizer step)
+        is the right place.
         """
         self._build_index_cache()
 
@@ -1337,7 +1331,6 @@ class OccupancyTensor(MixedTensor):
                 requires_grad=requires_grad,
             )
             self._has_refinable = False
-            self._refinable_indices = None
             return
 
         self._full_shape = initial_values.shape[0]
@@ -1551,7 +1544,7 @@ class OccupancyTensor(MixedTensor):
         # Integer indices, not the boolean mask: boolean indexing forces a GPU sync.
         result = self.fixed_values.clone()
         if self._has_refinable and self.refinable_params.numel() > 0:
-            result[self._refinable_indices] = self.refinable_params
+            result[self._refinable_idx_1d] = self.refinable_params
 
         if self.use_sigmoid:
             collapsed_occs = torch.sigmoid(result)
