@@ -34,9 +34,11 @@ def place_on_grid(
 
     Notes
     -----
-    ``enforce_hermitian=True`` index-adds each reflection's conjugate at ``-hkl``,
-    so input already holding both Friedel mates is double-counted -- pass only the
-    unique half. Placement is index-*add*, so duplicate hkl accumulate.
+    ``enforce_hermitian=True`` adds each reflection's conjugate at ``-hkl`` only
+    where no input reflection sits, as gemmi does, so a Friedel pair that is
+    already in the input (a centric reflection of a rotation-only P1 expansion)
+    keeps its two values once each. Placement is index-*add*, so duplicate hkl
+    accumulate.
     """
     batch_mode = True
     if structure_factor.ndim == 1:
@@ -64,7 +66,9 @@ def place_on_grid(
         ki_sym = torch.remainder(-k, Ny)
         li_sym = torch.remainder(-l, Nz)
         lin_sym = hi_sym * (Ny * Nz) + ki_sym * Nz + li_sym
-        vals_conj = torch.conj(structure_factor)
+        occupied = torch.zeros(Nx * Ny * Nz, dtype=torch.bool, device=device)
+        occupied[lin] = True
+        vals_conj = torch.where(occupied[lin_sym], 0, torch.conj(structure_factor))
         grid = grid.index_add(1, lin_sym, vals_conj)
 
     grid = grid.view(B, Nx, Ny, Nz)

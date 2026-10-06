@@ -6,6 +6,7 @@ import tempfile
 import pytest
 import torch
 
+from torchref.base.reciprocal import extract_structure_factor_from_grid
 from torchref.io import ReflectionData
 from torchref.maps import DifferenceMap, Map
 from torchref.model.model_ft import ModelFT
@@ -143,6 +144,68 @@ class TestMapScale:
         fcalc = Map(data, model, map_type="Fcalc").calculate()
         cc = torch.corrcoef(torch.stack([two_fo_fc.flatten(), fcalc.flatten()]))
         assert cc[0, 1] > 0.5
+
+
+def _coefficients_at(map_data, hkl):
+    """The Fourier coefficients a map holds at ``hkl``, read back off its FFT."""
+    return extract_structure_factor_from_grid(
+        torch.fft.ifftn(map_data, norm="forward"), hkl
+    )
+
+
+def _present_rows(data, valid):
+    """Rows set in ``valid`` that the space group does not systematically extinguish."""
+    rows = torch.nonzero(valid).squeeze(1)
+    return rows[~data.spacegroup.is_absent(data.hkl[rows])]
+
+
+class TestCentricReflections:
+    """A centric reflection enters a map once, although its Friedel mate is one of
+    its own rotation copies (1DAW is C2)."""
+
+    def test_map_holds_each_coefficient_once(self, model_ft_and_data):
+        model, data, _ = model_ft_and_data
+        rows = _present_rows(data, data.masks())
+        with torch.no_grad():
+            want = data.structure_factors(model, cached=False)[rows]
+        # An unfitted scaler is the identity, so the coefficients keep the model's
+        # exact centric phases; a fitted bulk-solvent phase offset would not, and
+        # the real map would hold only their real part.
+        m = Map(data, model, map_type="Fcalc", scaler=Scaler(model, data, verbose=0))
+        got = _coefficients_at(m.calculate(), data.hkl[rows])
+
+        centric = data.centric[rows]
+        assert centric.any() and (~centric).any()
+        atol = 1e-4 * float(want.abs().max())
+        torch.testing.assert_close(got[centric], want[centric], rtol=1e-3, atol=atol)
+        torch.testing.assert_close(got[~centric], want[~centric], rtol=1e-3, atol=atol)
+
+    def test_difference_map_holds_each_difference_once(self, model_ft_and_data):
+        model, data, _ = model_ft_and_data
+        h, k, l = data.hkl.T.to(data.F.dtype)
+        perturbed = ReflectionData.from_tensors(
+            data.hkl,
+            data.F * (1 + 0.15 * torch.sin(0.37 * h + 0.53 * k + 0.29 * l)),
+            data.F_sigma,
+            cell=data.cell,
+            spacegroup=data.spacegroup,
+            verbose=0,
+        )
+        dm = DifferenceMap(perturbed, data, model)
+        ref, pert = dm.data_reference, dm.data_perturbed
+        rows = _present_rows(ref, ref.masks() & pert.masks())
+        want = (pert.get_corrected_data()[0] - ref.get_corrected_data()[0])[rows]
+        got = _coefficients_at(dm.calculate(), ref.hkl[rows]).abs()
+
+        centric = ref.centric[rows]
+        assert centric.any() and (~centric).any()
+        atol = 1e-4 * float(want.abs().max())
+        torch.testing.assert_close(
+            got[centric], want[centric].abs(), rtol=1e-3, atol=atol
+        )
+        torch.testing.assert_close(
+            got[~centric], want[~centric].abs(), rtol=1e-3, atol=atol
+        )
 
 
 class TestDifferenceMap:

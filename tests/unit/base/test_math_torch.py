@@ -126,6 +126,19 @@ class TestGridFunctions:
         assert grid.shape[2] == 14
         assert grid.shape[3] == 3
 
+    @pytest.mark.unit
+    def test_place_on_grid_adds_only_missing_friedel_mates(self):
+        """A mate already in the input keeps its own value; a lone h gets conj at -h."""
+        from torchref.base.reciprocal.grid_operations import place_on_grid
+
+        F = torch.tensor(2.0 + 1.0j)
+        hkl = torch.tensor([[1, 0, 0], [-1, 0, 0]])
+        pair = place_on_grid(hkl, torch.stack([F, F.conj()]), (8, 8, 8))
+        assert pair[1, 0, 0] == F and pair[-1, 0, 0] == F.conj()
+
+        lone = place_on_grid(hkl[:1], F.reshape(1), (8, 8, 8))
+        assert lone[1, 0, 0] == F and lone[-1, 0, 0] == F.conj()
+
 
 class TestTransformationMatrices:
     """Tests for transformation matrix operations."""
