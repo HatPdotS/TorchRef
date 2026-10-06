@@ -5,9 +5,9 @@ current heavy-atom coordinates, scores VDW repulsion on a candidate H-heavy pair
 list fixed at restraint-build time, and discards them.
 """
 
-import numpy as np
-import torch
 from typing import TYPE_CHECKING, Dict
+
+import torch
 
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.utils.stats import (
@@ -36,8 +36,6 @@ class NonBondedHTarget(NonBondedTarget):
     ----------
     model : Model, optional
         Reference to Model object.
-    mode : str, optional
-        Repulsion function type. Default ``'prolsq'``.
     sigma : float, optional
         Effective tolerance on the overlap (Å). Default 0.3.
     r_exp : float, optional
@@ -55,7 +53,6 @@ class NonBondedHTarget(NonBondedTarget):
     def __init__(
         self,
         model: "Model" = None,
-        mode: str = "prolsq",
         sigma: float = 0.3,
         r_exp: float = 4.0,
         c_rep: "float | None" = None,
@@ -65,7 +62,6 @@ class NonBondedHTarget(NonBondedTarget):
     ):
         super().__init__(
             model=model,
-            mode=mode,
             sigma=sigma,
             r_exp=r_exp,
             c_rep=c_rep,
@@ -132,54 +128,29 @@ class NonBondedHTarget(NonBondedTarget):
         """VDW loss over the precomputed H-heavy candidate pairs.
 
         Places riding hydrogens differentiably, so the gradient runs
-        loss -> H_pos -> ``xyz[parent_idx]`` -> model parameters. The ``prolsq``
-        mode goes through :func:`torchref.base.targets.nonbonded_heavy_math` (Triton on
-        CUDA float32); the others score the positions of :meth:`_h_pair_positions`.
+        loss -> H_pos -> ``xyz[parent_idx]`` -> model parameters, and scores them
+        through :func:`torchref.base.targets.nonbonded_heavy_math` (Triton on CUDA
+        float32).
         """
-        device = xyz.device
+        from torchref.base.targets.nonbonded import nonbonded_heavy_math
 
         n_cand = h_topo.cand_idx_i.shape[0]
         if n_cand == 0:
             return xyz.new_zeros(())
 
-        # Fast path: prolsq goes through the dispatcher (Triton on CUDA fp32).
-        if self.mode == "prolsq":
-            from torchref.base.targets.nonbonded import nonbonded_heavy_math
-
-            xyz_all, indices = self._h_candidates(xyz, h_topo)
-            return nonbonded_heavy_math(
-                xyz_all, indices, h_topo.cand_min_dist,
-                h_topo.cand_symop_idx, h_topo.cand_cell_offset,
-                *self._symmetry_tables(),
-                self._c_rep, self._r_exp,
-                float(self._buffer), self._sigma_vdw,
-            )
-
-        pos_i, pos_j = self._h_pair_positions(xyz, h_topo)
-        actual_dist = torch.sqrt(((pos_j - pos_i) ** 2).sum(dim=-1) + 1e-8)
-        min_dist = h_topo.cand_min_dist
-
-        violations = torch.clamp(min_dist + self._buffer - actual_dist, min=0.0)
-
-        if self.mode == "gaussian":
-            sigma_val = torch.tensor(0.2, device=device, dtype=xyz.dtype)
-            log_2pi = torch.log(
-                torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
-            )
-            nll = (0.5 * (violations / sigma_val) ** 2
-                   + torch.log(sigma_val) + 0.5 * log_2pi)
-            return nll.sum()
-        elif self.mode == "soft":
-            threshold = 0.5
-            quadratic_mask = violations <= threshold
-            quadratic_energy = self._c_rep * (violations ** 2)
-            linear_energy = self._c_rep * (
-                2 * threshold * violations - threshold ** 2
-            )
-            energy = torch.where(quadratic_mask, quadratic_energy, linear_energy)
-            return energy.sum()
-        else:
-            raise ValueError(f"Unknown non-bonded mode: {self.mode}")
+        xyz_all, indices = self._h_candidates(xyz, h_topo)
+        return nonbonded_heavy_math(
+            xyz_all,
+            indices,
+            h_topo.cand_min_dist,
+            h_topo.cand_symop_idx,
+            h_topo.cand_cell_offset,
+            *self._symmetry_tables(),
+            self._c_rep,
+            self._r_exp,
+            float(self._buffer),
+            self._sigma_vdw,
+        )
 
     # ------------------------------------------------------------------
     # forward / stats / violations

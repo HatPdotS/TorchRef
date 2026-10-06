@@ -1,9 +1,9 @@
-"""Non-bonded (VDW) heavy-heavy repulsion NLL — prolsq mode with symmetry mates.
+"""Non-bonded (VDW) repulsion NLL — PROLSQ form with symmetry mates.
 
 :func:`nonbonded_pair_positions` places both ends of every pair. The eager kernel
-here, the inline modes and statistics of ``NonBondedTarget`` and the riding-hydrogen
-term of ``NonBondedHTarget`` all read their positions from it; the Triton kernel
-(:mod:`torchref.base.targets.triton.nonbonded`) computes the same positions in-kernel.
+here and the statistics of ``NonBondedTarget`` and ``NonBondedHTarget`` all read their
+positions from it; the Triton kernel (:mod:`torchref.base.targets.triton.nonbonded`)
+computes the same positions in-kernel.
 """
 
 from typing import Optional
@@ -130,8 +130,8 @@ def nonbonded_heavy_math(
 ) -> torch.Tensor:
     """Heavy-heavy VDW prolsq repulsion NLL.
 
-    Matches the prolsq branch of ``NonBondedTarget.forward``, with pair positions
-    from :func:`nonbonded_pair_positions`. The H-VDW term ``NonBondedHTarget``
+    The loss of ``NonBondedTarget.forward``, with pair positions from
+    :func:`nonbonded_pair_positions`. The H-VDW term ``NonBondedHTarget``
     adds is **not** included here. Dispatches to
     :func:`torchref.base.targets.triton.nonbonded_heavy_math_triton` on CUDA float32
     (the gain coming mostly from the analytic backward), eager otherwise.
