@@ -108,3 +108,39 @@ def test_link_edges_agree_between_pdb_and_cif(pdb_dir, cif_dir, code):
     from_cif = _load(cif_dir / f"{code}.cif")
     assert from_cif.ctx.links is not None and len(from_cif.ctx.links) > 0
     assert _link_identities(from_cif) == _link_identities(from_pdb)
+
+
+def _restraint_groups(restraints):
+    """``(name, group)`` for every restraint group, ``all`` excluded."""
+    entries = restraints.restraints
+    groups = [
+        (f"{edge_type}/{origin}", group)
+        for edge_type in ("bond", "angle", "torsion")
+        for origin, group in entries[edge_type].items()
+        if origin != "all"
+    ]
+    groups.append(("chiral", entries["chiral"]))
+    groups += [(f"plane/{key}", group) for key, group in entries["plane"].items()]
+    return groups
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("code", ["3A5V", "7L84"])
+def test_altloc_conformers_emit_shared_restraints_once(pdb_dir, code):
+    """A restraint over shared atoms is emitted once; none joins two conformations.
+
+    Hydrogens are kept: 7L84's split residues share their backbone hydrogens.
+    """
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / f"{code}.pdb"))
+    restraints = model.restraints
+    altloc = restraints.topology.atoms.altloc
+
+    for name, group in _restraint_groups(restraints):
+        n_rows = len(group["indices"])
+        columns = [group[prop].reshape(n_rows, -1).tolist() for prop in sorted(group)]
+        keys = [tuple(tuple(column[i]) for column in columns) for i in range(n_rows)]
+        assert len(set(keys)) == n_rows, f"{name}: {n_rows - len(set(keys))} repeats"
+
+        labels = [set(altloc[row]) - {" "} for row in group["indices"].tolist()]
+        assert all(len(found) < 2 for found in labels), name

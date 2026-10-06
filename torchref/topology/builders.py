@@ -27,12 +27,19 @@ from torchref.config import get_float_dtype, get_int_dtype
 # =============================================================================
 
 
-def _conformer_maps(topology, residue: int) -> List[Dict[str, int]]:
+def _conformer_maps(
+    topology, residue: int
+) -> List[Tuple[Optional[str], Dict[str, int]]]:
     """Atom-name-to-row maps for one residue, one per alternative conformation.
 
-    A residue without altlocs gives one map. One with altlocs gives one per altloc,
-    each holding the residue's blank-altloc atoms plus that altloc's own; one with no
-    blank atoms gives one per altloc on its own.
+    A residue without altlocs gives one map, labelled None. One with altlocs gives one
+    per altloc, labelled with it, each holding the residue's blank-altloc atoms plus
+    that altloc's own; one with no blank atoms gives one per altloc on its own.
+
+    Returns
+    -------
+    list of tuple
+        ``(altloc label or None, {atom name: row})`` per conformation.
     """
     start = int(topology.residues.atom_start[residue])
     end = int(topology.residues.atom_end[residue])
@@ -41,15 +48,46 @@ def _conformer_maps(topology, residue: int) -> List[Dict[str, int]]:
     altlocs = topology.atoms.altloc[start:end]
     unique = np.unique(altlocs)
     if len(unique) == 1 and unique[0] == " ":
-        return [dict(zip(names, rows))]
+        return [(None, dict(zip(names, rows)))]
     common = altlocs == " "
     maps = []
     for alt in unique:
         if alt == " ":
             continue
         chosen = common | (altlocs == alt)
-        maps.append(dict(zip(names[chosen], rows[chosen])))
+        maps.append((str(alt), dict(zip(names[chosen], rows[chosen]))))
     return maps
+
+
+def _matching_conformers(
+    conformers_a: List[Tuple[Optional[str], Dict[str, int]]],
+    conformers_b: List[Tuple[Optional[str], Dict[str, int]]],
+) -> List[Tuple[Dict[str, int], Dict[str, int]]]:
+    """Conformer maps of two linked residues that belong to one state of the model.
+
+    Two maps match when they carry the same altloc label, or when either label is
+    absent from the other residue. An unlabelled map therefore matches every map, and
+    conformer ``A`` of one residue never meets conformer ``B`` of the other while both
+    residues carry both.
+
+    Parameters
+    ----------
+    conformers_a, conformers_b : list of tuple
+        :func:`_conformer_maps` of the two residues.
+
+    Returns
+    -------
+    list of tuple of dict
+        ``(map_a, map_b)`` pairs, in conformer order.
+    """
+    labels_a = {label for label, _ in conformers_a}
+    labels_b = {label for label, _ in conformers_b}
+    return [
+        (map_a, map_b)
+        for label_a, map_a in conformers_a
+        for label_b, map_b in conformers_b
+        if label_a == label_b or label_a not in labels_b or label_b not in labels_a
+    ]
 
 
 def _atom_row(topology, residue: int, name: str) -> Optional[int]:
@@ -84,7 +122,8 @@ class PeptideResidues:
     Attributes
     ----------
     conformer_maps : dict
-        ``{residue: [ {atom name: row}, ... ]}`` for every residue in a pair.
+        ``{residue: [(altloc label or None, {atom name: row}), ...]}`` for every
+        residue in a pair, as :func:`_conformer_maps` gives them.
     resnames : numpy.ndarray
         Residue name per residue, shape ``(R,)``.
     """
@@ -119,6 +158,44 @@ class PeptideResidues:
             if self.atom_altlocs[row] != " ":
                 return str(self.atom_resnames[row])
         return str(names[0])
+
+    def conformer_pairs(
+        self,
+        next_resname_filter: Optional[str] = None,
+        exclude_next_resname: Optional[str] = None,
+    ):
+        """Yield the linked conformers of every pair, as the builders iterate them.
+
+        Conformers are paired by :func:`_matching_conformers`, so no restraint joins
+        two different conformations of the model.
+
+        Parameters
+        ----------
+        next_resname_filter : str, optional
+            Keep only pairs whose second (N-donating) conformer has this residue name,
+            e.g. ``'PRO'`` for the proline links.
+        exclude_next_resname : str, optional
+            Skip pairs whose second conformer has this residue name.
+
+        Yields
+        ------
+        tuple
+            ``(residue donating C, residue donating N, map_i, map_next)``, the last
+            two ``{atom name: row}`` for the paired conformers.
+        """
+        for res_i, res_next in self.pairs:
+            for map_i, map_next in _matching_conformers(
+                self.conformer_maps[res_i], self.conformer_maps[res_next]
+            ):
+                next_name = self.conformer_resname(map_next)
+                if next_resname_filter is not None and next_name != next_resname_filter:
+                    continue
+                if (
+                    exclude_next_resname is not None
+                    and next_name == exclude_next_resname
+                ):
+                    continue
+                yield res_i, res_next, map_i, map_next
 
 
 class PreprocessedCIF:
@@ -516,9 +593,7 @@ class InterResidueBondBuilder:
         if link_data.bonds is None:
             return None
 
-        # Pre-process PDB
-        conf_maps, pairs = residues.conformer_maps, residues.pairs
-        if not pairs:
+        if not residues.pairs:
             return None
 
         # Accumulate restraints
@@ -529,24 +604,20 @@ class InterResidueBondBuilder:
         bonds = link_data.bonds
         n_bonds = len(bonds["atom1"])
 
-        for res_i_idx, res_next_idx in pairs:
-            # Iterate over all conformer pairs (Cartesian product)
-            for map_i in conf_maps[res_i_idx]:
-                for map_next in conf_maps[res_next_idx]:
+        for _, _, map_i, map_next in residues.conformer_pairs():
+            for b in range(n_bonds):
+                comp1, comp2 = bonds["comp1"][b], bonds["comp2"][b]
+                atom1_name, atom2_name = bonds["atom1"][b], bonds["atom2"][b]
 
-                    for b in range(n_bonds):
-                        comp1, comp2 = bonds["comp1"][b], bonds["comp2"][b]
-                        atom1_name, atom2_name = bonds["atom1"][b], bonds["atom2"][b]
+                map1 = map_i if comp1 == "1" else map_next
+                map2 = map_i if comp2 == "1" else map_next
 
-                        map1 = map_i if comp1 == "1" else map_next
-                        map2 = map_i if comp2 == "1" else map_next
-
-                        if atom1_name in map1 and atom2_name in map2:
-                            idx1 = map1[atom1_name]
-                            idx2 = map2[atom2_name]
-                            all_indices.append([idx1, idx2])
-                            all_refs.append(bonds["value"][b])
-                            all_sigmas.append(bonds["sigma"][b])
+                if atom1_name in map1 and atom2_name in map2:
+                    idx1 = map1[atom1_name]
+                    idx2 = map2[atom2_name]
+                    all_indices.append([idx1, idx2])
+                    all_refs.append(bonds["value"][b])
+                    all_sigmas.append(bonds["sigma"][b])
 
         if not all_indices:
             return None
@@ -724,8 +795,7 @@ class InterResidueAngleBuilder:
         if link_data.angles is None:
             return None
 
-        conf_maps, pairs = residues.conformer_maps, residues.pairs
-        if not pairs:
+        if not residues.pairs:
             return None
 
         all_indices = []
@@ -735,42 +805,31 @@ class InterResidueAngleBuilder:
         angles = link_data.angles
         n_angles = len(angles["atom1"])
 
-        for res_i_idx, res_next_idx in pairs:
-            for map_i in conf_maps[res_i_idx]:
-                for map_next in conf_maps[res_next_idx]:
-                    next_name = residues.conformer_resname(map_next)
-                    if (
-                        next_resname_filter is not None
-                        and next_name != next_resname_filter
-                    ):
-                        continue
-                    if (
-                        exclude_next_resname is not None
-                        and next_name == exclude_next_resname
-                    ):
-                        continue
+        for _, _, map_i, map_next in residues.conformer_pairs(
+            next_resname_filter=next_resname_filter,
+            exclude_next_resname=exclude_next_resname,
+        ):
+            for a in range(n_angles):
+                comp1, comp2, comp3 = (
+                    angles["comp1"][a],
+                    angles["comp2"][a],
+                    angles["comp3"][a],
+                )
+                atom1, atom2, atom3 = (
+                    angles["atom1"][a],
+                    angles["atom2"][a],
+                    angles["atom3"][a],
+                )
 
-                    for a in range(n_angles):
-                        comp1, comp2, comp3 = (
-                            angles["comp1"][a],
-                            angles["comp2"][a],
-                            angles["comp3"][a],
-                        )
-                        atom1, atom2, atom3 = (
-                            angles["atom1"][a],
-                            angles["atom2"][a],
-                            angles["atom3"][a],
-                        )
+                map1 = map_i if comp1 == "1" else map_next
+                map2 = map_i if comp2 == "1" else map_next
+                map3 = map_i if comp3 == "1" else map_next
 
-                        map1 = map_i if comp1 == "1" else map_next
-                        map2 = map_i if comp2 == "1" else map_next
-                        map3 = map_i if comp3 == "1" else map_next
-
-                        if atom1 in map1 and atom2 in map2 and atom3 in map3:
-                            idx1, idx2, idx3 = map1[atom1], map2[atom2], map3[atom3]
-                            all_indices.append([idx1, idx2, idx3])
-                            all_refs.append(angles["value"][a])
-                            all_sigmas.append(angles["sigma"][a])
+                if atom1 in map1 and atom2 in map2 and atom3 in map3:
+                    idx1, idx2, idx3 = map1[atom1], map2[atom2], map3[atom3]
+                    all_indices.append([idx1, idx2, idx3])
+                    all_refs.append(angles["value"][a])
+                    all_sigmas.append(angles["sigma"][a])
 
         if not all_indices:
             return None
@@ -947,8 +1006,7 @@ class InterResidueTorsionBuilder:
         if link_data.torsions is None:
             return None
 
-        conf_maps, pairs = residues.conformer_maps, residues.pairs
-        if not pairs:
+        if not residues.pairs:
             return None
 
         # Separate accumulators for phi, psi, omega
@@ -975,78 +1033,75 @@ class InterResidueTorsionBuilder:
 
         from torchref.topology.ramachandran import classify_residue
 
-        for res_i_idx, res_next_idx in pairs:
-            for map_i in conf_maps[res_i_idx]:
-                for map_next in conf_maps[res_next_idx]:
-                    resname_i = residues.conformer_resname(map_i)
-                    resname_next = residues.conformer_resname(map_next)
-                    is_proline = resname_next == "PRO"
-                    key_i = (res_i_idx, resname_i)
-                    key_next = (res_next_idx, resname_next)
+        for res_i_idx, res_next_idx, map_i, map_next in residues.conformer_pairs():
+            resname_i = residues.conformer_resname(map_i)
+            resname_next = residues.conformer_resname(map_next)
+            is_proline = resname_next == "PRO"
+            key_i = (res_i_idx, resname_i)
+            key_next = (res_next_idx, resname_next)
 
-                    # Track which residue each phi/psi belongs to
-                    pair_phi = None   # phi from this pair belongs to res_next_idx
-                    pair_psi = None   # psi from this pair belongs to res_i_idx
+            # Track which residue each phi/psi belongs to
+            pair_phi = None  # phi from this pair belongs to res_next_idx
+            pair_psi = None  # psi from this pair belongs to res_i_idx
 
-                    for t in range(n_torsions):
-                        comp1 = torsions["comp1"][t]
-                        comp2 = torsions["comp2"][t]
-                        comp3 = torsions["comp3"][t]
-                        comp4 = torsions["comp4"][t]
-                        atom1 = torsions["atom1"][t]
-                        atom2 = torsions["atom2"][t]
-                        atom3 = torsions["atom3"][t]
-                        atom4 = torsions["atom4"][t]
-                        torsion_id = torsions["id"][t]
+            for t in range(n_torsions):
+                comp1 = torsions["comp1"][t]
+                comp2 = torsions["comp2"][t]
+                comp3 = torsions["comp3"][t]
+                comp4 = torsions["comp4"][t]
+                atom1 = torsions["atom1"][t]
+                atom2 = torsions["atom2"][t]
+                atom3 = torsions["atom3"][t]
+                atom4 = torsions["atom4"][t]
+                torsion_id = torsions["id"][t]
 
-                        map1 = map_i if comp1 == "1" else map_next
-                        map2 = map_i if comp2 == "1" else map_next
-                        map3 = map_i if comp3 == "1" else map_next
-                        map4 = map_i if comp4 == "1" else map_next
+                map1 = map_i if comp1 == "1" else map_next
+                map2 = map_i if comp2 == "1" else map_next
+                map3 = map_i if comp3 == "1" else map_next
+                map4 = map_i if comp4 == "1" else map_next
 
-                        if not (
-                            atom1 in map1 and atom2 in map2
-                            and atom3 in map3 and atom4 in map4
-                        ):
-                            continue
+                if not (
+                    atom1 in map1 and atom2 in map2 and atom3 in map3 and atom4 in map4
+                ):
+                    continue
 
-                        idx1, idx2, idx3, idx4 = (
-                            map1[atom1],
-                            map2[atom2],
-                            map3[atom3],
-                            map4[atom4],
-                        )
-                        period = int(torsions["period"][t])
+                idx1, idx2, idx3, idx4 = (
+                    map1[atom1],
+                    map2[atom2],
+                    map3[atom3],
+                    map4[atom4],
+                )
+                period = int(torsions["period"][t])
 
-                        if torsion_id == "phi":
-                            phi_data["indices"].append([idx1, idx2, idx3, idx4])
-                            phi_data["periods"].append(period)
-                            pair_phi = [idx1, idx2, idx3, idx4]
-                        elif torsion_id == "psi":
-                            psi_data["indices"].append([idx1, idx2, idx3, idx4])
-                            psi_data["periods"].append(period)
-                            pair_psi = [idx1, idx2, idx3, idx4]
-                        elif torsion_id == "omega":
-                            omega_data["indices"].append([idx1, idx2, idx3, idx4])
-                            omega_data["references"].append(float(torsions["value"][t]))
-                            omega_data["sigmas"].append(float(torsions["sigma"][t]))
-                            omega_data["periods"].append(period)
-                            omega_data["is_proline"].append(is_proline)
+                if torsion_id == "phi":
+                    phi_data["indices"].append([idx1, idx2, idx3, idx4])
+                    phi_data["periods"].append(period)
+                    pair_phi = [idx1, idx2, idx3, idx4]
+                elif torsion_id == "psi":
+                    psi_data["indices"].append([idx1, idx2, idx3, idx4])
+                    psi_data["periods"].append(period)
+                    pair_psi = [idx1, idx2, idx3, idx4]
+                elif torsion_id == "omega":
+                    omega_data["indices"].append([idx1, idx2, idx3, idx4])
+                    omega_data["references"].append(float(torsions["value"][t]))
+                    omega_data["sigmas"].append(float(torsions["sigma"][t]))
+                    omega_data["periods"].append(period)
+                    omega_data["is_proline"].append(is_proline)
 
-                    # Store phi/psi by the residue they actually belong to:
-                    # phi: C(i) - N(j) - CA(j) - C(j)  → belongs to residue j
-                    # psi: N(i) - CA(i) - C(i)  - N(j)  → belongs to residue i
-                    if pair_phi is not None:
-                        phi_by_residue[key_next] = pair_phi
-                    if pair_psi is not None:
-                        psi_by_residue[key_i] = pair_psi
-                    # Track residue names and next-residue names for classification
-                    resname_by_residue[key_i] = resname_i
-                    resname_by_residue[key_next] = resname_next
-                    next_resname_by_residue[key_i] = resname_next
-                    # The omega that decides PRO cis/trans, measured after the loop
-                    if omega_data["indices"]:
-                        omega_idx_by_residue[key_next] = omega_data["indices"][-1]
+            # Store phi/psi by the residue they actually belong to:
+            # phi: C(i) - N(j) - CA(j) - C(j)  → belongs to residue j
+            # psi: N(i) - CA(i) - C(i)  - N(j)  → belongs to residue i
+            if pair_phi is not None:
+                phi_by_residue[key_next] = pair_phi
+            if pair_psi is not None:
+                psi_by_residue[key_i] = pair_psi
+            # Track residue names and next-residue names for classification
+            resname_by_residue[key_i] = resname_i
+            resname_by_residue[key_next] = resname_next
+            next_resname_by_residue[key_i] = resname_next
+            # The omega that decides PRO cis/trans, measured after the loop
+            if omega_data["indices"]:
+                omega_idx_by_residue[key_next] = omega_data["indices"][-1]
 
         result = {}
 
@@ -1182,42 +1237,36 @@ class InterResiduePlaneBuilder:
         if link_data.planes is None:
             return None
 
-        conf_maps, pairs = residues.conformer_maps, residues.pairs
-        if not pairs:
+        if not residues.pairs:
             return None
 
         # Group planes by atom count
         planes_by_size: Dict[int, List[Tuple[np.ndarray, np.ndarray]]] = {}
 
-        for res_i_idx, res_next_idx in pairs:
-            for map_i in conf_maps[res_i_idx]:
-                for map_next in conf_maps[res_next_idx]:
+        for _, _, map_i, map_next in residues.conformer_pairs():
+            for plane_data in link_data.planes:
+                comp_ids = plane_data["comp_ids"]
+                atom_names = plane_data["atoms"]
+                sigmas = plane_data["sigmas"]
 
-                    for plane_data in link_data.planes:
-                        comp_ids = plane_data["comp_ids"]
-                        atom_names = plane_data["atoms"]
-                        sigmas = plane_data["sigmas"]
+                plane_indices = []
+                plane_sigmas = []
+                all_found = True
 
-                        plane_indices = []
-                        plane_sigmas = []
-                        all_found = True
+                for comp_id, atom_name, sigma in zip(comp_ids, atom_names, sigmas):
+                    atom_map = map_i if comp_id == "1" else map_next
+                    if atom_name in atom_map:
+                        plane_indices.append(atom_map[atom_name])
+                        plane_sigmas.append(sigma)
+                    else:
+                        all_found = False
+                        break
 
-                        for i, (comp_id, atom_name, sigma) in enumerate(
-                    zip(comp_ids, atom_names, sigmas)
-                ):
-                            atom_map = map_i if comp_id == "1" else map_next
-                            if atom_name in atom_map:
-                                plane_indices.append(atom_map[atom_name])
-                                plane_sigmas.append(sigma)
-                            else:
-                                all_found = False
-                                break
-
-                        if all_found and len(plane_indices) >= 3:
-                            n_atoms = len(plane_indices)
-                            if n_atoms not in planes_by_size:
-                                planes_by_size[n_atoms] = []
-                            planes_by_size[n_atoms].append(
+                if all_found and len(plane_indices) >= 3:
+                    n_atoms = len(plane_indices)
+                    if n_atoms not in planes_by_size:
+                        planes_by_size[n_atoms] = []
+                    planes_by_size[n_atoms].append(
                         (
                             np.array(plane_indices, dtype=np.int64),
                             np.array(plane_sigmas, dtype=np.float64),

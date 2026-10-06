@@ -708,6 +708,38 @@ def _link_record_edges(
     return np.asarray(rows, dtype=np.int64), rows, values
 
 
+def _first_occurrences(
+    rows: np.ndarray, properties: Dict[str, np.ndarray]
+) -> np.ndarray:
+    """Positions of the rows that do not repeat an earlier row's atoms and values.
+
+    Parameters
+    ----------
+    rows : numpy.ndarray
+        Edge atom indices, shape ``(E, k)``.
+    properties : dict
+        ``{property: array}``, each indexed by row on axis 0.
+
+    Returns
+    -------
+    numpy.ndarray
+        Ascending positions into ``rows``, the first of each repeated set.
+    """
+    if len(rows) < 2:
+        return np.arange(len(rows))
+    # Atom rows and values side by side in float64, which holds both exactly.
+    key = np.column_stack(
+        [np.asarray(rows, dtype=np.float64).reshape(len(rows), -1)]
+        + [
+            np.asarray(values, dtype=np.float64).reshape(len(rows), -1)
+            for _, values in sorted(properties.items())
+            if values is not None
+        ]
+    )
+    _, first = np.unique(key, axis=0, return_index=True)
+    return np.sort(first)
+
+
 def _block_with_values(
     per_origin: Dict[str, np.ndarray],
     payload: Dict[str, Dict[str, np.ndarray]],
@@ -720,9 +752,24 @@ def _block_with_values(
     The block and the values come out of a single :func:`assemble_origins` call, so the
     same permutation is applied to both -- which is the only thing keeping a sigma
     attached to the edge it belongs to.
+
+    Within an origin, a row repeating an earlier row's atoms and values is dropped: a
+    restraint over atoms that every altloc conformer shares is matched once per
+    conformer, and the copies would weight it once per conformer. Rows over the same
+    atoms with different values are kept.
     """
+    unique_rows: Dict[str, np.ndarray] = {}
+    unique_payload: Dict[str, Dict[str, np.ndarray]] = {}
+    for origin, rows in per_origin.items():
+        properties = payload.get(origin) or {}
+        keep = _first_occurrences(np.asarray(rows), properties)
+        unique_rows[origin] = np.asarray(rows)[keep]
+        unique_payload[origin] = {
+            prop: None if values is None else np.asarray(values)[keep]
+            for prop, values in properties.items()
+        }
     indices, bounds, sorted_payload = assemble_origins(
-        per_origin, arity, edge_type, payload
+        unique_rows, arity, edge_type, unique_payload
     )
     block = EdgeBlock(
         indices=torch.as_tensor(indices, dtype=get_int_dtype(), device=device),
