@@ -76,6 +76,7 @@ class FcalcDataset(CrystalDataset):
             is moved IN PLACE if ``device`` disagrees with it.
         spacegroup : SpaceGroupLike
             Space group (str, int, gemmi.SpaceGroup, or torchref.symmetry.SpaceGroup).
+            The dataset holds its own copy, on ``device``.
         d_min : float, optional
             High resolution limit in Angstroms. Default is 2.0.
         d_max : float, optional
@@ -115,10 +116,7 @@ class FcalcDataset(CrystalDataset):
                 cell_tensor = cell.to(device=device, dtype=dtype)
             cell_obj = Cell(cell_tensor, dtype=dtype, device=device)
 
-        if isinstance(spacegroup, SpaceGroup):
-            sg_obj = spacegroup
-        else:
-            sg_obj = SpaceGroup(spacegroup)
+        sg_obj = SpaceGroup(spacegroup, dtype=dtype, device=device)
 
         cell_list = cell_tensor.cpu().tolist()
         gemmi_cell = gemmi.UnitCell(

@@ -225,9 +225,20 @@ def _dataset_scaling_target(device):
     return DatasetScalingTarget(_dataset_scaler(device))
 
 
+def _fcalc_dataset(device):
+    """A generated HKL set carrying Fcalc, so the walk reaches every Fcalc field."""
+    from torchref.config import get_complex_dtype
+    from torchref.io import FcalcDataset
+
+    data = FcalcDataset.from_cell_and_resolution(_CELL, _SG, d_min=4.0, device=device)
+    data.set_fcalc(torch.ones(len(data), dtype=get_complex_dtype(), device=device))
+    return data
+
+
 CASES: List[DeviceCase] = [
     DeviceCase("DatasetScaler", _dataset_scaler, "DatasetScaler"),
     DeviceCase("ScaledDataset", _scaled_dataset, "ScaledDataset"),
+    DeviceCase("FcalcDataset", _fcalc_dataset, "FcalcDataset"),
     DeviceCase("DatasetScalingTarget", _dataset_scaling_target, "DatasetScalingTarget"),
     DeviceCase("EdgeBlock", _edge_block, "EdgeBlock"),
     DeviceCase("AtomGraph", _atom_graph, "AtomGraph"),
@@ -533,7 +544,6 @@ UNCOVERED: Dict[str, str] = {
     "Scaler": "needs a loaded model + data; covered in integration",
     "Restraints": "needs a model + monomer library",
     "DatasetCollection": "needs several loaded datasets",
-    "FcalcDataset": "needs computed structure factors",
     "Map": "needs data + model",
     "DifferenceMap": "needs two datasets + a model",
     "LBFGSRefinement": "full pipeline; covered in integration",

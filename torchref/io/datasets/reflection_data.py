@@ -1063,7 +1063,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             parameters (a, b, c in Å; alpha, beta, gamma in degrees) as a list,
             array or tensor are copied into a new Cell instead.
         spacegroup : SpaceGroup
-            Space group.
+            Space group. The dataset holds its own copy, on ``device``.
         rfree_flags : torch.Tensor, optional
             Flags of shape (N,), convention 1=work, 0=free. If None, generated
             (2% free) as int32; the stored dtype is not guaranteed bool.
@@ -1113,11 +1113,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             if isinstance(cell, Cell)
             else Cell(cell, device=data.device)
         )
-        data.spacegroup = (
-            spacegroup
-            if isinstance(spacegroup, SpaceGroup)
-            else SpaceGroup(spacegroup, device=data.device)
-        )
+        data.spacegroup = SpaceGroup(spacegroup, device=data.device)
 
         if rfree_flags is not None:
             data.rfree_flags = _prep(rfree_flags).to(
