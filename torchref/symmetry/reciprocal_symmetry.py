@@ -189,8 +189,8 @@ def _asu_condition_vectorized(h, k, l, condition_key):
     """Vectorized CCP4 ASU membership test over numpy ``h``/``k``/``l`` arrays.
 
     ``condition_key`` is a condition string from
-    ``gemmi.ReciprocalAsu.condition_str()``; an unrecognised one raises
-    ``ValueError``, which callers catch to fall back on ``gemmi``'s own scalar check.
+    ``gemmi.ReciprocalAsu.condition_str()``, which holds for indices in the
+    reference setting; an unrecognised one raises ``ValueError``.
     """
     # Map the 10 distinct CCP4 ASU conditions (covers all 230 space groups).
     _conditions = {
@@ -291,12 +291,17 @@ def _canonicalize_hkl(
         empty_i = torch.empty(0, dtype=torch.int64, device=device) if sort else None
         return empty_hkl, empty_f, empty_b, empty_i
 
-    # The mapping runs on CPU whatever device ``sym`` or ``hkl`` live on (gemmi's
-    # scalar ASU test is the fallback); only the returned tensors honour ``device``.
-    # Torch rather than numpy for the per-row arithmetic: the work is a handful of
-    # elementwise passes over every reflection, which torch spreads over threads.
-    asu = gemmi.ReciprocalAsu(sym._gemmi)
-    condition_key = asu.condition_str()
+    # The mapping runs on CPU whatever device ``sym`` or ``hkl`` live on; only the
+    # returned tensors honour ``device``. Torch rather than numpy for the per-row
+    # arithmetic: the work is a handful of elementwise passes over every
+    # reflection, which torch spreads over threads.
+    group = sym._gemmi
+    condition_key = gemmi.ReciprocalAsu(group).condition_str()
+    # The condition holds in the reference setting. As gemmi's ReciprocalAsu.is_in
+    # does, an index of another setting is tested as hkl @ rot, with rot the
+    # setting's change of basis for Miller indices, scaled by 24 -- which the
+    # homogeneous conditions ignore.
+    to_reference = None if group.is_reference_setting() else group.basisop.as_hkl().rot
     # Reciprocal-space rotation matrices are always integer-valued (0, ±1).
     recip_ops = torch.round(sym.reciprocal.matrices.detach().cpu()).to(get_int_dtype())
     translations = sym.translations.detach().cpu()  # (n_ops, 3)
@@ -304,19 +309,15 @@ def _canonicalize_hkl(
     hkl_cpu = hkl.detach().to(device="cpu", dtype=get_int_dtype())  # (N, 3)
 
     def in_asu(h, k, l):
-        try:
-            return _asu_condition_vectorized(h, k, l, condition_key)
-        except ValueError:
-            return torch.tensor(
-                [
-                    asu.is_in([a, b, c])
-                    for a, b, c in zip(h.tolist(), k.tolist(), l.tolist())
-                ],
-                dtype=torch.bool,
-            )
+        if to_reference is not None:
+            h, k, l = [
+                rotate([row[i] for row in to_reference], h, k, l) for i in range(3)
+            ]
+        return _asu_condition_vectorized(h, k, l, condition_key)
 
     def rotate(row, h, k, l):
-        """``row . (h, k, l)`` for one row of an integer (0, ±1) rotation."""
+        """``row . (h, k, l)`` for one row of an integer matrix; 0 and ±1 add no
+        multiply."""
         out = None
         for coef, col in zip(row, (h, k, l)):
             if coef == 0:

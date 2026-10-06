@@ -257,8 +257,18 @@ class TestCanonicalizeHkl:
     ASU_GROUPS = ["P1", "P21", "C2", "P212121", "I222", "P4", "P41212", "I41/a",
                   "P3", "P3121", "P3112", "R3", "P6", "P63", "P6122", "P23", "I23",
                   "P432", "Fm-3m"]
+    # The conditions hold in the reference setting; gemmi tests these there.
+    NON_REFERENCE_SETTINGS = [
+        "P 1 1 21",
+        "B 1 1 2",
+        "A 1 2 1",
+        "P 1 21/n 1",
+        "R 3:R",
+        "R 3 2:R",
+        "R -3 m:R",
+    ]
 
-    @pytest.mark.parametrize("sg", ASU_GROUPS)
+    @pytest.mark.parametrize("sg", ASU_GROUPS + NON_REFERENCE_SETTINGS)
     def test_matches_gemmi_asu(self, sg):
         """Canonical indices agree with gemmi's own ASU mapping, row by row."""
         import gemmi
