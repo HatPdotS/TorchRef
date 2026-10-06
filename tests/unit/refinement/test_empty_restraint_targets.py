@@ -3,16 +3,24 @@
 Extracts of 1DAW: its glycines alone have no chiral centres and no intra-residue
 torsions, glycine A 34 alone has no plane of more than three atoms, and waters carry no
 covalent restraints at all. A target with nothing to restrain returns a zero loss and an
-empty statistics dict instead of raising.
+empty statistics dict instead of raising, and that zero, like every other loss, comes
+back in the coordinates' dtype.
 """
 
 from pathlib import Path
 
 import pytest
+import torch
 
 from torchref.base.targets.torsion import torsion_omega_math
 from torchref.model.model import Model
 from torchref.refinement.targets import TotalGeometryTarget
+from torchref.refinement.targets.adp import (
+    ADPLocalityTarget,
+    NodeLoadTarget,
+    NodeSmoothnessTarget,
+    RigidBondTarget,
+)
 from torchref.refinement.targets.geometry import (
     AngleTarget,
     BondTarget,
@@ -124,3 +132,26 @@ def test_total_geometry_stats_are_stat_entries(pdb_dir, tmp_path, select):
 
     for component, entries in stats.items():
         assert all(isinstance(v, StatEntry) for v in entries.values()), component
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("select", EXTRACTS, ids=lambda f: f.__name__.strip("_"))
+def test_losses_take_the_coordinate_dtype(double_cpu, pdb_dir, tmp_path, select):
+    model = _extract(pdb_dir, tmp_path, select)
+    dtype = model.xyz().dtype
+    assert dtype == torch.float64
+
+    targets = dict(TotalGeometryTarget(model).items())
+    targets.update(
+        node_load=NodeLoadTarget(model),
+        node_smoothness=NodeSmoothnessTarget(model),
+        rigid_bond=RigidBondTarget(model),
+        locality=ADPLocalityTarget(model),
+    )
+    for name, target in targets.items():
+        loss = target()
+        assert loss.dim() == 0 and loss.dtype == dtype, name
+    assert targets["locality"]._neighbor_distances.dtype == dtype
+    violations = targets["chiral"].get_violations()
+    for key in ("volumes", "ideal_volumes", "deviations"):
+        assert violations[key].dtype == dtype, key

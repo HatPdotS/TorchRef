@@ -104,11 +104,11 @@ class NodeSmoothnessTarget(ADPTarget):
         """Weighted mean squared log-B difference between nearby nodes."""
         field = self._field
         if field is None or field.n_nodes < 2:
-            return torch.zeros((), device=self.device)
+            return torch.zeros((), device=self.device, dtype=self.dtype_float)
         w, diff2, _ = self._pair_terms()
         total = w.sum()
         if float(total.detach()) <= 0.0:
-            return torch.zeros((), device=self.device)
+            return total.new_zeros(())
         return (w * diff2).sum() / total
 
     def stats(self) -> Dict[str, any]:

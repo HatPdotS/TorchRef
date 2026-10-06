@@ -38,7 +38,7 @@ class RamachandranTarget(GeometryTarget):
         """Summed Ramachandran NLL; 0.0 unless the restraints carry phi/psi indices."""
         xyz = self.model.xyz()
         if not hasattr(self.restraints, "_rama_phi_indices") or self.restraints._rama_phi_indices is None:
-            return torch.tensor(0.0, device=xyz.device)
+            return xyz.new_zeros(())
         return ramachandran_math(
             xyz,
             self.restraints._rama_phi_indices,

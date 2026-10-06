@@ -51,10 +51,9 @@ class PlanarityTarget(GeometryTarget):
         """Summed planarity NLL over plane-size buckets; 0.0 when there are no planes."""
         from torchref.base.targets.planarity import planarity_math
         xyz = self.model.xyz()
-        device = xyz.device
 
         if "plane" not in self.restraints.restraints:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         # Bucketed by plane size, skipping 3-atom planes: zero signal by construction.
         plane_groups = []
@@ -68,7 +67,7 @@ class PlanarityTarget(GeometryTarget):
             plane_groups.append((indices, sigmas))
 
         if not plane_groups:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
         return planarity_math(xyz, plane_groups)
 
     def stats(self) -> Dict[str, any]:

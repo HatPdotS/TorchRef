@@ -80,7 +80,7 @@ class NodeLoadTarget(ADPTarget):
         """Summed one-sided load deficit over nodes, or zero outside field mode."""
         field = self._field
         if field is None:
-            return torch.zeros((), device=self.device)
+            return torch.zeros((), device=self.device, dtype=self.dtype_float)
         rel = self._relative_load()
         deficit = -torch.log(rel.clamp(min=1e-12)) / self.sharpness
         return torch.nn.functional.softplus(deficit).sum() * self.sharpness

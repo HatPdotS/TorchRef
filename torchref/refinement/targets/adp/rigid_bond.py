@@ -89,7 +89,7 @@ class RigidBondTarget(ADPTarget):
         delta_z_list = []
 
         if "bond" not in self.restraints.restraints:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         for origin, restraint_group in self.restraints.restraints["bond"].items():
             if origin == "all":
@@ -103,7 +103,7 @@ class RigidBondTarget(ADPTarget):
                 delta_z_list.append(delta_z)
 
         if not delta_z_list:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         delta_z = torch.cat(delta_z_list, dim=0)
 

@@ -132,7 +132,7 @@ class ADPLocalityTarget(ADPTarget):
 
         if k <= 0:
             all_neighbor_idx = np.zeros((n_atoms, 0), dtype=np.int64)
-            all_neighbor_dist = np.zeros((n_atoms, 0), dtype=np.float32)
+            all_neighbor_dist = np.zeros((n_atoms, 0), dtype=coords.dtype)
         else:
             # k + 1, because each atom is its own nearest point.
             _, idx = cKDTree(coords).query(coords, k=k + 1)
@@ -143,7 +143,7 @@ class ADPLocalityTarget(ADPTarget):
             keep[keep.all(axis=1), -1] = False
             all_neighbor_idx = idx[keep].reshape(n_atoms, k).astype(np.int64)
             diff = coords[:, None, :] - coords[all_neighbor_idx]
-            all_neighbor_dist = np.sqrt((diff * diff).sum(axis=-1)).astype(np.float32)
+            all_neighbor_dist = np.sqrt((diff * diff).sum(axis=-1))
 
         self._neighbor_indices = torch.from_numpy(all_neighbor_idx).to(device)
         self._neighbor_distances = torch.from_numpy(all_neighbor_dist).to(device)
@@ -198,11 +198,10 @@ class ADPLocalityTarget(ADPTarget):
             self._build_neighbor_list()
 
         adp = self.model.adp()
-        device = adp.device
         n_atoms = len(adp)
 
         if n_atoms == 0 or self._neighbor_indices is None:
-            return torch.tensor(0.0, device=device)
+            return adp.new_zeros(())
 
         indices = self._neighbor_indices
         distances = self._neighbor_distances

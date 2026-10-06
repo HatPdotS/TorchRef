@@ -83,9 +83,9 @@ class ChiralTarget(GeometryTarget):
                 "indices": torch.tensor(
                     [], dtype=get_int_dtype(), device=device
                 ).reshape(0, 4),
-                "volumes": torch.tensor([], device=device),
-                "ideal_volumes": torch.tensor([], device=device),
-                "deviations": torch.tensor([], device=device),
+                "volumes": xyz.new_zeros(0),
+                "ideal_volumes": xyz.new_zeros(0),
+                "deviations": xyz.new_zeros(0),
             }
 
         indices = chiral_data["indices"]
