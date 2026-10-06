@@ -154,7 +154,8 @@ class XrayTarget(DataTarget):
         Returns
         -------
         tuple
-            ``(F_obs, F_calc, sigma, centric, sub)`` — the first four compact;
+            ``(F_obs, F_calc, sigma, centric, sub)`` — the first four compact, with
+            ``F_calc`` the amplitude under this target's scale (``_scaled_F_calc_full``);
             ``sub`` is the ``_ReflectionSubset`` view (``.indices``/``.select``/``.n``).
         """
         if sub is None:
@@ -167,13 +168,9 @@ class XrayTarget(DataTarget):
 
         centric = sub.centric
 
-        # F_calc depends on the live model state — always computed fresh, then
-        # restricted to the same subset.
-        if fcalc is not None:
-            F_calc_full = self.get_F_calc_scaled(fcalc=fcalc)
-        else:
-            F_calc_full = self.get_F_calc_scaled(recalc=False)
-        F_calc = sub.select(F_calc_full)
+        # The target's own scale, not the scaler's alone: ls_wunit_k1 applies its K
+        # there, and the loss must score the amplitudes get_rfactor reports.
+        F_calc = sub.select(self._scaled_F_calc_full(fcalc=fcalc))
 
         return F_obs, F_calc, sigma, centric, sub
 
@@ -233,8 +230,8 @@ class XrayTarget(DataTarget):
     def _scaled_F_calc_full(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """Full-size ``|F_calc|`` under THIS target's objective scaling.
 
-        Defaults to the scaler's; targets owning their own scale override it so the
-        reported R-factor uses the very scale the loss saw.
+        Defaults to the scaler's; a target owning its own scale overrides it. The one
+        scale hook: the loss, :meth:`residuals` and :meth:`get_rfactor` all read it.
         """
         if fcalc is not None:
             return self.get_F_calc_scaled(fcalc=fcalc)

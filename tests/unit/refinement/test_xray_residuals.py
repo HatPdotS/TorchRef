@@ -77,14 +77,9 @@ def test_residuals_sum_matches_forward(refinement, mode, use_set):
 
     The one test standing between the eager ``_per_refl`` twins and the fused Triton
     ``forward`` kernels of ``nll`` / ``ls`` / ``ls_wunit_k1``: nothing else would notice
-    the two drifting into different objectives.
-
-    ``ls_wunit_k1`` on the free set is the documented exception -- see
-    :func:`test_ls_wunit_k1_forward_refits_its_scale_on_the_scored_set`.
+    the two drifting into different objectives. On the free set it also holds
+    ``ls_wunit_k1``'s free loss to the work-fit scale its residuals use.
     """
-    if mode == "ls_wunit_k1" and use_set == "free":
-        pytest.skip("ls_wunit_k1 free-set forward refits its own scale; see its own test")
-
     t = _target(refinement, mode, use_set=use_set)
     sub = t._subset()
     with torch.no_grad():
@@ -270,25 +265,21 @@ def test_ls_wunit_k1_residuals_use_the_work_fit_scale(refinement):
 
 
 @pytest.mark.integration
-def test_ls_wunit_k1_forward_refits_its_scale_on_the_scored_set(refinement):
-    """Pins a PRE-EXISTING inconsistency, so a later fix is a deliberate change.
-
-    ``UnitWeightK1XrayTarget.forward`` scales through ``_scaled_amplitudes``, which refits
-    the closed-form ``c`` on whatever subset the target is bound to. On the free-set target
-    that means the reported ``xray_test`` loss is computed under a scale fit to the very
-    reflections being scored, while ``get_rfactor`` uses the work-set fit. ``residuals``
-    follows ``get_rfactor``, so the two disagree here and only here.
-    """
-    t = _target(refinement, "ls_wunit_k1", use_set="free")
-    sub = t._subset()
+@pytest.mark.parametrize("mode", ["ls", "ls_wunit_k1"])
+def test_ls_rows_score_the_fcalc_they_are_given(refinement, mode):
+    """``residuals(fcalc=F)`` scores ``F``: without a model it reproduces the model-backed
+    residuals, and a different ``F`` gives different residuals."""
+    model_less = _target(refinement, mode, with_model=False)
+    with_model = _target(refinement, mode)
     with torch.no_grad():
-        fwd = t.forward()
-        summed = _masked_sum(t.residuals().index_select(0, sub.indices))
-    assert not torch.isclose(summed, fwd, rtol=1e-3), (
-        "ls_wunit_k1's free-set forward now agrees with the work-fit scale -- if that was "
-        "intentional, delete this test and un-skip the free case in "
-        "test_residuals_sum_matches_forward"
-    )
+        F = with_model.get_fcalc()
+        # Not a global factor, which ls_wunit_k1's own closed-form scale would absorb.
+        ramp = torch.linspace(0.5, 1.5, len(F), device=F.device, dtype=F.real.dtype)
+        expected = with_model.residuals()
+        got = model_less.residuals(fcalc=F)
+        other = model_less.residuals(fcalc=F * ramp)
+    torch.testing.assert_close(got, expected)
+    assert not torch.allclose(other, got, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.integration

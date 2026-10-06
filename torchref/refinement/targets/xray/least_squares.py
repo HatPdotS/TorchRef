@@ -28,7 +28,8 @@ class LeastSquaresXrayTarget(XrayTarget):
     second arm reachable; it is not selectable as a mode.
 
     :class:`UnitWeightK1XrayTarget` below is the ``ls_wunit_k1`` row -- unit weights and a
-    *self-owned* closed-form scale. The two differ in exactly one overridden hook.
+    *self-owned* closed-form scale. The two differ in exactly one overridden hook,
+    ``_scaled_F_calc_full``.
     """
 
     def __init__(
@@ -55,15 +56,6 @@ class LeastSquaresXrayTarget(XrayTarget):
         )
         self.weighting = weighting
 
-    def _scaled_amplitudes(
-        self, F_calc: torch.Tensor, F_obs: torch.Tensor, sub
-    ) -> torch.Tensor:
-        """The amplitudes the LS sum sees. Here the Scaler has already scaled them.
-
-        The one hook that distinguishes this row from ``ls_wunit_k1``.
-        """
-        return F_calc
-
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """Weighted least-squares loss.
 
@@ -73,30 +65,19 @@ class LeastSquaresXrayTarget(XrayTarget):
             Pre-computed structure factors. If provided, uses these instead of computing
             from the model.
         """
-        # 5th element of get_data is the ``_ReflectionSubset`` view, not a mask.
         # F_obs/F_calc are already compact (subset-applied) so the downstream kernel
         # needs no mask.
-        F_obs, F_calc, sigma, _, sub = self.get_data(fcalc=fcalc)
+        F_obs, F_calc, sigma, _, _ = self.get_data(fcalc=fcalc)
         return ls_xray_loss_math(
-            F_obs,
-            self._scaled_amplitudes(F_calc, F_obs, sub),
-            sigma,
-            mask=None,
-            weighting=self.weighting,
+            F_obs, F_calc, sigma, mask=None, weighting=self.weighting
         )
 
     def _per_refl(self, ctx) -> torch.Tensor:
         """The eager twin of :meth:`forward`'s fused kernel; see
-        ``NLLXrayTarget._per_refl``.
-
-        Goes through ``_scaled_F_calc_full`` rather than
-        ``_scaled_amplitudes`` because the two disagree for the ``ls_wunit_k1``
-        row, whose closed-form scale is fit on **whatever view it is handed**. On the
-        full-reflection view that would fit the scale to the free set as well, which
-        is neither what the loss saw nor what the R-factor uses.
+        ``NLLXrayTarget._per_refl``. ``ctx``'s ``F_calc`` already carries the target's
+        scale, so on every view ``ls_wunit_k1`` scores with its work-set K.
         """
-        F_obs, _, sigma, _, sub = ctx
-        F_calc = sub.select(self._scaled_F_calc_full())
+        F_obs, F_calc, sigma, _, _ = ctx
         return ls_per_refl(F_obs, F_calc, sigma, weighting=self.weighting)
 
 
@@ -148,18 +129,13 @@ class UnitWeightK1XrayTarget(LeastSquaresXrayTarget):
             F_calc, F_obs, bins, valid=None, nbins=self.n_bins, weights=None
         ).detach()
 
-    def _scaled_amplitudes(self, F_calc, F_obs, sub) -> torch.Tensor:
-        # `_get_bins_cached` returns FULL-data bins, so select via the subset indices.
-        bins = sub.select(self._get_bins_cached())
-        return self._binwise_scale(F_calc, F_obs, bins)[bins] * F_calc
-
     def _scaled_F_calc_full(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """Full-size ``|F_calc|`` under this target's own scale.
 
         The closed-form scale is fit on the **work** set and applied to **all** reflections,
         so ``R_free`` uses the same work-fit ``c`` as ``R_work`` (Phenix convention). The
-        only ``_scaled_F_calc_full`` override in the family, so an edit here moves reported
-        R-factors without moving any loss value.
+        only ``_scaled_F_calc_full`` override in the family; the work and free losses, the
+        residuals and the R-factors all read this one ``c``.
         """
         F_calc_full = super()._scaled_F_calc_full(fcalc=fcalc)
         full_bins = self._get_bins_cached()

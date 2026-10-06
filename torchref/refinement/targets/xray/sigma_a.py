@@ -164,10 +164,7 @@ class SigmaAXrayTarget(XrayTarget):
 
         # Full-size scaled |F_calc| (aligned to data.hkl). beta is estimated on the full
         # free set, so it needs the full-size arrays.
-        if fcalc is not None:
-            F_calc_full = self.get_F_calc_scaled(fcalc=fcalc)
-        else:
-            F_calc_full = self.get_F_calc_scaled(recalc=False)
+        F_calc_full = self._scaled_F_calc_full(fcalc=fcalc)
 
         eps_full, dss_full = self._geom()
         eps_full = eps_full.to(F_calc_full.dtype)
