@@ -1746,11 +1746,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Signed anomalous indices of shape (N, 3), distinguishing Bijvoet
             observations that share a canonical HKL. When supplied, match these
             against the dataset's signed indices and preserve their identities.
+            Required when this dataset holds Bijvoet pairs.
 
         Returns
         -------
         ReflectionData
             Self, mutated.
+
+        Raises
+        ------
+        ValueError
+            If two rows share the key they are matched on (the canonical HKL,
+            or the signed index with ``identity_hkl``): one would silently
+            replace the other.
         """
         if self.hkl is None:
             raise ValueError("No Miller indices loaded in ReflectionData")
@@ -1774,6 +1782,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         source_hkl = self.hkl if identity_hkl is None else self._hkl_for_sf()
         hkl_data_np = source_hkl.cpu().numpy()
         data_hkl_to_idx = {tuple(hkl): idx for idx, hkl in enumerate(hkl_data_np)}
+        if len(data_hkl_to_idx) < n_data:
+            raise ValueError(
+                f"validate_hkl: {n_data - len(data_hkl_to_idx)} of {n_data} rows "
+                "repeat another row's index and would be dropped. Bijvoet mates "
+                "share a canonical HKL: pass their signed indices as identity_hkl."
+            )
 
         # For each reference HKL, find the corresponding data index (or -1 if missing)
         lookup_hkl = hkl_ref if identity_hkl is None else identity_hkl

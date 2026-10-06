@@ -88,6 +88,23 @@ def test_centrics_not_duplicated(anomalous_two_column_mtz):
     assert not bool((d.friedel_flags & centric).any())
 
 
+def test_validate_hkl_matches_bijvoet_mates_by_signed_index(anomalous_two_column_mtz):
+    """Mates share a canonical HKL, so aligning on it alone is refused; aligning on
+    the signed indices keeps each mate's own amplitude."""
+    path, _ = anomalous_two_column_mtz
+    d = ReflectionData(verbose=0)
+    d.load_mtz(path)
+    d.F[d.friedel_flags] *= 0.5
+    F, signed = d.F.clone(), d.hkl_anomalous.clone()
+
+    with pytest.raises(ValueError, match="identity_hkl"):
+        d.validate_hkl(d.hkl.clone())
+
+    d.validate_hkl(d.hkl.clone(), identity_hkl=signed.clone())
+    assert torch.equal(d.F, F)
+    assert torch.equal(d.hkl_anomalous, signed)
+
+
 def _mixed_partition_groups(d, include_validation=False):
     """Canonical ASU indices whose rows disagree about which set they belong to.
 
