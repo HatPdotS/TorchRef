@@ -68,10 +68,10 @@ DEFAULT_GROUP_WEIGHTS = {
 #: Weight overrides a node-field ADP representation needs, applied by
 #: :meth:`BaseRefinement.set_adp_representation`.
 #:
-#: Work reflections per ADP parameter that :meth:`set_adp_representation` targets when
-#: sizing a field. PDB-REDO holds ~7 across its whole resolution range and switches model
-#: form to stay there; measured on 179 of their entries, 7 is also where a node field
-#: peaks, and both directions from it are worse.
+#: Work reflections per ADP parameter that :meth:`Refinement.set_adp_representation`
+#: targets when sizing a field. PDB-REDO holds ~7 across its whole resolution range and
+#: switches model form to stay there; measured on 179 of their entries, 7 is also where
+#: a node field peaks, and both directions from it are worse.
 DEFAULT_REFLECTIONS_PER_ADP_PARAMETER = 7.0
 
 
@@ -177,7 +177,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         adp_mode : str, optional
             ADP parametrization: ``"isotropic"`` (default) refines a per-atom
             B-factor, ``"anisotropic"`` a 6-component U tensor for the atoms
-            selected by ``aniso_selection`` (see :meth:`Model.set_adp_mode`).
+            selected by ``aniso_selection`` (see
+            :meth:`Model.set_adp_mode <torchref.model.model.Model.set_adp_mode>`).
             ``"field"`` / ``"field_aniso"`` replace it with a node field, sized and
             reweighted by :meth:`set_adp_representation`; ``"preserve"`` leaves the
             file's own ADPs untouched.
@@ -523,11 +524,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     ) -> int:
         """Node count giving ``reflections_per_parameter`` work reflections per ADP parameter.
 
-        The reason this lives on the refinement and not on :class:`Model`: the model has
-        no idea how much data there is, and node count is set by the data rather than by
-        the structure. Measured on 179 PDB-REDO entries, node count correlates with
-        reflection count far more strongly than with atom count, and the model's own
-        default (one node per 25 atoms) is unrelated to either.
+        The reason this lives on the refinement and not on
+        :class:`~torchref.model.model.Model`: the model has no idea how much data there
+        is, and node count is set by the data rather than by the structure. Measured on
+        179 PDB-REDO entries, node count correlates with reflection count far more
+        strongly than with atom count, and the model's own default (one node per 25
+        atoms) is unrelated to either.
 
         The work set is the denominator because it is what the refinement fits, and it is
         what PDB-REDO's ``NREFCNT`` counts, so the ratio is comparable to theirs.
@@ -556,10 +558,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     ):
         """Switch the ADP parametrization, sizing and reweighting it for this data set.
 
-        :meth:`Model.set_adp_mode` changes the representation but cannot size it: node
-        count follows from the reflection count, and the model has no idea how much data
-        there is. It also cannot swap the ADP restraint set, which is a property of the
-        representation rather than a weight to tune.
+        :meth:`Model.set_adp_mode <torchref.model.model.Model.set_adp_mode>` changes
+        the representation but cannot size it: node count follows from the reflection
+        count, and the model has no idea how much data there is. It also cannot swap the
+        ADP restraint set, which is a property of the representation rather than a
+        weight to tune.
 
         The loss is **not** rebalanced for a field. The point of the representation is that
         smoothness comes from the parametrisation, so a field should need *less*
@@ -577,9 +580,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         mode : str
-            Any mode :meth:`Model.set_adp_mode` accepts. ``"field"`` and
-            ``"field_aniso"`` are sized and reweighted; the per-atom modes just pass
-            through, with any field weight overrides removed again.
+            Any mode :meth:`~torchref.model.model.Model.set_adp_mode` accepts.
+            ``"field"`` and ``"field_aniso"`` are sized and reweighted; the per-atom
+            modes just pass through, with any field weight overrides removed again.
         mode_set : str, optional
             Displacement-mode set for ``mode="field_aniso"``; see
             :data:`~torchref.model.disorder_field.MODE_SETS`.
@@ -692,15 +695,17 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     @property
     def loss_state(self) -> LossState:
-        """The persistent :class:`LossState`, created on first access and reused
-        across refinement cycles (targets registered once, weights re-applied)."""
+        """The persistent :class:`~torchref.refinement.loss_state.LossState`, created on
+        first access and reused across refinement cycles (targets registered once,
+        weights re-applied)."""
         if self._loss_state is None:
             self._loss_state = self._create_loss_state()
         return self._loss_state
 
     @property
     def logger(self) -> Logger:
-        """The :class:`Logger` bound to :attr:`loss_state`, created on first access."""
+        """The :class:`~torchref.refinement.logger.Logger` bound to :attr:`loss_state`,
+        created on first access."""
         if self._logger is None:
             self._logger = Logger(
                 state=self.loss_state,
@@ -723,7 +728,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         mode : {"atoms", "riding"}
-            See :meth:`Model.set_hydrogen_mode`.
+            See :meth:`Model.set_hydrogen_mode
+            <torchref.model.model.Model.set_hydrogen_mode>`.
 
         Returns
         -------
@@ -754,9 +760,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         nuisance-magnitude fit that need not carry a model-error term, ``alpha`` is degenerate
         with the scale being fitted, and for ``ml_full`` the body target would put a 32-node
         quadrature inside every line-search evaluation. The fit runs on the same
-        :class:`LossState` machinery as the body steps, differing only in the loss and in
-        exposing only the scaler's parameters to the optimizer; see
-        :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`.
+        :class:`~torchref.refinement.loss_state.LossState` machinery as the body steps,
+        differing only in the loss and in exposing only the scaler's parameters to the
+        optimizer; see :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`.
 
         **No-op when the scaler is ``None``** -- targets such as ``ls_wunit_k1`` in
         ``binwise_optimal`` mode compute their own scale and leave it unset.
@@ -791,8 +797,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     def setup_scaler(self):
         """Construct ``self.scaler`` from ``self._scaler_class`` (default
-        :class:`Scaler`), wired to the current model, data, ``nbins``,
-        ``n_iso_coeff`` and device."""
+        :class:`~torchref.scaling.scaler.Scaler`), wired to the current model, data,
+        ``nbins``, ``n_iso_coeff`` and device."""
         cls = getattr(self, "_scaler_class", None) or Scaler
         self.scaler = cls(
             self.model,
@@ -1015,7 +1021,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Delegates to the work X-ray target, the single source of truth: R is
         computed from exactly the scaled ``|F_calc|`` the target's loss sees
         (the scaler's scaling, or the target's own closed-form per-bin scale for
-        ``binwise_optimal``). See :meth:`XrayTarget.get_rfactor`.
+        ``binwise_optimal``). See :meth:`XrayTarget.get_rfactor
+        <torchref.refinement.targets.xray.base.XrayTarget.get_rfactor>`.
         """
         return self.xray_target_work.get_rfactor()
 

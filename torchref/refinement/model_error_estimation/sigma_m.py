@@ -11,12 +11,14 @@ makes it a genuinely different quantity rather than a reparametrisation. It agre
 ``beta`` on shape but is off by roughly an order of magnitude, which is why a
 caller-supplied scale exists at all.
 
-Plain tensors in and out, like :class:`SigmaAEstimator`, so there is no
-``ReflectionData``/``Scaler`` coupling to close an import cycle. No ``no_grad`` inside:
-``RiceSigmaMXrayTarget`` needs gradients to reach the B factors *through* sigma_m, so
-that choice belongs to the caller. The precomputed tables are plain tensors rather than
-``nn.Module`` buffers, keeping ``exp_table`` (``b_grid_n x N_refl``) out of every
-checkpoint at the cost of explicit device placement.
+Plain tensors in and out, like
+:class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAEstimator`, so
+there is no ``ReflectionData``/``Scaler`` coupling to close an import cycle. No
+``no_grad`` inside: ``RiceSigmaMXrayTarget`` needs gradients to reach the B factors
+*through* sigma_m, so that choice belongs to the caller. The precomputed tables are
+plain tensors rather than ``nn.Module`` buffers, keeping ``exp_table``
+(``b_grid_n x N_refl``) out of every checkpoint at the cost of explicit device
+placement.
 """
 
 from typing import Optional, Tuple

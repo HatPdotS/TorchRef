@@ -351,8 +351,9 @@ class LossState(DeviceMovementMixin):
         cache.
 
         Needed only after external code replaced parameter identity -- e.g.
-        :meth:`Model.freeze`/:meth:`unfreeze`, which rebuild ``refinable_params``. Normal
-        :meth:`run` usage never changes identity.
+        :meth:`Model.freeze <torchref.model.model.Model.freeze>` or
+        :meth:`~torchref.model.model.Model.unfreeze`, which rebuild
+        ``refinable_params``. Normal :meth:`run` usage never changes identity.
         """
         self._loss_leaves = set()
         self._resettable_modules = []

@@ -131,7 +131,7 @@ class LBFGSRefinement(Refinement):
 
         Scaler parameters (``c_iso``, ``U``, solvent) join this call only when
         ``corefine_scaler`` is True; by default they are fixed here and updated by
-        :meth:`refine_scaler`.
+        :meth:`~torchref.refinement.base_refinement.Refinement.refine_scaler`.
         """
         state = self.complete_loss_state()
         body = self.model.parameters_of_types(("xyz",))
@@ -144,7 +144,8 @@ class LBFGSRefinement(Refinement):
         """LBFGS over ``adp``, ``u`` and ``occupancy``, xyz frozen; returns the LossState.
 
         Scaler parameters join this call only when ``corefine_scaler`` is True; by default
-        they are fixed here and updated by :meth:`refine_scaler`.
+        they are fixed here and updated by
+        :meth:`~torchref.refinement.base_refinement.Refinement.refine_scaler`.
         """
         state = self.complete_loss_state()
         body = self.model.parameters_of_types(("adp", "u", "occupancy"))
