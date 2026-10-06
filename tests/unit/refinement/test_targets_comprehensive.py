@@ -190,6 +190,7 @@ def test_empty_losses_follow_the_configured_float_dtype(double_cpu):
     in the configured float dtype, so a float64 run stays float64."""
     from types import SimpleNamespace
 
+    from torchref.config import get_int_dtype
     from torchref.refinement.targets import (
         CollectionDifferenceTarget,
         MultiModelADPTarget,
@@ -202,7 +203,7 @@ def test_empty_losses_follow_the_configured_float_dtype(double_cpu):
             return {}
 
     class NoDatasets:
-        hkl = torch.zeros((4, 3), dtype=torch.int32)
+        hkl = torch.zeros((4, 3), dtype=get_int_dtype())
 
         def __contains__(self, key):
             return False
