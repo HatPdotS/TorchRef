@@ -2058,7 +2058,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             New object with remapped data. Missing reflections get:
             - 0.0 for F, I, phase, fom
             - 1.0 for F_sigma, I_sigma (conservative uncertainty)
-            - True for masks['missing']
+            - False in masks['missing'] (a keep-mask, True for rows in the source)
         """
         from torchref.symmetry.spacegroup import SpaceGroup
 
