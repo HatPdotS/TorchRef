@@ -3,10 +3,6 @@
 Every ``match_*`` shares one calling convention: the caller pre-allocates the
 ``out_*`` arrays, the function fills entries ``[0:count]`` in place and returns
 ``count``. Anything past ``count`` is stale.
-
-These were Numba kernels. Each call covers one residue, so Numba's dispatch
-overhead outweighed the loop it compiled -- plain Python is faster, and it has no
-cold-cache compile (~13 s on first use per environment).
 """
 
 import numpy as np
