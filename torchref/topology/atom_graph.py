@@ -40,9 +40,8 @@ def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.T
     -------
     indptr, indices : torch.Tensor
         ``indices[indptr[i]:indptr[i + 1]]`` are atom ``i``'s bonded neighbours,
-        ascending, each partner listed once. A bond row repeated in the edge list --
-        once per altloc conformer for a bond between two shared atoms, or from a LINK
-        record that appears twice -- therefore does not inflate an atom's degree.
+        ascending, each partner listed once, so a bond row the edge list repeats
+        does not inflate an atom's degree.
     """
     device = bonds.device
     if bonds.numel() == 0:
