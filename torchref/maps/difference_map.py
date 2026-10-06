@@ -35,6 +35,18 @@ class DifferenceMap(Map):
         Model for computing phases.
     gridsize : tuple of int, optional
         Grid dimensions (nx, ny, nz). If None, determined automatically.
+    scale : torch.Tensor, optional
+        Per-reflection observed-to-model scale, shape (N,); the differences are
+        divided by it, which puts them in electrons. Row-aligned with the
+        collection's reflections, the sorted canonical (ASU) union of both
+        datasets' indices that the map exposes as ``data_reference.hkl`` -- the
+        reference dataset's own order only when both share one reflection list.
+
+    Raises
+    ------
+    ValueError
+        If ``scale`` does not have one row per union reflection. A scale of the
+        right length in another row order is not detected.
 
     Attributes
     ----------
@@ -92,6 +104,13 @@ class DifferenceMap(Map):
         self._collection.scale()
         self.data_reference = self._collection["reference"]
         self.data_perturbed = self._collection["perturbed"]
+        n_union = len(self.data_reference.hkl)
+        if scale is not None and len(scale) != n_union:
+            raise ValueError(
+                f"scale has {len(scale)} rows, but it must be row-aligned with the "
+                f"{n_union} reflections of the union of both datasets "
+                "(data_reference.hkl of the built map)."
+            )
 
         # Use reference dataset for cell, spacegroup, hkl via super().__init__
         super().__init__(
@@ -102,8 +121,6 @@ class DifferenceMap(Map):
             device=resolved,
             units=units,
         )
-        # Per-reflection observed-to-model scale over the reference dataset's full
-        # reflection list; dividing by it puts the differences in electrons.
         self.scale = scale
 
     def calculate(self) -> torch.Tensor:

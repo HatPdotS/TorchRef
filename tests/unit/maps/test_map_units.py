@@ -2,7 +2,8 @@
 
 Pinned: ``units="electrons"`` is the ``1/N``-normalised FFT rescaled by ``N / V``, i.e.
 ``(1/V) sum_h F(h) exp(-2 pi i h.x)``; the default is unchanged; an unknown unit is
-rejected; a ``DifferenceMap`` accepts a per-reflection scale and the same units.
+rejected; a ``DifferenceMap`` accepts a per-reflection scale, row-aligned with the
+union of both datasets' reflections, and the same units.
 """
 
 import pytest
@@ -54,3 +55,16 @@ def test_difference_map_scale_and_units(model_ft_and_data):
     out = scaled.calculate()
     assert out.shape == plain.shape and torch.isfinite(out).all()
     assert scaled.units == "electrons" and scaled.scale is scale
+
+
+@pytest.mark.unit
+def test_difference_map_scale_is_row_aligned_with_the_union(model_ft_and_data):
+    """The scale has one row per union reflection; a reference-length one raises."""
+    model, data = model_ft_and_data
+    reference = data[torch.arange(len(data)) % 7 != 0]
+    with pytest.raises(ValueError, match="row-aligned"):
+        DifferenceMap(data, reference, model, scale=torch.ones(len(reference)))
+
+    dm = DifferenceMap(data, reference, model, scale=torch.ones(len(data)))
+    assert len(dm.data_reference.hkl) == len(data)
+    assert torch.isfinite(dm.calculate()).all()
