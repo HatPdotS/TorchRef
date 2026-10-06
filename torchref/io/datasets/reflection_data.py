@@ -1023,8 +1023,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         self._canonicalize_in_place()
         self.sanitize_F()
-        # No-op when ``load`` already installed French-Wilson's own mask from the
-        # true intensities; this covers the amplitude-only path.
         self.flag_wilson_outliers()
         return self
 
