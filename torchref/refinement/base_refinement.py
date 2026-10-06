@@ -920,15 +920,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     def bond_loss(self) -> torch.Tensor:
         """Bond-length NLL component of the geometry target."""
-        return self.geometry_target.target_losses()["bond_target"]
+        return self.geometry_target["bond"]()
 
     def angle_loss(self) -> torch.Tensor:
         """Bond-angle NLL component of the geometry target."""
-        return self.geometry_target.target_losses()["angle_target"]
+        return self.geometry_target["angle"]()
 
     def torsion_loss(self) -> torch.Tensor:
         """Torsion-angle NLL component of the geometry target."""
-        return self.geometry_target.target_losses()["torsion_target"]
+        return self.geometry_target["torsion"]()
 
     def geometry_loss(self) -> torch.Tensor:
         """Total geometry NLL (all components of ``TotalGeometryTarget``)."""

@@ -117,6 +117,19 @@ def test_complete_loss_state_evaluates_no_target(build):
 
 
 @pytest.mark.integration
+def test_geometry_accessors_evaluate_their_component(build):
+    """bond_loss, angle_loss and torsion_loss are the named geometry components."""
+    ref = build()
+    with torch.no_grad():
+        for accessor, key in (
+            (ref.bond_loss, "bond"),
+            (ref.angle_loss, "angle"),
+            (ref.torsion_loss, "torsion"),
+        ):
+            torch.testing.assert_close(accessor(), ref.geometry_target[key]())
+
+
+@pytest.mark.integration
 def test_column_names_with_an_sf_mmcif_file_are_refused(cif_sf_dir, pdb_dir):
     """A column choice cannot apply to SF-mmCIF input, so it is an error rather than
     silently ignored."""
