@@ -10,7 +10,6 @@ import torch
 from typing import TYPE_CHECKING, Dict
 
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
-from torchref.config import dtypes
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
