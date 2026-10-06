@@ -156,6 +156,11 @@ def load_as_dataframe(
         x, y, z, occupancy, tempfactor, element, charge, anisou_flag, u11,
         u22, u33, u12, u13, u23, index.
         DataFrame attributes include 'cell', 'spacegroup', and 'z'.
+
+    Raises
+    ------
+    ValueError
+        If an ATOM or HETATM record has a blank element field (columns 77-78).
     """
     if skipheader == 0:
         skipheader = find_header_length(filepath)
@@ -276,6 +281,22 @@ def load_as_dataframe(
         .fillna(0)
         .astype(int)
     )
+    # Not guessed from the atom name: an unknown element scatters as Z = 0, so a
+    # wrong guess, like a blank, would load without complaint.
+    blank = pdb["element"].isna()
+    if blank.any():
+        first = pdb.loc[blank].head(5)
+        atoms = ", ".join(
+            f"{serial} {name} {resname}"
+            for serial, name, resname in zip(
+                first["serial"], first["name"], first["resname"]
+            )
+        )
+        raise ValueError(
+            f"{filepath}: {int(blank.sum())} atoms have a blank element field "
+            f"(columns 77-78), starting with {atoms}. Add the element symbols "
+            "first, e.g. with gemmi, pdbset or phenix.pdbtools."
+        )
     pdb["element"] = pdb["element"].astype(str).str.strip().str.capitalize()
     pdb["index"] = np.arange(pdb.shape[0]).astype(int)
 
