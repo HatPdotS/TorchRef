@@ -118,6 +118,20 @@ class TestValidation:
             mc.add_timepoint("t", [1.0])
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "fractions", [[1.5, -0.5], [-0.5, 1.5], [0.5, 0.7, -0.2], [float("nan"), 1.0]]
+    )
+    def test_fractions_must_be_non_negative(self, fractions):
+        """A negative population that still sums to 1 is refused, not clamped onto
+        the simplex."""
+        from torchref.model.model_collection import ModelCollection
+
+        models = [_StubModel(i) for i in range(len(fractions))]
+        mc = ModelCollection(models, verbose=0)
+        with pytest.raises(ValueError, match="non-negative"):
+            mc.add_timepoint("t", fractions)
+
+    @pytest.mark.unit
     def test_duplicate_timepoint_names_are_rejected(self, two_model_collection):
         with pytest.raises(ValueError, match="already exists"):
             two_model_collection.add_timepoint("light", [0.5, 0.5])

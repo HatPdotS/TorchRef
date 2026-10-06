@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 import torch
 from torch import nn
 
+from torchref.model.mixed_model import _check_fractions
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference
@@ -337,7 +338,9 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         name : str
             Timepoint identifier (should match DatasetCollection key).
         fractions : List[float], optional
-            Initial population fractions. If None, uses equal fractions.
+            Initial population fractions, non-negative and summing to 1 within 1e-3
+            (then renormalized); ``ValueError`` otherwise. If None, uses equal
+            fractions.
         frozen_fractions : bool
             If True, fractions are not updated during optimization.
 
@@ -352,14 +355,8 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         n = len(self._base_models)
         if fractions is None:
             fractions = [1.0 / n] * n
-        if len(fractions) != n:
-            raise ValueError(
-                f"Number of fractions ({len(fractions)}) must match "
-                f"number of models ({n})."
-            )
+        _check_fractions(fractions, n, atol=1e-3)
         total = sum(fractions)
-        if abs(total - 1.0) > 1e-3:
-            raise ValueError(f"Initial fractions must sum to 1.0, got {total:.6f}.")
         fractions = [f / total for f in fractions]
 
         index = len(self._order)

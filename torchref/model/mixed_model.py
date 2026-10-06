@@ -6,7 +6,7 @@ with learnable population fractions, enabling refinement of time-resolved
 crystallographic data with multiple conformational states.
 """
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 import torch
 from torch import nn
@@ -16,6 +16,33 @@ from torchref.utils.device_resolution import resolve_device
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
+
+
+def _check_fractions(fractions: Sequence[float], n_models: int, atol: float) -> None:
+    """Raise ``ValueError`` unless ``fractions`` are populations of ``n_models`` models.
+
+    Checked before any logit or log is taken, because those clamp a negative entry
+    onto the simplex without a word.
+
+    Parameters
+    ----------
+    fractions : sequence of float
+        One population per model.
+    n_models : int
+        Number of models the fractions weight.
+    atol : float
+        Allowed distance of the sum from 1.
+    """
+    if len(fractions) != n_models:
+        raise ValueError(
+            f"Number of fractions ({len(fractions)}) must match "
+            f"number of models ({n_models})."
+        )
+    if not all(f >= 0 for f in fractions):
+        raise ValueError(f"Fractions must be non-negative, got {list(fractions)}.")
+    total = sum(fractions)
+    if abs(total - 1.0) > atol:
+        raise ValueError(f"Initial fractions must sum to 1.0, got {total:.6f}.")
 
 
 class MixedModel(DeviceMovementMixin, nn.Module):
@@ -32,8 +59,8 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         List of ModelFT objects to combine. All models must have compatible
         cell parameters and space groups.
     initial_fractions : List[float], optional
-        Initial population fractions for each model. Must sum to 1.0.
-        If None, equal fractions are used (1/N for each model).
+        Initial population fractions for each model, non-negative and summing to
+        1.0. If None, equal fractions are used (1/N for each model).
     frozen_fractions : bool, optional
         If True, fractions are not updated during optimization.
         Default is False.
@@ -76,8 +103,8 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         Raises
         ------
         ValueError
-            If models list is empty, fractions don't match model count,
-            fractions don't sum to 1, or models have incompatible parameters.
+            If models list is empty, fractions don't match model count, are
+            negative or don't sum to 1, or models have incompatible parameters.
         """
         super().__init__()
 
@@ -97,16 +124,7 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         if initial_fractions is None:
             initial_fractions = [1.0 / n_models] * n_models
         else:
-            if len(initial_fractions) != n_models:
-                raise ValueError(
-                    f"Number of fractions ({len(initial_fractions)}) must match "
-                    f"number of models ({n_models})."
-                )
-            total = sum(initial_fractions)
-            if abs(total - 1.0) > 1e-6:
-                raise ValueError(
-                    f"Initial fractions must sum to 1.0, got {total:.6f}."
-                )
+            _check_fractions(initial_fractions, n_models, atol=1e-6)
 
         # Inverse softmax: softmax(theta) = fractions, so theta = log(fractions).
         # Built at the base models' float dtype so the mixing weights stay
