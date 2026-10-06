@@ -26,8 +26,8 @@ class FcalcDataset(CrystalDataset):
     """
     Dataset for storing calculated structure factors.
 
-    Unlike :class:`CrystalDataset`, ``spacegroup`` here holds a
-    ``torchref.symmetry.SpaceGroup`` object, not a string.
+    Unlike :class:`~torchref.io.datasets.base.CrystalDataset`, ``spacegroup`` here
+    holds a ``torchref.symmetry.SpaceGroup`` object, not a string.
 
     Parameters
     ----------
@@ -384,7 +384,8 @@ class FcalcDataset(CrystalDataset):
     ) -> None:
         """
         Write Fcalc to MTZ as pseudo-observations, readable back by
-        :meth:`ReflectionData.load_mtz` as if measured.
+        :meth:`~torchref.io.datasets.reflection_data.ReflectionData.load_mtz` as if
+        measured.
 
         Sigmas are fabricated as ``sigma_frac * |F|``, not measured.
 

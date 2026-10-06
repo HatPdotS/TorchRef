@@ -358,9 +358,11 @@ class DatasetCollection(CrystalDataset):
     ) -> torch.Tensor:
         """Per-base-model ``F_calc`` on the common HKL, in the canonical convention.
 
-        The batched counterpart of :meth:`ReflectionData.structure_factors`: models are
-        evaluated at the **signed** indices so Bijvoet mates get distinct ``|F_calc|``,
-        and the result is returned on the canonical ASU index that :attr:`hkl` holds.
+        The batched counterpart of a member's
+        :meth:`~torchref.io.datasets.reflection_data.ReflectionData.structure_factors`:
+        models are evaluated at the **signed** indices so Bijvoet mates get distinct
+        ``|F_calc|``, and the result is returned on the canonical ASU index that
+        :attr:`hkl` holds.
         Use this rather than calling
         :meth:`~torchref.model.model_collection.ModelCollection.compute_component_fcalcs`
         on :attr:`hkl` directly, which would skip both halves of that convention.

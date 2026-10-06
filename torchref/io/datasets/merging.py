@@ -1,7 +1,8 @@
 """
 Merge a reflection dataset into another space group and report how well it merges.
 
-:func:`merge_to_spacegroup` takes any :class:`ReflectionData`, generates every
+:func:`merge_to_spacegroup` takes any
+:class:`~torchref.io.datasets.reflection_data.ReflectionData`, generates every
 source-symmetry equivalent of every usable observation (the route through P1),
 maps each onto the target group's CCP4 asymmetric unit, and merges what lands
 together. The accompanying :class:`MergeStats` answers whether the target
