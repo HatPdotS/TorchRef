@@ -8,8 +8,7 @@ a raw operation list serves non-crystallographic symmetry too.
 
 :class:`SpaceGroup` specialises it with the crystallographic identity (Hermann-Mauguin
 naming, number, point group, crystal system) and the CCP4 asymmetric-unit verbs
-(``equivalent_hkl``, ``expand_hkl``, ``reduce_hkl``, ``complete_hkl``,
-``canonicalize_hkl``). It accepts a
+(``equivalent_hkl``, ``expand_hkl``, ``canonicalize_hkl``). It accepts a
 name, a number 1-230, a ``gemmi.SpaceGroup``, another instance, or None for P1.
 
 :class:`Cell` is separate: it wraps the six cell parameters, not a symmetry group.

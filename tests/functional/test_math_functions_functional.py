@@ -155,18 +155,6 @@ class TestNLLFunctions:
 class TestGridFunctions:
     """Test grid-related functions."""
 
-    def test_find_grid_size(self, model_and_data):
-        """Test grid size calculation."""
-        from torchref.base import find_grid_size
-        
-        model = model_and_data["model"]
-        cell = model.cell
-        
-        gridsize = find_grid_size(cell, max_res=2.0)
-        
-        assert len(gridsize) == 3
-        assert all(g > 0 for g in gridsize)
-
     def test_get_real_grid(self, model_and_data):
         """Test real space grid creation."""
         from torchref.base.math_torch import get_real_grid
@@ -174,7 +162,7 @@ class TestGridFunctions:
         model = model_and_data["model"]
         cell = model.cell
         
-        grid = get_real_grid(cell, max_res=3.0, device='cpu')
+        grid = get_real_grid(cell, gridsize=cell.compute_grid_size(3.0), device="cpu")
         
         assert grid is not None
         # Should be 4D (nx, ny, nz, 3)

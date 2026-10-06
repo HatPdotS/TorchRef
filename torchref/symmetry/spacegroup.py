@@ -276,30 +276,6 @@ class SpaceGroup(Symmetry):
         return self._gemmi.operations()
 
     # =========================================================================
-    # Aliases retained for existing callers
-    # =========================================================================
-
-    @property
-    def spacegroup(self) -> gemmi.SpaceGroup:
-        """Alias for :attr:`gemmi`."""
-        return self._gemmi
-
-    @property
-    def space_group(self) -> gemmi.SpaceGroup:
-        """Alias for :attr:`gemmi`."""
-        return self._gemmi
-
-    @property
-    def space_group_name(self) -> str:
-        """Alias for :attr:`name`."""
-        return self.name
-
-    @property
-    def space_group_number(self) -> int:
-        """Alias for :attr:`number`."""
-        return self.number
-
-    # =========================================================================
     # Asymmetric-unit conventions
     # =========================================================================
     #
@@ -395,75 +371,6 @@ class SpaceGroup(Symmetry):
         return _equivalent_hkl(
             self, hkl, include_friedel=include_friedel, device=device
         )
-
-    def reduce_hkl(
-        self,
-        hkl_p1: torch.Tensor,
-        include_friedel: bool = True,
-        device: Optional[torch.device] = None,
-    ):
-        """Reduce P1 Miller indices to this group's asymmetric unit.
-
-        The inverse of :meth:`expand_hkl`.
-
-        Parameters
-        ----------
-        hkl_p1 : torch.Tensor
-            P1 Miller indices, shape ``(N, 3)``.
-        include_friedel : bool, default True
-            Consider Friedel mates when picking the ASU representative.
-        device : torch.device, optional
-            Computation device. Defaults to ``hkl_p1``'s.
-
-        Returns
-        -------
-        hkl_asu : torch.Tensor
-            Unique ASU indices, shape ``(M, 3)``, in the configured int dtype.
-        reduction_indices : torch.Tensor
-            Indices into ``hkl_p1`` per equivalent, shape ``(M, n_equiv)``, **-1 where
-            no P1 reflection exists** -- mask or clamp before gathering, or a -1
-            silently reads the last row.
-        phase_shifts : torch.Tensor
-            Phase shifts to apply before aggregation, shape ``(M, n_equiv)``.
-        """
-        from torchref.symmetry.reciprocal_symmetry import _reduce_hkl
-
-        return _reduce_hkl(
-            self, hkl_p1, include_friedel=include_friedel, device=device
-        )
-
-    def complete_hkl(
-        self,
-        input_hkl: torch.Tensor,
-        cell: torch.Tensor,
-        d_min: float,
-        device: Optional[torch.device] = None,
-    ):
-        """Identify reflections missing from a dataset, without expanding symmetry.
-
-        Parameters
-        ----------
-        input_hkl : torch.Tensor
-            Possibly incomplete Miller indices, shape ``(N, 3)``.
-        cell : torch.Tensor
-            Unit cell parameters ``[a, b, c, alpha, beta, gamma]``, shape ``(6,)``.
-        d_min : float
-            High-resolution limit in Angstroms.
-        device : torch.device, optional
-            Computation device. Defaults to ``input_hkl``'s.
-
-        Returns
-        -------
-        complete_hkl : torch.Tensor
-            Every index within ``d_min`` minus systematic absences, shape ``(M, 3)``.
-        input_indices : torch.Tensor
-            Map complete -> input, shape ``(M,)``, ``-1`` where missing.
-        missing_mask : torch.Tensor
-            Boolean, shape ``(M,)``, True where absent from the input.
-        """
-        from torchref.symmetry.reciprocal_symmetry import _complete_hkl
-
-        return _complete_hkl(self, input_hkl, cell, d_min, device=device)
 
     def canonicalize_hkl(
         self,

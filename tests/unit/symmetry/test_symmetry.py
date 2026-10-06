@@ -18,8 +18,8 @@ class TestSpaceGroupInitialization:
 
         sg = SpaceGroup("P1")
 
-        # space_group is a gemmi.SpaceGroup object
-        assert "P 1" in str(sg.space_group) or "P1" in str(sg.space_group)
+        # gemmi is a gemmi.SpaceGroup object
+        assert "P 1" in str(sg.gemmi) or "P1" in str(sg.gemmi)
         assert sg.matrices is not None
         assert sg.translations is not None
         # P1 should have only identity

@@ -103,9 +103,10 @@ class TestGridFunctions:
     def test_get_real_grid_shape(self, mock_cell):
         """Test real grid generation has correct shape."""
         from torchref.base.math_torch import get_real_grid
+        from torchref.symmetry import Cell
 
         cell = mock_cell
-        grid = get_real_grid(cell, max_res=2.0)
+        grid = get_real_grid(cell, gridsize=Cell(cell).compute_grid_size(2.0))
         
         # Should be 3D grid with xyz in last dimension
         assert len(grid.shape) == 4
@@ -124,17 +125,6 @@ class TestGridFunctions:
         assert grid.shape[1] == 12
         assert grid.shape[2] == 14
         assert grid.shape[3] == 3
-
-    @pytest.mark.unit
-    def test_find_grid_size(self, mock_cell):
-        """Test automatic grid size calculation."""
-        from torchref.base.math_torch import find_grid_size
-
-        cell = mock_cell
-        grid_size = find_grid_size(cell, max_res=1.0)
-        
-        assert grid_size.shape == (3,)
-        assert torch.all(grid_size > 0)
 
 
 class TestTransformationMatrices:

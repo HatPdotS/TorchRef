@@ -1,20 +1,19 @@
 """Phase-shift sign convention for reciprocal-space symmetry operations.
 
-These tests pin the phase contract of :func:`expand_hkl`, :func:`canonicalize_hkl`
-and :func:`reduce_hkl` against an *independent* reference: a direct structure-factor
-summation over an explicitly symmetry-expanded atom set. That is the definition of a
-structure factor, so it cannot drift in step with the implementation the way a
-path-vs-path comparison can.
+These tests pin the phase contract of :func:`expand_hkl` and :func:`canonicalize_hkl`
+against an *independent* reference: a direct structure-factor summation over an
+explicitly symmetry-expanded atom set. That is the definition of a structure factor,
+so it cannot drift in step with the implementation the way a path-vs-path comparison
+can.
 
 Why this file exists
 --------------------
-All three functions computed ``+2π h·t`` where the correct shift is ``-2π h·t``
-(and, for the Friedel-flipped rows of ``canonicalize_hkl``, ``+2π h·t`` -- the sign
-is *not* uniform there; see that function's comment). The bug survived because the
-residual error of the wrong sign is ``4π h·t mod 2π``, which is **exactly zero** for
-2₁ screw axes and for centring translations -- and the pre-existing phase test
-(``test_canonicalize_hkl.py::test_phase_roundtrip``) parametrised only over
-``P21, P212121, C2, P4``, every one of which falls in that blind spot.
+The correct shift is ``-2π h·t`` (and, for the Friedel-flipped rows of
+``canonicalize_hkl``, ``+2π h·t`` -- the sign is *not* uniform there; see that
+function's comment). A wrong sign leaves a residual error of ``4π h·t mod 2π``, which
+is **exactly zero** for 2₁ screw axes and for centring translations, so
+``test_canonicalize_hkl.py::test_phase_roundtrip``, parametrised over
+``P21, P212121, C2, P4``, cannot see it: every one of those falls in that blind spot.
 
 The parametrisation below deliberately spans all three regimes:
 
@@ -55,11 +54,6 @@ def expand_hkl(hkl, sg, include_friedel=True, remove_absences=True, device=None)
         device=device,
     )
 
-
-def reduce_hkl(hkl, sg, include_friedel=True, device=None):
-    return SpaceGroup(sg).reduce_hkl(
-        hkl, include_friedel=include_friedel, device=device
-    )
 
 # Groups spanning the three regimes above. P1 is the degenerate control (no
 # translations at all); the screw-axis groups are the ones with real signal.
@@ -183,44 +177,6 @@ def test_canonicalize_hkl_phase_contract(spacegroup):
     assert err < ATOL_RAD, (
         f"{spacegroup}: canonicalize_hkl phase contract violated by {err:.4f} rad "
         f"({f.sum()} of {len(f)} rows were Friedel-flipped)."
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("spacegroup", SPACE_GROUPS)
-def test_reduce_hkl_phase_contract(spacegroup):
-    """Every equivalent must reconstruct the ASU phase, not just the first.
-
-    ``reduce_hkl`` returns one row per ASU reflection and a column per equivalent.
-    Column 0 is typically the identity operation (zero shift), so checking only that
-    column would pass regardless of the sign -- iterate over all of them.
-    """
-    fcalc = _reference_model(spacegroup)
-    hkl_p1, _, _ = expand_hkl(
-        _random_hkl(), spacegroup, include_friedel=False, remove_absences=True
-    )
-    phi_p1 = np.angle(fcalc(hkl_p1.numpy()))
-
-    hkl_asu, red_idx, red_shift = reduce_hkl(
-        hkl_p1, spacegroup, include_friedel=False
-    )
-    phi_asu = np.angle(fcalc(hkl_asu.numpy()))
-    idx, sh = red_idx.cpu().numpy(), red_shift.cpu().numpy()
-
-    errs, n_checked = [], 0
-    for row in range(idx.shape[0]):
-        for col in range(idx.shape[1]):
-            src = idx[row, col]
-            if src < 0:
-                continue
-            n_checked += 1
-            errs.append(_wrap(phi_p1[src] + sh[row, col] - phi_asu[row]))
-
-    assert n_checked >= idx.shape[0], "no equivalents were checked"
-    err = np.abs(errs).max()
-    assert err < ATOL_RAD, (
-        f"{spacegroup}: reduce_hkl phase contract violated by {err:.4f} rad "
-        f"over {n_checked} equivalents."
     )
 
 

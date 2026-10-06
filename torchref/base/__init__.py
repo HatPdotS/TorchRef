@@ -99,18 +99,10 @@ from .reciprocal import (
     get_scattering_vectors,
     # HKL
     get_d_spacing,
-    compute_d_spacing_batch,
     generate_possible_hkl,
     # Grid operations
     place_on_grid,
     extract_structure_factor_from_grid,
-    apply_translation_phase,
-    # Interpolation
-    interpolate_structure_factor_from_grid,
-    interpolate_complex_from_grid,
-    trilinear_interpolate_patterson,
-    interpolate_for_rotation,
-    smooth_reciprocal_grid,
     # Symmetry
     ReciprocalSymmetryExtractor,
 )
@@ -151,8 +143,6 @@ from .fourier import (
     fft,
     ifft,
     get_real_grid,
-    find_grid_size,
-    put_hkl_on_grid,
 )
 
 # =============================================================================
@@ -256,16 +246,9 @@ __all__ = [
     "reciprocal_basis_matrix",
     "get_scattering_vectors",
     "get_d_spacing",
-    "compute_d_spacing_batch",
     "generate_possible_hkl",
     "place_on_grid",
     "extract_structure_factor_from_grid",
-    "apply_translation_phase",
-    "interpolate_structure_factor_from_grid",
-    "interpolate_complex_from_grid",
-    "trilinear_interpolate_patterson",
-    "interpolate_for_rotation",
-    "smooth_reciprocal_grid",
     # Structure factors
     # -------------------------------------------------------------------------
     "iso_structure_factor_torched",
@@ -294,8 +277,6 @@ __all__ = [
     "fft",
     "ifft",
     "get_real_grid",
-    "find_grid_size",
-    "put_hkl_on_grid",
     # -------------------------------------------------------------------------
     # alignment
     # -------------------------------------------------------------------------

@@ -75,7 +75,9 @@ class TestModelFTRealSpaceMap:
         model = loaded_model_ft
 
         assert model.gridsize is not None
-        grid = get_real_grid(model.cell, max_res=2.0, device=model.device)
+        grid = get_real_grid(
+            model.cell, gridsize=model.cell.compute_grid_size(2.0), device=model.device
+        )
 
         assert grid is not None
         assert len(grid.shape) == 4  # Should be 4D (nx, ny, nz, 3)

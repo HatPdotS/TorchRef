@@ -4,8 +4,6 @@
 index convention (hkl taken mod the grid dimensions), so they round-trip.
 """
 
-import math
-
 import torch
 
 from torchref.config import get_int_dtype
@@ -118,40 +116,3 @@ def extract_structure_factor_from_grid(reciprocal_grid, hkls) -> torch.Tensor:
         structure_factors = structure_factors.squeeze(0)  # (N,)
 
     return structure_factors
-
-
-def apply_translation_phase(
-    F_calc: torch.Tensor,
-    hkl: torch.Tensor,
-    translation_frac: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Apply translation phase shift to structure factors.
-
-    For a translation t in fractional coordinates, the structure factor transforms as:
-    F'(hkl) = F(hkl) * exp(2πi * hkl · t)
-
-    Parameters
-    ----------
-    F_calc : torch.Tensor
-        Complex structure factors of shape (N,).
-    hkl : torch.Tensor
-        Miller indices of shape (N, 3).
-    translation_frac : torch.Tensor
-        Translation vector in fractional coordinates of shape (3,).
-
-    Returns
-    -------
-    torch.Tensor
-        Phase-shifted structure factors of shape (N,).
-
-    Notes
-    -----
-    The phase is computed in float32 regardless of input dtype and only then cast
-    to ``F_calc.dtype``, so a float64 caller does *not* get float64 phases.
-    """
-    phase = 2.0 * math.pi * (hkl.float() @ translation_frac.float())
-
-    phase_factor = torch.complex(torch.cos(phase), torch.sin(phase))
-
-    return F_calc * phase_factor.to(F_calc.dtype)

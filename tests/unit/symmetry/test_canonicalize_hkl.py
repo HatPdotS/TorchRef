@@ -25,12 +25,6 @@ def expand_hkl(hkl, sg, include_friedel=True, remove_absences=True, device=None)
     )
 
 
-def reduce_hkl(hkl, sg, include_friedel=True, device=None):
-    return SpaceGroup(sg).reduce_hkl(
-        hkl, include_friedel=include_friedel, device=device
-    )
-
-
 # ---------------------------------------------------------------------------
 # canonicalize_hkl unit tests
 # ---------------------------------------------------------------------------
