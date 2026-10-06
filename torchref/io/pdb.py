@@ -747,6 +747,28 @@ def _write_atom_records(handle, df: pd.DataFrame, anisou: bool) -> None:
         handle.write(records)
 
 
+def _cryst1_record(attrs) -> str:
+    """The CRYST1 record of a table's ``attrs``: ``cell``, ``spacegroup``, ``z``.
+
+    The columns :func:`read_crystallographic_info` reads: a, b, c 7-33 (Å),
+    alpha, beta, gamma 34-54 (degrees), space group 56-66 and Z 67-70, blank when
+    ``z`` is missing or not a number.
+
+    Raises
+    ------
+    KeyError, TypeError
+        If ``cell`` or ``spacegroup`` is missing or None.
+    """
+    cell, spacegroup = attrs["cell"], attrs["spacegroup"]
+    try:
+        z = str(int(attrs.get("z")))
+    except (TypeError, ValueError):
+        z = ""
+    lengths = "".join(f"{length:9.3f}" for length in cell[:3])
+    angles = "".join(f"{angle:7.2f}" for angle in cell[3:])
+    return f"CRYST1{lengths}{angles} {spacegroup:<11}{z:>4}\n"
+
+
 def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     """
     Write a DataFrame to a PDB file.
@@ -788,25 +810,7 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
 
         # Write CRYST1 record if cell info available (directly before atoms)
         try:
-            cell = df.attrs["cell"]
-            spacegroup = df.attrs["spacegroup"]
-            cell_abc = cell[:3]
-            cell_angles = cell[3:]
-            z = df.attrs.get("z", "")
-            try:
-                strz = str(int(z))
-            except:
-                strz = ""
-            line = (
-                "CRYST1"
-                + "".join([f"{i:>9.3f}" for i in cell_abc])
-                + "".join([f"{i:>7.2f}" for i in cell_angles])
-                + " "
-                + f"{spacegroup:<14}"
-                + strz
-                + "\n"
-            )
-            n.write(line)
+            n.write(_cryst1_record(df.attrs))
         except:
             print("No cell information found, writing without cell and spacegroup")
 
@@ -847,27 +851,8 @@ def write_multi_model(
 
     with open(filepath, "w") as f:
         # Write CRYST1 from first model if available
-        first_df = dataframes[0]
         try:
-            cell = first_df.attrs["cell"]
-            spacegroup = first_df.attrs["spacegroup"]
-            cell_abc = cell[:3]
-            cell_angles = cell[3:]
-            z = first_df.attrs.get("z", "")
-            try:
-                strz = str(int(z))
-            except Exception:
-                strz = ""
-            line = (
-                "CRYST1"
-                + "".join([f"{i:>9.3f}" for i in cell_abc])
-                + "".join([f"{i:>7.2f}" for i in cell_angles])
-                + " "
-                + f"{spacegroup:<14}"
-                + strz
-                + "\n"
-            )
-            f.write(line)
+            f.write(_cryst1_record(dataframes[0].attrs))
         except Exception:
             pass
 

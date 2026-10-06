@@ -74,6 +74,24 @@ class TestReadCrystallographicInfo:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("writer", ["write", "write_multi_model"])
+def test_written_cryst1_reads_back_with_a_two_digit_z(pdb_dir, tmp_path, writer):
+    from torchref.io import pdb
+
+    source = str(pdb_dir / "3GR5.pdb")
+    path = str(tmp_path / "written.pdb")
+    table = pdb.load_as_dataframe(source)
+    if writer == "write":
+        pdb.write(table, path)
+    else:
+        pdb.write_multi_model([table], path)
+
+    expected = pdb.read_crystallographic_info(source)
+    assert expected[1:] == ("P 65 2 2", "12")
+    assert pdb.read_crystallographic_info(path) == expected
+
+
+@pytest.mark.unit
 class TestOccupancyOutOfRange:
     def test_occupancy_above_one_is_clamped_with_warning(self):
         from torchref.model.parameter_wrappers import OccupancyTensor
