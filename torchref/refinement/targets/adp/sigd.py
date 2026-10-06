@@ -5,7 +5,7 @@ import math
 import torch
 from typing import TYPE_CHECKING, Dict
 
-from torchref.base.targets.adp import adp_sigd_math, u6_b_eq
+from torchref.base.targets.adp import adp_sigd_math
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -87,17 +87,6 @@ class ADPSigdTarget(ADPTarget):
     @b_shift.setter
     def b_shift(self, value: float):
         self._b_shift.fill_(value)
-
-    def _b_values(self) -> torch.Tensor:
-        """Per-atom B, using B_eq when any atom is anisotropic.
-
-        Mirrors the iso/aniso split in :class:`ADPSimilarityTarget`: an
-        all-isotropic model takes the cheaper direct path and is numerically
-        identical, since ``u6_b_eq`` reduces to B for isotropic atoms.
-        """
-        if not getattr(self.model, "_aniso_is_empty", True):
-            return u6_b_eq(self.model.adp_u6())
-        return self.model.adp()
 
     def forward(self) -> torch.Tensor:
         """Summed SIGD NLL over atoms, offset to be non-negative per atom."""

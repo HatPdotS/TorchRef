@@ -222,13 +222,15 @@ class ADPLocalityTarget(ADPTarget):
         Caution: ``weighted_rms_log`` and ``avg_weight`` use exponential-decay
         weights ``exp(-d / correlation_length)``, **not** the inverse-distance
         weights ``forward()`` uses, so they do not describe the loss's weighting.
+        The ``*_log`` figures are of log B_eq; on an anisotropic model the
+        fractional-anisotropy channel shows only in ``loss``.
         """
         self._build_neighbor_list()
 
         if self._neighbor_indices is None:
             return {}
 
-        adp = self.model.adp().detach()
+        adp = self._b_values().detach()
         log_adp = torch.log(adp.clamp(min=1e-3))
 
         indices = self._neighbor_indices

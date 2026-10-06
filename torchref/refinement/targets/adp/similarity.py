@@ -115,8 +115,12 @@ class ADPSimilarityTarget(ADPTarget):
         return adp_simu_math(adp_t, pair_indices, self._simu_sigma)
 
     def stats(self) -> Dict[str, any]:
-        """Get SIMU restraint statistics."""
-        b_diffs = self.restraints.adp_b_differences(self.model.adp())
+        """Get SIMU restraint statistics.
+
+        The ΔB figures and z-scores are of B_eq over the bonded pairs; on an
+        anisotropic model the deviatoric channel shows only in ``loss``.
+        """
+        b_diffs = self.restraints.adp_b_differences(self._b_values())
 
         if len(b_diffs) == 0:
             return {}

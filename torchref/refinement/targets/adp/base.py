@@ -1,5 +1,9 @@
 from typing import TYPE_CHECKING
 
+import torch
+
+from torchref.base.targets.adp import u6_b_eq
+
 from ..base import ModelTarget
 
 if TYPE_CHECKING:
@@ -41,3 +45,15 @@ class ADPTarget(ModelTarget):
         **kwargs,
     ):
         super().__init__(model, verbose, device=device)
+
+    def _b_values(self) -> torch.Tensor:
+        """Per-atom B in Å², shape ``(n_atoms,)``: B_eq from the unified U6 when any
+        atom is anisotropic, else ``model.adp()``.
+
+        Read B through this rather than ``model.adp()``, whose value for an anisotropic
+        atom is no longer refined. An all-isotropic model takes the direct path and is
+        numerically identical, since ``u6_b_eq`` reduces to B for isotropic atoms.
+        """
+        if not getattr(self.model, "_aniso_is_empty", True):
+            return u6_b_eq(self.model.adp_u6())
+        return self.model.adp()
