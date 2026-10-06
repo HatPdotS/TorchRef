@@ -25,9 +25,8 @@ class ScalerURegularizationTarget(Target):
     U33`` — is a straight trade with a uniform atomic B shift and must be
     anchored so the atoms absorb the B-factor roll-off, not the scaler.
 
-    Penalty ``(tr U)² · N_ref / 6`` — squared trace, scaled by the order
-    of magnitude of the xray gradient on U. The ``/ 6`` matches the
-    per-component gradient scaling the user originally requested.
+    Penalty ``(tr U)² · N_ref / 6`` — squared trace; ``N_ref / 6`` puts it on
+    the order of the xray gradient per U component.
     """
 
     name: str = "adp/scaler_U"
