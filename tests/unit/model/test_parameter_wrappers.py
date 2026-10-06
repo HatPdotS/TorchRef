@@ -435,3 +435,22 @@ class TestCholeskyMixedTensor:
         t().sum().backward()
         assert t.refinable_params.grad is not None
         assert torch.isfinite(t.refinable_params.grad).all()
+
+
+@pytest.mark.unit
+def test_freezing_keeps_the_refined_values(pdb_dir):
+    """Rows moving from refinable to fixed keep their refined values, not the load's."""
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    start = model.xyz().detach().clone()
+    with torch.no_grad():
+        model.xyz.refinable_params.add_(1.0)
+    n_selected = int(model.get_selection_mask("resseq 10:20").sum())
+
+    model.freeze_selection("resseq 10:20", targets="xyz")
+
+    assert model.xyz.get_refinable_count() == model.n_atoms - n_selected
+    shift = model.xyz().detach() - start
+    torch.testing.assert_close(shift, torch.ones_like(shift))

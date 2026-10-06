@@ -316,6 +316,18 @@ class TestRigidFreezeRestore:
         assert m.adp.refinable_params.numel() == adp0
 
     @pytest.mark.unit
+    def test_unfreeze_undoes_freeze_of_the_rigid_bodies(self, fresh_modelft):
+        m = fresh_modelft
+        m.use_rigid_xyz()
+        m.freeze("xyz")
+        assert not m.xyz.euler_angles.requires_grad
+        assert not m.xyz.translations.requires_grad
+
+        m.unfreeze("xyz")
+        assert m.xyz.euler_angles.requires_grad
+        assert m.xyz.translations.requires_grad
+
+    @pytest.mark.unit
     def test_pre_frozen_group_stays_frozen(self, fresh_modelft):
         m = fresh_modelft
         m.freeze("occupancy")

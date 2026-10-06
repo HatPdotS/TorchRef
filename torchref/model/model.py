@@ -1062,37 +1062,30 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Freeze (stop refining) one parameter type.
 
         A temporary toggle: the refinable set (the mask buffer) is left as it is,
-        and :meth:`unfreeze` re-applies it.
+        and :meth:`unfreeze` re-applies it. Frozen values are the current ones.
 
         Parameters
         ----------
         target : str
             One of ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
-            Unrecognized names are ignored. (``occupancy`` is frozen via the
-            OccupancyTensor's ``freeze_all`` rather than ``fix_all``.)
+            Unrecognized names are ignored.
         """
-        if target == "xyz":
-            self.xyz.fix_all()
-        elif target == "adp":
-            self.adp.fix_all()
-        elif target == "u":
-            self.u.fix_all()
-        elif target == "occupancy":
-            self.occupancy.freeze_all()  # OccupancyTensor uses freeze_all() not fix_all()
+        if target in self.PARAM_TYPES:
+            # Every wrapper takes an atom-space mask and collapses it onto its own
+            # storage (nodes of a field, occupancy groups, rigid bodies).
+            getattr(self, target).update_refinable_mask(
+                torch.zeros(self.n_atoms, dtype=torch.bool, device=self.device)
+            )
 
     def freeze_all(self):
         """Freeze every parameter type (``xyz``, ``adp``, ``u``, ``occupancy``)."""
-        self.freeze("xyz")
-        self.freeze("adp")
-        self.freeze("u")
-        self.freeze("occupancy")
+        for target in self.PARAM_TYPES:
+            self.freeze(target)
 
     def unfreeze_all(self):
         """Unfreeze every parameter type, re-applying each one's refinable set."""
-        self.unfreeze("xyz")
-        self.unfreeze("adp")
-        self.unfreeze("u")
-        self.unfreeze("occupancy")
+        for target in self.PARAM_TYPES:
+            self.unfreeze(target)
 
     def unfreeze(self, target: str):
         """
@@ -1108,17 +1101,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             One of ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
             Unrecognized names are ignored.
         """
-        if target == "xyz":
-            self.xyz.update_refinable_mask(self.xyz_mask)
-        elif target == "adp":
-            self.adp.update_refinable_mask(self.adp_mask)
-        elif target == "u":
-            self.u.update_refinable_mask(self.u_mask)
-        elif target == "occupancy":
-            # OccupancyTensor uses unfreeze_all() or update_refinable_mask() with full atom space mask
-            self.occupancy.update_refinable_mask(
-                self.occupancy_mask, in_compressed_space=False
-            )
+        if target in self.PARAM_TYPES:
+            getattr(self, target).update_refinable_mask(getattr(self, f"{target}_mask"))
 
     def set_adp_mode(
         self,
@@ -1512,7 +1496,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Push the current mask buffer into the parameter wrapper's refinable split.
 
         The counterpart to :meth:`update_mask_from_selection`, which only edits the
-        buffer. Replaces the wrapper's ``refinable_params``, so rebuild any
+        buffer, and the repartition :meth:`unfreeze` makes, raising on an unknown
+        target. Replaces the wrapper's ``refinable_params``, so rebuild any
         optimizer afterwards.
 
         Parameters
@@ -1525,20 +1510,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ValueError
             If target is not recognized.
         """
-        if target == "xyz":
-            self.xyz.update_refinable_mask(self.xyz_mask)
-        elif target == "adp":
-            self.adp.update_refinable_mask(self.adp_mask)
-        elif target == "u":
-            self.u.update_refinable_mask(self.u_mask)
-        elif target == "occupancy":
-            self.occupancy.update_refinable_mask(
-                self.occupancy_mask, in_compressed_space=False
-            )
-        else:
+        if target not in self.PARAM_TYPES:
             raise ValueError(
                 f"Invalid target: '{target}'. Must be 'xyz', 'adp', 'u', or 'occupancy'"
             )
+        self.unfreeze(target)
 
         if self.ctx.verbose > 0:
             n_refinable = getattr(self, f"{target}_mask").sum().item()

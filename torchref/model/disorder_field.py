@@ -1122,16 +1122,12 @@ class DisorderFieldTensor(MixedTensor):
             current[self.refinable_mask] = self.refinable_params.data
 
         self.fixed_values = current.clone().detach()
-        if bool(node_mask.any()):
-            self.refinable_params = nn.Parameter(
-                current[node_mask].clone().detach(),
-                requires_grad=self.refinable_params.requires_grad,
-            )
-        else:
-            self.refinable_params = nn.Parameter(
-                torch.empty(0, 2, dtype=self.dtype, device=self.device),
-                requires_grad=False,
-            )
+        # requires_grad carries over even when no node is refinable, so the field
+        # refines again once a later mask selects nodes.
+        self.refinable_params = nn.Parameter(
+            current[node_mask].clone().detach(),
+            requires_grad=self.refinable_params.requires_grad,
+        )
         self.refinable_mask = node_mask
         self.fixed_mask = ~node_mask
         self._build_index_cache()

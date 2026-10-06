@@ -444,7 +444,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         self, new_mask: torch.Tensor, reset_refinable: bool = False
     ):
         """
-        Repartition elements between refinable and fixed.
+        Repartition elements between refinable and fixed, at their current values.
 
         Replaces ``refinable_params``, so any optimizer built on the old one must
         be rebuilt.
@@ -454,8 +454,8 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         new_mask : torch.Tensor
             New boolean mask indicating refinable elements.
         reset_refinable : bool, optional
-            If True, also re-baseline ``fixed_values`` to the current values.
-            Default is False.
+            Accepted for signature compatibility; the values are always
+            re-baselined from the current state.
         """
         if new_mask.shape[0] != self._storage_rows:
             raise ValueError(
@@ -469,11 +469,8 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         self.refinable_mask = new_mask
         self.fixed_mask = ~new_mask
 
-        if reset_refinable:
-            self.fixed_values = current_full.clone()
-            new_refinable = current_full[self.refinable_mask].clone()
-        else:
-            new_refinable = current_full[self.refinable_mask].clone()
+        self.fixed_values = current_full.clone()
+        new_refinable = current_full[self.refinable_mask].clone()
 
         self.refinable_params = nn.Parameter(
             new_refinable, requires_grad=self.refinable_params.requires_grad

@@ -326,9 +326,16 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         self.euler_angles.requires_grad_(True)
         self.translations.requires_grad_(True)
 
-    def update_refinable_mask(self, *args, **kwargs):
-        # No-op: the rigid container has no per-atom mask.
-        return
+    def update_refinable_mask(self, new_mask: torch.Tensor) -> None:
+        """Refine every rigid body if any atom of the ``(N,)`` mask is True, else none.
+
+        The container has no per-atom split, so the mask only chooses between
+        :meth:`refine_all` and :meth:`fix_all`.
+        """
+        if bool(new_mask.any()):
+            self.refine_all()
+        else:
+            self.fix_all()
 
     def bake(self) -> None:
         """Bake the current rigid transformation into ``original_xyz``.
