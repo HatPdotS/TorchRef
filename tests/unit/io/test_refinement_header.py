@@ -312,6 +312,26 @@ def test_reflection_statistics_cover_the_reflections_refined(mtz_dir):
     assert meta.n_reflections_all < len(data.hkl)
 
 
+@pytest.mark.unit
+def test_atom_counts_match_the_deposited_refine_hist(pdb_dir):
+    """1DAW's _refine_hist: 2733 polymer, 285 water, 3051 non-hydrogen atoms.
+
+    The 33 AMP-PNP and magnesium atoms count only in the total.
+    """
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.n_atoms_protein == 2733
+    assert meta.n_atoms_solvent == 285
+    assert meta.n_atoms_total == 3051
+    hist = meta.render_cif_categories()["_refine_hist"]
+    assert hist["_refine_hist.pdbx_number_atoms_protein"] == "2733"
+    assert "_refine_hist.number_atoms_protein" not in hist
+
+
 # ====================================================================== #
 #  Coordinates
 # ====================================================================== #

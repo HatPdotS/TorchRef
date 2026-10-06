@@ -95,7 +95,8 @@ class RefinementMetadata:
     rmsd_bond_lengths, rmsd_bond_angles : float, optional
         Geometry deviations from ideal (Angstroms, degrees).
     n_atoms_total, n_atoms_protein, n_atoms_solvent : int, optional
-        Model atom counts.
+        Non-hydrogen atom counts: all, in polymer residues, and in waters.
+        Ligand atoms count only in the total.
     solvent_model_ksol, solvent_model_bsol : float, optional
         Bulk-solvent scale, and the equivalent single ``B`` for the fitted falloff.
     cell, spacegroup
@@ -278,10 +279,7 @@ class RefinementMetadata:
 
         # --- Atom counts ---
         try:
-            is_hetatm = refinement.model.ctx.topology.atoms.is_hetatm
-            meta.n_atoms_total = len(is_hetatm)
-            meta.n_atoms_protein = int((~is_hetatm).sum())
-            meta.n_atoms_solvent = int(is_hetatm.sum())
+            meta._set_atom_counts(refinement.model)
         except Exception:
             pass
 
@@ -353,6 +351,23 @@ class RefinementMetadata:
             self.n_reflections_test = n_test
             self.n_reflections_all = n_all
             self.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
+
+    def _set_atom_counts(self, model) -> None:
+        """Set the non-hydrogen atom counts from ``model.ctx.topology``.
+
+        Polymer residues count as protein and waters as solvent; ligands and
+        ions count only in the total, as in a deposited ``_refine_hist``.
+
+        Parameters
+        ----------
+        model : Model
+            The refined model.
+        """
+        topology = model.ctx.topology
+        heavy = ~topology.atoms.is_hydrogen.cpu().numpy()
+        self.n_atoms_total = int(heavy.sum())
+        self.n_atoms_protein = int((heavy & topology.is_polymer).sum())
+        self.n_atoms_solvent = int((heavy & topology.is_water).sum())
 
     # ------------------------------------------------------------------ #
     #  Construction from input files (pass-through)
@@ -839,7 +854,9 @@ class RefinementMetadata:
             hist = {}
             hist["_refine_hist.number_atoms_total"] = str(self.n_atoms_total)
             if self.n_atoms_protein is not None:
-                hist["_refine_hist.number_atoms_protein"] = str(self.n_atoms_protein)
+                hist["_refine_hist.pdbx_number_atoms_protein"] = str(
+                    self.n_atoms_protein
+                )
             if self.n_atoms_solvent is not None:
                 hist["_refine_hist.number_atoms_solvent"] = str(self.n_atoms_solvent)
             cats["_refine_hist"] = hist
