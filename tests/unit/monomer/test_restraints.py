@@ -225,7 +225,6 @@ def test_link_definitions_are_read_silently(capsys):
     assert capsys.readouterr().out == ""
 
 
-
 _BOND_FREE = """\
 CRYST1   30.000   30.000   30.000  90.00  90.00  90.00 P 1           1
 HETATM    1  O   HOH A   1       1.000   1.000   1.000  1.00 20.00           O
