@@ -22,11 +22,13 @@ def build(mtz_dir, pdb_dir):
 @pytest.mark.integration
 def test_load_state_restores_a_save_state_checkpoint(build, tmp_path):
     """A checkpoint loads onto a refinement built from the same files, metadata and
-    all, and reproduces its coordinates, scale and R-factors exactly."""
+    all, and reproduces its coordinates, every scaler parameter (scale, anisotropy,
+    bulk solvent) and its R-factors exactly."""
     saved = build()
     with torch.no_grad():
         saved.model.xyz.refinable_params.add_(0.03)
-        saved.scaler.c_iso.add_(0.01)
+        for p in saved.scaler.parameters():
+            p.add_(0.01)
     path = tmp_path / "refinement.pt"
     saved.save_state(str(path))
 
@@ -34,7 +36,9 @@ def test_load_state_restores_a_save_state_checkpoint(build, tmp_path):
     restored.load_state(str(path))
 
     assert torch.equal(restored.model.xyz(), saved.model.xyz())
-    assert torch.equal(restored.scaler.c_iso, saved.scaler.c_iso)
+    scaler = dict(saved.scaler.named_parameters())
+    for name, value in restored.scaler.named_parameters():
+        assert torch.equal(value, scaler[name]), name
     assert restored.get_rfactor() == saved.get_rfactor()
 
 
