@@ -19,8 +19,8 @@ from typing import List, Optional, Tuple
 import gemmi
 import torch
 
-from torchref.base.french_wilson import french_wilson_auto
 from torchref.base.reciprocal.hkl import get_d_spacing
+from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
 

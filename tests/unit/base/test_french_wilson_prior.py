@@ -9,18 +9,19 @@ intensity: on deposited data, when sigma grows with the intensity, and next to
 a single reflection whose sigma dwarfs everything around it.
 """
 
+from functools import partial
+
 import pytest
 import torch
 
 from torchref.base.french_wilson import (
-    _anisotropy_design,
     _bspline,
     fit_mean_intensity,
     french_wilson,
-    french_wilson_auto,
     french_wilson_h,
     french_wilson_valid_mask,
 )
+from torchref.io.datasets.french_wilson import _anisotropy_design, french_wilson_auto
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.symmetry import Cell, SpaceGroup
 
@@ -422,7 +423,11 @@ def test_anisotropic_prior_recovers_an_ellipsoidal_fall_off():
     centric = SpaceGroup("P 1 21 1").is_centric(hkl)
 
     aniso = fit_mean_intensity(
-        I, sigma, d, hkl=hkl, space_group="P 1 21 1", is_centric=centric
+        I,
+        sigma,
+        d,
+        anisotropy=partial(_anisotropy_design, hkl, "P 1 21 1"),
+        is_centric=centric,
     )
     iso = fit_mean_intensity(I, sigma, d, fit_mask=~centric)
 
@@ -457,8 +462,7 @@ def test_reflections_on_symmetry_axes_get_epsilon_times_the_prior(mtz_dir):
             I,
             sigma_I,
             d,
-            hkl=hkl,
-            space_group=group,
+            anisotropy=partial(_anisotropy_design, hkl, group),
             is_centric=group.is_centric(hkl),
             epsilon=epsilon,
         )

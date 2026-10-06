@@ -15,10 +15,10 @@ import numpy as np
 import torch
 
 from torchref.base import math_torch
-from torchref.base.french_wilson import french_wilson_auto
 from torchref.config import dtypes, get_int_dtype, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
+from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorMasks

@@ -8,11 +8,14 @@ Crystallographic dataset containers.
 - :class:`DatasetCollection` -- several ReflectionData on one common HKL grid
 - :func:`merge_to_spacegroup` -- merge a dataset into another space group, with
   Rmerge / Rmeas / CC_sym as :class:`MergeStats`
+- :func:`french_wilson_auto` -- French-Wilson amplitudes from a dataset's
+  intensities, Miller indices and space group
 """
 
 from .base import CrystalDataset
 from .collection import DatasetCollection
 from .fcalc_data import FcalcDataset
+from .french_wilson import french_wilson_auto
 from .merging import MergeShell, MergeStats, merge_to_spacegroup
 from .reflection_data import ReflectionData
 from .scaled_dataset import ScaledDataset
@@ -26,4 +29,5 @@ __all__ = [
     "merge_to_spacegroup",
     "MergeStats",
     "MergeShell",
+    "french_wilson_auto",
 ]
