@@ -82,7 +82,7 @@ class SigmaAXrayTarget(XrayTarget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Constructed ONCE, here -- never in forward(). The estimator caches internally
-        # until `maintenance()` resets it, which `LossState.optimize` calls after the step
+        # until `maintenance()` resets it, which `LossState.run` calls after the step
         # loop, so one estimate serves a whole optimizer-step block (every LBFGS inner
         # iteration and line-search evaluation included). Rebuilding it per forward is
         # correct and ruinous. The invalidation half is pinned by
