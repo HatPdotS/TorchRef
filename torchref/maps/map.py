@@ -43,15 +43,16 @@ class Map(DeviceMixin):
         Grid dimensions (nx, ny, nz). If None, determined automatically
         from cell parameters and resolution.
     map_type : str, optional
-        Type of map to compute. One of ``"2Fo-Fc"`` or ``"Fcalc"``.
-        Default is ``"2Fo-Fc"``. Note ``"2Fo-Fc"`` is a *plain* 2Fo-Fc map
-        (no figure-of-merit ``m`` and no sigma-A coefficient ``D``; i.e.
-        ``m=1``, ``D=1``), not a likelihood-weighted 2mFo-DFc map.
+        ``"2Fo-Fc"`` (default; unweighted, see :mod:`torchref.maps.map`) or
+        ``"Fcalc"``.
+    device : torch.device, optional
+        Computation device. ``data`` and ``model`` are moved onto it in place; if
+        None, ``model`` is moved onto ``data``'s device.
     units : str, optional
         ``"normalized"`` (default) keeps the FFT's ``1/N`` normalisation;
         ``"electrons"`` gives ``(1/V) sum_h F(h) exp(-2 pi i h.x)``, electrons per
-        cubic Angstrom, which is meaningful only when the coefficients are on the
-        absolute scale.
+        cubic Angstrom, which is meaningful only when ``data.F`` is on the absolute
+        scale: every map type is on ``data.F``'s scale.
     scaler : Scaler, optional
         A fitted :class:`~torchref.scaling.Scaler` for ``(data, model)``, e.g. a
         refinement's ``scaler``. Every map type uses ``scaler(F_calc)``, with bulk
@@ -61,28 +62,8 @@ class Map(DeviceMixin):
 
     Attributes
     ----------
-    data : ReflectionData
-        The observed reflection data.
-    model : ModelFT
-        The model used to compute structure factors.
-    gridsize : tuple of int or None
-        Requested grid dimensions; ``None`` means auto-determined at
-        ``calculate()`` time.
-    map_type : str
-        The configured map type (one of ``VALID_MAP_TYPES``).
     map_data : torch.Tensor or None
         The computed 3D real-space map, or ``None`` before ``calculate()``.
-    device : torch.device
-        Computation device.
-
-    Methods
-    -------
-    calculate()
-        Compute and return the 3D real-space map.
-    write(filepath)
-        Write the map to a CCP4 file (computing it first if needed).
-    reset_cache()
-        Discard the cached map so it is recomputed on next access.
     """
 
     VALID_MAP_TYPES = ("2Fo-Fc", "Fcalc")
@@ -147,7 +128,6 @@ class Map(DeviceMixin):
         if self.map_type == "Fcalc":
             return fcalc
 
-        # Plain 2Fo-Fc (m=1, D=1), not a likelihood-weighted 2mFo-DFc map.
         return map_coefficients(fobs, fcalc)[0]
 
     def calculate(self) -> torch.Tensor:
