@@ -68,9 +68,10 @@ class ADPLocalityTarget(ADPTarget):
         # analogue of log B_eq, hence the shared 0.5 scale.
         self._register_scalar("_sigma_aniso", float(sigma_aniso))
 
-        # The k-NN list and the coordinates it was built from.
+        # Cache for neighbor indices and distances
         self._neighbor_indices = None  # (N, k_neighbors)
         self._neighbor_distances = None  # (N, k_neighbors)
+        # The coordinates the list was built from, which maintenance() compares against.
         self._neighbor_xyz = None  # (N, 3)
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):

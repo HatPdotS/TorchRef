@@ -51,7 +51,7 @@ class ADPTarget(ModelTarget):
         atom is anisotropic, else ``model.adp()``.
 
         Read B through this rather than ``model.adp()``, whose value for an anisotropic
-        atom is no longer refined. An all-isotropic model takes the direct path and is
+        atom is not refined. An all-isotropic model takes the direct path and is
         numerically identical, since ``u6_b_eq`` reduces to B for isotropic atoms.
         """
         if not getattr(self.model, "_aniso_is_empty", True):
