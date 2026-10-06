@@ -82,6 +82,15 @@ class TestRigidXYZTensor:
         assert leaves[1].shape == (n_chains, 3)
 
     @pytest.mark.unit
+    def test_xyz_optimizer_gets_both_rigid_leaves(self, fresh_modelft):
+        """``refine_xyz`` builds its optimizer from ``parameters_of_types``."""
+        fresh_modelft.use_rigid_xyz()
+        leaves = fresh_modelft.parameters_of_types(("xyz",))
+        assert len(leaves) == 2
+        assert leaves[0] is fresh_modelft.xyz.euler_angles
+        assert leaves[1] is fresh_modelft.xyz.translations
+
+    @pytest.mark.unit
     def test_mass_weighted_centroid_matches_explicit(self, fresh_modelft):
         """``chain_centers`` should equal the mass-weighted COM of mobile atoms.
 

@@ -1042,7 +1042,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         -------
         list of nn.Parameter
             Leaves for each requested type, in the order the types were given.
-            Coordinate wrappers may expose additional torsion and rotation leaves.
+            A coordinate wrapper may expose several: a riding one adds torsion and
+            rotation leaves, a rigid one has rotation and translation leaves.
         """
         out: List[nn.Parameter] = []
         for t in types:

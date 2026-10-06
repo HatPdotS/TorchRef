@@ -282,9 +282,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         # Compat with ``MixedTensor`` consumers (e.g. ModelFT's dtype guard
         # in ``_check_forward_dtype``). This is a dtype-probe shim only: it
         # returns just one leaf (``euler_angles``) so callers can inspect the
-        # float dtype, NOT the full refinable set. The actual refinable count
+        # float dtype, NOT the full refinable set. The actual refinable set
         # spans both leaves (euler_angles + translations); see
-        # ``get_refinable_count``. Both leaves share the model's float dtype.
+        # ``optimization_parameters``. Both leaves share the model's float dtype.
         return self.euler_angles
 
     def get_refinable_count(self) -> int:
@@ -395,6 +395,10 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
 
     def parameters(self, recurse: bool = True):
         # Match MixedTensor.parameters() return convention (a list).
+        return self.optimization_parameters()
+
+    def optimization_parameters(self) -> list[nn.Parameter]:
+        """Return the rotation and translation leaves for the xyz optimizer."""
         return [self.euler_angles, self.translations]
 
     def copy(self) -> "RigidXYZTensor":
