@@ -1,5 +1,6 @@
-"""Which PDB records and fields reach the atom table, read against 1DAW."""
+"""PDB records and fields through load_as_dataframe and write, on deposited files."""
 
+import gemmi
 import pytest
 
 from torchref.io import pdb
@@ -66,3 +67,47 @@ def test_anisou_records_match_atoms_of_their_own_model(pdb_dir, tmp_path):
         1: 1209,
         2: 1209,
     }
+
+
+#: 1DAW's last atom record, a water.
+LAST_ATOM = "HETATM 3052 "
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "serial, resseq, expected",
+    [("A0000", "A000", (100000, 10000)), ("*****", " 634", (3051, 634))],
+    ids=["hybrid-36", "unparsable-serial"],
+)
+def test_overflowing_serials_and_residue_numbers_are_read(
+    pdb_dir, tmp_path, serial, resseq, expected
+):
+    path = _write_edited(
+        pdb_dir,
+        tmp_path,
+        lambda line: (
+            line[:6] + serial + line[11:22] + resseq + line[26:]
+            if line.startswith(LAST_ATOM)
+            else line
+        ),
+    )
+    table = pdb.load_as_dataframe(path)
+    assert tuple(table[["serial", "resseq"]].iloc[-1]) == expected
+
+
+@pytest.mark.unit
+def test_overflowing_serials_and_residue_numbers_are_written_in_hybrid_36(
+    pdb_dir, tmp_path
+):
+    table = pdb.load_as_dataframe(str(pdb_dir / "1DAW.pdb"))
+    table.loc[table.index[-1], ["serial", "resseq"]] = [100000, 10000]
+    path = str(tmp_path / "large.pdb")
+    pdb.write(table, path)
+
+    with open(path) as f:
+        last = [line for line in f if line.startswith(("ATOM", "HETATM"))][-1]
+    assert (last[6:11], last[22:26]) == ("A0000", "A000")
+    back = pdb.load_as_dataframe(path)
+    assert tuple(back[["serial", "resseq"]].iloc[-1]) == (100000, 10000)
+    water = gemmi.read_structure(path)[0][-1][-1]
+    assert (water[0].serial, water.seqid.num) == (100000, 10000)

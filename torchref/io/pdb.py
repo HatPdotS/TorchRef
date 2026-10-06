@@ -164,7 +164,10 @@ def load_as_dataframe(
     """
     Load a PDB file into a pandas DataFrame.
 
-    Parses ATOM, HETATM and ANISOU records by fixed column positions.
+    Parses ATOM, HETATM and ANISOU records by fixed column positions. Serials
+    above 99999 and residue numbers above 9999 are read as hybrid-36; a serial
+    that is neither decimal nor hybrid-36 (``*****``) becomes the atom's 1-based
+    position.
 
     Parameters
     ----------
@@ -230,6 +233,8 @@ def load_as_dataframe(
         "charge",
     ]
 
+    # serial and resseq stay text until decoded below, so that a hybrid-36 value
+    # cannot give the ATOM and ANISOU merge keys different dtypes.
     pdb = pd.read_fwf(
         filepath,
         names=names,
@@ -238,6 +243,7 @@ def load_as_dataframe(
         skipfooter=skipfooter,
         keep_default_na=False,
         na_values=[""],
+        dtype={"serial": str, "resseq": str},
     )
     pdb["anisou_flag"] = False
 
@@ -282,6 +288,7 @@ def load_as_dataframe(
         skipfooter=skipfooter,
         keep_default_na=False,
         na_values=[""],
+        dtype={"serial": str, "resseq": str},
     )
     models = _model_numbers(filepath, skipheader, skipfooter)
     anisou = anisou.loc[anisou["ATOM"] == "ANISOU"].assign(model_num=models["ANISOU"])
@@ -310,7 +317,16 @@ def load_as_dataframe(
     pdb[["u11", "u22", "u33", "u12", "u13", "u23"]] = (
         pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].astype(float) / 1e4
     )
-    pdb[["serial", "resseq"]] = pdb[["serial", "resseq"]].astype(int)
+    # A serial that is neither decimal nor hybrid-36, such as the '*****' some
+    # programs write past 99999, takes its position among the atoms instead.
+    serials = []
+    for position, text in enumerate(pdb["serial"], start=1):
+        try:
+            serials.append(_hy36_decode(_text(text), 5))
+        except ValueError:
+            serials.append(position)
+    pdb["serial"] = serials
+    pdb["resseq"] = [_hy36_decode(_text(text), 4) for text in pdb["resseq"]]
     pdb[["x", "y", "z", "occupancy", "tempfactor"]] = pdb[
         ["x", "y", "z", "occupancy", "tempfactor"]
     ].astype(float)
@@ -511,13 +527,13 @@ def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
                         "altloc1": line[16:17].strip(),
                         "resname1": line[17:20].strip(),
                         "chainid1": line[21:22].strip(),
-                        "resseq1": int(line[22:26]),
+                        "resseq1": _hy36_decode(line[22:26], 4),
                         "icode1": line[26:27].strip(),
                         "name2": line[42:46].strip(),
                         "altloc2": line[46:47].strip(),
                         "resname2": line[47:50].strip(),
                         "chainid2": line[51:52].strip(),
-                        "resseq2": int(line[52:56]),
+                        "resseq2": _hy36_decode(line[52:56], 4),
                         "icode2": line[56:57].strip(),
                         "length": length,
                     }
@@ -569,6 +585,53 @@ def _text(value) -> str:
     return "" if text == "nan" else text
 
 
+_HY36_DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _hy36_encode(value: int, width: int) -> str:
+    """``value`` in a ``width``-character field, hybrid-36 once decimal overflows.
+
+    Hybrid-36 (cctbx, phenix; gemmi reads it) continues past ``10**width - 1``
+    with upper-case base 36 from ``A0000`` (width 5, atom serials) or ``A000``
+    (width 4, residue numbers), then lower-case from ``a0000``.
+
+    Raises
+    ------
+    ValueError
+        If ``value`` is beyond the range of the field.
+    """
+    if -(10 ** (width - 1)) < value < 10**width:
+        return f"{value:>{width}d}"
+    n, digits = value - 10**width + 10 * 36 ** (width - 1), _HY36_DIGITS
+    if n >= 36**width:
+        n, digits = n - 26 * 36 ** (width - 1), _HY36_DIGITS.lower()
+    if value < 0 or n >= 36**width:
+        raise ValueError(f"{value} does not fit a {width}-character PDB field")
+    text = ""
+    for _ in range(width):
+        n, digit = divmod(n, 36)
+        text = digits[digit] + text
+    return text
+
+
+def _hy36_decode(text: str, width: int) -> int:
+    """The integer in a decimal or hybrid-36 field; inverse of :func:`_hy36_encode`.
+
+    Raises
+    ------
+    ValueError
+        If ``text`` is neither, e.g. blank or ``*****``.
+    """
+    text = text.strip()
+    if text.lstrip("-").isdigit():
+        return int(text)
+    if len(text) == width and text.isalnum() and text[0].isalpha():
+        if text[0].isupper():
+            return int(text, 36) - 10 * 36 ** (width - 1) + 10**width
+        return int(text, 36) + 16 * 36 ** (width - 1) + 10**width
+    raise ValueError(f"{text!r} is neither a decimal nor a hybrid-36 number")
+
+
 def _format_charge(charge) -> str:
     """Formal charge for columns 79-80: blank when neutral, else ``+1`` / ``-2``."""
     charge = 0 if pd.isna(charge) else int(charge)
@@ -591,15 +654,20 @@ def _format_atom_identity(row) -> str:
     Returns
     -------
     str
-        Exactly 21 characters for in-range values. A value wider than its field
-        (serial > 99999, a 4-character residue name) is not truncated and shifts
-        every later column.
+        Exactly 21 characters; a serial above 99999 or a residue number above
+        9999 is written in hybrid-36. A 4-character residue name is not
+        truncated and shifts every later column.
+
+    Raises
+    ------
+    ValueError
+        If the serial or residue number is beyond hybrid-36 range.
     """
     name = _format_pdb_atom_name(row["name"], _text(row["element"]))
     return (
-        f"{int(row['serial']):>5} {name}{_text(row['altloc']):1}"
+        f"{_hy36_encode(int(row['serial']), 5)} {name}{_text(row['altloc']):1}"
         f"{_text(row['resname']):>3}{_text(row['chainid']):>2}"
-        f"{int(row['resseq']):>4}{_text(row['icode']):1}"
+        f"{_hy36_encode(int(row['resseq']), 4)}{_text(row['icode']):1}"
     )
 
 
@@ -684,7 +752,8 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     ``df.attrs.get("z")`` (not from columns). If any of these are missing,
     the file is written without a CRYST1 record and a warning is printed.
 
-    Rows that fail to format are skipped with a printed warning; the
+    Serials above 99999 and residue numbers above 9999 are written as
+    hybrid-36. Rows that fail to format are skipped with a printed warning; the
     remaining rows are still written. Nothing is renumbered: duplicated atom
     identifiers are written as they are (see
     :func:`torchref.utils.sanitize_pdb_dataframe`).
