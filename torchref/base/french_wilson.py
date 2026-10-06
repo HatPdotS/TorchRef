@@ -6,10 +6,29 @@ Reference: French, S. & Wilson, K. (1978). Acta Cryst. A34, 517-525.
 The conversion has two parts:
 
 - **The prior.** :func:`fit_mean_intensity` fits the expected intensity of every
-  reflection, ``epsilon Sigma(h)``: a smooth radial curve in resolution, an
-  ellipsoidal anisotropy restricted to what the Laue class allows, and the
-  multiplicity ``epsilon``. It is a fit rather than a shell average, so it is
-  positive everywhere and has no shell edges.
+  reflection, ``epsilon Sigma(h)``. ``log Sigma`` is a cubic B-spline in
+  ``s^3 = 1/d^3`` with evenly spaced knots; reflections are spread evenly over
+  ``s^3``, so the knots are equal-count, as shells are, and no end of the curve
+  rests on a handful of reflections. An ellipsoidal anisotropy ``h^T M h``, with
+  ``M`` restricted to what the Laue class allows and its isotropic part left to
+  the radial curve, adds at most five parameters, each informed by every
+  reflection. The multiplicity enters as a fixed offset ``log epsilon``: on a
+  symmetry element the copies of each atom that map ``h`` onto itself scatter
+  in phase.
+
+  The fit is a quasi-likelihood with the first two moments of an acentric
+  Wilson intensity measured with error, ``E[I] = Sigma`` and
+  ``Var[I] = Sigma^2 + sbar^2``, where ``sbar(s)``, a smooth fit to
+  ``log sigma_I``, is the typical measurement error at that resolution. Its
+  estimating equation,
+  ``sum_h x_h (I_h - Sigma_h) Sigma_h / (Sigma_h^2 + sbar_h^2) = 0``, makes
+  ``Sigma`` a resolution-local mean intensity, as a shell mean is, but with no
+  shell edges and positive everywhere: where the local mean is zero or below,
+  the weight vanishes with ``Sigma`` and the fit settles towards zero instead
+  of crossing it. Reflections at one resolution share the weight ``sbar``
+  rather than taking their own sigmas, which correlate with the intensity
+  (counting statistics, merging) and would bias the mean; only a reflection
+  far noisier than typical is weighted down further.
 - **The posterior.** :func:`french_wilson` turns ``I``, ``sigma_I`` and the
   prior into posterior amplitudes: French and Wilson's tables, their expansion
   for large ``h``, and the corresponding series for ``h`` below the tables, so
@@ -23,14 +42,6 @@ The conversion has two parts:
 nothing here depends on :mod:`torchref.symmetry`. :func:`french_wilson_h` is the
 standardized argument shared by the posterior and the Wilson outlier test in
 :mod:`torchref.base.wilson_outliers`.
-
-Usage::
-
-        from torchref.io.datasets.french_wilson import french_wilson_auto
-
-        F, sigma_F, valid = french_wilson_auto(
-            I, sigma_I, hkl, d_spacings, space_group='P212121'
-        )
 
 These are plain functions on purpose: the conversion runs once per dataset, and
 a cached estimator holding per-row buffers goes stale the moment the rows are
@@ -430,22 +441,13 @@ def french_wilson_h(
     is_centric: torch.Tensor | bool | None = None,
 ) -> torch.Tensor:
     """
-    The French-Wilson normalized parameter ``h``.
+    Compute the French-Wilson normalized parameter ``h``.
 
-    ``h`` is not merely an interpolation coordinate for the lookup tables: it is
-    the standardized argument of the Wilson-predictive density of the
-    *observation*. Convolving the acentric Wilson prior
-    ``P(J) = (1/S)exp(-J/S)`` with the Gaussian measurement error
-    ``I|J ~ N(J, sigma^2)`` gives
-
-        p(I) = (1/S) exp(sigma^2/(2 S^2) - I/S) Phi(I/sigma - sigma/S)
-
-    whose ``Phi`` argument is exactly the acentric ``h`` below. The centric prior
-    ``J^(-1/2) exp(-J/2S)`` yields the factor of two. ``h`` is not itself a
-    tail probability: where ``sigma/S`` is large the exponential factor
-    compensates for ``Phi``, and an observation that is plain noise has a very
-    negative ``h`` and an ordinary ``p(I)``. That is why nothing here is
-    rejected on ``h``.
+    ``h = I/sigma_I - sigma_I/S``, with ``2S`` in place of ``S`` for a centric
+    reflection: the standardized argument of the Wilson-predictive density of
+    the observation (see :mod:`torchref.base.wilson_outliers`). It is not a tail
+    probability -- plain noise where ``sigma_I/S`` is large has a very negative
+    ``h`` -- so nothing is rejected on it.
 
     Parameters
     ----------
@@ -703,20 +705,10 @@ def intensities_from_amplitudes(
     """
     Approximate intensities from amplitudes, for datasets that supply only F.
 
-    Uses ``I = F^2`` and the delta-method ``sigma_I = 2 F sigma_F``.
-
-    **This is not an inverse of French-Wilson.** In the acentric asymptotic
-    branch the conversion satisfies ``F^2 = h sigma_I = I - sigma_I^2/S``, and
-    the table-driven branch has no closed form at all, so the round trip is
-    lossy in a specific and unavoidable direction: French-Wilson output ``F`` is
-    a strictly positive posterior mean, so every trace of a negative intensity
-    is gone.
-
-    The consequence for outlier detection is that on an amplitude-only dataset
-    the French-Wilson guard cannot detect an inexplicably negative intensity --
-    only an absurd ``sigma_F``. That is a property of amplitudes as input, not a
-    deficiency of this function; nothing can recover information the posterior
-    mean discarded.
+    Uses ``I = F^2`` and the delta-method ``sigma_I = 2 F sigma_F``. Not an
+    inverse of French-Wilson: its ``F`` is a positive posterior mean, so an
+    inexplicably negative intensity cannot be recovered (the French-Wilson
+    guard only catches an absurd ``sigma_F`` here).
 
     Parameters
     ----------
@@ -866,48 +858,11 @@ def fit_mean_intensity(
     is_centric: torch.Tensor | None = None,
     epsilon: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Wilson mean intensity ``Sigma`` per reflection, as a smooth positive curve.
+    """Fit the Wilson mean intensity ``Sigma`` per reflection as a positive curve.
 
-    ``log Sigma`` is a cubic B-spline in ``s^3 = 1/d^3`` with evenly spaced
-    knots. Reflections are spread evenly over ``s^3``, so the knots are
-    equal-count, as shells are; each basis function has local support, so
-    neither end of the curve rests on a handful of reflections the way the end
-    of a single high-degree polynomial does.
-
-    It is fitted by quasi-likelihood with the first two moments of an acentric
-    Wilson intensity measured with error, ``E[I] = Sigma`` and
-    ``Var[I] = Sigma^2 + sbar^2``, where ``sbar(s)`` is the typical measurement
-    error at that resolution, a smooth least-squares fit to ``log sigma_I``.
-    The estimating equation,
-
-        sum_h  x_h (I_h - Sigma_h) Sigma_h / (Sigma_h^2 + sbar_h^2) = 0,
-
-    makes ``Sigma`` a resolution-local mean intensity, as a shell mean is, but:
-
-    - ``Sigma > 0`` everywhere. Where the local mean is zero or below, as in a
-      region of pure noise, the weight vanishes with ``Sigma`` and the fit
-      settles towards zero instead of crossing it.
-    - There are no shell edges, and one reflection's pull is spread over the
-      support of its basis functions instead of landing on its own shell.
-    - Reflections at a given resolution get the same weight. Per-reflection
-      sigmas are not used for weighting because they correlate with the
-      intensity -- counting statistics make strong reflections noisier, and
-      merging can understate the error of rarely measured ones -- and
-      weighting by them would bias the mean in whichever direction that
-      correlation runs. The exception is a reflection more than ten times
-      noisier than typical, which takes its own sigma in place of ``sbar``
-      and so cannot drag the curve with an intensity that is mostly noise.
-
-    Given ``anisotropy``, ``log Sigma`` also carries an ellipsoidal anisotropy,
-    ``h^T M h`` with ``M`` restricted to what the Laue group allows, its
-    isotropic part left to the radial curve: at most five parameters, each
-    informed by every reflection. Without it the curve is isotropic.
-
-    Given ``epsilon``, a reflection's expected intensity is ``epsilon Sigma``:
-    on a symmetry element the copies of each atom that map ``h`` onto itself
-    scatter in phase, so the symmetry concentrates the same total intensity on
-    fewer, stronger reflections. It enters the fit as a fixed offset on
-    ``log Sigma``, and the result is returned multiplied by it.
+    ``log Sigma`` is a cubic B-spline in ``s^3 = 1/d^3``, plus the columns of
+    ``anisotropy`` when given, fitted by the quasi-likelihood the module
+    docstring derives.
 
     Parameters
     ----------

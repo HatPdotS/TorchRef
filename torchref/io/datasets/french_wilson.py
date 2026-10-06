@@ -2,10 +2,20 @@
 French-Wilson conversion of a dataset's intensities, with its symmetry.
 
 :func:`french_wilson_auto` is the entry point every intensity load goes through.
-It does the space-group bookkeeping the conversion needs -- centric and absent
-flags, the multiplicity epsilon and the anisotropy the Laue class allows -- and
-hands the rest to the tensor math in :mod:`torchref.base.french_wilson`, which
-stays free of the symmetry layer.
+It does the space-group bookkeeping the conversion needs and hands the rest to
+the tensor math in :mod:`torchref.base.french_wilson`, which stays free of the
+symmetry layer:
+
+- centric flags, which give centric rows their own variance in the prior and
+  their own posterior;
+- systematic absences, which never inform the prior: their intensity is zero by
+  symmetry, not a sample of the Wilson distribution;
+- the multiplicity ``epsilon``, the factor by which a reflection on a symmetry
+  element is stronger;
+- the anisotropy the Laue class allows. Without it the prior is fitted to the
+  acentric rows only: a centric zone is a single plane of reciprocal space, and
+  on anisotropic data its mean intensity is that of one direction, not of the
+  shell.
 """
 
 from functools import partial
@@ -152,14 +162,9 @@ def french_wilson_auto(
     Convert intensities to amplitudes, fitting the prior from the data.
 
     Every per-reflection input must be row-aligned: the prior and centric flag
-    of row ``i`` are taken from ``hkl[i]`` and ``d_spacings[i]``.
-
-    The prior is :func:`~torchref.base.french_wilson.fit_mean_intensity`.
-    Anisotropic, it is fitted to every row, centric ones with their own variance. Isotropic, it is fitted to the
-    acentric rows only: a centric zone is a single plane of reciprocal space,
-    and on anisotropic data its mean intensity is that of one direction, not
-    of the shell. Systematic absences never inform the prior: their intensity
-    is zero by symmetry, not a sample of the Wilson distribution.
+    of row ``i`` are taken from ``hkl[i]`` and ``d_spacings[i]``. The prior is
+    :func:`~torchref.base.french_wilson.fit_mean_intensity`, informed by neither
+    systematic absences nor, when ``anisotropic`` is False, centric rows.
 
     Parameters
     ----------
@@ -204,16 +209,6 @@ def french_wilson_auto(
         Boolean mask, ``True`` = keep. ``False`` both for rows too negative
         for their own sigma and for rows with NaN ``I`` or ``sigma_I`` or a
         non-finite ``d``, whose ``F`` and ``sigma_F`` are NaN.
-
-    Examples
-    --------
-    ::
-
-        hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-        I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-        sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-        d_spacings = torch.tensor([2.5, 3.0, 2.8, 2.0])
-        F, sigma_F, valid = french_wilson_auto(I, sigma_I, hkl, d_spacings, "P212121")
     """
     F = torch.full_like(I, float("nan"))
     sigma_F = torch.full_like(sigma_I, float("nan"))
