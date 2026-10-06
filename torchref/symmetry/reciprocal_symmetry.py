@@ -186,7 +186,7 @@ def _expand_hkl(
 
 
 def _asu_condition_vectorized(h, k, l, condition_key):
-    """Vectorized CCP4 ASU membership test over numpy ``h``/``k``/``l`` arrays.
+    """Vectorized CCP4 ASU membership test over torch ``h``/``k``/``l`` tensors.
 
     ``condition_key`` is a condition string from
     ``gemmi.ReciprocalAsu.condition_str()``, which holds for indices in the

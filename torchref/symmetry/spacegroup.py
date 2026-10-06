@@ -401,8 +401,8 @@ class SpaceGroup(Symmetry):
             reciprocal space has no pure-rotation representative in the Laue-based
             CCP4 ASU, and unmappable reflections raise.
         device : torch.device, optional
-            Output device. Defaults to ``hkl``'s. The lookup itself runs on CPU
-            whatever device this group is on, because the ASU tables are numpy-backed.
+            Output device. Defaults to ``hkl``'s. The mapping itself runs on CPU
+            with torch ops, whatever device this group or ``hkl`` is on.
         sort : bool, default True
             Sort the rows lexicographically by canonical ``(h, k, l)``. ``False``
             keeps the input row order and skips the sort, which callers that only
