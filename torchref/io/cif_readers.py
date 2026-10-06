@@ -1603,28 +1603,12 @@ class RestraintCIFReader:
         """Compound IDs present in the file, e.g. ``['ALA']``."""
         compounds = []
 
-        # Check for comp_list (monomer library format)
-        if "comp_list" in self.cif.data:
-            df = self.cif.data["comp_list"]
-            if "id" in df.columns:
-                compounds = df["id"].tolist()
-            elif "_chem_comp.id" in df.columns:
-                compounds = df["_chem_comp.id"].tolist()
-
-        # Check for chem_comp (eLBOW/phenix format)
-        if not compounds and "chem_comp" in self.cif.data:
+        # The _chem_comp header: a loop in the monomer library's data_comp_list
+        # block, key-value pairs in a single-compound (CCD-style) file.
+        if "chem_comp" in self.cif.data:
             df = _category_table(self.cif.data, "chem_comp")
             if "_chem_comp.id" in df.columns and len(df) > 0:
                 compounds = df["_chem_comp.id"].tolist()
-            elif "id" in df.columns and len(df) > 0:
-                compounds = df["id"].tolist()
-
-        if not compounds and "comp" in self.cif.data:
-            df = self.cif.data["comp"]
-            if "id" in df.columns and len(df) > 0:
-                compounds = [df["id"].iloc[0]]
-            elif "_chem_comp.id" in df.columns and len(df) > 0:
-                compounds = [df["_chem_comp.id"].iloc[0]]
 
         # If no comp_list/chem_comp header, derive the compound ID(s) from the
         # restraint data blocks themselves. Many user-supplied dictionaries
@@ -1634,19 +1618,11 @@ class RestraintCIFReader:
         # so ``_filter_by_comp`` returns nothing and the custom restraints are
         # silently overshadowed by the bundled monomer library.
         if not compounds:
-            for block in (
-                "comp_atom",
-                "chem_comp_atom",
-                "comp_bond",
-                "chem_comp_bond",
-            ):
+            for block in ("chem_comp_atom", "chem_comp_bond"):
                 df = _category_table(self.cif.data, block)
                 if len(df) == 0:
                     continue
-                id_col = next(
-                    (c for c in df.columns if c == "comp_id" or c.endswith(".comp_id")),
-                    None,
-                )
+                id_col = next((c for c in df.columns if c.endswith(".comp_id")), None)
                 if id_col is not None:
                     compounds = [c for c in df[id_col].unique().tolist() if c]
                     if compounds:
@@ -1677,11 +1653,8 @@ class RestraintCIFReader:
                 self.compounds = [comp_id]
 
         # Check for bond restraints with proper parameters
-        # Try both naming conventions: comp_bond and chem_comp_bond
         bond_df = None
-        if "comp_bond" in self.cif.data:
-            bond_df = self.cif.data["comp_bond"]
-        elif "chem_comp_bond" in self.cif.data:
+        if "chem_comp_bond" in self.cif.data:
             bond_df = _category_table(self.cif.data, "chem_comp_bond")
 
         if bond_df is not None:
@@ -1717,55 +1690,14 @@ class RestraintCIFReader:
         Returns
         -------
         dict
-            Dictionary mapping compound ID to dict of restraint types::
-
-                {
-                    'ALA': {
-                        'bonds': DataFrame(atom1, atom2, value, sigma),
-                        'angles': DataFrame(atom1, atom2, atom3, value, sigma),
-                        'torsions': DataFrame(id, atom1, atom2, atom3, atom4, value, sigma, periodicity),
-                        'planes': DataFrame(atom, plane_id),
-                        'chirals': DataFrame(atom_centre, atom1, atom2, atom3, volume_sign)
-                    },
-                    ...
-                }
+            Each compound ID in ``compounds`` mapped to the dict of ``bonds``,
+            ``angles``, ``torsions``, ``planes``, ``chirals`` and ``atoms``
+            DataFrames that :meth:`get_compound_restraints` returns for it.
         """
         result = {}
 
         for comp_id in self.compounds:
             result[comp_id] = self.get_compound_restraints(comp_id)
-
-        # If no compounds found, try to get data directly
-        if not result:
-            comp_id = self.filepath.stem
-            raw_bonds = self.cif.data.get(
-                "comp_bond", self.cif.data.get("chem_comp_bond", pd.DataFrame())
-            )
-            raw_angles = self.cif.data.get(
-                "comp_angle", self.cif.data.get("chem_comp_angle", pd.DataFrame())
-            )
-            raw_torsions = self.cif.data.get(
-                "comp_tor", self.cif.data.get("chem_comp_tor", pd.DataFrame())
-            )
-            raw_planes = self.cif.data.get(
-                "comp_plane_atom",
-                self.cif.data.get("chem_comp_plane_atom", pd.DataFrame()),
-            )
-            raw_chirals = self.cif.data.get(
-                "comp_chir", self.cif.data.get("chem_comp_chir", pd.DataFrame())
-            )
-            raw_atoms = self.cif.data.get(
-                "comp_atom", self.cif.data.get("chem_comp_atom", pd.DataFrame())
-            )
-
-            result[comp_id] = {
-                "bonds": self._standardize_bonds(raw_bonds),
-                "angles": self._standardize_angles(raw_angles),
-                "torsions": self._standardize_torsions(raw_torsions),
-                "planes": self._standardize_planes(raw_planes),
-                "chirals": self._standardize_chirals(raw_chirals),
-                "atoms": self._standardize_atoms(raw_atoms),
-            }
 
         return result
 
@@ -1787,59 +1719,49 @@ class RestraintCIFReader:
                     'bonds': DataFrame(atom1, atom2, value, sigma)
                     'angles': DataFrame(atom1, atom2, atom3, value, sigma)
                     'torsions': DataFrame(id, atom1, atom2, atom3, atom4, value, sigma, periodicity)
-                    'planes': DataFrame(atom, plane_id)
+                    'planes': DataFrame(atom, plane_id, sigma)
                     'chirals': DataFrame(atom_centre, atom1, atom2, atom3, volume_sign)
-                    'atoms': DataFrame(atom_id, type_symbol, charge, etc.)
+                    'atoms': DataFrame(atom_id, type_symbol, charge, type_energy)
                 }
+
+            ``atoms`` also holds the ideal coordinates ``x``, ``y``, ``z`` (Å)
+            when the dictionary gives them.
         """
         restraints = {}
 
         # Extract and standardize each restraint type
         raw_bonds = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_bond", _category_table(self.cif.data, "chem_comp_bond")
-            ),
+            _category_table(self.cif.data, "chem_comp_bond"),
             comp_id,
         )
         restraints["bonds"] = self._standardize_bonds(raw_bonds)
 
         raw_angles = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_angle", _category_table(self.cif.data, "chem_comp_angle")
-            ),
+            _category_table(self.cif.data, "chem_comp_angle"),
             comp_id,
         )
         restraints["angles"] = self._standardize_angles(raw_angles)
 
         raw_torsions = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_tor", _category_table(self.cif.data, "chem_comp_tor")
-            ),
+            _category_table(self.cif.data, "chem_comp_tor"),
             comp_id,
         )
         restraints["torsions"] = self._standardize_torsions(raw_torsions)
 
         raw_planes = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_plane_atom",
-                _category_table(self.cif.data, "chem_comp_plane_atom"),
-            ),
+            _category_table(self.cif.data, "chem_comp_plane_atom"),
             comp_id,
         )
         restraints["planes"] = self._standardize_planes(raw_planes)
 
         raw_chirals = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_chir", _category_table(self.cif.data, "chem_comp_chir")
-            ),
+            _category_table(self.cif.data, "chem_comp_chir"),
             comp_id,
         )
         restraints["chirals"] = self._standardize_chirals(raw_chirals)
 
         raw_atoms = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_atom", _category_table(self.cif.data, "chem_comp_atom")
-            ),
+            _category_table(self.cif.data, "chem_comp_atom"),
             comp_id,
         )
         restraints["atoms"] = self._standardize_atoms(raw_atoms)
@@ -1852,22 +1774,14 @@ class RestraintCIFReader:
             return pd.DataFrame(columns=["atom1", "atom2", "value", "sigma"])
 
         result = pd.DataFrame()
-        result["atom1"] = self._extract_col(
-            df, ["atom_id_1", "_chem_comp_bond.atom_id_1", "atom1"]
-        )
-        result["atom2"] = self._extract_col(
-            df, ["atom_id_2", "_chem_comp_bond.atom_id_2", "atom2"]
-        )
+        result["atom1"] = self._extract_col(df, ["_chem_comp_bond.atom_id_1"])
+        result["atom2"] = self._extract_col(df, ["_chem_comp_bond.atom_id_2"])
         result["value"] = pd.to_numeric(
-            self._extract_col(
-                df, ["value_dist", "_chem_comp_bond.value_dist", "value"]
-            ),
+            self._extract_col(df, ["_chem_comp_bond.value_dist"]),
             errors="coerce",
         )
         result["sigma"] = pd.to_numeric(
-            self._extract_col(
-                df, ["value_dist_esd", "_chem_comp_bond.value_dist_esd", "sigma", "esd"]
-            ),
+            self._extract_col(df, ["_chem_comp_bond.value_dist_esd"]),
             errors="coerce",
         )
         return result
@@ -1878,26 +1792,15 @@ class RestraintCIFReader:
             return pd.DataFrame(columns=["atom1", "atom2", "atom3", "value", "sigma"])
 
         result = pd.DataFrame()
-        result["atom1"] = self._extract_col(
-            df, ["atom_id_1", "_chem_comp_angle.atom_id_1", "atom1"]
-        )
-        result["atom2"] = self._extract_col(
-            df, ["atom_id_2", "_chem_comp_angle.atom_id_2", "atom2"]
-        )
-        result["atom3"] = self._extract_col(
-            df, ["atom_id_3", "_chem_comp_angle.atom_id_3", "atom3"]
-        )
+        result["atom1"] = self._extract_col(df, ["_chem_comp_angle.atom_id_1"])
+        result["atom2"] = self._extract_col(df, ["_chem_comp_angle.atom_id_2"])
+        result["atom3"] = self._extract_col(df, ["_chem_comp_angle.atom_id_3"])
         result["value"] = pd.to_numeric(
-            self._extract_col(
-                df, ["value_angle", "_chem_comp_angle.value_angle", "value"]
-            ),
+            self._extract_col(df, ["_chem_comp_angle.value_angle"]),
             errors="coerce",
         )
         result["sigma"] = pd.to_numeric(
-            self._extract_col(
-                df,
-                ["value_angle_esd", "_chem_comp_angle.value_angle_esd", "sigma", "esd"],
-            ),
+            self._extract_col(df, ["_chem_comp_angle.value_angle_esd"]),
             errors="coerce",
         )
         return result
@@ -1921,33 +1824,20 @@ class RestraintCIFReader:
         result = pd.DataFrame()
         # The id tells apart alternative sets on the same atoms (C2e-*/C3e-* puckers).
         result["id"] = self._extract_col(df, ["_chem_comp_tor.id"])
-        result["atom1"] = self._extract_col(
-            df, ["atom_id_1", "_chem_comp_tor.atom_id_1", "atom1"]
-        )
-        result["atom2"] = self._extract_col(
-            df, ["atom_id_2", "_chem_comp_tor.atom_id_2", "atom2"]
-        )
-        result["atom3"] = self._extract_col(
-            df, ["atom_id_3", "_chem_comp_tor.atom_id_3", "atom3"]
-        )
-        result["atom4"] = self._extract_col(
-            df, ["atom_id_4", "_chem_comp_tor.atom_id_4", "atom4"]
-        )
+        result["atom1"] = self._extract_col(df, ["_chem_comp_tor.atom_id_1"])
+        result["atom2"] = self._extract_col(df, ["_chem_comp_tor.atom_id_2"])
+        result["atom3"] = self._extract_col(df, ["_chem_comp_tor.atom_id_3"])
+        result["atom4"] = self._extract_col(df, ["_chem_comp_tor.atom_id_4"])
         result["value"] = pd.to_numeric(
-            self._extract_col(
-                df, ["value_angle", "_chem_comp_tor.value_angle", "value"]
-            ),
+            self._extract_col(df, ["_chem_comp_tor.value_angle"]),
             errors="coerce",
         )
         result["sigma"] = pd.to_numeric(
-            self._extract_col(
-                df,
-                ["value_angle_esd", "_chem_comp_tor.value_angle_esd", "sigma", "esd"],
-            ),
+            self._extract_col(df, ["_chem_comp_tor.value_angle_esd"]),
             errors="coerce",
         )
         result["periodicity"] = pd.to_numeric(
-            self._extract_col(df, ["period", "_chem_comp_tor.period", "periodicity"]),
+            self._extract_col(df, ["_chem_comp_tor.period"]),
             errors="coerce",
         )
         return result
@@ -1958,18 +1848,12 @@ class RestraintCIFReader:
             return pd.DataFrame(columns=["atom", "plane_id", "sigma"])
 
         result = pd.DataFrame()
-        result["atom"] = self._extract_col(
-            df, ["atom_id", "_chem_comp_plane_atom.atom_id", "atom"]
-        )
-        result["plane_id"] = self._extract_col(
-            df, ["plane_id", "_chem_comp_plane_atom.plane_id", "id"]
-        )
+        result["atom"] = self._extract_col(df, ["_chem_comp_plane_atom.atom_id"])
+        result["plane_id"] = self._extract_col(df, ["_chem_comp_plane_atom.plane_id"])
 
         # Extract sigma (dist_esd) and convert to numeric
         sigma = pd.to_numeric(
-            self._extract_col(
-                df, ["dist_esd", "_chem_comp_plane_atom.dist_esd", "sigma"]
-            ),
+            self._extract_col(df, ["_chem_comp_plane_atom.dist_esd"]),
             errors="coerce",
         )
 
@@ -1989,20 +1873,12 @@ class RestraintCIFReader:
 
         result = pd.DataFrame()
         result["atom_centre"] = self._extract_col(
-            df, ["atom_id_centre", "_chem_comp_chir.atom_id_centre", "atom_centre"]
+            df, ["_chem_comp_chir.atom_id_centre"]
         )
-        result["atom1"] = self._extract_col(
-            df, ["atom_id_1", "_chem_comp_chir.atom_id_1", "atom1"]
-        )
-        result["atom2"] = self._extract_col(
-            df, ["atom_id_2", "_chem_comp_chir.atom_id_2", "atom2"]
-        )
-        result["atom3"] = self._extract_col(
-            df, ["atom_id_3", "_chem_comp_chir.atom_id_3", "atom3"]
-        )
-        result["volume_sign"] = self._extract_col(
-            df, ["volume_sign", "_chem_comp_chir.volume_sign", "sign"]
-        )
+        result["atom1"] = self._extract_col(df, ["_chem_comp_chir.atom_id_1"])
+        result["atom2"] = self._extract_col(df, ["_chem_comp_chir.atom_id_2"])
+        result["atom3"] = self._extract_col(df, ["_chem_comp_chir.atom_id_3"])
+        result["volume_sign"] = self._extract_col(df, ["_chem_comp_chir.volume_sign"])
         return result
 
     def _standardize_atoms(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -2011,21 +1887,15 @@ class RestraintCIFReader:
             return pd.DataFrame(columns=["atom_id", "type_symbol", "charge"])
 
         result = pd.DataFrame()
-        result["atom_id"] = self._extract_col(
-            df, ["atom_id", "_chem_comp_atom.atom_id", "id"]
-        )
-        result["type_symbol"] = self._extract_col(
-            df, ["type_symbol", "_chem_comp_atom.type_symbol", "symbol"]
-        )
+        result["atom_id"] = self._extract_col(df, ["_chem_comp_atom.atom_id"])
+        result["type_symbol"] = self._extract_col(df, ["_chem_comp_atom.type_symbol"])
         result["charge"] = pd.to_numeric(
-            self._extract_col(
-                df, ["charge", "_chem_comp_atom.charge", "partial_charge"]
-            ),
+            self._extract_col(df, ["_chem_comp_atom.charge"]),
             errors="coerce",
         )
         # The CCP4 energy type (NH1, OC, CH3, ...) keys the contact radii and the
         # hydrogen-bond donor/acceptor roles; absent from eLBOW/Grade dictionaries.
-        type_cols = ["type_energy", "_chem_comp_atom.type_energy"]
+        type_cols = ["_chem_comp_atom.type_energy"]
         if any(col in df.columns for col in type_cols):
             result["type_energy"] = (
                 self._extract_col(df, type_cols).astype(str).str.strip()
@@ -2036,10 +1906,8 @@ class RestraintCIFReader:
         # Include x,y,z if present (for ideal coordinates)
         for coord in ["x", "y", "z"]:
             coord_cols = [
-                f"pdbx_model_Cartn_{coord}_ideal",
                 f"_chem_comp_atom.pdbx_model_Cartn_{coord}_ideal",
                 f"_chem_comp_atom.{coord}",
-                coord,
             ]
             if any(col in df.columns for col in coord_cols):
                 result[coord] = pd.to_numeric(
@@ -2053,18 +1921,14 @@ class RestraintCIFReader:
         if df.empty:
             return df.drop(columns=[_SOURCE_BLOCK_COLUMN], errors="ignore")
 
-        # Try different possible column names for compound ID
-        # Include all naming conventions: monomer library, eLBOW/phenix, short forms
+        # The comp_id tag of whichever restraint category df holds.
         id_cols = [
-            "comp_id",
-            "_chem_comp.id",
             "_chem_comp_bond.comp_id",
             "_chem_comp_angle.comp_id",
             "_chem_comp_tor.comp_id",
             "_chem_comp_atom.comp_id",
             "_chem_comp_plane_atom.comp_id",
             "_chem_comp_chir.comp_id",
-            "id",
         ]
 
         selected = None
