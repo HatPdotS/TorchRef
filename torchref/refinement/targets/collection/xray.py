@@ -270,8 +270,9 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
         """The parent's stack plus ``alpha`` and ``beta_model`` on the common HKL.
 
         The fit sees the timepoint rows only (the dark row is the reference the
-        differences are taken against), their free reflections, and a detached model
-        difference, so gradients reach the models only through ``ctx.model``.
+        differences are taken against), their free reflections present in every
+        dataset, and a detached model difference, so gradients reach the models only
+        through ``ctx.model``.
         """
         ctx = super()._loss_inputs(recalc=recalc)
         dark = ctx.keys.index(self._model_collection.dark_key)
@@ -285,11 +286,13 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
             rows = [i for i in range(len(ctx.keys)) if i != dark] or [dark]
             dc = self._dataset_collection
             n_rows = len(rows)
-            # The free set, independent of this target's own subset; the fit drops
-            # non-finite observations itself.
+            # Each row's free set, independent of this target's own subset, narrowed to
+            # reflections present in every member: where one is absent the stack holds
+            # a finite placeholder (F = 0) that would enter the fit as a difference.
+            present = torch.stack([dc[k].masks() for k in ctx.keys]).all(dim=0)
             fit_mask = torch.cat(
-                [dc[ctx.keys[i]].free.mask.to(ctx.mask.device) for i in rows]
-            )
+                [dc[ctx.keys[i]].free.mask & present for i in rows]
+            ).to(ctx.mask.device)
             fit = self._estimator.get(
                 torch.cat([delta_obs[i] for i in rows]),
                 torch.cat([sigma_diff[i] for i in rows]),
@@ -301,15 +304,8 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
                 delta_calc=torch.cat([delta_calc[i].detach() for i in rows]),
                 fit_sigma_scale=False,
             )
-        # A reflection missing from the dark row has no amplitude for the power law;
-        # evaluate it at the median instead of letting a NaN reach the variance, where
-        # the masked-out branch of the loss would still turn it into a NaN gradient.
-        finite = torch.isfinite(f_dark)
-        f_eval = torch.where(
-            finite, f_dark, f_dark[finite].median() if bool(finite.any()) else 1.0
-        )
         alpha = fit.alpha_at(dss)
-        beta = fit.signal_power(dss, epsilon=eps, f_dark=f_eval, centric=centric)
+        beta = fit.signal_power(dss, epsilon=eps, f_dark=f_dark, centric=centric)
         return CollectionSigmaDLossInputs(
             *ctx, alpha=alpha.to(dtype).detach(), beta_model=beta.to(dtype).detach()
         )

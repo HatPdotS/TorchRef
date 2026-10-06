@@ -26,10 +26,13 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def target(loaded_reflection_data, sample_structure_pair):
+def target(request, loaded_reflection_data, sample_structure_pair):
     """A dark/light collection whose light amplitudes carry a resolution-dependent
     difference proportional to ``F``, so the fitted coupling is not zero, and a light
-    model shifted by 0.2 A."""
+    model shifted by 0.2 A.
+
+    Indirect parameter: the fraction of reflections the dark set keeps, lowest
+    resolution first (default 1, all of them)."""
     from torchref import ReflectionData
     from torchref.cli._common import load_model
     from torchref.io import DatasetCollection
@@ -37,6 +40,10 @@ def target(loaded_reflection_data, sample_structure_pair):
     from torchref.scaling import CollectionScaler
 
     data = loaded_reflection_data
+    dark = data
+    keep = getattr(request, "param", 1.0)
+    if keep < 1.0:
+        dark = data[data.resolution >= torch.quantile(data.resolution, 1.0 - keep)]
     g = torch.Generator().manual_seed(11)
     f = data.F
     dss = 1.0 / data.resolution**2
@@ -65,7 +72,7 @@ def target(loaded_reflection_data, sample_structure_pair):
     with torch.no_grad():
         models[1].xyz.refinable_params += 0.2
     dc = DatasetCollection(device=data.device, verbose=0)
-    dc.add_dataset("dark", data, set_as_reference=True).add_dataset("light", light)
+    dc.add_dataset("dark", dark, set_as_reference=True).add_dataset("light", light)
     mc = ModelCollection(models, dark_key="dark", verbose=0)
     mc.add_dark().add_timepoint("light", [0.78, 0.22])
     scaler = CollectionScaler(dc, mc, verbose=0).initialize()
@@ -125,6 +132,28 @@ def test_fit_uses_free_reflections_of_the_timepoint_row(target, monkeypatch):
     free = dc["light"].free.mask.to(seen["fit_mask"].device)
     assert bool((seen["fit_mask"] & ~free).sum() == 0)
     assert int(seen["fit_mask"].sum()) > 0
+
+
+@pytest.mark.parametrize("target", [0.8], indirect=True)
+def test_fit_excludes_reflections_missing_from_the_dark_set(target, monkeypatch):
+    """A reflection the dark set lacks holds a placeholder amplitude of 0 on the common
+    grid, so the timepoint row's difference from the mean there is half its own
+    amplitude rather than a measured difference. The fit must not see such rows; on
+    the rows it does see, the unexplained power rises with the dark amplitude."""
+    dc, _mc, t = target
+    seen = {}
+    real = difference_power_module.fit_difference_power
+
+    def spy(delta_obs, sigma_diff, d_star_sq, **kw):
+        seen["fit_mask"] = kw["fit_mask"].clone()
+        return real(delta_obs, sigma_diff, d_star_sq, **kw)
+
+    monkeypatch.setattr(difference_power_module, "fit_difference_power", spy)
+    t.forward()
+    dark_present = dc["dark"].masks().to(seen["fit_mask"].device)
+    assert not bool(dark_present.all())
+    assert not bool((seen["fit_mask"] & ~dark_present).any())
+    assert t._estimator.fit.gamma > 0
 
 
 def test_stats_carry_the_fit_summary(target):
