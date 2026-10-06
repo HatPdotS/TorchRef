@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from torchref.io import ReflectionData
 from torchref.io.cif_readers import ModelCIFReader, ReflectionCIFReader
 
 
@@ -64,3 +65,15 @@ def test_blank_line_inside_a_loop_keeps_the_rows_after_it(
 
     assert len(ReflectionCIFReader(reflections).data["HKL"]) == 23356
     assert len(ModelCIFReader(atoms).dataframe) == 3051
+
+
+@pytest.mark.unit
+def test_provenance_keys_are_tag_names(cif_sf_dir):
+    path = str(cif_sf_dir / "3GR5-sf.cif")
+    data = ReflectionCIFReader(path).data
+
+    assert data["HKL_key"] == "_refln.index_h,_refln.index_k,_refln.index_l"
+    assert data["F_col"] == "_refln.F_meas_au"
+    assert data["SIGF_col"] == "_refln.F_meas_sigma_au"
+    assert data["R-free-source"] == "_refln.status"
+    assert "F=_refln.F_meas_au" in repr(ReflectionData(verbose=0).load_cif(path))

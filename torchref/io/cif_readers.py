@@ -523,7 +523,7 @@ class ReflectionCIFReader:
             ]
         ).astype(np.int32)
         self.data["HKL"] = hkl
-        self.data["HKL_key"] = refln_df["hkl_key"]
+        self.data["HKL_key"] = self._source_tags["HKL_key"]
         # Friedel merge state (set by get_reflection_data); False when F(+)/F(-) were
         # expanded into explicit signed-HKL Bijvoet pairs.
         self.data["friedel_merged"] = getattr(self, "_friedel_merged", True)
@@ -531,20 +531,20 @@ class ReflectionCIFReader:
         # Store amplitudes if available (standardized keys matching MTZ reader)
         if refln_df["F_obs"].notna().any():
             self.data["F"] = refln_df["F_obs"].to_numpy().astype(np.float32)
-            self.data["F_col"] = refln_df["F_obs_key"]
+            self.data["F_col"] = self._source_tags["F_col"]
 
         if refln_df["sigma_F_obs"].notna().any():
             self.data["SIGF"] = refln_df["sigma_F_obs"].to_numpy().astype(np.float32)
-            self.data["SIGF_col"] = refln_df["sigma_F_obs_key"]
+            self.data["SIGF_col"] = self._source_tags["SIGF_col"]
 
         # Store intensities if available (standardized keys matching MTZ reader)
         if refln_df["I_obs"].notna().any():
             self.data["I"] = refln_df["I_obs"].to_numpy().astype(np.float32)
-            self.data["I_col"] = refln_df["I_obs_key"]
+            self.data["I_col"] = self._source_tags["I_col"]
 
         if refln_df["sigma_I_obs"].notna().any():
             self.data["SIGI"] = refln_df["sigma_I_obs"].to_numpy().astype(np.float32)
-            self.data["SIGI_col"] = refln_df["sigma_I_obs_key"]
+            self.data["SIGI_col"] = self._source_tags["SIGI_col"]
 
         # A structure-factor CIF must carry observed amplitudes or intensities.
         # Calculated columns (e.g. _refln.F_calc) are intentionally not used as
@@ -582,7 +582,7 @@ class ReflectionCIFReader:
                 self.data["R-free-source"] = "None"
             else:
                 self.data["R-free-flags"] = rfree_characters.to_numpy().astype(np.int32)
-                self.data["R-free-source"] = refln_df["free_flag_key"]
+                self.data["R-free-source"] = self._source_tags["R-free-source"]
 
         # Extract cell and spacegroup
         self.cell = self.get_cell_parameters()
@@ -649,6 +649,9 @@ class ReflectionCIFReader:
         # Friedel merge state: set False below if anomalous F(+)/F(-) (or I(+)/I(-))
         # are detected, in which case rows are expanded into signed-HKL Bijvoet pairs.
         self._friedel_merged = True
+        # The tag behind each output, filed under the provenance key MTZReader uses
+        # for the same quantity ("None" when absent); _extract_data copies them.
+        self._source_tags = {}
 
         # Miller indices (required)
         result["h"], hkey = self._extract_numeric(
@@ -660,7 +663,7 @@ class ReflectionCIFReader:
         result["l"], lkey = self._extract_numeric(
             refln_df, ["_refln.index_l", "_refln.l"], required=True, target_type="int"
         )
-        result["hkl_key"] = f"{hkey},{kkey},{lkey}"
+        self._source_tags["HKL_key"] = f"{hkey},{kkey},{lkey}"
 
         # Structure factors - check for anomalous data first
         F_plus_col = (
@@ -691,7 +694,7 @@ class ReflectionCIFReader:
                 refln_df[F_minus_col].replace(["?", "."], np.nan), errors="coerce"
             )
             result["F_obs"] = np.nan
-            result["F_obs_key"] = f"{F_plus_col}/{F_minus_col}_unstacked"
+            self._source_tags["F_col"] = f"{F_plus_col}/{F_minus_col}_unstacked"
 
             if sigF_plus_col and sigF_minus_col:
                 result["_sigF_plus"] = pd.to_numeric(
@@ -702,7 +705,7 @@ class ReflectionCIFReader:
                     errors="coerce",
                 )
                 result["sigma_F_obs"] = np.nan
-                result["sigma_F_obs_key"] = (
+                self._source_tags["SIGF_col"] = (
                     f"{sigF_plus_col}/{sigF_minus_col}_unstacked"
                 )
             else:
@@ -713,7 +716,7 @@ class ReflectionCIFReader:
                 result["_sigF_plus"] = sigF
                 result["_sigF_minus"] = sigF
                 result["sigma_F_obs"] = np.nan
-                result["sigma_F_obs_key"] = sigma_F_obs_key
+                self._source_tags["SIGF_col"] = sigma_F_obs_key
 
             if self.verbose > 0:
                 F_plus, F_minus = result["_F_plus"], result["_F_minus"]
@@ -739,11 +742,11 @@ class ReflectionCIFReader:
                 ],
                 target_type="float",
             )
-            result["F_obs_key"] = F_obs_key
+            self._source_tags["F_col"] = F_obs_key
             result["sigma_F_obs"], sigma_F_obs_key = self._extract_numeric(
                 refln_df, _SIGMA_F_TAGS, target_type="float"
             )
-            result["sigma_F_obs_key"] = sigma_F_obs_key
+            self._source_tags["SIGF_col"] = sigma_F_obs_key
 
         # Intensities - check for anomalous intensities
         I_plus_col = (
@@ -773,7 +776,7 @@ class ReflectionCIFReader:
                 refln_df[I_minus_col].replace(["?", "."], np.nan), errors="coerce"
             )
             result["I_obs"] = np.nan
-            result["I_obs_key"] = f"{I_plus_col}/{I_minus_col}_unstacked"
+            self._source_tags["I_col"] = f"{I_plus_col}/{I_minus_col}_unstacked"
 
             if sigI_plus_col and sigI_minus_col:
                 result["_sigI_plus"] = pd.to_numeric(
@@ -784,7 +787,7 @@ class ReflectionCIFReader:
                     errors="coerce",
                 )
                 result["sigma_I_obs"] = np.nan
-                result["sigma_I_obs_key"] = (
+                self._source_tags["SIGI_col"] = (
                     f"{sigI_plus_col}/{sigI_minus_col}_unstacked"
                 )
             else:
@@ -802,7 +805,7 @@ class ReflectionCIFReader:
                 result["_sigI_plus"] = sigI
                 result["_sigI_minus"] = sigI
                 result["sigma_I_obs"] = np.nan
-                result["sigma_I_obs_key"] = sigIobskey
+                self._source_tags["SIGI_col"] = sigIobskey
 
             if self.verbose > 0:
                 I_plus, I_minus = result["_I_plus"], result["_I_minus"]
@@ -829,7 +832,7 @@ class ReflectionCIFReader:
                 ],
                 target_type="float",
             )
-            result["I_obs_key"] = Iobskey
+            self._source_tags["I_col"] = Iobskey
             result["sigma_I_obs"], sigIobskey = self._extract_numeric(
                 refln_df,
                 [
@@ -842,20 +845,17 @@ class ReflectionCIFReader:
                 ],
                 target_type="float",
             )
-            result["sigma_I_obs_key"] = sigIobskey
+            self._source_tags["SIGI_col"] = sigIobskey
 
         # Phase information
-        result["phase"], phase_key = self._extract_numeric(
+        result["phase"], _ = self._extract_numeric(
             refln_df,
             ["_refln.phase_meas", "_refln.phase_calc", "_refln.pdbx_PHIB"],
             target_type="float",
         )
-
-        result["phase_key"] = phase_key
-        result["fom"], fom_key = self._extract_numeric(
+        result["fom"], _ = self._extract_numeric(
             refln_df, ["_refln.fom", "_refln.pdbx_FOM"], target_type="float"
         )
-        result["fom_key"] = fom_key
 
         # R-free flags
         result["free_flag"], free_flag_key = self._extract_numeric(
@@ -863,7 +863,7 @@ class ReflectionCIFReader:
             ["_refln.status", "_refln.pdbx_r_free_flag", "_refln.free_flag"],
             target_type="None",
         )
-        result["free_flag_key"] = free_flag_key
+        self._source_tags["R-free-source"] = free_flag_key
 
         if not self._friedel_merged:
             # Anomalous columns were detected. Honor the caller's preference:
