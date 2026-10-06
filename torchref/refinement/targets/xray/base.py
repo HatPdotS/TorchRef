@@ -280,24 +280,20 @@ class XrayTarget(DataTarget):
         Parameters
         ----------
         fcalc : torch.Tensor, optional
-            Pre-computed structure factors.
+            Pre-computed structure factors, scored by both the loss and the R-factors.
 
         Returns
         -------
         dict
             Statistics dict with StatEntry values containing verbosity levels.
         """
-        F_obs, F_calc, sigma, _, sub = self.get_data(fcalc=fcalc)
-        F_calc_amp = torch.abs(F_calc)
-        diff = F_obs - F_calc_amp
-
         loss = self.forward(fcalc=fcalc)
 
-        rwork, rfree = self.get_rfactor()
+        rwork, rfree = self.get_rfactor(fcalc=fcalc)
 
         return {
             "loss": stat(loss.item(), VERBOSITY_STANDARD),
-            "n": stat(sub.n, VERBOSITY_DEBUG),
+            "n": stat(self._subset().n, VERBOSITY_DEBUG),
             "rwork": stat(rwork, VERBOSITY_STANDARD),
             "rfree": stat(rfree, VERBOSITY_STANDARD),
         }

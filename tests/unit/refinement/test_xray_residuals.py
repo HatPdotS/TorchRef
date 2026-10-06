@@ -40,10 +40,10 @@ def refinement(pdb_dir, mtz_dir):
     return ref
 
 
-def _target(refinement, mode, use_set="work"):
+def _target(refinement, mode, use_set="work", with_model=True):
     return create_xray_target(
         data=refinement.reflection_data,
-        model=refinement.model,
+        model=refinement.model if with_model else None,
         scaler=refinement.scaler,
         mode=mode,
         use_set=use_set,
@@ -219,6 +219,28 @@ def test_residuals_are_differentiable(refinement):
     assert res.requires_grad
     grads = torch.autograd.grad(res.sum(), xyz, allow_unused=True)[0]
     assert grads is not None and torch.isfinite(grads).all()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_stats_scores_the_fcalc_it_is_given(refinement, mode):
+    """``stats(fcalc=F)`` reports the R-factors of ``F``, the structure factors its loss
+    scores: without a model there is no other F_calc to use, and with one the model's
+    own F_calc must not stand in for ``F``."""
+    model_less = _target(refinement, mode, with_model=False)
+    with_model = _target(refinement, mode)
+    with torch.no_grad():
+        F = with_model.get_fcalc()
+        # Not a global factor, which ls_wunit_k1's own closed-form scale would absorb.
+        ramp = torch.linspace(0.5, 1.5, len(F), device=F.device, dtype=F.real.dtype)
+        F_other = F * ramp
+        assert with_model.get_rfactor(fcalc=F_other) != pytest.approx(
+            with_model.get_rfactor(), rel=1e-3
+        ), "vacuous: F_other must score differently from the model's own F_calc"
+        for t, fcalc in ((model_less, F), (with_model, F_other)):
+            stats = t.stats(fcalc=fcalc)
+            reported = (stats["rwork"].value, stats["rfree"].value)
+            assert reported == pytest.approx(t.get_rfactor(fcalc=fcalc), rel=1e-6)
 
 
 # =====================================================================
