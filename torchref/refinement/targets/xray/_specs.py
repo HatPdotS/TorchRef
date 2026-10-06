@@ -39,8 +39,8 @@ Each is a choice of (distribution) x (variance) x (mean):
 =============  ========================  ============  ================================
 mode           distribution              mean          variance
 =============  ========================  ============  ================================
-``nll``        Gaussian on |F|           ``|F_c|``     ``sigma_obs**2``
-``nll_beta``   Gaussian on |F|           ``|F_c|``     ``eps*beta`` -> amplitude var.
+``nll``        Gaussian on ``|F|``       ``|F_c|``     ``sigma_obs**2``
+``nll_beta``   Gaussian on ``|F|``       ``|F_c|``     ``eps*beta`` -> amplitude var.
 ``ml``         Rice / folded normal      ``a*|F_c|``   ``eps*beta``
 ``ml_noalpha`` Rice / folded normal      ``|F_c|``     ``eps*beta``
 ``ml_full``    Rice (x) Gaussian, marg.  ``a*|F_c|``   ``eps*beta_model`` + sigma_obs

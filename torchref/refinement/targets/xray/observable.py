@@ -103,7 +103,7 @@ class IntensityObservableMixin:
 class NLLIntensityXrayTarget(IntensityObservableMixin, XrayTarget):
     """``--xray-mode nll_i``: Gaussian intensity NLL weighted by the experimental sigma.
 
-        NLL = 0.5*(I_obs - |F_calc|**2)**2/sigma_I**2 + log(sigma_I) + 0.5*log(2*pi)
+      ``NLL = 0.5*(I_obs - |F_calc|**2)**2/sigma_I**2 + log(sigma_I) + 0.5*log(2*pi)``
 
     The intensity counterpart of :class:`~.nll.NLLXrayTarget`, and like it carries no
     model-error term, so it does **not** control overfitting.

@@ -356,7 +356,7 @@ class DataTarget(Target):
         Returns
         -------
         torch.Tensor
-            Scaled structure factor amplitudes |F_calc|.
+            Scaled structure factor amplitudes ``|F_calc|``.
         """
         return torch.abs(self.get_fcalc_scaled(hkl, recalc=recalc, fcalc=fcalc))
 
