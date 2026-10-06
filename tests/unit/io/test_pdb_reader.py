@@ -69,6 +69,20 @@ def test_anisou_records_match_atoms_of_their_own_model(pdb_dir, tmp_path):
     }
 
 
+@pytest.mark.unit
+def test_anisou_fields_are_read_over_all_seven_columns(pdb_dir, tmp_path):
+    table = pdb.load_as_dataframe(str(pdb_dir / "4BX9.pdb"))
+    atom = table.index[table["anisou_flag"]][0]
+    # -10 and -12.3456 Å² fill their 7-column fields: '-100000', '-123456'.
+    table.loc[atom, ["u12", "u13"]] = [-10.0, -12.3456]
+    path = str(tmp_path / "wide_anisou.pdb")
+    pdb.write(table, path)
+
+    u = ["u11", "u22", "u33", "u12", "u13", "u23"]
+    back = pdb.load_as_dataframe(path)
+    assert back.loc[atom, u].tolist() == table.loc[atom, u].tolist()
+
+
 #: 1DAW's last atom record, a water.
 LAST_ATOM = "HETATM 3052 "
 
