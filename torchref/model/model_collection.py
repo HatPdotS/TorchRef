@@ -832,16 +832,16 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             row.requires_grad_(True)
 
     def freeze_structures(self):
-        """Freeze xyz and adp on all base models."""
+        """Freeze xyz and the ADPs (``adp`` and ``u``) on all base models."""
         for model in self._base_models:
-            model.freeze("xyz")
-            model.freeze("b")
+            for target in ("xyz", "adp", "u"):
+                model.freeze(target)
 
     def unfreeze_structures(self):
-        """Unfreeze xyz and adp on all base models."""
+        """Unfreeze xyz and the ADPs on all base models, re-applying their masks."""
         for model in self._base_models:
-            model.unfreeze("xyz")
-            model.unfreeze("b")
+            for target in ("xyz", "adp", "u"):
+                model.unfreeze(target)
 
     def write_pdbs(self, outdir: str):
         """

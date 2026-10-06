@@ -172,6 +172,24 @@ class TestFreezing:
         mc.freeze_all_fractions()
         assert all(not p.requires_grad for p in mc.fraction_parameters())
 
+    @pytest.mark.unit
+    def test_freeze_structures_freezes_adps(self, pdb_dir):
+        """Freezing the structures stops coordinates and ADPs alike; unfreezing
+        re-applies each base model's refinable sets."""
+        from torchref.model import ModelCollection, ModelFT
+
+        model = ModelFT(max_res=3.0, verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb"))
+        mc = ModelCollection([model, model.copy()], verbose=0)
+
+        mc.freeze_structures()
+        for base in mc.base_models:
+            assert base.xyz.get_refinable_count() == 0
+            assert base.adp.get_refinable_count() == 0
+        mc.unfreeze_structures()
+        for base in mc.base_models:
+            assert base.xyz.get_refinable_count() == int(base.xyz_mask.sum())
+            assert base.adp.get_refinable_count() == int(base.adp_mask.sum()) > 0
+
 
 class TestOverride:
     @pytest.mark.unit
