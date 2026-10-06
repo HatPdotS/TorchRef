@@ -183,107 +183,6 @@ class HydrogenTopology(DeviceMixin):
 # ---------------------------------------------------------------------------
 
 
-#: Parsed monomer templates, keyed by residue name, shared across calls. Values are
-#: None where the CIF is missing or carries no usable atom coordinates.
-_TEMPLATE_CACHE: Dict = {}
-
-
-def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
-    """``{resname: entry | None}`` H topology, ``None`` where the CIF is unusable.
-
-    Populates and returns :data:`_TEMPLATE_CACHE`. Each entry carries ``ids``,
-    ``elems``, ``coords``, ``is_h``, ``id_to_idx``, ``heavy_names``,
-    ``heavy_coords``, ``h_names``, ``h_coords``, ``parent_map``, ``ideal_bl``,
-    ``heavy_neighbor_map`` and ``planar_h``.
-    """
-    from torchref.topology.hydrogens import _planar_hydrogens
-    from torchref.topology.monomer.library import MonomerLibraryManager
-
-    lib = MonomerLibraryManager(verbose=0)
-    cache = _TEMPLATE_CACHE
-
-    for rn in pdb["resname"].unique():
-        rn_str = str(rn).strip()
-        if not rn_str:
-            continue
-        if rn_str in cache:
-            if cache[rn_str] is None or "planar_h" in cache[rn_str]:
-                continue
-            del cache[rn_str]
-
-        cif_path = lib.get_cif_file(rn_str)
-        if cif_path is None:
-            cache[rn_str] = None
-            continue
-
-        try:
-            import pandas as pd
-
-            from torchref.io.cif_readers import RestraintCIFReader
-
-            reader = RestraintCIFReader(str(cif_path))
-            all_data = reader.get_all_restraints()
-            comp_data = all_data.get(rn_str) or all_data.get(rn_str.upper())
-            if comp_data is None:
-                cache[rn_str] = None
-                continue
-            atom_df = comp_data.get("atoms", comp_data.get("atom"))
-            bond_df = comp_data.get("bonds", comp_data.get("bond"))
-            if atom_df is None or atom_df.empty or "x" not in atom_df.columns:
-                cache[rn_str] = None
-                continue
-        except Exception:
-            cache[rn_str] = None
-            continue
-
-        ids = atom_df["atom_id"].astype(str).str.strip().values
-        elems = atom_df["type_symbol"].astype(str).str.strip().values
-        coords = atom_df[["x", "y", "z"]].values.astype(np.float64)
-        is_h = np.array([e.upper() == "H" for e in elems])
-        id_to_idx = {n: i for i, n in enumerate(ids)}
-
-        parent_map = {}
-        ideal_bl = {}
-        heavy_neighbor_map = {}
-        if bond_df is not None and not bond_df.empty:
-            a1s = bond_df["atom1"].astype(str).str.strip().values
-            a2s = bond_df["atom2"].astype(str).str.strip().values
-            vals = pd.to_numeric(bond_df["value"], errors="coerce").values
-            h_set = set(ids[is_h])
-            for i in range(len(a1s)):
-                b1, b2 = a1s[i], a2s[i]
-                if b1 in h_set and b2 in id_to_idx and not is_h[id_to_idx[b2]]:
-                    parent_map[b1] = b2
-                    if np.isfinite(vals[i]):
-                        ideal_bl[b1] = float(vals[i])
-                elif b2 in h_set and b1 in id_to_idx and not is_h[id_to_idx[b1]]:
-                    parent_map[b2] = b1
-                    if np.isfinite(vals[i]):
-                        ideal_bl[b2] = float(vals[i])
-                i1, i2 = id_to_idx.get(b1), id_to_idx.get(b2)
-                if i1 is not None and i2 is not None and not is_h[i1] and not is_h[i2]:
-                    heavy_neighbor_map.setdefault(b1, []).append(b2)
-                    heavy_neighbor_map.setdefault(b2, []).append(b1)
-
-        cache[rn_str] = {
-            "ids": ids,
-            "elems": elems,
-            "coords": coords,
-            "is_h": is_h,
-            "id_to_idx": id_to_idx,
-            "heavy_names": ids[~is_h],
-            "heavy_coords": coords[~is_h],
-            "h_names": ids[is_h],
-            "h_coords": coords[is_h],
-            "parent_map": parent_map,
-            "ideal_bl": ideal_bl,
-            "heavy_neighbor_map": heavy_neighbor_map,
-            "planar_h": _planar_hydrogens(comp_data, ids[is_h]),
-        }
-
-    return cache
-
-
 def _template_frame(
     info: Dict,
     parent_name: str,
@@ -314,13 +213,13 @@ def _template_frame(
         return None
     rows = sorted(
         name_to_global[name]
-        for name in info["heavy_neighbor_map"].get(neighbour_name, [])
+        for name in info["heavy_adjacency"].get(neighbour_name, [])
         if name != parent_name and name in name_to_global
     )
     if not rows:
         return None
     frame_names = (parent_name, neighbour_name, model_names[rows[0]])
-    index, coords = info["id_to_idx"], info["coords"]
+    index, coords = info["id_to_index"], info["coords"]
     if any(name not in index for name in (*frame_names, *h_names)):
         return None
     directions = _frame_directions(
@@ -362,6 +261,7 @@ def build_hydrogen_topology(
     pdb,
     device: torch.device = None,
     verbose: int = 0,
+    cif_dict: Optional[Dict] = None,
 ) -> HydrogenTopology:
     """Build riding-hydrogen topology from the model's heavy-atom DataFrame.
 
@@ -373,14 +273,36 @@ def build_hydrogen_topology(
         Target device for tensors.
     verbose : int
         Verbosity level.
+    cif_dict : dict, optional
+        Restraint dictionary keyed by residue name, such as ``Restraints.cif_dict``;
+        each residue's hydrogens are read from its template there. None looks every
+        residue up in the monomer library instead, whose last resort is a download.
 
     Returns
     -------
     HydrogenTopology
         Module with registered buffer tensors.
     """
+    from torchref.topology.hydrogens import _template
+
     device = normalize_device(device)
-    cache = _load_cif_hydrogen_info(pdb, verbose)
+    resnames = pdb["resname"].astype(str).str.strip().unique()
+    if cif_dict is None:
+        from torchref.io.cif_readers import RestraintCIFReader
+        from torchref.topology.monomer.cif import find_cif_file_in_library
+
+        cif_dict = {}
+        for resname in resnames:
+            path = find_cif_file_in_library(resname) if resname else None
+            if path is None:
+                continue
+            try:
+                cif_dict.update(RestraintCIFReader(str(path)).get_all_restraints())
+            except Exception:
+                # An unreadable entry leaves its residue without riding hydrogens,
+                # as a missing one does.
+                continue
+    templates = {resname: _template(cif_dict, resname) for resname in resnames}
 
     model_names = pdb["name"].astype(str).str.strip().values
     model_xyz = pdb[["x", "y", "z"]].values.astype(np.float64)
@@ -413,7 +335,7 @@ def build_hydrogen_topology(
     for gi in range(len(group_starts)):
         s, e = group_starts[gi], group_ends[gi]
         rn = str(group_keys[s, 3]).strip()
-        info = cache.get(rn)
+        info = templates.get(rn)
         if info is None:
             continue
 
@@ -435,12 +357,11 @@ def build_hydrogen_topology(
         # Group H atoms by parent
         parent_to_h = {}
         for h_name in h_names_add:
-            pn = info["parent_map"].get(h_name)
+            pn = info["parent_of"].get(h_name)
             if pn is not None and pn in name_to_global:
                 parent_to_h.setdefault(pn, []).append(h_name)
 
-        hnm = info.get("heavy_neighbor_map", {})
-        id2i = info["id_to_idx"]
+        id2i = info["id_to_index"]
 
         for par_name, h_list in parent_to_h.items():
             pidx = name_to_global[par_name]
@@ -455,7 +376,7 @@ def build_hydrogen_topology(
             n_model_heavy = len(bonded)
 
             # Cap H count by expected valence
-            par_elem = info["elems"][id2i[par_name]].upper()
+            par_elem = info["elements"][id2i[par_name]].upper()
             expected_h = max(0, _std_val.get(par_elem, 4) - n_model_heavy)
             h_list_capped = sorted(h_list)[:expected_h]
             if not h_list_capped:
@@ -482,7 +403,7 @@ def build_hydrogen_topology(
             nb_arr[:nb_count] = bonded[:nb_count]
 
             for slot, h_name in enumerate(h_list_capped):
-                bl = info["ideal_bl"].get(h_name, 0.97)
+                bl = info["ideal_length"].get(h_name, 0.97)
                 ptype = _classify_placement(n_h, n_model_heavy, slot)
 
                 if ptype < 0:
