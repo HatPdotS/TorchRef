@@ -431,10 +431,9 @@ def _split_neighbours(
     copies lose its H. Blank-altloc neighbours always count.
 
     The hydrogen count is what makes generation idempotent and makes a partially
-    hydrogenated structure top up correctly. Both consume the parent's valence, so
-    subtracting only the heavy neighbours leaves budget for a hydrogen the parent
-    already carries -- which is how a second pass came to add the free-amino-acid ``H2``
-    to every backbone nitrogen that already had its ``H``.
+    hydrogenated structure top up correctly: hydrogens consume the parent's valence as
+    heavy neighbours do, so subtracting only the heavy neighbours would leave budget for
+    a hydrogen the parent already carries.
     """
     neighbours = topology.atoms.neighbors(atom_index)
     if neighbours.numel() == 0:
