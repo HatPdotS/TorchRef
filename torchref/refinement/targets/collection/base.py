@@ -141,8 +141,9 @@ class CollectionXrayTarget(Target):
 
     #: Multiplies the work-set loss. Rows carrying a likelihood whose magnitude differs
     #: from its siblings' set this so the term neither swamps nor is swamped by the
-    #: restraints; :meth:`CollectionTwoMomentIntensityTarget.calibrate_base_weight` fits
-    #: it against a reference target's gradient norm.
+    #: restraints;
+    #: :meth:`~.intensity.CollectionTwoMomentIntensityTarget.calibrate_base_weight`
+    #: fits it against a reference target's gradient norm.
     base_weight: float = 1.0
 
     def __init__(
@@ -320,7 +321,7 @@ class CollectionXrayTarget(Target):
         """Per-dataset R-work / R-free plus percentile summaries.
 
         Each dataset's R-factor is computed with
-        :func:`~torchref.base.metrics.rfactor.rfactor_work_free` on the exact
+        :func:`~torchref.base.metrics.rfactor_work_free` on the exact
         scaled ``|F_calc|`` the loss sees, so the collection cannot disagree with
         the single-dataset targets on convention. R-factors are unweighted (no
         ``base_weight``) and scale-invariant within a dataset.

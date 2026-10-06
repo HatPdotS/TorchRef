@@ -31,11 +31,11 @@ class IntensityObservableMixin:
     on amplitudes, and no method needs a runtime branch.
 
     Note there is deliberately no ``_scaled_F_calc_full`` override. That method feeds
-    :meth:`XrayTarget.get_rfactor`, and for a ``|F_calc|**2`` model its correct value is
-    ``sqrt(I_calc) == |F_calc|`` -- exactly what the inherited implementation returns. So
-    **R-factors stay on amplitudes for every row**, comparable across the whole table
-    regardless of which observable drove the loss. A row whose intensity model is *not*
-    the square of an amplitude (the two-moment model, where it is
+    :meth:`~.base.XrayTarget.get_rfactor`, and for a ``|F_calc|**2`` model its correct
+    value is ``sqrt(I_calc) == |F_calc|`` -- exactly what the inherited implementation
+    returns. So **R-factors stay on amplitudes for every row**, comparable across the
+    whole table regardless of which observable drove the loss. A row whose intensity
+    model is *not* the square of an amplitude (the two-moment model, where it is
     ``|F|**2 + var*|dF|**2``) must override it to report ``sqrt`` of its own model.
     """
 
@@ -59,11 +59,12 @@ class IntensityObservableMixin:
         self, fcalc: torch.Tensor = None, sub=None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, object]:
         """``(I_obs, I_calc, sigma_I, centric, sub)`` -- the intensity twin of
-        :meth:`XrayTarget.get_data`, same tuple shape and same subset semantics.
+        :meth:`~.base.XrayTarget.get_data`, same tuple shape and same subset semantics.
 
         Both observation columns are the *corrected* views (``sub.I``/``sub.sigI``), in
         which the scale and the anisotropy factor enter squared, so they are on the same
-        footing as the squared model amplitude from :meth:`get_I_calc_scaled`.
+        footing as the squared model amplitude from
+        :meth:`~torchref.refinement.targets.base.DataTarget.get_I_calc_scaled`.
         """
         if sub is None:
             sub = self._subset()
@@ -111,8 +112,9 @@ class NLLIntensityXrayTarget(IntensityObservableMixin, XrayTarget):
     Subclasses :class:`~.base.XrayTarget` directly rather than ``NLLXrayTarget``, because
     that row's ``forward`` calls the fused Triton amplitude kernel
     (``nll_sigma_obs_math``) which has no intensity counterpart. Here ``forward`` is the
-    structural ``_masked_sum(_per_refl(...))``, so it and :meth:`residuals` are the same
-    expression by construction rather than by test.
+    structural ``_masked_sum(_per_refl(...))``, so it and
+    :meth:`~.base.XrayTarget.residuals` are the same expression by construction rather
+    than by test.
     """
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:

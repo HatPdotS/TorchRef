@@ -145,12 +145,14 @@ class TotalADPTarget(CombinedModelTargets):
 
     Components, keyed for individual access (``target['simu']()``):
 
-    - 'simu': :class:`ADPSimilarityTarget`, bonded atoms should share a B --
-      covalent topology, the strongest local constraint.
-    - 'locality': :class:`ADPLocalityTarget`, K-NN spatial smoothness,
-      inverse-distance weighted, for medium-range correlation.
-    - 'sigd': :class:`ADPSigdTarget`, a shifted inverse-gamma prior on the whole
-      B distribution, which is where overfitting shows up.
+    - 'simu': :class:`~torchref.refinement.targets.adp.similarity.ADPSimilarityTarget`,
+      bonded atoms should share a B -- covalent topology, the strongest local
+      constraint.
+    - 'locality': :class:`~torchref.refinement.targets.adp.locality.ADPLocalityTarget`,
+      K-NN spatial smoothness, inverse-distance weighted, for medium-range correlation.
+    - 'sigd': :class:`~torchref.refinement.targets.adp.sigd.ADPSigdTarget`, a shifted
+      inverse-gamma prior on the whole B distribution, which is where overfitting shows
+      up.
 
     'locality' works in log space, since B > 0 and right-skewed; 'sigd' uses the
     shifted inverse-gamma distribution that Masmaliyeva & Murshudov (2019) showed

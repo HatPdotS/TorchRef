@@ -7,7 +7,7 @@ per-reflection geometry, and the one R-factor implementation
 they own their own scale, :meth:`_scaled_F_calc_full`.
 
 The likelihood is supplied **per reflection**, as :meth:`_per_refl`, so that both
-the summed loss (:meth:`forward`) and the unsummed one (:meth:`residuals`) come
+the summed loss (``forward``) and the unsummed one (:meth:`~XrayTarget.residuals`) come
 from one expression and cannot encode different objectives. ``residuals`` is what
 lets anything outside the target ask which reflections the model fails to explain,
 in the target's own currency.
@@ -141,8 +141,9 @@ class XrayTarget(DataTarget):
         Get compact F_obs, F_calc, sigma, centric and the subset view for
         this target's set (work, free or validation).
 
-        Goes through the :class:`ReflectionData` subset accessor, which applies the
-        validity masks and caches the remapped indices. The returned amplitude
+        Goes through the
+        :class:`~torchref.io.datasets.reflection_data.ReflectionData` subset accessor,
+        which applies the validity masks and caches the remapped indices. The returned amplitude
         tensors are **compact** -- already restricted to the subset -- so a
         full-size, model-computed array must be passed through ``sub.select(t)``
         before it can be combined with them.
@@ -212,7 +213,7 @@ class XrayTarget(DataTarget):
     def residuals(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """Per-reflection loss over EVERY reflection, aligned to ``data.hkl``.
 
-        The unsummed :meth:`forward`: same mean, same variance, same likelihood.
+        The unsummed ``forward``: same mean, same variance, same likelihood.
         Three deliberate differences, all of them so the result can be used to
         *judge* the data rather than to fit it:
 
@@ -221,7 +222,8 @@ class XrayTarget(DataTarget):
           against masks, resolution or the work/free split.
         * **Masks are not applied.** A reflection the masks exclude still gets a
           value, so the array can be used to ask *why* it was excluded rather than
-          only reflecting the answer back; see :attr:`ReflectionData.all`.
+          only reflecting the answer back; see
+          :attr:`~torchref.io.datasets.reflection_data.ReflectionData.all`.
         * **Non-finite values survive.** ``forward`` substitutes ``1e6`` so one NaN
           cannot poison a gradient; here a NaN is a finding, not a nuisance.
 

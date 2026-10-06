@@ -12,8 +12,8 @@ differences are the :meth:`SigmaAXrayTarget._model_error`, :meth:`SigmaAXrayTarg
 :class:`~torchref.refinement.targets.xray._specs.XrayTargetTable`.
 
 The likelihood hook is **per reflection**. Summing is
-:meth:`~torchref.refinement.targets.xray.base.XrayTarget.forward`'s job and happens once,
-here, so the summed and unsummed forms cannot encode different objectives.
+:meth:`SigmaAXrayTarget.forward`'s job and happens once, here, so the summed and unsummed
+forms cannot encode different objectives.
 
 ``nll`` is deliberately *not* a subclass: it needs no estimate, and it reads amplitudes
 through :meth:`XrayTarget.get_data`, which falls back to **raw** amplitudes when the scaler

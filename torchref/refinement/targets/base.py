@@ -371,10 +371,10 @@ class DataTarget(Target):
 
         Squaring the *scaled* amplitude is what makes this correct -- the scale and the
         anisotropy factor both enter squared, matching
-        :meth:`ReflectionData.get_corrected_intensities` on the observation side. Squaring
-        an unscaled ``F_calc`` and scaling afterwards with the amplitude factors would be
-        wrong by that factor, which is resolution-dependent and so reads as a scale or B
-        error rather than as a bug.
+        :meth:`~torchref.io.datasets.reflection_data.ReflectionData.get_corrected_intensities`
+        on the observation side. Squaring an unscaled ``F_calc`` and scaling afterwards
+        with the amplitude factors would be wrong by that factor, which is
+        resolution-dependent and so reads as a scale or B error rather than as a bug.
 
         Parameters
         ----------

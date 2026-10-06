@@ -7,7 +7,8 @@ from .sigma_a import AlphaCentredMixin
 class MLXrayTarget(AlphaCentredMixin, MLNoAlphaXrayTarget):
     """Read MLF at ``Sigma = epsilon*beta``, conditional mean ``alpha*|F_calc|``.
 
-    The default target. Inherits its likelihood from :class:`MLNoAlphaXrayTarget` and its
+    The default target. Inherits its likelihood from
+    :class:`~torchref.refinement.targets.xray.ml_noalpha.MLNoAlphaXrayTarget` and its
     mean from :class:`~torchref.refinement.targets.xray.sigma_a.AlphaCentredMixin`, so this
     class is the *pairing* and nothing else -- which is the whole content of the difference
     between the two rows. It is the default because the Luzzati mean coupling is the
