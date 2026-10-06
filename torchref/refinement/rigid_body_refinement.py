@@ -4,8 +4,8 @@ Wraps an :class:`~torchref.refinement.lbfgs_refinement.LBFGSRefinement`, swaps t
 model's ``xyz`` for a :class:`~torchref.model.rigid_xyz.RigidXYZTensor` via
 :meth:`~torchref.model.model.Model.use_rigid_xyz`, and runs one LBFGS step per cutoff
 coarse to fine. Above 6 Å the xray target is Phenix-style ``ls_wunit_k1`` (unit weights,
-per-bin optimal scale recomputed every gradient call, no external scaler); at 6 Å and
-below it switches to ``ml`` with the normal Scaler.
+one global K refit every gradient call) over a Scaler cut to one isotropic coefficient,
+anisotropy and bulk solvent; at 6 Å and below it is ``ml`` with a full Scaler.
 """
 
 import copy
