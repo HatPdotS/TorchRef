@@ -472,8 +472,7 @@ def estimate_beta(
 
     Runs under ``torch.no_grad()``. The working dtype is the wider of the configured float
     dtype and ``F_obs.dtype`` (float32 on MPS, which has no float64); results are cast back
-    to ``F_obs.dtype``. It used to force float64 unconditionally, which made the fit
-    unrunnable on MPS -- see the dtype note in the body and ``_rice_nll_reduced``.
+    to ``F_obs.dtype``.
 
     Parameters
     ----------

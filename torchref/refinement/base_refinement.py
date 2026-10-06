@@ -51,8 +51,7 @@ DEFAULT_GROUP_WEIGHTS = {
     # Sub-weight on the SIGD distribution prior. Weights multiply down the path
     # (see LossState.get_effective_weight), so this scales adp/sigd alone: it is a
     # per-atom sum, whereas adp/simu and adp/locality already sum over pairs and
-    # neighbours, and the log-normal KL term it replaced was a single intensive
-    # scalar. Pending the R_free weight scan, 1.0 leaves it at the group weight.
+    # neighbours. 1.0 leaves it at the group weight.
     "adp/sigd": 1.0,
     # Load balancing for the node-field ADP representation. Sub-weight on the adp
     # group, and inert on the per-atom path, so it only acts in field mode. Set
@@ -302,7 +301,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 verbose=self.verbose, device=self.device, nbins=self.nbins,
                 n_iso_coeff=self.n_iso_coeff,
             )
-            # Restraints are now lazy-loaded via model.restraints property
             return
 
         # Full initialization with file paths
@@ -473,8 +471,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         **Keep this the only place the kwargs are spelled out.** Both construction
         paths go through it; a second build site silently reverts whatever it forgets
-        to pass, which once made five CLI flags no-ops. The ``getattr`` fallbacks are
-        required: the ensemble path builds targets before these attributes exist.
+        to pass. The ``getattr`` fallbacks are required: the ensemble path builds
+        targets before these attributes exist.
         """
         return dict(
             model=self.model,
@@ -665,8 +663,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             xray_mode = getattr(self, "xray_mode", "ml")
         self._build_xray_targets(xray_mode)
 
-        # Total geometry target (handles bond, angle, torsion internally)
-        # Geometry targets now accept model directly instead of refinement
         self.geometry_target = TotalGeometryTarget(self.model, verbose=self.verbose)
 
         self.adp_target = TotalADPTarget(self.model, verbose=self.verbose)

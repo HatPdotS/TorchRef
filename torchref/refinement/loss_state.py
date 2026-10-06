@@ -603,16 +603,6 @@ class LossState(DeviceMovementMixin):
         print(self.format_breakdown())
 
     # =========================================================================
-    # Device Management
-    # =========================================================================
-    #
-    # ``LossState`` normally owns no tensors (targets are callables, weights are
-    # floats), so its ``device`` tracker used to need a bespoke ``to()``
-    # override to survive a move. ``DeviceMixin`` now carries the parsed request
-    # down the traversal and updates tensor-free objects itself, so the override
-    # is gone; ``self.device`` follows ``.to()`` via the shared machinery.
-
-    # =========================================================================
     # Utility
     # =========================================================================
 
