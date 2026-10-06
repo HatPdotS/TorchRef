@@ -742,10 +742,10 @@ def build_h_candidate_pairs(
     computes distances. An image pair's other direction comes from its reverse
     entry, B against A under the inverse operation, so the heavy list must hold both
     directions of every image contact, as ``build_vdw_restraints_gpu`` emits them.
-    Mutates ``h_topo`` in place, registering ``cand_idx_i``/``cand_idx_j``
-    (combined-array atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (the
-    image of the ``cand_idx_j`` end), ``cand_weight`` and ``cand_min_dist`` (H + heavy
-    radius sum).
+    Mutates ``h_topo`` in place, setting ``cand_idx_i``/``cand_idx_j`` (combined-array
+    atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (the image of the
+    ``cand_idx_j`` end), ``cand_weight``, and ``cand_min_dist`` as zeros for the caller
+    to fill with the contact distances (:func:`candidate_contact_distances`).
 
     Parameters
     ----------
@@ -761,9 +761,8 @@ def build_h_candidate_pairs(
     device : torch.device
     verbose : int
     """
-    # Buffers are registered onto ``h_topo`` below, so follow it rather than
-    # the global default -- otherwise they attach to a module living somewhere
-    # else.
+    # The candidate tensors are set on ``h_topo`` below, so they follow its device
+    # rather than the global default.
     device = resolve_device(h_topo, device=device)
     n_h = h_topo.n_hydrogens
     n_heavy = len(pdb)
@@ -805,9 +804,8 @@ def build_h_candidate_pairs(
     offsets_np = heavy_offsets.cpu().numpy()
     is_image_np = is_symmetry_image(heavy_symop, heavy_offsets).cpu().numpy()
 
-    # Per-pair VDW radius sums are not computed here: the cand_min_dist
-    # buffer is allocated as zeros below and is populated by the caller,
-    # which has the model's per-atom VDW radii.
+    # Contact distances are not computed here: cand_min_dist is allocated as zeros
+    # below for the caller, which has the model's radii and hydrogen-bond roles.
 
     # Candidate pairs stored as indices into the combined array:
     #   [0 .. n_heavy-1] = heavy atoms,  [n_heavy .. n_heavy+n_h-1] = H atoms
