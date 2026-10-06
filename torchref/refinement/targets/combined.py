@@ -127,7 +127,8 @@ class TotalGeometryTarget(CombinedModelTargets):
 
     def _create_targets(self) -> Dict[str, Target]:
         """Build the seven geometry component targets."""
-        print("Initializing TotalGeometryTarget with component targets...")
+        if self.verbose > 0:
+            print("Initializing TotalGeometryTarget with component targets...")
         return {
             "bond": BondTarget(self.model, self.verbose),
             "angle": AngleTarget(self.model, self.verbose),

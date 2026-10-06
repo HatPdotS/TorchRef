@@ -176,6 +176,13 @@ class TestTotalGeometryTarget:
         target = TotalGeometryTarget()
         assert target._model is None
 
+    def test_silent_at_verbose_zero(self, capsys):
+        """Construction prints nothing at the default verbosity."""
+        from torchref.refinement.targets import TotalGeometryTarget
+
+        TotalGeometryTarget()
+        assert capsys.readouterr().out == ""
+
 
 @pytest.mark.unit
 def test_empty_losses_follow_the_configured_float_dtype(double_cpu):
