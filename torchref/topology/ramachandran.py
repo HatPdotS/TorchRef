@@ -28,11 +28,6 @@ TYPE_PRE_PROLINE = 4
 #: Surface-type index for isoleucine or valine.
 TYPE_ILE_VAL = 5
 
-#: Number of Ramachandran surface types (size of the first tensor axis).
-N_TYPES = 6
-#: Number of 1° bins per axis, covering [-180, +180).
-GRID_SIZE = 360
-
 _DATA_FILE = Path(__file__).resolve().parents[1] / "data" / "rama_nll_surfaces.pt"
 
 
