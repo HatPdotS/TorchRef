@@ -47,10 +47,6 @@ NH2_B = 6  # 2 H on 1-neighbour parent, slot 1
 # Pre-computed tetrahedral geometry constants
 _COS_TET = -1.0 / 3.0  # cos(180 - 109.47) from axis
 _SIN_TET = np.sqrt(8.0 / 9.0)  # sin(180 - 109.47)
-_COS_120 = np.cos(2.0 * np.pi / 3.0)  # -0.5
-_SIN_120 = np.sin(2.0 * np.pi / 3.0)  # √3/2
-_COS_240 = np.cos(4.0 * np.pi / 3.0)  # -0.5
-_SIN_240 = np.sin(4.0 * np.pi / 3.0)  # -√3/2
 
 MAX_HEAVY_NB = 4  # Maximum heavy-atom neighbours to store per parent
 
@@ -496,27 +492,6 @@ def build_hydrogen_topology(
 # ---------------------------------------------------------------------------
 
 
-def _safe_normalize(v: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    """Normalize vectors along last dimension with epsilon for stability."""
-    return v / (v.norm(dim=-1, keepdim=True) + eps)
-
-
-def _orthonormal_basis(axis: torch.Tensor) -> tuple:
-    """``(perp1, perp2)``, each (B, 3), right-handed with the (B, 3) unit ``axis``."""
-    B = axis.shape[0]
-    # Seed from the cardinal direction least aligned with axis, so the cross
-    # product cannot degenerate.
-    abs_ax = axis.abs()
-    min_idx = abs_ax.argmin(dim=-1)  # (B,)
-    cardinal = torch.zeros_like(axis)
-    cardinal[torch.arange(B, device=axis.device), min_idx] = 1.0
-
-    perp1 = torch.cross(axis, cardinal, dim=-1)
-    perp1 = _safe_normalize(perp1)
-    perp2 = torch.cross(axis, perp1, dim=-1)
-    return perp1, perp2
-
-
 def _precompute_direction_coefficients(topo: HydrogenTopology) -> torch.Tensor:
     """(N_h, 3) of ``(c_base, c_perp1, c_perp2)``, zeros if ``type_bounds`` is unset.
 
@@ -782,7 +757,6 @@ def build_h_candidate_pairs(
     heavy_offsets = vdw_data["cell_offsets"]  # (P, 3)
 
     parent_idx_np = h_topo.h_parent_idx.cpu().numpy()  # (N_h,)
-    h_vdw_np = h_topo.h_vdw_radius.cpu().numpy()  # (N_h,)
 
     # Build parent → H index mapping
     parent_to_h = {}
