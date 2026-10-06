@@ -126,14 +126,23 @@ class MTZReader:
         column_names : dict, optional
             Explicit column name mapping to override automatic detection.
             Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
-            Example: ``{"F": "dFo", "SIGF": "sig_dFo"}``.
+            Example: ``{"F": "dFo", "SIGF": "sig_dFo"}``. A pinned column is
+            read as what its MTZ type says it is: an ``"F"`` pin naming an
+            intensity (type J or K) is an ``"I"`` pin, and an ``"I"`` pin
+            naming an amplitude (F or G) an ``"F"`` pin, with the sigma pin
+            following. Pinning one kind of data turns off the search for the
+            other, so ``{"F": "FP"}`` loads amplitudes even when the file also
+            has intensities, and French-Wilson does not run.
         anomalous : bool, optional
             None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into explicit
             Friedel pairs when such columns exist; True forces that (warning if
             none exist); False forces a merged load, averaging the pairs.
         """
         self.verbose = verbose
-        self.column_names = column_names or {}
+        # A copy: pins are re-keyed by MTZ type when a file is read.
+        self.column_names = dict(column_names or {})
+        # The data column anomalous stacking chose, consulted after the pins.
+        self._stacked_columns = {}
         self.anomalous = anomalous
         self.data = None
         self.cell = None
@@ -163,6 +172,7 @@ class MTZReader:
             print(f"Reading MTZ file: {filepath}")
 
         self.mtz_data = rs.read_mtz(filepath)
+        self._key_pins_by_type()
         self._maybe_stack_anomalous()
         self.cell = np.array(
             [
@@ -187,13 +197,35 @@ class MTZReader:
 
         return self
 
+    def _key_pins_by_type(self) -> None:
+        """Re-key a pinned data column (and its sigma) by the column's MTZ type.
+
+        Intensities are types J and K, amplitudes F and G; a pin under the
+        other family's key moves to the right one unless that key is pinned
+        too. Pins naming a column the file lacks are left for extraction to
+        report.
+        """
+        pins = self.column_names
+        for key, sigma, other, other_sigma, types in (
+            ("F", "SIGF", "I", "SIGI", "JK"),
+            ("I", "SIGI", "F", "SIGF", "FG"),
+        ):
+            column = pins.get(key)
+            if column not in self.mtz_data.columns or other in pins:
+                continue
+            if getattr(self.mtz_data.dtypes[column], "mtztype", "") in types:
+                pins[other] = pins.pop(key)
+                if sigma in pins:
+                    pins[other_sigma] = pins.pop(sigma)
+
     def _maybe_stack_anomalous(self) -> None:
         """Stack anomalous F(+)/F(-) (or I(+)/I(-)) columns into Bijvoet pairs.
 
         One row per Friedel mate, the minus member carrying the negated Miller
-        index (centrics are not split). Pins the chosen base columns in
-        ``column_names`` so the priority search cannot pick a coexisting merged
-        column such as ``FMEAN`` instead. On any failure the merged data stand.
+        index (centrics are not split). Records the chosen base column so the
+        priority search cannot pick a coexisting merged column such as
+        ``FMEAN`` instead; a pin in ``column_names`` still wins. On any failure
+        the merged data stand.
         """
         if self.anomalous is False:
             # Caller forced a merged load. If the file carries only anomalous
@@ -246,16 +278,16 @@ class MTZReader:
         self.mtz_data = stacked
         self.friedel_merged = False
 
-        # Pin the stacked data column so extraction uses it (and not a coexisting
+        # Choose the stacked data column so extraction uses it (and not a coexisting
         # merged column via the priority search). Prefer intensities so French-Wilson
         # runs per Bijvoet member. The matching sigma is auto-discovered by
-        # _extract_amplitudes_and_intensities. Respect any user-provided names.
+        # _extract_amplitudes_and_intensities. A pin of either kind wins.
         intensity_bases = [b for b in bases if "Intensity" in str(stacked.dtypes[b])]
         amplitude_bases = [b for b in bases if "SFAmplitude" in str(stacked.dtypes[b])]
-        if intensity_bases and "I" not in self.column_names:
-            self.column_names["I"] = intensity_bases[0]
-        elif amplitude_bases and "F" not in self.column_names:
-            self.column_names["F"] = amplitude_bases[0]
+        if intensity_bases:
+            self._stacked_columns["I"] = intensity_bases[0]
+        elif amplitude_bases:
+            self._stacked_columns["F"] = amplitude_bases[0]
 
         if self.verbose > 0:
             print(
@@ -336,7 +368,9 @@ class MTZReader:
         directly instead of the priority-based search. The ``"F"`` / ``"I"``
         keys override the amplitude / intensity column, and the ``"SIGF"`` /
         ``"SIGI"`` keys override their associated sigma columns (otherwise the
-        sigma column is auto-discovered).
+        sigma column is auto-discovered). A pin of one kind turns off the
+        search for the other. Without a pin of its kind, the column anomalous
+        stacking chose replaces the search.
         """
         available_cols = set(self.mtz_data.columns)
 
@@ -348,6 +382,10 @@ class MTZReader:
                     f"Intensity column '{intensity_col}' not found in MTZ. "
                     f"Available: {sorted(available_cols)}"
                 )
+        elif "F" in self.column_names:
+            intensity_col = None
+        elif "I" in self._stacked_columns:
+            intensity_col = self._stacked_columns["I"]
         else:
             intensity_col = None
             for col in self.INTENSITY_PRIORITY:
@@ -364,6 +402,10 @@ class MTZReader:
                     f"Amplitude column '{amplitude_col}' not found in MTZ. "
                     f"Available: {sorted(available_cols)}"
                 )
+        elif "I" in self.column_names:
+            amplitude_col = None
+        elif "F" in self._stacked_columns:
+            amplitude_col = self._stacked_columns["F"]
         else:
             amplitude_col = None
             for col in self.AMPLITUDE_PRIORITY:
