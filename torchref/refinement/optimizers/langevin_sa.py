@@ -15,20 +15,31 @@ class LangevinSA(Optimizer):
     invariance across all parameter types (xyz, B-factors, occupancies,
     torsions, etc.).
 
-    Args:
-        params: Iterable of parameters or param groups.
-        dt: Integration timestep.
-        friction: Friction coefficient gamma. Controls thermalization speed.
-        T_initial: Starting temperature.
-        T_final: Final temperature.
-        total_steps: Total number of annealing steps.
-        cooling_schedule: 'exponential' or 'linear'.
-        adaptive_masses: Use EMA of grad² as per-element masses.
-        mass_beta: EMA decay for adaptive masses.
-        mass_eps: Floor for adaptive masses (numerical stability).
-        gradient_clip: Optional max gradient norm (per-parameter).
-        max_step_size: Maximum displacement per element per full step.
-            Velocities are clamped so ``|v * dt| <= max_step_size``.
+    Parameters
+    ----------
+    params : iterable
+        Parameters or param groups.
+    dt : float
+        Integration timestep.
+    friction : float
+        Friction coefficient gamma. Controls thermalization speed.
+    T_initial, T_final : float
+        Starting and final temperature.
+    total_steps : int
+        Total number of annealing steps.
+    cooling_schedule : {"exponential", "linear"}
+        Shape of the temperature schedule.
+    adaptive_masses : bool
+        Use EMA of grad² as per-element masses.
+    mass_beta : float
+        EMA decay for adaptive masses.
+    mass_eps : float
+        Floor for adaptive masses (numerical stability).
+    gradient_clip : float, optional
+        Max gradient norm per parameter; None disables clipping.
+    max_step_size : float
+        Maximum displacement per element per full step. Velocities are clamped so
+        ``|v * dt| <= max_step_size``.
     """
 
     def __init__(
@@ -186,12 +197,15 @@ class LangevinSA(Optimizer):
         (``loss - best > 2 * |best|``). This prevents the dynamics from permanently
         damaging the structure while still allowing uphill exploration.
 
-        Args:
-            closure: A callable that re-evaluates the model and returns the
-                loss. The closure must call ``loss.backward()`` before
-                returning.
+        Parameters
+        ----------
+        closure : callable
+            Re-evaluates the model and returns the loss. It must call
+            ``loss.backward()`` before returning.
 
-        Returns:
+        Returns
+        -------
+        torch.Tensor
             The loss value from the closure evaluation.
         """
         if closure is None:
