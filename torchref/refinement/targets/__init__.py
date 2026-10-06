@@ -35,12 +35,6 @@ from .combined import (
     TotalGeometryTarget,
 )
 from .dataset_scaling import DatasetScalingTarget
-from .difference import (
-    DifferenceXrayTarget,
-    PhaseInformedDifferenceTarget,
-    RiceDifferenceTarget,
-    TaylorCorrectedDifferenceTarget,
-)
 from .geometry import (
     AngleTarget,
     BondTarget,
@@ -98,11 +92,6 @@ __all__ = [
     "COLLECTION_XRAY_TARGETS",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
-    # Difference targets
-    "DifferenceXrayTarget",
-    "PhaseInformedDifferenceTarget",
-    "RiceDifferenceTarget",
-    "TaylorCorrectedDifferenceTarget",
     # Geometry targets
     "GeometryTarget",
     "BondTarget",

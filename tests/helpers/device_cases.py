@@ -575,10 +575,6 @@ UNCOVERED: Dict[str, str] = {
     "MLFullXrayTarget": "needs model + data + scaler",
     "NLLBetaXrayTarget": "needs model + data + scaler",
     "RiceXrayTarget": "needs model + data + scaler",
-    "DifferenceXrayTarget": "needs two datasets",
-    "PhaseInformedDifferenceTarget": "needs two datasets + phases",
-    "RiceDifferenceTarget": "needs two datasets",
-    "TaylorCorrectedDifferenceTarget": "needs two datasets",
 }
 
 # Everything under torchref/experimental is out of scope for the conformance
