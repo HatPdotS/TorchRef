@@ -10,9 +10,9 @@ ModelCollection / DatasetCollection structures. This mapping can be:
 
 Concept Mapping
 ---------------
-IHM state  ->  base model (ModelFT) in ModelCollection
-IHM model group  ->  timepoint entry (_SharedMixedModel) in ModelCollection
-IHM population fraction  ->  activation / branching on ModelCollection
+IHM model (one per structural state)  ->  base model (ModelFT) in ModelCollection
+IHM state group  ->  timepoint entry (_SharedMixedModel) in ModelCollection
+IHM state population fraction  ->  that timepoint's fraction of the state's model
 """
 
 from dataclasses import dataclass, field
@@ -29,14 +29,18 @@ class IHMStateInfo:
     Parameters
     ----------
     state_id : int
-        Unique identifier matching ``_ihm_multi_state_modeling.state_id``.
+        Unique identifier of the structural state, the key of
+        ``IHMModelGroupInfo.state_fractions``. The file holds one
+        ``_ihm_multi_state_modeling`` state per timepoint for it.
     name : str
         Human-readable name (e.g., ``"ground_state"``, ``"intermediate_1"``).
     details : str
         Free-text description of this state.
     model_num : int
-        ``pdbx_PDB_model_num`` in the ``_atom_site`` loop that corresponds
-        to this state's coordinates.
+        ``pdbx_PDB_model_num`` in the ``_atom_site`` loop (the
+        ``_ihm_model_list.model_id``) that holds this state's coordinates in
+        the file read. ``IHMWriter`` numbers its models ``1..n`` in
+        ``state_id`` order instead.
     """
 
     state_id: int
@@ -48,14 +52,16 @@ class IHMStateInfo:
 @dataclass
 class IHMModelGroupInfo:
     """
-    Metadata for a model group (experimental condition / timepoint).
+    Metadata for a timepoint (experimental condition): one
+    ``_ihm_multi_state_modeling`` state group.
 
     Parameters
     ----------
     group_id : int
-        Unique identifier matching ``_ihm_model_group.id``.
+        Unique identifier; timepoints are ordered by it.
     name : str
-        Human-readable name (e.g., ``"dark"``, ``"1ps"``, ``"5ps"``).
+        Human-readable name (e.g., ``"dark"``, ``"1ps"``, ``"5ps"``), stored
+        as the name of the timepoint's ``_ihm_model_group`` rows.
     state_fractions : Dict[int, float]
         Mapping of ``state_id`` -> population fraction for this group.
         Fractions should sum to 1.0.
@@ -81,7 +87,7 @@ class IHMEnsembleMapping:
     states : List[IHMStateInfo]
         Structural states (one per base model in ModelCollection).
     model_groups : List[IHMModelGroupInfo]
-        Model groups / timepoints (one per timepoint in ModelCollection).
+        Timepoints (one per timepoint in ModelCollection).
     cell : list of float, optional
         Unit cell parameters ``[a, b, c, alpha, beta, gamma]``.
     spacegroup : str, optional
