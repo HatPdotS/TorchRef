@@ -7,7 +7,6 @@ refinement. Kinetic-specific targets (e.g. ``KineticPriorTarget``) stay in
 :mod:`torchref.experimental.kinetic.targets`.
 """
 
-from ._util import _scale_fcalc
 from .base import (
     CollectionLossInputs,
     CollectionSigmaALossInputs,
