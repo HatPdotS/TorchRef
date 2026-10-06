@@ -902,7 +902,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             self.amplitude_source = data_dict.get("F_col", "Unknown")
 
         else:
-            raise ValueError("No amplitude or intensity data found in MTZ file")
+            raise ValueError(
+                f"No amplitude or intensity data found by {type(reader).__name__}"
+            )
 
         if "R-free-flags" in data_dict:
             rfree = torch.tensor(
