@@ -418,16 +418,18 @@ class LossState(DeviceMovementMixin):
         -------
         torch.Tensor or None
             The loss from the last accepted closure call, or None if every call was non-finite.
+            Also None, without a step, when no parameter the optimizer holds has an element
+            that requires grad (a frozen group): LBFGS cannot step over zero elements.
         """
 
         params = list(_optimizer_param_set(optimizer))
+        if not any(p.requires_grad and p.numel() > 0 for p in params):
+            return None
         last_loss: Dict[str, Optional[torch.Tensor]] = {"val": None}
         # Device/dtype for the +inf sentinel returned when a trial step is
         # rejected before a loss value exists (linalg op raised on non-finite
         # input — see below).
-        _ref = params[0] if params else None
-        _inf_dev = _ref.device if _ref is not None else self.device
-        _inf_dtype = _ref.dtype if _ref is not None else torch.get_default_dtype()
+        _inf_dev, _inf_dtype = params[0].device, params[0].dtype
         _warned_linalg = {"done": False}
 
         def _reject():

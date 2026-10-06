@@ -589,3 +589,20 @@ class TestLinalgExceptionGuard:
         ls.run(opt2, nsteps=1, context="test_linalg_guard")
         assert torch.isfinite(p).all()
         assert abs(float(p.detach())) < p0  # moved toward the (p**2) minimum
+
+
+class TestFrozenParameterGroup:
+    """An optimizer whose parameters hold no refinable element takes no step."""
+
+    @pytest.mark.unit
+    def test_run_over_a_zero_element_leaf_returns_none(self):
+        from torchref.refinement.loss_state import LossState
+
+        empty = torch.nn.Parameter(torch.zeros(0))
+        other = torch.nn.Parameter(torch.tensor([3.0]))
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("xray", lambda: (other**2).sum() + empty.sum())
+        opt = torch.optim.LBFGS([empty], line_search_fn="strong_wolfe")
+
+        assert ls.run(opt, context="test_frozen_group") is None
+        assert other.item() == 3.0

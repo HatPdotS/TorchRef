@@ -49,3 +49,15 @@ def test_load_state_refuses_a_checkpoint_missing_a_parameter(build, tmp_path):
 
     with pytest.raises(RuntimeError, match="scaler.c_iso"):
         ref.load_state(str(path))
+
+
+@pytest.mark.integration
+def test_refine_xyz_with_xyz_frozen_leaves_coordinates_alone(build):
+    """With xyz frozen the coordinate step has nothing to refine and is skipped."""
+    ref = build()
+    ref.model.freeze("xyz")
+    before = ref.model.xyz().detach().clone()
+
+    ref.refine_xyz()
+
+    assert torch.equal(ref.model.xyz(), before)
