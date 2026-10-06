@@ -91,6 +91,35 @@ def test_cis_proline_takes_the_cis_surface(pdb_dir):
     np.testing.assert_array_equal(is_cis, np.abs(omega) < 90.0)
 
 
+def test_proline_without_omega_defaults_to_trans(pdb_dir, tmp_path):
+    """A proline whose peptide has no omega reads the trans surface.
+
+    Without PHE232's CA neither the 231-232 nor the 232-233 peptide has an omega,
+    while the one measured just before them, GLU230-PRO231, is cis.
+    """
+    lines = []
+    for line in (pdb_dir / "1DAW.pdb").read_text().splitlines():
+        if line.startswith("ATOM") and line[21] == "A":
+            if line[22:26] == " 232" and line[12:16] == " CA ":
+                continue
+            if line[22:26] == " 233":
+                line = line[:17] + "PRO" + line[20:]
+        lines.append(line)
+    path = tmp_path / "no_omega.pdb"
+    path.write_text("\n".join(lines) + "\n")
+    _, restraints = _deposited(path)
+
+    columns = restraints.topology.columns()
+    (ca,) = np.flatnonzero(
+        (columns["chain"] == "A")
+        & (columns["resseq"] == 233)
+        & (columns["name"] == "CA")
+    )
+    phi_ca = restraints._rama_phi_indices.cpu()[:, 2]
+    (row,) = torch.nonzero(phi_ca == int(ca)).flatten().tolist()
+    assert int(restraints._rama_surface_type[row]) == TYPE_TRANS_PROLINE
+
+
 def _nucleotide(code):
     """One nucleotide at its dictionary's ideal coordinates.
 

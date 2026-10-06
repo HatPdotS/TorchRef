@@ -1050,6 +1050,7 @@ class InterResidueTorsionBuilder:
             # Track which residue each phi/psi belongs to
             pair_phi = None  # phi from this pair belongs to res_next_idx
             pair_psi = None  # psi from this pair belongs to res_i_idx
+            pair_omega = None  # decides res_next_idx's cis/trans PRO surface
 
             for t in range(n_torsions):
                 comp1 = torsions["comp1"][t]
@@ -1094,6 +1095,7 @@ class InterResidueTorsionBuilder:
                     omega_data["sigmas"].append(float(torsions["sigma"][t]))
                     omega_data["periods"].append(period)
                     omega_data["is_proline"].append(is_proline)
+                    pair_omega = [idx1, idx2, idx3, idx4]
 
             # Store phi/psi by the residue they actually belong to:
             # phi: C(i) - N(j) - CA(j) - C(j)  → belongs to residue j
@@ -1106,9 +1108,9 @@ class InterResidueTorsionBuilder:
             resname_by_residue[key_i] = resname_i
             resname_by_residue[key_next] = resname_next
             next_resname_by_residue[key_i] = resname_next
-            # The omega that decides PRO cis/trans, measured after the loop
-            if omega_data["indices"]:
-                omega_idx_by_residue[key_next] = omega_data["indices"][-1]
+            # Measured after the loop; a pair without one leaves the 180° default.
+            if pair_omega is not None:
+                omega_idx_by_residue[key_next] = pair_omega
 
         result = {}
 
