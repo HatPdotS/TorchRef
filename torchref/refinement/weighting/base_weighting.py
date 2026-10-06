@@ -39,7 +39,7 @@ class BaseWeighting(DeviceMixin, nn.Module, ABC):
 
     name: str = "base_weighting"
 
-    def __init__(self, device: torch.device = None, **kwargs):
+    def __init__(self, device: torch.device = None):
         super().__init__()
         self.device = device or get_default_device()
 
