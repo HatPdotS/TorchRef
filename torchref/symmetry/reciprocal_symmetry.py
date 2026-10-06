@@ -33,7 +33,7 @@ def _equivalent_hkl(
     include_friedel: bool = True,
     device: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Back ``SpaceGroup.equivalent_hkl``, which holds the contract."""
+    """Implement ``SpaceGroup.equivalent_hkl``, which documents the contract."""
     if device is None:
         device = hkl.device
     hkl_float = hkl.to(dtype=get_float_dtype(), device=device)
@@ -70,7 +70,7 @@ def _expand_hkl(
     device: Optional[torch.device] = None,
     return_friedel: bool = False,
 ) -> Tuple[torch.Tensor, ...]:
-    """Back ``SpaceGroup.expand_hkl``, which holds the contract.
+    """Implement ``SpaceGroup.expand_hkl``, which documents the contract.
 
     Each P1 index keeps its first copy in ``_equivalent_hkl`` order, so a rotation
     copy wins over a Friedel copy and signed Bijvoet rows expand without colliding;
@@ -173,7 +173,7 @@ def _canonicalize_hkl(
     device: Optional[torch.device] = None,
     sort: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Back ``SpaceGroup.canonicalize_hkl``, which holds the contract.
+    """Implement ``SpaceGroup.canonicalize_hkl``, which documents the contract.
 
     Runs on CPU with torch ops whatever device ``sym`` or ``hkl`` is on. The phase
     shift is ``-2 pi h.t`` (input ``h``, translation ``t`` of the mapping operation),
