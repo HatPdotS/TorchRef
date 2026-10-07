@@ -7,7 +7,7 @@ as pseudo-observations.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
 import pandas as pd
 import torch
@@ -424,47 +424,6 @@ class FcalcDataset(CrystalDataset):
 
         df = pd.DataFrame(columns)
         mtz.write(df, self.cell.data, self.spacegroup, filepath)
-
-    # ========== SERIALIZATION OVERRIDES ==========
-
-    def _get_state(self) -> Dict[str, Any]:
-        """As the base, but ``spacegroup`` is flattened via its ``hm`` symbol."""
-        state = super()._get_state()
-        if self.spacegroup is not None:
-            state["spacegroup"] = self.spacegroup.hm
-        return state
-
-    @classmethod
-    def _from_state(cls, state: Dict[str, Any], device=None) -> "FcalcDataset":
-        """Rebuild from a :meth:`_get_state` dict, rewrapping the H-M string as a
-        ``SpaceGroup``. Pops ``"masks"``, so ``state`` is mutated.
-        """
-        from torchref.utils.utils import TensorMasks
-
-        device = normalize_device(device)
-
-        masks_state = state.pop("masks", {})
-        state = cls._drop_stale_state_keys(state)
-
-        if "device" in state:
-            state["device"] = torch.device(state["device"])
-
-        if "spacegroup" in state and state["spacegroup"] is not None:
-            if isinstance(state["spacegroup"], str):
-                state["spacegroup"] = SpaceGroup(state["spacegroup"])
-
-        if "cell" in state and state["cell"] is not None:
-            if isinstance(state["cell"], torch.Tensor):
-                state["cell"] = Cell(
-                    state["cell"], dtype=get_float_dtype(), device=device
-                )
-
-        obj = cls(**state)
-
-        if masks_state:
-            obj.masks = TensorMasks(data=masks_state, device=device)
-
-        return obj.to(device)
 
     # ========== UTILITY METHODS ==========
 

@@ -43,6 +43,25 @@ def test_state_roundtrip(cls):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "cell, setting",
+    [
+        ([50.0, 50.0, 50.0, 80.0, 80.0, 80.0], "R 3:R"),
+        ([60.0, 60.0, 40.0, 90.0, 90.0, 90.0], "P 4/n:2"),
+    ],
+)
+def test_fcalc_state_keeps_the_space_group_setting(cell, setting):
+    """A non-default setting reloads as itself, not as its group's default one."""
+    data = FcalcDataset.from_cell_and_resolution(cell, setting, d_min=4.0, device="cpu")
+
+    back = FcalcDataset._from_state(data._get_state(), device="cpu")
+
+    assert back.spacegroup.xhm == setting
+    assert torch.equal(back.spacegroup.matrices, data.spacegroup.matrices)
+    assert torch.equal(back.spacegroup.translations, data.spacegroup.translations)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("cls", [ReflectionData, FcalcDataset])
 def test_state_with_a_removed_field_still_loads(cls):
     """A key that is no longer a dataclass field is dropped, loudly, not fatally.
