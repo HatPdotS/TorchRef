@@ -5,11 +5,14 @@ reflection the refinement excludes -- past the resolution cut or rejected -- whi
 observed columns stay complete, in both the per-row and the anomalous layout.
 """
 
+import gemmi
 import numpy as np
+import pandas as pd
 import pytest
 import reciprocalspaceship as rs
 import torch
 
+from torchref.io import mtz
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model.model_ft import ModelFT
 
@@ -164,3 +167,15 @@ class TestExcludedFlags:
         reloaded = _load(out_path)
         assert int((~reloaded.masks["flagged_initial"]).sum()) == n_excluded
         assert reloaded.free.n == data.free.n
+
+
+def test_write_leaves_a_named_index_out(tmp_path):
+    """``mtz.write`` writes H, K, L and the frame's columns, not its index."""
+    df = pd.DataFrame(
+        {"H": [1, 2], "K": [0, 1], "L": [4, 5], "F-obs": [9.0, 7.0]},
+        index=pd.Index([10, 11], name="row"),
+    )
+    path = tmp_path / "out.mtz"
+    mtz.write(df, [50, 60, 70, 90, 90, 90], "P 21 21 21", str(path))
+    labels = [c.label for c in gemmi.read_mtz_file(str(path)).columns]
+    assert labels == ["H", "K", "L", "F-obs"]

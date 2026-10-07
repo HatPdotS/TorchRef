@@ -679,7 +679,7 @@ def write(
         mtz_rs["H"] = mtz_rs["H"].astype("H")
         mtz_rs["K"] = mtz_rs["K"].astype("H")
         mtz_rs["L"] = mtz_rs["L"].astype("H")
-        mtz_rs = mtz_rs.set_index("H", "K", "L")
+        mtz_rs = mtz_rs.set_index(["H", "K", "L"])
 
     for col in structure_factor_cols:
         if col in mtz_rs.columns:
