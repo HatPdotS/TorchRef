@@ -460,7 +460,7 @@ def fused_add_to_map_gpu(
     xyz, b, occ : torch.Tensor
         Positions ``(N_atoms, 3)``, isotropic B-factors and occupancies ``(N_atoms,)``.
     inv_frac_matrix, frac_matrix : torch.Tensor
-        Fractionalization matrix and its inverse, ``(3, 3)``.
+        Cartesian-to-fractional and fractional-to-Cartesian, ``(3, 3)``.
     A, B : torch.Tensor
         ITC92 amplitudes and widths, ``(N_atoms, 5)`` each.
     """

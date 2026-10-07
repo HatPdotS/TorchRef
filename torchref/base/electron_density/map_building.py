@@ -88,7 +88,7 @@ def vectorized_add_to_map_aniso(
         Cartesian positions ``(N_atoms, 3)``, ADPs ``(u11, u22, u33, u12, u13, u23)`` in A^2
         ``(N_atoms, 6)``, and occupancies ``(N_atoms,)``.
     inv_frac_matrix, frac_matrix : torch.Tensor
-        Fractionalization matrix and its inverse, ``(3, 3)``.
+        Cartesian-to-fractional and fractional-to-Cartesian, ``(3, 3)``.
     A, B : torch.Tensor
         ITC92 amplitudes and widths (A^2), ``(N_atoms, 5)`` each.
 

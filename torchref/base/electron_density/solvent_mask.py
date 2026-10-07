@@ -30,7 +30,7 @@ def add_to_solvent_mask(
     radius : float
         Sphere radius per atom, in Angstrom.
     inv_frac_matrix, frac_matrix : torch.Tensor
-        Fractionalization matrix and its inverse, ``(3, 3)``.
+        Cartesian-to-fractional and fractional-to-Cartesian, ``(3, 3)``.
 
     Returns
     -------
