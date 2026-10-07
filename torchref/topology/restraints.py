@@ -132,10 +132,10 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             raise ValueError("Restraints over a topology need the coordinates, xyz=")
 
         self._nodes = topology
-        self.unique_residues = self._dictionary_resnames(topology)
+        self.unique_residues, single_atom = self._dictionary_resnames(topology)
 
         # Parse CIF files
-        self._load_cif_dictionaries(cif_path)
+        self._load_cif_dictionaries(cif_path, single_atom)
 
         # Load link definitions for inter-residue restraints
         if verbose > 1:
@@ -149,22 +149,16 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             self.summary()
 
     @staticmethod
-    def _dictionary_resnames(topology) -> list:
-        """Residue names, in first-seen order, whose dictionaries the build needs.
-
-        Those whose atoms carry more than one name, and water, even as a lone oxygen:
-        its template types the oxygen ``OH2``, a hydrogen-bond donor and acceptor, and
-        holds the hydrogens it rides. Other single-atom residues (ions) need none.
+    def _dictionary_resnames(topology) -> tuple:
+        """Residue names in first-seen order, as two lists: those whose atoms carry more
+        than one name, whose dictionaries the build needs, and those of a single atom.
         """
         names_by_resname: dict = {}
         columns = topology.columns()
         for resname, atom_name in zip(columns["resname"], columns["name"]):
             names_by_resname.setdefault(str(resname), set()).add(str(atom_name))
-        return [
-            name
-            for name, atoms in names_by_resname.items()
-            if len(atoms) > 1 or name == "HOH"
-        ]
+        multi = [name for name, atoms in names_by_resname.items() if len(atoms) > 1]
+        return multi, [name for name in names_by_resname if name not in multi]
 
     def _riding_table(self, xyz: torch.Tensor) -> pd.DataFrame:
         """The identity-plus-coordinates table :mod:`torchref.topology.riding` reads.
@@ -231,8 +225,15 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         self._rebuild_entries()
         return result
 
-    def _load_cif_dictionaries(self, cif_path):
-        """Load CIF dictionaries from provided paths and monomer library."""
+    def _load_cif_dictionaries(self, cif_path, single_atom):
+        """Load CIF dictionaries from provided paths and monomer library.
+
+        A residue of ``single_atom`` takes its library entry if that reads as a
+        restraint dictionary, as one with hydrogens does (a lone water oxygen, an NH2
+        cap): it types the atom and holds the hydrogens it rides. An ion's entry has no
+        bonds and the reader rejects it, so an ion stays untyped and out of
+        ``missing_residues``.
+        """
         if cif_path:
             if isinstance(cif_path, str):
                 self.cif_dict = read_cif(cif_path)
@@ -252,16 +253,19 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         from pathlib import Path
         from torchref import PATH_TORCHREF_DATA
 
+        lookups = self.missing_residues + [
+            res for res in single_atom if res not in self.cif_dict
+        ]
         additional_files = [
             (
                 Path(PATH_TORCHREF_DATA) / "monomer_library/h/HOH.cif"
                 if res == "HOH"
                 else find_cif_file_in_library(res)
             )
-            for res in self.missing_residues
+            for res in lookups
         ]
 
-        for cif_file in additional_files:
+        for res, cif_file in zip(lookups, additional_files):
             if cif_file is not None:
                 if self.verbose > 1:
                     print(cif_file)
@@ -269,8 +273,9 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                     additional_cif_dict = read_cif(cif_file)
                     self.cif_dict.update(additional_cif_dict)
                 except Exception as e:
-                    print("Error reading CIF file:", e)
-                    print("This residue will have no restraints applied.")
+                    if res not in single_atom:
+                        print("Error reading CIF file:", e)
+                        print("This residue will have no restraints applied.")
 
         self.missing_residues = [
             res for res in self.unique_residues if res not in self.cif_dict

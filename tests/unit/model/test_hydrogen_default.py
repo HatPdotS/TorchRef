@@ -354,7 +354,7 @@ def test_restraints_ride_on_their_own_dictionary(pdb_dir, monkeypatch):
     restraints = model.restraints
     library = build_hydrogen_topology(restraints._riding_table(model.xyz()))
     water = restraints.topology.is_water
-    assert water[library.h_parent_idx.numpy()].sum() > 0
+    assert water[library.h_parent_idx.cpu().numpy()].sum() > 0
 
     def no_library(self, resname):
         raise AssertionError(f"{resname} was looked up in the monomer library")
@@ -362,5 +362,73 @@ def test_restraints_ride_on_their_own_dictionary(pdb_dir, monkeypatch):
     monkeypatch.setattr(MonomerLibraryManager, "get_cif_file", no_library)
     restraints.rebuild_vdw_restraints(model.xyz())
     np.testing.assert_array_equal(
-        restraints.h_topo.h_parent_idx.numpy(), library.h_parent_idx.numpy()
+        restraints.h_topo.h_parent_idx.cpu().numpy(),
+        library.h_parent_idx.cpu().numpy(),
     )
+
+
+# The monomer library's NH2 entry, cut to the columns the reader needs.
+NH2_CIF = """\
+data_comp_NH2
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+_chem_comp_atom.type_energy
+_chem_comp_atom.x
+_chem_comp_atom.y
+_chem_comp_atom.z
+NH2 N   N N33 10.097 8.960 -7.822
+NH2 HN1 H H   10.995 8.960 -7.822
+NH2 HN2 H H    9.648 9.738 -7.822
+NH2 H   H H    9.648 8.182 -7.822
+loop_
+_chem_comp_bond.comp_id
+_chem_comp_bond.atom_id_1
+_chem_comp_bond.atom_id_2
+_chem_comp_bond.value_dist
+_chem_comp_bond.value_dist_esd
+NH2 N HN1 0.898 0.020
+NH2 N HN2 0.898 0.020
+NH2 N H   0.898 0.020
+"""
+
+
+@pytest.mark.unit
+def test_a_one_atom_residue_rides_on_its_library_template(
+    pdb_dir, tmp_path, monkeypatch
+):
+    """A residue written as one atom whose library template carries hydrogens rides as
+    the library places them, and a rebuild looks nothing up: here 1DAW with its
+    C-terminal OXT turned into an NH2 cap, whose nitrogen has room for two."""
+    from torchref.topology.monomer.library import MonomerLibraryManager
+    from torchref.topology.riding import build_hydrogen_topology
+
+    nh2 = tmp_path / "NH2.cif"
+    nh2.write_text(NH2_CIF)
+    serve = MonomerLibraryManager.get_cif_file
+    monkeypatch.setattr(
+        MonomerLibraryManager,
+        "get_cif_file",
+        lambda self, resname: nh2 if resname == "NH2" else serve(self, resname),
+    )
+    deposited = (pdb_dir / "1DAW.pdb").read_text()
+    oxt = next(line for line in deposited.splitlines() if line[12:16] == " OXT")
+    capped = tmp_path / "1DAW_NH2.pdb"
+    capped.write_text(
+        deposited.replace(oxt, f"HETATM{oxt[6:12]} N   NH2 A 334{oxt[26:76]} N")
+    )
+
+    model = Model(verbose=0).load_pdb(str(capped))
+    restraints = model.restraints
+    library = build_hydrogen_topology(restraints._riding_table(model.xyz()))
+    expected = library.h_parent_idx.cpu().numpy()
+    cap = restraints.topology.atoms.resname.astype(str) == "NH2"
+    assert cap[expected].sum() == 2
+
+    def no_library(self, resname):
+        raise AssertionError(f"{resname} was looked up in the monomer library")
+
+    monkeypatch.setattr(MonomerLibraryManager, "get_cif_file", no_library)
+    restraints.rebuild_vdw_restraints(model.xyz())
+    np.testing.assert_array_equal(restraints.h_topo.h_parent_idx.cpu().numpy(), expected)
