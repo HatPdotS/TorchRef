@@ -227,6 +227,8 @@ def wilson_log_upper_tail(
     is_centric : torch.Tensor or bool, optional
         Boolean mask of centric reflections, or a plain ``bool`` for an input
         that is all one or the other. None treats everything as acentric.
+        Centric rows are selected by boolean indexing, a GPU->CPU sync whenever
+        any row is centric.
 
     Returns
     -------
@@ -276,7 +278,8 @@ def wilson_log_lower_tail(
         Wilson ``Sigma`` for each reflection, as for
         :func:`wilson_log_upper_tail`. Same shape, must be positive.
     is_centric : torch.Tensor or bool, optional
-        As for :func:`wilson_log_upper_tail`. None treats everything as acentric.
+        As for :func:`wilson_log_upper_tail`, including the host sync. None treats
+        everything as acentric.
 
     Returns
     -------
