@@ -166,7 +166,7 @@ class TestAnisotropyCorrectionFunctional:
         scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
         scaler.setup_anisotropy_correction()
 
-        # With small random U values, correction should be close to 1
+        # U starts at zero, so the correction starts at 1
         correction = scaler.anisotropy_correction()
 
         # Most values should be between 0.5 and 2.0 for small U

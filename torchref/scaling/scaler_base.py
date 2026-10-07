@@ -273,9 +273,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         return self.c_iso
 
     def setup_anisotropy_correction(self):
-        """Initialize anisotropic correction parameters."""
+        """Create ``U`` at zero, the identity correction; a repeat call resets it."""
         self.U = nn.Parameter(
-            torch.normal(0, 0.001, (6,), dtype=get_float_dtype(), device=self.device)
+            torch.zeros(6, dtype=get_float_dtype(), device=self.device)
         )
 
     def anisotropy_correction(self):

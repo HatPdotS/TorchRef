@@ -192,3 +192,26 @@ class TestAnisotropicScaling:
         for i in range(5):
             mat = U_matrices[i]
             assert torch.allclose(mat, mat.T, atol=1e-6)
+
+
+class TestAnisotropyStart:
+    """``U`` starts at zero, the identity correction, so every scale fit starts alike."""
+
+    @pytest.mark.unit
+    def test_setup_gives_the_same_zero_tensor_every_time(self, mtz_dir):
+        from torchref.io import ReflectionData
+        from torchref.scaling.scaler_base import ScalerBase
+
+        data = ReflectionData(verbose=0, device="cpu").load_mtz(
+            str(mtz_dir / "1DAW.mtz")
+        )
+        scaler = ScalerBase(data=data, nbins=10, verbose=0)
+
+        scaler.setup_anisotropy_correction()
+        first = scaler.U.detach().clone()
+        scaler.setup_anisotropy_correction()
+
+        assert torch.equal(first, torch.zeros_like(first))
+        assert torch.equal(scaler.U.detach(), first)
+        correction = scaler.anisotropy_correction()
+        assert torch.equal(correction, torch.ones_like(correction))
