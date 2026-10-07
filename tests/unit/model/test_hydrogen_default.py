@@ -339,3 +339,28 @@ def test_riding_hydrogens_read_the_dictionary_they_are_given(
     parents = riding.h_parent_idx.numpy()
     assert glu[parents].sum() > 0
     assert sorted(parents[glu[parents]]) == sorted(expected[glu[expected]])
+
+
+@pytest.mark.unit
+def test_restraints_ride_on_their_own_dictionary(pdb_dir, monkeypatch):
+    """Rebuilding the pair list places riding hydrogens from the dictionaries the
+    restraints were built from, with no monomer-library lookup, and loses none of the
+    library's: in 3K7M that includes the waters with a heavy atom in bonding range."""
+    from torchref.topology.monomer.library import MonomerLibraryManager
+    from torchref.topology.riding import build_hydrogen_topology
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "3K7M.pdb"))
+    restraints = model.restraints
+    library = build_hydrogen_topology(restraints._riding_table(model.xyz()))
+    water = restraints.topology.is_water
+    assert water[library.h_parent_idx.numpy()].sum() > 0
+
+    def no_library(self, resname):
+        raise AssertionError(f"{resname} was looked up in the monomer library")
+
+    monkeypatch.setattr(MonomerLibraryManager, "get_cif_file", no_library)
+    restraints.rebuild_vdw_restraints(model.xyz())
+    np.testing.assert_array_equal(
+        restraints.h_topo.h_parent_idx.numpy(), library.h_parent_idx.numpy()
+    )

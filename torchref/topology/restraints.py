@@ -153,8 +153,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         """Residue names, in first-seen order, whose dictionaries the build needs.
 
         Those whose atoms carry more than one name, and water, even as a lone oxygen:
-        its template types the oxygen ``OH2``, a hydrogen-bond donor and acceptor.
-        Other single-atom residues (ions) need none.
+        its template types the oxygen ``OH2``, a hydrogen-bond donor and acceptor, and
+        holds the hydrogens it rides. Other single-atom residues (ions) need none.
         """
         names_by_resname: dict = {}
         columns = topology.columns()
@@ -494,6 +494,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                 pdb=riding_table,
                 device=cpu,
                 verbose=self.verbose,
+                cif_dict=self.cif_dict,
             )
         self._h_excl_hash = self._build_h_exclusion_hash(self._h_topo, cpu)
 
