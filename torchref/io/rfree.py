@@ -87,9 +87,9 @@ def read_sf_file(path: str, cif_block: Optional[str] = None) -> rs.DataSet:
     CIF measurement aliases use conventional MTZ labels. Crystal, wavelength and
     scale-group identifiers are metadata rather than MTZ measurements. Unsupported
     measurement columns and aliases that collide on one MTZ label raise ValueError.
-    A ``_refln.status`` other than ``o`` or ``f`` excludes its row (see
-    :func:`excluded_rows`), also where ``_refln.pdbx_r_free_flag`` supplies the
-    ``FreeR_flag`` values.
+    Where ``_refln.status`` is present its letters decide the free set, by
+    :func:`work_free_flags`, and ``_refln.pdbx_r_free_flag`` only numbers the work
+    rows of ``FreeR_flag`` (CCP4 sets ``1..K``; 1 where it gives no positive value).
 
     Parameters
     ----------
@@ -142,22 +142,31 @@ def read_sf_file(path: str, cif_block: Optional[str] = None) -> rs.DataSet:
             raise ValueError(
                 "CIF columns map to the same MTZ label: " + "; ".join(collisions)
             )
-        # With both flag tags, pdbx_r_free_flag keeps its CCP4 values and the
-        # status letters, read into a column of their own, mark the exclusions.
-        both = {"status", "pdbx_r_free_flag"} <= set(tags)
         converter = gemmi.CifToMtz()
         converter.spec_lines = [
-            f"{tag} {label} {kind} 1" + (" o=1,f=0,x=-1" if tag == "status" else "")
+            f"{tag} {label} {kind} 1"
             for tag in tags
-            if tag in _CIF_COLUMNS
-            for label, kind in [
-                ("status", "I") if both and tag == "status" else _CIF_COLUMNS[tag]
-            ]
+            if tag in _CIF_COLUMNS and tag != "status"
+            for label, kind in [_CIF_COLUMNS[tag]]
         ]
         ds = rs.io.from_gemmi(converter.convert_block_to_mtz(block))
-        if both:
-            ds.loc[excluded_rows(ds, "status"), FREE_COLUMN] = -1
-            ds = ds.drop(columns="status")
+        if "status" in tags:
+            # The letters are read off the loop, so its rows must be the converted
+            # rows; a misaligned free set would go unnoticed into every output file.
+            if not np.array_equal(ds.get_hkls(), block.make_miller_array()):
+                raise ValueError(f"_refln.status does not align with {path}'s rows")
+            column = block.block.find_values("_refln.status")
+            letters = np.array([gemmi.cif.as_string(v) for v in column])
+            flags = work_free_flags(status=letters)
+            numbers = np.ones(len(ds))
+            if FREE_COLUMN in ds.columns:
+                numbers = ds[FREE_COLUMN].to_numpy(dtype=float)
+            numbered = np.where(numbers > 0, numbers, 1)
+            ds[FREE_COLUMN] = rs.DataSeries(
+                np.where(flags == 1, numbered, flags).astype(np.int32),
+                index=ds.index,
+                dtype="I",
+            )
         return ds
     raise ValueError(f"Unsupported structure-factor format: {path}")
 
@@ -276,7 +285,7 @@ def excluded_rows(ds: rs.DataSet, column: Optional[str] = None) -> np.ndarray:
 
     A row is excluded when its flag is negative or missing: MTZ ``-1`` or
     missing-number flags, and every mmCIF ``_refln.status`` other than ``o``
-    and ``f`` (``x``, ``<``, ``-``, ``h``, ``l``), which gemmi reads as missing.
+    and ``f``, which :func:`read_sf_file` reads as ``-1`` (:func:`work_free_flags`).
     The result does not depend on whether the remaining rows form a valid
     partition, so a column that excludes every row still excludes every row.
 
@@ -350,20 +359,34 @@ def read_free_set(ds: rs.DataSet, column: Optional[str] = None) -> dict:
     }
 
 
-def work_free_flags(free_set: dict) -> np.ndarray:
-    """Flags of a :func:`read_free_set` result as the readers pass them on.
+def work_free_flags(
+    free_set: dict | None = None, status: np.ndarray | None = None
+) -> np.ndarray:
+    """The free set as the readers pass it on: ``1`` work, ``0`` free, ``-1`` excluded.
+
+    ``_refln.status`` letters decide wherever a file has them, whatever its numeric
+    flags say: ``o`` work, ``f`` free, every other letter (``x``, ``<``, ``-``, ``h``,
+    ``l``) and a missing value excluded. Without them the numbers decide, as
+    :func:`read_free_set` reads them. The MTZ and SF-mmCIF readers and
+    :func:`read_sf_file` all split a file here, so they cannot disagree.
 
     Parameters
     ----------
-    free_set : dict
-        Result of :func:`read_free_set`.
+    free_set : dict, optional
+        Result of :func:`read_free_set`; read only without ``status``.
+    status : numpy.ndarray, optional
+        ``_refln.status`` letters per row, shape (N,).
 
     Returns
     -------
     np.ndarray
-        int32, shape (N,): ``1`` work, ``0`` free, ``-1`` excluded, the
-        ``"R-free-flags"`` the MTZ and SF-mmCIF readers give ``ReflectionData.load``.
+        int32, shape (N,): the ``"R-free-flags"`` the readers give
+        ``ReflectionData.load``.
     """
+    if status is not None:
+        letters = np.char.lower(np.asarray(status, dtype=str))
+        flags = np.where(letters == "o", 1, np.where(letters == "f", 0, -1))
+        return flags.astype(np.int32)
     flags = np.where(free_set["free"], 0, 1).astype(np.int32)
     flags[free_set["excluded"]] = -1
     return flags

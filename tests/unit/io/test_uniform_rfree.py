@@ -363,3 +363,38 @@ def test_status_excludes_rows_that_carry_numeric_flags(cif_sf_dir, code):
     free_set = rfree.read_free_set(rfree.read_sf_file(path))
     np.testing.assert_array_equal(free_set["excluded"], ~np.isin(status, ["o", "f"]))
     np.testing.assert_array_equal(free_set["free"], status == "f")
+
+
+def test_status_decides_where_numeric_flags_disagree(cif_sf_dir, tmp_path):
+    """Both SF-mmCIF readers split by the status letters; the numbers survive only
+    as the CCP4 numbering of the uniform-rfree path's work rows."""
+    from torchref.io.cif_readers import ReflectionCIFReader
+
+    doc = gemmi.cif.read(str(cif_sf_dir / "1DAW-sf.cif"))
+    status = doc[0].find_values("_refln.status")
+    for row in range(3):
+        status[row] = "x"
+    letters = np.array([gemmi.cif.as_string(v) for v in status])
+    rows = np.arange(len(letters))
+    # CCP4 numbers, 0 = free, contradicting the letters on every tenth row.
+    numbers = np.where(letters == "f", 0, 1 + rows % 19)
+    numbers[::10] = np.where(letters[::10] == "f", 7, 0)
+    loop = doc[0].find_loop("_refln.index_h").get_loop()
+    loop.add_columns(["_refln.pdbx_r_free_flag"], "0")
+    column = doc[0].find_values("_refln.pdbx_r_free_flag")
+    for row, number in enumerate(numbers.tolist()):
+        column[row] = str(number)
+    path = str(tmp_path / "disagreeing-sf.cif")
+    doc.write_file(path)
+    expected = np.where(letters == "o", 1, np.where(letters == "f", 0, -1))
+
+    flags = ReflectionCIFReader(path).data["R-free-flags"]
+    ds = rfree.read_sf_file(path)
+    free_set = rfree.read_free_set(ds)
+
+    np.testing.assert_array_equal(flags, expected)
+    np.testing.assert_array_equal(free_set["free"], expected == 0)
+    np.testing.assert_array_equal(free_set["excluded"], expected == -1)
+    numbered = (expected == 1) & (numbers > 0)
+    written = ds[rfree.FREE_COLUMN].to_numpy()
+    np.testing.assert_array_equal(written[numbered], numbers[numbered])
