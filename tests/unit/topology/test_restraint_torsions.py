@@ -91,6 +91,19 @@ def test_cis_proline_takes_the_cis_surface(pdb_dir):
     np.testing.assert_array_equal(is_cis, np.abs(omega) < 90.0)
 
 
+def _surface_type(restraints, resseq):
+    """Ramachandran surface type of chain A's residue ``resseq``, found by its phi."""
+    columns = restraints.topology.columns()
+    (ca,) = np.flatnonzero(
+        (columns["chain"] == "A")
+        & (columns["resseq"] == resseq)
+        & (columns["name"] == "CA")
+    )
+    phi_ca = restraints._rama_phi_indices.cpu()[:, 2]
+    (row,) = torch.nonzero(phi_ca == int(ca)).flatten().tolist()
+    return int(restraints._rama_surface_type[row])
+
+
 def test_proline_without_omega_defaults_to_trans(pdb_dir, tmp_path):
     """A proline whose peptide has no omega reads the trans surface.
 
@@ -108,16 +121,27 @@ def test_proline_without_omega_defaults_to_trans(pdb_dir, tmp_path):
     path = tmp_path / "no_omega.pdb"
     path.write_text("\n".join(lines) + "\n")
     _, restraints = _deposited(path)
+    assert _surface_type(restraints, 233) == TYPE_TRANS_PROLINE
 
-    columns = restraints.topology.columns()
-    (ca,) = np.flatnonzero(
-        (columns["chain"] == "A")
-        & (columns["resseq"] == 233)
-        & (columns["name"] == "CA")
-    )
-    phi_ca = restraints._rama_phi_indices.cpu()[:, 2]
-    (row,) = torch.nonzero(phi_ca == int(ca)).flatten().tolist()
-    assert int(restraints._rama_surface_type[row]) == TYPE_TRANS_PROLINE
+
+def test_degenerate_omega_defaults_to_trans(pdb_dir, tmp_path):
+    """A proline whose omega is undefined reads the trans surface.
+
+    With ARG19's CA on its C, the ARG19-PRO20 omega has no defined value, which the
+    dihedral reads as 0°.
+    """
+    lines = (pdb_dir / "1DAW.pdb").read_text().splitlines()
+    arg19 = {
+        line[12:16]: i
+        for i, line in enumerate(lines)
+        if line.startswith("ATOM") and line[17:26] == "ARG A  19"
+    }
+    ca, c = arg19[" CA "], arg19[" C  "]
+    lines[ca] = lines[ca][:30] + lines[c][30:54] + lines[ca][54:]
+    path = tmp_path / "collapsed.pdb"
+    path.write_text("\n".join(lines) + "\n")
+    _, restraints = _deposited(path)
+    assert _surface_type(restraints, 20) == TYPE_TRANS_PROLINE
 
 
 def _nucleotide(code):

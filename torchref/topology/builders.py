@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from torchref.base.coordinates.local_frame import frame_is_degenerate
 from torchref.base.targets._common import torsions_from_xyz
 from torchref.config import get_float_dtype, get_int_dtype
 
@@ -1103,14 +1104,22 @@ class InterResidueTorsionBuilder:
             omega_keys = [r for r in rama_residues if r in omega_idx_by_residue]
             omega_by_residue = {}
             if omega_keys:
-                omega_values = torsions_from_xyz(
-                    torch.as_tensor(residues.xyz, dtype=get_float_dtype()),
-                    torch.as_tensor(
-                        [omega_idx_by_residue[r] for r in omega_keys],
-                        dtype=get_int_dtype(),
-                    ),
+                xyz = torch.as_tensor(residues.xyz, dtype=get_float_dtype())
+                quads = torch.as_tensor(
+                    [omega_idx_by_residue[r] for r in omega_keys],
+                    dtype=get_int_dtype(),
                 )
-                omega_by_residue = dict(zip(omega_keys, omega_values.tolist()))
+                ca_i, c_i, n_next, ca_next = xyz[quads].unbind(1)
+                # A collapsed or collinear CA-C-N or C-N-CA leaves omega undefined,
+                # which torsions_from_xyz reads as 0° (cis); such residues keep 180°.
+                undefined = frame_is_degenerate(c_i, ca_i, n_next)
+                undefined |= frame_is_degenerate(n_next, c_i, ca_next)
+                omega = torsions_from_xyz(xyz, quads).tolist()
+                omega_by_residue = {
+                    r: w
+                    for r, w, skip in zip(omega_keys, omega, undefined.tolist())
+                    if not skip
+                }
             rama_phi = []
             rama_psi = []
             rama_types = []
