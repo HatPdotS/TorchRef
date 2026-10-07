@@ -3,7 +3,7 @@
 One launch each way, where the eager helper (``_place_h_jit`` in
 :mod:`torchref.topology.riding`) fuses only the forward and leaves its
 backward to run op-by-op through autograd -- ~100 launches at 3k hydrogens, which
-dominates the non-bonded backward. The math mirrors ``_place_h_jit`` exactly:
+dominates the non-bonded backward. The math mirrors ``_place_h_jit`` exactly::
 
     pp        = xyz[parent_idx]
     nb_pos[i] = xyz[nb_idx[i]]

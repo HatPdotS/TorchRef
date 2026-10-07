@@ -241,7 +241,7 @@ def nll_per_refl(
 ) -> torch.Tensor:
     """Per-reflection Gaussian NLL on the amplitude (NOT masked or summed).
 
-        0.5 * (F_obs - |F_calc|)**2 / var + 0.5 * log(var) + 0.5 * log(2*pi)
+        ``0.5 * (F_obs - |F_calc|)**2 / var + 0.5 * log(var) + 0.5 * log(2*pi)``
 
     ``var`` is the **amplitude** variance. Build it with
     :func:`amplitude_var_from_sigma_obs` (``nll``) or :func:`amplitude_var_from_complex`
