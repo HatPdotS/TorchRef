@@ -225,8 +225,6 @@ class RefinementMetadata:
         ``collect_metrics()`` and the reflection data. Every statistic is
         best-effort: anything unavailable is left unset, silently.
         """
-        import torch
-
         from torchref import __version__
 
         meta = cls(program_version=__version__)
@@ -257,21 +255,7 @@ class RefinementMetadata:
 
         # --- Geometry deviations (silently skip if no restraints) ---
         try:
-            model = refinement.model
-            if model.ctx.initialized and model.ctx.restraints is not None:
-                restraints = model.restraints
-                if hasattr(restraints, "bond_deviations"):
-                    with torch.no_grad():
-                        bond_devs, _ = restraints.bond_deviations(model.xyz())
-                        meta.rmsd_bond_lengths = float(
-                            torch.sqrt((bond_devs**2).mean())
-                        )
-                if hasattr(restraints, "angle_deviations"):
-                    with torch.no_grad():
-                        angle_devs, _ = restraints.angle_deviations(model.xyz())
-                        meta.rmsd_bond_angles = float(
-                            torch.sqrt((angle_devs**2).mean())
-                        )
+            meta._set_geometry_deviations(refinement.model)
         except Exception:
             pass
 
@@ -349,6 +333,30 @@ class RefinementMetadata:
             self.n_reflections_test = n_test
             self.n_reflections_all = n_all
             self.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
+
+    def _set_geometry_deviations(self, model) -> None:
+        """Set the bond-length and bond-angle RMSDs from ``model``'s restraints.
+
+        Only restraints the model has already built are used. A kind of
+        restraint the model has none of leaves its RMSD unset rather than NaN.
+
+        Parameters
+        ----------
+        model : Model
+            The refined model.
+        """
+        import torch
+
+        if not model.ctx.initialized or model.ctx.restraints is None:
+            return
+        with torch.no_grad():
+            xyz = model.xyz()
+            bonds, _ = model.restraints.bond_deviations(xyz)
+            angles, _ = model.restraints.angle_deviations(xyz)
+        if bonds.numel():
+            self.rmsd_bond_lengths = float(torch.sqrt((bonds**2).mean()))
+        if angles.numel():
+            self.rmsd_bond_angles = float(torch.sqrt((angles**2).mean()))
 
     def _set_atom_counts(self, model) -> None:
         """Set the non-hydrogen atom counts from ``model.ctx.topology``.

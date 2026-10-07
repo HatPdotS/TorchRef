@@ -347,6 +347,28 @@ def test_atom_counts_match_the_deposited_refine_hist(pdb_dir):
     assert "_refine_hist.number_atoms_protein" not in hist
 
 
+@pytest.mark.unit
+def test_restraint_kind_without_entries_leaves_its_rmsd_unset():
+    """Empty deviations, as for a model without bonds, give no RMSD, not NaN."""
+    import torch
+
+    no_bonds = SimpleNamespace(
+        bond_deviations=lambda xyz: (xyz.new_zeros(0), xyz.new_zeros(0)),
+        angle_deviations=lambda xyz: (xyz.new_full((4,), 0.02), xyz.new_ones(4)),
+    )
+    model = SimpleNamespace(
+        ctx=SimpleNamespace(initialized=True, restraints=no_bonds),
+        restraints=no_bonds,
+        xyz=lambda: torch.zeros(3, 3),
+    )
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.rmsd_bond_lengths is None
+    assert meta.rmsd_bond_angles is not None
+    header = meta.render_pdb_header().splitlines()
+    assert next(line for line in header if "BOND LENGTHS" in line).endswith("NULL")
+
+
 # ====================================================================== #
 #  Coordinates
 # ====================================================================== #
