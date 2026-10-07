@@ -335,8 +335,8 @@ def test_riding_hydrogens_read_the_dictionary_they_are_given(
     monkeypatch.setattr(MonomerLibraryManager, "get_cif_file", no_library)
     riding = build_hydrogen_topology(table, cif_dict=cif_dict)
 
-    expected = reference.h_parent_idx.numpy()
-    parents = riding.h_parent_idx.numpy()
+    expected = reference.h_parent_idx.cpu().numpy()
+    parents = riding.h_parent_idx.cpu().numpy()
     assert glu[parents].sum() > 0
     assert sorted(parents[glu[parents]]) == sorted(expected[glu[expected]])
 
