@@ -25,8 +25,7 @@ def cartesian_to_fractional_torch(xyz, cell, B_inv=None):
         Angstroms and angles in degrees. The matrix derived from it takes ``xyz``'s
         dtype and device.
     B_inv : torch.Tensor, optional
-        Fractionalization matrix B^-1 (Cartesian -> fractional). If None, it will
-        be calculated from cell.
+        Fractionalization matrix B^-1 (Cartesian -> fractional); from cell if None.
 
     Returns
     -------
@@ -55,8 +54,7 @@ def fractional_to_cartesian_torch(xyz_fractional, cell, B=None):
         Angstroms and angles in degrees. The matrix derived from it takes
         ``xyz_fractional``'s dtype and device.
     B : torch.Tensor, optional
-        Orthogonalization matrix B (fractional -> Cartesian). If None, it will be
-        calculated from cell.
+        Orthogonalization matrix B (fractional -> Cartesian); from cell if None.
 
     Returns
     -------
