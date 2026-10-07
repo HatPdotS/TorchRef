@@ -5,10 +5,13 @@ implementation from the tensor device: CPU uses a JIT-scripted einsum kernel wit
 tensor; on GPU, when the shared targets gate permits Triton (CUDA + float32, dispatch
 AUTO/TRITON), the fused Triton branch is selected, otherwise the pure-torch,
 double-differentiable ``_add_to_map_gpu_simple``. The CPU JIT and simple GPU paths are
-fully differentiable and compile on import.
+fully differentiable; the CPU kernel is scripted on first use, or by :func:`warmup`.
 """
 
+import hashlib
+import inspect
 import os
+
 import torch
 
 from torchref.base.targets._dispatch import use_triton
@@ -21,7 +24,6 @@ _CACHE_DIR = os.environ.get(
     "TORCHREF_COMPILE_CACHE",
     os.path.join(os.path.expanduser("~"), ".cache", "torchref", "inductor"),
 )
-os.makedirs(_CACHE_DIR, exist_ok=True)
 
 __all__ = [
     "vectorized_add_to_map",
@@ -33,7 +35,7 @@ __all__ = [
 ]
 
 # =============================================================================
-# Kernel state - compiled on import
+# Kernel state - built on first use
 # =============================================================================
 
 _jit_cpu_kernel = None
@@ -87,8 +89,6 @@ def precompute_fractional_coords(
 # =============================================================================
 # CPU JIT kernel - uses einsum with metric tensor
 # =============================================================================
-
-_JIT_CPU_CACHE_PATH = os.path.join(_CACHE_DIR, "jit_cpu_kernel.pt")
 
 
 class _CpuDensityKernel(torch.nn.Module):
@@ -147,6 +147,18 @@ class _CpuDensityKernel(torch.nn.Module):
         return density_map
 
 
+def _jit_cpu_cache_path() -> str:
+    """Cache file of the scripted CPU kernel.
+
+    Named after the torch version and a hash of the kernel source, so a file written by
+    another torch build or for an edited kernel is never loaded.
+    """
+    source = inspect.getsource(_CpuDensityKernel).encode()
+    digest = hashlib.sha256(source).hexdigest()[:16]
+    name = f"jit_cpu_kernel-{torch.__version__}-{digest}.pt"
+    return os.path.join(_CACHE_DIR, name)
+
+
 def _get_jit_cpu_kernel():
     """Get or create the JIT-scripted CPU kernel."""
     global _jit_cpu_kernel
@@ -154,10 +166,10 @@ def _get_jit_cpu_kernel():
     if _jit_cpu_kernel is not None:
         return _jit_cpu_kernel
 
-    # Try loading from cache
-    if os.path.exists(_JIT_CPU_CACHE_PATH):
+    cache_path = _jit_cpu_cache_path()
+    if os.path.exists(cache_path):
         try:
-            _jit_cpu_kernel = torch.jit.load(_JIT_CPU_CACHE_PATH)
+            _jit_cpu_kernel = torch.jit.load(cache_path)
             return _jit_cpu_kernel
         except Exception:
             pass  # Cache corrupted, will recreate
@@ -168,8 +180,8 @@ def _get_jit_cpu_kernel():
 
     # Save to cache
     try:
-        os.makedirs(os.path.dirname(_JIT_CPU_CACHE_PATH), exist_ok=True)
-        torch.jit.save(_jit_cpu_kernel, _JIT_CPU_CACHE_PATH)
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        torch.jit.save(_jit_cpu_kernel, cache_path)
     except Exception:
         pass
 
@@ -479,15 +491,3 @@ def clear_cache() -> None:
     if os.path.exists(_CACHE_DIR):
         shutil.rmtree(_CACHE_DIR)
         os.makedirs(_CACHE_DIR, exist_ok=True)
-
-
-# =============================================================================
-# Compile kernels on import
-# =============================================================================
-
-# CPU kernel always compiles (fast, ~0.1s)
-_get_jit_cpu_kernel()
-
-# GPU kernel compiles if CUDA is available
-if torch.cuda.is_available():
-    _get_jit_gpu_kernel()
