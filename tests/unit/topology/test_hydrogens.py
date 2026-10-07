@@ -8,6 +8,8 @@ whose dihedral the template cannot know, and a group whose dihedral it does fix 
 conjugated NH2 of ASN, GLN and ARG -- lands in its plane, generated or riding.
 """
 
+import copy
+
 import numpy as np
 import pytest
 import torch
@@ -495,7 +497,7 @@ def test_triton_riding_placement_matches_the_eager_kernel(built):
     from torchref.topology.riding import _place_h_jit
 
     model, restraints, _ = built("1DAW")
-    h_topo = restraints.h_topo.to(torch.device("cuda"))
+    h_topo = copy.deepcopy(restraints.h_topo).to(torch.device("cuda"))
     assert bool((h_topo.h_frame_atom >= 0).any())
     xyz = model.xyz().detach().to("cuda", torch.float32)
     place_riding_hydrogens(xyz, h_topo)
