@@ -11,10 +11,8 @@ never assume a populated result.
 
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import asdict, dataclass, field, fields
-from datetime import date
+from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
 #: Input records that describe the crystal, the sample and its chemistry.
