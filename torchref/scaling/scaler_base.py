@@ -286,9 +286,10 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
     def set_solvent_model(self, solvent_model: "SolventModel") -> None:
         """
-        Attach a pre-configured :class:`SolventModel` and invalidate the ``F_sol`` cache.
+        Attach a pre-configured :class:`~torchref.scaling.solvent.SolventModel`.
 
-        The solvent model must be built externally (it needs a ``Model``).
+        Invalidates the ``F_sol`` cache. The solvent model must be built externally (it
+        needs a ``Model``).
 
         Parameters
         ----------
@@ -380,11 +381,11 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Number of previous gradients kept for the Hessian approximation.
         verbose : bool, default True
             Print progress; gated by ``self.verbose`` as well.
-        scale_target : str, default :data:`DEFAULT_SCALE_TARGET`
+        scale_target : str, default :data:`~torchref.scaling.scaler_base.DEFAULT_SCALE_TARGET`
             Which :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS` row to
-            minimise, restricted to :data:`SCALE_TARGETS`. ``'ls'`` is unit-weight least
-            squares; ``'nll'`` is the sigma_obs-weighted Gaussian; ``'ml_noalpha'`` is the
-            Read-MLF sigma_A likelihood.
+            minimise, restricted to :data:`~torchref.scaling.scaler_base.SCALE_TARGETS`.
+            ``'ls'`` is unit-weight least squares; ``'nll'`` is the sigma_obs-weighted
+            Gaussian; ``'ml_noalpha'`` is the Read-MLF sigma_A likelihood.
 
             Only rows whose likelihood centres on ``|F_calc|`` are admissible: ``alpha`` is
             degenerate with the scale being fitted, so an ``alpha*|F_calc|``-centred row
@@ -406,7 +407,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Raises
         ------
         ValueError
-            If ``scale_target`` is not in :data:`SCALE_TARGETS`.
+            If ``scale_target`` is not in
+            :data:`~torchref.scaling.scaler_base.SCALE_TARGETS`.
         """
         if scale_target not in SCALE_TARGETS:
             raise ValueError(

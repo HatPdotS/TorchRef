@@ -77,7 +77,7 @@ DEFAULT_MAX_ITER = 100
 #: division by zero it exists to prevent.
 _MU_FLOOR = 1e-30
 
-#: Relative convergence tolerance -- see :meth:`WilsonNormaliser._irls` for why
+#: Relative convergence tolerance -- see ``WilsonNormaliser._irls`` for why
 #: it is relative to the improvement so far rather than to the objective.
 #:
 #: This is a normalisation curve, not a refined parameter. The quantity it

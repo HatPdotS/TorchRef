@@ -397,14 +397,15 @@ class CollectionScaler(ScalerBase):
         One set of scale parameters serves every matched dataset-model pair, so the
         closure sums a per-dataset objective. Each dataset's term is built from a row of
         :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS`, exactly as
-        :meth:`ScalerBase.refine_lbfgs` builds its single-dataset one -- so both scale
-        fits evaluate the same likelihood code, and neither carries a private copy of it.
+        :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs` builds its
+        single-dataset one -- so both scale fits evaluate the same likelihood code, and
+        neither carries a private copy of it.
 
         The row sees this dataset's own **mixed** bulk solvent, via a
-        :class:`_DatasetScalerView` that shares the parent's parameters and applies
+        ``_DatasetScalerView`` that shares the parent's parameters and applies
         :meth:`forward_mixed`. That is why the scaler cannot simply be handed to the
         target: the solvent depends on which dataset's fractions are in play, and the
-        plain :meth:`ScalerBase.forward` has no way to know.
+        plain :meth:`~torchref.scaling.scaler_base.ScalerBase.forward` has no way to know.
 
         Amplitudes throughout, whatever observable the *refinement* target fits.
         Unit-weight least squares on intensities would put leverage where the data is

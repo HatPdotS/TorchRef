@@ -101,7 +101,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
     ``ss = (sin(theta)/lambda)**2``. ``ss_half`` is where the term is halved and ``n``
     how sharply it switches off; ``n = 1`` is exactly ``exp(-B ss)`` with
     ``B = ln2 / ss_half``, so a Debye-Waller solvent is a special case rather than a
-    different model. Both are clamped to :data:`SS_HALF_BOUNDS` / :data:`N_EXP_BOUNDS`.
+    different model. Both are clamped to
+    :data:`~torchref.scaling.solvent.SS_HALF_BOUNDS` and ``N_EXP_BOUNDS``.
 
     Attributes
     ----------

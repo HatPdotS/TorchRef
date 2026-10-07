@@ -26,10 +26,10 @@ class Scaler(ScalerBase):
     """
     Full-featured scaler with Model integration.
 
-    Extends :class:`ScalerBase` with a reference to a ``Model``, so every
-    method that needs ``F_calc`` computes it when not given one. Constructed
-    either fully (``Scaler(model, data, nbins=20)`` then ``initialize()``) or
-    empty (``Scaler()`` then ``load_state_dict``).
+    Extends :class:`~torchref.scaling.scaler_base.ScalerBase` with a reference to a
+    ``Model``, so every method that needs ``F_calc`` computes it when not given one.
+    Constructed either fully (``Scaler(model, data, nbins=20)`` then ``initialize()``)
+    or empty (``Scaler()`` then ``load_state_dict``).
 
     Parameters
     ----------
