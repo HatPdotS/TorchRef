@@ -604,8 +604,8 @@ class RefinementMetadata:
         slotted in at 3, then sequence, chemistry and connectivity. Only the
         REMARK 3 block is generated; everything else is either carried through
         from the input or supplied by the caller. Metadata that sets no
-        refinement field annotates the input instead, and keeps the input's
-        own REMARK 3 when ``from_pdb_file(supersede_refinement=False)``
+        refinement field annotates the input instead: it generates no REMARK 3
+        and keeps the input's, if ``from_pdb_file(supersede_refinement=False)``
         collected one.
         """
         lines: List[str] = []
@@ -634,9 +634,8 @@ class RefinementMetadata:
 
         passthrough = sorted(self.passthrough_pdb_remarks, key=_remark_number)
         lines.extend(r for r in passthrough if _remark_number(r) < 3)
-        remark3 = [r for r in passthrough if _remark_number(r) == 3]
-        if remark3 and self._is_annotation():
-            lines.extend(remark3)
+        if self._is_annotation():
+            lines.extend(r for r in passthrough if _remark_number(r) == 3)
         else:
             lines.extend(self._render_remark3())
         lines.extend(r for r in passthrough if _remark_number(r) > 3)

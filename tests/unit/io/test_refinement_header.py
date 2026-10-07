@@ -580,6 +580,16 @@ def test_annotation_keeps_the_input_remark_3():
 
 
 @pytest.mark.unit
+def test_annotation_without_an_input_remark_3_generates_none():
+    """An mmCIF input has no REMARK 3 to keep; a title still credits no TORCHREF."""
+    meta = RefinementMetadata.from_cif_file(CIF_1DAW, supersede_refinement=False)
+    meta.title = "Annotated"
+    header = meta.render_pdb_header().splitlines()
+    assert not any("PROGRAM     : TORCHREF" in line for line in header)
+    assert not any(line.startswith("REMARK   3") for line in header)
+
+
+@pytest.mark.unit
 def test_a_statistic_turns_annotation_into_our_record():
     meta = RefinementMetadata.from_pdb_file(PDB_1DAW, supersede_refinement=False)
     meta.r_work = 0.2
