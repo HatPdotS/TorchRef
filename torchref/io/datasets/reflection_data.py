@@ -2133,9 +2133,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             New object at ``spacegroup="P1"`` holding every symmetry-equivalent
             reflection. Per-reflection fields are indexed from the original,
-            ``phase`` additionally gets the translation phase shift, and
-            ``resolution`` is recomputed. ``hkl_anomalous`` equals ``hkl``: each
-            P1 row is its own index. ``source`` records the provenance.
+            ``phase`` is negated on Friedel copies and shifted by the translation,
+            and ``resolution`` is recomputed. ``hkl_anomalous`` equals ``hkl``:
+            each P1 row is its own index. ``source`` records the provenance.
 
         Raises
         ------
@@ -2148,11 +2148,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         anomalous = not self.friedel_merged and self.hkl_anomalous is not None
         sg = self.spacegroup or SpaceGroup("P1", device=self.device)
-        hkl_p1, indices, phase_shifts = sg.expand_hkl(
+        hkl_p1, indices, phase_shifts, is_friedel = sg.expand_hkl(
             self.hkl_anomalous if anomalous else self.hkl,
             include_friedel=include_friedel,
             remove_absences=remove_absences,
             device=self.device,
+            return_friedel=True,
         )
 
         p1 = self.remap(
@@ -2166,7 +2167,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 # A conjugated mate stores the phase of its canonical index, the
                 # negative of the phase at its own signed index.
                 phase = torch.where(self.friedel_flags[indices], -phase, phase)
-            p1.phase = phase + phase_shifts
+            # A Friedel copy is a conjugation, phi(-h) = -phi(h), not an offset.
+            p1.phase = torch.where(is_friedel, -phase, phase) + phase_shifts
         p1.hkl_anomalous = p1.hkl.clone()
         p1.friedel_flags = torch.zeros_like(p1.hkl[:, 0], dtype=torch.bool)
         p1.friedel_merged = self.friedel_merged

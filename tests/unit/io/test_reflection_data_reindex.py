@@ -112,6 +112,32 @@ class TestP1RoundTripReindex:
 
 
 @pytest.mark.integration
+class TestExpandToP1Phases:
+    """Expanded phases equal the model phase at every P1 index, Friedel copies
+    included."""
+
+    def test_phases_match_direct_fcalc(self, pdb_dir, mtz_dir):
+        from torchref.model import ModelFT
+
+        data = ReflectionData(verbose=0, device="cpu").load_mtz(
+            str(mtz_dir / "1DAW.mtz")
+        )
+        model = ModelFT(
+            max_res=float(data.resolution.min()), device="cpu", verbose=0
+        ).load_pdb(str(pdb_dir / "1DAW.pdb"))
+        with torch.no_grad():
+            data.phase = torch.angle(model.get_structure_factor(data.hkl))
+            p1 = data.expand_to_p1(include_friedel=True)
+            fcalc = model.get_structure_factor(p1.hkl, recalc=True)
+
+        # A near-zero amplitude has no float32-stable phase to compare against.
+        strong = fcalc.abs() > fcalc.abs().median()
+        err = torch.remainder(p1.phase - torch.angle(fcalc) + torch.pi, 2 * torch.pi)
+        wrong = (err - torch.pi).abs() > 1e-3
+        assert int((wrong & strong).sum()) == 0
+
+
+@pytest.mark.integration
 class TestCollectionDifferenceMismatchedHKL:
     """In-process reproduction of the reported failure: a DatasetCollection
     built from two different reflection sets, run through the collection
