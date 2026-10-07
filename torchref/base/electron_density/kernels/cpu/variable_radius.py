@@ -18,8 +18,9 @@ statement.
 
 Out-of-sphere voxels are zeroed rather than dropped, keeping the box dense so one
 ``scatter_add`` covers the chunk -- some wasted writes, the right trade for a portable
-reference. These functions ADD into the supplied ``density_map`` (so the isotropic and
-anisotropic passes accumulate into one map) and are autograd-connected in
+reference. These functions return ``density_map + splat`` and do not modify
+``density_map`` (with no atoms the result is a view of it), so the isotropic and
+anisotropic passes chain through the return value; they are autograd-connected in
 xyz / adp / u / occ.
 """
 
@@ -105,7 +106,9 @@ def _canonical_setup(xyz, inv_frac, frac, grid_dims, radius_per_atom, dtype):
 
 def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
                             inv_frac_matrix, frac_matrix, radius_per_atom):
-    """Portable canonical-sphere isotropic splat; adds into ``density_map``.
+    """Portable canonical-sphere isotropic splat; returns ``density_map + splat``.
+
+    ``density_map`` is not modified.
 
     Signature mirrors
     :func:`~torchref.base.electron_density.kernels.cpu.sphere_splat.add_isotropic_cpu_sphere_var`
@@ -145,7 +148,9 @@ def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
 
 def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
                               inv_frac_matrix, frac_matrix, radius_per_atom):
-    """Portable canonical-sphere anisotropic splat; adds into ``density_map``.
+    """Portable canonical-sphere anisotropic splat; returns ``density_map + splat``.
+
+    ``density_map`` is not modified.
 
     Signature mirrors
     :func:`~torchref.base.electron_density.kernels.cpu.sphere_splat.add_anisotropic_cpu_sphere_var`.

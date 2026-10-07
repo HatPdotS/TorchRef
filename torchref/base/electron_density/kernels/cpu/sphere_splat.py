@@ -731,7 +731,7 @@ def add_isotropic_cpu_sphere_var(
 def add_anisotropic_cpu_sphere_var(
     density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
 ):
-    """Fused anisotropic spherical-cutoff splat; adds into ``density_map``.
+    """Fused anisotropic spherical-cutoff splat; returns ``density_map + splat``.
 
     Identical contract to :func:`add_isotropic_cpu_sphere_var`, but ``u`` carries the 6
     components ``[U11, U22, U33, U12, U13, U23]`` and the density is the full 3D Gaussian

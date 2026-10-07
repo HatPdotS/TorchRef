@@ -94,7 +94,9 @@ class MetalGridDensity(torch.autograd.Function):
 def add_isotropic_mps_var(
     density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
 ):
-    """Isotropic variable-radius Metal splat; adds into ``density_map``.
+    """Isotropic variable-radius Metal splat; returns ``density_map + splat``.
+
+    ``density_map`` is not modified.
 
     The canonical splat signature, identical to ``add_isotropic_plain_var`` and
     ``add_isotropic_cpu_sphere_var``: the grid shape comes from ``density_map`` and the
@@ -173,7 +175,9 @@ class MetalGridDensityAniso(torch.autograd.Function):
 def add_anisotropic_mps_var(
     density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
 ):
-    """Anisotropic variable-radius Metal splat; adds into ``density_map``.
+    """Anisotropic variable-radius Metal splat; returns ``density_map + splat``.
+
+    ``density_map`` is not modified.
 
     The canonical splat signature, identical to ``add_anisotropic_plain_var`` and
     ``add_anisotropic_cpu_sphere_var``. Each atom is truncated at its per-axis bounding box
