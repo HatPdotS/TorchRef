@@ -405,6 +405,54 @@ def test_hydrogen_bonds_are_held_to_the_hydrogen_bond_distance(model_1daw):
     assert float(overlap[amide_h].max()) < 0.2
 
 
+def test_water_oxygens_are_hydrogen_bond_partners(model_1daw):
+    """A water written as its oxygen alone is typed from the water dictionary,
+    ``OH2``, a donor and an acceptor, so an amide N against it, and the N's riding
+    hydrogen, are hydrogen bonds held to the ener_lib distances rather than radius
+    sums, and the deposited ones carry little overlap."""
+    from torchref.topology.nonbonded import HBOND_DISTANCE, HBOND_H_DISTANCE
+
+    restraints = model_1daw.restraints
+    atoms = restraints.topology.atoms
+    kinds = atoms.energy_type.astype(str)
+    water = restraints.topology.is_water
+    assert water.sum() > 100
+    assert (kinds[water] == "OH2").all()
+
+    vdw = restraints.restraints["vdw"]
+    i, j = vdw["indices"].T.cpu().numpy()
+    amide_water = (kinds[i] == "NH1") & water[j]
+    assert amide_water.sum() > 10
+    np.testing.assert_allclose(vdw["min_distances"][amide_water], HBOND_DISTANCE)
+
+    h_topo = restraints.h_topo
+    n_heavy = atoms.n_atoms
+    cand_i, cand_j = h_topo.cand_idx_i.numpy(), h_topo.cand_idx_j.numpy()
+    riding = cand_i >= n_heavy
+    parent = h_topo.h_parent_idx.numpy()[np.where(riding, cand_i - n_heavy, 0)]
+    heavy_j = np.where(cand_j < n_heavy, cand_j, 0)
+    to_water = riding & (cand_j < n_heavy) & (kinds[parent] == "NH1")
+    to_water &= water[heavy_j]
+    assert to_water.sum() > 100
+    minimum = h_topo.cand_min_dist
+    np.testing.assert_allclose(minimum[to_water], HBOND_H_DISTANCE)
+
+    xyz = model_1daw.xyz().detach()
+    cell, sg = model_1daw.cell, model_1daw.spacegroup
+    pos_i, pos_j = nonbonded_pair_positions(
+        torch.cat([xyz, place_riding_hydrogens(xyz, h_topo)]),
+        torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1),
+        h_topo.cand_symop_idx,
+        h_topo.cand_cell_offset,
+        sg.matrices,
+        sg.translations,
+        cell.fractional_matrix,
+        cell.inv_fractional_matrix,
+    )
+    overlap = (minimum - (pos_j - pos_i).norm(dim=1)).clamp(min=0)
+    assert float(overlap[to_water].max()) < 0.3
+
+
 def test_contacts_take_the_connected_topology_contact_distances(model_1daw):
     """Heavy pairs and riding candidates are held to the contact distances of the
     connected topology, its ener_lib radii and hydrogen-bond roles. The topology the

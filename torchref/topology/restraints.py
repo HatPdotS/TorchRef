@@ -132,7 +132,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             raise ValueError("Restraints over a topology need the coordinates, xyz=")
 
         self._nodes = topology
-        self.unique_residues = self._multi_atom_resnames(topology)
+        self.unique_residues = self._dictionary_resnames(topology)
 
         # Parse CIF files
         self._load_cif_dictionaries(cif_path)
@@ -149,16 +149,22 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             self.summary()
 
     @staticmethod
-    def _multi_atom_resnames(topology) -> list:
-        """Residue names, in first-seen order, whose atoms carry more than one name.
+    def _dictionary_resnames(topology) -> list:
+        """Residue names, in first-seen order, whose dictionaries the build needs.
 
-        Single-atom residues (ions, lone waters) need no dictionary lookup.
+        Those whose atoms carry more than one name, and water, even as a lone oxygen:
+        its template types the oxygen ``OH2``, a hydrogen-bond donor and acceptor.
+        Other single-atom residues (ions) need none.
         """
         names_by_resname: dict = {}
         columns = topology.columns()
         for resname, atom_name in zip(columns["resname"], columns["name"]):
             names_by_resname.setdefault(str(resname), set()).add(str(atom_name))
-        return [name for name, atoms in names_by_resname.items() if len(atoms) > 1]
+        return [
+            name
+            for name, atoms in names_by_resname.items()
+            if len(atoms) > 1 or name == "HOH"
+        ]
 
     def _riding_table(self, xyz: torch.Tensor) -> pd.DataFrame:
         """The identity-plus-coordinates table :mod:`torchref.topology.riding` reads.

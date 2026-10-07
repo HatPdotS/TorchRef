@@ -87,16 +87,17 @@ def test_template_h_count_and_implicit_hydrogens(heavy_1daw):
     atoms = heavy_1daw.restraints.topology.atoms
     names = atoms.name.astype(str)
     polymer = heavy_1daw.pdb["ATOM"].astype(str).str.strip().values == "ATOM"
-    single_atom = np.isin(heavy_1daw.pdb["resname"].str.strip().values, ["HOH", "MG"])
+    resname = heavy_1daw.pdb["resname"].str.strip().values
     counts = atoms.template_h_count.cpu().numpy()
     assert (counts[names == "CB"] >= 1).all()
     assert (counts[(names == "O") & polymer] == 0).all()
     missing = atoms.implicit_h_count().cpu().numpy()
     np.testing.assert_array_equal(missing[counts >= 0], counts[counts >= 0])
-    # Waters and ions have no template, so their count is unknown; every polymer
-    # atom's is known.
+    # Waters take their two hydrogens from the water dictionary; ions have no
+    # template, so their count is unknown. Every polymer atom's is known.
     assert (counts[polymer] >= 0).all()
-    assert (counts[single_atom] == -1).all()
+    assert (counts[resname == "HOH"] == 2).all()
+    assert (counts[resname == "MG"] == -1).all()
 
 
 @pytest.mark.unit
