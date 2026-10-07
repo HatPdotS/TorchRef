@@ -243,8 +243,9 @@ def test_refine_fits_the_scale_before_reporting_after_scaling():
     cycle -- so the field reported the previous cycle's scaler. That field is what the
     per-cycle benchmark figure plots.
     """
+    assert "self.refine_scaler()" in inspect.getsource(LBFGSRefinement._refresh_scales)
     src = inspect.getsource(LBFGSRefinement.refine)
-    fit = src.index("self.refine_scaler()")
+    fit = src.index("self._refresh_scales()")
     label = src.index('cycle_dict["after_scaling"]')
     assert fit < label, (
         "refine() records after_scaling before fitting the scale; the label describes "

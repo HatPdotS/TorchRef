@@ -11,8 +11,8 @@ fitting with the mean pinned at ``|F_calc|`` biases ``sigma_A`` high.
 Two traps. **Do not move :func:`estimate_beta` out of this module**: the out-of-repo
 estimator lab monkeypatches it as a same-module global that :meth:`SigmaAEstimator.get`
 resolves, and nothing asserts the patch took. And keep it plain-tensor in/out (no
-``ReflectionData``/``Scaler`` coupling), so :mod:`torchref.scaling` -- which must import
-it *inside* the method that uses it -- stays free of an import cycle.
+``ReflectionData``/``Scaler`` coupling): the patch must take exactly the tensors
+:meth:`SigmaAEstimator.get` passes, so a dataset or scaler argument breaks it unseen.
 """
 
 import math
@@ -23,6 +23,7 @@ import torch
 
 from torchref.config import get_float_dtype
 
+from ._shells import equal_count_shells as _equal_count_shells
 from ._shells import interp_in_dss as _interp_in_dss
 from ._shells import segment_layout as _segment_layout  # noqa: F401
 from ._shells import segsum as _segsum
@@ -471,8 +472,7 @@ def estimate_beta(
 
     Runs under ``torch.no_grad()``. The working dtype is the wider of the configured float
     dtype and ``F_obs.dtype`` (float32 on MPS, which has no float64); results are cast back
-    to ``F_obs.dtype``. It used to force float64 unconditionally, which made the fit
-    unrunnable on MPS -- see the dtype note in the body and ``_rice_nll_reduced``.
+    to ``F_obs.dtype``.
 
     Parameters
     ----------
@@ -578,18 +578,12 @@ def estimate_beta(
         )
 
     # --- equal-count resolution shells ---------------------------------------
-    # stable=True so tied d_star_sq break identically on CPU and GPU: a non-stable CUDA
-    # argsort reshuffles ties per process, which reshuffles shell membership.
-    order = torch.argsort(dss_all[free_idx], stable=True)
+    order, seg, seg_lengths, n_bins = _equal_count_shells(
+        dss_all[free_idx], per_bin=per_bin, min_bins=min_bins, min_per_bin=min_per_bin
+    )
     sel = free_idx[order]
     fo, fc, cen = fo_all[sel], fc_all[sel], cen_all[sel]
     eps, dss, sig = eps_all[sel], dss_all[sel], sig_all[sel]
-
-    n_by_count = max(1, n_free // per_bin)
-    n_cap = max(1, n_free // min_per_bin)
-    n_bins = max(n_by_count, min(min_bins, n_cap))
-    seg = (torch.arange(n_free, device=device) * n_bins) // n_free
-    seg_lengths = torch.bincount(seg, minlength=n_bins)
 
     def segsum(x):
         # Contiguous segments (data sorted by resolution, `seg` a non-decreasing ramp),
@@ -714,18 +708,11 @@ class SigmaAEstimator:
 
     def __init__(self):
         self._cache = None  # (beta_per_refl, epsilon) detached
-        self._alpha = None  # alpha_per_refl, detached
         self._beta_per_bin = None  # diagnostics
-        self._alpha_per_bin = None  # diagnostics
 
     def reset(self) -> None:
         """Invalidate the cache so the next :meth:`get` re-estimates ``beta``."""
         self._cache = None
-        self._alpha = None
-
-    def alpha_per_bin(self):
-        """Last-estimated per-bin Luzzati ``alpha`` (diagnostics)."""
-        return self._alpha_per_bin
 
     @property
     def beta_per_bin(self):
@@ -779,9 +766,7 @@ class SigmaAEstimator:
                 F_obs, F_calc_scaled, centric, epsilon, d_star_sq, free_mask,
                 sigma_obs=sigma_obs, **kwargs,
             )
-            self._shells = sh
             self._beta_per_bin = sh.beta
-            self._alpha_per_bin = sh.alpha
 
             grid = (
                 target_dss.reshape(-1)
@@ -810,7 +795,6 @@ class SigmaAEstimator:
                 ratio = torch.exp(log_sn - log_sp).clamp(max=RATIO_MAX)
                 alpha = (sigma_a * ratio.sqrt()).clamp(min=ALPHA_FLOOR)
 
-            self._alpha = alpha.detach()
             eps_ret = out_epsilon if out_epsilon is not None else epsilon
             eps_ret = eps_ret.detach() if torch.is_tensor(eps_ret) else eps_ret
             self._cache = SigmaAEstimate(

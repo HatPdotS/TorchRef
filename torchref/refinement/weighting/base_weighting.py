@@ -39,7 +39,7 @@ class BaseWeighting(DeviceMixin, nn.Module, ABC):
 
     name: str = "base_weighting"
 
-    def __init__(self, device: torch.device = None, **kwargs):
+    def __init__(self, device: torch.device = None):
         super().__init__()
         self.device = device or get_default_device()
 
@@ -47,8 +47,7 @@ class BaseWeighting(DeviceMixin, nn.Module, ABC):
     def forward(self, state: "LossState") -> Dict[str, float]:
         """The ``{component: weight}`` dict for the current ``state``.
 
-        Read data through ``state["key"]`` / ``state.get(...)``; model-level metrics live in
-        ``state.meta`` and cached per-target losses in ``state._losses``.
+        Read cached per-target losses through ``state["key"]`` / ``state.get(...)``.
         """
         raise NotImplementedError
 

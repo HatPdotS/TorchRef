@@ -113,8 +113,7 @@ def test_field_mode_does_not_register_the_restraints_it_duplicates(field_refinem
 
     # And the loss is NOT rebalanced for a field: the parametrisation is the constraint,
     # so a field needs less regularisation than a per-atom model, not a reweighted
-    # version of the same priors. An earlier override also silently scaled the two
-    # adp/scaler_* terms, which have nothing to do with atomic ADPs.
+    # version of the same priors.
     weights = field_refinement.weighting()
     for key, expected in DEFAULT_GROUP_WEIGHTS.items():
         assert weights.get(key) == expected, f"{key} diverged from the default"

@@ -11,12 +11,14 @@ makes it a genuinely different quantity rather than a reparametrisation. It agre
 ``beta`` on shape but is off by roughly an order of magnitude, which is why a
 caller-supplied scale exists at all.
 
-Plain tensors in and out, like :class:`SigmaAEstimator`, so there is no
-``ReflectionData``/``Scaler`` coupling to close an import cycle. No ``no_grad`` inside:
-``RiceSigmaMXrayTarget`` needs gradients to reach the B factors *through* sigma_m, so
-that choice belongs to the caller. The precomputed tables are plain tensors rather than
-``nn.Module`` buffers, keeping ``exp_table`` (``b_grid_n x N_refl``) out of every
-checkpoint at the cost of explicit device placement.
+Plain tensors in and out, like
+:class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAEstimator`, so
+there is no ``ReflectionData``/``Scaler`` coupling to close an import cycle. No
+``no_grad`` inside: ``RiceSigmaMXrayTarget`` needs gradients to reach the B factors
+*through* sigma_m, so that choice belongs to the caller. The precomputed tables are
+plain tensors rather than ``nn.Module`` buffers, keeping ``exp_table``
+(``b_grid_n x N_refl``) out of every checkpoint at the cost of explicit device
+placement.
 """
 
 from typing import Optional, Tuple
@@ -87,7 +89,6 @@ class SigmaMEstimator:
         self.g_w_table = None
         self.g_4_table = None
         self.atom_to_element = None
-        self.sigma_d_mean = None
 
     @property
     def ready(self) -> bool:
@@ -136,7 +137,6 @@ class SigmaMEstimator:
         valid_f = validity.to(torch.bool).to(device=device, dtype=dtype)
         n_valid = valid_f.sum().clamp(min=1.0)
         sigma_obs = sigma_obs.to(device=device, dtype=dtype)
-        self.sigma_d_mean = (sigma_obs * valid_f).sum() / n_valid
         mean_sigma_sq = ((sigma_obs**2 * valid_f).sum() / n_valid).clamp(min=1e-12)
 
         self.b_grid = torch.exp(
@@ -247,7 +247,3 @@ class SigmaMEstimator:
             + self.s_4.unsqueeze(0) * atom_factor_4
         )
         return per_type.sum(dim=0).clamp(min=1e-12)
-
-    def sigma_m(self, b_iso: torch.Tensor) -> torch.Tensor:
-        """``sqrt`` of :meth:`sigma_m_sq`."""
-        return torch.sqrt(self.sigma_m_sq(b_iso))

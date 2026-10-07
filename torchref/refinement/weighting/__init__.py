@@ -7,6 +7,6 @@ A scheme inherits :class:`BaseWeighting` and returns a ``{component: weight}`` d
 """
 
 from .base_weighting import BaseWeighting
-from .static_weighting import ManualWeighting, WeightingScheme
+from .static_weighting import ManualWeighting
 
-__all__ = ["BaseWeighting", "WeightingScheme", "ManualWeighting"]
+__all__ = ["BaseWeighting", "ManualWeighting"]

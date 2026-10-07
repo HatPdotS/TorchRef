@@ -9,7 +9,7 @@ import torch
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("mode", ["empty", "disabled", "disabled_compilable"])
+@pytest.mark.parametrize("mode", ["empty", "disabled"])
 @pytest.mark.parametrize("log_values", [False, True])
 def test_zero_aggregate_uses_configured_dtype_and_device(
     mode: str, log_values: bool
@@ -27,11 +27,9 @@ def test_zero_aggregate_uses_configured_dtype_and_device(
         state.register_target(
             "geometry/bond",
             disabled_target,
-            compile=mode == "disabled_compilable",
             probe=False,
         )
         state.set_weight("geometry", 0.0)
-        state.compile_aggregate()
 
     total = state.aggregate(log_values=log_values)
 
@@ -42,11 +40,8 @@ def test_zero_aggregate_uses_configured_dtype_and_device(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("compiled", [False, True])
-def test_aggregate_ignores_torch_default_dtype(
-    monkeypatch: pytest.MonkeyPatch, compiled: bool
-) -> None:
-    """Eager and compiled sums use TorchRef's dtype, not PyTorch's default."""
+def test_aggregate_ignores_torch_default_dtype(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sum uses TorchRef's dtype, not PyTorch's default."""
     from torchref.config import device, dtypes, get_float_dtype
     from torchref.refinement.loss_state import LossState
 
@@ -54,13 +49,11 @@ def test_aggregate_ignores_torch_default_dtype(
     monkeypatch.setattr(dtypes, "float", torch.float32)
     state = LossState()
     value = torch.tensor(2.0, dtype=get_float_dtype(), device=state.device)
-    state.register_target("geometry/bond", lambda: value, compile=compiled)
+    state.register_target("geometry/bond", lambda: value)
     state.set_weight("geometry", 3.0)
     previous_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(torch.float64)
-        if compiled:
-            state.compile_aggregate(backend="eager")
         total = state.aggregate()
     finally:
         torch.set_default_dtype(previous_dtype)
@@ -596,3 +589,105 @@ class TestLinalgExceptionGuard:
         ls.run(opt2, nsteps=1, context="test_linalg_guard")
         assert torch.isfinite(p).all()
         assert abs(float(p.detach())) < p0  # moved toward the (p**2) minimum
+
+    @pytest.mark.unit
+    def test_other_runtime_error_on_finite_parameters_propagates(self):
+        """A RuntimeError that is not a linalg failure, raised while every parameter is
+        finite, is a real error: run() re-raises it instead of rejecting the step."""
+        from torchref.refinement.loss_state import LossState
+
+        p = torch.nn.Parameter(torch.tensor([5.0]))
+        ctl = {"broken": False}
+
+        def target():
+            if ctl["broken"]:
+                return (p * torch.ones(2) + torch.ones(3)).sum()
+            return (p**2).sum()
+
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("geometry/plane", target)
+        ctl["broken"] = True
+        opt = torch.optim.LBFGS([p], max_iter=20, line_search_fn="strong_wolfe")
+
+        with pytest.raises(RuntimeError, match="must match the size"):
+            ls.run(opt, nsteps=1, context="test_runtime_error")
+        assert p.item() == 5.0
+
+    @pytest.mark.unit
+    def test_runtime_error_on_non_finite_parameters_rejects_the_step(self):
+        """The same kind of error raised while a parameter is non-finite is rejected
+        (+inf), as a non-finite loss would be."""
+        import warnings
+
+        from torchref.refinement.loss_state import LossState
+
+        p = torch.nn.Parameter(torch.tensor([float("inf")]))
+
+        def target():
+            raise RuntimeError("simulated failure on non-finite input")
+
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("geometry/plane", target, probe=False)
+        opt = torch.optim.LBFGS([p], max_iter=5, line_search_fn="strong_wolfe")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert ls.run(opt, nsteps=1, context="test_non_finite") is None
+        assert any(issubclass(x.category, RuntimeWarning) for x in w)
+
+
+class TestFrozenParameterGroup:
+    """An optimizer whose parameters hold no refinable element takes no step."""
+
+    @pytest.mark.unit
+    def test_run_over_a_zero_element_leaf_returns_none(self):
+        from torchref.refinement.loss_state import LossState
+
+        empty = torch.nn.Parameter(torch.zeros(0))
+        other = torch.nn.Parameter(torch.tensor([3.0]))
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("xray", lambda: (other**2).sum() + empty.sum())
+        opt = torch.optim.LBFGS([empty], line_search_fn="strong_wolfe")
+
+        assert ls.run(opt, context="test_frozen_group") is None
+        assert other.item() == 3.0
+
+
+class TestRequiresGradRestore:
+    """run() undoes exactly the requires_grad flips it makes, and no others."""
+
+    @pytest.mark.unit
+    def test_a_leaf_frozen_after_registration_stays_frozen(self):
+        from torchref.refinement.loss_state import LossState
+
+        a = torch.nn.Parameter(torch.tensor([2.0]))
+        b = torch.nn.Parameter(torch.tensor([3.0]))
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("xray", lambda: (a**2).sum() + (b**2).sum())
+        b.requires_grad_(False)
+
+        ls.run(torch.optim.LBFGS([a], line_search_fn="strong_wolfe"))
+
+        assert not b.requires_grad
+        assert a.requires_grad
+
+    @pytest.mark.unit
+    def test_a_leaf_outside_the_optimizer_is_frozen_only_for_the_step(self):
+        from torchref.refinement.loss_state import LossState
+
+        a = torch.nn.Parameter(torch.tensor([2.0]))
+        b = torch.nn.Parameter(torch.tensor([3.0]))
+        seen = []
+
+        def target():
+            seen.append(b.requires_grad)
+            return (a**2).sum() + (b**2).sum()
+
+        ls = LossState(device=torch.device("cpu"))
+        ls.register_target("xray", target)
+        seen.clear()
+
+        ls.run(torch.optim.LBFGS([a], line_search_fn="strong_wolfe"))
+
+        assert seen and not any(seen)
+        assert b.requires_grad
