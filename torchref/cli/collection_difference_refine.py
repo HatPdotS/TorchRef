@@ -4,8 +4,8 @@
 Collection-based difference refinement: joint scaling with bulk solvent.
 
 Uses ModelCollection / DatasetCollection / CollectionScaler so ONE set of scale
-parameters (overall scale, anisotropy, bulk solvent k_sol/B_sol) is shared across the
-dark and light datasets.
+parameters (overall scale, anisotropy, bulk-solvent k_sol and falloff) is shared
+across the dark and light datasets.
 
 Writes refined dark and light models (PDB/CIF), a JSON summary, and a difference MTZ.
 See :func:`write_results_mtz` for the columns and why each is where it is -- the table
