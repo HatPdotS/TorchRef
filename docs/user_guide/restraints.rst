@@ -76,10 +76,10 @@ Restraints are reached through a nested-dict interface, ``[type][origin][field]`
   ``"omega"``.
 - ``"all"`` is the merged origin the targets actually read. It is built with the
   rest when the restraints are built; a type with nothing to merge (the torsions
-  of a glycine-only model) has none, so probe with ``in``. Bond and angle
-  ``"all"`` merge every origin; torsion ``"all"`` merges only ``"intra"`` and
-  ``"disulfide"``, because phi/psi carry no reference values and omega has its
-  own target.
+  of a glycine-only model without hydrogens) has none, so probe with ``in``.
+  Bond and angle ``"all"`` merge every origin; torsion ``"all"`` merges only
+  ``"intra"`` and ``"disulfide"``, because phi/psi carry no reference values
+  and omega has its own target.
 - **Flat types** with no origin level: ``"vdw"`` and ``"chiral"`` are indexed
   straight by field, ``restraints.restraints["vdw"]["indices"]``.
 - **Fields** beyond the three above, where the restraint type has them:

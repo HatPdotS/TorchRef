@@ -136,7 +136,7 @@ def read_library_blocks():
 
 
 @lru_cache(maxsize=1)
-def read_component_groups():
+def read_component_groups() -> dict[str, str]:
     """Return the library's ``{comp_id: group}``, its chemical-component types.
 
     Read from the ``comp_list`` block of ``mon_lib_list.cif``, which lists every
