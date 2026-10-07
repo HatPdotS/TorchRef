@@ -1,5 +1,5 @@
 """
-Core utility containers and atom-selection parsing, re-exported from ``torchref.utils``.
+Core utility containers and atom-table sanitizing, re-exported from ``torchref.utils``.
 
 - :class:`ModuleReference` -- reference an ``nn.Module`` without registering it as a
   submodule, keeping its parameters out of the parent tree.
@@ -8,8 +8,6 @@ Core utility containers and atom-selection parsing, re-exported from ``torchref.
   combined (logical-AND) mask.
 - :func:`sanitize_pdb_dataframe` -- renumber HETATM residues whose atom identifiers
   repeat, and truncate over-long residue names, before an atom table is written.
-- :func:`parse_phenix_selection` / :func:`create_selection_mask` -- Phenix-style
-  atom-selection strings to boolean masks.
 """
 
 from pathlib import Path
@@ -418,89 +416,3 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
         print(f"  Final atoms: {len(pdb)}")
 
     return pdb
-
-
-def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
-    """Evaluate a Phenix-style selection against an atom table.
-
-    The grammar is documented in :mod:`torchref.utils.selection`; a model's own atoms
-    are selected with ``model.ctx.topology.select``.
-
-    Parameters
-    ----------
-    selection_string : str
-        Phenix-style selection string.
-    pdb_df : pandas.DataFrame
-        Atom table with ``chainid``, ``resseq``, ``resname``, ``name``, ``element`` and
-        ``altloc`` columns.
-
-    Returns
-    -------
-    torch.Tensor
-        Boolean tensor of shape (n_atoms,), on the CPU.
-
-    Raises
-    ------
-    ValueError
-        On an unknown keyword, an empty selection, or a bare term with no value.
-    """
-    from torchref.utils.selection import select_atoms
-
-    columns = {
-        "chain": pdb_df["chainid"].values.astype(str),
-        "resseq": pdb_df["resseq"].values,
-        "resname": pdb_df["resname"].values.astype(str),
-        "name": pdb_df["name"].values.astype(str),
-        "element": pdb_df["element"].values.astype(str),
-        "altloc": pdb_df["altloc"].values.astype(str),
-    }
-    return select_atoms(columns, selection_string)
-
-
-def create_selection_mask(
-    selection_string: str,
-    pdb_df: pd.DataFrame,
-    current_mask: Optional[torch.Tensor] = None,
-    mode: str = "set",
-) -> torch.Tensor:
-    """
-    Create or modify a refinable mask from a Phenix-style selection.
-
-    Parameters
-    ----------
-    selection_string : str
-        Phenix-style selection string (see :func:`parse_phenix_selection`).
-    pdb_df : pandas.DataFrame
-        DataFrame containing atomic data.
-    current_mask : torch.Tensor, optional
-        Current refinable mask. If None, starts with all False. Never mutated -- a new
-        tensor is returned.
-    mode : str, default 'set'
-        How to combine with ``current_mask``: ``'set'`` replaces it with the selection
-        (and so ignores it entirely), ``'add'`` ORs, ``'remove'`` AND-NOTs.
-
-    Returns
-    -------
-    torch.Tensor
-        Updated boolean mask of shape (n_atoms,).
-
-    Raises
-    ------
-    ValueError
-        If ``mode`` is not one of 'set', 'add', 'remove'.
-    """
-    selection_mask = parse_phenix_selection(selection_string, pdb_df)
-
-    if current_mask is None:
-        current_mask = torch.zeros(len(pdb_df), dtype=torch.bool)
-
-    if mode == "set":
-        return selection_mask
-    elif mode == "add":
-        return current_mask | selection_mask
-    elif mode == "remove":
-        return current_mask & ~selection_mask
-    else:
-        raise ValueError(f"Invalid mode: '{mode}'. Must be 'set', 'add', or 'remove'")
-
-

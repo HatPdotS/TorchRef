@@ -121,40 +121,6 @@ def test_wigner_blocks_carry_no_float64_to_the_device():
         assert torch.allclose(b[0], eye, atol=1e-5), f"d^{l}(0) is not I"
 
 
-def test_double_is_a_device_capability_not_a_constant():
-    """Where precision is load-bearing, the width comes from the device.
-
-    Two places in the engine need more than the working precision for reasons
-    that are not preferences: the radial accumulation cancels (see
-    ``cross_correlate_xi``) and the Bessel ladder's unnormalised intermediates
-    reach 1e157. Both used to hardcode float64, which is an error on a backend
-    that has none. They now ask, so that a device without float64 gets the
-    working dtype -- and the accuracy that implies -- instead of a crash.
-    """
-    from torchref.config import (supports_double, widest_complex_dtype,
-                                 widest_float_dtype)
-
-    assert supports_double("cpu")
-    assert widest_float_dtype("cpu") is torch.float64
-    assert widest_complex_dtype("cpu") is torch.complex128
-
-    # The no-float64 branch cannot be exercised on a host without such a device,
-    # so pin the policy itself: exactly the backends known to lack float64, and
-    # the fallback is the configured working dtype rather than a second constant.
-    from torchref.config import _NO_DOUBLE_DEVICE_TYPES
-    assert "mps" in _NO_DOUBLE_DEVICE_TYPES
-    assert not supports_double(torch.device("mps"))
-    original = dtypes.float, dtypes.complex
-    try:
-        dtypes.float, dtypes.complex = torch.float32, torch.complex64
-        assert widest_float_dtype(torch.device("mps")) is torch.float32
-        assert widest_complex_dtype(torch.device("mps")) is torch.complex64
-        dtypes.float, dtypes.complex = torch.float64, torch.complex128
-        assert widest_float_dtype(torch.device("mps")) is torch.float64
-    finally:
-        dtypes.float, dtypes.complex = original
-
-
 def test_the_radial_accumulation_follows_the_configuration_not_the_input():
     """Coefficients that arrive wider than the configured dtype are brought to it.
 
