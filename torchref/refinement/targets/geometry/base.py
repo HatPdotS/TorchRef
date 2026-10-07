@@ -1,4 +1,6 @@
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Optional
+
+import torch
 
 from torchref.utils.stats import StatEntry
 
@@ -28,11 +30,9 @@ class GeometryTarget(ModelTarget):
 
     Notes
     -----
-    ``**kwargs`` accepted by ``__init__`` are forwarded to
-    :class:`~torchref.refinement.targets.base.ModelTarget`, which currently
-    discards them. Passing ``target_value`` / ``sigma`` here therefore has no
-    effect on the loss; per-target tuning is done through each subclass's own
-    explicit parameters.
+    Extra keyword arguments are discarded, not forwarded, so ``target_value`` or
+    ``sigma`` passed here has no effect on the loss; each subclass takes its tuning
+    through its own explicit parameters.
     """
 
     def __init__(
@@ -43,6 +43,24 @@ class GeometryTarget(ModelTarget):
         **kwargs,
     ):
         super().__init__(model, verbose, device=device)
+
+    def _restraint_group(
+        self, edge_type: str, origin: Optional[str] = None
+    ) -> Optional[Dict[str, torch.Tensor]]:
+        """Return ``restraints[edge_type][origin]``, or ``restraints[edge_type]`` when
+        ``origin`` is None (chirals); None when the group is absent or has no indices.
+
+        A model without a restraint kind lacks the group rather than holding an empty
+        one (glycines have no torsion ``all`` group, waters no bonds), and its chiral
+        group is ``{}``, so the targets read every group through this.
+        """
+        group = self.restraints.restraints.get(edge_type, {})
+        if origin is not None:
+            group = group.get(origin, {})
+        indices = group.get("indices")
+        if indices is None or len(indices) == 0:
+            return None
+        return group
 
     def stats(self) -> Dict[str, StatEntry]:
         """

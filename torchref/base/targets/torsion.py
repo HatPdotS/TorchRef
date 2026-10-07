@@ -47,8 +47,7 @@ def torsion_omega_math(
 ) -> torch.Tensor:
     """Omega cis/trans mixture NLL.
 
-    Mirrors ``targets.geometry.torsions._omega_mixture_nll`` plus the
-    omega-angle computation. Models each ω as a 2-component mixture:
+    Computes each ω from ``xyz`` and models it as a 2-component mixture:
     ``w_trans VM(ω; π, κ) + w_cis VM(ω; 0, κ)``.
 
     Dispatches to

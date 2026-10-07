@@ -7,7 +7,6 @@ from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
-    StatEntry,
     stat,
 )
 
@@ -20,41 +19,23 @@ if TYPE_CHECKING:
 class NodeLoadTarget(ADPTarget):
     """Keep every disorder-field node carrying a fair share of atoms.
 
-    A node's load is the total weight it holds across all atoms,
-    :meth:`~torchref.model.disorder_field.DisorderFieldTensor.node_load`, and the
-    weights are a partition of unity, so the loads sum to the atom count and their mean
-    is ``n_atoms / K`` whatever the model does.
-
-    Without this the field has a degenerate direction: a node can narrow its kernel
-    until it holds a single atom, then take whatever value fits that atom. Measured, a
-    collapsed node ends up with a load near or below one atom against a healthy median
-    of seven, and sets its atom's B into the hundreds or thousands. One node fitting one
-    atom is per-atom refinement wearing a node's clothes, which is the thing the
-    representation exists to avoid.
-
-    The penalty is **one-sided**, ``softplus(-log(load / mean_load))``: it grows as a
-    node is abandoned, and flattens to zero once a node carries its share. That
-    asymmetry is deliberate. The symmetric choice -- maximising the entropy of the load
-    distribution -- is optimal at *uniform* load, so it would also penalise a broad node
-    that legitimately covers more atoms than its neighbours. Fitted fields span nearly
-    two orders of magnitude in kernel width within a single structure, and that spread
-    is the representation working, not failing.
-
-    Acts through the weights, so its gradient reaches node positions and kernel widths
-    but never the node values: it removes the *opportunity* to place an extreme B rather
-    than penalising the B itself. It therefore composes with, rather than duplicates,
-    the restraints that act on the values.
-
-    Inert unless the model is in field mode, so it can be registered unconditionally.
+    A node's load is the total weight it holds across all atoms
+    (:meth:`~torchref.model.disorder_field.DisorderFieldTensor.node_load`); the weights
+    partition unity, so the mean load is ``n_atoms / K``. The penalty, summed over
+    nodes, is ``s * softplus(-log(load / mean_load) / s)``: it grows as a node is
+    abandoned and flattens once the node carries its share, one-sided because a broad
+    node may legitimately carry more than the mean. It acts through the weights, so its
+    gradient reaches node positions and kernel widths but never the node values. Inert
+    unless the model is in field mode, so it can be registered unconditionally.
 
     Parameters
     ----------
     model : Model, optional
         Reference to the Model object.
     sharpness : float, optional
-        Softplus temperature in log-load units. Smaller is a harder barrier. Default
-        0.5, which leaves a node at the mean load contributing about 0.1 and a node at a
-        tenth of the mean about 2.3.
+        Softplus temperature ``s`` in log-load units. Smaller is a harder barrier.
+        Default 0.5, which leaves a node at the mean load contributing about 0.35 and a
+        node at a tenth of the mean about 2.3.
     verbose : int, optional
         Verbosity level. Default is 0.
     """
@@ -99,7 +80,7 @@ class NodeLoadTarget(ADPTarget):
         """Summed one-sided load deficit over nodes, or zero outside field mode."""
         field = self._field
         if field is None:
-            return torch.zeros((), device=self.device)
+            return torch.zeros((), device=self.device, dtype=self.dtype_float)
         rel = self._relative_load()
         deficit = -torch.log(rel.clamp(min=1e-12)) / self.sharpness
         return torch.nn.functional.softplus(deficit).sum() * self.sharpness

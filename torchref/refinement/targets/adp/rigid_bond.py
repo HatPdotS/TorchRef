@@ -10,7 +10,6 @@ from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
-    StatEntry,
     stat,
 )
 
@@ -31,7 +30,7 @@ class RigidBondTarget(ADPTarget):
         z_21 = l_21^T U_2 l_21 / |l_21|²
         Δz   = z_12 - z_21  ->  0
 
-    with ΔB = B_1 - B_2 as the isotropic proxy, and
+    with ΔB = B_1 - B_2 (B_eq for anisotropic atoms) as the isotropic proxy, and
     NLL = 0.5·(Δz/σ)² + log σ + 0.5·log 2π. Unlike SIMU
     (:class:`ADPSimilarityTarget`), which restrains the whole tensors to be
     similar, this constrains only the bond-direction component.
@@ -80,16 +79,17 @@ class RigidBondTarget(ADPTarget):
 
     def _compute_iso_rigid_bond(self) -> torch.Tensor:
         """Rigid-bond NLL from ΔB: for isotropic ADPs the MSDA is B/(8π²) in every
-        direction, so Δz is just ΔB/(8π²) and sigma is scaled to match.
+        direction, so Δz is just ΔB/(8π²) and sigma is scaled to match. Anisotropic
+        atoms enter through B_eq.
         """
-        adp = self.model.adp()
+        adp = self._b_values()
         xyz = self.model.xyz()
         device = xyz.device
 
         delta_z_list = []
 
         if "bond" not in self.restraints.restraints:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         for origin, restraint_group in self.restraints.restraints["bond"].items():
             if origin == "all":
@@ -103,7 +103,7 @@ class RigidBondTarget(ADPTarget):
                 delta_z_list.append(delta_z)
 
         if not delta_z_list:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         delta_z = torch.cat(delta_z_list, dim=0)
 
@@ -141,17 +141,17 @@ class RigidBondTarget(ADPTarget):
 
     def get_delta_z_stats(self) -> Dict[str, float]:
         """
-        Statistics of the Δz values, from the isotropic ΔB path regardless of
-        ``use_aniso`` -- so on an anisotropic model these describe a proxy for what
+        Statistics of the Δz values, from the isotropic ΔB path on B_eq regardless
+        of ``use_aniso`` -- so on an anisotropic model these describe a proxy for what
         ``forward`` actually minimises, not the same quantity.
 
         Returns
         -------
         dict
-            ``count``, ``mean``/``std``/``max``/``min``/``rms`` of |Δz|, and the
+            ``count``, ``mean``/``std``/``max``/``min``/``rms`` of ``|Δz|``, and the
             ``mean_z``/``rms_z`` Z-scores. All zero when there are no bonds.
         """
-        adp = self.model.adp()
+        adp = self._b_values()
         xyz = self.model.xyz()
         device = xyz.device
 

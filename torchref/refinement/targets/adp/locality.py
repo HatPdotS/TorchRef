@@ -10,7 +10,6 @@ from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
-    StatEntry,
     stat,
 )
 
@@ -24,8 +23,11 @@ class ADPLocalityTarget(ADPTarget):
     """
     Proximity-based ADP restraint over each atom's K nearest neighbours.
 
-    Built on a spatial cell-list (O(N) memory, O(N·k) time) rather than a full
-    N×N distance matrix, so it scales to arbitrarily large structures.
+    Built on a k-d tree rather than a full N×N distance matrix, so it scales to
+    arbitrarily large structures, and rebuilt by :meth:`maintenance` whenever the
+    coordinates have moved. Bonded neighbours are included; SIMU
+    (:class:`~torchref.refinement.targets.adp.ADPSimilarityTarget`) restrains them
+    separately.
 
     Parameters
     ----------
@@ -36,15 +38,10 @@ class ADPLocalityTarget(ADPTarget):
     correlation_length : float, optional
         Weight-decay distance scale (Å), default 5.0. Used **only** by ``stats()``;
         ``forward()`` weights by inverse distance instead.
-    scale : float, optional
-        Default 5.0, and informational only -- ``forward()`` does **not** multiply
-        the loss by it, so it is not a loss-magnitude lever.
     sigma_aniso : float, optional
         Sigma for the deviatoric (anisotropy) channel, used only when anisotropic
         atoms are present. Default 0.5, dimensionless and on the same scale as the
         magnitude channel's fixed 0.5 log-sigma.
-    exclude_bonded : bool, optional
-        Exclude directly bonded atoms. Default is True.
     verbose : int, optional
         Verbosity level. Default is 0.
     """
@@ -56,9 +53,7 @@ class ADPLocalityTarget(ADPTarget):
         model: "Model" = None,
         k_neighbors: int = 50,
         correlation_length: float = 5.0,
-        scale: float = 5.0,
         sigma_aniso: float = 0.5,
-        exclude_bonded: bool = True,
         verbose: int = 0,
         device=None,
     ):
@@ -68,31 +63,27 @@ class ADPLocalityTarget(ADPTarget):
         # sync per access.
         self._k_neighbors = int(k_neighbors)
         self._correlation_length = float(correlation_length)
-        self._scale = float(scale)
-        # This one *is* a buffer, unlike the three above: adp_locality_aniso_math
+        # This one *is* a buffer, unlike the two above: adp_locality_aniso_math
         # takes it as a tensor. It restrains fractional anisotropy dev/B_eq, the
         # analogue of log B_eq, hence the shared 0.5 scale.
         self._register_scalar("_sigma_aniso", float(sigma_aniso))
-        self.exclude_bonded = exclude_bonded
 
         # Cache for neighbor indices and distances
         self._neighbor_indices = None  # (N, k_neighbors)
         self._neighbor_distances = None  # (N, k_neighbors)
-        self._last_xyz_hash = None
+        # The coordinates the list was built from, which maintenance() compares against.
+        self._neighbor_xyz = None  # (N, 3)
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-        """Absorb ``_k_neighbors``/``_correlation_length``/``_scale`` from older
-        checkpoints. All three are host-side scalars now, so a ``strict=True`` load
-        would reject them as unexpected keys; restore the values instead.
+        """Accept checkpoints that store ``_k_neighbors``/``_correlation_length`` as
+        tensors, restoring their values, and drop a stored ``_scale``, which nothing
+        reads; a ``strict=True`` load would otherwise reject them as unexpected keys.
         """
-        for legacy, cast in (
-            ("_k_neighbors", int),
-            ("_correlation_length", float),
-            ("_scale", float),
-        ):
-            saved = state_dict.pop(prefix + legacy, None)
+        for key, cast in (("_k_neighbors", int), ("_correlation_length", float)):
+            saved = state_dict.pop(prefix + key, None)
             if saved is not None:
-                setattr(self, legacy, cast(saved.item()))
+                setattr(self, key, cast(saved.item()))
+        state_dict.pop(prefix + "_scale", None)
         return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     @property
@@ -102,6 +93,8 @@ class ADPLocalityTarget(ADPTarget):
     @k_neighbors.setter
     def k_neighbors(self, value: int):
         self._k_neighbors = int(value)
+        # Drop the list so forward() and maintenance() rebuild it with the new k.
+        self._neighbor_indices = self._neighbor_distances = self._neighbor_xyz = None
 
     @property
     def correlation_length(self) -> float:
@@ -110,14 +103,6 @@ class ADPLocalityTarget(ADPTarget):
     @correlation_length.setter
     def correlation_length(self, value: float):
         self._correlation_length = float(value)
-
-    @property
-    def scale(self) -> float:
-        return self._scale
-
-    @scale.setter
-    def scale(self, value: float):
-        self._scale = float(value)
 
     @property
     def sigma_aniso(self) -> float:
@@ -134,11 +119,9 @@ class ADPLocalityTarget(ADPTarget):
     def _build_neighbor_list(self) -> None:
         """Build each atom's list of its ``k`` nearest other atoms, nearest first.
 
-        Uses a k-d tree. ``stats()`` rebuilds the list on every call, which is also what
-        keeps ``forward()``'s list current as atoms move, so this runs every time
-        metrics are collected and has to be cheap. The per-atom Python loop over a cell
-        list that it replaces was one of the largest costs of a refinement, and more so
-        with hydrogens, which double the atom count.
+        Uses a k-d tree and keeps a detached copy of the coordinates it was built from.
+        :meth:`maintenance` rebuilds the list whenever those coordinates move, after
+        every optimizer step that changes them, so this has to be cheap.
 
         Distances are recomputed from the coordinates in their own dtype, the way the
         loss sees them, rather than taken from the tree.
@@ -152,7 +135,7 @@ class ADPLocalityTarget(ADPTarget):
 
         if k <= 0:
             all_neighbor_idx = np.zeros((n_atoms, 0), dtype=np.int64)
-            all_neighbor_dist = np.zeros((n_atoms, 0), dtype=np.float32)
+            all_neighbor_dist = np.zeros((n_atoms, 0), dtype=coords.dtype)
         else:
             # k + 1, because each atom is its own nearest point.
             _, idx = cKDTree(coords).query(coords, k=k + 1)
@@ -163,16 +146,28 @@ class ADPLocalityTarget(ADPTarget):
             keep[keep.all(axis=1), -1] = False
             all_neighbor_idx = idx[keep].reshape(n_atoms, k).astype(np.int64)
             diff = coords[:, None, :] - coords[all_neighbor_idx]
-            all_neighbor_dist = np.sqrt((diff * diff).sum(axis=-1)).astype(np.float32)
+            all_neighbor_dist = np.sqrt((diff * diff).sum(axis=-1))
 
         self._neighbor_indices = torch.from_numpy(all_neighbor_idx).to(device)
         self._neighbor_distances = torch.from_numpy(all_neighbor_dist).to(device)
+        self._neighbor_xyz = xyz.detach().clone()
 
         if self.verbose > 1 and all_neighbor_dist.size:
             print(
                 f"    Built K-NN list (k-d tree): k={k}, "
                 f"mean dist={float(all_neighbor_dist.mean()):.2f}A"
             )
+
+    def maintenance(self) -> None:
+        """Rebuild the k-NN list unless it was built from the current coordinates.
+
+        Costs one device sync for the comparison; see
+        :meth:`~torchref.refinement.targets.base.Target.maintenance`.
+        """
+        xyz = self.model.xyz().detach()
+        built = self._neighbor_xyz
+        if built is None or built.device != xyz.device or not torch.equal(built, xyz):
+            self._build_neighbor_list()
 
     def forward(self, recompute_neighbors: bool = False) -> torch.Tensor:
         """
@@ -189,7 +184,8 @@ class ADPLocalityTarget(ADPTarget):
         recompute_neighbors : bool, optional
             Rebuild the k-nearest-neighbor list before evaluating the loss.
             Default is False; the list is also rebuilt automatically when no
-            cache exists or it lives on a different device than the model.
+            cache exists or it lives on a different device than the model, and by
+            :meth:`maintenance` once the coordinates move.
 
         Returns
         -------
@@ -205,11 +201,10 @@ class ADPLocalityTarget(ADPTarget):
             self._build_neighbor_list()
 
         adp = self.model.adp()
-        device = adp.device
         n_atoms = len(adp)
 
         if n_atoms == 0 or self._neighbor_indices is None:
-            return torch.tensor(0.0, device=device)
+            return adp.new_zeros(())
 
         indices = self._neighbor_indices
         distances = self._neighbor_distances
@@ -240,13 +235,15 @@ class ADPLocalityTarget(ADPTarget):
         Caution: ``weighted_rms_log`` and ``avg_weight`` use exponential-decay
         weights ``exp(-d / correlation_length)``, **not** the inverse-distance
         weights ``forward()`` uses, so they do not describe the loss's weighting.
+        The ``*_log`` figures are of log B_eq; on an anisotropic model the
+        fractional-anisotropy channel shows only in ``loss``.
         """
-        self._build_neighbor_list()
+        self.maintenance()
 
         if self._neighbor_indices is None:
             return {}
 
-        adp = self.model.adp().detach()
+        adp = self._b_values().detach()
         log_adp = torch.log(adp.clamp(min=1e-3))
 
         indices = self._neighbor_indices
@@ -271,7 +268,6 @@ class ADPLocalityTarget(ADPTarget):
             "max_deviation_log": stat(diff.abs().max().item(), VERBOSITY_DETAILED),
             "k_neighbors": stat(self.k_neighbors, VERBOSITY_DEBUG),
             "correlation_length": stat(self.correlation_length, VERBOSITY_DEBUG),
-            "scale": stat(self.scale, VERBOSITY_DEBUG),
             "avg_neighbor_dist": stat(distances.mean().item(), VERBOSITY_DEBUG),
             "max_neighbor_dist": stat(distances.max().item(), VERBOSITY_DEBUG),
             "avg_weight": stat(weights.mean().item(), VERBOSITY_DEBUG),
