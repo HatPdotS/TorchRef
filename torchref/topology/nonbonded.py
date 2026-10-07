@@ -844,7 +844,6 @@ def build_vdw_restraints_gpu(
     topology,
     exclusion_set: Set[Tuple[int, int]],
     cutoff: float = 5.0,
-    sigma: float = 0.2,
     inter_residue_only: bool = True,
     verbose: int = 0,
 ) -> Dict[str, torch.Tensor]:
@@ -864,8 +863,6 @@ def build_vdw_restraints_gpu(
     exclusion_set : set of (int, int) bonded exclusion pairs
     cutoff : float
         Contact distance cutoff in Angstrom.
-    sigma : float
-        Standard deviation assigned to each VDW restraint.
     inter_residue_only : bool
     verbose : int
 
@@ -875,7 +872,7 @@ def build_vdw_restraints_gpu(
         ``indices`` ``(P, 2)``: the ASU atom and the atom imaged; ``symop_indices``
         ``(P,)`` and ``cell_offsets`` ``(P, 3)``: the operation and fractional lattice
         shift of that image (0 inside the ASU); ``min_distances`` ``(P,)``: the contact
-        distance in Å; ``sigmas`` ``(P,)``: ``sigma`` in Å; ``weights`` ``(P,)``:
+        distance in Å; ``weights`` ``(P,)``:
         :data:`IMAGE_PAIR_WEIGHT` for an image pair, else 1. Integer arrays in
         ``get_int_dtype()``, float ones in ``get_float_dtype()``. An intra-ASU pair is
         listed once, a crystal contact from both of its ends.
@@ -892,7 +889,6 @@ def build_vdw_restraints_gpu(
     empty_result = {
         "indices": torch.zeros(0, 2, dtype=get_int_dtype(), device=device),
         "min_distances": torch.zeros(0, dtype=get_float_dtype(), device=device),
-        "sigmas": torch.zeros(0, dtype=get_float_dtype(), device=device),
         "symop_indices": torch.zeros(0, dtype=get_int_dtype(), device=device),
         "cell_offsets": torch.zeros(0, 3, dtype=get_int_dtype(), device=device),
         "weights": torch.zeros(0, dtype=get_float_dtype(), device=device),
@@ -1042,9 +1038,6 @@ def build_vdw_restraints_gpu(
     result = {
         "indices": indices,
         "min_distances": min_distances.to(get_float_dtype()),
-        "sigmas": torch.full(
-            (len(indices),), sigma, dtype=get_float_dtype(), device=device
-        ),
         "symop_indices": symop_indices,
         "cell_offsets": pair_cell_offsets,
         "weights": torch.where(image, IMAGE_PAIR_WEIGHT, 1.0).to(get_float_dtype()),

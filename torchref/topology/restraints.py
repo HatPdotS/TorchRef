@@ -329,9 +329,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             # expected drift, so a displacement-triggered rebuild stays inside the
             # margin and cannot miss a newly-formed contact.
             if self._nonbonded:
-                self._build_vdw_restraints(
-                    xyz, cutoff=6.0, sigma=0.05, inter_residue_only=False
-                )
+                self._build_vdw_restraints(xyz, cutoff=6.0, inter_residue_only=False)
 
             if target_device.type != "cpu":
                 self.to(target_device)
@@ -388,9 +386,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
         return torch.tensor(hashes, dtype=torch.long, device=device)
 
-    def _build_vdw_restraints(
-        self, xyz, cutoff=6.0, sigma=0.2, inter_residue_only=True
-    ):
+    def _build_vdw_restraints(self, xyz, cutoff=6.0, inter_residue_only=True):
         """Build van der Waals (non-bonded contact) restraints.
 
         With cell and spacegroup present, includes contacts to symmetry mates.
@@ -405,8 +401,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         cutoff : float, default 6.0
             Contact-search cutoff in Angstroms. Keep it ~1 Å beyond the largest
             heavy-atom VDW sum so the rebuild threshold has margin.
-        sigma : float, default 0.2
-            Restraint sigma in Angstroms (the production caller passes 0.05).
         inter_residue_only : bool, default True
             If True, only build contacts between atoms in different residues.
 
@@ -418,7 +412,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         """
         self._vdw_build_kwargs = dict(
             cutoff=cutoff,
-            sigma=sigma,
             inter_residue_only=inter_residue_only,
         )
 
@@ -462,7 +455,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             topology=self.topology,
             exclusion_set=self.topology.atoms.exclusions_12_13_14(),
             cutoff=cutoff,
-            sigma=sigma,
             inter_residue_only=inter_residue_only,
             verbose=self.verbose,
         )
