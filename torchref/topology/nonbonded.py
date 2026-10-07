@@ -848,10 +848,7 @@ def build_vdw_restraints_gpu(
     inter_residue_only: bool = True,
     verbose: int = 0,
 ) -> Dict[str, torch.Tensor]:
-    """Build the VDW pair list: every contact closer than ``cutoff``, images included.
-
-    The pairs come from the grid search (:func:`find_pairs_periodic_grid_v2`) on an
-    accelerator and from the k-d tree (:func:`find_pairs_kdtree`) on CPU.
+    """Build the VDW pair list: grid search on an accelerator, k-d tree on CPU.
 
     Parameters
     ----------
