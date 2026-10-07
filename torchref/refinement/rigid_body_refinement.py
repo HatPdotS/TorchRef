@@ -95,28 +95,13 @@ class RigidBodyRefinementStep:
     # -----------------------------------------------------------------------
     @staticmethod
     def _sandbox(ref):
-        """A shallow clone of ``ref`` that shares its model but owns its namespace.
+        """Shallow clone of ``ref`` whose attribute assignments do not reach ``ref``.
 
-        Every cutoff calls :meth:`_rebind_for_data`, which assigns
-        ``reflection_data``, ``scaler`` and the x-ray targets for that cutoff's
-        resolution and target mode. Run against the real Refinement those
-        assignments are destructive -- the caller gets its data and scaler
-        silently replaced by whatever the last cutoff used.
-
-        Directing the step at a clone confines all of it. The real Refinement is
-        never written to, so there is nothing to restore and no window in which
-        it is inconsistent. The step builds its own single-target
-        :class:`~torchref.refinement.loss_state.LossState` rather than borrowing
-        the refinement's, so the caller's targets and any weights registered on
-        them are untouched as well.
-
-        The model is deliberately shared, not copied: ``use_rigid_xyz`` swaps its
-        xyz container in place, so refined coordinates reach the caller by object
-        identity and need no copy-back.
-
-        ``nn.Module`` keeps submodules in ``_modules``; copying ``__dict__``
-        alone would leave that dict shared, and a submodule assignment on the
-        clone would write straight through to the original.
+        ``__dict__``, ``_modules``, ``_parameters`` and ``_buffers`` are private copies,
+        so the ``reflection_data``, ``scaler`` and x-ray targets that
+        :meth:`_rebind_for_data` assigns per cutoff stay on the clone. The objects they
+        hold are shared: the model, so refined xyz reaches the caller by identity, and
+        the caller's ``ReflectionData``, whose resolution mask :meth:`_run` restores.
         """
         sandbox = copy.copy(ref)
         sandbox.__dict__ = dict(ref.__dict__)
@@ -128,13 +113,6 @@ class RigidBodyRefinementStep:
     def run(self):
         """Step through every cutoff coarse to fine and return
         ``[(d_min, LossState), ...]``.
-
-        Runs against a sandbox clone of the refinement (see :meth:`_sandbox`), so
-        the caller's targets, weights and ``reflection_data`` are left untouched.
-        Refined coordinates still reach the caller: the model is shared.
-
-        Bakes the final transform back into a plain ``ModelFT`` unless
-        ``commit=False``.
         """
         real = self.refinement
         self.refinement = self._sandbox(real)
