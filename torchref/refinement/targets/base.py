@@ -3,10 +3,9 @@
 A target is constructed once against the objects it scores, then called each
 iteration -- directly, or by the :class:`~torchref.refinement.loss_state.LossState`
 that :meth:`~torchref.refinement.loss_state.LossState.register_target` added it to.
-:class:`ModelTarget` adds a
-``Model`` reference (geometry, ADP restraints); :class:`DataTarget` adds
-``ReflectionData`` and an optional ``Scaler`` (X-ray targets). Also home to the
-shared NLL primitive :func:`gaussian_nll`.
+:class:`ModelTarget` adds a ``Model`` reference (geometry, ADP restraints);
+:class:`DataTarget` adds ``ReflectionData`` and an optional ``Scaler`` (X-ray
+targets). Also home to the shared NLL primitive :func:`gaussian_nll`.
 """
 
 from typing import TYPE_CHECKING
