@@ -60,7 +60,7 @@ class SigmaALossInputs:
         The whole estimate, full-size, for a hook needing a field this context does not name
         (``SigmaAXrayTarget._mean`` reads ``est.alpha``).
     sub
-        The ``_ReflectionSubset`` view. ``ml_full`` needs it for its parity cache key.
+        The ``ReflectionSubset`` view. ``ml_full`` needs it for its parity cache key.
     """
 
     F_obs: torch.Tensor
@@ -151,7 +151,7 @@ class SigmaAXrayTarget(XrayTarget):
         fcalc : torch.Tensor, optional
             Pre-computed structure factors. If provided, used instead of computing from the
             model.
-        sub : _ReflectionSubset, optional
+        sub : ReflectionSubset, optional
             Which reflections to compact onto. Defaults to this target's own set.
 
         Returns

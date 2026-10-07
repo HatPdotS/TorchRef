@@ -1020,6 +1020,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                     out.append(rp)
         return out
 
+    def _require_param_type(self, target: str) -> None:
+        """Raise ``ValueError`` unless ``target`` is in ``Model.PARAM_TYPES``."""
+        if target not in self.PARAM_TYPES:
+            raise ValueError(
+                f"Unknown parameter type {target!r}; Model.PARAM_TYPES is "
+                f"{self.PARAM_TYPES}"
+            )
+
     def freeze(self, target: str):
         """
         Freeze (stop refining) one parameter type.
@@ -1031,14 +1039,18 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ----------
         target : str
             One of ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
-            Unrecognized names are ignored.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in ``Model.PARAM_TYPES``.
         """
-        if target in self.PARAM_TYPES:
-            # Every wrapper takes an atom-space mask and collapses it onto its own
-            # storage (nodes of a field, occupancy groups, rigid bodies).
-            getattr(self, target).update_refinable_mask(
-                torch.zeros(self.n_atoms, dtype=torch.bool, device=self.device)
-            )
+        self._require_param_type(target)
+        # Every wrapper takes an atom-space mask and collapses it onto its own
+        # storage (nodes of a field, occupancy groups, rigid bodies).
+        getattr(self, target).update_refinable_mask(
+            torch.zeros(self.n_atoms, dtype=torch.bool, device=self.device)
+        )
 
     def freeze_all(self):
         """Freeze every parameter type (``xyz``, ``adp``, ``u``, ``occupancy``)."""
@@ -1062,10 +1074,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ----------
         target : str
             One of ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
-            Unrecognized names are ignored.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in ``Model.PARAM_TYPES``.
         """
-        if target in self.PARAM_TYPES:
-            getattr(self, target).update_refinable_mask(getattr(self, f"{target}_mask"))
+        self._require_param_type(target)
+        getattr(self, target).update_refinable_mask(getattr(self, f"{target}_mask"))
 
     def set_adp_mode(
         self,
@@ -1393,19 +1409,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             model.update_mask_from_selection("chain A", "xyz", freeze=True)
             model.apply_mask_to_parameter("xyz")
         """
-        mask_map = {
-            "xyz": "xyz_mask",
-            "adp": "adp_mask",
-            "u": "u_mask",
-            "occupancy": "occupancy_mask",
-        }
-
-        if target not in mask_map:
-            raise ValueError(
-                f"Invalid target: '{target}'. Must be one of: {list(mask_map.keys())}"
-            )
-
-        mask_name = mask_map[target]
+        self._require_param_type(target)
+        mask_name = f"{target}_mask"
         current_mask = getattr(self, mask_name)
 
         selected = self.get_selection_mask(selection_string).to(current_mask.device)
@@ -1430,9 +1435,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Push the current mask buffer into the parameter wrapper's refinable split.
 
         The counterpart to :meth:`update_mask_from_selection`, which only edits the
-        buffer, and the repartition :meth:`unfreeze` makes, raising on an unknown
-        target. Replaces the wrapper's ``refinable_params``, so rebuild any
-        optimizer afterwards.
+        buffer, and the same repartition :meth:`unfreeze` makes. Replaces the
+        wrapper's ``refinable_params``, so rebuild any optimizer afterwards.
 
         Parameters
         ----------
@@ -1444,10 +1448,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ValueError
             If target is not recognized.
         """
-        if target not in self.PARAM_TYPES:
-            raise ValueError(
-                f"Invalid target: '{target}'. Must be 'xyz', 'adp', 'u', or 'occupancy'"
-            )
         self.unfreeze(target)
 
         if self.ctx.verbose > 0:

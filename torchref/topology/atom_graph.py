@@ -427,36 +427,12 @@ class AtomGraph(DeviceMixin):
         keep = lo != hi
         return set(zip(lo[keep].cpu().tolist(), hi[keep].cpu().tolist()))
 
-    def exclusions_from_restraint_edges(self) -> Set[Tuple[int, int]]:
-        """1-2, 1-3 and 1-4 pairs taken from the bond, angle and torsion **edges**.
-
-        1-2 from every bond, 1-3 from each angle's outer pair, 1-4 from each torsion's
-        outer pair. Not the same as :meth:`exclusions_12_13_14`: a pair that is 1-3
-        bonded but whose angle the monomer library does not restrain appears there and
-        not here, so a non-bonded term excluding this set repels it.
-
-        Returns
-        -------
-        set of tuple of int
-            ``(low, high)`` atom index pairs.
-        """
-        excl: Set[Tuple[int, int]] = set()
-        for block, cols in (
-            (self.bonds, (0, 1)),
-            (self.angles, (0, 2)),
-            (self.torsions, (0, 3)),
-        ):
-            if block.n_edges:
-                excl |= self._pair_set(block.indices[:, cols])
-        return excl
-
     def exclusions_12_13_14(self) -> Set[Tuple[int, int]]:
         """1-2, 1-3 and 1-4 pairs derived from bond **connectivity** alone.
 
         Walks the adjacency two and three steps out, so the result does not depend on
-        which angles and torsions the monomer library happens to restrain. This is the
-        physically correct exclusion set; :meth:`exclusions_from_restraint_edges` is the
-        one wired into the non-bonded term.
+        which angles and torsions the monomer library happens to restrain. These are
+        the pairs the non-bonded (VDW) term leaves out of its intra-ASU pair list.
 
         Returns
         -------

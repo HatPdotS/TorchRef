@@ -7,6 +7,7 @@ from functools import lru_cache
 import pandas as pd
 
 from torchref.io import cif
+from torchref.io.cif_readers import DEFAULT_PLANE_SIGMA
 
 
 def validate_restraint_data(residue_data, cif_path):
@@ -243,11 +244,9 @@ def _standardize_link_columns(df, section_type):
             df = df.rename(columns={"atom_id": "atom"})
         if "dist_esd" in df.columns:
             df = df.rename(columns={"dist_esd": "sigma"})
-            # A missing sigma defaults to 0.02 Å (component planes default to 0.01 Å)
-            # and every sigma is floored at 0.001 Å.
-            df["sigma"] = (
-                pd.to_numeric(df["sigma"], errors="coerce").fillna(0.02).clip(lower=0.001)
-            )
+            # Same default and 0.001 Å floor as RestraintCIFReader's component planes.
+            sigma = pd.to_numeric(df["sigma"], errors="coerce")
+            df["sigma"] = sigma.fillna(DEFAULT_PLANE_SIGMA).clip(lower=0.001)
 
     return df
 

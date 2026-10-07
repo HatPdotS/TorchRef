@@ -27,6 +27,7 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import pandas as pd
 
+from torchref.io.cif_readers import DEFAULT_PLANE_SIGMA
 from torchref.topology.monomer.cif import read_library_blocks
 
 #: CIF category -> section name, matching :func:`read_link_definitions`.
@@ -309,7 +310,7 @@ def _addition_row(target: pd.DataFrame, mod_row: pd.Series, section: str) -> dic
     for column in _VALUE_COLUMNS[section]:
         value = mod_row[column]
         if pd.isna(value) and section == "planes" and column == "sigma":
-            value = 0.02
+            value = DEFAULT_PLANE_SIGMA
         row[column] = value
     for column in target.columns:
         row.setdefault(column, pd.NA)

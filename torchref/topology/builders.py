@@ -21,6 +21,7 @@ import torch
 from torchref.base.coordinates.local_frame import frame_is_degenerate
 from torchref.base.targets._common import torsions_from_xyz
 from torchref.config import get_float_dtype, get_int_dtype
+from torchref.io.cif_readers import DEFAULT_PLANE_SIGMA
 
 
 # =============================================================================
@@ -337,7 +338,7 @@ class PreprocessedCIF:
                     "sigmas": (
                         plane_atoms[sigma_col].values.astype(np.float64)
                         if sigma_col
-                        else np.full(len(plane_atoms), 0.02)
+                        else np.full(len(plane_atoms), DEFAULT_PLANE_SIGMA)
                     ),
                 }
             )

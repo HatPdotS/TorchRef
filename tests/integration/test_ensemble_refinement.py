@@ -62,7 +62,7 @@ def test_model_is_ensemble(refinement):
 
 
 def test_validation_set_was_generated(refinement):
-    # work/free/validation are disjoint _ReflectionSubset views (.n) over the
+    # work/free/validation are disjoint ReflectionSubset views (.n) over the
     # valid, in-resolution reflections (a subset of len(data), which counts all
     # loaded reflections incl. out-of-resolution / invalid).
     data = refinement.reflection_data
