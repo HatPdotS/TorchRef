@@ -2,13 +2,13 @@
 
 Five selectable X-ray targets, but only **three** likelihoods:
 
-===================  =======================  ================================
-primitive            distribution             consumed by
-===================  =======================  ================================
-:func:`nll_math`     Gaussian on ``|F|``      ``nll``, ``nll_beta``
-:func:`rice_math`    Rice / folded normal     ``ml``, ``ml_noalpha``
-:func:`rice_marginal_math`  Rice (x) Gaussian, marginalised   ``ml_full``
-===================  =======================  ================================
+==========================  ===============================  ======================
+primitive                   distribution                     consumed by
+==========================  ===============================  ======================
+:func:`nll_math`            Gaussian on ``|F|``              ``nll``, ``nll_beta``
+:func:`rice_math`           Rice / folded normal             ``ml``, ``ml_noalpha``
+:func:`rice_marginal_math`  Rice (x) Gaussian, marginalised  ``ml_full``
+==========================  ===============================  ======================
 
 What distinguishes ``nll`` from ``nll_beta``, and ``ml`` from ``ml_noalpha``, is not the
 likelihood -- it is where the variance comes from and where the mean is centred. The
