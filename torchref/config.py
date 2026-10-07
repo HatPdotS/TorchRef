@@ -496,7 +496,7 @@ def normalize_device(dev=None) -> torch.device:
 class DeviceConfig:
     """The active device: ``device.current`` reads it, assignment sets it.
 
-    Resolved once at import cuda -> mps -> cpu by :func:`_auto_detect_device`, which gates
+    Resolved once at import cuda -> mps -> cpu by ``_auto_detect_device``, which gates
     CUDA on compute capability and ``_MIN_CUDA_VRAM_GB`` of VRAM; ``TORCHREF_DEVICE``
     overrides that, bypassing the gates but raising if the backend is unavailable. The
     setter mirrors it -- a bad value raises ``ValueError``/``RuntimeError`` rather than

@@ -450,7 +450,7 @@ class DeviceMixin:
 
     Inherit **before** ``nn.Module`` in the MRO (``class Foo(DeviceMixin, nn.Module)``),
     or use it alone on a plain class or dataclass. Every mover -- ``.to()``, ``.cuda()``,
-    ``.cpu()``, ``.float()``, ``.double()``, ``.half()`` -- routes through :meth:`_apply`,
+    ``.cpu()``, ``.float()``, ``.double()``, ``.half()`` -- routes through ``_apply``,
     which runs ``nn.Module._apply`` where applicable, walks ``self.__dict__`` for plain
     tensors, nested containers and non-Module sub-objects, refreshes the device/dtype
     trackers, and calls ``reset_forward_cache()``/``reset_cache()`` if defined.
