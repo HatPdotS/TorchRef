@@ -306,6 +306,26 @@ class TestIHMReader:
         _assert_fixture_timepoints(mapping)
         assert [s.model_num for s in mapping.states] == [1, 2]
 
+    def test_cell_and_space_group_read_as_model_cif_reader_does(self, tmp_path):
+        """A ``.`` angle is 90 degrees and a DDL2-only space group is found."""
+        import gemmi
+
+        from torchref.io.cif_readers import ModelCIFReader
+        from torchref.io.ihm import IHMReader
+
+        doc = gemmi.cif.read(str(TEST_IHM_FILE))
+        doc[0].set_pair("_cell.angle_beta", ".")
+        doc[0].find_mmcif_category("_symmetry.").erase()
+        doc[0].set_pair("_space_group.name_H-M_alt", gemmi.cif.quote("P 21 21 21"))
+        path = tmp_path / "ddl2.cif"
+        doc.write_file(str(path))
+
+        mapping = IHMReader(str(path), verbose=0).read_mapping()
+        reader = ModelCIFReader(str(path))
+        assert mapping.cell == reader.get_cell_parameters()
+        assert mapping.cell == [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
+        assert mapping.spacegroup == reader.get_space_group() == "P 21 21 21"
+
     def test_states_load_the_model_their_groups_hold(self, tmp_path):
         """A state's coordinates are its linked model, not the k-th model."""
         import gemmi

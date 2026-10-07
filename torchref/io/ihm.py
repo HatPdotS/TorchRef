@@ -159,8 +159,8 @@ class IHMReader:
         shared equally by its models. A missing fraction counts as 0, and a
         timepoint without any fraction gets equal fractions. A timepoint takes
         the name its model groups share, else ``group_<n>``.
-        Cell and spacegroup come from the standard categories. Atom data is NOT
-        read -- see :meth:`read_atom_data`.
+        Cell and space group are read as ``ModelCIFReader`` reads them, ``"P 1"``
+        when none is named. Atom data is NOT read -- see :meth:`read_atom_data`.
 
         Returns
         -------
@@ -211,13 +211,23 @@ class IHMReader:
             )
         states = list(by_model.values())
 
-        # --- Extract cell and spacegroup ---
-        cell = None
-        spacegroup = None
-        doc = gemmi.cif.read(str(self.filepath))
-        for block in doc:
-            cell = self._extract_cell_from_block(block)
-            spacegroup = self._extract_spacegroup_from_block(block)
+        from torchref.io.cif_readers import _cell_parameters, _space_group
+
+        # The CIF readers' rule, from the first block with a cell. It reads tables
+        # as CIFReader stores them: first-row values unquoted, "?" and "." as written.
+        cell = spacegroup = None
+        for block in gemmi.cif.read(str(self.filepath)):
+            data = {
+                category: {
+                    attribute: v if gemmi.cif.is_null(v) else gemmi.cif.as_string(v)
+                    for attribute, values in block.get_mmcif_category(
+                        f"_{category}.", raw=True
+                    ).items()
+                    for v in values[:1]
+                }
+                for category in ("cell", "symmetry", "space_group")
+            }
+            cell, spacegroup = _cell_parameters(data), _space_group(data)
             if cell is not None:
                 break
 
@@ -236,37 +246,6 @@ class IHMReader:
                 print(f"  Group {g.group_id}: {g.name} fractions={g.state_fractions}")
 
         return mapping
-
-    def _extract_cell_from_block(self, block) -> Optional[List[float]]:
-        """Extract unit cell from a gemmi CIF block."""
-        try:
-            a = block.find_value("_cell.length_a")
-            b = block.find_value("_cell.length_b")
-            c = block.find_value("_cell.length_c")
-            alpha = block.find_value("_cell.angle_alpha")
-            beta = block.find_value("_cell.angle_beta")
-            gamma = block.find_value("_cell.angle_gamma")
-            if a and b and c:
-                return [
-                    float(a), float(b), float(c),
-                    float(alpha) if alpha else 90.0,
-                    float(beta) if beta else 90.0,
-                    float(gamma) if gamma else 90.0,
-                ]
-        except (ValueError, TypeError):
-            pass
-        return None
-
-    def _extract_spacegroup_from_block(self, block) -> Optional[str]:
-        """Extract space group from a gemmi CIF block."""
-        for tag in [
-            "_symmetry.space_group_name_H-M",
-            "_space_group.name_H-M_alt",
-        ]:
-            val = block.find_value(tag)
-            if val and val not in ("?", "."):
-                return val.strip("'\"")
-        return None
 
     # ------------------------------------------------------------------
     # Read atom data split by state
