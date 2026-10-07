@@ -93,6 +93,8 @@ class ADPLocalityTarget(ADPTarget):
     @k_neighbors.setter
     def k_neighbors(self, value: int):
         self._k_neighbors = int(value)
+        # Drop the list so forward() and maintenance() rebuild it with the new k.
+        self._neighbor_indices = self._neighbor_distances = self._neighbor_xyz = None
 
     @property
     def correlation_length(self) -> float:
