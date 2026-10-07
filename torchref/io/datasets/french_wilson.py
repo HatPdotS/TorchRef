@@ -207,8 +207,8 @@ def french_wilson_auto(
         Standard deviations of F of shape (n_reflections,).
     valid_mask : torch.Tensor
         Boolean mask, ``True`` = keep. ``False`` both for rows too negative
-        for their own sigma and for rows with NaN ``I`` or ``sigma_I`` or a
-        non-finite ``d``, whose ``F`` and ``sigma_F`` are NaN.
+        for their own sigma and for rows with NaN ``I``, a NaN or non-positive
+        ``sigma_I`` or a non-finite ``d``, whose ``F`` and ``sigma_F`` are NaN.
     """
     F = torch.full_like(I, float("nan"))
     sigma_F = torch.full_like(sigma_I, float("nan"))

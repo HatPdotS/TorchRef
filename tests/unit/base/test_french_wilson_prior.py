@@ -124,6 +124,23 @@ def test_non_positive_prior_gives_no_amplitude(centric):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("centric", [False, True])
+def test_a_row_without_a_positive_sigma_is_not_kept(centric):
+    """It has no amplitude, and a negative sigma_I flips the sign of the cut."""
+    I = torch.tensor([-20.0, 20.0, 5.0, 40.0])
+    sigma_I = torch.tensor([-2.0, -2.0, 0.0, 5.0])
+    Sigma = torch.full_like(I, 80.0)
+    is_centric = torch.full((4,), centric)
+
+    F, sigma_F, keep = french_wilson(I, sigma_I, Sigma, is_centric=is_centric)
+
+    assert torch.isnan(F[:3]).all() and torch.isnan(sigma_F[:3]).all()
+    assert not keep[:3].any()
+    assert not french_wilson_valid_mask(I, sigma_I, Sigma, centric)[:3].any()
+    assert bool(keep[3])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("centric", [False, True])
 def test_rejection_threshold_does_not_move_the_posterior(centric):
     """The cut decides which rows are kept, not what their amplitudes are."""
     I = torch.linspace(-35.0, 300.0, 400)

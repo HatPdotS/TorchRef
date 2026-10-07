@@ -487,11 +487,11 @@ def _keep(
     h: torch.Tensor, I: torch.Tensor, sigma_I: torch.Tensor, min_i_over_sigma: float
 ) -> torch.Tensor:
     """The rejection rule on an already computed ``h``."""
-    # A non-finite h means sigma_I was degenerate or the prior mean was not a
-    # positive number; such a reflection has no posterior and must not be kept
-    # on the strength of a NaN comparison (which is False anyway, but not by
-    # intent).
-    return torch.isfinite(h) & (I / sigma_I >= min_i_over_sigma)
+    # No posterior, so never kept: a non-finite h (sigma_I zero or NaN, or a
+    # prior mean that is not a positive number), or a negative sigma_I, whose h
+    # is finite but whose amplitude scales with sqrt(sigma_I) -- and which flips
+    # the sign of I/sigma_I, so a strongly negative I would pass the cut.
+    return torch.isfinite(h) & (sigma_I > 0) & (I / sigma_I >= min_i_over_sigma)
 
 
 def french_wilson_valid_mask(
@@ -505,7 +505,7 @@ def french_wilson_valid_mask(
     Which reflections French-Wilson converts, as a keep-mask.
 
     A reflection is kept when it has a posterior -- a positive prior mean and
-    a usable sigma -- and its intensity is not too negative for its own sigma:
+    a positive sigma -- and its intensity is not too negative for its own sigma:
     ``I/sigma_I >= min_i_over_sigma``. That cut asks whether *any* true
     intensity ``J >= 0`` could have produced the measurement, so it does not
     depend on the prior. A weak reflection whose prior lies far below the
