@@ -90,7 +90,7 @@ class IntensityObservableMixin:
         """
         sigma = self._subset().sigI
         if sigma is None or sigma.numel() == 0:
-            return torch.as_tensor(1e-6)
+            return torch.as_tensor(1e-6, device=self.device, dtype=self.dtype_float)
         return (torch.median(sigma).detach() * SIGMA_FLOOR_FRAC).clamp(min=SIGMA_FLOOR_ABS)
 
 
