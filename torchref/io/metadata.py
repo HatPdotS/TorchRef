@@ -380,22 +380,20 @@ class RefinementMetadata:
         """Extract the carry-through header of an existing PDB file.
 
         Captures TITLE, the structural records in ``_KEEP_RECORDS`` and every
-        REMARK except those in ``_DROP_REMARKS``. AUTHOR and JRNL are absent
-        from ``_KEEP_RECORDS`` and so never collected: they credit whoever
-        deposited the entry, not this refinement.
-
-        The input's REMARK 3 is dropped rather than carried, which is the whole
-        point -- a refined file that repeats the previous program's R-factors
-        alongside its own asserts two different refinements at once.
+        REMARK except those in ``_DROP_REMARKS``: a refined file that repeated
+        the input's REMARK 3 R-factors beside its own would assert two
+        refinements at once. JRNL is never collected.
 
         Parameters
         ----------
+        filepath : str
+            Path to the PDB file.
         supersede_refinement : bool, optional
             Whether this file's refinement is about to be replaced -- the
             default, and the case for refinement output. Pass ``False`` when
-            annotating a file without re-refining it: nothing supersedes the
-            existing REMARK 3 or AUTHOR records then, and dropping them would
-            lose statistics and credit that are still accurate.
+            annotating a file without re-refining it: then REMARK 2, 3 and 500
+            are kept too and the AUTHOR names collected, since nothing
+            supersedes their statistics and credit.
         """
         meta = cls()
         remarks: List[str] = []
@@ -614,8 +612,8 @@ class RefinementMetadata:
             _wrap_pdb_record(lines, "TITLE", self.title)
         _emit("COMPND", "SOURCE", "KEYWDS", "EXPDTA", "MDLTYP")
 
-        # Only ever what the caller set explicitly: authors are not inherited
-        # from the input, since they credit that deposition and not this run.
+        # The caller's authors; the input's only when annotating
+        # (supersede_refinement=False), as they credit that deposition.
         if self.authors:
             _wrap_pdb_record(lines, "AUTHOR", ", ".join(self.authors))
 
