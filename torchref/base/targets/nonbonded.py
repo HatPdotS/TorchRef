@@ -107,9 +107,9 @@ def _nonbonded_heavy_math_eager(
         inv_fractional_matrix,
     )
     diff = pos2 - pos1
-    actual_distances = torch.sqrt((diff**2).sum(dim=-1) + 1e-8)
+    actual_distances = torch.sqrt((diff ** 2).sum(dim=-1) + 1e-8)
     violations = torch.clamp(min_distances + buffer - actual_distances, min=0.0)
-    shape_energy = c_rep * (violations**r_exp)
+    shape_energy = c_rep * (violations ** r_exp)
     per_pair_const = torch.log(sigma_vdw) + 0.5 * LOG_2PI
     if weights is None:
         return shape_energy.sum() + per_pair_const * violations.shape[0]
