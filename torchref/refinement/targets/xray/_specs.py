@@ -1,71 +1,35 @@
-"""The X-ray target taxonomy, as data.
+"""The X-ray target taxonomy, as data: one row per selectable ``--xray-mode``.
 
-One row per selectable ``--xray-mode``. This table is the **single source of truth**:
+:data:`XRAY_TARGETS` is the single source of truth:
 :func:`~torchref.refinement.targets.xray.factory.create_xray_target` dispatches from it and
-the CLI derives its ``choices=`` from it, so a mode added in one place cannot go missing
-from the other. Frozen dataclass rows plus a table that checks its own invariants at import,
-following :mod:`torchref.utils.backends`; string literals validated against a table, not
-enums, is the house convention.
+``torchref.refine`` takes its ``--xray-mode`` choices from it. Frozen dataclass rows
+plus a table that checks its own invariants at import, following
+:mod:`torchref.utils.backends`. Each row's ``observable`` names the column it fits,
+``F_obs`` or (``nll_i``) ``I_obs``; see
+:mod:`torchref.refinement.targets.xray.observable`.
 
-## The observable
+The amplitude likelihoods, as (distribution) x (mean) x (variance):
 
-Every row shares one forward model -- the scaled complex ``F_calc`` -- and each declares
-which measured column it compares against, via ``spec.observable``:
+==============  ========================  ============  ================================
+mode            distribution              mean          variance
+==============  ========================  ============  ================================
+``nll``         Gaussian on ``|F|``       ``|F_c|``     ``sigma_obs**2``
+``nll_beta``    Gaussian on ``|F|``       ``|F_c|``     ``eps*beta`` -> amplitude var.
+``ml``          Rice / folded normal      ``a*|F_c|``   ``eps*beta``
+``ml_noalpha``  Rice / folded normal      ``|F_c|``     ``eps*beta``
+``ml_full``     Rice (x) Gaussian, marg.  ``a*|F_c|``   ``eps*beta_model`` + sigma_obs
+==============  ========================  ============  ================================
 
-* **amplitude** ``F_obs`` vs ``|F_calc|`` (all the sigma_A rows, and ``ls``)
-* **intensity** ``I_obs`` vs ``|F_calc|**2`` (``nll_i``)
+``mean`` is where the likelihood centres: the estimator behind ``beta`` fits ``alpha``
+for every row that has one, as :mod:`torchref.refinement.model_error_estimation.sigma_a`
+explains. :mod:`torchref.base.targets.xray_likelihoods` says why no row pairs Rice with
+``sigma_obs``.
 
-The intensity rows exist because ``F_obs`` on a merged dataset is a French-Wilson posterior
-rather than a measurement: strictly positive, so it reshapes the weak tail and erases
-negative intensities. A row whose signal lives in the *quadratic* part of the data reads
-``I_obs`` directly. See :mod:`torchref.refinement.targets.xray.observable`, which is the
-whole of that axis -- one ``get_data`` override, no runtime branch anywhere.
-
-Note the axis is **not square**: there is no intensity Rice, because Rice and the folded
-normal are distributions *of an amplitude* and the intensity analogue is the exponential /
-chi-square_1 Wilson distribution -- a different primitive, not a different variance.
-R-factors stay on amplitudes for every row regardless, so they remain comparable across the
-whole table.
-
-Intensity rows are **not** admissible as scale targets:
-:data:`~torchref.scaling.scaler_base.SCALE_TARGETS` normalises its objective by
-``1/sum(F_obs**2)``, which is dimensionally wrong for an ``O(F**4)`` loss, and that tuple
-fails closed on anything it does not list.
-
-## The sigma_A family
-
-Each is a choice of (distribution) x (variance) x (mean):
-
-=============  ========================  ============  ================================
-mode           distribution              mean          variance
-=============  ========================  ============  ================================
-``nll``        Gaussian on ``|F|``       ``|F_c|``     ``sigma_obs**2``
-``nll_beta``   Gaussian on ``|F|``       ``|F_c|``     ``eps*beta`` -> amplitude var.
-``ml``         Rice / folded normal      ``a*|F_c|``   ``eps*beta``
-``ml_noalpha`` Rice / folded normal      ``|F_c|``     ``eps*beta``
-``ml_full``    Rice (x) Gaussian, marg.  ``a*|F_c|``   ``eps*beta_model`` + sigma_obs
-=============  ========================  ============  ================================
-
-``ml`` is the default and centres on ``alpha*|F_calc|``; ``ml_noalpha`` is the same
-likelihood with the coupling pinned at 1, which is the correct choice for a **scale** fit,
-where ``alpha`` is degenerate with the isotropic scale being optimised -- an ``alpha``-centred
-row drives the scale to absorb ``1/alpha`` and inflates every R-factor computed from
-``k*|F_calc|``. That constraint is enforced, not advised:
-:data:`~torchref.scaling.scaler_base.SCALE_TARGETS` admits only ``nll`` and ``ml_noalpha``,
-and :meth:`ScalerBase.refine_lbfgs` builds its objective from *this* table. ``ml_full`` is
-the most principled row (it treats the two error kinds as the different objects they are) but
-costs a 32-node quadrature per loss evaluation, so it is not the default.
-
-**The ``mean`` column describes the LIKELIHOOD, never the estimator.** The estimator behind
-``beta`` fits ``alpha`` and ``beta`` *jointly* for every row, including rows whose mean is
-``|F_c|``, because pinning the mean during the fit biases ``sigma_A`` high. Read
-``mean = |F_c|`` as "this row does not *centre* on alpha", not "alpha is absent here".
-
-Nothing else varies by row: same estimator, same ``sigma_obs``, same shrinkage, so a
-comparison between two rows measures the likelihood and nothing else.
-
-There is deliberately no Rice-with-``sigma_obs`` row; see
-:mod:`torchref.base.targets.xray_likelihoods` for why the pairing is never correct.
+A row is not thereby a scale-fit objective:
+:meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs` builds its objective from
+this table but accepts only :data:`~torchref.scaling.scaler_base.SCALE_TARGETS`
+(``nll``, ``ml_noalpha`` and ``ls``), and says why no ``alpha``-centred row may fit a
+scale.
 """
 
 from dataclasses import dataclass, field
