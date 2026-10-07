@@ -1841,4 +1841,3 @@ class OccupancyTensor(MixedTensor):
             f"fixed={self.get_fixed_count()}, collapsed_groups={n_groups}, "
             f"use_sigmoid={self.use_sigmoid})"
         )
-
