@@ -14,7 +14,7 @@ class TestScalerInitialization:
 
     @pytest.mark.integration
     def test_empty_scaler_creation(self):
-        """Test creating an empty scaler for state_dict loading."""
+        """An empty scaler holds configuration only, for a later set_model_and_data."""
         from torchref.scaling.scaler import Scaler
         
         scaler = Scaler()

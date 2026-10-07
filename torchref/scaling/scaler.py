@@ -28,8 +28,9 @@ class Scaler(ScalerBase):
 
     Extends :class:`~torchref.scaling.scaler_base.ScalerBase` with a reference to a
     ``Model``, so every method that needs ``F_calc`` computes it when not given one.
-    Constructed either fully (``Scaler(model, data, nbins=20)`` then ``initialize()``)
-    or empty (``Scaler()`` then ``load_state_dict``).
+    Construct with both (``Scaler(model, data, nbins=20)``) and call ``initialize()``
+    before use or before :meth:`load_state_dict`; ``Scaler()`` is a shell for a later
+    :meth:`set_model_and_data` and ``initialize()``.
 
     Parameters
     ----------
@@ -76,8 +77,9 @@ class Scaler(ScalerBase):
         """
         Initialize Scaler.
 
-        If model and data are provided, fully initializes the scaler.
-        If not provided (empty init), creates a shell ready for load_state_dict().
+        With model and data, binds them and builds the reflection buffers; the scale
+        parameters appear only with ``initialize()``. Without them, creates a shell for
+        a later :meth:`set_model_and_data`.
 
         Parameters
         ----------
@@ -130,8 +132,8 @@ class Scaler(ScalerBase):
         """
         Set model and data references after empty initialization.
 
-        This is useful when loading from state_dict and then needing
-        to reconnect to model/data objects.
+        Follow with ``initialize()``, which creates the parameters that
+        :meth:`load_state_dict` loads into.
 
         Parameters
         ----------
@@ -293,7 +295,8 @@ class Scaler(ScalerBase):
         """
         Load the Scaler state from a dictionary.
 
-        Note: This assumes model and data are already set via __init__ or assignment.
+        The scaler must be built with model and data and ``initialize()``-d first, so the
+        parameters and the solvent model exist to load into.
 
         Parameters
         ----------

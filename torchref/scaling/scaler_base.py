@@ -53,8 +53,11 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     """
     Base scaler class for crystallographic scaling without model dependency.
 
-    Construct either fully (``ScalerBase(data=..., nbins=20)`` then ``initialize(fcalc)``)
-    or empty (``ScalerBase()`` then ``load_state_dict``). Note that ``c_iso``, ``U``
+    Construct with data (``ScalerBase(data=..., nbins=20)``) and ``initialize(fcalc)``.
+    :meth:`load_state_dict` restores only into a scaler built and initialized that way:
+    it does not create ``c_iso``, ``U`` or the buffers, so loading into ``ScalerBase()``
+    raises. The data-free ``ScalerBase()`` is a shell for a later :meth:`set_data` and
+    ``initialize``. Note that ``c_iso``, ``U``
     and ``solvent`` do **not** exist until ``initialize()`` / ``set_solvent_model()`` runs
     -- :meth:`forward` tests for each with ``hasattr`` and silently skips the missing ones,
     so an un-initialized scaler is an identity transform rather than an error.
@@ -105,15 +108,15 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         verbose: int = 1,
         device: Optional[torch.device] = None,
     ):
-        """See the class docstring. ``data=None`` builds an empty shell for
-        ``load_state_dict``; an explicit ``device`` forces ``data`` onto it."""
+        """See the class docstring. ``data=None`` builds a configuration-only shell for
+        ``set_data``; an explicit ``device`` forces ``data`` onto it."""
         super(ScalerBase, self).__init__()
         self.device = resolve_device(data, device=device)
         self.verbose = verbose
         self.nbins = nbins
         self.n_iso_coeff = n_iso_coeff
 
-        # Empty shell: configuration only, ready for load_state_dict().
+        # Empty shell: configuration only, until set_data() and initialize().
         if data is None:
             self._data = None
             self.cell = None
@@ -169,7 +172,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
     def set_data(self, data: "ReflectionData"):
         """
-        Reconnect a data object after an empty init or a ``load_state_dict``.
+        Attach a data object to a scaler built without one, before ``initialize``.
 
         Receiver wins: ``data`` is moved onto *this scaler's* device, since the scaler may
         already hold buffers. Buffers that already exist are left alone -- only ``s``,
@@ -671,8 +674,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Buffers and parameters, plus ``nbins``/``n_iso_coeff``/``verbose`` and the solvent
         sub-state.
 
-        The **data reference is not saved** -- reattach it with :meth:`set_data` after
-        loading.
+        The **data reference is not saved**: load into a scaler built with the same data
+        (see :meth:`load_state_dict`).
 
         Parameters
         ----------
@@ -698,7 +701,11 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
     def load_state_dict(self, state_dict, strict=True):
         """
-        Load scaler state; assumes data is already set via ``__init__`` or ``set_data``.
+        Load a saved state into a scaler built with the same data and initialized.
+
+        Values are copied into existing parameters and buffers, so build the scaler with
+        its data, ``initialize()`` it and attach the solvent model first; a strict load
+        raises on keys it has nowhere to put.
 
         **Mutates ``state_dict``**: the metadata and solvent keys are ``pop``-ed out of the
         caller's dict before delegating, so it cannot be reused for a second load.
