@@ -52,8 +52,8 @@ class MonomerLibraryManager:
     5. On-demand download from GitHub (cached for future use)
 
     Note that this 5-step chain applies to per-residue CIF resolution via
-    :meth:`get_cif_file`. The :meth:`ensure_gemmi_base` and :meth:`monomer_dir`
-    accessors use reduced chains (see their own docstrings).
+    :meth:`get_cif_file`. :meth:`ensure_gemmi_base` uses a reduced chain (see its
+    docstring).
 
     Parameters
     ----------
@@ -185,22 +185,6 @@ class MonomerLibraryManager:
                 f"{_MONOMER_LIB_RAW_URL}/list/mon_lib_list.cif", link
             )
         return _CACHE_DIR
-
-    @property
-    def monomer_dir(self):
-        """Monomer library root: env var, then bundled data, then legacy path.
-
-        For callers that want a directory rather than per-file resolution. The
-        bundled path is returned as a last resort even when absent or incomplete,
-        so the result is **not** guaranteed usable -- check before relying on it.
-        """
-        if self._env_path:
-            return self._env_path
-        if _BUNDLED_PATH.exists():
-            return _BUNDLED_PATH
-        if _LEGACY_PATH.exists():
-            return _LEGACY_PATH
-        return _BUNDLED_PATH  # fallback to bundled even if not fully populated
 
     def _download_cif(self, resname):
         """Download ``resname``'s CIF into the cache; None if unavailable.

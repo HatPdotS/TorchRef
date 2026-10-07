@@ -211,3 +211,73 @@ class TestRestraintNumericStability:
         angle = torch.acos(cos_angle) * 180 / torch.pi
         
         assert torch.isfinite(angle)
+
+
+@pytest.mark.unit
+def test_link_definitions_are_read_silently(capsys):
+    """Reading the bundled link library writes nothing to stdout."""
+    from torchref.topology.monomer.cif import read_link_definitions
+
+    read_link_definitions.cache_clear()
+    link_dict, link_list = read_link_definitions()
+
+    assert "TRANS" in link_dict and link_list is not None
+    assert capsys.readouterr().out == ""
+
+
+_BOND_FREE = """\
+CRYST1   30.000   30.000   30.000  90.00  90.00  90.00 P 1           1
+HETATM    1  O   HOH A   1       1.000   1.000   1.000  1.00 20.00           O
+HETATM    2  O   HOH A   2       5.000   1.000   1.000  1.00 20.00           O
+HETATM    3 NA    NA A   3       9.000   1.000   1.000  1.00 20.00          NA
+END
+"""
+
+
+@pytest.fixture
+def bond_free(tmp_path):
+    """Restraints over two waters and an ion, which carry no geometry restraints."""
+    from torchref.model.model import Model
+
+    path = tmp_path / "waters.pdb"
+    path.write_text(_BOND_FREE)
+    model = Model(verbose=0, hydrogens="strip")
+    model.load_pdb(str(path))
+    return model.restraints, model.xyz().detach().double()
+
+
+@pytest.mark.unit
+def test_bond_free_model_gives_empty_deviations(bond_free):
+    """An edge type with no restraints yields empty deviations, not a KeyError."""
+    restraints, xyz = bond_free
+    for deviations_of in (
+        restraints.bond_deviations,
+        restraints.angle_deviations,
+        restraints.torsion_deviations_with_sigmas,
+    ):
+        deviations, sigmas = deviations_of(xyz)
+        assert deviations.shape == (0,) and sigmas.shape == (0,)
+        assert deviations.dtype == xyz.dtype
+
+
+@pytest.mark.unit
+def test_bond_free_empty_results_keep_the_input_dtype(bond_free):
+    """Empty ADP differences and bond lengths come back in the caller's dtype."""
+    restraints, xyz = bond_free
+    adp = torch.full((xyz.shape[0],), 20.0, dtype=torch.float64)
+    differences = restraints.adp_b_differences(adp)
+    assert differences.shape == (0,) and differences.dtype == torch.float64
+    assert restraints.bond_lengths(None, xyz).dtype == torch.float64
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("as_list", [False, True])
+def test_unreadable_user_cif_raises(pdb_dir, tmp_path, as_list):
+    """A restraint dictionary the caller names but that cannot be read is an error."""
+    from torchref.model.model import Model
+
+    model = Model(verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb"))
+    missing = str(tmp_path / "missing.cif")
+    model.ctx.set_cif_path([missing] if as_list else missing)
+    with pytest.raises(FileNotFoundError):
+        model.restraints

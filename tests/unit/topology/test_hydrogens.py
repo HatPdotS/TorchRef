@@ -19,7 +19,7 @@ from torchref.topology.hydrogens import (
     plan_hydrogens,
 )
 
-# 3E98 brings HETATM selenomethionines bonded through LINK records and split side chains.
+# 3E98 brings HETATM selenomethionines, peptide-linked, and split side chains.
 STRUCTURES = ["7L84", "1DAW", "3E98"]
 
 
@@ -328,11 +328,11 @@ def _row(model, chain, resseq, name, altloc=""):
 
 @pytest.mark.unit
 def test_linked_nitrogen_keeps_one_hydrogen(built):
-    """A peptide bond supplied by a LINK record displaces two of the template's three.
+    """A peptide-linked HETATM nitrogen keeps one of its template's hydrogens.
 
-    MSE is a HETATM residue, so its backbone bonds come only from LINK records. MSE65
-    has a split side chain: its shared N gets one hydrogen per conformer, and its
-    carbonyl carbon, bonded to CA(A), CA(B), O and the next N, gets none.
+    MSE is a HETATM residue, peptide-linked like its ATOM neighbours. MSE65 has a
+    split side chain: its shared N gets one hydrogen per conformer, and its carbonyl
+    carbon, bonded to CA(A), CA(B), O and the next N, gets none.
     """
     model, _, plan = built("3E98")
     n73 = _row(model, "A", 73, "N")

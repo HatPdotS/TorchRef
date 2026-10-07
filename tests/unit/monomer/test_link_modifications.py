@@ -304,6 +304,31 @@ def test_proline_gets_its_own_modification(daw):
 
 
 @pytest.mark.unit
+def test_proline_peptides_use_ptrans_bond_and_plane(daw):
+    """X-Pro peptides take PTRANS's C-N target and its C(i-1)-N-CA-CD plane."""
+    names, pdb, tables = daw
+    resnames = pdb["resname"].values.astype(str)
+    resseq = pdb["resseq"].values.astype(int)
+    indices, references, sigmas = _table(tables, "bond", "peptide")
+
+    x_pro = [k for k, (_, n) in enumerate(indices) if resnames[n] == "PRO"]
+    assert len(x_pro) == 13
+    assert np.allclose(references[x_pro], 1.352, atol=TOL)
+    assert np.allclose(sigmas[x_pro], 0.010, atol=TOL)
+
+    planes = tables["plane"]["4_atoms"]["indices"].cpu().numpy()
+    with_cd = [
+        row
+        for row in planes
+        for cd in row
+        if names[cd] == "CD"
+        and resnames[cd] == "PRO"
+        and any(names[a] == "C" and resseq[a] != resseq[cd] for a in row)
+    ]
+    assert len(with_cd) == 13
+
+
+@pytest.mark.unit
 def test_backbone_bond_targets_switch_to_the_linked_values(daw):
     names, pdb, tables = daw
     resnames = pdb["resname"].values.astype(str)

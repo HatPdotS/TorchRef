@@ -13,7 +13,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from torchref.config import get_int_dtype
+from torchref.base.targets._common import torsions_from_xyz
+from torchref.config import get_float_dtype, get_int_dtype
 from torchref.topology.builders import (
     InterResidueAngleBuilder,
     InterResidueBondBuilder,
@@ -21,6 +22,8 @@ from torchref.topology.builders import (
     InterResidueTorsionBuilder,
     PeptideResidues,
     PreprocessedCIF,
+    _conformer_maps,
+    _matching_conformers,
 )
 from torchref.topology.matchers import (
     match_angles,
@@ -44,12 +47,11 @@ _WORK = 64
 
 
 def _atom_columns(topology: Topology) -> Dict[str, np.ndarray]:
-    """Per-atom identity arrays the matchers read, ``record`` and ``index`` included.
+    """Per-atom identity arrays the matchers read, ``index`` included.
 
     ``index`` is the atom row: edge indices are rows of the topology.
     """
     cols = topology.columns()
-    cols["record"] = np.where(cols.pop("is_hetatm"), "HETATM", "ATOM")
     cols["index"] = np.arange(topology.n_atoms, dtype=np.int64)
     return cols
 
@@ -165,18 +167,55 @@ def _atom_types(
     return energy, counts
 
 
+def _torsion_misfit(
+    xyz: torch.Tensor,
+    rows: np.ndarray,
+    references: np.ndarray,
+    sigmas: np.ndarray,
+    periods: np.ndarray,
+) -> float:
+    """Mean squared z-score of torsion restraints at ``xyz``.
+
+    Parameters
+    ----------
+    xyz : torch.Tensor
+        Cartesian coordinates in Å, shape ``(N, 3)``.
+    rows : numpy.ndarray
+        Atom rows of each torsion, shape ``(T, 4)``.
+    references, sigmas : numpy.ndarray
+        Ideal torsions and sigmas in degrees, shape ``(T,)``.
+    periods : numpy.ndarray
+        Periodicity of each torsion, shape ``(T,)``; each deviation is folded to the
+        nearest of its ``period`` equivalent minima, 0 counting as 1.
+
+    Returns
+    -------
+    float
+    """
+    measured = torsions_from_xyz(
+        xyz, torch.as_tensor(rows, dtype=get_int_dtype(), device=xyz.device)
+    )
+    step = 360.0 / np.maximum(periods, 1)
+    deviation = (measured.cpu().numpy() - references + step / 2) % step - step / 2
+    return float(np.mean((deviation / np.maximum(sigmas, 1e-4)) ** 2))
+
+
 def _match_intra(
     cols: Dict[str, np.ndarray],
     nodes: Dict[str, np.ndarray],
     template_key: np.ndarray,
     pp_cif: PreprocessedCIF,
+    xyz: torch.Tensor,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict[str, np.ndarray]]]:
     """Intra-residue edges and the ideal values that belong to them.
 
     Keyed ``bonds`` / ``angles`` / ``torsions`` / ``chirals``.
 
     Emitted only where every named atom of a library restraint is present in the
-    conformation, which is the condition the matchers apply.
+    conformation, which is the condition the matchers apply. Of a template's
+    alternative sugar-pucker torsion sets (:attr:`PreprocessedCIF.puckers`), each
+    conformation keeps the one its coordinates ``xyz`` (Cartesian, Å, ``(N, 3)``)
+    fit best, so the pucker is fixed at build time, as a proline's cis or trans is.
 
     Returns
     -------
@@ -202,6 +241,34 @@ def _match_intra(
     work["f2"] = np.zeros(_WORK, dtype=np.float64)
     size = _WORK
 
+    def matched_torsions(names, indices, t):
+        """``(rows, references, sigmas, periods)`` of torsion set ``t`` in a conformer."""
+        n = match_torsions(
+            names,
+            indices,
+            t["atom1"],
+            t["atom2"],
+            t["atom3"],
+            t["atom4"],
+            t["value"],
+            t["sigma"],
+            t["period"],
+            work["i1"],
+            work["i2"],
+            work["i3"],
+            work["i4"],
+            work["f1"],
+            work["f2"],
+            work["per"],
+        )
+        rows = np.column_stack([work[k][:n].copy() for k in ("i1", "i2", "i3", "i4")])
+        return (
+            rows,
+            work["f1"][:n].copy(),
+            work["f2"][:n].copy(),
+            work["per"][:n].copy(),
+        )
+
     for r in range(len(nodes["chain"])):
         key = str(template_key[r])
         start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
@@ -210,6 +277,7 @@ def _match_intra(
             len(pp_cif.angles.get(key, {}).get("atom1", ())),
             len(pp_cif.torsions.get(key, {}).get("atom1", ())),
             len(pp_cif.chirals.get(key, {}).get("atom1", ())),
+            *(len(t["atom1"]) for t in pp_cif.puckers.get(key, {}).values()),
         )
         if needed == 0:
             continue
@@ -266,40 +334,30 @@ def _match_intra(
                     )
                     val["angles"]["references"].append(work["f1"][:n].copy())
                     val["angles"]["sigmas"].append(work["f2"][:n].copy())
+            torsion_sets = []
             if key in pp_cif.torsions:
-                t = pp_cif.torsions[key]
-                n = match_torsions(
-                    names,
-                    indices,
-                    t["atom1"],
-                    t["atom2"],
-                    t["atom3"],
-                    t["atom4"],
-                    t["value"],
-                    t["sigma"],
-                    t["period"],
-                    work["i1"],
-                    work["i2"],
-                    work["i3"],
-                    work["i4"],
-                    work["f1"],
-                    work["f2"],
-                    work["per"],
+                torsion_sets.append(
+                    matched_torsions(names, indices, pp_cif.torsions[key])
                 )
-                if n:
-                    acc["torsions"].append(
-                        np.column_stack(
-                            [
-                                work["i1"][:n].copy(),
-                                work["i2"][:n].copy(),
-                                work["i3"][:n].copy(),
-                                work["i4"][:n].copy(),
-                            ]
-                        )
+            if key in pp_cif.puckers:
+                candidates = [
+                    found
+                    for found in (
+                        matched_torsions(names, indices, t)
+                        for t in pp_cif.puckers[key].values()
                     )
-                    val["torsions"]["references"].append(work["f1"][:n].copy())
-                    val["torsions"]["sigmas"].append(work["f2"][:n].copy())
-                    val["torsions"]["periods"].append(work["per"][:n].copy())
+                    if len(found[0])
+                ]
+                if candidates:
+                    torsion_sets.append(
+                        min(candidates, key=lambda found: _torsion_misfit(xyz, *found))
+                    )
+            for rows, references, sigmas, periods in torsion_sets:
+                if len(rows):
+                    acc["torsions"].append(rows)
+                    val["torsions"]["references"].append(references)
+                    val["torsions"]["sigmas"].append(sigmas)
+                    val["torsions"]["periods"].append(periods)
             if key in pp_cif.chirals:
                 c = pp_cif.chirals[key]
                 n = match_chirals(
@@ -375,7 +433,7 @@ def _match_intra_planes(
             continue
         start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
         for names, indices in _conformers(cols, start, end):
-            # Last-wins on a duplicate name, matching PlaneRestraintBuilder.
+            # Last-wins on a duplicate name.
             name_to_idx = dict(zip(names, indices))
             for plane in pp_cif.planes[key]:
                 present = []
@@ -452,37 +510,42 @@ def _inter_residue_edges(
         }
         return rows, rest
 
-    bond = InterResidueBondBuilder(verbose=verbose).build(
-        residues, trans, cpu
-    )
-    if bond:
-        indices["bond"]["peptide"], values["bond"]["peptide"] = split(bond)
+    def per_link(builder):
+        """One builder's groups, X-Pro pairs from PTRANS and the rest from TRANS.
 
-    ab = InterResidueAngleBuilder(verbose=verbose)
-    if ptrans is not None:
-        # PTRANS carries the extra C(i-1)-N-CD angle, so proline pairs are built from it
-        # and excluded from the TRANS pass to avoid two restraints on the same atoms.
-        groups = [
-            ab.build(
-                residues, trans, cpu, exclude_next_resname="PRO"
-            ),
-            ab.build(
-                residues, ptrans, cpu, next_resname_filter="PRO"
-            ),
+        PTRANS carries the X-Pro C-N length, the C(i-1)-N-CD angle and the
+        C(i-1)-N-CA-CD plane, so proline pairs are excluded from the TRANS pass rather
+        than restrained by both.
+        """
+        if ptrans is None:
+            return [builder.build(residues, trans, cpu)]
+        return [
+            builder.build(residues, trans, cpu, exclude_next_resname="PRO"),
+            builder.build(residues, ptrans, cpu, next_resname_filter="PRO"),
         ]
-    else:
-        groups = [ab.build(residues, trans, cpu)]
-    parts = [split(g) for g in groups if g]
-    if parts:
-        indices["angle"]["peptide"] = np.concatenate([p[0] for p in parts], axis=0)
-        shared = set.intersection(*(set(p[1]) for p in parts))
-        values["angle"]["peptide"] = {
-            prop: np.concatenate([p[1][prop] for p in parts]) for prop in shared
-        }
 
-    tors = InterResidueTorsionBuilder(verbose=verbose).build(
-        residues, trans, cpu
-    )
+    def joined(groups):
+        """Builder groups as one ``(indices array, {property: array})``, or None."""
+        parts = [split(g) for g in groups if g]
+        if not parts:
+            return None
+        shared = set.intersection(*(set(p[1]) for p in parts))
+        return (
+            np.concatenate([p[0] for p in parts], axis=0),
+            {prop: np.concatenate([p[1][prop] for p in parts]) for prop in shared},
+        )
+
+    for edge_type, builder in (
+        ("bond", InterResidueBondBuilder),
+        ("angle", InterResidueAngleBuilder),
+    ):
+        group = joined(per_link(builder(verbose=verbose)))
+        if group is not None:
+            indices[edge_type]["peptide"], values[edge_type]["peptide"] = group
+
+    # One TRANS pass: the PTRANS torsions are the same, and the Ramachandran pairing
+    # needs each residue's phi and psi from a single pass.
+    tors = InterResidueTorsionBuilder(verbose=verbose).build(residues, trans, cpu)
     if tors:
         for origin in ("phi", "psi", "omega"):
             if origin in tors:
@@ -492,12 +555,11 @@ def _inter_residue_edges(
         if "ramachandran" in tors:
             extras["ramachandran"] = tors["ramachandran"]
 
-    planes = InterResiduePlaneBuilder(verbose=verbose).build(
-        residues, trans, cpu
-    )
-    if planes:
-        for key, group in planes.items():
-            indices["plane"][key], values["plane"][key] = split(group)
+    planes = [g for g in per_link(InterResiduePlaneBuilder(verbose=verbose)) if g]
+    for key in sorted({key for group in planes for key in group}):
+        indices["plane"][key], values["plane"][key] = joined(
+            [group.get(key) for group in planes]
+        )
     return indices, values, extras
 
 
@@ -520,7 +582,6 @@ def _origins(
 
 def _disulfide_edges(
     topology: Topology,
-    cols: Dict[str, np.ndarray],
     residue_of_row: Dict[int, int],
     pairs: Sequence[Tuple[int, int]],
     link_dict: Optional[Dict],
@@ -530,7 +591,9 @@ def _disulfide_edges(
 
     Drives the ``InterResidue*Builder`` disulfide paths from the residue graph's
     ``disulf`` edges, so the link geometry comes from the ``disulf`` dictionary entry
-    rather than being restated here.
+    rather than being restated here. Each SG-SG bond takes its angles and torsion from
+    the cysteine conformers that hold its own two SG atoms, so a cysteine modelled in
+    two conformations restrains each conformer's CB once.
 
     Returns
     -------
@@ -560,15 +623,18 @@ def _disulfide_edges(
 
     for row_a, row_b in pairs:
         bond_builder.process_disulfide_bond(int(row_a), int(row_b), length, sigma)
-        res_a, res_b = residue_of_row[row_a], residue_of_row[row_b]
-        if disulf.get("angles") is not None:
-            angle_builder.process_disulfide_angles(
-                topology, res_a, res_b, disulf["angles"]
-            )
-        if disulf.get("torsions") is not None:
-            torsion_builder.process_disulfide_torsions(
-                topology, res_a, res_b, disulf["torsions"]
-            )
+        for map_a, map_b in _matching_conformers(
+            _conformer_maps(topology, residue_of_row[row_a]),
+            _conformer_maps(topology, residue_of_row[row_b]),
+        ):
+            if map_a.get("SG") != row_a or map_b.get("SG") != row_b:
+                continue
+            if disulf.get("angles") is not None:
+                angle_builder.process_disulfide_angles(map_a, map_b, disulf["angles"])
+            if disulf.get("torsions") is not None:
+                torsion_builder.process_disulfide_torsions(
+                    map_a, map_b, disulf["torsions"]
+                )
 
     values: Dict[str, Dict[str, np.ndarray]] = {}
     for edge_type, group in (
@@ -629,14 +695,15 @@ def _lookup_link_atom(
 def _link_record_edges(
     topology: Topology,
     links,
-    disulfide_bonds: Optional[np.ndarray],
+    linked_bonds: Sequence[np.ndarray],
     verbose: int,
 ) -> Tuple[np.ndarray, List[Tuple[int, int]], Dict[str, np.ndarray]]:
     """Bond edges for the accepted ``LINK`` records, and the atom pairs they join.
 
-    A record duplicating an auto-detected disulfide is dropped, since that link already
-    contributed its bond, angles and torsions; so is a record repeating an earlier one,
-    which would otherwise add a second bond edge and a second restraint on the same pair.
+    A record duplicating an auto-detected peptide or disulfide bond (``linked_bonds``,
+    ``(E, 2)`` atom rows each) is dropped, since that link already contributed its bond,
+    angles and torsions; so is a record repeating an earlier one, which would otherwise
+    add a second bond edge and a second restraint on the same pair.
 
     Returns
     -------
@@ -651,10 +718,11 @@ def _link_record_edges(
     if links is None or len(links) == 0:
         return np.zeros((0, 2), dtype=np.int64), [], {}
 
-    existing = set()
-    if disulfide_bonds is not None:
-        for a, b in disulfide_bonds:
-            existing.add((min(int(a), int(b)), max(int(a), int(b))))
+    existing = {
+        (min(int(a), int(b)), max(int(a), int(b)))
+        for bonds in linked_bonds
+        for a, b in bonds
+    }
 
     residue_by_key: Dict[Tuple[str, int, str], List[int]] = {}
     for r in range(topology.n_residues):
@@ -708,6 +776,38 @@ def _link_record_edges(
     return np.asarray(rows, dtype=np.int64), rows, values
 
 
+def _first_occurrences(
+    rows: np.ndarray, properties: Dict[str, np.ndarray]
+) -> np.ndarray:
+    """Positions of the rows that do not repeat an earlier row's atoms and values.
+
+    Parameters
+    ----------
+    rows : numpy.ndarray
+        Edge atom indices, shape ``(E, k)``.
+    properties : dict
+        ``{property: array}``, each indexed by row on axis 0.
+
+    Returns
+    -------
+    numpy.ndarray
+        Ascending positions into ``rows``, the first of each repeated set.
+    """
+    if len(rows) < 2:
+        return np.arange(len(rows))
+    # Atom rows and values side by side in float64, which holds both exactly.
+    key = np.column_stack(
+        [np.asarray(rows, dtype=np.float64).reshape(len(rows), -1)]
+        + [
+            np.asarray(values, dtype=np.float64).reshape(len(rows), -1)
+            for _, values in sorted(properties.items())
+            if values is not None
+        ]
+    )
+    _, first = np.unique(key, axis=0, return_index=True)
+    return np.sort(first)
+
+
 def _block_with_values(
     per_origin: Dict[str, np.ndarray],
     payload: Dict[str, Dict[str, np.ndarray]],
@@ -720,9 +820,24 @@ def _block_with_values(
     The block and the values come out of a single :func:`assemble_origins` call, so the
     same permutation is applied to both -- which is the only thing keeping a sigma
     attached to the edge it belongs to.
+
+    Within an origin, a row repeating an earlier row's atoms and values is dropped: a
+    restraint over atoms that every altloc conformer shares is matched once per
+    conformer, and the copies would weight it once per conformer. Rows over the same
+    atoms with different values are kept.
     """
+    unique_rows: Dict[str, np.ndarray] = {}
+    unique_payload: Dict[str, Dict[str, np.ndarray]] = {}
+    for origin, rows in per_origin.items():
+        properties = payload.get(origin) or {}
+        keep = _first_occurrences(np.asarray(rows), properties)
+        unique_rows[origin] = np.asarray(rows)[keep]
+        unique_payload[origin] = {
+            prop: None if values is None else np.asarray(values)[keep]
+            for prop, values in properties.items()
+        }
     indices, bounds, sorted_payload = assemble_origins(
-        per_origin, arity, edge_type, payload
+        unique_rows, arity, edge_type, unique_payload
     )
     block = EdgeBlock(
         indices=torch.as_tensor(indices, dtype=get_int_dtype(), device=device),
@@ -786,15 +901,17 @@ def build_topology_with_values(
     cif_dict : dict
         Restraint dictionary keyed by residue name.
     xyz : torch.Tensor
-        Cartesian coordinates in Å, shape ``(N, 3)``. Disulfides are detected by SG-SG
-        distance and proline omega classified cis or trans from them.
+        Cartesian coordinates in Å, shape ``(N, 3)``. Peptide links are detected by
+        C-N and disulfides by SG-SG distance, and each nucleotide's sugar pucker and
+        proline's cis or trans omega are chosen from them.
     link_dict : dict, optional
         Link-type definitions. Without it no inter-residue edges are built.
     link_list : pandas.DataFrame, optional
         Link table used to resolve which modifications a peptide link applies.
     links : pandas.DataFrame, optional
         Parsed PDB ``LINK`` records. Each record that resolves to two distinct atoms and
-        does not duplicate an auto-detected disulfide contributes one bond edge.
+        does not duplicate an auto-detected peptide or disulfide bond contributes one
+        bond edge.
     device : torch.device, optional
         Where to place the edge blocks.
     verbose : int, default 0
@@ -819,22 +936,13 @@ def build_topology_with_values(
     }
     n_res = len(nodes["chain"])
 
-    names_by_residue = [
-        set(cols["name"][int(nodes["atom_start"][r]) : int(nodes["atom_end"][r])])
-        for r in range(n_res)
-    ]
-    is_polymer = np.array(
-        [cols["record"][int(nodes["atom_start"][r])] == "ATOM" for r in range(n_res)],
-        dtype=bool,
-    )
-
-    polymer_nodes = {k: v[is_polymer] for k, v in nodes.items()}
-    polymer_map = np.nonzero(is_polymer)[0]
-    polymer_names = [names_by_residue[r] for r in polymer_map]
-    peptide_local = find_peptide_links(polymer_nodes, polymer_names)
-    peptide_pairs = [
-        (int(polymer_map[a]), int(polymer_map[b])) for a, b in peptide_local
-    ]
+    spans = list(zip(nodes["atom_start"].tolist(), nodes["atom_end"].tolist()))
+    c_rows = [s + np.flatnonzero(cols["name"][s:e] == "C") for s, e in spans]
+    n_rows = [s + np.flatnonzero(cols["name"][s:e] == "N") for s, e in spans]
+    # Paired by C-N distance whatever the record type, so a polymer residue written as
+    # HETATM (MSE, SEP, ...) takes the link, patching and backbone terms of its
+    # ATOM neighbours.
+    peptide_pairs = find_peptide_links(nodes, c_rows, n_rows, xyz)
 
     match_cols, chemical_nodes, chemical_pairs, source_rows, owners = _chemical_nodes(
         cols, nodes, peptide_pairs
@@ -873,7 +981,11 @@ def build_topology_with_values(
     template_h_count[source_rows[own_identity]] = chemical_h_count[own_identity]
 
     intra, intra_values = _match_intra(
-        match_cols, chemical_nodes, chemical_keys, pp_cif
+        match_cols,
+        chemical_nodes,
+        chemical_keys,
+        pp_cif,
+        torch.as_tensor(xyz.detach().cpu(), dtype=get_float_dtype()),
     )
     intra_planes, intra_plane_values = _match_intra_planes(
         match_cols, chemical_nodes, chemical_keys, pp_cif
@@ -889,18 +1001,21 @@ def build_topology_with_values(
         for row in range(int(nodes["atom_start"][r]), int(nodes["atom_end"][r])):
             residue_of_row[row] = r
 
-    sg_rows = [
-        row
-        for row in range(len(cols["name"]))
-        if cols["name"][row] == "SG" and cols["record"][row] == "ATOM"
-    ]
+    sg_rows = [row for row in range(len(cols["name"])) if cols["name"][row] == "SG"]
     disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz)
     disulfide, disulfide_values = _disulfide_edges(
-        topology, cols, residue_of_row, disulfide_pairs, link_dict, verbose
+        topology, residue_of_row, disulfide_pairs, link_dict, verbose
     )
 
     link_edges, link_atom_pairs, link_values = _link_record_edges(
-        topology, links, disulfide.get("bond"), verbose
+        topology,
+        links,
+        [
+            bonds
+            for bonds in (inter["bond"].get("peptide"), disulfide.get("bond"))
+            if bonds is not None
+        ],
+        verbose,
     )
 
     # LINK edges carry ``index`` values, so lift them through that column.

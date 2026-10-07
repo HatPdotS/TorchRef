@@ -23,7 +23,7 @@ downstream.
 """
 
 from functools import lru_cache
-from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -228,10 +228,9 @@ def apply_modifications(
     Returns
     -------
     dict
-        A new dict with new DataFrames; ``comp`` is not touched. Within each
-        modification the ``delete`` rows are applied first, then ``change``, then
-        ``add``, so a modification that deletes and re-adds the same restraint
-        ends up with the added one.
+        A new dict with new DataFrames; ``comp`` is not touched. Each modification's
+        rows apply in file order, and an ``add`` of a restraint the component already
+        defines overwrites it like a ``change``.
     """
     if not mod_ids:
         return dict(comp)
@@ -317,17 +316,8 @@ def _addition_row(target: pd.DataFrame, mod_row: pd.Series, section: str) -> dic
     return row
 
 
-def modification_ids_for_links(
-    link_ids: Iterable[str], link_list: Optional[pd.DataFrame]
-) -> Dict[str, Tuple]:
-    """Return ``{link_id: (mod_id_1, mod_id_2)}`` for the requested links only."""
-    modifications = link_modifications(link_list)
-    return {link_id: modifications.get(link_id, (None, None)) for link_id in link_ids}
-
-
 __all__ = [
     "apply_modifications",
     "link_modifications",
-    "modification_ids_for_links",
     "read_mod_definitions",
 ]

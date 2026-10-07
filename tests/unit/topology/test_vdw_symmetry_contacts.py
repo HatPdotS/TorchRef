@@ -167,7 +167,7 @@ def test_production_builder_keeps_its_contacts_under_a_lattice_shift(model_1daw)
             cell=cell,
             sg=sg,
             topology=restraints.topology,
-            exclusion_set=restraints.topology.atoms.exclusions_from_restraint_edges(),
+            exclusion_set=restraints.topology.atoms.exclusions_12_13_14(),
             cutoff=CUTOFF,
             inter_residue_only=False,
         )

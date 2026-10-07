@@ -17,11 +17,11 @@ ADP-similarity sigmas without duplicating the edges.
 
 Build one with :func:`build_topology`.
 
-Hydrogens come in two forms over the same graph. :func:`plan_hydrogens` instantiates
-the monomer templates to add them as real atoms, which is the default. For a model
-loaded heavy-only, :mod:`torchref.topology.riding` reconstructs them from their parents
-at each non-bonded evaluation instead, so their sterics still count. Only one applies at
-a time.
+Hydrogens come in two forms over the same graph. Under ``hydrogens="add"``,
+:func:`plan_hydrogens` instantiates the monomer templates to add them as real atoms. A
+model without hydrogens (a heavy-only file under the default ``"keep"``, or ``"strip"``)
+has :mod:`torchref.topology.riding` reconstruct them from their parents at each
+non-bonded evaluation instead, so their sterics still count. Only one applies at a time.
 """
 
 from .atom_graph import AtomGraph

@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from torchref.model.model import Model
+from torchref.refinement.targets import gaussian_nll
 from torchref.utils.caching import ParameterFingerprint
 
 KEYED_TYPES = ("bond", "angle", "torsion")
@@ -172,7 +173,10 @@ def test_blocks_are_untouched_by_a_refinement_step(restraints):
     fingerprint = ParameterFingerprint(blocks)
 
     xyz = restraints._last_vdw_build_xyz.clone().requires_grad_(True)
-    loss = restraints.nll_bonds(xyz).sum() + restraints.nll_angles(xyz).sum()
+    loss = (
+        gaussian_nll(*restraints.bond_deviations(xyz)).sum()
+        + gaussian_nll(*restraints.angle_deviations(xyz)).sum()
+    )
     loss.backward()
 
     assert fingerprint.matches(
@@ -209,3 +213,19 @@ def test_copy_aliases_its_own_blocks(restraints):
     entry = duplicate.restraints["bond"]["all"]["indices"]
     assert entry.data_ptr() == block.data_ptr()
     assert block.data_ptr() != restraints.topology.atoms.bonds.indices.data_ptr()
+
+
+@pytest.mark.unit
+def test_moving_restraints_leaves_the_model_cell(pdb_dir):
+    """The restraints move their own copy of the crystal, never the model's."""
+    model = Model(verbose=0, device=torch.device("cpu"))
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    cell, spacegroup = model.ctx.cell, model.ctx.spacegroup
+    dtype = cell.dtype
+
+    model.restraints.to(torch.float64)
+
+    assert model.ctx.cell is cell and cell.dtype == dtype
+    assert spacegroup.matrices.dtype == dtype
+    assert model.restraints._cell.dtype == torch.float64
+    assert model.restraints._spacegroup.matrices.dtype == torch.float64

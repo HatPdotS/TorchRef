@@ -56,9 +56,11 @@ class Restraints(DeviceMixin, DebugMixin, Module):
     cell : Cell, optional
         Crystallographic unit cell. Together with ``spacegroup``, enables
         symmetry-aware VDW restraints (contacts with symmetry mates). Without both,
-        the pair list is searched in an isolated P1 box.
-    spacegroup : SpaceGroup or str, optional
+        the pair list is searched in an isolated P1 box. Copied, so moving these
+        restraints never moves the caller's cell.
+    spacegroup : SpaceGroup, optional
         Space group. Together with ``cell``, enables symmetry-aware VDW restraints.
+        Copied, like ``cell``.
     links : pd.DataFrame, optional
         Parsed PDB LINK records; each accepted record adds one bond restraint
         between the two named atoms.
@@ -106,9 +108,10 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         self.links = links
         self._nonbonded = bool(nonbonded)
 
-        # Store crystallographic info for symmetry VDW restraints
-        self._cell = cell
-        self._spacegroup = spacegroup
+        # Own copies: DeviceMixin moves a Cell or SpaceGroup in place, and these
+        # usually belong to the model's context.
+        self._cell = None if cell is None else cell.clone()
+        self._spacegroup = None if spacegroup is None else spacegroup.copy()
 
         # Connectivity, the values layered over it, and the non-bonded pair list, which
         # is rebuilt on displacement and so is kept apart from the rest.
@@ -229,25 +232,11 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         """Load CIF dictionaries from provided paths and monomer library."""
         if cif_path:
             if isinstance(cif_path, str):
-                try:
-                    self.cif_dict = read_cif(cif_path)
-                except ValueError as e:
-                    print("Error reading CIF file:", e)
-                    raise
-                except Exception as e:
-                    print("Error reading CIF file:", e)
-                    self.cif_dict = {}
+                self.cif_dict = read_cif(cif_path)
             elif isinstance(cif_path, list):
                 self.cif_dict = {}
                 for cif_file in cif_path:
-                    try:
-                        cif_dict_part = read_cif(cif_file)
-                        self.cif_dict.update(cif_dict_part)
-                    except ValueError as e:
-                        print("Error reading CIF file:", e)
-                        raise
-                    except Exception as e:
-                        print("Error reading CIF file:", e)
+                    self.cif_dict.update(read_cif(cif_file))
             else:
                 raise ValueError("cif_path must be a string or a list of strings")
         else:
@@ -445,7 +434,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         from torchref.symmetry.cell import Cell
 
         # Fresh CPU copies: Cell/SpaceGroup ``.to()`` mutates in place, which would
-        # silently relocate the model's own Cell/SG.
+        # relocate the copies this object keeps on the model's device.
         if self._cell is not None and self._spacegroup is not None:
             cell_cpu = Cell(
                 self._cell._data.detach(), device=cpu, dtype=self._cell.dtype
@@ -466,7 +455,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             cell=cell_cpu,
             sg=sg_cpu,
             topology=self.topology,
-            exclusion_set=self.topology.atoms.exclusions_from_restraint_edges(),
+            exclusion_set=self.topology.atoms.exclusions_12_13_14(),
             cutoff=cutoff,
             sigma=sigma,
             inter_residue_only=inter_residue_only,
@@ -674,7 +663,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             Tensor of bond lengths of shape (N,).
         """
         if idx is None:
-            return torch.tensor([], device=xyz.device)
+            return xyz.new_zeros(0)
         pos1 = xyz[idx[:, 0], :]
         pos2 = xyz[idx[:, 1], :]
         return torch.linalg.norm(pos2 - pos1, dim=-1)
@@ -710,46 +699,24 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         Returns
         -------
         deviations : torch.Tensor
-            Calculated minus expected bond lengths in Angstroms.
+            Calculated minus expected bond lengths in Angstroms, shape ``(n_bonds,)``;
+            empty when there are no bond restraints.
         sigmas : torch.Tensor
-            Standard deviations from CIF library in Angstroms.
+            Standard deviations from CIF library in Angstroms, shape ``(n_bonds,)``.
         """
-        if "all" not in self.restraints["bond"]:
-            self.cat_dict()
+        group = self.restraints.get("bond", {}).get("all")
+        if group is None:
+            return xyz.new_zeros(0), xyz.new_zeros(0)
 
-        idx = self.restraints["bond"]["all"]["indices"]
-        references = self.restraints["bond"]["all"]["references"]
-        sigmas = self.restraints["bond"]["all"]["sigmas"]
+        idx = group["indices"]
+        references = group["references"]
+        sigmas = group["sigmas"]
 
         # Get current bond lengths
         bond_lengths = self.bond_lengths(idx, xyz)
         deviations = bond_lengths - references
 
         return deviations, sigmas
-
-    def nll_bonds(self, xyz: torch.Tensor):
-        """
-        Compute negative log-likelihood for bond length restraints.
-
-        For Gaussian distribution: NLL = -log(P(x|μ,σ))
-        NLL = 0.5 * ((x - μ) / σ)^2 + log(σ) + 0.5 * log(2π)
-
-        This is the true NLL where exp(-NLL) = probability density.
-
-        Parameters
-        ----------
-        xyz : torch.Tensor
-            Cartesian coordinates in Å, shape (n_atoms, 3).
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (n_bonds,) with negative log-likelihood values.
-        """
-        from torchref.refinement.targets import gaussian_nll
-
-        deviations, sigmas = self.bond_deviations(xyz)
-        return gaussian_nll(deviations, sigmas)
 
     def angles(self, idx, xyz: torch.Tensor):
         """
@@ -802,62 +769,31 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         Returns
         -------
         deviations : torch.Tensor
-            Calculated minus expected angles, in radians. The CIF library
-            references are stored in degrees and converted to radians here
-            before differencing.
+            Calculated minus expected angles, in radians, shape ``(n_angles,)``;
+            empty when there are no angle restraints. The CIF library references
+            are stored in degrees and converted to radians here before differencing.
         sigmas : torch.Tensor
             CIF library standard deviations, converted from degrees to radians.
         """
-        if "all" not in self.restraints["angle"]:
-            self.cat_dict()
+        group = self.restraints.get("angle", {}).get("all")
+        if group is None:
+            return xyz.new_zeros(0), xyz.new_zeros(0)
 
-        idx = self.restraints["angle"]["all"]["indices"]
-        references_rad = self.restraints["angle"]["all"]["references"] * (
-            torch.pi / 180.0
-        )
-        sigmas_rad = self.restraints["angle"]["all"]["sigmas"] * (torch.pi / 180.0)
+        idx = group["indices"]
+        references_rad = group["references"] * (torch.pi / 180.0)
+        sigmas_rad = group["sigmas"] * (torch.pi / 180.0)
 
         calculated_rad = self.angles(idx, xyz) * (torch.pi / 180.0)
         deviations = calculated_rad - references_rad
 
         return deviations, sigmas_rad
 
-    def nll_angles(self, xyz: torch.Tensor):
-        """
-        Compute negative log-likelihood for angle restraints.
-
-        For Gaussian distribution: NLL = -log(P(x|μ,σ))
-        NLL = 0.5 * ((x - μ) / σ)^2 + log(σ) + 0.5 * log(2π)
-
-        This is the true NLL where exp(-NLL) = probability density.
-
-        Parameters
-        ----------
-        xyz : torch.Tensor
-            Cartesian coordinates in Å, shape (n_atoms, 3).
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (n_angles,) with negative log-likelihood values.
-        """
-        from torchref.refinement.targets import gaussian_nll
-
-        deviations, sigmas = self.angle_deviations(xyz)
-        return gaussian_nll(deviations, sigmas)
-
     def cat_dict(self):
         """Ensure the combined ``all`` groups are present. Idempotent.
 
-        They are assembled with everything else at build time, so this normally has
-        nothing to do; it exists because the geometry targets guard their reads with
-        ``if "all" not in ...`` and call it when the guard trips.
-
-        The previous implementation concatenated the origins on each call, and because
-        writing ``restraints['bond']['all']`` also registered ``'all'`` as an origin, a
-        second call folded the combined group into itself and doubled every restraint.
-        Deriving the group from the topology instead makes that impossible: ``all`` is a
-        span of the edge block, never an origin in its own right.
+        They are assembled with everything else at build time, so on a built object
+        this has nothing to do. An edge type with no edges has no ``all`` group, and
+        this does not create one.
         """
         if self.topology is not None and "all" not in self._entries.get("bond", {}):
             self._rebuild_entries()
@@ -912,7 +848,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             k_range = torch.arange(max_period, device=device).unsqueeze(
                 0
             )  # (1, max_period)
-            periods_expanded = periods_flat.unsqueeze(1).float()  # (n_angles, 1)
+            periods_expanded = periods_flat.unsqueeze(1).to(diff_rad.dtype)
 
             # Offsets for each angle: k * 2π/period
             offsets = k_range * (
@@ -964,17 +900,19 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         Returns
         -------
         deviations_rad : torch.Tensor
-            Wrapped deviations in radians.
+            Wrapped deviations in radians, shape ``(n_torsions,)``; empty when there
+            are no torsion restraints.
         sigmas_deg : torch.Tensor
             Standard deviations in degrees (for von Mises NLL).
         """
-        if "all" not in self.restraints["torsion"]:
-            self.cat_dict()
+        group = self.restraints.get("torsion", {}).get("all")
+        if group is None:
+            return xyz.new_zeros(0), xyz.new_zeros(0)
 
-        idx = self.restraints["torsion"]["all"]["indices"]
-        expected = self.restraints["torsion"]["all"]["references"]
-        sigmas_deg = self.restraints["torsion"]["all"]["sigmas"]
-        periods = self.restraints["torsion"]["all"]["periods"]
+        idx = group["indices"]
+        expected = group["references"]
+        sigmas_deg = group["sigmas"]
+        periods = group["periods"]
 
         calculated = self.torsions(idx, xyz)
 
@@ -996,7 +934,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         Returns
         -------
         torch.Tensor
-            Tensor of B-factor differences (B_i - B_j) for all bonds.
+            B-factor differences (B_i - B_j) in Å² for all bonds, in ``adp``'s dtype;
+            empty when there are no bonds.
         """
         b_factors = adp
 
@@ -1013,4 +952,4 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
         if diffs_list:
             return torch.cat(diffs_list, dim=0)
-        return torch.tensor([], device=b_factors.device)
+        return b_factors.new_zeros(0)

@@ -4,9 +4,7 @@ and link definitions used by the restraints module.
 
 from functools import lru_cache
 
-import numpy as np
 import pandas as pd
-import torch
 
 from torchref.io import cif
 
@@ -14,14 +12,10 @@ from torchref.io import cif
 def validate_restraint_data(residue_data, cif_path):
     """Raise ``ValueError`` unless every compound carries a usable bond section.
 
-    Rejects structure-only CIFs: a compound must have a bond section, and that
-    section must carry ``value`` and ``sigma`` columns.
-
-    A section that has those columns but *no rows* is reported and allowed
-    through. It is not malformed -- a dictionary may legitimately define a
-    single-atom compound -- but it is also what a reader that quietly loses
-    restraints looks like from here, and the residue ends up unrestrained either
-    way, so it is worth saying out loud rather than passing over in silence.
+    Rejects a dictionary with no compounds, and any compound with no data, no bond
+    section, or no ``value`` and ``sigma`` bond columns (a structure-only CIF). A
+    compound whose bond section has no rows, such as a single-atom one, is only
+    reported on stdout and stays unrestrained.
     """
     if not residue_data:
         raise ValueError(f"CIF file {cif_path} contains no compound definitions")
@@ -35,9 +29,8 @@ def validate_restraint_data(residue_data, cif_path):
                 f"This may be a structure-only CIF file without restraint parameters."
             )
 
-        if "bonds" in data or "bond" in data:
-            bond_key = "bonds" if "bonds" in data else "bond"
-            bond_df = data[bond_key]
+        if "bonds" in data:
+            bond_df = data["bonds"]
             required_cols = ["value", "sigma"]
             missing_cols = [col for col in required_cols if col not in bond_df.columns]
 
@@ -74,8 +67,8 @@ def read_cif(cif_path):
     """
     Read a restraint CIF into ``{comp_id: {section: DataFrame}}``.
 
-    Sections are the standardized keys ``bond``, ``angle``, ``torsion``, ``plane``,
-    ``chiral`` and ``atom``. Runs :func:`validate_restraint_data`, so a
+    Sections are the standardized keys ``bonds``, ``angles``, ``torsions``,
+    ``planes``, ``chirals`` and ``atoms``. Runs :func:`validate_restraint_data`, so a
     structure-only CIF raises ``ValueError`` here rather than yielding empty
     restraints later.
     """
@@ -175,7 +168,6 @@ def read_link_definitions():
             # Strip CIF prefixes from column names
             df.columns = [c.split(".")[-1] for c in df.columns]
             link_list = df
-            print(f"Found {len(link_list)} link definitions")
 
     # --- Parse each individual link block ---
     link_dict = {}
@@ -251,8 +243,8 @@ def _standardize_link_columns(df, section_type):
             df = df.rename(columns={"atom_id": "atom"})
         if "dist_esd" in df.columns:
             df = df.rename(columns={"dist_esd": "sigma"})
-            # Clip sigma: default 0.02 Å, minimum 0.001 Å (consistent with
-            # monomer CIF reader in cif_readers.py:_standardize_planes)
+            # A missing sigma defaults to 0.02 Å (component planes default to 0.01 Å)
+            # and every sigma is floored at 0.001 Å.
             df["sigma"] = (
                 pd.to_numeric(df["sigma"], errors="coerce").fillna(0.02).clip(lower=0.001)
             )

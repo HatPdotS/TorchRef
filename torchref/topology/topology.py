@@ -17,7 +17,7 @@ Mutable by design; prefer :meth:`Topology.copy` over editing in place.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Mapping, Set, Tuple
+from typing import TYPE_CHECKING, Dict, Mapping, Tuple
 
 import numpy as np
 import torch
@@ -105,8 +105,8 @@ class Topology(DeviceMixin):
     Notes
     -----
     Holds no refinable parameters, so this is a dataclass rather than an ``nn.Module``.
-    Edge indices are ``int64`` constants and no gradient reaches them; gradients reach
-    the coordinates that the indices gather.
+    Edge indices are ``get_int_dtype()`` constants (int32 by default) and no gradient
+    reaches them; gradients reach the coordinates that the indices gather.
     """
 
     residues: ResidueGraph
@@ -256,13 +256,15 @@ class Topology(DeviceMixin):
 
     @property
     def is_polymer(self) -> np.ndarray:
-        """True for atoms of polymer residues, shape ``(N,)``.
+        """True for atoms of peptide-linked residues, shape ``(N,)``.
 
-        A residue is polymer when its first atom is an ATOM record, the same rule the
-        peptide-link search uses.
+        A residue is polymer when a peptide link joins it to a sequence neighbour,
+        whatever its record type, so a selenomethionine written as HETATM counts.
+        Peptide links are made when the topology is connected; on a node-only topology
+        (:meth:`from_table`) no residue is polymer yet.
         """
-        first = self.residues.atom_start.astype(np.int64)
-        per_residue = ~self.atoms.is_hetatm[first] if len(first) else np.zeros(0, bool)
+        per_residue = np.zeros(self.n_residues, dtype=bool)
+        per_residue[self.residues.links_of_kind("TRANS").ravel()] = True
         return per_residue[self.atoms.residue_of.cpu().numpy()]
 
     def with_hydrogens(
@@ -272,8 +274,9 @@ class Topology(DeviceMixin):
 
         Each residue's planned hydrogens go immediately after its own atoms, never at
         the end: residues are contiguous runs, so appending would split every
-        hydrogenated residue into two nodes. A hydrogen inherits its parent's identity
-        and takes the plan's ``name``, ``element`` and ``altloc``.
+        hydrogenated residue into two nodes. A hydrogen inherits its parent's identity,
+        takes the plan's ``name``, ``element`` and ``altloc``, and carries no formal
+        charge: the PDB convention puts a group's charge on its heavy atom.
 
         Parameters
         ----------
@@ -323,6 +326,7 @@ class Topology(DeviceMixin):
             ("name", np.asarray(plan.name).astype(str)),
             ("element", np.asarray(plan.element).astype(str)),
             ("altloc", np.where(np.char.strip(altloc) == "", " ", altloc)),
+            ("charge", np.zeros(plan.n_hydrogens, dtype=np.int64)),
         ):
             column = columns[key].astype(
                 np.result_type(columns[key].dtype, values.dtype)
@@ -455,22 +459,6 @@ class Topology(DeviceMixin):
             "torsion": self.atoms.torsions,
             "chiral": self.atoms.chirals,
         }[edge_type]
-
-    def tuple_sets(self) -> Dict[str, Dict[str, Set[Tuple[int, ...]]]]:
-        """Every edge as ``{edge type: {origin: set of index tuples}}``.
-
-        Order-free, so this is what an equivalence check against another builder should
-        compare.
-        """
-        out: Dict[str, Dict[str, Set[Tuple[int, ...]]]] = {}
-        for name in ("bond", "angle", "torsion", "chiral"):
-            block = self.edge_block(name)
-            out[name] = {o: block.tuple_set(o) for o in block.origins()}
-        out["plane"] = {}
-        for size, block in self.atoms.planes.items():
-            for origin in block.origins():
-                out["plane"][f"{size}_atoms/{origin}"] = block.tuple_set(origin)
-        return out
 
     def __repr__(self) -> str:
         return f"Topology({self.residues!r}, {self.atoms!r})"
