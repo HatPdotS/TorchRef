@@ -72,7 +72,6 @@ SUBMITTERS = [
     ("paper/figure2_alphafold_start/run_af_pipeline.py", r"\{REFINE_SCRIPT\}", ("refine", None), ()),
     ("paper/figure2_alphafold_start/analysis/submit_local_arm.py", r"\{P\.REFINE_SCRIPT\}", ("refine", None), ()),
     ("paper/figure2_alphafold_start/analysis/submit_weight_grid.py", r"\{P\.REFINE_SCRIPT\}", ("refine", None), ()),
-    ("paper/figure2_alphafold_start/analysis/submit_seeded_benchmark.py", r"\{P\.REFINE_SCRIPT\}", ("refine", None), ()),
     ("paper/extended_figures/exF4/submit_singlecore.py", r"\{P\.REFINE_SCRIPT\}", ("refine", None), ()),
     ("sigma_a_rework/submit_arms.py", r"\{refine\}", ("refine", None), ()),
     ("sigma_a_rework/submit_arm_grid.py", r"\{refine\}", ("refine", None), ()),
