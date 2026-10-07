@@ -270,7 +270,7 @@ class CompileTargetsConfig:
 
     @property
     def value(self) -> bool:
-        """Whether quadrature target kernels are ``torch.compile``d."""
+        """Whether quadrature target kernels are compiled with ``torch.compile``."""
         return self._value
 
     @value.setter
@@ -289,7 +289,7 @@ compile_targets = CompileTargetsConfig()
 
 
 def get_compile_targets() -> bool:
-    """Whether quadrature X-ray target kernels should be ``torch.compile``d."""
+    """Whether to compile quadrature X-ray target kernels with ``torch.compile``."""
     return compile_targets.value
 
 
