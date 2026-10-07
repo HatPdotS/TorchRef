@@ -77,6 +77,39 @@ LIG C2 O1 SINGLE 1.430 0.010
 """
 
 
+# One compound written CCD style: a category with a single row (_chem_comp,
+# _chem_comp_chir) as key-value pairs instead of a loop.
+_KEY_VALUE_CIF = """\
+data_LIG
+_chem_comp.id LIG
+_chem_comp.type non-polymer
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+LIG C1 C
+LIG C2 C
+LIG O1 O
+LIG N1 N
+loop_
+_chem_comp_bond.comp_id
+_chem_comp_bond.atom_id_1
+_chem_comp_bond.atom_id_2
+_chem_comp_bond.value_dist
+_chem_comp_bond.value_dist_esd
+LIG C1 C2 1.530 0.020
+LIG C1 O1 1.430 0.020
+LIG C1 N1 1.470 0.020
+_chem_comp_chir.comp_id LIG
+_chem_comp_chir.id chir_01
+_chem_comp_chir.atom_id_centre C1
+_chem_comp_chir.atom_id_1 C2
+_chem_comp_chir.atom_id_2 O1
+_chem_comp_chir.atom_id_3 N1
+_chem_comp_chir.volume_sign positive
+"""
+
+
 @pytest.mark.unit
 class TestRestraintCompIdExtraction:
     """A restraint dict without ``comp_list`` must still resolve its compound
@@ -99,3 +132,22 @@ class TestRestraintCompIdExtraction:
         assert "LIG" in restraints
         bonds = restraints["LIG"]["bonds"]
         assert len(bonds) == 2  # restraints survive the comp-id filter
+
+    def test_categories_written_as_key_value_pairs(self, tmp_path):
+        from torchref.io.cif_readers import RestraintCIFReader
+
+        cif = tmp_path / "ccd_style.cif"
+        cif.write_text(_KEY_VALUE_CIF)
+
+        reader = RestraintCIFReader(str(cif))
+        assert reader.compounds == ["LIG"]
+        chirals = reader.get_all_restraints()["LIG"]["chirals"]
+        assert chirals.to_dict("records") == [
+            {
+                "atom_centre": "C1",
+                "atom1": "C2",
+                "atom2": "O1",
+                "atom3": "N1",
+                "volume_sign": "positive",
+            }
+        ]
