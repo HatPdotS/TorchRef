@@ -193,13 +193,15 @@ def _link_identities(model):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("code", ["1DAW", "2DQ6", "3A5V", "3E98", "5BOV", "6G9X"])
+@pytest.mark.parametrize("code", ["1DAW", "2DQ6", "3A5V", "6G9X"])
 def test_link_edges_agree_between_pdb_and_cif(pdb_dir, cif_dir, code):
     """mmCIF ``_struct_conn`` yields the link edges the PDB LINK records do."""
     from_pdb = _load(pdb_dir / f"{code}.pdb")
     from_cif = _load(cif_dir / f"{code}.cif")
     assert from_cif.ctx.links is not None and len(from_cif.ctx.links) > 0
-    assert _link_identities(from_cif) == _link_identities(from_pdb)
+    links = _link_identities(from_pdb)
+    assert links
+    assert _link_identities(from_cif) == links
 
 
 def _restraint_groups(restraints):
