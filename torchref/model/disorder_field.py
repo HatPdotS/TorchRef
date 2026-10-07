@@ -876,10 +876,6 @@ class DisorderFieldTensor(MixedTensor):
             return (self._full_shape,)
         return (self._full_shape, self.out_width)
 
-    def _storage_values(self) -> torch.Tensor:
-        """The node storage, so the inherited storage-space edits act on nodes."""
-        return self.node_values()
-
     @property
     def node_shape(self):
         """Shape of the node storage."""

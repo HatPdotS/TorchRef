@@ -280,9 +280,9 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         return 0 if self.fixed_values is None else int(self.fixed_values.shape[0])
 
     def _storage_values(self) -> torch.Tensor:
-        """The stored rows assembled, in public units. Equal to ``forward()`` unless a
-        subclass derives extra rows."""
-        return self.forward()
+        """The stored rows assembled, in storage units. Equal to ``forward()`` unless a
+        subclass re-encodes the values (log, Cholesky, logit) or derives extra rows."""
+        return MixedTensor.forward(self)
 
     def _set_values(self, key, value: torch.Tensor) -> None:
         """Write already-cast values into the storage; override to re-encode.
@@ -710,39 +710,6 @@ class PositiveMixedTensor(MixedTensor):
                 new_refinable, requires_grad=self.refinable_params.requires_grad
             )
 
-    def fix(self, mask: torch.Tensor, freeze_at_current: bool = True):
-        """Freeze the masked elements, storing their value in log space.
-
-        ``freeze_at_current=True`` (default) freezes them at their current values;
-        ``False`` leaves ``fixed_values`` alone, so they revert to whatever was
-        stored there.
-        """
-        if freeze_at_current:
-            with torch.no_grad():
-                current_normal = self.forward()
-                current_log = torch.log(current_normal.clamp(min=self.epsilon))
-
-            if current_log.ndim > 1:
-                self.fixed_values[mask] = current_log[mask]
-            else:
-                self.fixed_values = torch.where(mask, current_log, self.fixed_values)
-
-        # freeze_at_current=False: the log-space values are already written.
-        super().fix(mask, freeze_at_current=False)
-
-    def refine(self, mask: torch.Tensor):
-        """Make the masked elements refinable, preserving their current value."""
-        with torch.no_grad():
-            current_normal = self.forward()
-            current_log = torch.log(current_normal.clamp(min=self.epsilon))
-
-        if current_log.ndim > 1:
-            self.fixed_values[mask] = current_log[mask]
-        else:
-            self.fixed_values = torch.where(mask, current_log, self.fixed_values)
-
-        super().refine(mask)
-
     def set(self, values: torch.Tensor, mask: torch.Tensor) -> None:
         """
         Set masked positions from NORMAL-space (positive) values, e.g.::
@@ -803,37 +770,6 @@ class PositiveMixedTensor(MixedTensor):
     def get_log_values(self) -> torch.Tensor:
         """The internal log-space representation (for debugging/introspection)."""
         return super().forward()
-
-    def update_refinable_mask(
-        self, new_mask: torch.Tensor, reset_refinable: bool = False
-    ):
-        """Repartition refinable/fixed elements, keeping values in log space.
-
-        ``reset_refinable`` is accepted for signature compatibility; the values
-        are always re-baselined from the current state.
-        """
-        if new_mask.shape[0] != self.shape[0]:
-            raise ValueError(
-                f"new_mask shape {new_mask.shape} must match "
-                f"tensor shape {self.shape}"
-            )
-
-        with torch.no_grad():
-            current_normal = self.forward()
-            current_log = torch.log(current_normal.clamp(min=self.epsilon))
-
-        new_mask = self._normalize_refinable_mask(new_mask)
-        self.refinable_mask = new_mask
-        self.fixed_mask = ~new_mask
-
-        self.fixed_values = current_log.clone()
-        new_refinable_log = current_log[self.refinable_mask].clone()
-
-        self.refinable_params = nn.Parameter(
-            new_refinable_log, requires_grad=self.refinable_params.requires_grad
-        )
-
-        self._build_index_cache()
 
     def copy(self) -> "PositiveMixedTensor":
         """Deep-copy, rebuilt from NORMAL-space values so the log
@@ -924,7 +860,7 @@ def u6_to_raw6(U: torch.Tensor, epsilon: float) -> torch.Tensor:
     """U components to Cholesky free parameters, projecting onto positive-definite.
 
     A least-squares or deposited U need not be PD, so the matrix is symmetrised and its
-    eigenvalues clamped before factorising. Runs at construction and on mask changes,
+    eigenvalues clamped before factorising. Runs at construction and on writes,
     never in a forward pass. Forced onto the CPU: cuSolver's batched kernels fail on
     the large degenerate batches an isotropic model produces, while LAPACK handles them.
     """
@@ -1024,7 +960,7 @@ class CholeskyMixedTensor(MixedTensor):
     Rows that are entirely non-finite (isotropic atoms carry ``U = NaN``) are
     passed through unchanged in both directions, preserving the iso/aniso split.
     The eigen-decomposition / Cholesky mapping ``U -> L`` runs only at
-    construction and on freeze/unfreeze, never in the forward path, so no matrix
+    construction and on writes, never in the forward path, so no matrix
     factorisation enters the autograd graph.
     """
 
@@ -1086,7 +1022,7 @@ class CholeskyMixedTensor(MixedTensor):
 
     def _set_values(self, key, value: torch.Tensor) -> None:
         """Set U-space values at ``key``; stored internally as Cholesky params."""
-        current = self._storage_values().detach()
+        current = self.forward().detach()
         current[key] = value
         raw = self._u6_to_raw6(current)
         self.fixed_values = raw.clone()
@@ -1096,50 +1032,9 @@ class CholeskyMixedTensor(MixedTensor):
                 requires_grad=self.refinable_params.requires_grad,
             )
 
-    def fix(self, mask: torch.Tensor, freeze_at_current: bool = True):
-        """Freeze rows, storing their current value in Cholesky space."""
-        if freeze_at_current:
-            with torch.no_grad():
-                raw = self._u6_to_raw6(self._storage_values())
-            self.fixed_values[mask] = raw[mask]
-        super().fix(mask, freeze_at_current=False)
-
-    def refine(self, mask: torch.Tensor):
-        """Make rows refinable, preserving their current value in Cholesky space."""
-        with torch.no_grad():
-            raw = self._u6_to_raw6(self._storage_values())
-        self.fixed_values[mask] = raw[mask]
-        super().refine(mask)
-
     def set(self, values: torch.Tensor, mask: torch.Tensor) -> None:
         """Set U-space values for masked rows (converted to Cholesky internally)."""
         self._set_values(mask, values)
-
-    def update_refinable_mask(
-        self, new_mask: torch.Tensor, reset_refinable: bool = False
-    ):
-        """Repartition refinable/fixed elements, preserving values in U space.
-
-        The base implementation re-stores ``forward()`` output directly, which
-        would double-transform here (U written back into Cholesky-parameter
-        storage); convert to Cholesky parameters first, mirroring
-        :meth:`PositiveMixedTensor.update_refinable_mask`.
-        """
-        if new_mask.shape[0] != self._storage_rows:
-            raise ValueError(
-                f"new_mask shape {new_mask.shape} must match tensor shape {self.shape}"
-            )
-        with torch.no_grad():
-            current_raw = self._u6_to_raw6(self._storage_values())
-        new_mask = self._normalize_refinable_mask(new_mask)
-        self.refinable_mask = new_mask
-        self.fixed_mask = ~new_mask
-        self.fixed_values = current_raw.clone()
-        new_refinable = current_raw[self.refinable_mask].clone()
-        self.refinable_params = nn.Parameter(
-            new_refinable, requires_grad=self.refinable_params.requires_grad
-        )
-        self._build_index_cache()
 
     def copy(self) -> "CholeskyMixedTensor":
         """Deep-copy, preserving the Cholesky parametrization.

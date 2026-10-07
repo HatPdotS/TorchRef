@@ -442,3 +442,37 @@ def test_freezing_keeps_the_refined_values(pdb_dir):
     assert model.xyz.get_refinable_count() == model.n_atoms - n_selected
     shift = model.xyz().detach() - start
     torch.testing.assert_close(shift, torch.ones_like(shift))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("operation", ["fix", "refine"])
+@pytest.mark.parametrize("kind", ["positive", "cholesky", "occupancy"])
+def test_fix_and_refine_keep_the_public_values(kind, operation):
+    """fix/refine move stored rows (occupancy groups) without changing forward()."""
+    from torchref.model.parameter_wrappers import (
+        CholeskyMixedTensor,
+        OccupancyTensor,
+        PositiveMixedTensor,
+    )
+
+    refinable = torch.tensor([False, True, True])
+    if kind == "positive":
+        wrapper = PositiveMixedTensor(torch.tensor([20.0, 30.0, 40.0]), refinable)
+    elif kind == "cholesky":
+        u = torch.tensor([0.25, 0.22, 0.20, 0.03, -0.01, 0.02])
+        wrapper = CholeskyMixedTensor(torch.stack([u, 1.5 * u, 2.0 * u]), refinable)
+    else:
+        groups = torch.tensor([0, 0, 1, 1, 2, 2])
+        wrapper = OccupancyTensor(
+            torch.tensor([1.0, 1.0, 0.7, 0.7, 0.3, 0.3]),
+            sharing_groups=groups,
+            altloc_groups=[([2, 3], [4, 5])],
+            refinable_mask=refinable[groups],
+        )
+    before = wrapper().detach().clone()
+
+    getattr(wrapper, operation)(torch.tensor([True, True, False]))
+
+    expected = [False, False, True] if operation == "fix" else [True, True, True]
+    assert wrapper.refinable_mask.tolist() == expected
+    torch.testing.assert_close(wrapper().detach(), before)
