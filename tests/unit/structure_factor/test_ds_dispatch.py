@@ -113,3 +113,37 @@ def test_integer_hkl_is_accepted_and_lossless():
     F_int = ds_iso(hkl_int, s, xyz, occ, adp, A, B)
     F_float = ds_iso(hkl_int.to(torch.float64), s, xyz, occ, adp, A, B)
     assert torch.equal(F_int, F_float), "casting integer Miller indices must be exact"
+
+
+def test_eager_oracle_is_independent_of_the_memory_budget():
+    """The eager oracle derives ``f(s)`` from the ITC92 A/B coefficients whether or not a
+    ``max_memory_gb`` budget is given, and the budget must not change the answer."""
+    from .helpers import _eager_aniso, _eager_iso
+
+    g = torch.Generator().manual_seed(0)
+    N, R = 8, 12
+    d = torch.float64
+    hkl = torch.randint(-3, 4, (R, 3), generator=g).to(d)
+    s = torch.rand(R, generator=g, dtype=d) * 0.4
+    svec = torch.randn(R, 3, generator=g, dtype=d) * 0.3
+    A = torch.rand(N, 5, generator=g, dtype=d)
+    B = torch.rand(N, 5, generator=g, dtype=d) + 0.5
+    xyz = torch.rand(N, 3, generator=g, dtype=d)
+    occ = torch.rand(N, generator=g, dtype=d) * 0.4 + 0.6
+    adp = torch.rand(N, generator=g, dtype=d) * 10 + 5
+    U = torch.rand(N, 6, generator=g, dtype=d) * 0.04 + 0.01
+
+    for tag, fn, geom, third in (
+        ("iso", _eager_iso, s, adp),
+        ("aniso", _eager_aniso, svec, U),
+    ):
+        f_none = fn(hkl, geom, xyz, occ, third, A, B, None)
+        f_batch = fn(hkl, geom, xyz, occ, third, A, B, 2.0)
+        assert torch.isfinite(f_none).all(), f"{tag}: non-finite F with no batching"
+        torch.testing.assert_close(
+            f_none,
+            f_batch,
+            rtol=1e-12,
+            atol=1e-12,
+            msg=f"{tag}: chunking changed the answer",
+        )
