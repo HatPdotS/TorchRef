@@ -126,14 +126,23 @@ class MTZReader:
         column_names : dict, optional
             Explicit column name mapping to override automatic detection.
             Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
-            Example: ``{"F": "dFo", "SIGF": "sig_dFo"}``.
+            Example: ``{"F": "dFo", "SIGF": "sig_dFo"}``. A pinned column is
+            read as what its MTZ type says it is: an ``"F"`` pin naming an
+            intensity (type J or K) is an ``"I"`` pin, and an ``"I"`` pin
+            naming an amplitude (F or G) an ``"F"`` pin, with the sigma pin
+            following. Pinning one kind of data turns off the search for the
+            other, so ``{"F": "FP"}`` loads amplitudes even when the file also
+            has intensities, and French-Wilson does not run.
         anomalous : bool, optional
             None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into explicit
-            Friedel pairs when such columns exist; True forces that (warning if
-            none exist); False forces a merged load, averaging the pairs.
+            Friedel pairs when such columns exist; True forces that (a notice at
+            verbose > 0 if none exist); False forces a merged load, averaging pairs.
         """
         self.verbose = verbose
-        self.column_names = column_names or {}
+        # A copy: pins are re-keyed by MTZ type when a file is read.
+        self.column_names = dict(column_names or {})
+        # The data column anomalous stacking chose, consulted after the pins.
+        self._stacked_columns = {}
         self.anomalous = anomalous
         self.data = None
         self.cell = None
@@ -163,6 +172,7 @@ class MTZReader:
             print(f"Reading MTZ file: {filepath}")
 
         self.mtz_data = rs.read_mtz(filepath)
+        self._key_pins_by_type()
         self._maybe_stack_anomalous()
         self.cell = np.array(
             [
@@ -187,13 +197,35 @@ class MTZReader:
 
         return self
 
+    def _key_pins_by_type(self) -> None:
+        """Re-key a pinned data column (and its sigma) by the column's MTZ type.
+
+        Intensities are types J and K, amplitudes F and G; a pin under the
+        other family's key moves to the right one unless that key is pinned
+        too. Pins naming a column the file lacks are left for extraction to
+        report.
+        """
+        pins = self.column_names
+        for key, sigma, other, other_sigma, types in (
+            ("F", "SIGF", "I", "SIGI", "JK"),
+            ("I", "SIGI", "F", "SIGF", "FG"),
+        ):
+            column = pins.get(key)
+            if column not in self.mtz_data.columns or other in pins:
+                continue
+            if getattr(self.mtz_data.dtypes[column], "mtztype", "") in types:
+                pins[other] = pins.pop(key)
+                if sigma in pins:
+                    pins[other_sigma] = pins.pop(sigma)
+
     def _maybe_stack_anomalous(self) -> None:
         """Stack anomalous F(+)/F(-) (or I(+)/I(-)) columns into Bijvoet pairs.
 
         One row per Friedel mate, the minus member carrying the negated Miller
-        index (centrics are not split). Pins the chosen base columns in
-        ``column_names`` so the priority search cannot pick a coexisting merged
-        column such as ``FMEAN`` instead. On any failure the merged data stand.
+        index (centrics are not split). Records the chosen base column so the
+        priority search cannot pick a coexisting merged column such as
+        ``FMEAN`` instead; a pin in ``column_names`` still wins. On any failure
+        the merged data stand.
         """
         if self.anomalous is False:
             # Caller forced a merged load. If the file carries only anomalous
@@ -246,16 +278,16 @@ class MTZReader:
         self.mtz_data = stacked
         self.friedel_merged = False
 
-        # Pin the stacked data column so extraction uses it (and not a coexisting
+        # Choose the stacked data column so extraction uses it (and not a coexisting
         # merged column via the priority search). Prefer intensities so French-Wilson
         # runs per Bijvoet member. The matching sigma is auto-discovered by
-        # _extract_amplitudes_and_intensities. Respect any user-provided names.
+        # _extract_amplitudes_and_intensities. A pin of either kind wins.
         intensity_bases = [b for b in bases if "Intensity" in str(stacked.dtypes[b])]
         amplitude_bases = [b for b in bases if "SFAmplitude" in str(stacked.dtypes[b])]
-        if intensity_bases and "I" not in self.column_names:
-            self.column_names["I"] = intensity_bases[0]
-        elif amplitude_bases and "F" not in self.column_names:
-            self.column_names["F"] = amplitude_bases[0]
+        if intensity_bases:
+            self._stacked_columns["I"] = intensity_bases[0]
+        elif amplitude_bases:
+            self._stacked_columns["F"] = amplitude_bases[0]
 
         if self.verbose > 0:
             print(
@@ -313,9 +345,10 @@ class MTZReader:
             file, and may include: ``"HKL"`` (int32 Miller indices); ``"F"`` /
             ``"SIGF"`` and/or ``"I"`` / ``"SIGI"`` (float32 data, with
             ``"*_col"`` provenance keys recording the source column names);
-            ``"R-free-flags"`` (int32: ``0`` = free, positive = work,
-            negative = excluded; a column whose majority value is ``0`` is
-            flipped to this convention) and ``"R-free-source"``;
+            ``"R-free-flags"`` (int32: ``1`` = work, ``0`` = free, ``-1`` =
+            excluded, as :func:`~torchref.io.rfree.read_free_set` reads the
+            column -- CCP4 ``0..K`` with ``0`` free, or a binary column whose
+            majority value is work) and ``"R-free-source"``;
             ``"Validation-flags"`` (a **bool** mask) and ``"Validation-source"``;
             and ``"friedel_merged"`` (bool) indicating the Bijvoet state of the
             returned data (False when anomalous F(+)/F(-) pairs were stacked).
@@ -335,7 +368,9 @@ class MTZReader:
         directly instead of the priority-based search. The ``"F"`` / ``"I"``
         keys override the amplitude / intensity column, and the ``"SIGF"`` /
         ``"SIGI"`` keys override their associated sigma columns (otherwise the
-        sigma column is auto-discovered).
+        sigma column is auto-discovered). A pin of one kind turns off the
+        search for the other. Without a pin of its kind, the column anomalous
+        stacking chose replaces the search.
         """
         available_cols = set(self.mtz_data.columns)
 
@@ -347,6 +382,10 @@ class MTZReader:
                     f"Intensity column '{intensity_col}' not found in MTZ. "
                     f"Available: {sorted(available_cols)}"
                 )
+        elif "F" in self.column_names:
+            intensity_col = None
+        elif "I" in self._stacked_columns:
+            intensity_col = self._stacked_columns["I"]
         else:
             intensity_col = None
             for col in self.INTENSITY_PRIORITY:
@@ -363,6 +402,10 @@ class MTZReader:
                     f"Amplitude column '{amplitude_col}' not found in MTZ. "
                     f"Available: {sorted(available_cols)}"
                 )
+        elif "I" in self.column_names:
+            amplitude_col = None
+        elif "F" in self._stacked_columns:
+            amplitude_col = self._stacked_columns["F"]
         else:
             amplitude_col = None
             for col in self.AMPLITUDE_PRIORITY:
@@ -411,7 +454,15 @@ class MTZReader:
                     self.data["SIGF_col"] = sigma_col
 
     def _extract_rfree_flags(self) -> None:
-        """Extract R-free flags from the dataset."""
+        """Extract R-free flags from the first integer ``RFREE_FLAG_NAMES`` column.
+
+        The column is interpreted by :func:`~torchref.io.rfree.read_free_set`,
+        the rule SF-mmCIF flags are read with too; a column it rejects, such as
+        one with no valid flag, is skipped with a warning naming it.
+        """
+        # rfree imports this module for its flag names.
+        from torchref.io.rfree import read_free_set
+
         available_cols = set(self.mtz_data.columns)
 
         for col in self.RFREE_FLAG_NAMES:
@@ -419,36 +470,15 @@ class MTZReader:
                 dtype = str(self.mtz_data.dtypes[col])
                 if "int" in dtype.lower() or "flag" in dtype.lower() or "I" in dtype:
                     try:
-                        flags = self.mtz_data[col].to_numpy()
-
-                        if flags.dtype == object or not np.issubdtype(
-                            flags.dtype, np.integer
-                        ):
-                            flags = pd.to_numeric(flags, errors="coerce")
-                            flags = np.nan_to_num(flags, nan=-1).astype(np.int32)
-                        else:
-                            flags = flags.astype(np.int32)
-
-                        rfree_flags = np.array(flags, dtype=np.int32)
-                        n_free = (rfree_flags == 0).sum()
-                        free_pct = (
-                            100.0 * n_free / len(rfree_flags)
-                            if len(rfree_flags) > 0
-                            else 0
-                        )
-
-                        # Flip convention if needed
-                        if free_pct > 50.0:
-                            flipped = np.zeros_like(rfree_flags)
-                            flipped[rfree_flags == 0] = 1
-                            flipped[rfree_flags > 0] = 0
-                            flipped[rfree_flags < 0] = -1
-                            rfree_flags = flipped
-
-                            if self.verbose > 0:
-                                n_free = (rfree_flags == 0).sum()
-                                free_pct = 100.0 * n_free / len(rfree_flags)
-                                print(f"   After flip: free={n_free} ({free_pct:.1f}%)")
+                        free_set = read_free_set(self.mtz_data, col)
+                        rfree_flags = np.where(free_set["free"], 0, 1).astype(np.int32)
+                        rfree_flags[free_set["excluded"]] = -1
+                        if self.verbose > 0:
+                            print(
+                                f"   R-free flags from '{col}': "
+                                f"{free_set['convention']}, "
+                                f"free={int(free_set['free'].sum())}"
+                            )
 
                         # keep int: -1 (excluded) is masked by ReflectionData.load
                         self.data["R-free-flags"] = rfree_flags
@@ -456,10 +486,9 @@ class MTZReader:
                         return
 
                     except Exception as e:
-                        if self.verbose > 0:
-                            print(
-                                f"Warning: Could not load R-free flags from {col}: {e}"
-                            )
+                        warnings.warn(
+                            f"Ignoring MTZ column {col!r} as R-free flags: {e}"
+                        )
 
     def _extract_validation_flags(self) -> None:
         """Extract the optional third-class validation flags (1 = validation).
@@ -581,8 +610,6 @@ def write(
     int
         Always returns 1 (failures raise rather than return a sentinel).
     """
-    import gemmi
-
     if torch.is_tensor(cell):
         cell = cell.detach().cpu().numpy().tolist()
     elif isinstance(cell, np.ndarray):
@@ -598,16 +625,7 @@ def write(
     elif isinstance(spacegroup, gemmi.SpaceGroup):
         pass
     elif isinstance(spacegroup, str):
-        if spacegroup.startswith("<gemmi.SpaceGroup"):
-            import re
-
-            match = re.search(r'SpaceGroup\("([^"]+)"\)', spacegroup)
-            if match:
-                spacegroup = gemmi.SpaceGroup(match.group(1))
-            else:
-                raise ValueError(f"Could not parse spacegroup string: {spacegroup}")
-        else:
-            spacegroup = gemmi.SpaceGroup(spacegroup)
+        spacegroup = gemmi.SpaceGroup(spacegroup)
     else:
         raise ValueError(
             f"Spacegroup must be str, gemmi.SpaceGroup, or torchref SpaceGroup, got {type(spacegroup)}"
@@ -650,7 +668,7 @@ def write(
         mtz_rs["H"] = mtz_rs["H"].astype("H")
         mtz_rs["K"] = mtz_rs["K"].astype("H")
         mtz_rs["L"] = mtz_rs["L"].astype("H")
-        mtz_rs = mtz_rs.set_index("H", "K", "L")
+        mtz_rs = mtz_rs.set_index(["H", "K", "L"])
 
     for col in structure_factor_cols:
         if col in mtz_rs.columns:
@@ -682,6 +700,35 @@ def _np(t: Optional[torch.Tensor]) -> Optional[np.ndarray]:
     return None if t is None else t.detach().cpu().numpy()
 
 
+def _rfree_column(data: "ReflectionData") -> np.ndarray:
+    """The R-free flags as written, per row: 1 = work, 0 = free, -1 = excluded.
+
+    Excluded rows are those whose input flag was negative or missing
+    (``masks["flagged_initial"]`` False); written as free, they would join the
+    test set on the next read.
+    """
+    flags = (_np(data.rfree_flags) != 0).astype(int)
+    flagged_initial = data.masks.get("flagged_initial")
+    if flagged_initial is not None:
+        flags[~_np(flagged_initial)] = -1
+    return flags
+
+
+def _flag_columns(data: "ReflectionData") -> dict:
+    """The flag columns both layouts write, per row, keyed by label.
+
+    R-free-flags as :func:`_rfree_column` gives it and, for a non-empty
+    validation set, Validation_flag (1 = validation): a separate column, so
+    external tools keep reading R-free-flags.
+    """
+    if data.rfree_flags is None:
+        return {}
+    columns = {"R-free-flags": _rfree_column(data)}
+    if data.validation_flags is not None and bool(data.validation_flags.any()):
+        columns["Validation_flag"] = (_np(data.validation_flags) != 0).astype(int)
+    return columns
+
+
 def _amplitude_phase(coeff: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
     """``|c|`` and ``arg(c)`` in degrees: a negative coefficient becomes a 180° flip."""
     return _np(coeff.abs()), _np(torch.rad2deg(torch.angle(coeff)))
@@ -711,8 +758,9 @@ def reflection_table(
     Returns
     -------
     pandas.DataFrame
-        Columns keyed by the intermediate names :func:`write` maps to MTZ
-        labels (``F-obs``, ``SIGF-obs``, ``I-obs``, ``R-free-flags``, ...).
+        Columns named as they are written: :func:`write` assigns MTZ types
+        and renames nothing (``F-obs``, ``SIGF-obs``, ``I-obs``,
+        ``R-free-flags``, ...).
     """
     if fcalc is not None and not torch.is_complex(fcalc):
         raise ValueError("fcalc must be a complex tensor")
@@ -732,12 +780,7 @@ def _merged_table(data, fcalc):
         table["I-obs"] = _np(data.I)
         if data.I_sigma is not None:
             table["SIGI-obs"] = _np(data.I_sigma)
-    # FreeR_flag is 1 = work, 0 = free; the optional held-out validation set is
-    # a separate Validation_flag column so external tools keep reading FreeR.
-    if data.rfree_flags is not None:
-        table["R-free-flags"] = (_np(data.rfree_flags) != 0).astype(int)
-        if data.validation_flags is not None and bool(data.validation_flags.any()):
-            table["Validation_flag"] = (_np(data.validation_flags) != 0).astype(int)
+    table.update(_flag_columns(data))
     if fcalc is not None:
         valid = data.masks().to(device=fcalc.device, dtype=torch.bool)
         two_fo_fc, fo_fc = map_coefficients(data.F, fcalc, observed=valid)
@@ -884,12 +927,9 @@ def _anomalous_table(data, fcalc):
         table["SIGF-obs(+)"], table["SIGF-obs(-)"] = mirror_centric(
             plus_of(sig), minus_of(sig)
         )
-    if data.rfree_flags is not None:
-        rfree = _np(data.rfree_flags).astype(int)
-        rf = np.zeros(m, dtype=int)
-        rf[has_minus] = rfree[mi][has_minus]
-        rf[has_plus] = rfree[pi][has_plus]  # both mates share a flag
-        table["R-free-flags"] = rf
+    for label, flags in _flag_columns(data).items():
+        table[label] = np.full(m, -1, dtype=int)
+        table[label][inverse.numpy()] = flags  # both mates share a flag
     return pd.DataFrame(table)
 
 
@@ -900,12 +940,17 @@ def write_reflections(
     anomalous: Optional[bool] = None,
     verbose: int = 0,
 ) -> None:
-    """Write a :class:`ReflectionData` (and optional model) to an MTZ file.
+    """Write a :class:`~torchref.io.datasets.reflection_data.ReflectionData` to MTZ.
 
-    Labels on disk: FP, SIGFP, I, SIGI, FreeR_flag (1 = work), Validation_flag;
-    with ``fcalc`` also FWT/PHWT (2Fo-Fc), DELFWT/PHDELWT (Fo-Fc) and
-    F-model/PH-model -- the unweighted m = 1, D = 1 coefficients of
-    :func:`~torchref.base.fourier.map_coefficients`, not 2mFo-DFc.
+    Labels on disk are the :func:`reflection_table` column names. Merged: F-obs,
+    SIGF-obs, I-obs, SIGI-obs; anomalous: F-obs, F-obs(+)/(-), SIGF-obs(+)/(-) and
+    no intensities; both: R-free-flags (1 = work, 0 = free, -1 = excluded by the
+    input's flags) and Validation_flag. With ``fcalc`` both add FWT/PHWT (2Fo-Fc),
+    DELFWT/PHDELWT (Fo-Fc) and F-model/PH-model, the unweighted m = 1, D = 1
+    coefficients of :func:`~torchref.base.fourier.map_coefficients`, not 2mFo-DFc;
+    anomalous also F-model(+)/(-), PHIF-model(+)/(-) and ANOM/PANOM.
+    R-free-flags is Phenix's label with the CCP4 free value 0, so tell Phenix
+    the test-flag value rather than letting it assume 1.
 
     Map and model columns are missing (not filled) for every reflection
     ``data.masks()`` excludes -- beyond the resolution cut or rejected as an
@@ -935,8 +980,3 @@ def write_reflections(
         print(f"✓ Wrote {layout} MTZ: {filepath}")
         print(f"  Reflections: {len(df)}")
         print(f"  Columns: {', '.join(df.columns)}")
-
-
-# Deprecated alias kept for backwards compatibility; prefer MTZReader.
-# Slated for removal in a future release. This is a public symbol.
-MTZ = MTZReader

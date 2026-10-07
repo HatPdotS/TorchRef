@@ -5,11 +5,14 @@ reflection the refinement excludes -- past the resolution cut or rejected -- whi
 observed columns stay complete, in both the per-row and the anomalous layout.
 """
 
+import gemmi
 import numpy as np
+import pandas as pd
 import pytest
 import reciprocalspaceship as rs
 import torch
 
+from torchref.io import mtz
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model.model_ft import ModelFT
 
@@ -34,6 +37,24 @@ def cut_data(mtz_dir):
     data.load_mtz(str(mtz_dir / "1DAW.mtz"))
     assert data.resolution.min().item() < CUT - 0.5, "data must extend past the cut"
     data.filter_by_resolution(d_min=CUT)
+    return data
+
+
+@pytest.fixture
+def excluded_mtz(mtz_dir, tmp_path):
+    """1DAW.mtz with FreeR_flag -1 (excluded) on 500 rows."""
+    ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+    flags = ds["FreeR_flag"].to_numpy().copy()
+    flags[np.random.default_rng(0).choice(len(ds), 500, replace=False)] = -1
+    ds["FreeR_flag"] = rs.DataSeries(flags, index=ds.index).astype("I")
+    path = tmp_path / "excluded.mtz"
+    ds.write_mtz(str(path))
+    return path
+
+
+def _load(path):
+    data = ReflectionData(verbose=0)
+    data.load_mtz(str(path))
     return data
 
 
@@ -124,3 +145,37 @@ class TestAnomalousLayout:
         np.testing.assert_allclose(
             row["FWT"], abs(2 * F_plus - row["F-model"]), rtol=1e-4
         )
+
+
+class TestExcludedFlags:
+    """Reflections the input's flags exclude stay excluded, not free."""
+
+    @pytest.mark.parametrize("anomalous", [False, True])
+    def test_excluded_rows_survive_a_round_trip(
+        self, excluded_mtz, tmp_path, anomalous
+    ):
+        source = excluded_mtz
+        if anomalous:
+            source = tmp_path / "excluded_anomalous.mtz"
+            rs.read_mtz(str(excluded_mtz)).stack_anomalous().write_mtz(str(source))
+        data = _load(source)
+        n_excluded = int((~data.masks["flagged_initial"]).sum())
+        assert n_excluded >= 500
+
+        out_path = tmp_path / "out.mtz"
+        data.write_mtz(str(out_path), anomalous=anomalous)
+        reloaded = _load(out_path)
+        assert int((~reloaded.masks["flagged_initial"]).sum()) == n_excluded
+        assert reloaded.free.n == data.free.n
+
+
+def test_write_leaves_a_named_index_out(tmp_path):
+    """``mtz.write`` writes H, K, L and the frame's columns, not its index."""
+    df = pd.DataFrame(
+        {"H": [1, 2], "K": [0, 1], "L": [4, 5], "F-obs": [9.0, 7.0]},
+        index=pd.Index([10, 11], name="row"),
+    )
+    path = tmp_path / "out.mtz"
+    mtz.write(df, [50, 60, 70, 90, 90, 90], "P 21 21 21", str(path))
+    labels = [c.label for c in gemmi.read_mtz_file(str(path)).columns]
+    assert labels == ["H", "K", "L", "F-obs"]

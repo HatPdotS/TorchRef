@@ -787,7 +787,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ----------
         reader : callable
             Data reader object that returns (data_dict, cell, spacegroup) when called.
-            Can be MTZ, ReflectionCIFReader, or other compatible reader.
+            Can be MTZReader, ReflectionCIFReader, or other compatible reader.
         french_wilson : bool, optional
             Whether to derive amplitudes from intensities via French-Wilson.
             Default True. When False, existing amplitude columns (``F``/``SIGF``)

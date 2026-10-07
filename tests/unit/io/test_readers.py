@@ -44,6 +44,15 @@ class TestReadCif:
         assert isinstance(obj, ModelFT)
         assert len(obj.pdb) > 0
 
+    def test_read_cif_model_takes_verbose(self, cif_dir, capsys):
+        """``verbose`` reaches the model the structure branch builds."""
+        from torchref import read_cif
+        from torchref.model import Model
+
+        model = read_cif(str(cif_dir / "1DAW.cif"), model_class=Model, verbose=0)
+        assert model.ctx.verbose == 0
+        assert capsys.readouterr().out == ""
+
     def test_read_cif_reflections(self, cif_sf_dir):
         from torchref import read_cif
         from torchref.io import ReflectionData

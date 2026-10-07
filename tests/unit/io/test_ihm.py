@@ -18,6 +18,39 @@ from torchref.io.ihm_mapping import (
 # Path to test IHM file
 TEST_IHM_FILE = Path(__file__).parent.parent.parent / "files" / "cif" / "test_ihm_ensemble.cif"
 
+#: The fixture's timepoints: population fractions of (ground_state, intermediate_1).
+FIXTURE_FRACTIONS = {"dark": [1.0, 0.0], "1ps": [0.9, 0.1], "5ps": [0.7, 0.3]}
+
+
+def _kinetic_mapping():
+    """The fixture's states and timepoints, built without reading it."""
+    states = [
+        IHMStateInfo(state_id=1, name="ground_state", model_num=1),
+        IHMStateInfo(state_id=2, name="intermediate_1", model_num=2),
+    ]
+    groups = [
+        IHMModelGroupInfo(
+            group_id=group_id,
+            name=name,
+            state_fractions=dict(zip((1, 2), fractions)),
+        )
+        for group_id, (name, fractions) in enumerate(FIXTURE_FRACTIONS.items(), 1)
+    ]
+    return IHMEnsembleMapping(
+        states=states,
+        model_groups=groups,
+        cell=[50.0, 60.0, 70.0, 90.0, 90.0, 90.0],
+        spacegroup="P 21 21 21",
+    )
+
+
+def _assert_fixture_timepoints(mapping):
+    assert [s.name for s in mapping.states] == ["ground_state", "intermediate_1"]
+    assert mapping.get_timepoint_names() == list(FIXTURE_FRACTIONS)
+    for name, fractions in FIXTURE_FRACTIONS.items():
+        assert mapping.get_fractions_for_group(name) == pytest.approx(fractions)
+    assert mapping.identify_dark_group() == "dark"
+
 
 # ======================================================================
 # IHMEnsembleMapping tests (no external dependencies)
@@ -29,33 +62,7 @@ class TestIHMEnsembleMapping:
 
     def _make_mapping(self):
         """Create a minimal mapping for testing."""
-        states = [
-            IHMStateInfo(state_id=1, name="ground_state", model_num=1),
-            IHMStateInfo(state_id=2, name="intermediate_1", model_num=2),
-        ]
-        groups = [
-            IHMModelGroupInfo(
-                group_id=1,
-                name="dark",
-                state_fractions={1: 1.0, 2: 0.0},
-            ),
-            IHMModelGroupInfo(
-                group_id=2,
-                name="1ps",
-                state_fractions={1: 0.9, 2: 0.1},
-            ),
-            IHMModelGroupInfo(
-                group_id=3,
-                name="5ps",
-                state_fractions={1: 0.7, 2: 0.3},
-            ),
-        ]
-        return IHMEnsembleMapping(
-            states=states,
-            model_groups=groups,
-            cell=[50.0, 60.0, 70.0, 90.0, 90.0, 90.0],
-            spacegroup="P 21 21 21",
-        )
+        return _kinetic_mapping()
 
     def test_get_state_ids(self):
         mapping = self._make_mapping()
@@ -222,6 +229,19 @@ class TestReadCifDetection:
             assert kind == "structure"
             assert kind != "ihm_ensemble"
 
+    def test_key_value_model_list_is_ihm_to_both_probes(self, tmp_path):
+        """read_cif and IHMReader.is_ihm_file agree on a one-model IHM file."""
+        from torchref.io.ihm import IHMReader
+        from torchref.io.readers import _detect_cif_type
+
+        path = tmp_path / "one_model.cif"
+        path.write_text(
+            "data_one\n_ihm_model_list.model_id 1\n"
+            "loop_\n_atom_site.group_PDB\n_atom_site.id\nATOM 1\n"
+        )
+        assert IHMReader.is_ihm_file(str(path))
+        assert _detect_cif_type(str(path)) == "ihm_ensemble"
+
 
 # ======================================================================
 # IHMReader static detection tests (no python-ihm needed)
@@ -278,6 +298,35 @@ class TestIHMReader:
         assert mapping.cell is not None
         assert mapping.spacegroup is not None
 
+    def test_read_mapping_timepoints(self):
+        """Each state group is a timepoint carrying its states' fractions."""
+        from torchref.io.ihm import IHMReader
+
+        mapping = IHMReader(str(TEST_IHM_FILE), verbose=0).read_mapping()
+        _assert_fixture_timepoints(mapping)
+        assert [s.model_num for s in mapping.states] == [1, 2]
+
+    def test_states_load_the_model_their_groups_hold(self, tmp_path):
+        """A state's coordinates are its linked model, not the k-th model."""
+        import gemmi
+
+        from torchref.io.ihm import IHMReader
+
+        doc = gemmi.cif.read(str(TEST_IHM_FILE))
+        for row in doc[0].find("_ihm_model_group_link.", ["model_id"]):
+            row[0] = {"1": "2", "2": "1"}[row[0]]
+        swapped = tmp_path / "swapped.cif"
+        doc.write_file(str(swapped))
+
+        reader = IHMReader(str(swapped), verbose=0)
+        mapping = reader.read_mapping()
+        atoms = reader.read_atom_data(mapping)
+        assert [s.name for s in mapping.states] == ["ground_state", "intermediate_1"]
+        assert [s.model_num for s in mapping.states] == [2, 1]
+        # Model 1 starts at x = 10.0, model 2 at x = 10.2.
+        assert atoms[1]["x"].iloc[0] == pytest.approx(10.2)
+        assert atoms[2]["x"].iloc[0] == pytest.approx(10.0)
+
     def test_read_atom_data(self):
         """Test reading per-state atom data."""
         from torchref.io.ihm import IHMReader
@@ -305,6 +354,21 @@ class TestIHMReader:
         )
 
         # Should have base models matching number of states
+        assert mc.n_base_models == len(mapping.states)
+
+    def test_stages_driven_by_hand(self):
+        """read_atom_data leaves the atoms on the mapping for the next stage."""
+        import torch
+
+        from torchref.io.ihm import IHMReader
+
+        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        mapping = reader.read_mapping()
+        atoms = reader.read_atom_data(mapping)
+        assert mapping.atom_data_per_state is atoms
+        mc = reader.build_model_collection(
+            mapping, max_res=3.0, device=torch.device("cpu")
+        )
         assert mc.n_base_models == len(mapping.states)
 
     def test_call_convenience(self):
@@ -361,6 +425,53 @@ class TestIHMWriter:
             assert "pdbx_PDB_model_num" in content
         finally:
             os.unlink(outpath)
+
+    def test_write_read_round_trip_keeps_timepoints(self, tmp_path):
+        """Every timepoint's fractions survive IHMWriter -> IHMReader."""
+        import torch
+
+        from torchref.io.ihm import IHMReader, IHMWriter
+
+        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        mapping = _kinetic_mapping()
+        mapping.atom_data_per_state = reader.read_atom_data(mapping)
+        mc = reader.build_model_collection(
+            mapping, max_res=3.0, device=torch.device("cpu")
+        )
+        out = tmp_path / "round_trip.cif"
+        IHMWriter(mc, mapping=mapping, verbose=0).write(str(out))
+
+        back = IHMReader(str(out), verbose=0).read_mapping()
+        _assert_fixture_timepoints(back)
+
+    def test_refln_status_marks_excluded_reflections(self, mtz_dir, tmp_path):
+        """A reflection the input's flags exclude is written as status x, not f."""
+        import gemmi
+        import numpy as np
+        import reciprocalspaceship as rs
+        import torch
+
+        from torchref.io.datasets.reflection_data import ReflectionData
+        from torchref.io.ihm import IHMReader, IHMWriter
+
+        ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+        flags = ds["FreeR_flag"].to_numpy().copy()
+        flags[:100] = -1
+        ds["FreeR_flag"] = rs.DataSeries(flags, index=ds.index).astype("I")
+        ds.write_mtz(str(tmp_path / "excluded.mtz"))
+        data = ReflectionData(verbose=0)
+        data.load_mtz(str(tmp_path / "excluded.mtz"))
+
+        mc, mapping = IHMReader(str(TEST_IHM_FILE), verbose=0)(
+            max_res=3.0, device=torch.device("cpu")
+        )
+        out = tmp_path / "with_data.cif"
+        IHMWriter(mc, mapping=mapping, datasets={"dark": data}, verbose=0).write(
+            str(out)
+        )
+        status = list(gemmi.cif.read(str(out))["dark"].find_values("_refln.status"))
+        assert status.count("x") == 100
+        assert status.count("f") == np.count_nonzero(flags == 0)
 
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""

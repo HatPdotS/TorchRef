@@ -16,7 +16,9 @@ previous program's output.
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import gemmi
 import pandas as pd
 import pytest
 
@@ -26,6 +28,10 @@ from torchref.io.metadata import RefinementMetadata
 # 3GR5 was refined with REFMAC 5.1.24 and carries a full deposition header:
 # 420 lines including REMARK 2/3/500, JRNL, AUTHOR, SEQRES, SSBOND and SITE.
 INPUT_PDB = str(Path(__file__).resolve().parents[2] / "files" / "pdb" / "3GR5.pdb")
+
+# 1DAW was refined with REFMAC; both its PDB and its mmCIF carry the record.
+PDB_1DAW = str(Path(__file__).resolve().parents[2] / "files" / "pdb" / "1DAW.pdb")
+CIF_1DAW = str(Path(__file__).resolve().parents[2] / "files" / "cif" / "1DAW.cif")
 
 #: PDB record order, abridged to the records this writer can emit. The format
 #: mandates this sequence; TITLE used to be written *after* REMARK 900.
@@ -267,6 +273,21 @@ def test_header_lines_fit_the_format():
 
 
 @pytest.mark.unit
+def test_long_statistic_values_wrap_rather_than_overflow():
+    """A generated free set's provenance is wider than the statistics column."""
+    meta = _refined_metadata()
+    meta.rfree_selection = "Generated (resolution-binned, ASU-grouped, seed 0)"
+    lines = meta.render_pdb_header().splitlines()
+    assert [line for line in lines if len(line) > 80] == []
+    head = next(
+        i for i, line in enumerate(lines) if "FREE R VALUE TEST SET SELECTION" in line
+    )
+    assert lines[head + 1].startswith("REMARK   3" + " " * 37 + ": ")
+    joined = " ".join(line.split(" : ", 1)[1] for line in lines[head : head + 2])
+    assert joined == meta.rfree_selection
+
+
+@pytest.mark.unit
 def test_long_identification_values_wrap_rather_than_overflow():
     """Naming cycles, mode, ADP model and scale target overruns column 80."""
     meta = _refined_metadata()
@@ -287,6 +308,87 @@ def test_long_identification_values_wrap_rather_than_overflow():
         if " : " in line
     )
     assert "RIGID BODY 5 ITERATIONS" in joined
+
+
+@pytest.mark.unit
+def test_reflection_statistics_cover_the_reflections_refined(mtz_dir):
+    """A resolution cut shows in the reported range and counts."""
+    from torchref.io.datasets.reflection_data import ReflectionData
+
+    data = ReflectionData(verbose=0)
+    data.load_mtz(str(mtz_dir / "1DAW.mtz"))
+    data.filter_by_resolution(d_min=2.5)
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(reflection_data=data))
+
+    assert meta.resolution_high == pytest.approx(2.5, abs=0.01)
+    assert meta.n_reflections_work == data.work.n
+    assert meta.n_reflections_test == data.free.n
+    assert meta.n_reflections_all == data.work.n + data.free.n
+    assert meta.n_reflections_all < len(data.hkl)
+
+
+@pytest.mark.unit
+def test_atom_counts_match_the_deposited_refine_hist(pdb_dir):
+    """1DAW's _refine_hist: 2733 polymer, 285 water, 3051 non-hydrogen atoms.
+
+    The 33 AMP-PNP and magnesium atoms count only in the total.
+    """
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.n_atoms_protein == 2733
+    assert meta.n_atoms_solvent == 285
+    assert meta.n_atoms_total == 3051
+    hist = meta.render_cif_categories()["_refine_hist"]
+    assert hist["_refine_hist.pdbx_number_atoms_protein"] == "2733"
+    assert "_refine_hist.number_atoms_protein" not in hist
+
+
+@pytest.mark.unit
+def test_restraint_kind_without_entries_leaves_its_rmsd_unset():
+    """Empty deviations, as for a model without bonds, give no RMSD, not NaN."""
+    import torch
+
+    no_bonds = SimpleNamespace(
+        bond_deviations=lambda xyz: (xyz.new_zeros(0), xyz.new_zeros(0)),
+        angle_deviations=lambda xyz: (xyz.new_full((4,), 0.02), xyz.new_ones(4)),
+    )
+    model = SimpleNamespace(
+        ctx=SimpleNamespace(initialized=True, restraints=no_bonds),
+        restraints=no_bonds,
+        xyz=lambda: torch.zeros(3, 3),
+    )
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.rmsd_bond_lengths is None
+    assert meta.rmsd_bond_angles is not None
+    header = meta.render_pdb_header().splitlines()
+    assert next(line for line in header if "BOND LENGTHS" in line).endswith("NULL")
+
+
+@pytest.mark.unit
+def test_bond_angle_rmsd_is_reported_in_degrees(pdb_dir):
+    """The RMSD on REMARK 3's BOND ANGLES (DEGREES) line is in degrees."""
+    import math
+
+    import torch
+
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    with torch.no_grad():
+        radians, _ = model.restraints.angle_deviations(model.xyz())
+    degrees = math.degrees(float(torch.sqrt((radians**2).mean())))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.rmsd_bond_angles == pytest.approx(degrees, rel=1e-5)
+    header = meta.render_pdb_header().splitlines()
+    line = next(line for line in header if "BOND ANGLES" in line)
+    assert line.endswith(f": {degrees:.2f}")
 
 
 # ====================================================================== #
@@ -394,6 +496,15 @@ def test_input_refine_statistics_are_not_carried_into_cif(tmp_path):
 
 
 @pytest.mark.unit
+def test_refinement_method_is_not_a_structure_determination_method():
+    """pdbx_method_to_determine_struct holds the phasing method (SAD, MR, ...)."""
+    meta = RefinementMetadata(refinement_method="difference-refine")
+    cats = meta.render_cif_categories()
+    assert "_refine.pdbx_method_to_determine_struct" not in cats.get("_refine", {})
+    assert cats["_software"]["_software.description"] == ["difference-refine"]
+
+
+@pytest.mark.unit
 def test_starting_model_is_recorded_as_an_accession(tmp_path):
     cats = _refined_metadata().render_cif_categories()
     initial = cats["_pdbx_initial_refinement_model"]
@@ -452,3 +563,66 @@ def test_refinement_output_supersedes_by_default():
     numbers = {_remark_number(r) for r in meta.passthrough_pdb_remarks}
     assert not ({2, 3, 500} & numbers)
     assert meta.authors == []
+
+
+@pytest.mark.unit
+def test_annotation_keeps_the_input_remark_3():
+    """A title alone does not replace the REFMAC record with a TORCHREF one."""
+    meta = RefinementMetadata.from_pdb_file(PDB_1DAW, supersede_refinement=False)
+    meta.title = "Annotated"
+    header = meta.render_pdb_header().splitlines()
+    with open(PDB_1DAW) as handle:
+        remark3 = [
+            line.rstrip("\n") for line in handle if line.startswith("REMARK   3")
+        ]
+    assert [line for line in header if line.startswith("REMARK   3")] == remark3
+    assert not any("PROGRAM     : TORCHREF" in line for line in header)
+
+
+@pytest.mark.unit
+def test_annotation_without_an_input_remark_3_generates_none():
+    """An mmCIF input has no REMARK 3 to keep; a title still credits no TORCHREF."""
+    meta = RefinementMetadata.from_cif_file(CIF_1DAW, supersede_refinement=False)
+    meta.title = "Annotated"
+    header = meta.render_pdb_header().splitlines()
+    assert not any("PROGRAM     : TORCHREF" in line for line in header)
+    assert not any(line.startswith("REMARK   3") for line in header)
+
+
+@pytest.mark.unit
+def test_a_statistic_turns_annotation_into_our_record():
+    meta = RefinementMetadata.from_pdb_file(PDB_1DAW, supersede_refinement=False)
+    meta.r_work = 0.2
+    header = meta.render_pdb_header()
+    assert "PROGRAM     : TORCHREF" in header
+    assert "PROGRAM     : REFMAC" not in header
+
+
+@pytest.mark.unit
+def test_carried_cif_values_are_quoted_once(tmp_path):
+    """Values carried from an mmCIF input are re-quoted once, so the file parses."""
+    out = tmp_path / "carried.cif"
+    meta = RefinementMetadata.from_cif_file(CIF_1DAW)
+    cif.write_model(_atom_df(), str(out), metadata=meta)
+
+    block = gemmi.cif.read(str(out)).sole_block()
+    assert "'PROTEIN KINASE CK2'" in list(block.find_values("_entity.pdbx_description"))
+
+
+@pytest.mark.unit
+def test_cif_annotation_keeps_the_input_refinement():
+    """The mmCIF counterpart: _refine and the authors stay, TORCHREF is not added."""
+    meta = RefinementMetadata.from_cif_file(CIF_1DAW, supersede_refinement=False)
+    meta.title = "Annotated"
+    cats = meta.render_cif_categories()
+    assert cats["_refine"]["_refine.ls_R_factor_R_work"] == "0.2120000"
+    assert "_refine_hist" in cats
+    assert cats["_software"]["_software.name"][0] == "REFMAC"
+    assert "TORCHREF" not in cats["_software"]["_software.name"]
+    assert meta.authors
+
+    meta.r_work = 0.2
+    cats = meta.render_cif_categories()
+    assert cats["_refine"] == {"_refine.ls_R_factor_R_work": "0.2000"}
+    assert "_refine_hist" not in cats
+    assert cats["_software"]["_software.name"][-1] == "TORCHREF"

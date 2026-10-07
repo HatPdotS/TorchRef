@@ -11,10 +11,8 @@ never assume a populated result.
 
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import asdict, dataclass, field, fields
-from datetime import date
+from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
 #: Input records that describe the crystal, the sample and its chemistry.
@@ -46,6 +44,25 @@ _KEEP_CIF_CATEGORIES = (
     "_chem_comp", "_struct_ref", "_struct_ref_seq", "_exptl",
 )
 
+#: Category prefixes of an input CIF's refinement record, the counterpart of
+#: REMARK 3: carried only by ``from_cif_file(supersede_refinement=False)``.
+_REFINEMENT_CIF_PREFIXES = ("_refine", "_pdbx_refine", "_pdbx_initial_refinement_model")
+
+#: Fields that describe the input entry rather than a refinement of it.
+#: Metadata that sets no other field is an annotation, which keeps the input's
+#: own refinement record instead of generating one.
+_ANNOTATION_FIELDS = {
+    "program",
+    "title",
+    "authors",
+    "cell",
+    "spacegroup",
+    "software_chain",
+    "passthrough_pdb_remarks",
+    "passthrough_pdb_records",
+    "passthrough_cif_categories",
+}
+
 #: Width of the label field in a REMARK 3 line, so the colons line up. Matches
 #: the longest label we emit ("RESOLUTION RANGE HIGH (ANGSTROMS)").
 _REMARK3_LABEL_WIDTH = 33
@@ -76,7 +93,8 @@ class RefinementMetadata:
     rmsd_bond_lengths, rmsd_bond_angles : float, optional
         Geometry deviations from ideal (Angstroms, degrees).
     n_atoms_total, n_atoms_protein, n_atoms_solvent : int, optional
-        Model atom counts.
+        Non-hydrogen atom counts: all, in polymer residues, and in waters.
+        Ligand atoms count only in the total.
     solvent_model_ksol, solvent_model_bsol : float, optional
         Bulk-solvent scale, and the equivalent single ``B`` for the fitted falloff.
     cell, spacegroup
@@ -207,8 +225,6 @@ class RefinementMetadata:
         ``collect_metrics()`` and the reflection data. Every statistic is
         best-effort: anything unavailable is left unset, silently.
         """
-        import torch
-
         from torchref import __version__
 
         meta = cls(program_version=__version__)
@@ -221,30 +237,9 @@ class RefinementMetadata:
         except Exception:
             pass
 
-        # --- Resolution from reflection data ---
+        # --- Resolution and reflection counts ---
         try:
-            rd = refinement.reflection_data
-            if rd.resolution is not None:
-                meta.resolution_high = float(rd.resolution.min())
-                meta.resolution_low = float(rd.resolution.max())
-        except Exception:
-            pass
-
-        # --- Reflection counts ---
-        try:
-            rd = refinement.reflection_data
-            with torch.no_grad():
-                hkl, fobs, sigma, rfree_flags = rd.hkl, rd.F, rd.F_sigma, rd.rfree_flags
-            n_all = len(fobs)
-            n_test = int(rfree_flags.sum().item()) if rfree_flags.dtype == torch.bool else int((~rfree_flags.bool()).sum().item())
-            n_work = n_all - n_test
-            # In torchref, rfree_flags=True means WORK set
-            n_work = int(rfree_flags.sum().item())
-            n_test = n_all - n_work
-            meta.n_reflections_all = n_all
-            meta.n_reflections_work = n_work
-            meta.n_reflections_test = n_test
-            meta.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
+            meta._set_reflection_statistics(refinement.reflection_data)
         except Exception:
             pass
 
@@ -260,30 +255,13 @@ class RefinementMetadata:
 
         # --- Geometry deviations (silently skip if no restraints) ---
         try:
-            model = refinement.model
-            if model.ctx.initialized and model.ctx.restraints is not None:
-                restraints = model.restraints
-                if hasattr(restraints, "bond_deviations"):
-                    with torch.no_grad():
-                        bond_devs, _ = restraints.bond_deviations(model.xyz())
-                        meta.rmsd_bond_lengths = float(
-                            torch.sqrt((bond_devs**2).mean())
-                        )
-                if hasattr(restraints, "angle_deviations"):
-                    with torch.no_grad():
-                        angle_devs, _ = restraints.angle_deviations(model.xyz())
-                        meta.rmsd_bond_angles = float(
-                            torch.sqrt((angle_devs**2).mean())
-                        )
+            meta._set_geometry_deviations(refinement.model)
         except Exception:
             pass
 
         # --- Atom counts ---
         try:
-            is_hetatm = refinement.model.ctx.topology.atoms.is_hetatm
-            meta.n_atoms_total = len(is_hetatm)
-            meta.n_atoms_protein = int((~is_hetatm).sum())
-            meta.n_atoms_solvent = int(is_hetatm.sum())
+            meta._set_atom_counts(refinement.model)
         except Exception:
             pass
 
@@ -332,6 +310,73 @@ class RefinementMetadata:
 
         return meta
 
+    def _set_reflection_statistics(self, data) -> None:
+        """Set the resolution range and reflection counts from ``data``.
+
+        Both cover only the reflections the refinement scored, those
+        ``data.masks()`` keeps: a resolution cut, missing data and excluded
+        free-set flags are left out, as in ``get_rfactor``. The counts are
+        ``data.work.n`` and ``data.free.n``; ``n_reflections_all`` is their sum.
+
+        Parameters
+        ----------
+        data : ReflectionData
+            The refined dataset; its ``resolution`` is in Å.
+        """
+        if data.resolution is not None:
+            self.resolution_high = data.d_min
+            self.resolution_low = float(data.resolution[data.masks()].max())
+        if data.rfree_flags is not None:
+            n_work, n_test = data.work.n, data.free.n
+            n_all = n_work + n_test
+            self.n_reflections_work = n_work
+            self.n_reflections_test = n_test
+            self.n_reflections_all = n_all
+            self.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
+
+    def _set_geometry_deviations(self, model) -> None:
+        """Set the bond-length and bond-angle RMSDs from ``model``'s restraints.
+
+        In Å and degrees, the units the header reports, over the restraints the
+        model has already built. A kind of restraint the model has none of
+        leaves its RMSD unset rather than NaN.
+
+        Parameters
+        ----------
+        model : Model
+            The refined model.
+        """
+        import torch
+
+        if not model.ctx.initialized or model.ctx.restraints is None:
+            return
+        with torch.no_grad():
+            xyz = model.xyz()
+            bonds, _ = model.restraints.bond_deviations(xyz)
+            angles, _ = model.restraints.angle_deviations(xyz)
+        if bonds.numel():
+            self.rmsd_bond_lengths = float(torch.sqrt((bonds**2).mean()))
+        if angles.numel():
+            # angle_deviations is in radians.
+            self.rmsd_bond_angles = float(torch.rad2deg(torch.sqrt((angles**2).mean())))
+
+    def _set_atom_counts(self, model) -> None:
+        """Set the non-hydrogen atom counts from ``model.ctx.topology``.
+
+        Polymer residues count as protein and waters as solvent; ligands and
+        ions count only in the total, as in a deposited ``_refine_hist``.
+
+        Parameters
+        ----------
+        model : Model
+            The refined model.
+        """
+        topology = model.ctx.topology
+        heavy = ~topology.atoms.is_hydrogen.cpu().numpy()
+        self.n_atoms_total = int(heavy.sum())
+        self.n_atoms_protein = int((heavy & topology.is_polymer).sum())
+        self.n_atoms_solvent = int((heavy & topology.is_water).sum())
+
     # ------------------------------------------------------------------ #
     #  Construction from input files (pass-through)
     # ------------------------------------------------------------------ #
@@ -343,22 +388,20 @@ class RefinementMetadata:
         """Extract the carry-through header of an existing PDB file.
 
         Captures TITLE, the structural records in ``_KEEP_RECORDS`` and every
-        REMARK except those in ``_DROP_REMARKS``. AUTHOR and JRNL are absent
-        from ``_KEEP_RECORDS`` and so never collected: they credit whoever
-        deposited the entry, not this refinement.
-
-        The input's REMARK 3 is dropped rather than carried, which is the whole
-        point -- a refined file that repeats the previous program's R-factors
-        alongside its own asserts two different refinements at once.
+        REMARK except those in ``_DROP_REMARKS``: a refined file that repeated
+        the input's REMARK 3 R-factors beside its own would assert two
+        refinements at once. JRNL is never collected.
 
         Parameters
         ----------
+        filepath : str
+            Path to the PDB file.
         supersede_refinement : bool, optional
             Whether this file's refinement is about to be replaced -- the
             default, and the case for refinement output. Pass ``False`` when
-            annotating a file without re-refining it: nothing supersedes the
-            existing REMARK 3 or AUTHOR records then, and dropping them would
-            lose statistics and credit that are still accurate.
+            annotating a file without re-refining it: then REMARK 2, 3 and 500
+            are kept too and the AUTHOR names collected, since nothing
+            supersedes their statistics and credit.
         """
         meta = cls()
         remarks: List[str] = []
@@ -401,18 +444,26 @@ class RefinementMetadata:
         return meta
 
     @classmethod
-    def from_cif_file(cls, filepath: str) -> RefinementMetadata:
+    def from_cif_file(
+        cls, filepath: str, *, supersede_refinement: bool = True
+    ) -> RefinementMetadata:
         """Extract the carry-through metadata of an existing mmCIF file.
 
-        Captures ``_struct.title``, the entity/sequence/connectivity categories
-        in ``_KEEP_CIF_CATEGORIES``, and the ``_software`` loop -- the last so
-        this refinement can append itself to the chain of programs rather than
-        presenting itself as the only one.
+        Captures ``_struct.title``, the categories in ``_KEEP_CIF_CATEGORIES``
+        and the ``_software`` loop, which this refinement appends itself to.
+        Values are stored unquoted, so they are quoted once when written.
 
-        The input's ``_refine`` category is deliberately NOT captured. It holds
-        the previous program's R-factors and resolution, which this refinement
-        supersedes; carrying them forward is the mmCIF form of the duplicated
-        REMARK 3 that ``from_pdb_file`` used to produce.
+        Parameters
+        ----------
+        filepath : str
+            Path to the mmCIF file.
+        supersede_refinement : bool, optional
+            Whether this file's refinement is about to be replaced -- the
+            default, and the case for refinement output: the input's
+            refinement record (``_refine`` and the other categories in
+            ``_REFINEMENT_CIF_PREFIXES``) is not captured. Pass ``False`` when
+            annotating a file without re-refining it, to keep that record and
+            the ``_audit_author`` names.
         """
         meta = cls()
         try:
@@ -445,6 +496,20 @@ class RefinementMetadata:
                             entry[key] = val
                 chain.append(entry)
             meta.software_chain = chain
+            if not supersede_refinement:
+                meta.authors = [
+                    gemmi.cif.as_string(name)
+                    for name in block.find_values("_audit_author.name")
+                ]
+
+            def carried(category: str) -> bool:
+                return category in _KEEP_CIF_CATEGORIES or (
+                    not supersede_refinement
+                    and category.startswith(_REFINEMENT_CIF_PREFIXES)
+                )
+
+            def unquoted(token: str) -> str:
+                return token if gemmi.cif.is_null(token) else gemmi.cif.as_string(token)
 
             # Entity, sequence and connectivity categories, in whichever form
             # the input used them (loop or key-value).
@@ -452,19 +517,19 @@ class RefinementMetadata:
             for item in block:
                 if item.loop is not None:
                     tags = list(item.loop.tags)
-                    if tags[0].split(".")[0] not in _KEEP_CIF_CATEGORIES:
+                    if not carried(tags[0].split(".")[0]):
                         continue
                     cats[tags[0].split(".")[0]] = {
                         tag: [
-                            item.loop[r, c] for r in range(item.loop.length())
+                            unquoted(item.loop[r, c]) for r in range(item.loop.length())
                         ]
                         for c, tag in enumerate(tags)
                     }
                 elif item.pair is not None:
                     tag, val = item.pair
                     category = tag.split(".")[0]
-                    if category in _KEEP_CIF_CATEGORIES:
-                        cats.setdefault(category, {})[tag] = val
+                    if carried(category):
+                        cats.setdefault(category, {})[tag] = unquoted(val)
             meta.passthrough_cif_categories = cats
 
         except Exception:
@@ -538,7 +603,10 @@ class RefinementMetadata:
         entry-level records, then REMARKs in ascending numeric order with ours
         slotted in at 3, then sequence, chemistry and connectivity. Only the
         REMARK 3 block is generated; everything else is either carried through
-        from the input or supplied by the caller.
+        from the input or supplied by the caller. Metadata that sets no
+        refinement field annotates the input instead: it generates no REMARK 3
+        and keeps the input's, if ``from_pdb_file(supersede_refinement=False)``
+        collected one.
         """
         lines: List[str] = []
         records = self.passthrough_pdb_records
@@ -552,8 +620,8 @@ class RefinementMetadata:
             _wrap_pdb_record(lines, "TITLE", self.title)
         _emit("COMPND", "SOURCE", "KEYWDS", "EXPDTA", "MDLTYP")
 
-        # Only ever what the caller set explicitly: authors are not inherited
-        # from the input, since they credit that deposition and not this run.
+        # The caller's authors; the input's only when annotating
+        # (supersede_refinement=False), as they credit that deposition.
         if self.authors:
             _wrap_pdb_record(lines, "AUTHOR", ", ".join(self.authors))
 
@@ -566,7 +634,10 @@ class RefinementMetadata:
 
         passthrough = sorted(self.passthrough_pdb_remarks, key=_remark_number)
         lines.extend(r for r in passthrough if _remark_number(r) < 3)
-        lines.extend(self._render_remark3())
+        if self._is_annotation():
+            lines.extend(r for r in passthrough if _remark_number(r) == 3)
+        else:
+            lines.extend(self._render_remark3())
         lines.extend(r for r in passthrough if _remark_number(r) > 3)
 
         # -- sequence, chemistry, connectivity ---------------------------- #
@@ -575,6 +646,10 @@ class RefinementMetadata:
               "SSBOND", "LINK", "CISPEP", "SITE")
 
         return "\n".join(lines) + "\n"
+
+    def _is_annotation(self) -> bool:
+        """Whether only ``_ANNOTATION_FIELDS`` are set (no refinement field)."""
+        return set(self.to_dict()) <= _ANNOTATION_FIELDS
 
     def _render_remark3(self) -> List[str]:
         """Build the REMARK 3 block: this refinement, and only this one."""
@@ -656,6 +731,9 @@ class RefinementMetadata:
 
         Returns a dict of dicts keyed by mmCIF category, with item names
         as keys and string values. Uses official PDBx/mmCIF field names.
+        Metadata that sets no refinement field annotates the input: it adds no
+        ``_software`` row for this program and keeps the input's refinement
+        categories, which ``from_cif_file(supersede_refinement=False)`` carries.
 
         Returns
         -------
@@ -687,17 +765,21 @@ class RefinementMetadata:
             ours["version"] = self.program_version
         if description:
             ours["description"] = description
-        chain.append(ours)
+        # An annotation credits no program with a refinement it did not run.
+        annotation = self._is_annotation()
+        if not annotation:
+            chain.append(ours)
         columns = [
             key
             for key in ("pdbx_ordinal", "name", "version", "classification",
                         "description")
             if any(key in entry for entry in chain)
         ]
-        cats["_software"] = {
-            f"_software.{key}": [entry.get(key, "?") for entry in chain]
-            for key in columns
-        }
+        if chain:
+            cats["_software"] = {
+                f"_software.{key}": [entry.get(key, "?") for entry in chain]
+                for key in columns
+            }
 
         # _struct
         if self.title:
@@ -743,8 +825,6 @@ class RefinementMetadata:
             ref["_refine.pdbx_R_Free_selection_details"] = self.rfree_selection
         if self.starting_model:
             ref["_refine.pdbx_starting_model"] = os.path.basename(self.starting_model)
-        if self.refinement_method:
-            ref["_refine.pdbx_method_to_determine_struct"] = self.refinement_method
         if self.output_remarks:
             ref["_refine.details"] = self.output_remarks
         if ref:
@@ -777,15 +857,21 @@ class RefinementMetadata:
             hist = {}
             hist["_refine_hist.number_atoms_total"] = str(self.n_atoms_total)
             if self.n_atoms_protein is not None:
-                hist["_refine_hist.number_atoms_protein"] = str(self.n_atoms_protein)
+                hist["_refine_hist.pdbx_number_atoms_protein"] = str(
+                    self.n_atoms_protein
+                )
             if self.n_atoms_solvent is not None:
                 hist["_refine_hist.number_atoms_solvent"] = str(self.n_atoms_solvent)
             cats["_refine_hist"] = hist
 
-        # Pass-through CIF categories
+        # Pass-through CIF categories. The input's refinement record stands
+        # only for an annotation; a refinement replaces all of it.
         for cat_name, items in self.passthrough_cif_categories.items():
-            if cat_name not in cats:
-                cats[cat_name] = items
+            if cat_name in cats or (
+                cat_name.startswith(_REFINEMENT_CIF_PREFIXES) and not annotation
+            ):
+                continue
+            cats[cat_name] = items
 
         return cats
 
@@ -820,7 +906,7 @@ def _initial_model_category(starting_model: str) -> Dict[str, str]:
 def _remark3(
     lines: List[str], label: str, value: Any, fmt: str = ""
 ) -> None:
-    """Append a REMARK 3 ``label : value`` line.
+    """Append a REMARK 3 ``label : value`` line, wrapped as :func:`_ident` does.
 
     The line is always emitted; when ``value`` is None it is rendered as
     the literal ``NULL`` rather than being skipped.
@@ -829,17 +915,16 @@ def _remark3(
         formatted = f"{value:{fmt}}"
     else:
         formatted = "NULL"
-    # Pad the label so the colons align down the block. Callers used to have to
-    # pre-pad their own labels, and the ones that forgot rendered ragged.
-    lines.append(f"REMARK   3   {label:<{_REMARK3_LABEL_WIDTH}} : {formatted}")
+    _ident(lines, label, formatted, label_width=_REMARK3_LABEL_WIDTH + 1)
 
 
-def _ident(lines: List[str], label: str, value: str) -> None:
+def _ident(lines: List[str], label: str, value: str, label_width: int = 12) -> None:
     """Append a ``REMARK   3   LABEL      : value`` line, wrapped if long.
 
-    Overflow continues on a further line whose label field is blank and whose
-    colon stays in the same column, which is what REFMAC does with its own
-    long values::
+    The label is padded to ``label_width`` characters, so the colon follows
+    in a fixed column. Overflow continues on a further line whose label field
+    is blank and whose colon stays in the same column, which is what REFMAC
+    does with its own long values::
 
         REMARK   3   AUTHORS     : MURSHUDOV,SKUBAK,LEBEDEV,PANNU,STEINER,
         REMARK   3               : NICHOLLS,WINN,LONG,VAGIN
@@ -847,8 +932,8 @@ def _ident(lines: List[str], label: str, value: str) -> None:
     Without this an optimizer description naming the cycles, mode, ADP model and
     scale target runs past column 80.
     """
-    head = f"REMARK   3   {label:<12}: "
-    cont = f"REMARK   3   {'':<12}: "
+    head = f"REMARK   3   {label:<{label_width}}: "
+    cont = f"REMARK   3   {'':<{label_width}}: "
     width = 80 - len(head)
     prefix, current = head, ""
     for word in value.split():
