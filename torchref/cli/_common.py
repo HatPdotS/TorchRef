@@ -231,8 +231,8 @@ def add_column_args(parser: argparse.ArgumentParser) -> None:
 def add_dual_column_args(parser: argparse.ArgumentParser) -> None:
     """Add dark/light-specific column-selection arguments.
 
-    Adds ``-csf-dark``, ``-csf-light``, ``-csig-dark``, ``-csig-light``,
-    ``-cphi-dark``, ``-cphi-light`` for per-dataset column overrides.
+    Adds ``-csf-dark``, ``-csf-light``, ``-csig-dark`` and ``-csig-light``
+    for per-dataset column overrides.
     """
     for side in ("dark", "light"):
         parser.add_argument(
@@ -252,15 +252,6 @@ def add_dual_column_args(parser: argparse.ArgumentParser) -> None:
             metavar="COL",
             help=f"Column name for sigmas in the {side} structure factor "
                  f"file (default: auto-detect)",
-        )
-        parser.add_argument(
-            f"-cphi-{side}",
-            f"--column-phase-{side}",
-            type=str,
-            default=None,
-            metavar="COL",
-            help=f"Column name for phases in degrees in the {side} "
-                 f"structure factor file (default: auto-detect)",
         )
 
 
@@ -644,23 +635,21 @@ def validate_cif_files(cif_paths: Optional[List[str]]) -> int:
 def build_column_names(
     column_structure_factor: Optional[str] = None,
     column_sigma: Optional[str] = None,
-    column_phase: Optional[str] = None,
 ) -> Optional[Dict[str, str]]:
-    """Build a ``column_names`` dict from ``-csf``, ``-csig``, ``-cphi`` args.
+    """Build a ``column_names`` dict from ``-csf`` and ``-csig`` args.
 
-    Returns ``None`` when none are specified (auto-detect).
-    The dict keys (``"F"``, ``"SIGF"``, ``"PHIF"``) match the keys
-    expected by :meth:`ReflectionData.load_mtz`.
+    Returns ``None`` when neither is specified (auto-detect).
+    The dict keys (``"F"``, ``"SIGF"``) are those
+    :class:`~torchref.io.mtz.MTZReader` takes; it reads an intensity column
+    (MTZ type J or K) named here as ``"I"``/``"SIGI"``.
     """
-    if column_structure_factor is None and column_sigma is None and column_phase is None:
+    if column_structure_factor is None and column_sigma is None:
         return None
     column_names: Dict[str, str] = {}
     if column_structure_factor is not None:
         column_names["F"] = column_structure_factor
     if column_sigma is not None:
         column_names["SIGF"] = column_sigma
-    if column_phase is not None:
-        column_names["PHIF"] = column_phase
     return column_names
 
 
@@ -681,12 +670,10 @@ def build_dual_column_names(
     col_dark = build_column_names(
         args.column_structure_factor_dark,
         args.column_sigma_dark,
-        args.column_phase_dark,
     )
     col_light = build_column_names(
         args.column_structure_factor_light,
         args.column_sigma_light,
-        args.column_phase_light,
     )
     return col_dark, col_light
 
@@ -809,7 +796,7 @@ def load_reflection_data(
     device : str or torch.device
         Target device.
     column_names : dict, optional
-        Column name overrides (``"F"``, ``"SIGF"``, ``"PHIF"``).  Only used for MTZ.
+        Column name overrides (``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``); MTZ only.
     verbose : int
         Verbosity passed to ReflectionData.
 

@@ -98,17 +98,8 @@ DEFAULT_TARGET_WEIGHTS = {
 # ---------------------------------------------------------------------------
 
 
-def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min,
-                           device, verbose, hydrogenate=False):
-    """Load models and create a ModelCollection.
-
-    Parameters
-    ----------
-    hydrogenate : bool
-        If True, add explicit hydrogens to both models.  H atoms
-        participate in geometry/VDW restraints (preventing clashes)
-        but are excluded from structure factor calculations.
-    """
+def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min, device, verbose):
+    """Load models and create a ModelCollection."""
     from torchref.model.model_collection import ModelCollection
 
     model_dark = load_model(
@@ -117,15 +108,6 @@ def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min,
     model_light = load_model(
         pdb_light, max_res=d_min, device=device, verbose=verbose, cif=cif,
     )
-
-    if hydrogenate:
-        if verbose > 0:
-            print("Adding hydrogens for VDW clash prevention...")
-            sys.stdout.flush()
-        model_dark = model_dark.hydrogenate(verbose=max(0, verbose - 1))
-        model_light = model_light.hydrogenate(verbose=max(0, verbose - 1))
-        model_dark.hydrogens_in_xray = False
-        model_light.hydrogens_in_xray = False
 
     mc = ModelCollection([model_dark, model_light], dark_key="dark")
     mc.add_dark()
@@ -171,7 +153,7 @@ def setup_scaler(dataset_collection, model_collection, device, verbose=1):
     return scaler
 
 
-def setup_dark_only(pdb_dark, dc, cif, d_min, device, verbose, hydrogenate=False):
+def setup_dark_only(pdb_dark, dc, cif, d_min, device, verbose):
     """Load the dark model alone and scale it against the dark data.
 
     This is everything a weighted difference map needs. The amplitude is
@@ -196,13 +178,6 @@ def setup_dark_only(pdb_dark, dc, cif, d_min, device, verbose, hydrogenate=False
     model_dark = load_model(
         pdb_dark, max_res=d_min, device=device, verbose=verbose, cif=cif,
     )
-    if hydrogenate:
-        if verbose > 0:
-            print("Adding hydrogens...")
-            sys.stdout.flush()
-        model_dark = model_dark.hydrogenate(verbose=max(0, verbose - 1))
-        model_dark.hydrogens_in_xray = False
-
     scaler = Scaler(
         model_dark, dc["dark"], device=device, verbose=max(-1, verbose - 1),
     )
