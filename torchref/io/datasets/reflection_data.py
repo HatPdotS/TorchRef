@@ -53,7 +53,7 @@ class ReflectionSubset:
     # -- index / mask -----------------------------------------------------
     @property
     def kind(self) -> str:
-        """Which subset this view is: ``work``/``free``/``validation``/``all``.
+        """Which subset this view is (``work``, ``free``, ``validation`` or ``all``).
 
         Public so a caller keying a cache on "which reflections is this" has a
         stable label. Length alone does not distinguish the views, and
@@ -121,7 +121,7 @@ class ReflectionSubset:
 
     # -- intensities, corrected to match F/sigF above -----------------------
     @property
-    def I(self) -> torch.Tensor:  # noqa: E743 - crystallographic name
+    def I(self) -> Optional[torch.Tensor]:  # noqa: E743 - crystallographic name
         """Scaled intensities, or None when this dataset carries no intensities.
 
         Corrected, like :attr:`F` -- both the anisotropy factor and the overall scale
@@ -131,25 +131,25 @@ class ReflectionSubset:
         return I_corr.index_select(0, self.indices) if I_corr is not None else None
 
     @property
-    def sigI(self):
+    def sigI(self) -> Optional[torch.Tensor]:
         """Scaled intensity sigmas, or None. See :attr:`I`."""
         sig_corr = self._parent.I_sigma
         return sig_corr.index_select(0, self.indices) if sig_corr is not None else None
 
     @property
-    def I_raw(self):
+    def I_raw(self) -> Optional[torch.Tensor]:
         """Unscaled intensities, or None."""
         i = self._parent.I_raw
         return i.index_select(0, self.indices) if i is not None else None
 
     @property
-    def sigI_raw(self):
+    def sigI_raw(self) -> Optional[torch.Tensor]:
         """Unscaled intensity sigmas, or None."""
         si = self._parent.I_sigma_raw
         return si.index_select(0, self.indices) if si is not None else None
 
     @property
-    def centric(self):
+    def centric(self) -> Optional[torch.Tensor]:
         """Centric-reflection flags on this subset, or None without HKL."""
         c = self._parent.centric
         return c.index_select(0, self.indices) if c is not None else None
