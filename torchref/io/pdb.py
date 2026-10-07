@@ -732,7 +732,26 @@ def _write_atom_records(handle, df: pd.DataFrame, anisou: bool) -> None:
     With ``anisou``, rows whose ``anisou_flag`` is set also get an ANISOU
     record. A row that cannot be formatted is skipped whole, with a printed
     warning, so one bad value costs one atom rather than the file.
+
+    Raises
+    ------
+    ValueError
+        If a residue is numbered below -999, before any record of ``df`` is
+        written: no PDB file can hold it, so skipping would lose whole residues.
     """
+    low = df["resseq"] < -999
+    if low.any():
+        residues = df.loc[low, ["resname", "chainid", "resseq", "icode"]]
+        residues = residues.drop_duplicates()
+        listed = ", ".join(
+            f"{_text(name)} {_text(chain)} {int(number)}{_text(icode)}"
+            for name, chain, number, icode in residues.head(5).itertuples(index=False)
+        )
+        raise ValueError(
+            f"{len(residues)} residues are numbered below -999, which the PDB resSeq "
+            f"field cannot hold even in hybrid-36, starting with {listed}. Write "
+            "mmCIF instead (cif.write_model, Model.write_cif)."
+        )
     anisou = anisou and "anisou_flag" in df.columns and bool(df["anisou_flag"].any())
     columns = list(_ATOM_COLUMNS)
     if anisou:
@@ -788,6 +807,9 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     ------
     KeyError
         If a required column is missing.
+    ValueError
+        If a residue is numbered below -999, which no PDB file can hold; write
+        mmCIF instead.
 
     Notes
     -----
@@ -844,6 +866,8 @@ def write_multi_model(
     ------
     KeyError
         If a DataFrame lacks a required column.
+    ValueError
+        If a residue is numbered below -999, as in :func:`write`.
     """
     if not dataframes:
         return

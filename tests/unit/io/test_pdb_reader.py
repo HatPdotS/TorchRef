@@ -128,6 +128,14 @@ def test_overflowing_serials_and_residue_numbers_are_written_in_hybrid_36(
 
 
 @pytest.mark.unit
+def test_residue_numbers_below_minus_999_raise_on_write(pdb_dir, tmp_path):
+    table = pdb.load_as_dataframe(str(pdb_dir / "1DAW.pdb"))
+    table["resseq"] = table["resseq"].replace({7: -1001, 8: -1000})
+    with pytest.raises(ValueError, match="SER A -1001, LYS A -1000.*mmCIF"):
+        pdb.write(table, str(tmp_path / "low.pdb"))
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("field", ["3-", "-3"])
 def test_charges_are_read_in_either_sign_order(pdb_dir, tmp_path, field):
     path = _write_edited(
