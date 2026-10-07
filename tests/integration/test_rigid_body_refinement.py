@@ -170,3 +170,26 @@ class TestRebindCost:
         ref.refine_rigid_body(cutoffs=cutoffs, iterations_per_step=2)
 
         assert len(calls) == len(cutoffs)
+
+
+class TestCallerSolvent:
+    @pytest.mark.integration
+    def test_solvent_follows_the_refined_coordinates(self, pdb_dir, mtz_dir):
+        """Afterwards the caller's solvent mask, and the F_sol its R-factor uses, are
+        those of the refined coordinates rather than the starting ones."""
+        ref = _build_refinement(pdb_dir, mtz_dir, "1DAW")
+        chain_id = ref.model.pdb["chainid"].iloc[0]
+        _apply_rigid_perturbation(
+            ref, chain_id, euler_deg=[0.0, 0.5, 0.0], translation_A=[0.5, 0.0, 0.0]
+        )
+        ref.scaler.update_solvent()
+        ref.get_rfactor()  # caches F_sol from the starting mask
+        start_mask = ref.scaler.solvent.solvent_mask.clone()
+
+        ref.refine_rigid_body(iterations_per_step=10)
+        mask, rfactor = ref.scaler.solvent.solvent_mask.clone(), ref.get_rfactor()
+        ref.scaler.update_solvent()
+
+        assert not torch.equal(mask, start_mask)
+        assert torch.equal(ref.scaler.solvent.solvent_mask, mask)
+        assert ref.get_rfactor() == rfactor

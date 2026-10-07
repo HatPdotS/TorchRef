@@ -98,8 +98,8 @@ class LBFGSRefinement(Refinement):
             High-resolution cutoffs (Å), coarse to fine. Defaults to a schedule generated from
             the native data resolution.
         iterations_per_step : int, optional
-            ``max_iter`` per cutoff. The default 30 **under-converges** in practice; raise
-            it for production.
+            ``max_iter`` per cutoff. The default 30 **under-converges** in practice;
+            raise it for production.
         commit : bool, optional
             If True (default), bake the final coordinates into a per-atom xyz container
             on the same model so subsequent refinement uses per-atom xyz. False leaves

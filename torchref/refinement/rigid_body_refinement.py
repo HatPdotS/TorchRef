@@ -25,13 +25,14 @@ class RigidBodyRefinementStep:
     refinement : LBFGSRefinement
         Refinement whose model is refined in place, its ``xyz`` swapped for a
         :class:`~torchref.model.rigid_xyz.RigidXYZTensor` (see ``commit``). Its data,
-        scaler, targets and weights are left as they were.
+        targets, weights and scaler parameters are left as they were; the scaler's
+        solvent mask is rebuilt at the refined coordinates.
     cutoffs : list of float, optional
         High-resolution cutoffs (Å), coarse to fine. ``None`` generates a schedule from the
         native data resolution via :meth:`default_cutoffs`.
     iterations_per_step : int, optional
-        ``max_iter`` per cutoff. The default 30 **under-converges** in practice; raise it
-        for production.
+        ``max_iter`` per cutoff. The default 30 **under-converges** in practice; raise
+        it for production.
     commit : bool, optional
         If True (default), bake the final coordinates into a per-atom xyz container on
         the same model so later refinement sees normal per-atom xyz. False leaves the
@@ -117,9 +118,13 @@ class RigidBodyRefinementStep:
         real = self.refinement
         self.refinement = self._sandbox(real)
         try:
-            return self._run()
+            history = self._run()
         finally:
             self.refinement = real
+        # Each cutoff's scaler got a mask of its own in the sandbox; the caller's mask
+        # still surrounds the coordinates the run started from.
+        real.scaler.update_solvent()
+        return history
 
     def _run(self):
         ref = self.refinement
