@@ -87,7 +87,7 @@ def test_template_h_count_and_implicit_hydrogens(heavy_1daw):
     atoms = heavy_1daw.restraints.topology.atoms
     names = atoms.name.astype(str)
     polymer = heavy_1daw.pdb["ATOM"].astype(str).str.strip().values == "ATOM"
-    resname = heavy_1daw.pdb["resname"].str.strip().values
+    resname = atoms.resname.astype(str)
     counts = atoms.template_h_count.cpu().numpy()
     assert (counts[names == "CB"] >= 1).all()
     assert (counts[(names == "O") & polymer] == 0).all()
