@@ -2,14 +2,14 @@
 
 As a quasi-Newton method LBFGS converges in far fewer macro cycles than first-order
 optimizers; the production default is ``macro_cycles=5``. The refinement composes a
-persistent :class:`~torchref.refinement.loss_state.LossState`, persistent per-group
-LBFGS optimizers (xyz, adp+u+occupancy, joint) created lazily and reused, and scaler
-refinement which runs its own local LossState + LBFGS step between body refinements.
+persistent :class:`~torchref.refinement.loss_state.LossState`, body steps over the
+xyz, adp+u+occupancy and joint parameter groups, and scaler refinement which runs its
+own local LossState + LBFGS step between body refinements.
 
-**Each body step clears its optimizer's LBFGS curvature history first.** The Hessian
-approximation does not transfer across a mode transition (xyz -> adp), and scaler
-updates between body steps move parameters the xray target reads, so retained curvature
-is stale.
+**Each body step builds a fresh LBFGS over its parameter group, so curvature never
+carries across steps.** The Hessian approximation does not transfer across a mode
+transition (xyz -> adp), and scaler updates between body steps move parameters the
+xray target reads, so retained curvature would be stale.
 """
 
 import torch

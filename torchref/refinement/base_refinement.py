@@ -742,9 +742,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         Notes
         -----
-        The coordinate wrapper is replaced, so cached optimizers and the persistent
-        ``LossState`` are dropped and rebuilt on the next step. Call between macro
-        cycles, never inside one.
+        The coordinate wrapper is replaced, so the persistent ``LossState`` is dropped
+        and rebuilt on the next step. Call between macro cycles, never inside one.
         """
         self.model.set_hydrogen_mode(mode)
         self.reset_loss_state()
