@@ -120,7 +120,7 @@ def split_data_blocks(content):
 def read_library_blocks():
     """Return ``mon_lib_list.cif`` split into ``{block_name: block_text}``.
 
-    Shared by :func:`read_link_definitions` and
+    Shared by :func:`read_link_definitions`, :func:`read_component_groups` and
     :func:`~torchref.topology.monomer.modifications.read_mod_definitions`, which read
     disjoint parts of the same 4 MB file.
 
@@ -133,6 +133,28 @@ def read_library_blocks():
     path = str(get_library_manager().get_link_definitions_path())
     with open(path) as handle:
         return split_data_blocks(handle.read())
+
+
+@lru_cache(maxsize=1)
+def read_component_groups():
+    """Return the library's ``{comp_id: group}``, its chemical-component types.
+
+    Read from the ``comp_list`` block of ``mon_lib_list.cif``, which lists every
+    component of the library, so no per-residue dictionary is resolved or fetched.
+    The bundled library's groups are ``'peptide'``, ``'M-peptide'``, ``'P-peptide'``,
+    ``'DNA'``, ``'RNA'``, the sugar groups and ``'NON-POLYMER'``.
+
+    Warnings
+    --------
+    Cached process-wide; the returned dict is shared, so do not mutate it.
+    """
+    import gemmi
+
+    # gemmi rather than CIFReader, whose tokenizer drops an empty quoted name ('')
+    # and so shifts the group column of that row.
+    block = gemmi.cif.read_string(read_library_blocks()["comp_list"]).sole_block()
+    rows = block.find("_chem_comp.", ["id", "group"])
+    return {row.str(0): row.str(1) for row in rows}
 
 
 @lru_cache(maxsize=1)

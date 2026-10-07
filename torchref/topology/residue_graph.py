@@ -218,6 +218,43 @@ def build_residue_nodes(
     }
 
 
+def polymer_type(resname: Sequence[str]) -> np.ndarray:
+    """Polymer type of each residue name, by its chemical-component type.
+
+    The type is the name's group in the monomer library's component list
+    (:func:`~torchref.topology.monomer.cif.read_component_groups`): the peptide groups
+    (``peptide``, ``L-peptide``, ``M-peptide``, ``P-peptide`` and the like) are
+    ``'protein'``, DNA and RNA ``'nucleic_acid'``, and everything else -- ligands,
+    ions, sugars, waters and names the library does not list -- ``''``. Neither the
+    record type nor coordinates nor links enter, so a selenomethionine written as
+    HETATM is protein, and a CA-only trace or a lone residue is classed as any other.
+
+    Parameters
+    ----------
+    resname : sequence of str
+        Residue names, shape ``(n,)``; surrounding blanks are ignored.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``'protein'``, ``'nucleic_acid'`` or ``''`` per name, shape ``(n,)``.
+    """
+    from torchref.topology.monomer.cif import read_component_groups
+
+    groups = read_component_groups()
+    names, inverse = np.unique(
+        np.char.strip(np.asarray(resname, dtype=str)), return_inverse=True
+    )
+    types = np.full(len(names), "", dtype="<U12")
+    for i, name in enumerate(names):
+        group = groups.get(name, "").lower()
+        if "peptide" in group:
+            types[i] = "protein"
+        elif "dna" in group or "rna" in group:
+            types[i] = "nucleic_acid"
+    return types[inverse]
+
+
 def find_peptide_links(
     nodes: Dict[str, np.ndarray],
     c_rows: Sequence[Sequence[int]],
@@ -318,6 +355,7 @@ def find_disulfide_links(
 __all__ = [
     "ResidueGraph",
     "build_residue_nodes",
+    "polymer_type",
     "find_peptide_links",
     "find_disulfide_links",
     "DISULFIDE_MAX_DISTANCE",

@@ -329,7 +329,8 @@ def test_reflection_statistics_cover_the_reflections_refined(mtz_dir):
 
 @pytest.mark.unit
 def test_atom_counts_match_the_deposited_refine_hist(pdb_dir):
-    """1DAW's _refine_hist: 2733 polymer, 285 water, 3051 non-hydrogen atoms.
+    """1DAW's _refine_hist: 2733 protein, 0 nucleic-acid, 285 water and 3051
+    non-hydrogen atoms.
 
     The 33 AMP-PNP and magnesium atoms count only in the total.
     """
@@ -340,11 +341,59 @@ def test_atom_counts_match_the_deposited_refine_hist(pdb_dir):
     meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
 
     assert meta.n_atoms_protein == 2733
+    assert meta.n_atoms_nucleic_acid == 0
     assert meta.n_atoms_solvent == 285
     assert meta.n_atoms_total == 3051
     hist = meta.render_cif_categories()["_refine_hist"]
     assert hist["_refine_hist.pdbx_number_atoms_protein"] == "2733"
+    assert hist["_refine_hist.pdbx_number_atoms_nucleic_acid"] == "0"
     assert "_refine_hist.number_atoms_protein" not in hist
+
+
+@pytest.mark.unit
+def test_hetatm_selenomethionines_count_as_protein(pdb_dir):
+    """3E98's selenomethionines, written as HETATM, are protein: what is left
+    besides protein and water is its deposited 12 ligand (ethylene glycol) atoms."""
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "3E98.pdb"))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.n_atoms_total - meta.n_atoms_protein - meta.n_atoms_solvent == 12
+    assert meta.n_atoms_solvent == 75
+    assert meta.n_atoms_nucleic_acid == 0
+
+
+@pytest.mark.unit
+def test_nucleic_acid_atoms_are_counted_apart_from_protein():
+    """DNA and RNA residues count as nucleic acid in both records, not as protein
+    or ligand; the ethylene glycol counts only in the total."""
+    from torchref.topology import Topology
+
+    atoms = [
+        ("A", 1, "ALA", ["N", "CA", "C", "O", "H"]),
+        ("B", 1, "DA", ["P", "C1'", "N9"]),
+        ("B", 2, "U", ["P", "C1'"]),
+        ("C", 1, "EDO", ["C1", "O1"]),
+        ("C", 2, "HOH", ["O"]),
+    ]
+    table = pd.DataFrame(
+        [(c, r, n, a, a[0]) for c, r, n, names in atoms for a in names],
+        columns=["chainid", "resseq", "resname", "name", "element"],
+    )
+    topology = Topology.from_table(table)
+    model = SimpleNamespace(ctx=SimpleNamespace(topology=topology, initialized=False))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.n_atoms_protein == 4
+    assert meta.n_atoms_nucleic_acid == 5
+    assert meta.n_atoms_solvent == 1
+    assert meta.n_atoms_total == 12
+    hist = meta.render_cif_categories()["_refine_hist"]
+    assert hist["_refine_hist.pdbx_number_atoms_nucleic_acid"] == "5"
+    header = meta.render_pdb_header().splitlines()
+    assert next(line for line in header if "NUCLEIC ACID ATOMS" in line).endswith(": 5")
 
 
 @pytest.mark.unit
