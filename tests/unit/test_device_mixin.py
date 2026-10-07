@@ -206,6 +206,24 @@ def test_nested_module_in_dict_attribute_moves():
 
 
 @pytest.mark.unit
+def test_module_reference_referent_is_not_moved():
+    """``.to()`` moves what a module owns, never a module it holds by reference."""
+    from torchref.utils.utils import ModuleReference
+
+    class _Holder(DeviceMixin, nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.own = nn.Parameter(torch.zeros(2, dtype=torch.float32))
+            self.borrowed = ModuleReference(nn.Linear(2, 2))
+
+    holder = _Holder()
+    holder.to(torch.float64)
+
+    assert holder.own.dtype == torch.float64
+    assert holder.borrowed.weight.dtype == torch.float32
+
+
+@pytest.mark.unit
 def test_tensormasks_traversal_moves_dict_items():
     """``TensorMasks`` stores masks as ``dict`` items, not in ``__dict__``.
 

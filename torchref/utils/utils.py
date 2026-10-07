@@ -25,10 +25,11 @@ class ModuleReference:
     Hold a reference to an ``nn.Module`` without registering it as a submodule.
 
     Assigning an ``nn.Module`` to an attribute of another registers it, adding its
-    parameters to the parent's tree; wrapping it here does not. Attribute access and
-    ``__call__`` are forwarded, so a wrapped module is mostly a drop-in -- but it is
+    parameters to the parent's tree; wrapping it here does not. Public attribute access
+    and ``__call__`` are forwarded, so a wrapped module is mostly a drop-in -- but it is
     absent from ``state_dict`` and from ``.to()``, so the referent must be moved by
-    whoever owns it.
+    whoever owns it. ``copy.copy`` shares the referent; ``copy.deepcopy`` and pickle
+    copy it, through the memo, so a deep copy of a whole object graph stays consistent.
 
     Attributes
     ----------
@@ -47,8 +48,15 @@ class ModuleReference:
         return object.__getattribute__(self, "_wrapped_module")
 
     def __getattr__(self, name):
-        """Forward attribute access to the wrapped module."""
-        return getattr(self.module, name)
+        """Forward public attribute access to the wrapped module."""
+        # Underscore names stop here: DeviceMixin probes ``_apply``/``_data`` to decide
+        # what to move, and copy/pickle probe ``__setstate__`` on an instance whose
+        # ``_wrapped_module`` is not set yet, where ``self.module`` would recurse.
+        if name.startswith("_"):
+            raise AttributeError(
+                f"ModuleReference does not forward {name!r}; read it from .module"
+            )
+        return getattr(self.__dict__.get("_wrapped_module"), name)
 
     def __call__(self, *args, **kwargs):
         """Forward calls to the wrapped module."""
