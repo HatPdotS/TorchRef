@@ -160,11 +160,14 @@ def test_production_builder_keeps_its_contacts_under_a_lattice_shift(model_1daw)
     restraints = model_1daw.restraints
     cell, sg = model_1daw.cell, model_1daw.spacegroup
     xyz = model_1daw.xyz().detach()
+    radii = torch.as_tensor(
+        restraints.topology.atoms.vdw_radii, dtype=get_float_dtype()
+    )
 
     def image_distances(coords):
         vdw = nb.build_vdw_restraints_gpu(
             xyz=coords,
-            vdw_radii=restraints._vdw_radii,
+            vdw_radii=radii,
             cell=cell,
             sg=sg,
             topology=restraints.topology,
@@ -400,6 +403,26 @@ def test_hydrogen_bonds_are_held_to_the_hydrogen_bond_distance(model_1daw):
     )
     overlap = (minimum - (pos_j - pos_i).norm(dim=1)).clamp(min=0)
     assert float(overlap[amide_h].max()) < 0.2
+
+
+def test_contacts_take_the_connected_topology_contact_distances(model_1daw):
+    """Heavy pairs and riding candidates are held to the contact distances of the
+    connected topology, its ener_lib radii and hydrogen-bond roles. The topology the
+    restraints are constructed from carries no energy types, so its radii are the
+    element radii."""
+    from torchref.topology.riding import candidate_contact_distances
+
+    restraints = model_1daw.restraints
+    atoms = restraints.topology.atoms
+    radii = torch.as_tensor(atoms.vdw_radii, dtype=get_float_dtype())
+    vdw = restraints.restraints["vdw"]
+    torch.testing.assert_close(
+        vdw["min_distances"], nb.contact_distances(radii, atoms.hb_type, vdw["indices"])
+    )
+    h_topo = restraints.h_topo
+    torch.testing.assert_close(
+        h_topo.cand_min_dist, candidate_contact_distances(h_topo, radii, atoms.hb_type)
+    )
 
 
 @pytest.mark.gpu

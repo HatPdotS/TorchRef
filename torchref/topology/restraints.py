@@ -132,9 +132,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             raise ValueError("Restraints over a topology need the coordinates, xyz=")
 
         self._nodes = topology
-        self._vdw_radii = torch.tensor(
-            topology.atoms.vdw_radii, dtype=get_float_dtype()
-        )
         self.unique_residues = self._multi_atom_resnames(topology)
 
         # Parse CIF files
@@ -428,7 +425,9 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         cpu = torch.device("cpu")
         target_device = xyz.device
         xyz_cpu = xyz.detach().to(cpu)
-        radii_cpu = self._vdw_radii.to(cpu)
+        radii_cpu = torch.as_tensor(
+            self.topology.atoms.vdw_radii, dtype=get_float_dtype()
+        )
 
         from torchref.symmetry import SpaceGroup
         from torchref.symmetry.cell import Cell
@@ -478,6 +477,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             HydrogenTopology,
             build_h_candidate_pairs,
             build_hydrogen_topology,
+            candidate_contact_distances,
         )
 
         if bool(self.topology.atoms.is_hydrogen.any()):
@@ -502,14 +502,9 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                 device=cpu,
                 verbose=self.verbose,
             )
-            # Fill in VDW min distances using combined radii array
             if self._h_topo.has_candidates:
-                heavy_radii = radii_cpu                       # (N_heavy,)
-                h_radii = self._h_topo.h_vdw_radius           # (N_h,) on CPU
-                all_radii = torch.cat([heavy_radii, h_radii])
-                self._h_topo.cand_min_dist = (
-                    all_radii[self._h_topo.cand_idx_i]
-                    + all_radii[self._h_topo.cand_idx_j]
+                self._h_topo.cand_min_dist = candidate_contact_distances(
+                    self._h_topo, radii_cpu, self.topology.atoms.hb_type
                 )
 
         # Snapshot at build time so maintenance() can diff current positions
