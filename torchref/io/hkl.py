@@ -21,9 +21,9 @@ Usage mirrors :class:`torchref.io.mtz.MTZReader`::
     data_dict, cell, spacegroup = reader()
 
 The returned ``data_dict`` conforms to the intensity-path contract of
-:meth:`ReflectionData.load` — ``{"HKL": (N,3) int, "I": (N,) float,
-"SIGI": (N,) float, "I_col": "I (CrystFEL)"}`` — so French-Wilson kicks
-in automatically and amplitudes are derived downstream.
+:meth:`~torchref.io.datasets.reflection_data.ReflectionData.load` —
+``{"HKL": (N,3) int, "I": (N,) float, "SIGI": (N,) float, "I_col": "I (CrystFEL)"}``
+— so French-Wilson kicks in automatically and amplitudes are derived downstream.
 """
 
 from typing import Any, Optional, Tuple, Union

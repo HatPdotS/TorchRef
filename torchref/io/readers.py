@@ -74,7 +74,7 @@ def _detect_cif_type(filepath: str) -> str:
 
 def read_mtz(filepath: Union[str, Path], verbose: int = 1, **load_kwargs):
     """
-    Load an MTZ reflection file into a :class:`ReflectionData`.
+    Load an MTZ file as a :class:`~torchref.io.datasets.reflection_data.ReflectionData`.
 
     Parameters
     ----------
@@ -83,7 +83,7 @@ def read_mtz(filepath: Union[str, Path], verbose: int = 1, **load_kwargs):
     verbose : int, optional
         Verbosity level. Default is 1.
     **load_kwargs
-        Forwarded to :meth:`ReflectionData.load_mtz`.
+        Passed to :meth:`~torchref.io.datasets.reflection_data.ReflectionData.load_mtz`.
 
     Returns
     -------
@@ -105,8 +105,8 @@ def read_pdb(filepath: Union[str, Path], model_class=None, **model_kwargs):
     filepath : str or Path
         Path to the PDB file.
     model_class : type, optional
-        Model class to construct. Defaults to :class:`ModelFT`. Pass
-        :class:`Model` for the plain base model.
+        Model class to construct, by default :class:`~torchref.model.model_ft.ModelFT`;
+        pass :class:`~torchref.model.model.Model` for the plain base model.
     **model_kwargs
         Forwarded to the model constructor (e.g. ``max_res``).
 
@@ -127,17 +127,19 @@ def read_cif(filepath: Union[str, Path], model_class=None, verbose: int = 1, **k
 
     The CIF is probed to decide what it contains:
 
-    - reflection data (``_refln``)        -> :class:`ReflectionData`
-    - IHM ensemble (``_ihm_model_list``)  -> ``(ModelCollection, IHMEnsembleMapping)``
-    - atomic model (``_atom_site``)       -> ``model_class`` (default :class:`ModelFT`)
-    - restraint dictionary (``_chem_comp``) -> :class:`RestraintCIFReader`
+    - reflection data (``_refln``) ->
+      :class:`~torchref.io.datasets.reflection_data.ReflectionData`
+    - IHM ensemble (``_ihm_model_list``) -> ``(ModelCollection, IHMEnsembleMapping)``
+    - atomic model (``_atom_site``) -> ``model_class``
+    - restraint dictionary (``_chem_comp``) ->
+      :class:`~torchref.io.cif_readers.RestraintCIFReader`
 
     Parameters
     ----------
     filepath : str or Path
         Path to the CIF/mmCIF file.
     model_class : type, optional
-        Model class for the structure branch. Defaults to :class:`ModelFT`.
+        Class of the atomic model; default :class:`~torchref.model.model_ft.ModelFT`.
     verbose : int, optional
         Verbosity level. Default is 1.
     **kwargs

@@ -942,7 +942,7 @@ def write_reflections(
     anomalous: Optional[bool] = None,
     verbose: int = 0,
 ) -> None:
-    """Write a :class:`ReflectionData` (and optional model) to an MTZ file.
+    """Write a :class:`~torchref.io.datasets.reflection_data.ReflectionData` to MTZ.
 
     Labels on disk are the :func:`reflection_table` column names: F-obs,
     SIGF-obs, I-obs, SIGI-obs, R-free-flags (1 = work, 0 = free, -1 = excluded

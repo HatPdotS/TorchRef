@@ -258,7 +258,7 @@ def flag_column(ds: rs.DataSet, column: Optional[str] = None) -> Optional[str]:
     ds : rs.DataSet
         Reflections to search.
     column : str, optional
-        Column to look for. By default the first of :data:`FLAG_COLUMN_NAMES`
+        Column to look for. By default the first of ``FLAG_COLUMN_NAMES``
         present in ``ds``.
 
     Returns
@@ -516,8 +516,7 @@ def hkl_keys(hkl: np.ndarray) -> np.ndarray:
     Returns
     -------
     np.ndarray
-        int64 keys, shape (N,), ordered like ``hkl`` and decoded by
-        :func:`_unkey`.
+        int64 keys, shape (N,), ordered like ``hkl`` and decoded by ``_unkey``.
 
     Raises
     ------
