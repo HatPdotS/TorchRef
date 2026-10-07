@@ -275,12 +275,14 @@ class IHMReader:
         Parameters
         ----------
         mapping : IHMEnsembleMapping
-            Mapping whose states carry the ``model_num`` to select on.
+            Mapping whose states carry the ``model_num`` to select on. Updated
+            in place: the result is stored as its ``atom_data_per_state``,
+            where :meth:`build_model_collection` reads it.
 
         Returns
         -------
         dict of int -> pandas.DataFrame
-            ``state_id`` -> atom DataFrame.
+            ``state_id`` -> atom DataFrame, the dict stored on ``mapping``.
         """
         from torchref.io.cif_readers import ModelCIFReader
 
@@ -299,6 +301,7 @@ class IHMReader:
         # Validate atom consistency across states
         self._validate_atom_consistency(result, mapping)
 
+        mapping.atom_data_per_state = result
         return result
 
     def _validate_atom_consistency(
@@ -441,7 +444,7 @@ class IHMReader:
         tuple of (ModelCollection, IHMEnsembleMapping)
         """
         mapping = self.read_mapping()
-        mapping.atom_data_per_state = self.read_atom_data(mapping)
+        self.read_atom_data(mapping)
         model_collection = self.build_model_collection(
             mapping,
             max_res=max_res,

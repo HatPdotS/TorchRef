@@ -343,6 +343,21 @@ class TestIHMReader:
         # Should have base models matching number of states
         assert mc.n_base_models == len(mapping.states)
 
+    def test_stages_driven_by_hand(self):
+        """read_atom_data leaves the atoms on the mapping for the next stage."""
+        import torch
+
+        from torchref.io.ihm import IHMReader
+
+        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        mapping = reader.read_mapping()
+        atoms = reader.read_atom_data(mapping)
+        assert mapping.atom_data_per_state is atoms
+        mc = reader.build_model_collection(
+            mapping, max_res=3.0, device=torch.device("cpu")
+        )
+        assert mc.n_base_models == len(mapping.states)
+
     def test_call_convenience(self):
         """Test the __call__ convenience method."""
         import torch
