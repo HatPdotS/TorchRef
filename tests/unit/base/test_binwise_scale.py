@@ -65,6 +65,16 @@ def test_valid_mask_excludes_from_fit():
     assert torch.isclose(c[0], torch.tensor(2.0), atol=1e-5)
 
 
+def test_excluded_rows_may_be_non_finite():
+    """A NaN in a row the mask excludes leaves its bin's scale finite."""
+    Fc = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    Fo = torch.tensor([2.0, float("nan"), 6.0, 8.0])
+    bins = torch.tensor([0, 0, 1, 1])
+    valid = torch.tensor([True, False, True, True])
+    c = binwise_scale(Fc, Fo, bins, valid=valid, nbins=2)
+    torch.testing.assert_close(c, torch.tensor([2.0, 2.0]))
+
+
 def test_complex_input():
     Fc = torch.tensor([3.0 + 4.0j, 6.0 + 8.0j])  # |Fc| = 5, 10
     Fo = torch.tensor([10.0, 20.0])
