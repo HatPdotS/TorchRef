@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Optional
 import torch
 import torch.nn as nn
 
-from torchref.base.math_torch import U_to_matrix
+from torchref.base.targets.adp import U_to_matrix
 from torchref.scaling.basis import chebyshev_design
 from torchref.base.metrics import (
     binwise_scale,

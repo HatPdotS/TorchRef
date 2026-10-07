@@ -324,10 +324,10 @@ class Cell(_NonModuleDeviceMixin):
     # =========================================================================
 
     def _compute_fractional_matrix(self) -> torch.Tensor:
-        """Fractional-to-Cartesian matrix, via ``math_torch.get_fractional_matrix``."""
-        from torchref.base import math_torch
+        """Fractional-to-Cartesian matrix, via ``coordinates.get_fractional_matrix``."""
+        from torchref.base.coordinates import get_fractional_matrix
 
-        return math_torch.get_fractional_matrix(self._data)
+        return get_fractional_matrix(self._data)
 
     def _compute_volume(self) -> torch.Tensor:
         """V = det(B); B is upper triangular, so that is its diagonal product."""

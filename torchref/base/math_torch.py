@@ -1,33 +1,17 @@
-"""
-PyTorch implementations of mathematical functions for crystallography.
+"""Deprecated flat namespace over a subset of the ``torchref.base`` domain modules.
 
 .. deprecated:: 0.6.0
-    This module is deprecated. Please import from domain-specific submodules:
+    Importing this module warns ``DeprecationWarning``. Import each name from the
+    module that defines it: :mod:`torchref.base.coordinates`,
+    :mod:`torchref.base.reciprocal`, :mod:`torchref.base.direct_summation`,
+    :mod:`torchref.base.electron_density`, :mod:`torchref.base.fourier`,
+    :mod:`torchref.base.metrics`, or :mod:`torchref.base.targets.adp` for
+    ``U_to_matrix``.
 
-    - ``torchref.base.coordinates`` - Coordinate transformations
-    - ``torchref.base.reciprocal`` - Reciprocal space calculations
-    - ``torchref.base.direct_summation`` - Structure factor calculations
-    - ``torchref.base.electron_density`` - Electron density map building
-    - ``torchref.base.fourier`` - FFT operations
-    - ``torchref.base.scattering`` - Atomic scattering factors
-    - ``torchref.base.alignment`` - Coordinate alignment
-    - ``torchref.base.metrics`` - R-factors and loss functions
-    - ``torchref.base.kernels`` - Optimized kernels
-
-This module is maintained for backward compatibility and re-exports all
-functions from the new submodules.
-
-Example (new style - recommended)::
-
-    from torchref.base.coordinates import cartesian_to_fractional_torch
-    from torchref.base.metrics import get_rfactors
-
-Example (old style - still works)::
-
-    from torchref.base.math_torch import cartesian_to_fractional_torch
+Only the names in ``__all__`` are re-exported, and nothing is defined here.
 """
 
-import torch
+import warnings
 
 # =============================================================================
 # Re-exports from coordinates submodule
@@ -102,39 +86,17 @@ from torchref.base.metrics import (
 )
 
 # =============================================================================
-# Utility functions (kept here as they don't fit a specific domain)
+# Re-exports from targets submodule
 # =============================================================================
+from torchref.base.targets.adp import U_to_matrix
 
-
-def U_to_matrix(U: torch.Tensor) -> torch.Tensor:
-    """
-    Convert anisotropic displacement parameters from 6-component vector to 3x3 matrix.
-
-    Parameters
-    ----------
-    U : torch.Tensor
-        Anisotropic displacement parameters in the order
-        [u11, u22, u33, u12, u13, u23] of shape (..., 6).
-
-    Returns
-    -------
-    torch.Tensor
-        Anisotropic displacement parameter matrices of shape (..., 3, 3).
-    """
-    u11 = U[..., 0]
-    u22 = U[..., 1]
-    u33 = U[..., 2]
-    u12 = U[..., 3]
-    u13 = U[..., 4]
-    u23 = U[..., 5]
-
-    # Build rows and stack to preserve gradient flow
-    row0 = torch.stack([u11, u12, u13], dim=-1)
-    row1 = torch.stack([u12, u22, u23], dim=-1)
-    row2 = torch.stack([u13, u23, u33], dim=-1)
-
-    return torch.stack([row0, row1, row2], dim=-2)
-
+warnings.warn(
+    "torchref.base.math_torch is deprecated: import from the torchref.base domain "
+    "modules (coordinates, reciprocal, direct_summation, electron_density, fourier, "
+    "metrics, targets.adp) instead",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 # =============================================================================
 # __all__ - Public API
@@ -182,6 +144,6 @@ __all__ = [
     "nll_xray_mean",
     "nll_xray_lognormal",
     "estimate_sigma_F",
-    # Utility functions
+    # ADPs
     "U_to_matrix",
 ]

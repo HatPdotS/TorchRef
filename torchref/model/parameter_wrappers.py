@@ -14,6 +14,7 @@ from typing import Iterable, List, Mapping, Optional, Union
 import torch
 from torch import nn
 
+from torchref.base.targets.adp import U_to_matrix
 from torchref.config import get_float_dtype, get_int_dtype, normalize_device
 from torchref.utils.caching import CachedForwardMixin
 from torchref.utils.device_mixin import DeviceMixin
@@ -820,15 +821,11 @@ class PositiveMixedTensor(MixedTensor):
 
 
 def u6_to_matrix(U: torch.Tensor) -> torch.Tensor:
-    """``(..., 6)`` U components to a symmetric ``(..., 3, 3)`` matrix."""
-    M = U.new_zeros(*U.shape[:-1], 3, 3)
-    M[..., 0, 0] = U[..., 0]
-    M[..., 1, 1] = U[..., 1]
-    M[..., 2, 2] = U[..., 2]
-    M[..., 0, 1] = M[..., 1, 0] = U[..., 3]
-    M[..., 0, 2] = M[..., 2, 0] = U[..., 4]
-    M[..., 1, 2] = M[..., 2, 1] = U[..., 5]
-    return M
+    """``(..., 6)`` U components to a symmetric ``(..., 3, 3)`` matrix.
+
+    Delegates to :func:`torchref.base.targets.adp.U_to_matrix`, the one conversion.
+    """
+    return U_to_matrix(U)
 
 
 def raw6_to_u6(raw: torch.Tensor, epsilon: float) -> torch.Tensor:

@@ -10,6 +10,17 @@ import torch
 import numpy as np
 
 
+@pytest.mark.unit
+def test_importing_math_torch_warns():
+    """The flat namespace is deprecated, and importing it says so."""
+    import importlib
+
+    import torchref.base.math_torch as math_torch
+
+    with pytest.warns(DeprecationWarning, match="math_torch is deprecated"):
+        importlib.reload(math_torch)
+
+
 class TestCoordinateTransformations:
     """Tests for coordinate transformation functions."""
 

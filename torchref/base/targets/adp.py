@@ -81,6 +81,35 @@ def u6_deviatoric(u6: torch.Tensor) -> torch.Tensor:
     return d
 
 
+def U_to_matrix(U: torch.Tensor) -> torch.Tensor:
+    """Symmetric 3x3 matrix from a U6 vector; the package's one U6-to-3x3 conversion.
+
+    Parameters
+    ----------
+    U : torch.Tensor
+        Displacement parameters of shape (..., 6) in Å², ordered
+        ``[U11, U22, U33, U12, U13, U23]``. NaN rows pass through.
+
+    Returns
+    -------
+    torch.Tensor
+        Symmetric matrices of shape (..., 3, 3) in Å², differentiable in ``U``.
+    """
+    u11 = U[..., 0]
+    u22 = U[..., 1]
+    u33 = U[..., 2]
+    u12 = U[..., 3]
+    u13 = U[..., 4]
+    u23 = U[..., 5]
+
+    # Build rows and stack to preserve gradient flow
+    row0 = torch.stack([u11, u12, u13], dim=-1)
+    row1 = torch.stack([u12, u22, u23], dim=-1)
+    row2 = torch.stack([u13, u23, u33], dim=-1)
+
+    return torch.stack([row0, row1, row2], dim=-2)
+
+
 def adp_simu_aniso_math(
     u6: torch.Tensor,
     pair_indices: torch.Tensor,
@@ -245,13 +274,7 @@ def adp_rigid_bond_aniso_math(
     handled natively. Gradient flows to both the U tensors and the coordinates
     (the Hirshfeld test couples ADP and geometry).
     """
-    M = u6.new_zeros(u6.shape[0], 3, 3)
-    M[:, 0, 0] = u6[:, 0]
-    M[:, 1, 1] = u6[:, 1]
-    M[:, 2, 2] = u6[:, 2]
-    M[:, 0, 1] = M[:, 1, 0] = u6[:, 3]
-    M[:, 0, 2] = M[:, 2, 0] = u6[:, 4]
-    M[:, 1, 2] = M[:, 2, 1] = u6[:, 5]
+    M = U_to_matrix(u6)
     r = xyz[pair_indices[:, 1]] - xyz[pair_indices[:, 0]]
     l = r / torch.sqrt((r * r).sum(-1, keepdim=True) + 1e-8)
     z1 = torch.einsum("bi,bij,bj->b", l, M[pair_indices[:, 0]], l)

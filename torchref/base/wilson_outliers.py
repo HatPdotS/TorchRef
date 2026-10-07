@@ -45,8 +45,8 @@ import numpy as np
 import torch
 
 from torchref.base.french_wilson import french_wilson_h
-from torchref.base.math_torch import U_to_matrix
 from torchref.base.reciprocal.basis import get_scattering_vectors
+from torchref.base.targets.adp import U_to_matrix
 
 #: median of Exp(1) is ln 2, so ``Sigma = median(I) / ln 2`` for acentrics.
 _ACENTRIC_MEDIAN = math.log(2.0)
@@ -428,7 +428,7 @@ def fit_anisotropic_scale(
     -------
     torch.Tensor
         ``U`` of shape ``(6,)`` in the ``[u11, u22, u33, u12, u13, u23]`` order
-        :func:`~torchref.base.math_torch.U_to_matrix` expects. All zeros when
+        :func:`~torchref.base.targets.adp.U_to_matrix` expects. All zeros when
         there is too little data to fit.
     """
     zero = torch.zeros(6, dtype=I.dtype, device=I.device)

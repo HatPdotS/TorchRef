@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torchref.base import math_torch
+from torchref.base.coordinates import cartesian_to_fractional_torch
 from torchref.config import (
     canonical_device,
     get_default_device,
@@ -2129,7 +2129,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # Get Cartesian coordinates
         cartesian_coords = self.xyz()
 
-        fractional_coords = math_torch.cartesian_to_fractional_torch(
+        fractional_coords = cartesian_to_fractional_torch(
             cartesian_coords, self.cell.data, self.inv_fractional_matrix
         )
 
