@@ -46,6 +46,21 @@ def test_free_value_is_the_minority_among_valid_rows(mtz_dir, tmp_path):
 
 
 @pytest.mark.unit
+def test_free_column_without_a_valid_flag_is_dropped_with_a_warning(mtz_dir, tmp_path):
+    """The dropped column is named in a warning, and load draws a new free set."""
+
+    def edit(ds):
+        flags = np.full(len(ds), -1)
+        ds["FreeR_flag"] = rs.DataSeries(flags, index=ds.index).astype("I")
+        return ds
+
+    with pytest.warns(UserWarning, match="'FreeR_flag'"):
+        data = _load(_rewrite(mtz_dir, tmp_path, edit))
+    assert data.rfree_source.startswith("Generated")
+    assert bool(data.masks["flagged_initial"].all())
+
+
+@pytest.mark.unit
 def test_amplitude_pin_loads_amplitudes_beside_intensities(mtz_dir):
     """Pinning F turns off the intensity search, so French-Wilson does not run."""
     data = _load(str(mtz_dir / "1DAW.mtz"), {"F": "FP", "SIGF": "SIGFP"})

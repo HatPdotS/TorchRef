@@ -457,7 +457,8 @@ class MTZReader:
         """Extract R-free flags from the first integer ``RFREE_FLAG_NAMES`` column.
 
         The column is interpreted by :func:`~torchref.io.rfree.read_free_set`,
-        the rule SF-mmCIF flags are read with too.
+        the rule SF-mmCIF flags are read with too; a column it rejects, such as
+        one with no valid flag, is skipped with a warning naming it.
         """
         # rfree imports this module for its flag names.
         from torchref.io.rfree import read_free_set
@@ -485,10 +486,9 @@ class MTZReader:
                         return
 
                     except Exception as e:
-                        if self.verbose > 0:
-                            print(
-                                f"Warning: Could not load R-free flags from {col}: {e}"
-                            )
+                        warnings.warn(
+                            f"Ignoring MTZ column {col!r} as R-free flags: {e}"
+                        )
 
     def _extract_validation_flags(self) -> None:
         """Extract the optional third-class validation flags (1 = validation).
