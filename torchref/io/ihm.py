@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import gemmi
-import numpy as np
 import pandas as pd
 
 from torchref.io.ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMStateInfo
@@ -27,7 +26,6 @@ if TYPE_CHECKING:
 
     from torchref.io.datasets.reflection_data import ReflectionData
     from torchref.model.model_collection import ModelCollection
-    from torchref.model.model_ft import ModelFT
 
 
 def _check_ihm_available():
@@ -355,8 +353,6 @@ class IHMReader:
         -------
         ModelCollection
         """
-        import torch
-
         from torchref.model.model_collection import ModelCollection
         from torchref.model.model_ft import ModelFT
 
@@ -547,19 +543,9 @@ class IHMWriter:
         if mc.n_base_models > 0:
             model0 = mc.base_models[0]
             if hasattr(model0, "cell") and model0.cell is not None:
-                cell_obj = model0.cell
-                if hasattr(cell_obj, "parameters"):
-                    cell = cell_obj.parameters.tolist()
-                elif hasattr(cell_obj, "tolist"):
-                    cell = cell_obj.tolist()
+                cell = model0.cell.tolist()
             if hasattr(model0, "spacegroup") and model0.spacegroup is not None:
-                sg = model0.spacegroup
-                if hasattr(sg, "hm"):
-                    spacegroup = sg.hm
-                elif hasattr(sg, "xhm"):
-                    spacegroup = sg.xhm()
-                else:
-                    spacegroup = str(sg)
+                spacegroup = model0.spacegroup.hm
 
         return IHMEnsembleMapping(
             states=states,
