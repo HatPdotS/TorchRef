@@ -12,7 +12,11 @@ import pytest
 import torch
 
 from torchref.base.targets import xray_ml_full as F
-from torchref.base.targets.xray_likelihoods import rice_marginal_math, rice_per_refl
+from torchref.base.targets.xray_likelihoods import (
+    rice_marginal_math,
+    rice_marginal_per_refl,
+    rice_per_refl,
+)
 
 DT = torch.float64
 
@@ -309,6 +313,22 @@ def test_log_i0_fast_accuracy_budget():
     ])
     err = (F.log_i0(z) - F.log_i0_exact(z)).abs().max().item()
     assert err < 2e-6, f"log_i0 polynomial error {err:.3e}"
+
+
+def test_float64_defaults_to_the_exact_log_bessel():
+    """Without ``li0``, float64 inputs take ``log_i0_exact``: the polynomial's error is
+    above the float64 quadrature error, so it must not leak into the reference path."""
+    F_obs, sig, Fc, Sigma = _grid(
+        [1e-3, 1e-2, 0.1, 0.3, 1.0, 3.0, 10.0, 100.0],
+        [0.0, 0.1, 1.0, 5.0, 20.0, 50.0],
+        [0.0, 0.5, 2.0, 10.0, 200.0],
+    )
+    cen = torch.zeros_like(F_obs, dtype=torch.bool)
+    exact = F.ml_full_nll_per_refl(F_obs, sig, Fc, Sigma, cen, li0=F.log_i0_exact)
+    by_default = F.ml_full_nll_per_refl(F_obs, sig, Fc, Sigma, cen)
+    torch.testing.assert_close(by_default, exact, atol=1e-12, rtol=0.0)
+    via_likelihoods = rice_marginal_per_refl(F_obs, Fc, Sigma, sig, cen)
+    torch.testing.assert_close(via_likelihoods, exact, atol=1e-12, rtol=0.0)
 
 
 def test_float32_runs_and_tracks_float64():

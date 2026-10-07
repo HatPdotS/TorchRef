@@ -112,8 +112,8 @@ def log_i0(z: torch.Tensor) -> torch.Tensor:
     Replaces ``i0e`` + ``log``, which at 25x ``exp`` per element would dominate
     this kernel (~2x measured per forward). Accuracy is max ``|dlog I0|`` = 4.7e-7
     against :func:`log_i0_exact` over ``z`` in [0, 1e4] -- under the target's
-    float32 floor, but *above* the float64 quadrature error, so the float64 /
-    EAGER reference path must use :func:`log_i0_exact` instead.
+    float32 floor, but *above* the float64 quadrature error, which is why
+    :func:`acentric_nll` takes :func:`log_i0_exact` for float64 inputs.
 
     Both branches run everywhere and are selected with ``where``, each input first
     clamped into its own valid domain so the unused branch cannot emit a NaN that
@@ -199,7 +199,7 @@ def _laplace_centre_acentric(F_obs, sigma, Fc, Sigma):
 # =====================================================================
 
 
-def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=log_i0):
+def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=None):
     """Per-reflection acentric NLL by Gauss-Legendre + log-sum-exp.
 
     The window is **detached**: it need only *cover* the mass, and not
@@ -210,6 +210,9 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=log_i0)
     reflections. The integrand is a product of two log-concave densities, hence
     log-concave and unimodal, so one window suffices and there is no second mode.
 
+    ``li0`` is the ``log I0`` implementation; ``None`` takes :func:`log_i0_exact` for
+    float64 inputs and the fast :func:`log_i0` otherwise.
+
     Routes through a ``torch.compile(dynamic=True)`` build when
     ``torchref.compile_targets`` is on (the default) and the standard configuration
     is in use -- eager costs ~20 array passes per node, so fusing is worth an order
@@ -217,6 +220,9 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=log_i0)
     """
     n_quad = N_QUAD if n_quad is None else n_quad
     n_sigma = N_SIGMA if n_sigma is None else n_sigma
+    if li0 is None:
+        # dtype-ok: selects the reference log-Bessel for float64, not an allocation
+        li0 = log_i0_exact if F_obs.dtype is torch.float64 else log_i0
 
     if (
         li0 is log_i0
@@ -383,7 +389,7 @@ def ml_full_nll_per_refl(
     alpha=None,
     n_quad=None,
     n_sigma=None,
-    li0=log_i0,
+    li0=None,
     idx=None,
 ):
     """Per-reflection full-form NLL (NOT masked/summed).
@@ -400,7 +406,8 @@ def ml_full_nll_per_refl(
     never evaluated cannot poison anything.
 
     Pass ``idx=(idx_acentric, idx_centric)`` from :func:`parity_indices` to avoid a
-    per-call ``nonzero`` (and the device sync it implies).
+    per-call ``nonzero`` (and the device sync it implies). ``li0`` is passed to
+    :func:`acentric_nll`, which resolves ``None`` by dtype.
     """
     F_obs = F_obs.reshape(-1)
     Fc = torch.abs(F_calc).reshape(-1)

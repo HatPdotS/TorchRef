@@ -330,7 +330,7 @@ def rice_marginal_per_refl(
     li0=None,
 ) -> torch.Tensor:
     """Per-reflection full-form MLF (NOT masked or summed). See :func:`rice_marginal_math`."""
-    from .xray_ml_full import log_i0, ml_full_nll_per_refl
+    from .xray_ml_full import ml_full_nll_per_refl
 
     # `beta=Sigma, epsilon=None` because Sigma is ALREADY epsilon*beta_model: the callee
     # would otherwise multiply epsilon in a second time. `alpha=None` for the same reason
@@ -345,7 +345,7 @@ def rice_marginal_per_refl(
         alpha=None,
         n_quad=n_quad,
         n_sigma=n_sigma,
-        li0=log_i0 if li0 is None else li0,
+        li0=li0,
         idx=idx,
     )
 
@@ -375,9 +375,9 @@ def rice_marginal_math(
     measurement variance counts it twice.
 
     Pass ``idx`` from :func:`~torchref.base.targets.xray_ml_full.parity_indices` to avoid a
-    device sync per call. ``li0`` overrides the log-Bessel implementation (default: the fast
-    piecewise one) -- tests pass ``log_i0_exact`` to separate the quadrature's own error from
-    the Bessel approximation's. The quadrature internals live in
+    device sync per call. ``li0`` overrides the log-Bessel implementation (default: the
+    exact one for float64 inputs, the fast piecewise one otherwise). The quadrature
+    internals live in
     :mod:`torchref.base.targets.xray_ml_full`; this is their single public entry point.
     """
     return _masked_sum(
