@@ -65,9 +65,6 @@ DEFAULT_GROUP_WEIGHTS = {
     "adp/node_smoothness": 0.0,
 }
 
-#: Weight overrides a node-field ADP representation needs, applied by
-#: :meth:`BaseRefinement.set_adp_representation`.
-#:
 #: Work reflections per ADP parameter that :meth:`Refinement.set_adp_representation`
 #: targets when sizing a field. PDB-REDO holds ~7 across its whole resolution range and
 #: switches model form to stay there; measured on 179 of their entries, 7 is also where
@@ -179,8 +176,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             B-factor, ``"anisotropic"`` a 6-component U tensor for the atoms
             selected by ``aniso_selection`` (see
             :meth:`Model.set_adp_mode <torchref.model.model.Model.set_adp_mode>`).
-            ``"field"`` / ``"field_aniso"`` replace it with a node field, sized and
-            reweighted by :meth:`set_adp_representation`; ``"preserve"`` leaves the
+            ``"field"`` / ``"field_aniso"`` replace it with a node field, sized for this
+            data set by :meth:`set_adp_representation`; ``"preserve"`` leaves the
             file's own ADPs untouched.
         adp_mode_set : str, optional
             Displacement-mode set for ``adp_mode="field_aniso"`` --- ``"rigid"`` is TLS,
@@ -368,8 +365,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             # Set the ADP parametrization before scaling/restraints/targets so all
             # structure-factor evaluation sees the chosen representation. Routed through
             # set_adp_representation rather than straight to the model: a field mode has
-            # to be sized from the reflection count and reweighted, and the model can do
-            # neither. Targets do not exist yet, so it will not try to rebuild them.
+            # to be sized from the reflection count, which the model does not know.
+            # Targets do not exist yet, so it will not try to rebuild them.
             self.set_adp_representation(
                 self.adp_mode,
                 mode_set=self.adp_mode_set,
@@ -529,15 +526,21 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     ) -> int:
         """Node count giving ``reflections_per_parameter`` work reflections per ADP parameter.
 
-        The reason this lives on the refinement and not on
-        :class:`~torchref.model.model.Model`: the model has no idea how much data there
-        is, and node count is set by the data rather than by the structure. Measured on
-        179 PDB-REDO entries, node count correlates with reflection count far more
-        strongly than with atom count, and the model's own default (one node per 25
-        atoms) is unrelated to either.
+        Node count follows the work-set reflection count (what the refinement fits, and
+        what PDB-REDO's ``NREFCNT`` counts), which is why this lives on the refinement
+        rather than on :class:`~torchref.model.model.Model`.
 
-        The work set is the denominator because it is what the refinement fits, and it is
-        what PDB-REDO's ``NREFCNT`` counts, so the ratio is comparable to theirs.
+        Parameters
+        ----------
+        mode : {"field", "field_aniso"}, optional
+            Field mode whose per-node payload is counted.
+        mode_set : str, optional
+            Displacement-mode set for ``mode="field_aniso"``; see
+            :data:`~torchref.model.disorder_field.MODE_SETS`.
+        reflections_per_parameter : float, optional
+            Work reflections each ADP parameter should hold.
+        refine_node_positions : bool, optional
+            Count the three position-offset parameters of each node.
 
         Returns
         -------
@@ -561,23 +564,13 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         refine_node_positions: bool = True,
         aniso_selection: str = None,
     ):
-        """Switch the ADP parametrization, sizing and reweighting it for this data set.
+        """Switch the ADP parametrization, sizing it for this data set.
 
-        :meth:`Model.set_adp_mode <torchref.model.model.Model.set_adp_mode>` changes
-        the representation but cannot size it: node count follows from the reflection
-        count, and the model has no idea how much data there is. It also cannot swap the
-        ADP restraint set, which is a property of the representation rather than a
-        weight to tune.
-
-        The loss is **not** rebalanced for a field. The point of the representation is that
-        smoothness comes from the parametrisation, so a field should need *less*
-        regularisation than a per-atom model, not a reweighted version of the same
-        priors. :data:`DEFAULT_GROUP_WEIGHTS` already carries everything a field needs,
-        and an earlier attempt to raise the ``adp`` group for field mode had two side
-        effects worth remembering: ``adp/scaler_U`` and ``adp/scaler_log_scale`` sit under
-        that group, so it multiplied the scaler regularisation by the same factor, and it
-        made the field's configuration differ from every per-atom baseline in a way that
-        had nothing to do with ADPs.
+        The refinement sizes a field because node count follows the work-set reflection
+        count, which :meth:`Model.set_adp_mode <torchref.model.model.Model.set_adp_mode>`
+        cannot see. The loss is **not** rebalanced: smoothness comes from the
+        parametrisation, so a field needs less regularisation than a per-atom model,
+        not reweighted priors.
 
         Safe to call after construction: the targets and scales are rebuilt afterwards,
         which is what the model's own "run once at setup" caveat is about.
@@ -586,8 +579,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         ----------
         mode : str
             Any mode :meth:`~torchref.model.model.Model.set_adp_mode` accepts.
-            ``"field"`` and ``"field_aniso"`` are sized and reweighted; the per-atom
-            modes just pass through, with any field weight overrides removed again.
+            ``"field"`` and ``"field_aniso"`` are sized for this data set; the per-atom
+            modes pass straight through.
         mode_set : str, optional
             Displacement-mode set for ``mode="field_aniso"``; see
             :data:`~torchref.model.disorder_field.MODE_SETS`.
@@ -595,6 +588,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Explicit node count, bypassing the reflection budget entirely.
         reflections_per_parameter : float, optional
             Target work reflections per ADP parameter when ``n_nodes`` is not given.
+        k_neighbors : int, optional
+            Candidate nodes per atom for a field mode, capped at the node count.
+        refine_node_positions : bool, optional
+            Give each node a refinable position offset, three parameters per node that
+            the budget counts.
+        aniso_selection : str, optional
+            Phenix-style selection of the atoms made anisotropic. None falls back to the
+            refinement's ``aniso_selection``.
 
         Returns
         -------
