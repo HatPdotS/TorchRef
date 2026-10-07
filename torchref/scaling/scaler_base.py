@@ -32,10 +32,10 @@ if TYPE_CHECKING:
     from torchref.scaling.solvent import SolventModel
 
 
-#: Selectable objectives for the scaler's own L-BFGS scale fit. **Both are rows of
+#: Selectable objectives for the scaler's own L-BFGS scale fit. **Each is a row of
 #: :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS`**, not a private enum: the
 #: scale fit and the body refinement evaluate the same likelihood code, and differ only in
-#: which row they pick. Neither row may centre on ``alpha`` -- see
+#: which row they pick. None may centre on ``alpha`` -- see
 #: :meth:`ScalerBase.refine_lbfgs`.
 SCALE_TARGETS = ("nll", "ml_noalpha", "ls")
 
