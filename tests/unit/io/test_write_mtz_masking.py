@@ -167,6 +167,10 @@ class TestExcludedFlags:
         reloaded = _load(out_path)
         assert int((~reloaded.masks["flagged_initial"]).sum()) == n_excluded
         assert reloaded.free.n == data.free.n
+        # The intensities are written, so the outlier test re-reads the measurements
+        # and every mask, Wilson outliers included, comes back row for row.
+        assert torch.equal(reloaded.hkl_anomalous, data.hkl_anomalous)
+        assert torch.equal(reloaded.masks(), data.masks())
 
 
 def test_write_leaves_a_named_index_out(tmp_path):
