@@ -241,7 +241,7 @@ def test_each_mode_has_its_own_class():
         cls = XRAY_TARGETS.by_name(name).target_cls
         assert cls not in seen, (
             f"{name} and {seen[cls]} share {cls.__name__}: a class serving two modes has to "
-            f"branch on something at runtime, which is what this refactor removed"
+            f"branch on something at runtime"
         )
         seen[cls] = name
 
