@@ -632,8 +632,8 @@ def complete_flag_table(
     every value (in particular the free value 0) holds exactly
     ``1 / n_flags`` of every shell. The last shell is always completed with
     reflections beyond ``dmin``, so the flag of any reflection depends only on
-    cell, space group, ``n_flags``, ``shell_size`` and ``seed``: a larger
-    ``dmin`` (a later, better dataset) never changes existing flags.
+    cell, space group, ``n_flags``, ``shell_size`` and ``seed``: another ``dmin``
+    (e.g. a later, higher-resolution dataset) keeps every common reflection's flag.
 
     A flag is tied to a reflection's rank in resolution, so it depends on the
     exact cell: a relative change of 1e-5 in one cell edge already moves about
