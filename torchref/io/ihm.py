@@ -125,7 +125,7 @@ class IHMReader:
     @staticmethod
     def is_ihm_file(filepath: str) -> bool:
         """
-        Quick check for ``_ihm_model_list`` / ``_ihm_multi_state_modeling`` loops.
+        Quick check for ``_ihm_model_list`` / ``_ihm_multi_state_modeling`` categories.
 
         Uses gemmi only, so detection does not require ``python-ihm``.
 
