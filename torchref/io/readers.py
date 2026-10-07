@@ -166,7 +166,7 @@ def read_cif(filepath: Union[str, Path], model_class=None, verbose: int = 1, **k
     if kind == "structure":
         if model_class is None:
             from torchref.model import ModelFT as model_class
-        model = model_class(**kwargs)
+        model = model_class(verbose=verbose, **kwargs)
         model.load_cif(path)
         return model
 
