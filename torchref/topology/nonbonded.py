@@ -987,9 +987,16 @@ def build_vdw_restraints_gpu(
     excl_hash = exclusion_set_to_hash(exclusion_set, max_idx, device)
 
     keep = filter_pairs(
-        pair_atom_i, pair_atom_j, pair_combo_j,
-        identity_combo, excl_hash, max_idx,
-        cart_pos, M, topology, inter_residue_only,
+        pair_atom_i,
+        pair_atom_j,
+        pair_combo_j,
+        identity_combo,
+        excl_hash,
+        max_idx,
+        cart_pos,
+        M,
+        topology,
+        inter_residue_only,
     )
 
     pair_atom_i = pair_atom_i[keep]
