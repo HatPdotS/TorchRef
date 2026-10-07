@@ -215,3 +215,19 @@ def test_refining_only_a_selection_starts_from_an_empty_set(daw_model):
     model.unfreeze_selection(SELECTION, targets="xyz")
     n_selected = int(model.get_selection_mask(SELECTION).sum())
     assert model.xyz.get_refinable_count() == n_selected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "method, args",
+    [
+        ("freeze", ("b",)),
+        ("unfreeze", ("b",)),
+        ("apply_mask_to_parameter", ("b",)),
+        ("update_mask_from_selection", (SELECTION, "b")),
+    ],
+)
+def test_an_unknown_parameter_type_raises(daw_model, method, args):
+    """A name outside ``Model.PARAM_TYPES`` raises instead of being ignored."""
+    with pytest.raises(ValueError, match="PARAM_TYPES"):
+        getattr(daw_model, method)(*args)
