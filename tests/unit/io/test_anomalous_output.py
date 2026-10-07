@@ -157,6 +157,20 @@ class TestAnomalousMtzOutput:
         for absent in ("F-model", "F-model(+)", "FWT", "DELFWT", "ANOM", "PANOM"):
             assert absent not in cols
 
+    def test_validation_set_survives_a_round_trip(self, anomalous_data, tmp_path):
+        """Validation_flag is written per ASU reflection, as in the merged layout."""
+        anomalous_data.generate_validation_set(seed=0)
+        out = tmp_path / "anom_val.mtz"
+        anomalous_data.write_mtz(str(out), anomalous=True)
+        reloaded = ReflectionData(verbose=0)
+        reloaded.load_mtz(str(out))
+        assert reloaded.validation_flags is not None
+
+        def held_out(d):
+            return {tuple(h) for h in d.hkl[d.validation_flags].tolist()}
+
+        assert held_out(reloaded) == held_out(anomalous_data)
+
     def test_display_map_missing_only_where_no_mate_is_valid(
         self, anomalous_data, pdb_dir, tmp_path
     ):
