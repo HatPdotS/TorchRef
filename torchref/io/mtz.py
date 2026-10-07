@@ -461,7 +461,7 @@ class MTZReader:
         one with no valid flag, is skipped with a warning naming it.
         """
         # rfree imports this module for its flag names.
-        from torchref.io.rfree import read_free_set
+        from torchref.io.rfree import read_free_set, work_free_flags
 
         available_cols = set(self.mtz_data.columns)
 
@@ -471,8 +471,7 @@ class MTZReader:
                 if "int" in dtype.lower() or "flag" in dtype.lower() or "I" in dtype:
                     try:
                         free_set = read_free_set(self.mtz_data, col)
-                        rfree_flags = np.where(free_set["free"], 0, 1).astype(np.int32)
-                        rfree_flags[free_set["excluded"]] = -1
+                        rfree_flags = work_free_flags(free_set)
                         if self.verbose > 0:
                             print(
                                 f"   R-free flags from '{col}': "

@@ -350,6 +350,25 @@ def read_free_set(ds: rs.DataSet, column: Optional[str] = None) -> dict:
     }
 
 
+def work_free_flags(free_set: dict) -> np.ndarray:
+    """Flags of a :func:`read_free_set` result as the readers pass them on.
+
+    Parameters
+    ----------
+    free_set : dict
+        Result of :func:`read_free_set`.
+
+    Returns
+    -------
+    np.ndarray
+        int32, shape (N,): ``1`` work, ``0`` free, ``-1`` excluded, the
+        ``"R-free-flags"`` the MTZ and SF-mmCIF readers give ``ReflectionData.load``.
+    """
+    flags = np.where(free_set["free"], 0, 1).astype(np.int32)
+    flags[free_set["excluded"]] = -1
+    return flags
+
+
 def _group_free(keys: np.ndarray, free: np.ndarray):
     """Reduce rows to unique ASU keys; returns (keys, free, conflicting).
 

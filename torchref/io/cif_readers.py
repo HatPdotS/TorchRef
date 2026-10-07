@@ -532,16 +532,13 @@ def _free_flags(values: pd.Series, numeric: bool) -> np.ndarray:
         return letters.fillna(-1).to_numpy(dtype=np.int32)
     import reciprocalspaceship as rs
 
-    from torchref.io.rfree import read_free_set
+    from torchref.io.rfree import read_free_set, work_free_flags
 
     numbers = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
-    flags = np.full(len(numbers), -1, dtype=np.int32)
     # read_free_set refuses a column without a usable value; all rows stay excluded.
-    if (numbers >= 0).any():
-        free_set = read_free_set(rs.DataSet({"flag": numbers}), "flag")
-        flags[~free_set["excluded"]] = 1
-        flags[free_set["free"]] = 0
-    return flags
+    if not (numbers >= 0).any():
+        return np.full(len(numbers), -1, dtype=np.int32)
+    return work_free_flags(read_free_set(rs.DataSet({"flag": numbers}), "flag"))
 
 
 class ReflectionCIFReader:
