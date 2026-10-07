@@ -230,7 +230,8 @@ def load_as_dataframe(
     Raises
     ------
     ValueError
-        If an ATOM or HETATM record has no element in columns 77-78.
+        If an ATOM or HETATM record has no element in columns 77-78, or columns
+        79-80 hold anything but a formal charge (``2-``, ``-2``, ``2`` or blank).
     """
     if skipheader == 0:
         skipheader = find_header_length(filepath)
@@ -369,7 +370,14 @@ def load_as_dataframe(
         ["x", "y", "z", "occupancy", "tempfactor"]
     ].astype(float)
     pdb[["altloc", "icode"]] = pdb[["altloc", "icode"]].fillna("")
-    pdb["charge"] = [_parse_charge(text) for text in pdb["charge"]]
+    charges = []
+    for text in map(_text, pdb["charge"]):
+        match = re.fullmatch(r"([+-]?)(\d)([+-]?)", text)
+        if match is None and text:
+            raise ValueError(f"{filepath}: {text!r} in columns 79-80 is not a charge")
+        sign = -1 if match and "-" in match[1] + match[3] else 1
+        charges.append(sign * int(match[2]) if match else 0)
+    pdb["charge"] = charges
     _require_elements(pdb, filepath, "columns 77-78")
     pdb["element"] = pdb["element"].astype(str).str.strip().str.capitalize()
     pdb["index"] = np.arange(pdb.shape[0]).astype(int)
@@ -650,27 +658,6 @@ def _format_charge(charge) -> str:
     """Formal charge for columns 79-80: blank when neutral, else ``2+`` / ``1-``."""
     charge = 0 if pd.isna(charge) else int(charge)
     return f"{abs(charge)}{'-' if charge < 0 else '+'}" if charge else ""
-
-
-def _parse_charge(text) -> int:
-    """Formal charge in columns 79-80; inverse of :func:`_format_charge`.
-
-    Reads the wwPDB digit-then-sign form (``2-``) and, as gemmi does, the
-    sign-first ``-2`` and an unsigned ``2``; a blank field is neutral.
-
-    Raises
-    ------
-    ValueError
-        If the field holds anything else.
-    """
-    text = _text(text)
-    match = re.fullmatch(r"([+-]?)(\d)([+-]?)", text)
-    if match is None:
-        if text:
-            raise ValueError(f"{text!r} is not a formal charge")
-        return 0
-    before, digit, after = match.groups()
-    return -int(digit) if "-" in before + after else int(digit)
 
 
 def _format_atom_identity(row) -> str:
