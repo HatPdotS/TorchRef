@@ -19,6 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import gemmi
 import pytest
 
 
@@ -75,6 +76,7 @@ def test_difference_refine_mismatched_mtz_cpu(
             "-dsf", str(mismatched_mtz_pair["dark"]),
             "-lsf", str(mismatched_mtz_pair["light"]),
             "--fraction", "0.3",
+            "--refine-fractions",
             "--n-cycles", "1",
             "--n-steps", "1",
             "--max-iter", "5",
@@ -108,3 +110,27 @@ def test_difference_refine_mismatched_mtz_cpu(
     with open(summary) as f:
         data = json.load(f)
     assert "results" in data and "r_factor_light" in data["results"]
+
+    # The merged deposition CIF scales each atom's own occupancy by the refined
+    # population of its state; 3GR5's HOH A224 sits on a special position at 0.50.
+    def occupancies(path):
+        structure = gemmi.read_structure(str(path))
+        return {
+            (chain.name, str(residue.seqid), atom.name, atom.altloc): atom.occ
+            for chain in structure[0]
+            for residue in chain
+            for atom in residue
+        }
+
+    merged = occupancies(outdir / f"{prefix}_merged.cif")
+    populations = data["results"]["fractions"]
+    assert merged[("A", "224", "O", "A")] == pytest.approx(
+        0.5 * populations[0], abs=0.01
+    )
+    for state, altloc, w in zip(("dark", "light"), "AB", populations):
+        own = occupancies(outdir / f"{prefix}_{state}.pdb")
+        # Both files round occupancies to two decimals.
+        for (chain, seqid, name, _), occ in own.items():
+            assert merged[(chain, seqid, name, altloc)] == pytest.approx(
+                occ * w, abs=0.005 * (1 + w)
+            )

@@ -1672,13 +1672,16 @@ Examples:
         from torchref import __version__
         from torchref.io.metadata import RefinementMetadata
 
+        # Scaled, not replaced: an atom's own partial occupancy (a water on a
+        # special position) holds within its state.
+        w_dark, w_light = mixed.fractions.detach().cpu().tolist()
         dark_df = model_dark.to_dataframe()
         dark_df["altloc"] = "A"
-        dark_df["occupancy"] = fractions[0]
+        dark_df["occupancy"] *= w_dark
 
         light_df = model_light.to_dataframe()
         light_df["altloc"] = "B"
-        light_df["occupancy"] = fractions[1]
+        light_df["occupancy"] *= w_light
 
         merged_df = pd.concat([dark_df, light_df], ignore_index=True)
         merged_df = merged_df.sort_values(
@@ -1713,8 +1716,8 @@ Examples:
 
         ensemble_note = (
             f"Mixed-state ensemble from TorchRef difference refinement. "
-            f"Conformer A (occupancy {fractions[0]:.2f}): dark/ground state. "
-            f"Conformer B (occupancy {fractions[1]:.2f}): light/excited state. "
+            f"Conformer A (occupancy {w_dark:.2f}): dark/ground state. "
+            f"Conformer B (occupancy {w_light:.2f}): light/excited state. "
             f"R-factors: mixed vs light data Rwork={r_work_l:.4f} Rfree={r_free_l:.4f}; "
             f"dark vs dark data Rwork={r_work_d:.4f} Rfree={r_free_d:.4f}."
         )
