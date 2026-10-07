@@ -369,6 +369,28 @@ def test_restraint_kind_without_entries_leaves_its_rmsd_unset():
     assert next(line for line in header if "BOND LENGTHS" in line).endswith("NULL")
 
 
+@pytest.mark.unit
+def test_bond_angle_rmsd_is_reported_in_degrees(pdb_dir):
+    """The RMSD on REMARK 3's BOND ANGLES (DEGREES) line is in degrees."""
+    import math
+
+    import torch
+
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    with torch.no_grad():
+        radians, _ = model.restraints.angle_deviations(model.xyz())
+    degrees = math.degrees(float(torch.sqrt((radians**2).mean())))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.rmsd_bond_angles == pytest.approx(degrees, rel=1e-5)
+    header = meta.render_pdb_header().splitlines()
+    line = next(line for line in header if "BOND ANGLES" in line)
+    assert line.endswith(f": {degrees:.2f}")
+
+
 # ====================================================================== #
 #  Coordinates
 # ====================================================================== #

@@ -337,8 +337,9 @@ class RefinementMetadata:
     def _set_geometry_deviations(self, model) -> None:
         """Set the bond-length and bond-angle RMSDs from ``model``'s restraints.
 
-        Only restraints the model has already built are used. A kind of
-        restraint the model has none of leaves its RMSD unset rather than NaN.
+        In Å and degrees, the units the header reports, over the restraints the
+        model has already built. A kind of restraint the model has none of
+        leaves its RMSD unset rather than NaN.
 
         Parameters
         ----------
@@ -356,7 +357,8 @@ class RefinementMetadata:
         if bonds.numel():
             self.rmsd_bond_lengths = float(torch.sqrt((bonds**2).mean()))
         if angles.numel():
-            self.rmsd_bond_angles = float(torch.sqrt((angles**2).mean()))
+            # angle_deviations is in radians.
+            self.rmsd_bond_angles = float(torch.rad2deg(torch.sqrt((angles**2).mean())))
 
     def _set_atom_counts(self, model) -> None:
         """Set the non-hydrogen atom counts from ``model.ctx.topology``.
