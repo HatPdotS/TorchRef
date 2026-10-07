@@ -154,9 +154,10 @@ class TotalADPTarget(CombinedModelTargets):
     - 'sigd': :class:`~torchref.refinement.targets.adp.sigd.ADPSigdTarget`, a shifted
       inverse-gamma prior on the whole B distribution, which is where overfitting shows
       up.
-    - 'node_load': :class:`~torchref.refinement.targets.adp.NodeLoadTarget`, keeps
-      every node carrying a fair share of atoms.
-    - 'node_smoothness': :class:`~torchref.refinement.targets.adp.NodeSmoothnessTarget`,
+    - 'node_load': :class:`~torchref.refinement.targets.adp.node_load.NodeLoadTarget`,
+      keeps every node carrying a fair share of atoms.
+    - 'node_smoothness':
+      :class:`~torchref.refinement.targets.adp.node_smoothness.NodeSmoothnessTarget`,
       penalises a node whose B departs from the nodes around it.
 
     'locality' works in log space, since B > 0 and right-skewed; 'sigd' uses the
