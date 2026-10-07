@@ -120,8 +120,8 @@ def energy_type_table() -> Dict[str, Tuple[int, float, float]]:
 def hydrogen_roles(parent_roles: torch.Tensor) -> torch.Tensor:
     """Hydrogen-bond role of hydrogens, from the roles of the atoms they are bonded to.
 
-    ener_lib gives every hydrogen the one type ``H``, so whether a hydrogen bonds is
-    read off its parent: one on a donor is :data:`HB_HYDROGEN`, any other has no role.
+    Templates type every hydrogen ``H``, which ener_lib gives no role, so a hydrogen's
+    role is read off its parent: :data:`HB_HYDROGEN` on a donor, none otherwise.
 
     Parameters
     ----------

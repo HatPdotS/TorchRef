@@ -400,3 +400,17 @@ def test_hydrogen_bonds_are_held_to_the_hydrogen_bond_distance(model_1daw):
     )
     overlap = (minimum - (pos_j - pos_i).norm(dim=1)).clamp(min=0)
     assert float(overlap[amide_h].max()) < 0.2
+
+
+@pytest.mark.gpu
+def test_riding_contact_distances_take_roles_from_any_device(model_1daw, gpu_device):
+    """A rebuild forms the radii and the riding candidates on CPU while ``hb_type``
+    sits with the topology on the model device; the distances follow the radii."""
+    from torchref.topology.riding import candidate_contact_distances
+
+    restraints = model_1daw.restraints
+    h_topo, atoms = restraints.h_topo, restraints.topology.atoms
+    radii = torch.as_tensor(atoms.vdw_radii, dtype=get_float_dtype())
+    on_cpu = candidate_contact_distances(h_topo, radii, atoms.hb_type)
+    moved = candidate_contact_distances(h_topo, radii, atoms.hb_type.to(gpu_device))
+    torch.testing.assert_close(moved, on_cpu, rtol=0, atol=0)

@@ -137,7 +137,7 @@ def test_atom_graph_reads_hydrogen_bond_roles_from_the_table(hydrogenated_1daw):
     assert (roles[kinds == "O"] == HB_ACCEPTOR).all()
     assert (roles[kinds == "OH1"] == HB_DONOR | HB_ACCEPTOR).all()
     assert (roles[np.isin(kinds, ["CH1", "CH2", "CH3"])] == 0).all()
-    # ener_lib types every hydrogen H, without a role; an amide H bonds as its N does.
+    # The templates type every hydrogen H (no role); an amide H bonds as its N does.
     assert (roles[names == "H"] == HB_HYDROGEN).all()
     assert (roles[names == "HA"] == 0).all()
 

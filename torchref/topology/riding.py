@@ -931,8 +931,8 @@ def candidate_contact_distances(
     heavy_radii : torch.Tensor
         Contact radius per heavy atom in Å, shape ``(N_heavy,)``.
     heavy_roles : torch.Tensor or None
-        ``AtomGraph.hb_type`` of the heavy atoms, shape ``(N_heavy,)``; None scores
-        every pair by its radius sum.
+        ``AtomGraph.hb_type`` of the heavy atoms, shape ``(N_heavy,)``, on any device;
+        None scores every pair by its radius sum.
 
     Returns
     -------
@@ -944,6 +944,7 @@ def candidate_contact_distances(
     radii = torch.cat([heavy_radii, h_topo.h_vdw_radius.to(heavy_radii)])
     roles = None
     if heavy_roles is not None:
+        heavy_roles = heavy_roles.to(heavy_radii.device)
         riding = hydrogen_roles(heavy_roles[h_topo.h_parent_idx])
         roles = torch.cat([heavy_roles, riding])
     pairs = torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1)
