@@ -1893,8 +1893,8 @@ class RestraintCIFReader:
             self._extract_col(df, ["_chem_comp_atom.charge"]),
             errors="coerce",
         )
-        # The CCP4 energy type (NH1, OC, CH3, ...) keys the contact radii and the
-        # hydrogen-bond donor/acceptor roles; absent from eLBOW/Grade dictionaries.
+        # The CCP4 energy type (NH1, OC, CH3, ...) keys the ener_lib contact radius and
+        # hydrogen-bond role; an atom without one takes its element radius and no role.
         type_cols = ["_chem_comp_atom.type_energy"]
         if any(col in df.columns for col in type_cols):
             result["type_energy"] = (
