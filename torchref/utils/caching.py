@@ -52,7 +52,10 @@ class CachedForwardMixin:
     output. Invalidated by: any parameter/buffer ``(data_ptr, _version)`` change (so
     optimizer in-place updates and parameter replacement are both covered); any input
     tensor ``(data_ptr, _version)`` or non-tensor argument change; or a backward through
-    the cached output, via a gradient hook that bumps a generation counter.
+    the cached output, via a gradient hook that bumps a generation counter. A write
+    through ``.data`` (``p.data.copy_(x)``) leaves ``data_ptr`` and ``_version`` as they
+    were, so it is served stale: write under ``torch.no_grad()`` without ``.data``, or
+    call :meth:`reset_forward_cache` after.
 
     The cached tensor **keeps its autograd graph**, so gradients flow on the first backward
     and the cache is invalidated after it -- a second backward on the same result needs

@@ -70,6 +70,30 @@ def test_changed_argument_still_misses_while_enabled(module):
     assert torch.allclose(second, module.p * 3.0)
 
 
+def test_tensordict_assignment_invalidates_a_cached_forward():
+    """A same-shape ``TensorDict`` assignment is a write the cache must see."""
+    from torchref.utils import TensorDict
+
+    class _StoreBacked(CachedForwardMixin, nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.store = TensorDict({"k": torch.zeros(3)})
+            self.n_forward = 0
+
+        def forward(self):
+            self.n_forward += 1
+            return self.store["k"] * 2.0
+
+    cfg.caching.value = True
+    module = _StoreBacked()
+    module()
+
+    module.store["k"] = torch.tensor([1.0, 2.0, 3.0])
+
+    assert torch.equal(module(), torch.tensor([2.0, 4.0, 6.0]))
+    assert module.n_forward == 2
+
+
 # ---------------------------------------------------------------------------
 # Caching disabled
 # ---------------------------------------------------------------------------

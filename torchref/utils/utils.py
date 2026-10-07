@@ -94,7 +94,9 @@ class TensorDict(nn.Module):
 
         On an existing key of the *same* shape the value is copied **in place**, so a
         previously-read reference to ``self[key]`` sees the new data; a shape change
-        re-registers the buffer instead, and old references then go stale.
+        re-registers the buffer instead, and old references then go stale. The in-place
+        copy bumps the buffer's version: cached forwards that read it recompute, and a
+        graph that saved the old value can no longer be backpropagated.
         """
         name = f"_buf_{key}"
         if not hasattr(self, name):
@@ -103,7 +105,10 @@ class TensorDict(nn.Module):
         else:
             existing = getattr(self, name)
             if existing.shape == tensor.shape:
-                existing.data.copy_(tensor)
+                # Not ``.data.copy_``: only a tracked write bumps ``_version``, which is
+                # how a cached forward that read this buffer learns it changed.
+                with torch.no_grad():
+                    existing.copy_(tensor)
             else:
                 delattr(self, name)
                 self.register_buffer(name, tensor)
