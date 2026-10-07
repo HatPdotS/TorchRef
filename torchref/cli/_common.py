@@ -633,18 +633,43 @@ def validate_cif_files(cif_paths: Optional[List[str]]) -> int:
 # ---------------------------------------------------------------------------
 
 def build_column_names(
+    structure_factor: str,
     column_structure_factor: Optional[str] = None,
     column_sigma: Optional[str] = None,
+    flag_suffix: str = "",
 ) -> Optional[Dict[str, str]]:
     """Build a ``column_names`` dict from ``-csf`` and ``-csig`` args.
 
-    Returns ``None`` when neither is specified (auto-detect).
-    The dict keys (``"F"``, ``"SIGF"``) are those
-    :class:`~torchref.io.mtz.MTZReader` takes; it reads an intensity column
-    (MTZ type J or K) named here as ``"I"``/``"SIGI"``.
+    Parameters
+    ----------
+    structure_factor : str
+        Path of the structure-factor file the columns are read from.
+    column_structure_factor, column_sigma : str, optional
+        The ``-csf`` and ``-csig`` values.
+    flag_suffix : str, optional
+        Completes the flag names in the error message, e.g. ``"-dark"``.
+
+    Returns
+    -------
+    dict or None
+        ``None`` when neither column is given (auto-detect). The keys
+        (``"F"``, ``"SIGF"``) are those :class:`~torchref.io.mtz.MTZReader`
+        takes; it reads an intensity column (MTZ type J or K) named here as
+        ``"I"``/``"SIGI"``.
+
+    Raises
+    ------
+    SystemExit
+        If a column is given for an SF-mmCIF (``.cif``) file, whose reader takes
+        no column choice and would ignore it.
     """
     if column_structure_factor is None and column_sigma is None:
         return None
+    if Path(structure_factor).suffix.lower() == ".cif":
+        sys.exit(
+            f"Error: -csf{flag_suffix}/-csig{flag_suffix} name MTZ columns, but "
+            f"{structure_factor} is SF-mmCIF, whose reader takes no column choice."
+        )
     column_names: Dict[str, str] = {}
     if column_structure_factor is not None:
         column_names["F"] = column_structure_factor
@@ -659,7 +684,8 @@ def build_dual_column_names(
     """Build column_names dicts for dark and light datasets.
 
     Reads the per-side flags (``-csf-dark``, ``-csf-light``, etc.)
-    from the parsed *args* namespace.
+    and structure-factor files from the parsed *args* namespace; see
+    :func:`build_column_names`, which exits on columns named for SF-mmCIF.
 
     Returns
     -------
@@ -668,12 +694,16 @@ def build_dual_column_names(
         auto-detection.
     """
     col_dark = build_column_names(
+        args.dark_structure_factor,
         args.column_structure_factor_dark,
         args.column_sigma_dark,
+        "-dark",
     )
     col_light = build_column_names(
+        args.light_structure_factor,
         args.column_structure_factor_light,
         args.column_sigma_light,
+        "-light",
     )
     return col_dark, col_light
 

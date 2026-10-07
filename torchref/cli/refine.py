@@ -310,7 +310,9 @@ Loss weights:
         print("Initializing refinement...")
         sys.stdout.flush()
 
-    column_names = build_column_names(args.column_structure_factor, args.column_sigma)
+    column_names = build_column_names(
+        str(sf_path), args.column_structure_factor, args.column_sigma
+    )
 
     refinement = LBFGSRefinement(
         data_file=str(sf_path),
