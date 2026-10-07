@@ -74,13 +74,11 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
 
         Var(F_i - F_mean) = σ_i²·(1 - 2/N) + (Σ_j σ_j²)/N²
 
-    At N=2 the gradients are identical to direct dark-reference subtraction; above
-    that the mean reference is the quieter one.
+    At N=2 both rows carry the same term, so loss and gradient are twice those of direct
+    dark-reference subtraction (the loss plus a constant); above that the mean reference
+    is the quieter one.
 
-    Cross-dataset-coupled, unlike its siblings: the per-reflection mean ties all
-    datasets together, so it works on aligned ``(N, n_hkl)`` stacks on the common HKL
-    grid rather than the flat concatenate-then-mask form, and a reflection counts only
-    if it is in this target's subset in **every** dataset.
+    A reflection counts only if it is in this target's subset in **every** dataset.
 
     Parameters
     ----------
@@ -89,9 +87,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
     scaler : ScalerBase
         Single scaler applied to all F_calc (uses ``forward_mixed``
         with per-model fractions when available).
-    normalize : bool
-        Unused placeholder. ``forward`` always returns the unnormalised summed
-        NLL regardless of this flag.
     use_work_set : bool
         Legacy bool; superseded by ``use_set``. If True, loss on the work set.
     use_set : str, optional
@@ -110,7 +105,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         dataset_collection: "DatasetCollection",
         model_collection: "ModelCollection",
         scaler: "ScalerBase" = None,
-        normalize: bool = True,
         use_work_set: bool = True,
         use_set: str = None,
         verbose: int = 0,
@@ -123,7 +117,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
             use_set=use_set,
             verbose=verbose,
         )
-        self.normalize = normalize
 
     def _loss_inputs(self, recalc: bool = False):
         """The base's stack, with the mask narrowed across datasets.
@@ -131,7 +124,7 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         A reflection counts only if it is in this target's subset in **every** dataset:
         the per-reflection mean ties them together, so a reflection missing from one
         member would silently shift the reference for all the others. Narrowed here
-        rather than inside :meth:`_per_refl` so ``forward``'s sum and ``residuals``'
+        rather than inside ``_per_refl`` so ``forward``'s sum and ``residuals``'
         array agree on which reflections count.
         """
         ctx = super()._loss_inputs(recalc=recalc)
@@ -229,7 +222,6 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
         dataset_collection: "DatasetCollection",
         model_collection: "ModelCollection",
         scaler: "ScalerBase" = None,
-        normalize: bool = True,
         use_work_set: bool = True,
         use_set: str = None,
         verbose: int = 0,
@@ -239,7 +231,6 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
             dataset_collection,
             model_collection,
             scaler=scaler,
-            normalize=normalize,
             use_work_set=use_work_set,
             use_set=use_set,
             verbose=verbose,
@@ -277,8 +268,9 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
         """The parent's stack plus ``alpha`` and ``beta_model`` on the common HKL.
 
         The fit sees the timepoint rows only (the dark row is the reference the
-        differences are taken against), their free reflections, and a detached model
-        difference, so gradients reach the models only through ``ctx.model``.
+        differences are taken against), their free reflections present in every
+        dataset, and a detached model difference, so gradients reach the models only
+        through ``ctx.model``.
         """
         ctx = super()._loss_inputs(recalc=recalc)
         dark = ctx.keys.index(self._model_collection.dark_key)
@@ -292,11 +284,13 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
             rows = [i for i in range(len(ctx.keys)) if i != dark] or [dark]
             dc = self._dataset_collection
             n_rows = len(rows)
-            # The free set, independent of this target's own subset; the fit drops
-            # non-finite observations itself.
+            # Each row's free set, independent of this target's own subset, narrowed to
+            # reflections present in every member: where one is absent the stack holds
+            # a finite placeholder (F = 0) that would enter the fit as a difference.
+            present = torch.stack([dc[k].masks() for k in ctx.keys]).all(dim=0)
             fit_mask = torch.cat(
-                [dc[ctx.keys[i]].free.mask.to(ctx.mask.device) for i in rows]
-            )
+                [dc[ctx.keys[i]].free.mask & present for i in rows]
+            ).to(ctx.mask.device)
             fit = self._estimator.get(
                 torch.cat([delta_obs[i] for i in rows]),
                 torch.cat([sigma_diff[i] for i in rows]),
@@ -308,15 +302,8 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
                 delta_calc=torch.cat([delta_calc[i].detach() for i in rows]),
                 fit_sigma_scale=False,
             )
-        # A reflection missing from the dark row has no amplitude for the power law;
-        # evaluate it at the median instead of letting a NaN reach the variance, where
-        # the masked-out branch of the loss would still turn it into a NaN gradient.
-        finite = torch.isfinite(f_dark)
-        f_eval = torch.where(
-            finite, f_dark, f_dark[finite].median() if bool(finite.any()) else 1.0
-        )
         alpha = fit.alpha_at(dss)
-        beta = fit.signal_power(dss, epsilon=eps, f_dark=f_eval, centric=centric)
+        beta = fit.signal_power(dss, epsilon=eps, f_dark=f_dark, centric=centric)
         return CollectionSigmaDLossInputs(
             *ctx, alpha=alpha.to(dtype).detach(), beta_model=beta.to(dtype).detach()
         )
@@ -372,10 +359,10 @@ class CollectionMLTarget(CollectionXrayTarget):
     serves all datasets. The estimator belongs to this target, not the scaler, which
     owns scaling only.
 
-    Per-dataset loss is the Read MLF form (``mean = |Fc|``, variance ``epsilon*beta``)
-    from :func:`torchref.base.targets.xray_likelihoods.rice_math`, and since those sums
-    are independent the datasets are concatenated and masked once. ``beta`` is detached,
-    so gradients reach the models only through ``F_calc``.
+    Read MLF per reflection (``mean = |Fc|``, variance ``epsilon*beta``) via
+    :func:`~torchref.base.targets.xray_likelihoods.rice_per_refl` on the ``(N, n_hkl)``
+    stack, with ``beta`` broadcast over datasets; the base ``forward`` masks and sums it.
+    ``beta`` is detached, so gradients reach the models only through ``F_calc``.
 
     Parameters
     ----------
@@ -383,9 +370,6 @@ class CollectionMLTarget(CollectionXrayTarget):
     model_collection : ModelCollection
     scaler : ScalerBase
         Scaling layer applied to F_calc (``forward_mixed`` when available).
-    normalize : bool
-        Unused placeholder, as on the other two collection targets.
-        TODO: remove from all three.
     use_work_set : bool
         Legacy bool; superseded by ``use_set``. If True, loss on the work set.
     use_set : str, optional
@@ -411,7 +395,6 @@ class CollectionMLTarget(CollectionXrayTarget):
         dataset_collection: "DatasetCollection",
         model_collection: "ModelCollection",
         scaler: "ScalerBase" = None,
-        normalize: bool = True,
         use_work_set: bool = True,
         use_set: str = None,
         verbose: int = 0,
@@ -425,7 +408,6 @@ class CollectionMLTarget(CollectionXrayTarget):
             use_set=use_set,
             verbose=verbose,
         )
-        self.normalize = normalize
         self.base_weight = (
             self.DEFAULT_BASE_WEIGHT if base_weight is None else float(base_weight)
         )

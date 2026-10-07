@@ -76,19 +76,6 @@ class TestNLLXrayTarget:
         # NLL can be negative depending on normalization
 
 
-@pytest.mark.unit
-class TestRiceXrayTarget:
-    """Test RiceXrayTarget."""
-
-    def test_rice_target_initialization(self):
-        """Test RiceXrayTarget initialization."""
-        from torchref.refinement.targets import RiceXrayTarget
-
-        target = RiceXrayTarget()
-        assert target._model is None
-        assert target._data is None
-
-
 # =============================================================================
 # Geometry Target Tests
 # =============================================================================
@@ -219,6 +206,50 @@ class TestTotalGeometryTarget:
 
         target = TotalGeometryTarget()
         assert target._model is None
+
+    def test_silent_at_verbose_zero(self, capsys):
+        """Construction prints nothing at the default verbosity."""
+        from torchref.refinement.targets import TotalGeometryTarget
+
+        TotalGeometryTarget()
+        assert capsys.readouterr().out == ""
+
+
+@pytest.mark.unit
+def test_empty_losses_follow_the_configured_float_dtype(double_cpu):
+    """A combined, multi-model or collection target with nothing to sum returns zeros
+    in the configured float dtype, so a float64 run stays float64."""
+    from types import SimpleNamespace
+
+    from torchref.config import get_int_dtype
+    from torchref.refinement.targets import (
+        CollectionDifferenceTarget,
+        MultiModelADPTarget,
+        MultiModelGeometryTarget,
+    )
+    from torchref.refinement.targets.combined import CombinedModelTargets
+
+    class NoComponents(CombinedModelTargets):
+        def _create_targets(self):
+            return {}
+
+    class NoDatasets:
+        hkl = torch.zeros((4, 3), dtype=get_int_dtype())
+
+        def __contains__(self, key):
+            return False
+
+    no_models = SimpleNamespace(base_models=[], device=torch.device("cpu"))
+    no_members = SimpleNamespace(dark_key="dark", timepoint_names=[])
+    collection = CollectionDifferenceTarget(NoDatasets(), no_members)
+    zeros = {
+        "combined": NoComponents()(),
+        "multi_model_geometry": MultiModelGeometryTarget(no_models)(),
+        "multi_model_adp": MultiModelADPTarget(no_models)(),
+        "collection_forward": collection(),
+        "collection_residuals": collection.residuals(),
+    }
+    assert {k: v.dtype for k, v in zeros.items()} == dict.fromkeys(zeros, torch.float64)
 
 
 # =============================================================================

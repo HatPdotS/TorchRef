@@ -15,9 +15,7 @@ from .base import (
     DataTarget,
     ModelTarget,
     Target,
-    adp_similarity_nll,
     gaussian_nll,
-    von_mises_nll,
 )
 from .collection import (
     COLLECTION_XRAY_TARGETS,
@@ -30,17 +28,10 @@ from .collection import (
     MultiModelGeometryTarget,
 )
 from .combined import (
-    CombinedTargets,
     TotalADPTarget,
     TotalGeometryTarget,
 )
 from .dataset_scaling import DatasetScalingTarget
-from .difference import (
-    DifferenceXrayTarget,
-    PhaseInformedDifferenceTarget,
-    RiceDifferenceTarget,
-    TaylorCorrectedDifferenceTarget,
-)
 from .geometry import (
     AngleTarget,
     BondTarget,
@@ -60,7 +51,6 @@ from .xray import (
     MLXrayTarget,
     NLLBetaXrayTarget,
     NLLXrayTarget,
-    RiceXrayTarget,
     SigmaAXrayTarget,
     UnitWeightK1XrayTarget,
     XrayTarget,
@@ -75,8 +65,6 @@ __all__ = [
     "DataTarget",
     # Utility functions
     "gaussian_nll",
-    "von_mises_nll",
-    "adp_similarity_nll",
     # X-ray targets
     "XrayTarget",
     "SigmaAXrayTarget",
@@ -87,7 +75,6 @@ __all__ = [
     "MLFullXrayTarget",
     "LeastSquaresXrayTarget",
     "UnitWeightK1XrayTarget",
-    "RiceXrayTarget",
     "create_xray_target",
     # Collection (multi-dataset) targets
     "CollectionDifferenceTarget",
@@ -98,11 +85,6 @@ __all__ = [
     "COLLECTION_XRAY_TARGETS",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
-    # Difference targets
-    "DifferenceXrayTarget",
-    "PhaseInformedDifferenceTarget",
-    "RiceDifferenceTarget",
-    "TaylorCorrectedDifferenceTarget",
     # Geometry targets
     "GeometryTarget",
     "BondTarget",
@@ -120,7 +102,6 @@ __all__ = [
     "ADPSigdTarget",
     "ADPLocalityTarget",
     # Combined targets
-    "CombinedTargets",
     "TotalGeometryTarget",
     "TotalADPTarget",
     # Similarity restraint

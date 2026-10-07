@@ -43,7 +43,7 @@ _R_PCT_LABELS = ("p10", "p25", "p50", "p75", "p90")
 
 
 class CollectionLossInputs(NamedTuple):
-    """What a collection row's :meth:`CollectionXrayTarget._per_refl` reads.
+    """What a collection row's ``CollectionXrayTarget._per_refl`` reads.
 
     Every tensor is ``(N, n_hkl)`` on the collection's common HKL grid, with ``N`` the
     number of matched datasets in ``keys`` order -- full size rather than compact, because
@@ -141,8 +141,9 @@ class CollectionXrayTarget(Target):
 
     #: Multiplies the work-set loss. Rows carrying a likelihood whose magnitude differs
     #: from its siblings' set this so the term neither swamps nor is swamped by the
-    #: restraints; :meth:`CollectionTwoMomentIntensityTarget.calibrate_base_weight` fits
-    #: it against a reference target's gradient norm.
+    #: restraints;
+    #: :meth:`~.intensity.CollectionTwoMomentIntensityTarget.calibrate_base_weight`
+    #: fits it against a reference target's gradient norm.
     base_weight: float = 1.0
 
     def __init__(
@@ -250,7 +251,7 @@ class CollectionXrayTarget(Target):
         :class:`CollectionLossInputs` for the shapes and the NaN discipline.
 
         Rows narrow the mask here (the difference targets require a reflection to be in
-        the subset of every dataset) rather than inside :meth:`_per_refl`, so that
+        the subset of every dataset) rather than inside ``_per_refl``, so that
         :meth:`forward`'s sum and :meth:`residuals`' array agree on which reflections
         count.
         """
@@ -279,7 +280,7 @@ class CollectionXrayTarget(Target):
         raise NotImplementedError
 
     def forward(self) -> torch.Tensor:
-        """Masked sum of :meth:`_per_refl`, with ``base_weight`` on the work set only.
+        """Masked sum of ``_per_refl``, with ``base_weight`` on the work set only.
 
         Cache reset first: a preceding no-grad ``stats()`` or ``get_rfactor()`` call can
         leave a detached tensor in a base model's cache, which would silently kill the
@@ -287,7 +288,9 @@ class CollectionXrayTarget(Target):
         """
         keys = self._keys()
         if len(keys) < self.min_datasets:
-            return torch.zeros((), device=self._dataset_collection.hkl.device)
+            return torch.zeros(
+                (), device=self._dataset_collection.hkl.device, dtype=self.dtype_float
+            )
 
         self._reset_model_caches()
         ctx = self._loss_inputs(recalc=False)
@@ -299,24 +302,26 @@ class CollectionXrayTarget(Target):
         return total
 
     def residuals(self) -> torch.Tensor:
-        """:meth:`_per_refl` over every reflection, ``(N, n_hkl)``, unsummed and unmasked.
+        """``_per_refl`` over every reflection, ``(N, n_hkl)``, unsummed and unmasked.
 
-        The unreduced :meth:`forward`: same observable, same model, same variance. Masked
-        reflections still get a value, so the array can be used to ask *why* one was
-        excluded rather than only reflecting the answer back, and non-finite values
-        survive because here a NaN is a finding rather than a nuisance.
+        The unreduced :meth:`forward` on its sanitised stack, meaningful only where this
+        row's mask holds. Unlike the single-dataset ``residuals``, other entries are
+        placeholders: non-finite data enter as 0 and 1, difference and two-moment rows
+        zero a masked residual, and a non-finite difference or ML loss reads ``1e6``.
         """
         keys = self._keys()
         if len(keys) < self.min_datasets:
             dc = self._dataset_collection
-            return torch.zeros((0, len(dc.hkl)), device=dc.hkl.device)
+            return torch.zeros(
+                (0, len(dc.hkl)), device=dc.hkl.device, dtype=self.dtype_float
+            )
         return self._per_refl(self._loss_inputs(recalc=True))
 
     def get_rfactor(self) -> Dict[str, object]:
         """Per-dataset R-work / R-free plus percentile summaries.
 
         Each dataset's R-factor is computed with
-        :func:`~torchref.base.metrics.rfactor.rfactor_work_free` on the exact
+        :func:`~torchref.base.metrics.rfactor_work_free` on the exact
         scaled ``|F_calc|`` the loss sees, so the collection cannot disagree with
         the single-dataset targets on convention. R-factors are unweighted (no
         ``base_weight``) and scale-invariant within a dataset.
@@ -324,9 +329,9 @@ class CollectionXrayTarget(Target):
         Returns
         -------
         dict
-            ``{"per_dataset": {key: (rwork, rfree)},
-               "rwork_pct": {label: value}, "rfree_pct": {label: value}}``.
-            The percentile dicts are empty when no dataset contributed.
+            ``{"per_dataset": {key: (rwork, rfree)}, "rwork_pct": {label: value},
+            "rfree_pct": {label: value}}``. The percentile dicts are empty when no
+            dataset contributed.
         """
         dc = self._dataset_collection
         mc = self._model_collection

@@ -45,7 +45,7 @@ class CollectionXrayTargetSpec:
     target_cls
         The class. **One class per row**, checked by :class:`CollectionXrayTargetTable`.
     doc
-        One line, for ``--help`` and the loss breakdown.
+        One-line description of the row.
     observable
         ``"amplitude"`` or ``"intensity"``. Checked against the class, so a spec and its
         implementation cannot disagree -- a row advertising intensities while reading

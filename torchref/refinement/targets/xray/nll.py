@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING
-
 import torch
 
 from torchref.base.targets.xray_likelihoods import (
@@ -10,34 +8,18 @@ from torchref.base.targets.xray_nll import nll_sigma_obs_math
 
 from .base import XrayTarget
 
-if TYPE_CHECKING:
-    from torchref.io import ReflectionData
-    from torchref.model.model import Model
-    from torchref.scaling.scaler_base import Scaler
-
 
 class NLLXrayTarget(XrayTarget):
     """``--xray-mode nll``: Gaussian amplitude NLL weighted by the experimental sigma.
 
-        NLL = 0.5*(F_obs - |F_calc|)²/σ² + log(σ) + 0.5*log(2π)
+        ``NLL = 0.5*(F_obs - |F_calc|)²/σ² + log(σ) + 0.5*log(2π)``
 
-    No model-error term, so it does **not** control overfitting -- the only x-ray target
-    here that does not. Was ``GaussianXrayTarget``; the taxonomy names the row, and
-    "Gaussian" named the distribution, which ``nll_beta`` shares.
+    No model-error term, so it does **not** control overfitting.
 
     Read observations through the dataset subset accessors, which expose live
     corrections for ScaledDataset. The target uses a fused Triton kernel where
     available and floors uncertainties at one tenth of their median.
-
-    Attributes
-    ----------
-    target_value : float
-        Reference value carried for the generic ``Target`` machinery. Note the
-        loss returned by ``forward`` is a summed (not per-reflection normalized)
-        NLL, so this value is not a tight per-reflection target.
     """
-
-    target_value: float = 1.0
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """

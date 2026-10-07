@@ -6,20 +6,17 @@ Everything else lives here: one estimator, one estimator call, one compaction, o
 ``maintenance``.
 
 **No code in this module branches on which mode is running**, and none should: the three
-differences are the :meth:`SigmaAXrayTarget._model_error`, :meth:`SigmaAXrayTarget._mean` and
-:meth:`SigmaAXrayTarget._per_refl` overrides, so a new row is a new class rather than a new
+differences are the ``SigmaAXrayTarget._model_error``, ``SigmaAXrayTarget._mean`` and
+``SigmaAXrayTarget._per_refl`` overrides, so a new row is a new class rather than a new
 ``elif``. One class per mode is checked at import by
 :class:`~torchref.refinement.targets.xray._specs.XrayTargetTable`.
 
 The likelihood hook is **per reflection**. Summing is
-:meth:`~torchref.refinement.targets.xray.base.XrayTarget.forward`'s job and happens once,
-here, so the summed and unsummed forms cannot encode different objectives.
+:meth:`SigmaAXrayTarget.forward`'s job and happens once, here, so the summed and unsummed
+forms cannot encode different objectives.
 
-``nll`` is deliberately *not* a subclass: it needs no estimate, and it reads amplitudes
-through :meth:`XrayTarget.get_data`, which falls back to **raw** amplitudes when the scaler
-has not run, where this path calls ``get_corrected_data()`` and raises. Moving it here would
-turn that silent fallback into a hard failure and lose its fused Triton kernel and its
-``median(sigma)*0.1`` clamp.
+``nll`` is deliberately *not* a subclass: it needs no estimate, and it keeps its own
+fused Triton kernel (``nll_sigma_obs_math``) and ``median(sigma)*0.1`` sigma clamp.
 """
 
 from dataclasses import dataclass
@@ -47,11 +44,11 @@ class SigmaALossInputs:
     F_obs
         Compact corrected amplitudes, from the SAME full-size array the estimator was fed.
     F_calc
-        Compact scaled amplitude, **already centred** by :meth:`SigmaAXrayTarget._mean`:
+        Compact scaled amplitude, **already centred** by ``SigmaAXrayTarget._mean``:
         ``|F_c|``, or ``alpha*|F_c|`` for the rows whose mean says so.
     Sigma
         Compact **complex** variance -- what a Rice denominator takes, ``epsilon`` times
-        whatever :meth:`SigmaAXrayTarget._model_error` selected. ``nll_beta`` converts it to
+        whatever ``SigmaAXrayTarget._model_error`` selected. ``nll_beta`` converts it to
         an amplitude variance itself; that conversion is the large-signal limit and is the
         one place the two variance conventions must not be confused.
     centric
@@ -61,7 +58,7 @@ class SigmaALossInputs:
         so compacting here would be work the other three rows discard. Call :meth:`compact`.
     est
         The whole estimate, full-size, for a hook needing a field this context does not name
-        (:meth:`SigmaAXrayTarget._mean` reads ``est.alpha``).
+        (``SigmaAXrayTarget._mean`` reads ``est.alpha``).
     sub
         The ``_ReflectionSubset`` view. ``ml_full`` needs it for its parity cache key.
     """
@@ -85,7 +82,7 @@ class SigmaAXrayTarget(XrayTarget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Constructed ONCE, here -- never in forward(). The estimator caches internally
-        # until `maintenance()` resets it, which `LossState.optimize` calls after the step
+        # until `maintenance()` resets it, which `LossState.run` calls after the step
         # loop, so one estimate serves a whole optimizer-step block (every LBFGS inner
         # iteration and line-search evaluation included). Rebuilding it per forward is
         # correct and ruinous. The invalidation half is pinned by
@@ -167,10 +164,7 @@ class SigmaAXrayTarget(XrayTarget):
 
         # Full-size scaled |F_calc| (aligned to data.hkl). beta is estimated on the full
         # free set, so it needs the full-size arrays.
-        if fcalc is not None:
-            F_calc_full = self.get_F_calc_scaled(fcalc=fcalc)
-        else:
-            F_calc_full = self.get_F_calc_scaled(recalc=False)
+        F_calc_full = self._scaled_F_calc_full(fcalc=fcalc)
 
         eps_full, dss_full = self._geom()
         eps_full = eps_full.to(F_calc_full.dtype)
@@ -236,7 +230,7 @@ class AlphaCentredMixin:
     """Centre the likelihood on ``alpha*|F_calc|`` instead of ``|F_calc|``.
 
     A mixin rather than a copied override so ``sub.select(alpha)`` stays in exactly one
-    place (:meth:`SigmaAXrayTarget._alpha_centred`).
+    place (``SigmaAXrayTarget._alpha_centred``).
     """
 
     def _mean(self, F_calc, est, sub):

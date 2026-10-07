@@ -180,7 +180,7 @@ class LossState(DeviceMovementMixin):
         self._compiled_aggregate = None  # invalidate stale compiled closure
 
         # Check if target is a combined/dictionary-like target with .items()
-        # This handles CombinedTargets, TotalGeometryTarget, TotalADPTarget, etc.
+        # This handles TotalGeometryTarget, TotalADPTarget, etc.
         if hasattr(target, "items") and callable(getattr(target, "items", None)):
             # Use name as prefix to maintain hierarchy (e.g., "geometry" -> "geometry/bond")
             combined_prefix = f"{prefix}/{name}" if prefix else name

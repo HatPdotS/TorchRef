@@ -154,7 +154,7 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
         Returns
         -------
         torch.Tensor
-            Predicted intensities, rows aligned with :meth:`_keys`.
+            Predicted intensities, rows aligned with ``_keys``.
         """
         dc, mc = self._dataset_collection, self._model_collection
         keys = self._keys()

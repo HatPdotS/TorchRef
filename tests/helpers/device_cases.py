@@ -518,7 +518,6 @@ UNCOVERED: Dict[str, str] = {
     "BaseWeighting": "abstract base; covered via ManualWeighting",
     "Refinement": "abstract base; covered via LBFGSRefinement in integration",
     "ADPTarget": "abstract base; needs a model with ADPs",
-    "CombinedTargets": "composite container; needs its component targets",
     "CombinedModelTargets": "composite container; needs a loaded model",
     "CollectionXrayTarget": "abstract base; needs a dataset collection",
     # --- need loaded structures/data: covered by integration tests -----------
@@ -571,11 +570,6 @@ UNCOVERED: Dict[str, str] = {
     "MLNoAlphaXrayTarget": "needs model + data + scaler",
     "MLFullXrayTarget": "needs model + data + scaler",
     "NLLBetaXrayTarget": "needs model + data + scaler",
-    "RiceXrayTarget": "needs model + data + scaler",
-    "DifferenceXrayTarget": "needs two datasets",
-    "PhaseInformedDifferenceTarget": "needs two datasets + phases",
-    "RiceDifferenceTarget": "needs two datasets",
-    "TaylorCorrectedDifferenceTarget": "needs two datasets",
 }
 
 # Everything under torchref/experimental is out of scope for the conformance
