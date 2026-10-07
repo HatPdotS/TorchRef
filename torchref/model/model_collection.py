@@ -249,9 +249,8 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
     Timepoint-keyed ``_SharedMixedModel`` views over shared base models.
 
     The ModelFT base models are stored once, in an ``nn.ModuleList``; the collection
-    owns the populations, ``w(t) = (1 - alpha) e_ref + alpha q(t)`` with one ``alpha``
-    shared by every timepoint (see the module docstring). Timepoints with independent
-    populations go through ``set_fraction_override`` instead.
+    owns the populations, ``w(t) = (1 - alpha) e_ref + alpha q(t)`` with one shared
+    ``alpha``; timepoints with independent populations use ``set_fraction_override``.
 
     Keys should match DatasetCollection keys so that collection-aware
     targets can automatically pair datasets with models.
