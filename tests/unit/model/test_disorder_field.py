@@ -20,6 +20,7 @@ from torchref.model.disorder_field import (
     build_neighbor_list,
     farthest_point_anchors,
 )
+from torchref.model.model import Model
 from torchref.model.parameter_wrappers import MixedTensor
 
 
@@ -463,3 +464,36 @@ def test_ragged_anchor_neighbourhoods_average_their_atoms(coords, target_b):
     assert pos.shape == (2, 3)
     assert torch.allclose(pos[0], coords[[0, 1, 2]].mean(dim=0))
     assert torch.allclose(pos[1], coords[[10, 11]].mean(dim=0))
+
+
+def _daw_field(pdb_dir, mode):
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    model.set_adp_mode(mode)
+    return model.adp_field
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["field", "field_aniso"])
+def test_shape_is_the_output_shape_and_fixed_values_stay_node_storage(pdb_dir, mode):
+    """``shape`` is what ``forward()`` returns, and the stored buffer takes node rows."""
+    field = _daw_field(pdb_dir, mode)
+    assert field.shape == tuple(field().shape)
+    with pytest.raises(ValueError, match="stored shape"):
+        field.update_fixed_values(field().detach())
+    field.update_fixed_values(field.node_values().detach())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["field", "field_aniso"])
+def test_inherited_fix_and_refine_select_nodes(pdb_dir, mode):
+    """``fix`` / ``refine`` masks run over the node storage and keep the output."""
+    field = _daw_field(pdb_dir, mode)
+    before = field().detach().clone()
+    field.fix(torch.ones(field.n_nodes, dtype=torch.bool))
+    assert int(field.get_refinable_count()) == 0
+    some = torch.zeros(field.n_nodes, dtype=torch.bool)
+    some[:5] = True
+    field.refine(some)
+    assert int(field.get_refinable_count()) == 5
+    assert torch.equal(field(), before)

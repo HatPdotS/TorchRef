@@ -18,6 +18,7 @@ from torchref.model.disorder_field import (
     ModeCovariancePayload,
     payload_code,
 )
+from torchref.model.parameter_wrappers import u6_to_matrix
 from torchref.refinement.base_refinement import DEFAULT_GROUP_WEIGHTS
 from torchref.refinement.lbfgs_refinement import LBFGSRefinement
 
@@ -203,7 +204,7 @@ def test_refinement_reduces_rwork_and_stays_finite(files):
 
     u6 = ref.model.adp_u6().detach()
     assert torch.isfinite(u6).all()
-    ev = torch.linalg.eigvalsh(_u6_to_matrix(u6))
+    ev = torch.linalg.eigvalsh(u6_to_matrix(u6))
     assert float(ev.min()) > 0.0, "an atom went non-positive-definite during refinement"
 
 
@@ -226,15 +227,6 @@ def test_full_refine_moves_coordinates_without_staling_the_field(files):
     assert not torch.allclose(xyz0, xyz1), "coordinates did not move, test proves nothing"
     assert torch.isfinite(u1).all()
     assert not torch.allclose(u0, u1), "ADPs unchanged after xyz moved -- stale cache"
-
-
-def _u6_to_matrix(u6):
-    M = torch.zeros(u6.shape[0], 3, 3, dtype=u6.dtype)
-    M[:, 0, 0], M[:, 1, 1], M[:, 2, 2] = u6[:, 0], u6[:, 1], u6[:, 2]
-    M[:, 0, 1] = M[:, 1, 0] = u6[:, 3]
-    M[:, 0, 2] = M[:, 2, 0] = u6[:, 4]
-    M[:, 1, 2] = M[:, 2, 1] = u6[:, 5]
-    return M
 
 
 # ----------------------------------------------------------------------------------

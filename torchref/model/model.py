@@ -1,22 +1,16 @@
-"""
-A base model class for atomic structure models using PyTorch.
+"""The atomic model: refinable parameters over a loaded structure.
 
-Space groups are stored as gemmi.SpaceGroup objects for consistency
-and direct access to symmetry operations.
-
-Variable naming conventions:
-- adp: Atomic displacement parameters (model-level, replaces b_factor)
-- xyz: Cartesian coordinates
-- xyz_fractional: Fractional coordinates
-- F_calc/F_obs: Structure factor amplitudes (uppercase = amplitudes)
-- f_calc/f_obs: Complex structure factors (lowercase = complex)
+:class:`Model` holds coordinates, isotropic and anisotropic ADPs and occupancies as
+parameter wrappers that decide which atoms are refinable, over a
+:class:`~torchref.model.context.ModelContext` that carries the loaded structure's
+cell, space group, atom identity and restraints.
+:class:`~torchref.model.model_ft.ModelFT` adds the structure factors.
 """
 
 import math
 import warnings
-from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple, Union
 
-import gemmi
 import numpy as np
 import torch
 import torch.nn as nn
@@ -146,9 +140,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.adp = None
         self.u = None
         self.occupancy = None
-
-        # Scattering factor parametrization (built lazily on first access)
-        self._parametrization = None
 
     def __bool__(self):
         """Return the initialization status when used in boolean context.
@@ -364,13 +355,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     # Scattering Factor Parametrization
     # =========================================================================
 
-    def _build_parametrization(self):
-        """Register the ``_A`` / ``_B`` ITC92 buffers by Z-based table lookup and
-        return the ``{element: (A, B)}`` dict. Cached; called lazily on first
-        access to :attr:`parametrization` or the scattering parameters.
+    def _build_parametrization(self) -> None:
+        """Register the ``_A`` / ``_B`` ITC92 buffers by Z-based table lookup.
+
+        Called lazily on first access to the scattering parameters; the buffers are
+        kept until the atom set changes.
         """
-        if self._parametrization is not None:
-            return self._parametrization
+        if getattr(self, "_A", None) is not None:
+            return
 
         if not self.ctx.initialized:
             raise RuntimeError(
@@ -391,31 +383,25 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.register_buffer("_A", A)
         self.register_buffer("_B", B)
 
-        # Legacy per-element view: one representative row per element.
-        elements = self.ctx.topology.atoms.element.tolist()
-        unique_elements = list(set(elements))
-        self._parametrization = {}
-
-        for elem in unique_elements:
-            idx = elements.index(elem)
-            self._parametrization[elem] = (
-                A[idx : idx + 1],  # Keep shape (1, 5)
-                B[idx : idx + 1],
-            )
-
         if self.ctx.verbose > 0:
-            print(
-                f"Parametrization built for {len(self._parametrization)} unique atom types"
-            )
-        if self.ctx.verbose > 1:
-            print("Elements with parametrization:", list(self._parametrization.keys()))
-
-        return self._parametrization
+            elements = sorted(set(self.ctx.topology.atoms.element))
+            print(f"Parametrization built for {len(elements)} unique atom types")
+            if self.ctx.verbose > 1:
+                print("Elements with parametrization:", elements)
 
     @property
-    def parametrization(self):
-        """ITC92 ``{element: (A, B)}`` dict, built on first access."""
-        return self._build_parametrization()
+    def parametrization(self) -> dict:
+        """ITC92 ``{element: (A, B)}``, each a ``(1, 5)`` row of the per-atom buffers.
+
+        Built on each access; the rows alias the ``_A`` / ``_B`` buffers, which are
+        what the structure-factor code reads.
+        """
+        self._build_parametrization()
+        elements, first = np.unique(self.ctx.topology.atoms.element, return_index=True)
+        return {
+            str(elem): (self._A[i : i + 1], self._B[i : i + 1])
+            for elem, i in zip(elements, first)
+        }
 
     def get_scattering_params_iso(self):
         """
@@ -494,22 +480,17 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def _invalidate_atom_derived_caches(self) -> None:
         """Drop the lazily-cached per-atom buffers.
 
-        Each is guarded by ``hasattr`` and returned as-is once built, so a load that
-        changes the atom count would otherwise hand back a buffer sized for the previous
-        one. That surfaced when hydrogen generation began extending the table in place:
-        the van der Waals radii stayed at the heavy-atom count while the pair list
-        indexed the full set, and the non-bonded build raised ``IndexError``. Rebuilding
-        a new model each time had hidden it.
+        Each is returned as-is once built, so a load that changes the atom count would
+        otherwise reuse buffers sized for a different atom count.
         """
         for name in self._ATOM_DERIVED_BUFFERS:
             if hasattr(self, name):
                 delattr(self, name)
-        self._parametrization = None
 
     def load(self, reader):
         """
         Populate the model from a reader callable, through
-        :meth:`ModelContext.from_atoms`; ``load_pdb`` / ``load_cif`` come through here.
+        :meth:`~.context.ModelContext.from_atoms`; ``load_pdb``/``load_cif`` call this.
 
         Parameters
         ----------
@@ -729,12 +710,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # gradient-free result cached here would be served to the next loss.
         xyz = self.xyz().detach().cpu().numpy()
         u = self.u().detach().cpu().numpy()
-        if getattr(self, "_aniso_is_empty", True):
-            b = self.adp().detach().cpu().numpy()
-        else:
-            from torchref.base.targets.adp import u6_b_eq
-
-            b = u6_b_eq(self.adp_u6()).detach().cpu().numpy()
+        b = self._b_eq().detach().cpu().numpy()
         occupancy = self.occupancy().detach().cpu().numpy()
         n = self.n_atoms
         table = pd.DataFrame(
@@ -815,14 +791,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self, old_device, new_device, old_dtype, new_dtype, *,
         device_changed, dtype_changed,
     ):
-        """Report the move.
-
-        This used to regenerate the iso/aniso index tensors, which a device move
-        would otherwise leave on the old device. It no longer has to: the
-        partition is derived on access and keyed on ``aniso_flag``'s identity,
-        and ``nn.Module._apply`` replaces the buffer rather than mutating it, so
-        the move invalidates the cache by itself.
-        """
+        """Report the move when verbose."""
         if self.ctx.verbose > 0:
             print(f"Model moved to device: {self.device}")
 
@@ -833,15 +802,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Independent in every part: the context -- restraints included -- is copied via
         :meth:`~torchref.model.context.ModelContext.copy`, buffers are cloned and each
         parameter wrapper is copied through its own ``copy`` so its parametrization
-        survives. Subclass settings carry over through :meth:`_subclass_kwargs`.
+        survives. Subclass settings carry over through ``_subclass_kwargs``.
 
         Returns
         -------
         Model
             A new, fully independent instance with copied data.
         """
-        import copy as copy_module
-
         if not self.ctx.initialized:
             raise RuntimeError("Cannot copy an uninitialized Model. Load data first.")
 
@@ -859,8 +826,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ):
                 continue
             setattr(duplicate, name, module.copy())
-        if self._parametrization is not None:
-            duplicate._parametrization = copy_module.deepcopy(self._parametrization)
 
         # Anything that borrows the coordinates -- the ADP node field -- carries the
         # reference through its own ``copy`` and still points at THIS model's ``xyz``.
@@ -1005,7 +970,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         B-factors), ``u_mask`` (atoms with no NaN U component), and
         ``occupancy_mask`` (occupancies below 0.999), then pushes each mask
         into the corresponding parameter wrapper via ``update_refinable_mask``.
-        Called from :meth:`_install_parameters` after the wrappers are constructed.
+        Called from ``_install_parameters`` after the wrappers are constructed.
         """
         self.register_buffer(
             "xyz_mask", torch.ones(self.n_atoms, dtype=torch.bool, device=self.device)
@@ -1021,7 +986,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     PARAM_TYPES: Tuple[str, ...] = ("xyz", "adp", "u", "occupancy")
 
     def parameters_of_types(self, types: Iterable[str]) -> List[nn.Parameter]:
-        """Return the leaf ``nn.Parameter``s for the named parameter types.
+        """Return the leaf ``nn.Parameter`` objects for the named parameter types.
 
         Used by refinement entry points (``refine_xyz``, ``refine_adp``, ...)
         to construct an optimizer over only the leaves the caller intends to
@@ -1039,7 +1004,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         -------
         list of nn.Parameter
             Leaves for each requested type, in the order the types were given.
-            Coordinate wrappers may expose additional torsion and rotation leaves.
+            A coordinate wrapper may expose several: a riding one adds torsion and
+            rotation leaves, a rigid one has rotation and translation leaves.
         """
         out: List[nn.Parameter] = []
         for t in types:
@@ -1058,42 +1024,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Freeze (stop refining) one parameter type.
 
-        Parameters
-        ----------
-        target : str
-            One of ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
-            Unrecognized names are ignored. (``occupancy`` is frozen via the
-            OccupancyTensor's ``freeze_all`` rather than ``fix_all``.)
-        """
-        if target == "xyz":
-            self.xyz.fix_all()
-        elif target == "adp":
-            self.adp.fix_all()
-        elif target == "u":
-            self.u.fix_all()
-        elif target == "occupancy":
-            self.occupancy.freeze_all()  # OccupancyTensor uses freeze_all() not fix_all()
-
-    def freeze_all(self):
-        """Freeze every parameter type (``xyz``, ``adp``, ``u``, ``occupancy``)."""
-        self.freeze("xyz")
-        self.freeze("adp")
-        self.freeze("u")
-        self.freeze("occupancy")
-
-    def unfreeze_all(self):
-        """Unfreeze every parameter type, restoring each wrapper's default mask."""
-        self.unfreeze("xyz")
-        self.unfreeze("adp")
-        self.unfreeze("u")
-        self.unfreeze("occupancy")
-
-    def unfreeze(self, target: str):
-        """
-        Unfreeze (resume refining) one parameter type.
-
-        Restores the parameter's default refinable mask (``xyz_mask`` /
-        ``adp_mask`` / ``u_mask`` / ``occupancy_mask``).
+        A temporary toggle: the refinable set (the mask buffer) is left as it is,
+        and :meth:`unfreeze` re-applies it. Frozen values are the current ones.
 
         Parameters
         ----------
@@ -1101,17 +1033,39 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             One of ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
             Unrecognized names are ignored.
         """
-        if target == "xyz":
-            self.xyz.update_refinable_mask(self.xyz_mask)
-        elif target == "adp":
-            self.adp.update_refinable_mask(self.adp_mask)
-        elif target == "u":
-            self.u.update_refinable_mask(self.u_mask)
-        elif target == "occupancy":
-            # OccupancyTensor uses unfreeze_all() or update_refinable_mask() with full atom space mask
-            self.occupancy.update_refinable_mask(
-                self.occupancy_mask, in_compressed_space=False
+        if target in self.PARAM_TYPES:
+            # Every wrapper takes an atom-space mask and collapses it onto its own
+            # storage (nodes of a field, occupancy groups, rigid bodies).
+            getattr(self, target).update_refinable_mask(
+                torch.zeros(self.n_atoms, dtype=torch.bool, device=self.device)
             )
+
+    def freeze_all(self):
+        """Freeze every parameter type (``xyz``, ``adp``, ``u``, ``occupancy``)."""
+        for target in self.PARAM_TYPES:
+            self.freeze(target)
+
+    def unfreeze_all(self):
+        """Unfreeze every parameter type, re-applying each one's refinable set."""
+        for target in self.PARAM_TYPES:
+            self.unfreeze(target)
+
+    def unfreeze(self, target: str):
+        """
+        Unfreeze (resume refining) one parameter type.
+
+        Re-applies the parameter's refinable set: its mask buffer (``xyz_mask`` /
+        ``adp_mask`` / ``u_mask`` / ``occupancy_mask``), set at load and edited by
+        :meth:`freeze_selection` and :meth:`unfreeze_selection`.
+
+        Parameters
+        ----------
+        target : str
+            One of ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
+            Unrecognized names are ignored.
+        """
+        if target in self.PARAM_TYPES:
+            getattr(self, target).update_refinable_mask(getattr(self, f"{target}_mask"))
 
     def set_adp_mode(
         self,
@@ -1127,58 +1081,45 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Repartitions atoms between isotropic (a single B in ``adp``) and
         anisotropic (a 6-component U in ``u``), *converting* the stored values and
-        refreshing everything keyed off the split: ``aniso_flag``, the cached SF
-        index arrays, the refinable masks, the PDB ``anisou_flag`` column (which
-        gates ANISOU output) and the forward caches.
-
-        A true conversion, not a freeze: an anisotropic atom's structure factor
-        uses only its ``u``, so freezing ``u`` instead would leave most atoms' ADPs
-        merely fixed rather than isotropic.
+        refreshing everything keyed off the split: ``aniso_flag`` (which decides the
+        ANISOU records written), the cached SF index arrays, the refinable masks and the
+        forward caches.
 
         Parameters
         ----------
         mode : {"isotropic", "anisotropic", "field", "field_aniso", "preserve"}, optional
-            ``"isotropic"`` (default) converts every atom, previously anisotropic
-            ones to ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"``
-            converts those matching ``aniso_selection``, expanding isotropic atoms
-            to ``U = (B / 8 pi^2) I``. ``"field"`` replaces the per-atom isotropic B
-            with a :class:`~torchref.model.disorder_field.DisorderFieldTensor`, whose
-            node values are least-squares fitted to the B it replaces, so the atom
-            count stops setting the ADP parameter count. ``"field_aniso"`` is the same
-            representation carrying a full U per node, which takes over ``u`` rather
-            than ``adp``. ``"preserve"`` is a no-op: the ADPs stay exactly as the file
-            supplied them, anisotropic where the file was anisotropic.
+            ``"isotropic"`` (default) converts every atom, the anisotropic ones to
+            ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"`` converts
+            those matching ``aniso_selection``, expanding isotropic atoms to
+            ``U = (B / 8 pi^2) I``. ``"field"`` replaces the per-atom B with a
+            :class:`~torchref.model.disorder_field.DisorderFieldTensor` whose node
+            values are least-squares fitted to it; ``"field_aniso"`` does the same with
+            a full U per node, in ``u``. ``"preserve"`` is a no-op: the ADPs stay
+            exactly as the file supplied them.
         aniso_selection : str, optional
-            Phenix-style selection for ``mode="anisotropic"``, default
-            ``"not resname HOH and not element H"``; ignored otherwise.
+            Phenix-style selection of the anisotropic atoms: ``"anisotropic"`` defaults
+            to ``"not resname HOH and not element H"``, ``"field_aniso"`` to every atom.
         n_nodes : int, optional
-            Nodes for ``mode="field"``. Defaults to one per 25 atoms, floored at 4.
+            Nodes for either field mode; default one per 25 atoms, floored at 4.
         k_neighbors : int, optional
-            Candidate nodes per atom for ``mode="field"``. Default 12.
+            Candidate nodes per atom for either field mode. Default 12.
         refine_node_positions : bool, optional
             Give each node a refinable offset from its anchor centroid, at three extra
             parameters per node. On by default: it is what lets the load-balancing
             restraint move a node toward atoms instead of only widening its kernel.
         init : {"fit", "flat"}, optional
-            What a field mode fits its nodes to: ``"fit"`` (default) the model's current
-            per-atom ADPs, ``"flat"`` a single level with their spatial structure
-            discarded. See :meth:`_install_disorder_field`.
+            What a field mode fits to: ``"fit"`` (default) the current per-atom ADPs,
+            ``"flat"`` their median level with the spatial structure discarded.
         mode_set : str, optional
             For ``mode="field_aniso"``, a key of
-            :data:`~torchref.model.disorder_field.MODE_SETS` --- ``"rigid"`` is TLS,
-            ``"affine"`` adds shear and extension. The node then stores the covariance
-            of its displacement modes, so the U it gives an atom depends on where that
-            atom sits inside the node's region rather than being constant across it.
-            Default ``None`` keeps the constant-U payload.
+            :data:`~torchref.model.disorder_field.MODE_SETS` (``"rigid"`` is TLS,
+            ``"affine"`` adds shear and extension) for a node U that varies across the
+            node's region. Default ``None`` keeps the constant-U payload.
 
         Notes
         -----
         Run once at model setup, before scaling / restraints / targets. The
         isotropic result matches a freshly-loaded isotropic-only model.
-
-        Leaving ``"field"`` needs no special case: the conversion reads ``adp()``,
-        which a field evaluates per atom, so the field materialises into a per-atom
-        wrapper on the way out.
         """
         if not self.ctx.initialized:
             return
@@ -1267,29 +1208,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     ):
         """Replace a per-atom ADP wrapper with a node field fitted to it.
 
-        The field lands in the slot its payload feeds: an isotropic payload takes over
-        ``adp`` and leaves the model isotropic, an anisotropic one takes over ``u`` and
-        the model refines every selected atom anisotropically. Both expect the partition
-        to have run first, which :meth:`set_adp_mode` arranges.
-
-        ``mode_set`` selects a displacement-mode payload in place of the constant-U one,
-        which is the difference between a node holding a single ADP and a node holding a
-        motion whose ADP varies across its region.
-
-        ``init`` chooses what the field is fitted to:
-
-        ``"fit"``
-            The per-atom ADPs the model currently holds. Right when those mean something
-            --- a deposited or already-refined model --- because the field then starts
-            from a state whose R-factor is known.
-        ``"flat"``
-            A single value, the median of those ADPs. Right when they do not mean
-            anything. An AlphaFold model's B values come from a pLDDT conversion, and
-            fitting a smooth basis to them spends the field's parameters reproducing
-            structure it cannot hold and that is not worth holding: measured on 2A25, the
-            fitted field starts 0.025 R-free WORSE than a flat one, before any
-            refinement. The level is kept because it is close to right and the scaler
-            owns it anyway; only the spatial structure is discarded.
+        An isotropic payload takes over ``adp``; an anisotropic one, or the
+        displacement-mode payload ``mode_set`` selects (a U that varies across the
+        node's region), takes over ``u``. Either way the iso/aniso partition must have
+        run first, which :meth:`set_adp_mode` arranges. ``init="fit"`` fits the nodes
+        to the per-atom ADPs the model holds; ``"flat"`` fits them to the median of
+        those ADPs, keeping the level and discarding the spatial structure, for B
+        values that carry none (an AlphaFold model's pLDDT-derived ones).
         """
         from torchref.model.disorder_field import (
             AnisotropicPayload,
@@ -1436,13 +1361,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.reset_cache()
 
     def update_mask_from_selection(
-        self, selection_string: str, target: str, mode: str = "set", freeze: bool = True
+        self, selection_string: str, target: str, freeze: bool = True
     ):
         """
-        Update the refinable mask for a parameter using Phenix-style selection syntax.
+        Remove a Phenix-style selection from a parameter's refinable set, or add it.
 
-        Updates only the mask buffer (``xyz_mask`` / ``adp_mask`` / ``u_mask`` /
-        ``occupancy_mask``); the parameter tensors keep their old split until
+        The refinable set is the mask buffer (``xyz_mask`` / ``adp_mask`` / ``u_mask``
+        / ``occupancy_mask``) that :meth:`unfreeze` and :meth:`unfreeze_all` re-apply.
+        Only the buffer changes; the parameter tensors keep their old split until
         :meth:`apply_mask_to_parameter` is called.
 
         Parameters
@@ -1451,12 +1377,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Phenix-style selection; grammar in :mod:`torchref.utils.selection`.
         target : str
             Parameter to update: 'xyz', 'adp', 'u', or 'occupancy'.
-        mode : str, optional
-            How to combine with current mask: ``'set'`` (default) replaces,
-            ``'add'`` unions, ``'remove'`` subtracts.
         freeze : bool, optional
-            If True (default), selected atoms will be frozen (mask=False).
-            If False, selected atoms will be unfrozen (mask=True).
+            True (default) removes the selected atoms from the set, False adds them.
+            Atoms outside the selection keep their state either way.
 
         Raises
         ------
@@ -1486,25 +1409,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         current_mask = getattr(self, mask_name)
 
         selected = self.get_selection_mask(selection_string).to(current_mask.device)
-        if mode == "set":
-            selection_mask = selected
-        elif mode == "add":
-            selection_mask = current_mask | selected
-        elif mode == "remove":
-            selection_mask = current_mask & ~selected
-        else:
-            raise ValueError(f"mode must be 'set', 'add' or 'remove', got {mode!r}")
-
         # Masks name the REFINABLE atoms, so freezing clears the selection.
-        if freeze:
-            updated_mask = current_mask & ~selection_mask
-        else:
-            updated_mask = selection_mask
+        updated_mask = current_mask & ~selected if freeze else current_mask | selected
 
         setattr(self, mask_name, updated_mask)
 
         if self.ctx.verbose > 0:
-            n_selected = selection_mask.sum().item()
+            n_selected = selected.sum().item()
             n_refinable = updated_mask.sum().item()
             action = "frozen" if freeze else "unfrozen"
             print(
@@ -1519,7 +1430,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Push the current mask buffer into the parameter wrapper's refinable split.
 
         The counterpart to :meth:`update_mask_from_selection`, which only edits the
-        buffer. Replaces the wrapper's ``refinable_params``, so rebuild any
+        buffer, and the repartition :meth:`unfreeze` makes, raising on an unknown
+        target. Replaces the wrapper's ``refinable_params``, so rebuild any
         optimizer afterwards.
 
         Parameters
@@ -1532,20 +1444,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ValueError
             If target is not recognized.
         """
-        if target == "xyz":
-            self.xyz.update_refinable_mask(self.xyz_mask)
-        elif target == "adp":
-            self.adp.update_refinable_mask(self.adp_mask)
-        elif target == "u":
-            self.u.update_refinable_mask(self.u_mask)
-        elif target == "occupancy":
-            self.occupancy.update_refinable_mask(
-                self.occupancy_mask, in_compressed_space=False
-            )
-        else:
+        if target not in self.PARAM_TYPES:
             raise ValueError(
                 f"Invalid target: '{target}'. Must be 'xyz', 'adp', 'u', or 'occupancy'"
             )
+        self.unfreeze(target)
 
         if self.ctx.verbose > 0:
             n_refinable = getattr(self, f"{target}_mask").sum().item()
@@ -1557,8 +1460,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Freeze atoms matching a Phenix-style selection for specified parameters.
 
-        Convenience method that combines update_mask_from_selection() and
-        apply_mask_to_parameter() into a single call.
+        Removes them from each target's refinable set
+        (:meth:`update_mask_from_selection`) and applies the set
+        (:meth:`apply_mask_to_parameter`); atoms outside the selection keep their state.
 
         Parameters
         ----------
@@ -1575,16 +1479,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             model.freeze_selection("chain A")                     # everything
             model.freeze_selection("resseq 10:20", targets='xyz')  # coords only
         """
-        if targets == "all":
-            targets = ["xyz", "adp", "u", "occupancy"]
-        elif isinstance(targets, str):
-            targets = [targets]
-
-        for target in targets:
-            self.update_mask_from_selection(
-                selection_string, target, mode="set", freeze=True
-            )
-            self.apply_mask_to_parameter(target)
+        self._edit_refinable_sets(selection_string, targets, freeze=True)
 
     def unfreeze_selection(
         self, selection_string: str, targets: Union[str, list] = "all"
@@ -1592,8 +1487,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Unfreeze atoms matching a Phenix-style selection for specified parameters.
 
-        Convenience method that combines update_mask_from_selection() and
-        apply_mask_to_parameter() into a single call.
+        Adds them to each target's refinable set (:meth:`update_mask_from_selection`)
+        and applies the set (:meth:`apply_mask_to_parameter`); atoms outside the
+        selection keep their state. :meth:`freeze` and :meth:`freeze_all` leave the
+        sets untouched, so after them this makes the whole set refinable again, not
+        just the selection: to refine only a selection, start from
+        ``freeze_selection("all")``.
 
         Parameters
         ----------
@@ -1607,18 +1506,22 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         --------
         ::
 
-            model.unfreeze_selection("chain A")
+            model.freeze_selection("all", targets='xyz')
             model.unfreeze_selection("name CA or name C or name N", targets='xyz')
         """
+        self._edit_refinable_sets(selection_string, targets, freeze=False)
+
+    def _edit_refinable_sets(
+        self, selection_string: str, targets: Union[str, list], freeze: bool
+    ) -> None:
+        """Edit each target's refinable set by a selection, then apply the set."""
         if targets == "all":
-            targets = ["xyz", "adp", "u", "occupancy"]
+            targets = list(self.PARAM_TYPES)
         elif isinstance(targets, str):
             targets = [targets]
 
         for target in targets:
-            self.update_mask_from_selection(
-                selection_string, target, mode="set", freeze=False
-            )
+            self.update_mask_from_selection(selection_string, target, freeze=freeze)
             self.apply_mask_to_parameter(target)
 
     def get_aniso(self):
@@ -1690,6 +1593,20 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         flag = self.aniso_flag.to(B.device).unsqueeze(-1)
         return torch.where(flag, torch.nan_to_num(U), u_from_b)
 
+    def _b_eq(self) -> torch.Tensor:
+        """Per-atom equivalent isotropic B in Å², ``(N,)``, differentiable.
+
+        ``B_eq = (8 pi^2 / 3) tr(U)`` from :meth:`adp_u6` when any atom is
+        anisotropic, else ``adp()`` directly, which is the same number for an
+        isotropic atom without the U path. The written ``tempfactor`` column reads
+        it, and so should any ADP restraint that needs one B per atom.
+        """
+        if self._aniso_is_empty:
+            return self.adp()
+        from torchref.base.targets.adp import u6_b_eq
+
+        return u6_b_eq(self.adp_u6())
+
     def parameters(self, recurse: bool = True):
         """
         Iterate over refinable parameters, skipping empty ones.
@@ -1711,9 +1628,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return (p for p in super().parameters(recurse) if p.numel() > 0)
 
     def named_mixed_tensors(self):
-        """Yield ``(name, wrapper)`` for every :class:`MixedTensor` submodule.
+        """Yield ``(name, wrapper)`` for each :class:`~.parameter_wrappers.MixedTensor`.
 
-        Subclasses of ``MixedTensor`` are included; ``RigidXYZTensor`` is not.
+        Subclasses are included; ``RigidXYZTensor`` is not.
         """
         for name, module in self.named_modules():
             if isinstance(module, MixedTensor) and module != self:
@@ -1853,8 +1770,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Return a dictionary containing the complete state of the Model.
 
         Registered buffers, the four parameter wrappers, the context's entries
-        (:meth:`ModelContext.state`), the atom table (:meth:`to_dataframe`), dtype and
-        device. Restore with
+        (:meth:`~torchref.model.context.ModelContext.state`), the atom table
+        (:meth:`to_dataframe`), dtype and device. Restore with
         :meth:`create_from_state_dict`, which is what knows how to rebuild the wrappers.
 
         Parameters
@@ -2052,7 +1969,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         -----
         Consumes ``state_dict``: the metadata keys are popped off it. Checkpoints
         written before the hydrogen policy existed are mapped onto it; see
-        :meth:`ModelContext.from_state`.
+        :meth:`~torchref.model.context.ModelContext.from_state`.
         """
         # Build on CPU throughout, then move once: the wrappers are built from the atom
         # table and land on CPU whatever is asked for, so resolving an accelerator up
@@ -2107,8 +2024,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Return a boolean mask for atoms matching a Phenix-style selection.
 
-        Evaluated on the topology (:meth:`Topology.select`); the result can be handed
-        straight to ``MixedTensor.set()``.
+        Evaluated on the topology (:meth:`~.topology.topology.Topology.select`); the
+        result can be handed straight to ``MixedTensor.set()``.
 
         Parameters
         ----------
@@ -2233,8 +2150,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         rotation_matrix : torch.Tensor
             3x3 rotation matrix. Should be orthogonal (R^T @ R = I).
         center : torch.Tensor, optional
-            Center of rotation with shape (3,). Defaults to the centroid of all
-            atomic coordinates.
+            Center of rotation with shape (3,), in Å. Defaults to :meth:`get_centroid`.
 
         Returns
         -------
@@ -2246,7 +2162,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         xyz = self.xyz()
         if center is None:
-            center = xyz.mean(dim=0)
+            center = self.get_centroid()
 
         rotation_matrix = rotation_matrix.to(device=xyz.device, dtype=xyz.dtype)
         center = center.to(device=xyz.device, dtype=xyz.dtype)
@@ -2306,14 +2222,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return self
 
     def get_centroid(self) -> torch.Tensor:
-        """
-        Compute the centroid (center of mass) of all atoms.
-
-        Returns
-        -------
-        torch.Tensor
-            Centroid coordinates with shape (3,).
-        """
+        """Return the unweighted mean of all Cartesian coordinates, ``(3,)`` in Å."""
         if not self.ctx.initialized:
             raise RuntimeError("Model must be initialized to compute centroid.")
 
@@ -2325,7 +2234,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     @property
     def hydrogen_mode(self) -> str:
-        """``"atoms"`` or ``"riding"``; see :class:`ModelContext`."""
+        """``"atoms"`` or ``"riding"``; see :class:`~.context.ModelContext`."""
         return self.ctx.hydrogen_mode
 
     def hydrogen_frames(self):
@@ -2382,9 +2291,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         The atom table never changes here: hydrogens a table lacks are generated only
         at load, with ``hydrogens="add"``. Replaces the ``xyz`` wrapper, so any
         optimizer or ``LossState`` built over the old parameters is stale;
-        :meth:`Refinement.set_hydrogen_mode` does the engine-side reset. The refinable
-        set carries over row for row (a hydrogen released to ``"atoms"`` follows its
-        parent's mask).
+        :meth:`~torchref.refinement.base_refinement.Refinement.set_hydrogen_mode`
+        does the engine-side reset. The refinable set carries over row for row (a
+        hydrogen released to ``"atoms"`` follows its parent's mask).
         """
         from torchref.model.context import check_hydrogen_policy
         from torchref.model.riding_xyz import RidingXYZTensor
@@ -2418,7 +2327,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def use_rigid_xyz(self) -> "Model":
         """
-        Swap ``self.xyz`` for a per-chain :class:`RigidXYZTensor`.
+        Swap ``self.xyz`` for a per-chain :class:`~.rigid_xyz.RigidXYZTensor`.
 
         The only refinable leaves become per-chain Euler angles and translations,
         with chains auto-detected from the topology's chain ids (waters and
@@ -2531,8 +2440,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Parameters
         ----------
         commit : bool, optional
-            If ``True`` (default), bake the current rotated/translated
-            coordinates into a fresh :class:`MixedTensor` and install that
+            If ``True`` (default), bake the current rotated/translated coordinates
+            into a fresh :class:`~.parameter_wrappers.MixedTensor` and install that
             as ``self.xyz``. If ``False``, restore the original container
             untouched (discarding the rigid transform).
 

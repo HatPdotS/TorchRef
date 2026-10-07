@@ -517,7 +517,6 @@ UNCOVERED: Dict[str, str] = {
     "CrystalDataset": "abstract dataclass base; covered via ReflectionData",
     "BaseWeighting": "abstract base; covered via ManualWeighting",
     "Refinement": "abstract base; covered via LBFGSRefinement in integration",
-    "PassThroughTensor": "documented non-functional stub (parameter_wrappers.py)",
     "ADPTarget": "abstract base; needs a model with ADPs",
     "CombinedTargets": "composite container; needs its component targets",
     "CombinedModelTargets": "composite container; needs a loaded model",

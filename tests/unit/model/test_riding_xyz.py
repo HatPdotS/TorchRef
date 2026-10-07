@@ -231,3 +231,11 @@ def test_forward_is_cached_until_parameters_move(hydrogenated):
     with torch.no_grad():
         riding.refinable_params[0, 0] += 0.5
     assert riding() is not first
+
+
+@pytest.mark.unit
+def test_update_fixed_values_takes_a_full_space_table(hydrogenated):
+    _, frames, xyz = hydrogenated
+    riding = RidingXYZTensor(xyz, frames)
+    riding.update_fixed_values(xyz + 0.5)
+    assert torch.equal(riding.fixed_values, (xyz + 0.5)[riding.base_row])

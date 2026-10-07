@@ -137,7 +137,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         # entry; forward() blends with mobile_mask so the rotated/translated
         # result is discarded for non-mobile atoms).
         safe_idx_np = np.where(idx_list >= 0, idx_list, 0)
-        chain_indices = torch.from_numpy(safe_idx_np).to(device=device)
+        chain_indices = torch.as_tensor(
+            safe_idx_np, dtype=get_int_dtype(), device=device
+        )
 
         # Per-atom weights for the centroid (= rotation center). Defaults
         # to uniform; pass atomic Z (or true masses) to use a mass-weighted
@@ -158,7 +160,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             atom_weights_t = atom_weights_t.reshape(-1).contiguous()
 
         # Per-chain mass-weighted center: only over MOBILE atoms of each chain.
-        mobile_idx = torch.from_numpy(idx_list[mobile_arr]).to(device=device)
+        mobile_idx = torch.as_tensor(
+            idx_list[mobile_arr], dtype=get_int_dtype(), device=device
+        )
         mobile_xyz = original_xyz_t[mobile_t]
         mobile_w = atom_weights_t[mobile_t]
         chain_centers = torch.zeros((n_chains, 3), dtype=dtype, device=device)
@@ -282,9 +286,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         # Compat with ``MixedTensor`` consumers (e.g. ModelFT's dtype guard
         # in ``_check_forward_dtype``). This is a dtype-probe shim only: it
         # returns just one leaf (``euler_angles``) so callers can inspect the
-        # float dtype, NOT the full refinable set. The actual refinable count
+        # float dtype, NOT the full refinable set. The actual refinable set
         # spans both leaves (euler_angles + translations); see
-        # ``get_refinable_count``. Both leaves share the model's float dtype.
+        # ``optimization_parameters``. Both leaves share the model's float dtype.
         return self.euler_angles
 
     def get_refinable_count(self) -> int:
@@ -326,9 +330,16 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         self.euler_angles.requires_grad_(True)
         self.translations.requires_grad_(True)
 
-    def update_refinable_mask(self, *args, **kwargs):
-        # No-op: the rigid container has no per-atom mask.
-        return
+    def update_refinable_mask(self, new_mask: torch.Tensor) -> None:
+        """Refine every rigid body if any atom of the ``(N,)`` mask is True, else none.
+
+        The container has no per-atom split, so the mask only chooses between
+        :meth:`refine_all` and :meth:`fix_all`.
+        """
+        if bool(new_mask.any()):
+            self.refine_all()
+        else:
+            self.fix_all()
 
     def bake(self) -> None:
         """Bake the current rigid transformation into ``original_xyz``.
@@ -388,6 +399,10 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
 
     def parameters(self, recurse: bool = True):
         # Match MixedTensor.parameters() return convention (a list).
+        return self.optimization_parameters()
+
+    def optimization_parameters(self) -> list[nn.Parameter]:
+        """Return the rotation and translation leaves for the xyz optimizer."""
         return [self.euler_angles, self.translations]
 
     def copy(self) -> "RigidXYZTensor":
@@ -425,8 +440,8 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     # Materialize back into a regular MixedTensor.
     # -----------------------------------------------------------------------
     def to_mixed_tensor(self):
-        """A per-atom :class:`MixedTensor` holding the current transformed
-        coordinates, for handing per-atom refinement back to ``Model``.
+        """A per-atom :class:`~.parameter_wrappers.MixedTensor` holding the current
+        transformed coordinates, for handing per-atom refinement back to ``Model``.
         """
         from torchref.model.parameter_wrappers import MixedTensor
 

@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from torchref.base.alignment.rotation import rotation_matrix_euler_xyz
+from torchref.config import get_int_dtype
 from torchref.model import ModelFT, RigidXYZTensor
 from torchref.model.parameter_wrappers import MixedTensor
 
@@ -24,6 +25,11 @@ class TestRigidXYZTensor:
         assert m is fresh_modelft
         assert isinstance(m.xyz, RigidXYZTensor)
         assert m.xyz.n_chains == n_chains_pdb
+
+    @pytest.mark.unit
+    def test_chain_indices_take_the_configured_int_dtype(self, fresh_modelft):
+        fresh_modelft.use_rigid_xyz()
+        assert fresh_modelft.xyz.chain_indices.dtype == get_int_dtype()
 
     @pytest.mark.unit
     def test_identity_reconstruction(self, fresh_modelft):
@@ -80,6 +86,15 @@ class TestRigidXYZTensor:
         n_chains = fresh_modelft.xyz.n_chains
         assert leaves[0].shape == (n_chains, 3)
         assert leaves[1].shape == (n_chains, 3)
+
+    @pytest.mark.unit
+    def test_xyz_optimizer_gets_both_rigid_leaves(self, fresh_modelft):
+        """``refine_xyz`` builds its optimizer from ``parameters_of_types``."""
+        fresh_modelft.use_rigid_xyz()
+        leaves = fresh_modelft.parameters_of_types(("xyz",))
+        assert len(leaves) == 2
+        assert leaves[0] is fresh_modelft.xyz.euler_angles
+        assert leaves[1] is fresh_modelft.xyz.translations
 
     @pytest.mark.unit
     def test_mass_weighted_centroid_matches_explicit(self, fresh_modelft):
@@ -314,6 +329,18 @@ class TestRigidFreezeRestore:
         m.use_rigid_xyz()
         m.restore_xyz_from_rigid(commit=False)
         assert m.adp.refinable_params.numel() == adp0
+
+    @pytest.mark.unit
+    def test_unfreeze_undoes_freeze_of_the_rigid_bodies(self, fresh_modelft):
+        m = fresh_modelft
+        m.use_rigid_xyz()
+        m.freeze("xyz")
+        assert not m.xyz.euler_angles.requires_grad
+        assert not m.xyz.translations.requires_grad
+
+        m.unfreeze("xyz")
+        assert m.xyz.euler_angles.requires_grad
+        assert m.xyz.translations.requires_grad
 
     @pytest.mark.unit
     def test_pre_frozen_group_stays_frozen(self, fresh_modelft):

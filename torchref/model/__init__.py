@@ -23,7 +23,6 @@ from torchref.model.parameter_wrappers import (
     CholeskyMixedTensor,
     MixedTensor,
     OccupancyTensor,
-    PassThroughTensor,
     PositiveMixedTensor,
 )
 from torchref.model.model_collection import ModelCollection, _SharedMixedModel
@@ -39,7 +38,6 @@ __all__ = [
     "MixedTensor",
     "PositiveMixedTensor",
     "CholeskyMixedTensor",
-    "PassThroughTensor",
     "OccupancyTensor",
     "ModelCollection",
     "_SharedMixedModel",

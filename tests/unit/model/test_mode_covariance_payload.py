@@ -29,10 +29,6 @@ from torchref.model.parameter_wrappers import (
 DTYPE = torch.float64
 
 
-def _u6_to_mat(u6):
-    return u6_to_matrix(u6)
-
-
 def _random_sigma(q, k=1, scale=0.05, seed=0):
     """A random PD ``(k, q, q)`` covariance."""
     g = torch.Generator().manual_seed(seed)
@@ -221,7 +217,7 @@ def test_raw_to_cholesky_matches_the_unrolled_three_by_three():
     raw = torch.randn(12, 6, dtype=DTYPE)
     L = raw_to_cholesky(raw, 3, eps)
     got = L @ L.transpose(-1, -2)
-    expected = _u6_to_mat(raw6_to_u6(raw, eps))
+    expected = u6_to_matrix(raw6_to_u6(raw, eps))
     assert torch.allclose(got, expected, atol=1e-12)
 
 

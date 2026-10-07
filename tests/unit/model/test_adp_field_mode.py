@@ -230,3 +230,28 @@ def test_state_dict_round_trip_in_field_mode(pdb_path):
     assert restored.adp_is_field
     assert restored.adp.n_nodes == 24
     assert torch.allclose(restored.adp().detach(), expected, atol=1e-6)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["field", "field_aniso"])
+@pytest.mark.parametrize("round_trip", ["freeze_all", "rigid_body"])
+def test_freeze_round_trip_leaves_the_field_refining(pdb_dir, mode, round_trip):
+    """Freezing repartitions a field over its nodes, and undoing it refines them again."""
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    model.set_adp_mode(mode)
+    n_nodes = model.adp_field.get_refinable_count()
+    assert n_nodes > 0
+
+    if round_trip == "freeze_all":
+        model.freeze_all()
+        assert model.adp_field.get_refinable_count() == 0
+        model.unfreeze_all()
+    else:
+        model.use_rigid_xyz()
+        assert model.adp_field.get_refinable_count() == 0
+        model.restore_xyz_from_rigid()
+
+    field = model.adp_field
+    assert field.get_refinable_count() == n_nodes
+    assert field.refinable_params.requires_grad
