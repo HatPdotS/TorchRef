@@ -39,6 +39,18 @@ def _check_ihm_available():
         )
 
 
+def _is_ihm_block(block: gemmi.cif.Block) -> bool:
+    """Whether ``block`` has an ``_ihm_model_list`` or ``_ihm_multi_state_modeling``.
+
+    Shared by :meth:`IHMReader.is_ihm_file` and ``read_cif``'s content dispatch;
+    a loop and a key-value item both count.
+    """
+    return bool(
+        block.find(["_ihm_model_list.model_id"])
+        or block.find(["_ihm_multi_state_modeling.state_id"])
+    )
+
+
 def _add_group_with_independent_populations(collection, name, fractions):
     """Add an IHM model group, keeping its populations exactly as deposited.
 
@@ -130,13 +142,7 @@ class IHMReader:
             doc = gemmi.cif.read(str(filepath))
         except Exception:
             return False
-
-        for block in doc:
-            if block.find(["_ihm_model_list.model_id"]):
-                return True
-            if block.find(["_ihm_multi_state_modeling.state_id"]):
-                return True
-        return False
+        return any(_is_ihm_block(block) for block in doc)
 
     # ------------------------------------------------------------------
     # Read IHM metadata -> IHMEnsembleMapping

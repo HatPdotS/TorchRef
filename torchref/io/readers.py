@@ -15,6 +15,8 @@ from typing import Any, Union
 
 import gemmi
 
+from torchref.io.ihm import _is_ihm_block
+
 __all__ = ["read_mtz", "read_cif", "read_pdb"]
 
 
@@ -51,9 +53,7 @@ def _detect_cif_type(filepath: str) -> str:
             or block.find_value("_chem_comp.id")
         ):
             has_restraints = True
-        if block.find_loop("_ihm_model_list.model_id") or block.find(
-            ["_ihm_multi_state_modeling.state_id"]
-        ):
+        if _is_ihm_block(block):
             has_ihm = True
 
     # IHM ensembles also carry _atom_site, so check them first.

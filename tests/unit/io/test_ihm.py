@@ -229,6 +229,19 @@ class TestReadCifDetection:
             assert kind == "structure"
             assert kind != "ihm_ensemble"
 
+    def test_key_value_model_list_is_ihm_to_both_probes(self, tmp_path):
+        """read_cif and IHMReader.is_ihm_file agree on a one-model IHM file."""
+        from torchref.io.ihm import IHMReader
+        from torchref.io.readers import _detect_cif_type
+
+        path = tmp_path / "one_model.cif"
+        path.write_text(
+            "data_one\n_ihm_model_list.model_id 1\n"
+            "loop_\n_atom_site.group_PDB\n_atom_site.id\nATOM 1\n"
+        )
+        assert IHMReader.is_ihm_file(str(path))
+        assert _detect_cif_type(str(path)) == "ihm_ensemble"
+
 
 # ======================================================================
 # IHMReader static detection tests (no python-ihm needed)
