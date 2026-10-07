@@ -390,7 +390,6 @@ class _FusedDensityFunction(torch.autograd.Function):
         )
         ctx.ny = ny
         ctx.nz = nz
-        ctx.density_map_shape = density_map.shape
 
         return output
 
