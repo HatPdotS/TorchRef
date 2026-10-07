@@ -108,3 +108,75 @@ assert torch.equal(got, want), f"max |diff| {{(got - want).abs().max().item()}}"
     proc = _run_torchref(code, tmp_path)
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert len(list(tmp_path.glob("jit_cpu_kernel-*.pt"))) == 1
+
+
+def _split_1daw(pdb_path, device):
+    """1DAW as two atom groups of voxel-list splat arguments on ``device``, float32."""
+    from torchref.base.electron_density.voxel_utils import find_relevant_voxels
+    from torchref.base.fourier import get_real_grid
+    from torchref.base.scattering.scattering_table import (
+        elements_to_z,
+        get_scattering_params_by_z,
+    )
+    from torchref.io.pdb import PDBReader
+    from torchref.symmetry.cell import Cell
+
+    df, cell, _ = PDBReader().read(str(pdb_path))()
+    cell = Cell(cell)
+    f32 = torch.float32
+    frac = cell.fractional_matrix.to(device, f32)
+    inv_frac = cell.inv_fractional_matrix.to(device, f32)
+    xyz = torch.tensor(df[["x", "y", "z"]].to_numpy(), dtype=f32, device=device)
+    b = torch.tensor(df["tempfactor"].to_numpy(), dtype=f32, device=device)
+    occ = torch.tensor(df["occupancy"].to_numpy(), dtype=f32, device=device)
+    z = elements_to_z(df["element"].tolist()).to(device)
+    A, B = get_scattering_params_by_z(z, dtype=f32)
+    grid = get_real_grid(fractional_matrix=frac, gridsize=(108, 45, 35))
+    coords, idx = find_relevant_voxels(grid, xyz, 3.0, inv_frac_matrix=inv_frac)
+    half = xyz.shape[0] // 2
+    groups = [
+        (coords[s], idx[s], xyz[s], b[s], A[s], B[s], occ[s])
+        for s in (slice(0, half), slice(half, None))
+    ]
+    return groups, inv_frac, frac, grid.shape[:3]
+
+
+def _first_group_xyz_grad(groups, inv_frac, frac, dims, weight):
+    """d/d xyz_1 of ``sum(weight * map)``, the map built by two chained splats."""
+    from torchref.base.electron_density.kernels.cpu.jit_reference import (
+        vectorized_add_to_map,
+    )
+
+    (c1, i1, x1, b1, A1, B1, o1), (c2, i2, x2, b2, A2, B2, o2) = groups
+    x1 = x1.clone().requires_grad_(True)
+    density = torch.zeros(dims, dtype=frac.dtype, device=frac.device)
+    density = vectorized_add_to_map(c1, i1, density, x1, b1, inv_frac, frac, A1, B1, o1)
+    density = vectorized_add_to_map(c2, i2, density, x2, b2, inv_frac, frac, A2, B2, o2)
+    (grad,) = torch.autograd.grad((weight * density).sum(), x1, allow_unused=True)
+    return grad
+
+
+@pytest.mark.cuda
+def test_fused_cuda_splat_passes_the_gradient_to_its_input_map(pdb_dir):
+    """The fused Triton splat returns ``density_map + splat``, so its backward must hand
+    the incoming gradient to ``density_map``.
+
+    1DAW split into two atom groups: the first group reaches the loss only through the
+    second call's ``density_map``, so its coordinate gradient must match the CPU JIT
+    path's.
+    """
+    from torchref.base.targets._dispatch import use_triton
+
+    cuda = torch.device("cuda")
+    groups, inv_frac, frac, dims = _split_1daw(pdb_dir / "1DAW.pdb", cuda)
+    if not use_triton(groups[0][2]):
+        pytest.skip("the fused Triton splat is not selected on this host")
+    weight = torch.randn(dims, generator=torch.Generator().manual_seed(0))
+
+    got = _first_group_xyz_grad(groups, inv_frac, frac, dims, weight.to(cuda))
+    cpu_groups = [tuple(t.cpu() for t in g) for g in groups]
+    want = _first_group_xyz_grad(cpu_groups, inv_frac.cpu(), frac.cpu(), dims, weight)
+
+    assert got is not None, "no gradient reached the first splat's atoms"
+    rel = float((got.cpu() - want).norm() / want.norm())
+    assert rel < 1e-3, f"CUDA vs CPU first-group xyz gradient rel L2 {rel:.2e}"

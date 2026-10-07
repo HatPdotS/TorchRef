@@ -421,8 +421,20 @@ class _FusedDensityFunction(torch.autograd.Function):
 
         # Return gradients in same order as forward args:
         # surrounding_coords, voxel_indices, density_map, xyz, b,
-        # inv_frac_matrix, frac_matrix, A, B, occ
-        return None, None, None, grad_xyz, grad_b, None, None, None, None, grad_occ
+        # inv_frac_matrix, frac_matrix, A, B, occ. The output is density_map + splat,
+        # so the gradient with respect to density_map is the identity.
+        return (
+            None,
+            None,
+            grad_density_map,
+            grad_xyz,
+            grad_b,
+            None,
+            None,
+            None,
+            None,
+            grad_occ,
+        )
 
 
 # =============================================================================
