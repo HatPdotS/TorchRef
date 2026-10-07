@@ -17,7 +17,7 @@ class TestReadMtz:
     def test_read_mtz_estimates_sigmas_beside_missing_amplitudes(
         self, mtz_dir, tmp_path
     ):
-        """An F-only MTZ with missing amplitudes loads, every measured F with a sigma."""
+        """An F-only MTZ with missing amplitudes loads, each measured F with a sigma."""
         import gemmi
         import numpy as np
         import torch
