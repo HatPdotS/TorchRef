@@ -83,10 +83,9 @@ def floor_sigma_obs(
     **Pass ``floor`` explicitly to make the result independent of which reflections are in
     ``sigma``.** A median computed from the argument makes every per-reflection value
     depend on the whole array, so the same reflection scores differently in a subset sum
-    than in a full-size residual -- measured at 0.09% on a work set and 1.8% on a free set
-    for intensities, whose sigmas span orders of magnitude. Callers that need the two to
-    agree (any target with both a ``forward`` and a ``residuals``) compute the floor once
-    from their own fitted subset and pass it here.
+    than in a full-size residual -- most for intensities, whose sigmas span orders of
+    magnitude. Callers that need the two to agree (any target with both a ``forward`` and
+    a ``residuals``) compute the floor once from their own fitted subset and pass it here.
     """
     if floor is None:
         selected = sigma if mask is None else sigma[mask]
