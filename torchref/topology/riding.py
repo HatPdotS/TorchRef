@@ -284,8 +284,7 @@ def build_hydrogen_topology(
     device = normalize_device(device)
     resnames = pdb["resname"].astype(str).str.strip().unique()
     if cif_dict is None:
-        from torchref.io.cif_readers import RestraintCIFReader
-        from torchref.topology.monomer.cif import find_cif_file_in_library
+        from torchref.topology.monomer.cif import find_cif_file_in_library, read_cif
 
         cif_dict = {}
         for resname in resnames:
@@ -293,7 +292,7 @@ def build_hydrogen_topology(
             if path is None:
                 continue
             try:
-                cif_dict.update(RestraintCIFReader(str(path)).get_all_restraints())
+                cif_dict.update(read_cif(str(path)))
             except Exception:
                 # An unreadable entry leaves its residue without riding hydrogens,
                 # as a missing one does.
