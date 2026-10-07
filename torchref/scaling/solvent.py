@@ -5,16 +5,12 @@ A class for modelling solvent contribution to structure factors.
 import torch
 import torch.nn as nn
 
-from torchref.base import (
-    extract_structure_factor_from_grid,
-    get_scattering_vectors,
-    ifft,
-)
+from torchref.base import extract_structure_factor_from_grid, ifft
 from torchref.config import get_float_dtype, get_int_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
-from torchref.utils.utils import ModuleReference, TensorDict
+from torchref.utils.utils import ModuleReference
 
 #: ``ln 2``, so ``s_half_sq = ss_half`` halves the solvent term by construction.
 _LN2 = 0.6931471805599453
@@ -196,7 +192,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         # Heavy-atom radii already stand in for the hydrogens they carry, so a mask
         # built over hydrogen rows too would exclude solvent twice.
         self.ignore_hydrogens = bool(ignore_hydrogens)
-        self._cache = TensorDict()
 
         # Empty initialization
         if model is None:
@@ -258,7 +253,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 "phase_offset",
                 torch.tensor(0.0, dtype=self.float_type, device=self.device),
             )
-        self._cache = TensorDict()
 
     def _init_falloff(self, d_half, n_exp):
         """Register ``log_ss_half`` / ``log_n_exp`` from a resolution and an exponent."""
@@ -565,15 +559,13 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         return self.solvent_mask
 
     def update_solvent(self):
-        """Rebuild the solvent mask from current coordinates and drop the mask-derived cache.
+        """Rebuild the solvent mask from the current coordinates.
 
         Prefer :meth:`~torchref.scaling.scaler_base.ScalerBase.update_solvent`, which also
         clears the scaler's own ``_f_sol_raw``; that one is what ``F_calc`` reads. Calling
         this directly refreshes the mask but leaves the scaler on the old ``F_sol``.
         """
         self.get_solvent_mask()
-        # The per-hkl cache is the FFT of the mask, so a new mask invalidates all of it.
-        self._cache = TensorDict()
 
     def get_rec_solvent(self, hkl):
         """
@@ -604,85 +596,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             fsol
         ).all(), "Non-finite values in solvent structure factors"
         return fsol
-
-    def forward(self, hkl, update_fsol=False, F_protein=None):
-        """
-        Compute solvent contribution to structure factors at given HKL.
-
-        Differentiable w.r.t. ``log_k_solvent``, ``log_ss_half``, ``log_n_exp`` and
-        ``phase_offset``. Takes ``f_sol`` (the FFT of the binary mask) from a per-hkl
-        cache, applies :meth:`damping` at ``ss = (sin(θ)/λ)**2``,
-        blends mask phases toward the protein phases when ``optimize_phase`` and
-        ``F_protein`` are both given (``phase_offset`` 0 = mask phases,
-        ±π = protein phases), and scales by ``k_solvent``.
-
-        Parameters
-        ----------
-        hkl : torch.Tensor
-            Miller indices, shape (N, 3).
-        update_fsol : bool, default False
-            Force recomputation of the cached solvent structure factors for this
-            hkl and refresh the cache entry, instead of reusing a cached entry
-            keyed on the hkl fingerprint.
-        F_protein : torch.Tensor, optional
-            Protein structure factors, used for phase blending.
-
-        Returns
-        -------
-        torch.Tensor
-            Complex solvent structure factors, shape (N,).
-        """
-
-        # Lightweight fingerprint: (data_ptr, version, numel) — avoids SHA-1
-        hkl_key = (hkl.data_ptr(), hkl._version, hkl.numel())
-
-        if not update_fsol and hkl_key in self._cache:
-            f_sol = self._cache[hkl_key]
-        else:
-            f_sol = self.get_rec_solvent(hkl)
-            self._cache[hkl_key] = f_sol
-
-        # Calculate scattering vector magnitude: s = sin(θ)/λ
-        # Note: get_scattering_vectors returns h* = (h·a*, k·b*, l·c*)
-        # For the Debye-Waller factor, we need s = |h*|/2 = sin(θ)/λ
-        scattering_vectors = get_scattering_vectors(
-            hkl, self.model.cell, recB=self.model.recB
-        )
-        s = torch.norm(scattering_vectors, dim=1) / 2.0  # This is sin(θ)/λ
-        s_squared = s**2  # Now s² is correct for B-factor formula
-
-        falloff = self.damping(s_squared)
-        k_solvent = self.k_solvent()
-
-        # Phase handling
-        if self.optimize_phase and F_protein is not None:
-            f_mask_amp = torch.abs(f_sol)
-            mask_phases = torch.angle(f_sol)
-            protein_phases = torch.angle(F_protein)
-
-            # Interpolate phases using phase_offset as a blending parameter
-            # cos(phase_offset) = 1: use mask phases
-            # cos(phase_offset) = -1: use inverted protein phases
-            blend_factor = torch.cos(self.phase_offset)
-            blended_phase = (
-                mask_phases * (1 + blend_factor) / 2
-                + (protein_phases + torch.pi) * (1 - blend_factor) / 2
-            )
-
-            phase_adjusted_f_sol = f_mask_amp * torch.exp(1j * blended_phase)
-        elif self.optimize_phase:
-            # Apply global phase offset
-            phase_adjusted_f_sol = f_sol * torch.exp(1j * self.phase_offset)
-        else:
-            # No phase adjustment - use mask phases as-is
-            phase_adjusted_f_sol = f_sol
-
-        f_solvent = k_solvent * phase_adjusted_f_sol * falloff
-
-        assert torch.isfinite(
-            f_solvent
-        ).all(), "Non-finite values in solvent structure factors"
-        return f_solvent
 
     def parameters(self):
         """Refinable solvent parameters as a list (phase offset only if refined)."""

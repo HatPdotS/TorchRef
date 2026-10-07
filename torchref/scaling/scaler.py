@@ -3,8 +3,7 @@
 The full-featured :class:`Scaler`, which holds a reference to a ``Model`` and
 computes ``F_calc`` itself; see :class:`~torchref.scaling.ScalerBase` for the
 model-independent version. ``initialize()`` enables the isotropic overall scale,
-the anisotropy correction and the solvent model. The per-bin B-factor
-(``setup_bin_wise_bfactor``) is opt-in and never set up by ``initialize()``.
+the anisotropy correction and the solvent model.
 """
 
 from typing import Optional, TYPE_CHECKING
@@ -228,46 +227,6 @@ class Scaler(ScalerBase):
         self.solvent.update_solvent()
         self._f_sol_raw = None  # Invalidate cached raw solvent SFs
 
-    def screen_solvent_params(
-        self,
-        fcalc: torch.Tensor = None,
-        steps: int = 15,
-        use_low_res_weighting: bool = True,
-        low_res_cutoff: float = 5.0,
-        fit_on_low_res_only: bool = True,
-        low_res_limit: float = 3.5,
-    ):
-        """
-        Screen solvent parameters using grid search.
-
-        If fcalc is not provided, computes it from the internal model.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor, optional
-            Calculated structure factors. If None, computed from model.
-        steps : int, default 15
-            Number of grid points for each parameter.
-        use_low_res_weighting : bool, default True
-            If True, weight low-resolution reflections more heavily.
-        low_res_cutoff : float, default 5.0
-            Resolution cutoff for weighting in Angstroms.
-        fit_on_low_res_only : bool, default True
-            If True, fit using only low-resolution reflections.
-        low_res_limit : float, default 3.5
-            Resolution limit for low-res only fitting in Angstroms.
-        """
-        if fcalc is None:
-            fcalc = self.compute_fcalc()
-        return super().screen_solvent_params(
-            fcalc,
-            steps=steps,
-            use_low_res_weighting=use_low_res_weighting,
-            low_res_cutoff=low_res_cutoff,
-            fit_on_low_res_only=fit_on_low_res_only,
-            low_res_limit=low_res_limit,
-        )
-
     def refine_lbfgs(
         self,
         fcalc: torch.Tensor = None,
@@ -318,26 +277,6 @@ class Scaler(ScalerBase):
             verbose=verbose,
             scale_target=scale_target,
         )
-
-    def get_binwise_mean_intensity(self, fcalc: torch.Tensor = None):
-        """
-        Get bin-wise mean intensities.
-
-        If fcalc is not provided, computes it from the internal model.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor, optional
-            Calculated structure factors. If None, computed from model.
-
-        Returns
-        -------
-        tuple
-            Mean observed intensity, mean calculated intensity, and mean resolution per bin.
-        """
-        if fcalc is None:
-            fcalc = self.compute_fcalc()
-        return super().get_binwise_mean_intensity(fcalc)
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         """

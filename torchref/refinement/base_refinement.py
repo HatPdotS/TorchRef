@@ -1039,7 +1039,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         with torch.no_grad():
             # Canonical-ASU convention, row-aligned with reflection_data.hkl --
             # the index write_mtz emits as H,K,L.
-            fcalc = self.scaler(self.get_fcalc(), use_mask=False)
+            fcalc = self.scaler(self.get_fcalc())
             self.reflection_data.write_mtz(out_mtz_path, fcalc, anomalous=anomalous)
 
     def collect_deposition_metadata(self, metadata=None):

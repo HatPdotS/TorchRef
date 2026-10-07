@@ -179,19 +179,6 @@ class TestSolventDeviceOperations:
 
 
 @pytest.mark.integration
-class TestSolventCacheOperations:
-    """Test SolventModel caching mechanism."""
-
-    def test_cache_initialization(self):
-        """Test that cache is initialized."""
-        from torchref.scaling.solvent import SolventModel
-        
-        solvent = SolventModel()
-        
-        assert solvent._cache is not None
-
-
-@pytest.mark.integration
 class TestSolventBFactorCorrection:
     """Test B-factor correction in solvent model."""
 

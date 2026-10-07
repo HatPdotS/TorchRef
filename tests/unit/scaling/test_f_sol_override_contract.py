@@ -116,7 +116,7 @@ class TestOverridePreservesRank:
         out = scaler.forward(fcalc, f_sol_override=override)
 
         assert out.shape == (n,)
-        # fcalc + k_sol * f_sol, with damping == 1 and no aniso/Chebyshev/per-bin B.
+        # fcalc + k_sol * f_sol, with damping == 1 and no aniso/Chebyshev scale.
         expected = 1.0 + 0.35 * 2.0
         assert torch.allclose(
             out.real, torch.full((n,), expected, device=dev, dtype=get_float_dtype())

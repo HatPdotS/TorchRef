@@ -73,8 +73,7 @@ class CollectionScaler(ScalerBase):
     Shares scale parameters (c_iso, U and the solvent falloff) across **all**
     data-model pairs, and manages per-component solvent models so a mixed
     model's bulk solvent is the fraction-weighted sum of the component solvent
-    SFs. The bin-wise B-factor correction is *not* set up by ``initialize()``
-    and so is not a shared refined parameter by default.
+    SFs.
 
     Parameters
     ----------
@@ -700,19 +699,9 @@ class CollectionScaler(ScalerBase):
         if self.verbose > 0:
             print("  Updated all component solvent masks.")
 
-    def invalidate_solvent_cache(self):
-        """Clear cached raw solvent SFs (forces recomputation on next call)."""
-        self._f_sol_raw_components = {}
-        self._f_sol_raw = None
-
     # ------------------------------------------------------------------
     # Convenience
     # ------------------------------------------------------------------
-
-    @property
-    def component_solvent_models(self) -> nn.ModuleList:
-        """Per-component SolventModel instances (read-only)."""
-        return self._component_solvent_models
 
     def __repr__(self):
         n_comp = len(self._component_solvent_models)
