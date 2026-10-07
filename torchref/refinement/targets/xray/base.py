@@ -134,12 +134,11 @@ class XrayTarget(DataTarget):
         Get compact F_obs, F_calc, sigma, centric and the subset view for
         this target's set (work, free or validation).
 
-        Goes through the
-        :class:`~torchref.io.datasets.reflection_data.ReflectionData` subset accessor,
-        which applies the validity masks and caches the remapped indices. The returned amplitude
-        tensors are **compact** -- already restricted to the subset -- so a
-        full-size, model-computed array must be passed through ``sub.select(t)``
-        before it can be combined with them.
+        Goes through the :class:`~torchref.io.datasets.reflection_data.ReflectionData`
+        subset accessor, which applies the validity masks and caches the remapped
+        indices. The returned amplitude tensors are **compact** -- already restricted to
+        the subset -- so a full-size, model-computed array must be passed through
+        ``sub.select(t)`` before it can be combined with them.
 
         Parameters
         ----------
