@@ -81,7 +81,7 @@ class TestModuleReference:
     @pytest.mark.unit
     @pytest.mark.parametrize("how", ["copy", "deepcopy", "pickle"])
     def test_module_reference_copies_and_pickles(self, how):
-        """``copy`` shares the referent; ``deepcopy`` and a pickle round trip copy it."""
+        """``copy`` shares the referent; ``deepcopy`` and pickling copy it."""
         import copy
         import pickle
 

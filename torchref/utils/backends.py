@@ -147,9 +147,9 @@ class Backend:
     require_uniform_dtype : bool
         Whether every probed float tensor must share **one** dtype, rather than each
         independently being in ``dtypes``. The fused CPU kernel picks one ``scalar_t``
-        from the output map and reads every tensor through ``data_ptr<scalar_t>()``, which
-        raises ``RuntimeError`` on any other dtype; this sends a mixed-dtype call, which
-        ``dtypes=(f32, f64)`` alone *admits*, to the base case instead.
+        from the output map and reads every tensor through ``data_ptr<scalar_t>()``,
+        which raises ``RuntimeError`` on any other dtype; this sends a mixed-dtype call,
+        which ``dtypes=(f32, f64)`` alone *admits*, to the base case instead.
     probes : tuple[int, ...], optional
         Which argument positions carry the device/dtype contract; ``None`` probes all. Set
         per table, because for some kernels the dtype is a capability and for others only

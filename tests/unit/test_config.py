@@ -14,7 +14,7 @@ _GB = 1024**3
 
 
 def _fake_gpus(monkeypatch, gpus, current):
-    """Present ``gpus`` (``(capability, total_memory)`` per index) as the visible GPUs."""
+    """Make ``gpus`` (``(capability, total_memory)`` per index) the visible GPUs."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
         torch.cuda, "get_arch_list", lambda: ["sm_70", "sm_80", "sm_90"]

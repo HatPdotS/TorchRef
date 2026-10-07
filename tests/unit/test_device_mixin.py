@@ -255,7 +255,7 @@ def test_tensormasks_traversal_moves_dict_items():
 
 @pytest.mark.unit
 def test_plain_dtype_move_keeps_integer_and_bool_tensors(mtz_dir):
-    """On a plain class a dtype casts floating tensors only, as ``nn.Module.to`` does."""
+    """On a plain class a dtype casts only floating tensors, like ``nn.Module.to``."""
     from torchref.io import ReflectionData
     from torchref.utils.utils import TensorMasks
 
