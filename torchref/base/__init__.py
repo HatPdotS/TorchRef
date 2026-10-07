@@ -24,7 +24,7 @@ fourier
 scattering
     Atomic scattering factors (ITC92 parameterization).
 alignment
-    Coordinate alignment and superposition functions.
+    Euler-angle rotation matrices.
 metrics
     R-factor and loss function calculations.
 kernels
@@ -147,29 +147,7 @@ from .fourier import (
 # alignment (from alignment submodule)
 # =============================================================================
 from .alignment import (
-    rotate_coords_torch,
-    rotate_coords_numpy,
-    axis_angle_to_rotation_matrix,
-    rotation_matrix_to_axis_angle,
-    quaternion_to_rotation_matrix,
-    random_rotation_uniform,
-    superpose_vectors_robust_torch,
-    superpose_vectors_robust,
-    align_torch,
-    align_pdbs,
-    get_alignment_matrix,
-    apply_transformation,
-    apply_transformation_numpy,
-    invert_transformation_matrix,
-    binned_correlation,
     rotation_matrix_euler_zyz,
-    compute_radial_shells,
-    assign_to_shells,
-    compute_anisotropy_correction,
-    compute_shell_cv,
-    fit_anisotropy_correction,
-    apply_anisotropy_correction,
-    F_squared_to_E_values,
 )
 
 # =============================================================================
@@ -177,17 +155,11 @@ from .alignment import (
 # =============================================================================
 from .metrics import (
     get_rfactors,
-    bin_wise_rfactors,
     binwise_scale,
     nll_xray,
-    nll_xray_sum,
     nll_xray_mean,
     nll_xray_lognormal,
-    log_loss,
-    estimate_sigma_I,
     estimate_sigma_F,
-    gaussian_to_lognormal_sigma,
-    gaussian_to_lognormal_mu,
 )
 
 # =============================================================================
@@ -272,44 +244,14 @@ __all__ = [
     "ifft",
     "get_real_grid",
     # -------------------------------------------------------------------------
-    # alignment
-    # -------------------------------------------------------------------------
-    "compute_radial_shells",
-    "assign_to_shells",
-    "compute_anisotropy_correction",
-    "compute_shell_cv",
-    "fit_anisotropy_correction",
-    "apply_anisotropy_correction",
-    "F_squared_to_E_values",
-    "rotate_coords_torch",
-    "rotate_coords_numpy",
-    "axis_angle_to_rotation_matrix",
-    "rotation_matrix_to_axis_angle",
-    "quaternion_to_rotation_matrix",
-    "random_rotation_uniform",
-    "superpose_vectors_robust_torch",
-    "superpose_vectors_robust",
-    "align_torch",
-    "align_pdbs",
-    "get_alignment_matrix",
-    "apply_transformation",
-    "apply_transformation_numpy",
-    "invert_transformation_matrix",
-    # -------------------------------------------------------------------------
     # Metrics
     # -------------------------------------------------------------------------
     "get_rfactors",
-    "bin_wise_rfactors",
     "binwise_scale",
     "nll_xray",
-    "nll_xray_sum",
     "nll_xray_mean",
     "nll_xray_lognormal",
-    "log_loss",
-    "estimate_sigma_I",
     "estimate_sigma_F",
-    "gaussian_to_lognormal_sigma",
-    "gaussian_to_lognormal_mu",
     # -------------------------------------------------------------------------
     # Kernels
     # -------------------------------------------------------------------------

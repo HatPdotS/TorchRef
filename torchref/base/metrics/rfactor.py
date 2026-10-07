@@ -84,37 +84,3 @@ def rfactor_work_free(data, F_calc_amp: torch.Tensor) -> tuple:
     r_work = rfactor(work.F, work.select(F_calc_amp))
     r_free = rfactor(free.F, free.select(F_calc_amp))
     return r_work, r_free
-
-
-def bin_wise_rfactors(
-    F_obs: torch.Tensor, F_calc: torch.Tensor, rfree: torch.Tensor, bins: torch.Tensor
-) -> tuple:
-    """
-    Per-bin R-work and R-test, one entry per bin index in ``[0, bins.max()]``.
-
-    Parameters
-    ----------
-    F_obs : torch.Tensor
-        Observed structure factor amplitudes.
-    F_calc : torch.Tensor
-        Calculated structure factor amplitudes.
-    rfree : torch.Tensor
-        **Must already be boolean** -- used directly in ``mask & rfree`` with no cast, unlike
-        :func:`get_rfactors`, so an integer mask silently misbehaves. 1 is WORK.
-    bins : torch.Tensor
-        Bin index per reflection.
-
-    Returns
-    -------
-    tuple of torch.Tensor
-        ``(r_work_bins, r_test_bins)``. An empty bin yields NaN (0/0).
-    """
-    r_work_bins = []
-    r_test_bins = []
-    for b in range(bins.max().item() + 1):
-        mask = bins == b
-        r_work = rfactor(F_obs[mask & rfree], F_calc[mask & rfree])
-        r_test = rfactor(F_obs[mask & ~rfree], F_calc[mask & ~rfree])
-        r_work_bins.append(r_work)
-        r_test_bins.append(r_test)
-    return torch.tensor(r_work_bins), torch.tensor(r_test_bins)

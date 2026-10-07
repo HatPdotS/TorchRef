@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from torchref.base.metrics.loss import nll_xray, nll_xray_mean, nll_xray_sum
+from torchref.base.metrics.loss import nll_xray, nll_xray_mean
 from torchref.config import get_default_device, get_float_dtype
 
 pytestmark = pytest.mark.unit
@@ -21,7 +21,6 @@ def test_gaussian_nll_value_and_reduction() -> None:
     expected = obs.new_tensor(1.5 + math.log(8.0) + 1.5 * math.log(2.0 * math.pi))
 
     torch.testing.assert_close(nll_xray(obs, calc, sigma), expected)
-    torch.testing.assert_close(nll_xray_sum(obs, calc, sigma), expected)
     torch.testing.assert_close(nll_xray_mean(obs, calc, sigma), expected / obs.numel())
 
 

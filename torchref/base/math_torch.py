@@ -27,7 +27,6 @@ Example (old style - still works)::
     from torchref.base.math_torch import cartesian_to_fractional_torch
 """
 
-import hashlib
 import torch
 
 # =============================================================================
@@ -92,38 +91,14 @@ from torchref.base.fourier import (
 )
 
 # =============================================================================
-# Re-exports from alignment submodule
-# =============================================================================
-from torchref.base.alignment import (
-    rotate_coords_torch,
-    axis_angle_to_rotation_matrix,
-    rotation_matrix_to_axis_angle,
-    quaternion_to_rotation_matrix,
-    random_rotation_uniform,
-    superpose_vectors_robust_torch,
-    align_torch,
-    # NOTE: legacy misspelling preserved for backward compatibility. The
-    # canonical public name is ``get_alignment_matrix`` (exported by
-    # ``torchref.base``); this ``get_alignement_matrix`` alias is deprecated.
-    get_alignement_matrix,
-    apply_transformation,
-)
-
-# =============================================================================
 # Re-exports from metrics submodule
 # =============================================================================
 from torchref.base.metrics import (
     get_rfactors,
-    bin_wise_rfactors,
     nll_xray,
-    nll_xray_sum,
     nll_xray_mean,
     nll_xray_lognormal,
-    log_loss,
-    estimate_sigma_I,
     estimate_sigma_F,
-    gaussian_to_lognormal_sigma,
-    gaussian_to_lognormal_mu,
 )
 
 # =============================================================================
@@ -159,102 +134,6 @@ def U_to_matrix(U: torch.Tensor) -> torch.Tensor:
     row2 = torch.stack([u13, u23, u33], dim=-1)
 
     return torch.stack([row0, row1, row2], dim=-2)
-
-
-def deterministic_tensor_digest(t: torch.Tensor, n_chunks: int = 16) -> torch.Tensor:
-    """
-    Compute a deterministic digest vector for tensor directly on GPU.
-
-    This function is deterministic across devices and runs, sensitive to all
-    tensor values and order, fully vectorized with no Python loops, and suitable
-    for large GPU tensors. Uses a simple mean/std approach per chunk which is
-    fully deterministic.
-
-    Parameters
-    ----------
-    t : torch.Tensor
-        Input tensor to compute digest for.
-    n_chunks : int, optional
-        Number of chunks to divide the tensor into. Default is 16.
-
-    Returns
-    -------
-    torch.Tensor
-        Digest vector of length n_chunks.
-    """
-    # Flatten and cast to a stable type
-    flat = t.detach().reshape(-1)
-    if not torch.is_floating_point(flat):
-        flat = flat.float()
-
-    # If tensor smaller than n_chunks, just pad
-    n = flat.numel()
-    if n < n_chunks:
-        flat = torch.nn.functional.pad(flat, (0, n_chunks - n))
-        n = n_chunks
-
-    # Reshape into chunks directly (pad if needed)
-    chunk_size = (n + n_chunks - 1) // n_chunks
-    padded_size = chunk_size * n_chunks
-
-    if n < padded_size:
-        flat = torch.nn.functional.pad(flat, (0, padded_size - n))
-
-    # Reshape to (n_chunks, chunk_size) and compute stats per chunk
-    chunks = flat[: chunk_size * n_chunks].reshape(n_chunks, chunk_size)
-
-    # Create digest from mean and std of each chunk (both are deterministic)
-    # Interleave for better sensitivity
-    digest_mean = chunks.mean(dim=1)
-    if chunks.size(1) > 1:
-        digest_std = chunks.std(dim=1)
-    else:
-        digest_std = torch.zeros_like(digest_mean)
-
-    # Combine into single digest vector (alternate mean/std would double size)
-    # Instead, use weighted combination
-    digest = digest_mean + 0.61803398875 * digest_std
-
-    return digest
-
-
-def hash_tensors(tensors) -> str:
-    """
-    Compute a hash of multiple tensors for caching purposes.
-
-    .. deprecated:: 0.6.0
-        Use ``(tensor.data_ptr(), tensor._version, tensor.numel())`` tuples
-        for lightweight fingerprinting instead. ``hash_tensors`` copies data
-        to CPU and computes SHA-1, which is expensive.
-
-    Parameters
-    ----------
-    tensors : list of torch.Tensor or None
-        List of tensors to hash. None values are handled.
-
-    Returns
-    -------
-    str
-        SHA-1 hash of the tensor contents.
-    """
-    import warnings
-    warnings.warn(
-        "hash_tensors is deprecated. Use (tensor.data_ptr(), tensor._version, "
-        "tensor.numel()) tuples for lightweight fingerprinting instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    h = hashlib.sha1()
-    for t in tensors:
-        if t is None:
-            h.update(b"<None>")
-            continue
-        digest = deterministic_tensor_digest(t)
-        # Bring only digest (small) to CPU for hashing
-        h.update(digest.cpu().numpy().tobytes())
-        h.update(str(t.shape).encode())
-        h.update(str(t.dtype).encode())
-    return h.hexdigest()
 
 
 # =============================================================================
@@ -297,30 +176,12 @@ __all__ = [
     "fft",
     "ifft",
     "get_real_grid",
-    # Alignment
-    "rotate_coords_torch",
-    "axis_angle_to_rotation_matrix",
-    "rotation_matrix_to_axis_angle",
-    "quaternion_to_rotation_matrix",
-    "random_rotation_uniform",
-    "superpose_vectors_robust_torch",
-    "align_torch",
-    "get_alignement_matrix",
-    "apply_transformation",
     # Metrics
     "get_rfactors",
-    "bin_wise_rfactors",
     "nll_xray",
-    "nll_xray_sum",
     "nll_xray_mean",
     "nll_xray_lognormal",
-    "log_loss",
-    "estimate_sigma_I",
     "estimate_sigma_F",
-    "gaussian_to_lognormal_sigma",
-    "gaussian_to_lognormal_mu",
     # Utility functions
     "U_to_matrix",
-    "deterministic_tensor_digest",
-    "hash_tensors",
 ]

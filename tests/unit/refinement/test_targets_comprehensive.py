@@ -464,27 +464,6 @@ class TestRfactorCalculations:
 
         assert r_work < 0.001  # Should be ~0
 
-    def test_bin_wise_rfactors(self):
-        """Test bin-wise R-factor calculation."""
-        from torchref.base.math_torch import bin_wise_rfactors
-
-        n_refl = 100
-        n_bins = 5
-
-        fobs = torch.rand(n_refl) + 1.0
-        fcalc = fobs * (1 + 0.1 * torch.randn(n_refl))
-        # Note: rfree=True means work set (not free set)
-        rfree_mask = torch.rand(n_refl) > 0.1
-
-        # Ensure all bins are represented
-        bins = torch.arange(n_refl) % n_bins
-
-        r_work_bins, r_free_bins = bin_wise_rfactors(fobs, fcalc, rfree_mask, bins)
-
-        # Should have results for each bin
-        assert len(r_work_bins) == n_bins
-        assert len(r_free_bins) == n_bins
-
 
 # =============================================================================
 # Loss Function Tests
