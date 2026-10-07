@@ -14,7 +14,7 @@ for the parsed content::
 import numpy as np
 import torch
 
-# Re-exported for torchref.io and the cif.<Reader> callers; unused here.
+# Re-exported for torchref.io and the cif.<Reader> callers.
 from torchref.io.cif_readers import (  # noqa: F401
     CIFReader,
     ModelCIFReader,
