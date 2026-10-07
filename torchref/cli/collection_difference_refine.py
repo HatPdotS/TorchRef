@@ -1229,7 +1229,7 @@ Examples:
     )
     refine.add_argument(
         "--max-iter", type=int, default=100,
-        help="Max line-search iterations per LBFGS step (default: 100)",
+        help="Max L-BFGS iterations per optimisation round (default: 100)",
     )
     refine.add_argument(
         "--n-clean", type=int, default=2,
