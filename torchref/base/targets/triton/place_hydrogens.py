@@ -38,7 +38,7 @@ def _placeh_fwd_kernel(
     xyz_ptr,            # (N_heavy, 3)
     parent_ptr,         # (N_h,) int
     nb_idx_ptr,         # (N_h, 4) int (clamped to >=0)
-    nb_valid_ptr,       # (N_h, 4) float (1.0 / 0.0)
+    nb_valid_ptr,  # (N_h, 4) float slot weights; 0 masks padding
     coeff_ptr,          # (N_h, 3) float
     blen_ptr,           # (N_h,) float
     out_ptr,            # (N_h, 3) float
