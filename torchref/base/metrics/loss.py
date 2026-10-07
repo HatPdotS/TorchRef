@@ -143,7 +143,21 @@ def nll_xray_lognormal(
     return nll.mean()
 
 
-def estimate_sigma_F(F):
-    """Heuristic sigma for amplitudes: 5% of ``F`` plus 1% of its mean. Not measured."""
-    sigma = F * 0.05 + torch.mean(F) * 0.01
+def estimate_sigma_F(F: torch.Tensor) -> torch.Tensor:
+    """Heuristic sigma for amplitudes: 5% of ``F`` plus 1% of its mean. Not measured.
+
+    The mean skips missing (NaN) amplitudes, so a missing ``F`` leaves only its own
+    sigma NaN, for the caller's sanity mask to drop.
+
+    Parameters
+    ----------
+    F : torch.Tensor
+        Amplitudes of shape (N,), NaN where missing.
+
+    Returns
+    -------
+    torch.Tensor
+        Estimated sigmas of shape (N,), in the units of ``F``.
+    """
+    sigma = F * 0.05 + torch.nanmean(F) * 0.01
     return sigma
