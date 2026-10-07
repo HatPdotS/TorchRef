@@ -35,6 +35,7 @@ from torchref.cli._common import (
     add_outdir_arg,
     add_verbose_arg,
     configure_unbuffered_output,
+    parse_device_str,
 )
 
 configure_unbuffered_output()
@@ -579,9 +580,7 @@ def main(argv=None):
                 )
                 return 1
             args.scale_reference = key
-        from torchref.config import normalize_device
-
-        device = normalize_device(args.device)
+        device = parse_device_str(args.device)
         if args.verbose:
             print(f"\nScaling {len(flagged)} datasets jointly on {device} ...")
         try:

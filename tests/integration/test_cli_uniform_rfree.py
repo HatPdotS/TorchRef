@@ -81,6 +81,15 @@ def test_scale_onto_reference(inputs, tmp_path):
     assert abs(np.median(ratio) - 1) < 0.02
 
 
+def test_scale_with_default_device(inputs, tmp_path):
+    """``--scale`` runs under the default ``--device auto``."""
+    _, paths = inputs
+    out = tmp_path / "out"
+    res = _run(*paths[:2], "-o", out, "--scale", "--scale-reference", "dark")
+    assert res.returncode == 0, res.stderr
+    assert (out / "light_rfree.mtz").exists()
+
+
 def test_torchref_reads_flags(inputs, tmp_path):
     from torchref.io.datasets.reflection_data import ReflectionData
 
