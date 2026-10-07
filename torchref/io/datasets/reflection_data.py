@@ -26,10 +26,11 @@ from torchref.utils.utils import TensorMasks
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
 
-class _ReflectionSubset:
+
+class ReflectionSubset:
     """
-    Lightweight view of one reflection subset (``work`` / ``free`` /
-    ``validation`` / ``all``) of a :class:`ReflectionData`.
+    Lightweight view of one reflection subset of a :class:`ReflectionData`, as its
+    ``work`` / ``free`` / ``validation`` / ``all`` properties return it.
 
     The first three apply the validity masks; ``all`` deliberately does not (see
     :attr:`ReflectionData.all`).
@@ -82,33 +83,40 @@ class _ReflectionSubset:
 
     @property
     def n(self) -> int:
+        """Number of reflections in this subset, the same as ``len(view)``."""
         return int(self.indices.numel())
 
     # Subset reads dispatch through the parent observation attributes.
     @property
     def F(self) -> torch.Tensor:
+        """The parent's ``F`` on this subset."""
         return self._parent.F.index_select(0, self.indices)
 
     @property
     def sigF(self) -> torch.Tensor:
+        """The parent's ``F_sigma`` on this subset."""
         return self._parent.F_sigma.index_select(0, self.indices)
 
     # -- raw (uncorrected) amplitudes -------------------------------------
     @property
     def F_raw(self) -> torch.Tensor:
+        """The parent's ``F_raw`` on this subset."""
         return self._parent.F_raw.index_select(0, self.indices)
 
     @property
     def sigF_raw(self) -> torch.Tensor:
+        """The parent's ``F_sigma_raw`` on this subset."""
         return self._parent.F_sigma_raw.index_select(0, self.indices)
 
     # -- common aliases ---------------------------------------------------
     @property
     def hkl(self) -> torch.Tensor:
+        """Miller indices on this subset, shape ``(n, 3)``."""
         return self._parent.hkl.index_select(0, self.indices)
 
     @property
     def rfree(self) -> torch.Tensor:
+        """The parent's ``rfree_flags`` on this subset (1 = work, 0 = free)."""
         return self._parent.rfree_flags.index_select(0, self.indices)
 
     # -- intensities, corrected to match F/sigF above -----------------------
@@ -142,6 +150,7 @@ class _ReflectionSubset:
 
     @property
     def centric(self):
+        """Centric-reflection flags on this subset, or None without HKL."""
         c = self._parent.centric
         return c.index_select(0, self.indices) if c is not None else None
 
@@ -162,7 +171,7 @@ class _ReflectionSubset:
         )
 
     def __repr__(self) -> str:
-        return f"_ReflectionSubset(kind={self._kind!r}, n={self.n})"
+        return f"ReflectionSubset(kind={self._kind!r}, n={self.n})"
 
 
 @dataclass
@@ -228,22 +237,22 @@ class ReflectionData(CrystalDataset, DebugMixin):
     # ===================== work / free / validation =====================
 
     @property
-    def work(self) -> "_ReflectionSubset":
+    def work(self) -> "ReflectionSubset":
         """Working-set view (``rfree_flags != 0``, excluding validation)."""
-        return _ReflectionSubset(self, "work")
+        return ReflectionSubset(self, "work")
 
     @property
-    def free(self) -> "_ReflectionSubset":
+    def free(self) -> "ReflectionSubset":
         """Free/test-set view (``rfree_flags == 0``, excluding validation)."""
-        return _ReflectionSubset(self, "free")
+        return ReflectionSubset(self, "free")
 
     @property
-    def validation(self) -> "_ReflectionSubset":
+    def validation(self) -> "ReflectionSubset":
         """Validation-set view (``validation_flags``). Empty unless populated."""
-        return _ReflectionSubset(self, "validation")
+        return ReflectionSubset(self, "validation")
 
     @property
-    def all(self) -> "_ReflectionSubset":
+    def all(self) -> "ReflectionSubset":
         """Every reflection, in storage order, **ignoring the masks entirely**.
 
         The odd one out: ``work``/``free``/``validation`` are all intersected with
@@ -257,7 +266,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         to a loss would undo the masking. ``sub.select`` is a full copy rather than
         the identity, so the view behaves identically to the others.
         """
-        return _ReflectionSubset(self, "all")
+        return ReflectionSubset(self, "all")
 
     def _subset_fingerprint(self):
         """Fingerprint of everything the subset index maps depend on:

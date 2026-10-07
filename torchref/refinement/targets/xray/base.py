@@ -117,7 +117,7 @@ class XrayTarget(DataTarget):
         return self._eps_cache, self._dss_cache
 
     def _subset(self):
-        """The ``_ReflectionSubset`` view for this target's ``use_set``. Single
+        """The ``ReflectionSubset`` view for this target's ``use_set``. Single
         source of truth for the selection -- both :meth:`get_data` and the subclass
         ``forward`` paths go through here, so loss and stats cannot diverge.
         """
@@ -145,7 +145,7 @@ class XrayTarget(DataTarget):
         fcalc : torch.Tensor, optional
             Pre-computed structure factors. If provided, uses these instead
             of computing from the model.
-        sub : _ReflectionSubset, optional
+        sub : ReflectionSubset, optional
             Which reflections to return. Defaults to this target's own
             ``use_set``; :meth:`residuals` passes ``data.all`` to get every
             reflection, masks included.
@@ -155,7 +155,7 @@ class XrayTarget(DataTarget):
         tuple
             ``(F_obs, F_calc, sigma, centric, sub)`` — the first four compact, with
             ``F_calc`` the amplitude under this target's scale (``_scaled_F_calc_full``);
-            ``sub`` is the ``_ReflectionSubset`` view (``.indices``/``.select``/``.n``).
+            ``sub`` is the ``ReflectionSubset`` view (``.indices``/``.select``/``.n``).
         """
         if sub is None:
             sub = self._subset()

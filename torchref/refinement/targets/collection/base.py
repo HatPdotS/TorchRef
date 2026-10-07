@@ -178,7 +178,7 @@ class CollectionXrayTarget(Target):
         return keys
 
     def _subset(self, data):
-        """Return the ``_ReflectionSubset`` view selected by ``use_set``."""
+        """Return the ``ReflectionSubset`` view selected by ``use_set``."""
         if self.use_set == "free":
             return data.free
         if self.use_set == "val":
