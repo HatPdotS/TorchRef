@@ -87,10 +87,10 @@ class LBFGSRefinement(Refinement):
     ):
         """Multi-resolution per-chain rigid-body refinement.
 
-        Swaps the model for a :class:`RigidModelFT` whose ``xyz`` exposes only per-chain
+        Swaps the model's ``xyz`` in place for a
+        :class:`~torchref.model.rigid_xyz.RigidXYZTensor` that exposes only per-chain
         XYZ-Euler rotations and translations, then runs an LBFGS step at each cutoff,
-        coarse to
-        fine. Only the xray target is active.
+        coarse to fine. Only the xray target is active.
 
         Parameters
         ----------
@@ -98,10 +98,8 @@ class LBFGSRefinement(Refinement):
             High-resolution cutoffs (Å), coarse to fine. Defaults to a schedule generated from
             the native data resolution.
         iterations_per_step : int, optional
-            ``max_iter`` per cutoff. The default 30 **under-converges** in practice (9RTS needs
-            >= 100); raise it for production. Under the solvent-only (``ls_wunit_k1``)
-            inner-cycle path this is per *inner* cycle, so the total is
-            ``n_inner * iterations_per_step``.
+            ``max_iter`` per cutoff. The default 30 **under-converges** in practice; raise
+            it for production.
         commit : bool, optional
             If True (default), bake the final coordinates into a per-atom xyz container
             on the same model so subsequent refinement uses per-atom xyz. False leaves

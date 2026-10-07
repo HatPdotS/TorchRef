@@ -23,15 +23,15 @@ class RigidBodyRefinementStep:
     Parameters
     ----------
     refinement : LBFGSRefinement
-        Its ``model`` is swapped for a rigid model for the duration of the run.
+        Refinement whose model is refined in place, its ``xyz`` swapped for a
+        :class:`~torchref.model.rigid_xyz.RigidXYZTensor` (see ``commit``). Its data,
+        scaler, targets and weights are left as they were.
     cutoffs : list of float, optional
         High-resolution cutoffs (Å), coarse to fine. ``None`` generates a schedule from the
         native data resolution via :meth:`default_cutoffs`.
     iterations_per_step : int, optional
-        ``max_iter`` per cutoff. The default 30 **under-converges** in practice (9RTS needs
-        >= 100); raise it for production. Under the solvent-only (``ls_wunit_k1``)
-        inner-cycle path this is per *inner* cycle, so total rigid-body iterations are
-        ``n_inner * iterations_per_step``.
+        ``max_iter`` per cutoff. The default 30 **under-converges** in practice; raise it
+        for production.
     commit : bool, optional
         If True (default), bake the final coordinates into a per-atom xyz container on
         the same model so later refinement sees normal per-atom xyz. False leaves the
@@ -226,42 +226,27 @@ class RigidBodyRefinementStep:
         state.set_weight("xray", 1.0)
         state.cache_losses()
 
+        # Rigid parameters only. The body target centres on
+        # ``alpha*|F_calc|`` and ``alpha`` absorbs a rescaling of ``F_calc``
+        # exactly, so the scale has a flat direction here -- the rule
+        # ``SCALE_TARGETS`` states for the scale fit. ``refine_scaler``
+        # (objective ``ls``) owns the scale, between cutoffs. Omitting them
+        # is enough: ``LossState.run`` freezes leaves the optimizer lacks.
         rigid_params = [
             rigid_model.xyz.euler_angles,
             rigid_model.xyz.translations,
         ]
 
-        # Decide whether to use the inner-cycle (mask-refresh) loop.
-        # Unsatisfiable as it stands: nothing sets ``c_iso.requires_grad =
-        # False``, so ``_run_inner_cycles`` does not run.
-        use_inner_cycles = (
-            ref.scaler is not None
-            and getattr(ref.scaler, "solvent", None) is not None
-            and getattr(ref.scaler, "c_iso", None) is not None
-            and ref.scaler.c_iso.requires_grad is False
+        rigid_model.reset_cache()
+        opt = torch.optim.LBFGS(
+            rigid_params,
+            max_iter=self.iterations_per_step,
+            **self.DEFAULT_LBFGS_KWARGS,
         )
-
-        if use_inner_cycles:
-            self._run_inner_cycles(d_min, state, rigid_params, n_inner=5)
-        else:
-            # Rigid parameters only. The body target centres on
-            # ``alpha*|F_calc|`` and ``alpha`` absorbs a rescaling of ``F_calc``
-            # exactly, so the scale has a flat direction here -- the rule
-            # ``SCALE_TARGETS`` states for the scale fit. ``refine_scaler``
-            # (objective ``ls``) owns the scale, between cutoffs. Omitting them
-            # is enough: ``LossState.run`` freezes leaves the optimizer lacks.
-            opt_params = rigid_params
-
-            rigid_model.reset_cache()
-            opt = torch.optim.LBFGS(
-                opt_params,
-                max_iter=self.iterations_per_step,
-                **self.DEFAULT_LBFGS_KWARGS,
-            )
-            state.step(
-                opt,
-                context=f"rigid_body[d_min={d_min:.2f}]",
-            )
+        state.step(
+            opt,
+            context=f"rigid_body[d_min={d_min:.2f}]",
+        )
         if ref.verbose > 0:
             try:
                 rwork, rfree = ref.get_rfactor()
@@ -273,72 +258,3 @@ class RigidBodyRefinementStep:
             except Exception:
                 pass
         return state
-
-    def _run_inner_cycles(self, d_min, state, rigid_params, n_inner: int = 5):
-        """Phenix-style inner cycle: refresh mask, refit solvent, then rigid LBFGS.
-
-        Used at coarse cutoffs with a solvent-only scaler. Each cycle rebuilds the
-        bulk-solvent mask FFT at the current positions, runs a short LBFGS over the solvent
-        parameters, runs the rigid-body LBFGS for ``iterations_per_step`` iterations
-        with the
-        mask frozen, then ``bake()``s the transform into ``original_xyz`` and zeroes the
-        euler/translation params (matching Phenix's per-macro-cycle reset). Total rigid
-        LBFGS
-        work per cutoff is therefore ``n_inner * iterations_per_step``.
-        """
-        ref = self.refinement
-        rigid_model = ref.model
-        solvent = ref.scaler.solvent
-
-        # Build the solvent parameter list — only the ones that are
-        # actually refinable.
-        solvent_params = []
-        for name in ("log_k_solvent", "log_ss_half", "log_n_exp"):
-            p = getattr(solvent, name, None)
-            if isinstance(p, torch.nn.Parameter) and p.requires_grad:
-                solvent_params.append(p)
-        phase = getattr(solvent, "phase_offset", None)
-        if isinstance(phase, torch.nn.Parameter) and phase.requires_grad:
-            solvent_params.append(phase)
-
-        # In the inner-cycle path, iterations_per_step is the per-INNER
-        # LBFGS max_iter (Phenix uses 25). Total rigid LBFGS work per
-        # cutoff = n_inner × iterations_per_step.
-        iters_per_inner = self.iterations_per_step
-
-        for inner in range(n_inner):
-            # (a) Refresh the bulk-solvent mask at current positions.
-            ref.scaler.update_solvent()
-            rigid_model.reset_cache()
-
-            # (b) Refit solvent params (k_sol, B_sol[, phase]) against F_obs
-            # — only if any solvent params are actually refinable.
-            if solvent_params:
-                sol_opt = torch.optim.LBFGS(
-                    solvent_params,
-                    max_iter=20,
-                    **self.DEFAULT_LBFGS_KWARGS,
-                )
-                state.step(
-                    sol_opt,
-                    context=f"rigid_body[d_min={d_min:.2f},inner={inner + 1},solvent]",
-                )
-
-            # (c) Rigid LBFGS — mask + solvent params frozen here.
-            rigid_model.reset_cache()
-            rb_opt = torch.optim.LBFGS(
-                rigid_params,
-                max_iter=iters_per_inner,
-                **self.DEFAULT_LBFGS_KWARGS,
-            )
-            state.step(
-                rb_opt,
-                context=f"rigid_body[d_min={d_min:.2f},inner={inner + 1},rigid]",
-            )
-
-            # (d) Bake the current rigid transform into original_xyz and
-            # zero euler+translation, matching Phenix's per-macro-cycle
-            # reset (mmtbx/refinement/rigid_body.py:344-370). Keeps the
-            # next solve in the small-angle regime with a clean Hessian.
-            rigid_model.xyz.bake()
-            rigid_model.reset_cache()
