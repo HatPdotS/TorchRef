@@ -1,8 +1,10 @@
 """Table-based ITC92 scattering factor lookup.
 
 Vectorized lookup from a pre-computed ``.pt`` table, which removes gemmi from
-the runtime path: neutral atoms Z=1..103 (H to Lr), common ions at several
-charge states, and the element-symbol/atomic-number mappings.
+the runtime path: neutral-atom coefficients indexed by Z and the
+element-symbol/atomic-number mappings. Rows 1-98 (H to Cf) hold the ITC92
+coefficients; rows 0 and 99-103 (Es to Lr) are zero, so atoms looked up there
+scatter nothing. There are no ionic form factors.
 :func:`get_scattering_params_by_z` is the batch entry point;
 :func:`load_scattering_table` caches the raw table process-wide.
 """
@@ -57,7 +59,6 @@ def load_scattering_table(
         - 'A', 'B': Tensor(max_z + 1, 5), neutral coefficients indexed by Z; column
           :data:`CONSTANT_TERM` holds ``c`` with ``B = 0``
         - 'element_to_z' / 'z_to_element': symbol/number mappings
-        - 'ions': ion key -> (A, B)
         - 'metadata': source information
 
     Raises
@@ -91,17 +92,6 @@ def load_scattering_table(
                 if dtype is not None and value.is_floating_point():
                     value = value.to(dtype=dtype)
                 result[key] = value
-            elif key == "ions" and isinstance(value, dict):
-                ions_result = {}
-                for ion_key, (A, B) in value.items():
-                    if device is not None:
-                        A = A.to(device=device)
-                        B = B.to(device=device)
-                    if dtype is not None:
-                        A = A.to(dtype=dtype)
-                        B = B.to(dtype=dtype)
-                    ions_result[ion_key] = (A, B)
-                result[key] = ions_result
             else:
                 result[key] = value
         return result
@@ -151,9 +141,10 @@ def get_scattering_params_by_z(
     ----------
     z_tensor : torch.Tensor
         Atomic numbers, shape (n_atoms,). Every value must be a valid table
-        index in 0-103 (the table is ``max_z + 1`` = 104 rows): 1..103 are the
-        elements, 0 is the reserved "unknown element" slot that
-        :func:`elements_to_z` assigns. Out-of-range Z raises from the index.
+        index in 0-103 (the table is ``max_z + 1`` = 104 rows). Rows 1-98 hold
+        coefficients; row 0, the "unknown element" slot that
+        :func:`elements_to_z` assigns, and rows 99-103 are zero, so such atoms
+        scatter nothing. Out-of-range Z raises from the index.
     device : torch.device, optional
         Output device. Default is ``z_tensor``'s.
     dtype : torch.dtype, optional
@@ -188,7 +179,10 @@ def get_scattering_params_for_ion(
     dtype: Optional[torch.dtype] = None,
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
     """
-    Get ITC92 scattering parameters for one ion, e.g. ``('Fe', 2)``/``('O', -2)``.
+    Get the ITC92 scattering parameters of an ion's element; the charge is ignored.
+
+    Ionic form factors are not modelled, so ``('Fe', 2)``, ``('O', -2)`` and every
+    other charge state return the neutral atom's coefficients.
 
     Parameters
     ----------
@@ -196,7 +190,7 @@ def get_scattering_params_for_ion(
         Element symbol (e.g. 'Fe', 'O'). Case-sensitive: it is used verbatim as
         a table key, unlike :func:`elements_to_z`.
     charge : int
-        Ionic charge. ``0`` falls back to the neutral Z-indexed row.
+        Ionic charge. Ignored.
     device : torch.device, optional
         Device to place tensors on.
     dtype : torch.dtype, optional
@@ -205,31 +199,16 @@ def get_scattering_params_for_ion(
     Returns
     -------
     tuple or None
-        (A, B) tensors of shape (5,), or None if the ion is not tabulated.
+        (A, B) tensors of shape (5,), or None if ``element`` is not in the table.
     """
     if dtype is None:
         dtype = get_float_dtype()
 
     table = load_scattering_table(device=device, dtype=dtype)
-
-    if charge > 0:
-        key = f"{element}{charge}+"
-    elif charge < 0:
-        key = f"{element}{abs(charge)}-"
-    else:
-        element_to_z = table["element_to_z"]
-        z = element_to_z.get(element)
-        if z is None:
-            return None
-        A = table["A"][z]
-        B = table["B"][z]
-        return A, B
-
-    ions = table.get("ions", {})
-    if key in ions:
-        return ions[key]
-
-    return None
+    z = table["element_to_z"].get(element)
+    if z is None:
+        return None
+    return table["A"][z], table["B"][z]
 
 
 def elements_to_z(elements: list, normalize: bool = True) -> torch.Tensor:
