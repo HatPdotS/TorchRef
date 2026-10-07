@@ -304,7 +304,7 @@ class IHMReader:
     def _validate_atom_consistency(
         self, atom_data: Dict[int, pd.DataFrame], mapping: IHMEnsembleMapping
     ) -> None:
-        """Check that all states have the same atoms in the same order."""
+        """Raise if the states' atom counts differ."""
         state_ids = sorted(atom_data.keys())
         if len(state_ids) < 2:
             return
