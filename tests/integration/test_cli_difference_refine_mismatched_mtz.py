@@ -134,3 +134,16 @@ def test_difference_refine_mismatched_mtz_cpu(
             assert merged[(chain, seqid, name, altloc)] == pytest.approx(
                 occ * w, abs=0.005 * (1 + w)
             )
+
+    # Header statistics: atom counts as deposited for 3GR5 (its 15 sulfate atoms are
+    # neither protein nor solvent), and the merged file reports the reflections its
+    # R-factors (mixed model against the light data) were computed on.
+    def block(state):
+        return gemmi.cif.read(str(outdir / f"{prefix}_{state}.cif")).sole_block()
+
+    dark, light, merged_block = block("dark"), block("light"), block("merged")
+    assert dark.find_value("_refine_hist.pdbx_number_atoms_protein") == "1237"
+    assert dark.find_value("_refine_hist.number_atoms_solvent") == "77"
+    for tag in ("_refine.ls_number_reflns_R_work", "_refine.ls_number_reflns_R_free"):
+        assert light.find_value(tag) is not None
+        assert merged_block.find_value(tag) == light.find_value(tag)

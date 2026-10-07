@@ -1587,25 +1587,7 @@ Examples:
                 refinement_method="difference-refine",
                 r_work=float(r_work), r_free=float(r_free),
             )
-            # Resolution (from masks, respects cutoff)
-            if data.resolution is not None:
-                valid = data.masks().to(torch.bool)
-                res_valid = data.resolution[valid]
-                if len(res_valid) > 0:
-                    meta.resolution_high = float(res_valid.min())
-                    meta.resolution_low = float(res_valid.max())
-
-            # Reflection counts (standard work/free subset accessors: validity
-            # masked, validation carved out of both).
-            with torch.no_grad():
-                if data.rfree_flags is not None:
-                    n_work = data.work.n
-                    n_test = data.free.n
-                    n_all = n_work + n_test
-                    meta.n_reflections_work = n_work
-                    meta.n_reflections_test = n_test
-                    meta.n_reflections_all = n_all
-                    meta.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
+            meta._set_reflection_statistics(data)
 
             # B-factor statistics, from the written B column
             bvals = model.to_dataframe()["tempfactor"]
@@ -1613,11 +1595,7 @@ Examples:
             meta.b_min = float(bvals.min())
             meta.b_max = float(bvals.max())
 
-            # Atom counts
-            is_hetatm = model.ctx.topology.atoms.is_hetatm
-            meta.n_atoms_total = len(is_hetatm)
-            meta.n_atoms_protein = int((~is_hetatm).sum())
-            meta.n_atoms_solvent = int(is_hetatm.sum())
+            meta._set_atom_counts(model)
 
             # Geometry deviations
             if model.ctx.initialized and model.ctx.restraints is not None:
@@ -1700,12 +1678,7 @@ Examples:
             r_free=float(r_free_l),
             authors=getattr(args, "authors", None) or ["AUTHOR NAME"],
         )
-        if data_light.resolution is not None:
-            valid = data_light.masks().to(torch.bool)
-            res_valid = data_light.resolution[valid]
-            if len(res_valid) > 0:
-                merged_meta.resolution_high = float(res_valid.min())
-                merged_meta.resolution_low = float(res_valid.max())
+        merged_meta._set_reflection_statistics(data_light)
         merged_meta.b_mean_overall = float(merged_df["tempfactor"].mean())
         merged_meta.n_atoms_total = len(merged_df)
 
