@@ -134,37 +134,24 @@ def test_plane_sets_match_builders(built, code):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("code", STRUCTURES)
-def test_exclusions_reproduce_current_set(built, code):
-    """The outer pairs of the bond, angle and torsion edges, and nothing else."""
-    topology, _ = built(code)
-    from_edges = topology.atoms.exclusions_from_restraint_edges()
-
-    expected = set()
-    for edge_type, cols in (("bond", (0, 1)), ("angle", (0, 2)), ("torsion", (0, 3))):
-        block = topology.edge_block(edge_type)
-        for row in block.indices.cpu().numpy():
-            a, b = int(row[cols[0]]), int(row[cols[1]])
-            if a != b:
-                expected.add((min(a, b), max(a, b)))
-
-    assert from_edges == expected
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("code", STRUCTURES)
 def test_connectivity_exclusions_are_a_superset(built, code):
-    """Connectivity-derived exclusions cover the restraint-derived ones, and then some.
+    """Connectivity exclusions cover every bond, angle and torsion edge's outer pair.
 
-    The difference is every pair that is 1-3 or 1-4 bonded but whose angle or torsion
-    the monomer library does not restrain; the non-bonded term excludes those too.
+    They hold more: every pair that is 1-3 or 1-4 bonded but whose angle or torsion
+    the monomer library does not restrain, which the non-bonded term excludes too.
     """
     topology, _ = built(code)
-    from_edges = topology.atoms.exclusions_from_restraint_edges()
+    from_edges = set()
+    for edge_type, cols in (("bond", (0, 1)), ("angle", (0, 2)), ("torsion", (0, 3))):
+        for row in topology.edge_block(edge_type).indices.cpu().numpy():
+            a, b = int(row[cols[0]]), int(row[cols[1]])
+            if a != b:
+                from_edges.add((min(a, b), max(a, b)))
     from_bonds = topology.atoms.exclusions_12_13_14()
 
     assert from_edges <= from_bonds, (
-        f"{code}: {len(from_edges - from_bonds)} restraint-derived exclusions are "
-        f"not reachable within three bonds, which should be impossible"
+        f"{code}: {len(from_edges - from_bonds)} edge outer pairs are not reachable "
+        f"within three bonds, which should be impossible"
     )
 
 
