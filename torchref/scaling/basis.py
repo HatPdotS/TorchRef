@@ -1,4 +1,4 @@
-"""Chebyshev basis in resolution, shared by everything that fits a smooth curve in |s|.
+"""Chebyshev basis in resolution, shared by every fit of a smooth curve in ``|s|``.
 
 Two things in here carry argument rather than convention, and both were settled
 by the scaler rework:
