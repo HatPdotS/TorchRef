@@ -504,14 +504,7 @@ class CollectionScaler(ScalerBase):
             name = "scaler/joint"
 
             def forward(self):
-                total = torch.zeros((), device=scaler_self.device)
-                for target, fc in terms:
-                    loss = target(fcalc=fc)
-                    # Skip a dataset whose term went non-finite rather than poisoning
-                    # the whole joint gradient with it.
-                    if torch.isfinite(loss):
-                        total = total + loss
-                return total * _norm
+                return sum(target(fcalc=fc) for target, fc in terms) * _norm
 
             def maintenance(self):
                 """Forward the hook so sigma_A rows drop their ``beta`` cache after a
