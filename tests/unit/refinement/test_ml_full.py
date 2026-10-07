@@ -38,6 +38,12 @@ def _t(*vals):
     return [torch.as_tensor(np.asarray(v, dtype=np.float64), dtype=DT) for v in vals]
 
 
+def _log_cosh(x):
+    """Numerically safe ``log cosh(x) = |x| + log1p(exp(-2|x|)) - log 2``."""
+    ax = torch.abs(x)
+    return ax + torch.log1p(torch.exp(-2.0 * ax)) - math.log(2.0)
+
+
 def _grid(r_sig, r_fc, r_fo, Sigma=1.0):
     """Dimensionless grid. NLL is exactly equivariant under
     ``F -> lam F, Sigma -> lam^2 Sigma`` (``NLL -> NLL + log lam``), so fixing
@@ -79,7 +85,7 @@ def test_quadrature_reproduces_exact_centric_closed_form():
         return (
             0.5 * torch.log(2.0 / (math.pi * Sigma))
             - (t * t + Fc * Fc) * (0.5 * inv_S)
-            + F._log_cosh(t * Fc * inv_S)
+            + _log_cosh(t * Fc * inv_S)
             - 0.5 * (F.LOG_2PI + 2.0 * torch.log(sig))
             - (F_obs - t) ** 2 / (2.0 * sig**2)
         )

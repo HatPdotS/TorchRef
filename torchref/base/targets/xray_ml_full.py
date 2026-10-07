@@ -157,12 +157,6 @@ def log_i0(z: torch.Tensor) -> torch.Tensor:
     return torch.where(zc <= 3.75, small, large)
 
 
-def _log_cosh(x: torch.Tensor) -> torch.Tensor:
-    """Numerically safe ``log cosh(x) = |x| + log1p(exp(-2|x|)) - log 2``."""
-    ax = torch.abs(x)
-    return ax + torch.log1p(torch.exp(-2.0 * ax)) - math.log(2.0)
-
-
 # =====================================================================
 # log-integrand and its analytic Laplace centre
 # =====================================================================
