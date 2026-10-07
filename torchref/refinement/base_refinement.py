@@ -657,8 +657,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     def _init_targets(self, xray_mode: str = None):
         """Build the x-ray, geometry and ADP targets and initialise the scales.
 
-        ``xray_mode`` defaults to ``self.xray_mode`` (itself ``'ml'``), so the
-        deserialization path picks up the stored mode rather than the default.
+        ``xray_mode`` defaults to ``self.xray_mode``.
         """
         if xray_mode is None:
             xray_mode = getattr(self, "xray_mode", "ml")
@@ -1114,7 +1113,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         The checkpoint holds no reflection data, so the only restore path is to build
         the refinement from the same input files and settings as the saved one and then
         call this. Checkpoint entries that are not a parameter or buffer here (the
-        model's cell, atom table and other metadata) are ignored.
+        model's cell, atom table and other metadata) are ignored. A data file without
+        R-free flags gets a newly drawn free set on every build, so restoring from it
+        changes the work/free split.
 
         Parameters
         ----------
@@ -1136,5 +1137,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 f"refinement, e.g. {missing[:5]}; build the refinement from the same "
                 "input files and settings as the saved one."
             )
+        # The cached F_sol was computed from the solvent mask the checkpoint replaced.
+        self.scaler._f_sol_raw = None
         if self.verbose > 0:
             print(f"Loaded refinement state from {path}")

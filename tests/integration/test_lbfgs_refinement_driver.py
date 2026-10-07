@@ -23,12 +23,14 @@ def build(mtz_dir, pdb_dir):
 def test_load_state_restores_a_save_state_checkpoint(build, tmp_path):
     """A checkpoint loads onto a refinement built from the same files, metadata and
     all, and reproduces its coordinates, every scaler parameter (scale, anisotropy,
-    bulk solvent) and its R-factors exactly."""
+    bulk solvent) and its R-factors exactly, also after the solvent mask was rebuilt
+    as every refine() cycle does."""
     saved = build()
     with torch.no_grad():
-        saved.model.xyz.refinable_params.add_(0.03)
+        saved.model.xyz.refinable_params.add_(0.3)
         for p in saved.scaler.parameters():
             p.add_(0.01)
+    saved.scaler.update_solvent()
     path = tmp_path / "refinement.pt"
     saved.save_state(str(path))
 
