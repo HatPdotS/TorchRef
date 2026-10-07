@@ -462,10 +462,10 @@ class DeviceMixin:
         """Move ``self`` to a device and/or dtype, returning ``self``.
 
         Accepts the usual ``nn.Module.to`` argument forms (device, dtype,
-        or both). For ``nn.Module`` subclasses this defers to the standard
-        ``nn.Module.to``; for plain (non-Module) classes the (device, dtype)
-        pair is parsed and applied via :meth:`_apply`. A call that resolves
-        to neither a device nor a dtype is a no-op that returns ``self``.
+        both, or a tensor) and follows its rules on plain classes too: a dtype
+        casts only floating and complex tensors, so integer and boolean ones
+        keep theirs, and a non-floating dtype raises ``TypeError``. A call that
+        resolves to neither a device nor a dtype is a no-op that returns ``self``.
         """
         if _PARSE_TO is not None:
             # Let PyTorch's own parser raise on invalid arguments.
@@ -486,15 +486,9 @@ class DeviceMixin:
                 return super().to(*args, **kwargs)
             if device is None and dtype is None:
                 return self
-
-            # Forward the caller's original arguments rather than the parsed
-            # pair, so overloads and options the parser folds away --
-            # ``.to(other_tensor)``, ``non_blocking=``, ``memory_format=`` --
-            # reach the tensors intact.
-            def fn(t):
-                return t.to(*args, **kwargs)
-
-            return self._apply(fn)
+            # ``nn.Module.to`` needs nothing from ``self`` but ``_apply``, so a plain
+            # class reuses its parser and its floating/complex-only converter.
+            return nn.Module.to(self, *args, **kwargs)
         finally:
             _pop_request(prev_request)
             _exit_traversal(token)
