@@ -353,3 +353,13 @@ def test_cif_read_rejects_colliding_measurement_aliases(mtz_dir, tmp_path):
     doc.write_file(str(path))
     with pytest.raises(ValueError, match="F_meas"):
         rfree.read_sf_file(str(path))
+
+
+@pytest.mark.parametrize("code", ["7L84", "6G9X"])
+def test_status_excludes_rows_that_carry_numeric_flags(cif_sf_dir, code):
+    """Beside pdbx_r_free_flag, every status other than o and f still excludes."""
+    path = str(cif_sf_dir / f"{code}-sf.cif")
+    status = np.array(list(gemmi.cif.read(path)[0].find_values("_refln.status")))
+    free_set = rfree.read_free_set(rfree.read_sf_file(path))
+    np.testing.assert_array_equal(free_set["excluded"], ~np.isin(status, ["o", "f"]))
+    np.testing.assert_array_equal(free_set["free"], status == "f")

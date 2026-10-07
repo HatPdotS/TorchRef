@@ -87,7 +87,9 @@ def read_sf_file(path: str, cif_block: Optional[str] = None) -> rs.DataSet:
     CIF measurement aliases use conventional MTZ labels. Crystal, wavelength and
     scale-group identifiers are metadata rather than MTZ measurements. Unsupported
     measurement columns and aliases that collide on one MTZ label raise ValueError.
-
+    A ``_refln.status`` other than ``o`` or ``f`` excludes its row (see
+    :func:`excluded_rows`), also where ``_refln.pdbx_r_free_flag`` supplies the
+    ``FreeR_flag`` values.
 
     Parameters
     ----------
@@ -140,16 +142,23 @@ def read_sf_file(path: str, cif_block: Optional[str] = None) -> rs.DataSet:
             raise ValueError(
                 "CIF columns map to the same MTZ label: " + "; ".join(collisions)
             )
+        # With both flag tags, pdbx_r_free_flag keeps its CCP4 values and the
+        # status letters, read into a column of their own, mark the exclusions.
+        both = {"status", "pdbx_r_free_flag"} <= set(tags)
         converter = gemmi.CifToMtz()
         converter.spec_lines = [
             f"{tag} {label} {kind} 1" + (" o=1,f=0,x=-1" if tag == "status" else "")
             for tag in tags
             if tag in _CIF_COLUMNS
-            for label, kind in [_CIF_COLUMNS[tag]]
-            if tag != "status" or "pdbx_r_free_flag" not in tags
+            for label, kind in [
+                ("status", "I") if both and tag == "status" else _CIF_COLUMNS[tag]
+            ]
         ]
-        mtz = converter.convert_block_to_mtz(block)
-        return rs.io.from_gemmi(mtz)
+        ds = rs.io.from_gemmi(converter.convert_block_to_mtz(block))
+        if both:
+            ds.loc[excluded_rows(ds, "status"), FREE_COLUMN] = -1
+            ds = ds.drop(columns="status")
+        return ds
     raise ValueError(f"Unsupported structure-factor format: {path}")
 
 
