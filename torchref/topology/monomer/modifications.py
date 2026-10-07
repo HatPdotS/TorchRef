@@ -113,7 +113,7 @@ def read_mod_definitions() -> Dict[str, Dict[str, pd.DataFrame]]:
     (``new_value_dist``), matching :class:`~torchref.io.cif_readers.RestraintCIFReader`;
     the ``_nucleus`` columns are ignored.
     """
-    from torchref.io.cif_readers import CIFReader
+    from torchref.io.cif_readers import CIFReader, _category_table
 
     blocks = read_library_blocks()
 
@@ -128,7 +128,7 @@ def read_mod_definitions() -> Dict[str, Dict[str, pd.DataFrame]]:
         for cif_category, section in _CATEGORY_MAP.items():
             if cif_category not in reader.data:
                 continue
-            df = reader.data[cif_category].copy()
+            df = _category_table(reader.data, cif_category).copy()
             df.columns = [c.split(".")[-1] for c in df.columns]
             sections[section] = _standardize_mod_columns(df, section)
         mod_dict[mod_id] = sections

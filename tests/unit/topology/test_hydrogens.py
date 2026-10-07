@@ -82,9 +82,8 @@ def test_every_candidate_hydrogen_is_placed(built, code):
     checked = 0
     for residue in range(residues.n_residues):
         start, end = int(residues.atom_start[residue]), int(residues.atom_end[residue])
-        template = _template(
-            restraints.cif_dict, str(residues.resname[residue]).strip()
-        )
+        resname = str(residues.resname[residue]).strip()
+        template = _template(restraints.cif_dict, resname)
         if template is None:
             continue
         # Residues with altlocs plan one hydrogen per conformer; the two-sided count
@@ -96,7 +95,8 @@ def test_every_candidate_hydrogen_is_placed(built, code):
             if template_h == 0:
                 continue
             neighbours = atoms.neighbors(parent)
-            heavy = int((~is_h[neighbours]).sum())
+            # A water's metal contact displaces none of its hydrogens.
+            heavy = 0 if resname == "HOH" else int((~is_h[neighbours]).sum())
             element = str(atoms.element[parent]).strip().upper()
             template_heavy = len(template["heavy_adjacency"].get(names[parent], []))
             extra_bonds = max(0, heavy - template_heavy)

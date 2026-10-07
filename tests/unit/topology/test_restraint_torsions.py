@@ -182,7 +182,6 @@ def _nucleotide(code):
         for row in block.find("_chem_comp_tor.", tags)
     }
     cif_dict = read_cif(str(path))
-    cif_dict[code]["torsions"]["id"] = list(torsions)
     return table, cif_dict, torsions
 
 

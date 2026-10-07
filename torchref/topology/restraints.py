@@ -132,13 +132,10 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             raise ValueError("Restraints over a topology need the coordinates, xyz=")
 
         self._nodes = topology
-        self._vdw_radii = torch.tensor(
-            topology.atoms.vdw_radii, dtype=get_float_dtype()
-        )
-        self.unique_residues = self._multi_atom_resnames(topology)
+        self.unique_residues, single_atom = self._dictionary_resnames(topology)
 
         # Parse CIF files
-        self._load_cif_dictionaries(cif_path)
+        self._load_cif_dictionaries(cif_path, single_atom)
 
         # Load link definitions for inter-residue restraints
         if verbose > 1:
@@ -152,16 +149,16 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             self.summary()
 
     @staticmethod
-    def _multi_atom_resnames(topology) -> list:
-        """Residue names, in first-seen order, whose atoms carry more than one name.
-
-        Single-atom residues (ions, lone waters) need no dictionary lookup.
+    def _dictionary_resnames(topology) -> tuple:
+        """Residue names in first-seen order, as two lists: those whose atoms carry more
+        than one name, whose dictionaries the build needs, and those of a single atom.
         """
         names_by_resname: dict = {}
         columns = topology.columns()
         for resname, atom_name in zip(columns["resname"], columns["name"]):
             names_by_resname.setdefault(str(resname), set()).add(str(atom_name))
-        return [name for name, atoms in names_by_resname.items() if len(atoms) > 1]
+        multi = [name for name, atoms in names_by_resname.items() if len(atoms) > 1]
+        return multi, [name for name in names_by_resname if name not in multi]
 
     def _riding_table(self, xyz: torch.Tensor) -> pd.DataFrame:
         """The identity-plus-coordinates table :mod:`torchref.topology.riding` reads.
@@ -228,8 +225,15 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         self._rebuild_entries()
         return result
 
-    def _load_cif_dictionaries(self, cif_path):
-        """Load CIF dictionaries from provided paths and monomer library."""
+    def _load_cif_dictionaries(self, cif_path, single_atom):
+        """Load CIF dictionaries from provided paths and monomer library.
+
+        A residue of ``single_atom`` takes its library entry if that reads as a
+        restraint dictionary, as one with hydrogens does (a lone water oxygen, an NH2
+        cap): it types the atom and holds the hydrogens it rides. An ion's entry has no
+        bonds and the reader rejects it, so an ion stays untyped and out of
+        ``missing_residues``.
+        """
         if cif_path:
             if isinstance(cif_path, str):
                 self.cif_dict = read_cif(cif_path)
@@ -249,16 +253,19 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         from pathlib import Path
         from torchref import PATH_TORCHREF_DATA
 
+        lookups = self.missing_residues + [
+            res for res in single_atom if res not in self.cif_dict
+        ]
         additional_files = [
             (
                 Path(PATH_TORCHREF_DATA) / "monomer_library/h/HOH.cif"
                 if res == "HOH"
                 else find_cif_file_in_library(res)
             )
-            for res in self.missing_residues
+            for res in lookups
         ]
 
-        for cif_file in additional_files:
+        for res, cif_file in zip(lookups, additional_files):
             if cif_file is not None:
                 if self.verbose > 1:
                     print(cif_file)
@@ -266,8 +273,9 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                     additional_cif_dict = read_cif(cif_file)
                     self.cif_dict.update(additional_cif_dict)
                 except Exception as e:
-                    print("Error reading CIF file:", e)
-                    print("This residue will have no restraints applied.")
+                    if res not in single_atom:
+                        print("Error reading CIF file:", e)
+                        print("This residue will have no restraints applied.")
 
         self.missing_residues = [
             res for res in self.unique_residues if res not in self.cif_dict
@@ -326,9 +334,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             # expected drift, so a displacement-triggered rebuild stays inside the
             # margin and cannot miss a newly-formed contact.
             if self._nonbonded:
-                self._build_vdw_restraints(
-                    xyz, cutoff=6.0, sigma=0.05, inter_residue_only=False
-                )
+                self._build_vdw_restraints(xyz, cutoff=6.0, inter_residue_only=False)
 
             if target_device.type != "cpu":
                 self.to(target_device)
@@ -385,9 +391,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         # dtype-ok: packed pair key min*max_idx+max overflows int32 beyond ~46k atoms; searchsorted needs both sides int64
         return torch.tensor(hashes, dtype=torch.long, device=device)
 
-    def _build_vdw_restraints(
-        self, xyz, cutoff=6.0, sigma=0.2, inter_residue_only=True
-    ):
+    def _build_vdw_restraints(self, xyz, cutoff=6.0, inter_residue_only=True):
         """Build van der Waals (non-bonded contact) restraints.
 
         With cell and spacegroup present, includes contacts to symmetry mates.
@@ -402,8 +406,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         cutoff : float, default 6.0
             Contact-search cutoff in Angstroms. Keep it ~1 Å beyond the largest
             heavy-atom VDW sum so the rebuild threshold has margin.
-        sigma : float, default 0.2
-            Restraint sigma in Angstroms (the production caller passes 0.05).
         inter_residue_only : bool, default True
             If True, only build contacts between atoms in different residues.
 
@@ -415,7 +417,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         """
         self._vdw_build_kwargs = dict(
             cutoff=cutoff,
-            sigma=sigma,
             inter_residue_only=inter_residue_only,
         )
 
@@ -428,7 +429,9 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         cpu = torch.device("cpu")
         target_device = xyz.device
         xyz_cpu = xyz.detach().to(cpu)
-        radii_cpu = self._vdw_radii.to(cpu)
+        radii_cpu = torch.as_tensor(
+            self.topology.atoms.vdw_radii, dtype=get_float_dtype()
+        )
 
         from torchref.symmetry import SpaceGroup
         from torchref.symmetry.cell import Cell
@@ -457,7 +460,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             topology=self.topology,
             exclusion_set=self.topology.atoms.exclusions_12_13_14(),
             cutoff=cutoff,
-            sigma=sigma,
             inter_residue_only=inter_residue_only,
             verbose=self.verbose,
         )
@@ -478,6 +480,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             HydrogenTopology,
             build_h_candidate_pairs,
             build_hydrogen_topology,
+            candidate_contact_distances,
         )
 
         if bool(self.topology.atoms.is_hydrogen.any()):
@@ -488,6 +491,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                 pdb=riding_table,
                 device=cpu,
                 verbose=self.verbose,
+                cif_dict=self.cif_dict,
             )
         self._h_excl_hash = self._build_h_exclusion_hash(self._h_topo, cpu)
 
@@ -502,14 +506,9 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                 device=cpu,
                 verbose=self.verbose,
             )
-            # Fill in VDW min distances using combined radii array
             if self._h_topo.has_candidates:
-                heavy_radii = radii_cpu                       # (N_heavy,)
-                h_radii = self._h_topo.h_vdw_radius           # (N_h,) on CPU
-                all_radii = torch.cat([heavy_radii, h_radii])
-                self._h_topo.cand_min_dist = (
-                    all_radii[self._h_topo.cand_idx_i]
-                    + all_radii[self._h_topo.cand_idx_j]
+                self._h_topo.cand_min_dist = candidate_contact_distances(
+                    self._h_topo, radii_cpu, self.topology.atoms.hb_type
                 )
 
         # Snapshot at build time so maintenance() can diff current positions

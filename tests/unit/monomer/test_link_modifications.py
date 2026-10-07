@@ -433,3 +433,36 @@ def test_deposited_coordinates_fit_the_corrected_targets_better(daw):
     linked_rms = np.sqrt(((observed - 120.614) ** 2).mean())
     free_rms = np.sqrt(((observed - 117.191) ** 2).mean())
     assert linked_rms < free_rms
+
+
+def _first_loop_as_pairs(block):
+    """``block`` with its first loop, which holds one row, written as key-value pairs."""
+    head, rest = block.split("loop_\n", 1)
+    lines = rest.split("\n")
+    n_tags = next(k for k, line in enumerate(lines) if not line.startswith("_"))
+    values = lines[n_tags].split()
+    assert len(values) == n_tags
+    pairs = [f"{tag} {value}" for tag, value in zip(lines[:n_tags], values)]
+    return head + "\n".join(pairs + lines[n_tags + 1 :])
+
+
+@pytest.mark.unit
+def test_a_one_row_category_written_as_pairs_reads_like_its_loop(monkeypatch):
+    """CIF may write a one-row category as key-value pairs instead of a loop; the link
+    and modification readers take both forms alike."""
+    from torchref.topology.monomer import cif, modifications
+
+    blocks = dict(cif.read_library_blocks())
+    for name in ("link_disulf", "mod_DG9m1"):
+        blocks[name] = _first_loop_as_pairs(blocks[name])
+    monkeypatch.setattr(cif, "read_library_blocks", lambda: blocks)
+    monkeypatch.setattr(modifications, "read_library_blocks", lambda: blocks)
+
+    links, _ = cif.read_link_definitions.__wrapped__()
+    pd.testing.assert_frame_equal(
+        links["disulf"]["bonds"], read_link_definitions()[0]["disulf"]["bonds"]
+    )
+    mods = modifications.read_mod_definitions.__wrapped__()
+    pd.testing.assert_frame_equal(
+        mods["DG9m1"]["atoms"], read_mod_definitions()["DG9m1"]["atoms"]
+    )
