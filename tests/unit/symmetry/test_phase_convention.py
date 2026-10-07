@@ -129,7 +129,7 @@ def _random_hkl(n=8, seed=3):
 @pytest.mark.parametrize("include_friedel", [False, True])
 @pytest.mark.parametrize("spacegroup", SPACE_GROUPS)
 def test_expand_hkl_phase_contract(spacegroup, include_friedel):
-    """``where(friedel, -phi_orig, phi_orig)[indices] + shifts`` is the true phase.
+    """``where(friedel, -phi_in[indices], phi_in[indices]) + shifts`` is the true phase.
 
     This is the contract stated in :func:`expand_hkl`'s own docstring. A Friedel
     copy is a conjugation (``phi(-h) = -phi(h)``), not an offset, so the rows that

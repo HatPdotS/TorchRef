@@ -318,8 +318,8 @@ class SpaceGroup(Symmetry):
             ``F_exp = F_orig[orig_indices]``.
         phase_shifts : torch.Tensor
             Translation phase offsets in radians, shape ``(M,)``, in the configured
-            float dtype: ``phase_exp =
-            where(is_friedel, -phase_orig, phase_orig)[orig_indices] + phase_shifts``.
+            float dtype: ``phase_exp = where(is_friedel, -phase_orig[orig_indices],
+            phase_orig[orig_indices]) + phase_shifts``.
         is_friedel : torch.Tensor
             Boolean, shape ``(M,)``, True for the rows that are Friedel copies of a
             rotated index; returned only with ``return_friedel``. All False when
