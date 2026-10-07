@@ -48,14 +48,19 @@ from torchref.base.electron_density.radius_policy import (
     per_atom_radius_aniso,
     per_atom_radius_iso,
 )
-from torchref.base.scattering.scattering_table import get_scattering_params_by_z
+from torchref.base.scattering.scattering_table import (
+    elements_to_z,
+    get_scattering_params_by_z,
+)
+from torchref.io.pdb import PDBReader
 from torchref.model.parameter_wrappers import u6_to_matrix
+from torchref.symmetry.cell import Cell
 from torchref.utils import use_portable
 
 pytestmark = pytest.mark.unit
 
 # float32 agreement floor. The fused kernel uses a fast 2^x exp (the CPU analogue of
-# the metal::fast::exp the Metal kernels already use), measured at 2e-5 rel L2
+# the metal::fast::exp the Metal kernels already use), measured at 2e-6 rel L2
 # against std::exp; the portable splat uses torch.exp. Both are far below the 7.9e-4
 # amplitude-truncation error at the default 3 sigma, so this tolerance bounds
 # arithmetic noise while still failing on any geometry disagreement (the smallest of
@@ -227,6 +232,33 @@ def test_fused_float64_is_exact():
         torch.zeros(dims, dtype=torch.float64), xyz, adp, occ, A, B, inv_frac, frac, r)
     want = _brute_iso(dims, xyz, adp, occ, A, B, inv_frac, frac, r)
     assert _rel_l2(got, want) < 1e-13
+
+
+def test_fused_float32_total_density_is_unbiased(pdb_dir):
+    """The float32 fast exp adds no one-sided bias to the integrated density.
+
+    1DAW atoms on a 216x90x69 grid, float32 against float64 (``std::exp``) on the same
+    inputs: the total density must agree to 2e-6 relative. A 2^f polynomial whose error
+    has one sign, such as the Taylor series, leaves the whole map 1.3e-5 low.
+    """
+    if sphere_splat.why_unavailable() is not None:
+        pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
+    df, cell, _ = PDBReader().read(str(pdb_dir / "1DAW.pdb"))()
+    cell = Cell(cell)
+    f32 = torch.float32
+    xyz = torch.tensor(df[["x", "y", "z"]].to_numpy(), dtype=f32)
+    adp = torch.tensor(df["tempfactor"].to_numpy(), dtype=f32)
+    occ = torch.tensor(df["occupancy"].to_numpy(), dtype=f32)
+    A, B = get_scattering_params_by_z(elements_to_z(df["element"].tolist()), dtype=f32)
+    r = per_atom_radius_iso(adp, B, n_sigma=3.0)
+    args = (xyz, adp, occ, A, B, cell.inv_fractional_matrix, cell.fractional_matrix, r)
+    dims = (216, 90, 69)
+    got = sphere_splat.add_isotropic_cpu_sphere_var(torch.zeros(dims, dtype=f32), *args)
+    want = sphere_splat.add_isotropic_cpu_sphere_var(
+        torch.zeros(dims, dtype=torch.float64), *(t.double() for t in args)
+    )
+    bias = float(got.double().sum() / want.sum() - 1.0)
+    assert abs(bias) < 2e-6, f"float32 total density off by {bias:.2e} relative"
 
 
 # ===========================================================================

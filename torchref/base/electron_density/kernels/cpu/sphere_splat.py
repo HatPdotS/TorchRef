@@ -46,17 +46,19 @@ _CPP_SRC = r"""
 // exp: fast branchless variant for float, libm for double.
 //
 // exp(x) = 2^(x*log2(e)): the integer part goes straight into the IEEE exponent
-// field, the fractional part through a degree-5 minimax polynomial on [0,1).
-// No branches, so the innermost voxel loop stays vectorizable. This mirrors
-// metal::fast::exp, which the Metal kernels already use.
+// field, the fractional part through a degree-5 minimax polynomial for 2^f on
+// [0,1) with p(0) = 1. Its relative error, 8.5e-8 (1.7e-7 in float32 Horner),
+// alternates in sign; the Taylor coefficients ln2^k/k! are always low, by up to
+// 8.5e-5, which biases every map. No branches, so the innermost voxel loop stays
+// vectorizable. This mirrors metal::fast::exp, which the Metal kernels already use.
 // ---------------------------------------------------------------------------
 static inline float fast_exp(float x) {
     x = x < -87.0f ? -87.0f : x;                 // below this, exp underflows
     const float t = x * 1.44269504088896341f;    // log2(e)
     const float n = std::floor(t);
     const float f = t - n;
-    const float p = 1.0f + f * (0.6931471805f + f * (0.2402265069f
-                  + f * (0.0555041087f + f * (0.0096181291f + f * 0.0013333558f))));
+    const float p = 1.0f + f * (0.69315131f + f * (0.24016445f
+                  + f * (0.05579991f + f * (0.00901703f + f * 0.00186713f))));
     const int32_t bits = (int32_t)((n + 127.0f) * 8388608.0f) & 0x7f800000;
     float scale;
     std::memcpy(&scale, &bits, sizeof(scale));
