@@ -535,8 +535,15 @@ class TestModelCollectionIHM:
         assert mc.n_base_models >= 1
         assert isinstance(mapping, IHMEnsembleMapping)
 
-    def test_from_ihm_refuses_a_negative_population(self, tmp_path):
-        """A negative deposited population is refused, not installed as an override."""
+    @pytest.mark.parametrize(
+        "first, second",
+        [("1.100", "-0.100"), ("0.500", "-0.500"), ("nan", "0.100")],
+    )
+    def test_from_ihm_refuses_a_negative_population(self, tmp_path, first, second):
+        """A negative or NaN deposited population is refused, whatever the group sums to.
+
+        Only an all-zero group falls back to equal fractions.
+        """
         import gemmi
         import torch
 
@@ -547,7 +554,7 @@ class TestModelCollectionIHM:
             "_ihm_multi_state_modeling.", ["state_id", "population_fraction"]
         )
         for row in table:
-            row[1] = {"3": "1.100", "4": "-0.100"}.get(row[0], row[1])
+            row[1] = {"3": first, "4": second}.get(row[0], row[1])
         path = tmp_path / "negative.cif"
         doc.write_file(str(path))
 

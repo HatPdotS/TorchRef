@@ -390,7 +390,7 @@ class IHMReader:
             total = sum(fractions)
             if total > 0:
                 fractions = [f / total for f in fractions]
-            else:
+            elif not any(fractions):
                 fractions = [1.0 / len(fractions)] * len(fractions)
 
             is_dark = (group.name == dark_name)
