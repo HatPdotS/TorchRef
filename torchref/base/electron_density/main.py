@@ -26,10 +26,6 @@ from torchref.config import get_float_dtype, get_sigma_cutoff_ed
 from torchref.utils.backends import run_or_degrade, select
 
 from torchref.base.electron_density._backends import DENSITY_BACKENDS
-
-# Re-imported to preserve this namespace: ``scaling/solvent.py`` imports
-# ``_get_radius_offsets`` from here, not from its defining module.
-from torchref.base.electron_density.kernels.offsets import _get_radius_offsets
 from torchref.base.electron_density.radius_policy import (
     per_atom_radius_aniso,
     per_atom_radius_iso,

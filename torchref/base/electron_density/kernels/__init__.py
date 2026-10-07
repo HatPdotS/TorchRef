@@ -5,7 +5,6 @@
 * ``cuda/`` -- the production variable-radius work-queue kernels
   (``variable_radius.py``) plus a fixed-radius fused Triton kernel (``fused.py``,
   benchmark-only).
-* ``offsets.py`` -- shared voxel-offset helpers for the variable-radius splats.
 
 The public API is re-exported here. Triton imports are guarded, so the package loads
 without a GPU.
@@ -13,7 +12,6 @@ without a GPU.
 
 from .cpu.jit_reference import (
     vectorized_add_to_map,
-    build_electron_density,
     compute_metric_tensor,
     precompute_fractional_coords,
     warmup,
@@ -23,7 +21,6 @@ from .cpu.jit_reference import (
 
 __all__ = [
     "vectorized_add_to_map",
-    "build_electron_density",
     "compute_metric_tensor",
     "precompute_fractional_coords",
     "warmup",

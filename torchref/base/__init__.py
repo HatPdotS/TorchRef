@@ -27,8 +27,6 @@ alignment
     Coordinate alignment and superposition functions.
 metrics
     R-factor and loss function calculations.
-kernels
-    Optimized GPU/CPU kernels for performance-critical operations.
 
 Legacy Submodule (For Backward Compatibility)
 ---------------------------------------------
@@ -63,7 +61,6 @@ from . import (
     scattering,
     alignment,
     metrics,
-    kernels,
 )
 
 # =============================================================================
@@ -109,12 +106,9 @@ from .electron_density import (
     vectorized_add_to_map,
     vectorized_add_to_map_aniso,
     scatter_add_nd,
-    scatter_add_nd_super_slow,
     find_relevant_voxels,
     excise_angstrom_radius_around_coord,
     add_to_solvent_mask,
-    add_to_phenix_mask,
-    find_solvent_voids,
 )
 
 # =============================================================================
@@ -177,9 +171,9 @@ from .metrics import (
 )
 
 # =============================================================================
-# Kernels (from kernels submodule)
+# Kernels (from electron_density.kernels)
 # =============================================================================
-from .kernels import (
+from .electron_density.kernels import (
     compute_metric_tensor,
     precompute_fractional_coords,
     warmup,
@@ -202,7 +196,6 @@ __all__ = [
     "scattering",
     "alignment",
     "metrics",
-    "kernels",
     # -------------------------------------------------------------------------
     # Legacy submodule (backward compatibility)
     # -------------------------------------------------------------------------
@@ -235,12 +228,9 @@ __all__ = [
     "vectorized_add_to_map",
     "vectorized_add_to_map_aniso",
     "scatter_add_nd",
-    "scatter_add_nd_super_slow",
     "find_relevant_voxels",
     "excise_angstrom_radius_around_coord",
     "add_to_solvent_mask",
-    "add_to_phenix_mask",
-    "find_solvent_voids",
     # -------------------------------------------------------------------------
     # Fourier
     # -------------------------------------------------------------------------

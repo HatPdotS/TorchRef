@@ -25,7 +25,6 @@ os.makedirs(_CACHE_DIR, exist_ok=True)
 
 __all__ = [
     "vectorized_add_to_map",
-    "build_electron_density",
     "compute_metric_tensor",
     "precompute_fractional_coords",
     "warmup",
@@ -413,37 +412,6 @@ def vectorized_add_to_map(
             B,
             occ,
         )
-
-
-def build_electron_density(
-    surrounding_coords: torch.Tensor,
-    voxel_indices: torch.Tensor,
-    density_map: torch.Tensor,
-    xyz: torch.Tensor,
-    b: torch.Tensor,
-    inv_frac_matrix: torch.Tensor,
-    frac_matrix: torch.Tensor,
-    A: torch.Tensor,
-    B: torch.Tensor,
-    occ: torch.Tensor,
-) -> torch.Tensor:
-    """Alias for :func:`vectorized_add_to_map`, taking the same *voxel-level* arguments.
-
-    Distinct from :func:`torchref.base.electron_density.main.build_electron_density`, which
-    takes *atomic* parameters and performs the full table-based variable-radius dispatch.
-    """
-    return vectorized_add_to_map(
-        surrounding_coords,
-        voxel_indices,
-        density_map,
-        xyz,
-        b,
-        inv_frac_matrix,
-        frac_matrix,
-        A,
-        B,
-        occ,
-    )
 
 
 # =============================================================================

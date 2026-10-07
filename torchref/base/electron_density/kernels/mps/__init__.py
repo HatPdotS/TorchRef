@@ -8,12 +8,7 @@ shader; a runtime failure degrades to the portable splat and warns.
 Every other platform is unaffected.
 """
 
-from torchref.base.electron_density.kernels.mps.compile import (
-    clear_cache,
-    last_error,
-    mps_kernels_available,
-    warmup,
-)
+from torchref.base.electron_density.kernels.mps.compile import last_error
 from torchref.base.electron_density.kernels.mps.variable_radius import (
     add_anisotropic_mps_var,
     add_isotropic_mps_var,
@@ -22,8 +17,5 @@ from torchref.base.electron_density.kernels.mps.variable_radius import (
 __all__ = [
     "add_isotropic_mps_var",
     "add_anisotropic_mps_var",
-    "mps_kernels_available",
-    "warmup",
-    "clear_cache",
     "last_error",
 ]

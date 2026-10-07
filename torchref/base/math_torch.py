@@ -12,7 +12,6 @@ PyTorch implementations of mathematical functions for crystallography.
     - ``torchref.base.scattering`` - Atomic scattering factors
     - ``torchref.base.alignment`` - Coordinate alignment
     - ``torchref.base.metrics`` - R-factors and loss functions
-    - ``torchref.base.kernels`` - Optimized kernels
 
 This module is maintained for backward compatibility and re-exports all
 functions from the new submodules.
@@ -60,12 +59,9 @@ from torchref.base.electron_density import (
     vectorized_add_to_map,
     vectorized_add_to_map_aniso,
     scatter_add_nd,
-    scatter_add_nd_super_slow,
     find_relevant_voxels,
     excise_angstrom_radius_around_coord,
     add_to_solvent_mask,
-    add_to_phenix_mask,
-    find_solvent_voids,
 )
 
 # =============================================================================
@@ -264,12 +260,9 @@ __all__ = [
     "vectorized_add_to_map",
     "vectorized_add_to_map_aniso",
     "scatter_add_nd",
-    "scatter_add_nd_super_slow",
     "find_relevant_voxels",
     "excise_angstrom_radius_around_coord",
     "add_to_solvent_mask",
-    "add_to_phenix_mask",
-    "find_solvent_voids",
     # Fourier
     "fft",
     "ifft",

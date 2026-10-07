@@ -531,21 +531,6 @@ def sphere_splat_available() -> bool:
     return why_unavailable() is None
 
 
-
-
-def warmup() -> bool:
-    """Eagerly compile, to move the one-time cost off the first refinement step."""
-    return _get_module() is not None
-
-
-def clear_cache() -> None:
-    """Forget the compiled module and failure state (rebuilt on next use)."""
-    global _module, _module_failed, _module_error
-    _module = None
-    _module_failed = False
-    _module_error = None
-
-
 def last_error() -> Optional[Tuple[str, str]]:
     """The ``(message, traceback)`` of the last build failure, if any."""
     return _module_error
