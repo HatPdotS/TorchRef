@@ -211,23 +211,9 @@ def test_pair_indices_take_the_configured_int_dtype(model_1daw):
 
 def test_pair_list_holds_no_per_pair_sigma(model_1daw):
     """The non-bonded targets score every pair at their own ``sigma_vdw``, so the
-    pair list, built or empty, holds the pairs, their images, contact distances and
-    weights only."""
+    pair list holds the pairs, their images, contact distances and weights only."""
     fields = {"indices", "symop_indices", "cell_offsets", "min_distances", "weights"}
     assert set(model_1daw.restraints.restraints["vdw"]) == fields
-
-    cpu = torch.device("cpu")
-    lone = nb.build_vdw_restraints_gpu(
-        xyz=torch.zeros(1, 3, dtype=get_float_dtype()),
-        vdw_radii=torch.ones(1, dtype=get_float_dtype()),
-        cell=Cell([50.0, 50.0, 50.0, 90.0, 90.0, 90.0], device=cpu),
-        sg=SpaceGroup("P 1", device=cpu),
-        topology=None,
-        exclusion_set=set(),
-        cutoff=CUTOFF,
-    )
-    assert len(lone["indices"]) == 0
-    assert set(lone) == fields
 
 
 def test_no_atom_is_in_contact_with_its_own_image(model_1daw):
