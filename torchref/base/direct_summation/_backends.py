@@ -96,8 +96,7 @@ DS_BACKENDS = BackendTable(
             on_failure="raise",
             # First-order only: the backward replays each chunk under ``enable_grad`` but
             # without ``create_graph``, so a second derivative raises rather than returning
-            # something wrong. ``_eager_*`` is the double-differentiable reference and is
-            # deliberately not in this table -- it is not a production dispatch target.
+            # something wrong.
             second_order=False,
         ),
     ),

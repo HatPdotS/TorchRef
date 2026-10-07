@@ -27,8 +27,6 @@ from tests.helpers.grad_asserts import (
 from torchref.base.direct_summation.dispatch import (
     _checkpointed_aniso,
     _checkpointed_iso,
-    _eager_aniso,
-    _eager_iso,
 )
 
 from . import (
@@ -47,6 +45,7 @@ from . import (
 )
 from . import helpers as H
 from .conftest import DEVICE_DTYPE_KERNELS, DS_DEVICE_DTYPE_KERNELS
+from .helpers import _eager_aniso, _eager_iso
 
 pytestmark = pytest.mark.unit
 

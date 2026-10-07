@@ -341,14 +341,13 @@ def test_triton_ds_does_not_silently_truncate_hkl(scene_small):
     is not whether the two Triton calls agree with each other, it is whether the truncation
     costs accuracy that the caller asked for by supplying float64.
     """
-    from torchref.base.direct_summation.dispatch import _eager_iso
     from torchref.base.direct_summation.triton_ds import ds_iso_triton
 
     cuda = torch.device("cuda")
     s64 = scene_small.to(device=cuda, dtype=torch.float64)
     s32 = scene_small.to(device=cuda, dtype=torch.float32)
 
-    ref = _eager_iso(
+    ref = H._eager_iso(
         s64.hkl, s64.s, s64.xyz_frac, s64.occ, s64.adp, s64.A, s64.B, None
     )
     # float64 hkl with float32 xyz_frac: the gate passes, and hkl gets truncated.

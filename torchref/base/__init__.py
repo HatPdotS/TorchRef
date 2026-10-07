@@ -16,7 +16,7 @@ coordinates
 reciprocal
     Reciprocal space calculations (basis, HKL, d-spacing, grid operations).
 direct_summation
-    Structure factor calculations (isotropic, anisotropic, corrections).
+    Structure factor calculations (isotropic, anisotropic).
 electron_density
     Electron density map building functions.
 fourier
@@ -100,20 +100,6 @@ from .reciprocal import (
     extract_structure_factor_from_grid,
     # Symmetry
     ReciprocalSymmetryExtractor,
-)
-
-# =============================================================================
-# Structure factors (from direct_summation submodule)
-# =============================================================================
-from .direct_summation import (
-    iso_structure_factor_torched,
-    iso_structure_factor_torched_no_complex,
-    aniso_structure_factor_torched,
-    aniso_structure_factor_torched_no_complex,
-    anharmonic_correction,
-    anharmonic_correction_no_complex,
-    core_deformation,
-    multiplication_quasi_complex_tensor,
 )
 
 # =============================================================================
@@ -243,16 +229,6 @@ __all__ = [
     "generate_possible_hkl",
     "place_on_grid",
     "extract_structure_factor_from_grid",
-    # Structure factors
-    # -------------------------------------------------------------------------
-    "iso_structure_factor_torched",
-    "iso_structure_factor_torched_no_complex",
-    "aniso_structure_factor_torched",
-    "aniso_structure_factor_torched_no_complex",
-    "anharmonic_correction",
-    "anharmonic_correction_no_complex",
-    "core_deformation",
-    "multiplication_quasi_complex_tensor",
     # -------------------------------------------------------------------------
     # Electron density
     # -------------------------------------------------------------------------

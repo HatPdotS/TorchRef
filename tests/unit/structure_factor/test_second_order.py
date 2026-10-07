@@ -37,7 +37,6 @@ import pytest
 import torch
 
 from tests.helpers.grad_asserts import cosine_similarity, hvp, hvp_central_fd, rel_error
-from torchref.base.direct_summation.dispatch import _eager_aniso, _eager_iso
 from torchref.base.electron_density._backends import DENSITY_BACKENDS
 
 from . import (
@@ -50,6 +49,7 @@ from . import (
 )
 from . import helpers as H
 from .conftest import DEVICE_DTYPE_KERNELS
+from .helpers import _eager_aniso, _eager_iso
 
 pytestmark = pytest.mark.unit
 
