@@ -1,8 +1,8 @@
 """TorchRef - GPU-accelerated crystallographic refinement built on PyTorch.
 
 Refinement as ``nn.Module`` objects and autograd, so a custom target function
-differentiates itself. Start from :class:`LBFGSRefinement`, which takes the MTZ and
-PDB paths directly::
+differentiates itself. :class:`~torchref.refinement.lbfgs_refinement.LBFGSRefinement`
+is the entry point and takes the MTZ and PDB paths directly::
 
     from torchref import LBFGSRefinement
 

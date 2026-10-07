@@ -323,7 +323,7 @@ _DEFAULT_CACHING = True
 
 
 class CachingConfig:
-    """Whether :class:`torchref.utils.CachedForwardMixin` serves cached results.
+    """Whether :class:`torchref.utils.caching.CachedForwardMixin` serves cached results.
 
     ``caching.value`` reads or sets it; initialised from ``TORCHREF_CACHING``
     ("1"/"true"/"yes"/"on" vs "0"/"false"/"no"/"off"), on by default. Turning it off makes
@@ -339,7 +339,7 @@ class CachingConfig:
     Intended for diagnosis rather than production: if refinement produces stale-looking
     numbers, rerunning with ``TORCHREF_CACHING=0`` says in one step whether the forward cache
     is responsible. Also useful as an eager reference when changing the mixin's fingerprinting.
-    Use :func:`torchref.utils.no_caching` to scope the change to a block.
+    Use :func:`torchref.utils.caching.no_caching` to scope the change to a block.
     """
 
     def __init__(self):
@@ -485,8 +485,8 @@ def normalize_device(dev=None) -> torch.device:
     """Coerce a user-supplied ``device`` (or ``None``) to a canonical device.
 
     ``None`` resolves to :func:`get_default_device`. The pure, side-effect-free counterpart
-    of :func:`torchref.utils.resolve_device`, which *moves* the objects it is given: use
-    this for one device source, that one to reconcile several.
+    of :func:`~torchref.utils.device_resolution.resolve_device`, which *moves* the
+    objects it is given: use this for one device source, that one to reconcile several.
     """
     if dev is None:
         return get_default_device()

@@ -24,7 +24,7 @@ def resolve_device(
     """Resolve one device from N device-bearing modules, moving them to agree.
 
     Modules must expose ``.device`` and ``.to(device)`` (``nn.Module`` or
-    :class:`~torchref.utils.DeviceMixin`); ``None`` entries are skipped, so
+    :class:`~torchref.utils.device_mixin.DeviceMixin`); ``None`` entries are skipped, so
     optional submodules can be passed unconditionally. With ``device`` given,
     all modules are moved to it. Otherwise the first module's device wins --
     callers express precedence by argument order -- and any module elsewhere is
