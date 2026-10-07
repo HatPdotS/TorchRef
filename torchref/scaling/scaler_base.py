@@ -713,7 +713,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         self.nbins = state_dict.pop("nbins", 20)
         self.n_iso_coeff = state_dict.pop("n_iso_coeff", 6)
         self.verbose = state_dict.pop("verbose", 1)
-        # Legacy state dicts may contain a "frozen" entry; drop it silently.
+        # Not scaler state; dropped so a checkpoint that carries it loads strictly.
         state_dict.pop("frozen", None)
 
         solvent_state = state_dict.pop("solvent", None)

@@ -182,8 +182,7 @@ class CollectionScaler(ScalerBase):
             fobs_clamped = fobs.clamp(min=1e-3)
 
             # Mask: work subset (validity + work, validation carved out), and
-            # positive intensities. ``data.work.mask`` is the standard subset
-            # boolean mask, replacing the ad-hoc ``masks() & rfree``.
+            # positive intensities.
             work_mask = data.work.mask
             if hasattr(data, "I") and data.I is not None:
                 pos_mask = data.I > 0
