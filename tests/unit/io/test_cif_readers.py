@@ -234,6 +234,25 @@ def test_torsions_keep_their_id():
 
 
 @pytest.mark.unit
+def test_plane_atoms_without_an_esd_get_the_link_plane_default(tmp_path):
+    """A component plane row with no ``dist_esd`` gets 0.02 Å, as link planes do."""
+
+    def drop_plane_esds(lines):
+        return [
+            line.rsplit(maxsplit=1)[0] if line.startswith("PHE plan-") else line
+            for line in lines
+            if line.strip() != "_chem_comp_plane_atom.dist_esd"
+        ]
+
+    source = get_library_manager(verbose=0).get_cif_file("PHE")
+    path = _write_edited(source, tmp_path, drop_plane_esds)
+    planes = RestraintCIFReader(path).get_all_restraints()["PHE"]["planes"]
+
+    assert len(planes) > 0
+    np.testing.assert_allclose(planes["sigma"].to_numpy(dtype=float), 0.02)
+
+
+@pytest.mark.unit
 def test_atoms_without_a_type_symbol_raise(cif_dir, tmp_path):
     def unknown_elements(lines):
         edited = []

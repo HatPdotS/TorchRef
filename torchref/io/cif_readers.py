@@ -31,6 +31,10 @@ _SOURCE_BLOCK_COLUMN = "_source_block"
 #: intensities.
 _SIGMA_F_TAGS = ("_refln.F_meas_sigma_au", "_refln.F_meas_sigma", "_refln.SIGF-obs")
 
+#: Sigma (Å) of a plane atom whose dictionary row gives no ``dist_esd``. Component
+#: planes, link planes and ``chem_mod`` additions all take it, so they cannot drift.
+DEFAULT_PLANE_SIGMA = 0.02
+
 
 class CIFReader:
     """
@@ -1857,10 +1861,9 @@ class RestraintCIFReader:
             errors="coerce",
         )
 
-        # Fill missing values with 0.01 Å default, then clip minimum to 0.001 Å
-        # (avoid overly tight restraints while allowing looser ones)
-        sigma = sigma.fillna(0.01)
-        result["sigma"] = sigma.clip(lower=0.001)  # Minimum 0.001 Å, no maximum
+        # The 0.001 Å floor keeps a near-zero esd from making one plane overly
+        # tight; looser restraints pass unchanged.
+        result["sigma"] = sigma.fillna(DEFAULT_PLANE_SIGMA).clip(lower=0.001)
 
         return result
 
