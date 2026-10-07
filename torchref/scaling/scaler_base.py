@@ -25,7 +25,6 @@ from torchref.config import get_complex_dtype, get_float_dtype, get_int_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
-from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
@@ -131,7 +130,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             return
 
         self.to(self.device)
-        self._data = ModuleReference(data)
+        self._data = data
 
         self.cell = data.cell
         s = get_scattering_vectors(data.hkl, self.cell)
@@ -184,7 +183,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             ReflectionData object with observed data.
         """
         self.device = resolve_device(self, data)
-        self._data = ModuleReference(data)
+        self._data = data
         if data.cell is not None:
             self.cell = data.cell
         if self.s is None and data.hkl is not None and data.cell is not None:
