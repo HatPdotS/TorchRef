@@ -135,8 +135,8 @@ class MTZReader:
             has intensities, and French-Wilson does not run.
         anomalous : bool, optional
             None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into explicit
-            Friedel pairs when such columns exist; True forces that (warning if
-            none exist); False forces a merged load, averaging the pairs.
+            Friedel pairs when such columns exist; True forces that (a notice at
+            verbose > 0 if none exist); False forces a merged load, averaging pairs.
         """
         self.verbose = verbose
         # A copy: pins are re-keyed by MTZ type when a file is read.
