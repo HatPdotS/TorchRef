@@ -11,11 +11,11 @@ float64), ``TORCHREF_DTYPE_INT`` (int32 / int64), ``TORCHREF_DTYPE_COMPLEX``
     torchref.sigma_cutoff_ed.value = 4.0   # density splat truncation, in sigmas
     torchref.config.caching.value = False  # recompute every cached forward()
 
-The default device is auto-detected cuda -> mps -> cpu, and a CUDA device is picked only
-if its compute capability is >= the minimum sm_* in this PyTorch build *and* its VRAM is
->= ``_MIN_CUDA_VRAM_GB``; otherwise auto-detection falls back with a warning naming the
-failing requirement. An explicit ``TORCHREF_DEVICE`` bypasses those gates but still fails
-fast if the backend is unavailable.
+The default device is auto-detected cuda -> mps -> cpu, and the current CUDA device is
+picked only if its compute capability is >= the minimum sm_* in this PyTorch build *and*
+its VRAM is >= ``_MIN_CUDA_VRAM_GB``; otherwise auto-detection falls back with a warning
+naming the device and the failing requirement. An explicit ``TORCHREF_DEVICE`` bypasses
+those gates but still fails fast if the backend is unavailable.
 
 **MPS supports neither float64 nor complex128.** Resolving to MPS with float64
 configured warns at import; set ``TORCHREF_DTYPE_FLOAT=float32`` or
@@ -385,13 +385,15 @@ _MIN_CUDA_VRAM_GB = 10
 
 
 def _cuda_is_usable() -> bool:
-    """True iff a visible CUDA device is fit to auto-select as the default.
+    """True iff the current CUDA device is fit to auto-select as the default.
 
     Requires ``torch.cuda.is_available()``, a compute capability >= the minimum sm_* in this
     PyTorch wheel (older GPUs fail at the first kernel launch), and VRAM >=
     ``_MIN_CUDA_VRAM_GB`` (a too-small GPU OOMs on real refinements, so CPU is preferred).
+    Only ``torch.cuda.current_device()`` is checked, because that is the GPU
+    ``torch.device("cuda")`` resolves to; a fitter GPU at another index is not used.
     If ``get_arch_list`` is missing or empty the capability check is skipped and
-    ``is_available()`` trusted. On failure one warning names the requirement missed.
+    ``is_available()`` trusted. On failure one warning names the device and requirement.
     """
     if not torch.cuda.is_available():
         return False
@@ -418,26 +420,24 @@ def _cuda_is_usable() -> bool:
     if not supported:
         return True
     min_supported = min(supported)
-    min_vram_bytes = _MIN_CUDA_VRAM_GB * (1024**3)
-    for idx in range(torch.cuda.device_count()):
-        try:
-            cap = torch.cuda.get_device_capability(idx)
-        except Exception:
-            continue
-        if cap < min_supported:
-            continue
+    idx = torch.cuda.current_device()
+    try:
+        capable = torch.cuda.get_device_capability(idx) >= min_supported
+    except Exception:
+        capable = False
+    if capable:
         try:
             total_mem = torch.cuda.get_device_properties(idx).total_memory
         except Exception:
             total_mem = 0
-        if total_mem >= min_vram_bytes:
+        if total_mem >= _MIN_CUDA_VRAM_GB * (1024**3):
             return True
     warnings.warn(
-        "TorchRef: no detected CUDA GPU meets the auto-selection requirements "
-        f"(compute capability >= {min_supported[0]}.{min_supported[1]} and "
+        f"TorchRef: CUDA device cuda:{idx} does not meet the auto-selection "
+        f"requirements (compute capability >= {min_supported[0]}.{min_supported[1]} and "
         f">= {_MIN_CUDA_VRAM_GB} GB VRAM; PyTorch build supports sm_*: "
-        f"{arch_list}). Falling back to CPU. Set TORCHREF_DEVICE=cuda "
-        "explicitly to override.",
+        f"{arch_list}). Falling back to CPU. Set CUDA_VISIBLE_DEVICES to select "
+        "another GPU, or TORCHREF_DEVICE=cuda to use this one anyway.",
         stacklevel=3,
     )
     return False
