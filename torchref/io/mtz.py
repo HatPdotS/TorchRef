@@ -610,8 +610,6 @@ def write(
     int
         Always returns 1 (failures raise rather than return a sentinel).
     """
-    import gemmi
-
     if torch.is_tensor(cell):
         cell = cell.detach().cpu().numpy().tolist()
     elif isinstance(cell, np.ndarray):
@@ -627,16 +625,7 @@ def write(
     elif isinstance(spacegroup, gemmi.SpaceGroup):
         pass
     elif isinstance(spacegroup, str):
-        if spacegroup.startswith("<gemmi.SpaceGroup"):
-            import re
-
-            match = re.search(r'SpaceGroup\("([^"]+)"\)', spacegroup)
-            if match:
-                spacegroup = gemmi.SpaceGroup(match.group(1))
-            else:
-                raise ValueError(f"Could not parse spacegroup string: {spacegroup}")
-        else:
-            spacegroup = gemmi.SpaceGroup(spacegroup)
+        spacegroup = gemmi.SpaceGroup(spacegroup)
     else:
         raise ValueError(
             f"Spacegroup must be str, gemmi.SpaceGroup, or torchref SpaceGroup, got {type(spacegroup)}"
