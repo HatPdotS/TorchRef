@@ -788,16 +788,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
         return deviations, sigmas_rad
 
-    def cat_dict(self):
-        """Ensure the combined ``all`` groups are present. Idempotent.
-
-        They are assembled with everything else at build time, so on a built object
-        this has nothing to do. An edge type with no edges has no ``all`` group, and
-        this does not create one.
-        """
-        if self.topology is not None and "all" not in self._entries.get("bond", {}):
-            self._rebuild_entries()
-
     def torsions(self, idx: torch.Tensor, xyz: torch.Tensor) -> torch.Tensor:
         """Compute current torsion angles, IUPAC sign, in degrees.
 
