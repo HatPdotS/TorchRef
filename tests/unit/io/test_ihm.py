@@ -535,6 +535,27 @@ class TestModelCollectionIHM:
         assert mc.n_base_models >= 1
         assert isinstance(mapping, IHMEnsembleMapping)
 
+    def test_from_ihm_refuses_a_negative_population(self, tmp_path):
+        """A negative deposited population is refused, not installed as an override."""
+        import gemmi
+        import torch
+
+        from torchref.model.model_collection import ModelCollection
+
+        doc = gemmi.cif.read(str(TEST_IHM_FILE))
+        table = doc[0].find(
+            "_ihm_multi_state_modeling.", ["state_id", "population_fraction"]
+        )
+        for row in table:
+            row[1] = {"3": "1.100", "4": "-0.100"}.get(row[0], row[1])
+        path = tmp_path / "negative.cif"
+        doc.write_file(str(path))
+
+        with pytest.raises(ValueError, match="non-negative"):
+            ModelCollection.from_ihm(
+                str(path), max_res=3.0, device=torch.device("cpu"), verbose=0
+            )
+
     def test_write_ihm(self):
         """Test writing via ModelCollection method."""
         import torch

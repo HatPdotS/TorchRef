@@ -46,6 +46,14 @@ def _logit(p: float) -> float:
     return float(torch.log(torch.tensor(p / (1.0 - p))))
 
 
+class _ActivationConflict(ValueError):
+    """Valid populations whose activation differs from the one already shared.
+
+    Distinct from the refusal of invalid populations, so a caller that drives such a
+    timepoint through ``set_fraction_override`` can catch it alone.
+    """
+
+
 class _SharedMixedModel(DeviceMovementMixin, nn.Module):
     """
     One timepoint's view of a :class:`ModelCollection`.
@@ -404,7 +412,7 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         if self._branching_rows:
             if abs(alpha - current) > 1e-3:
                 established = ", ".join(sorted(self._branching_rows))
-                raise ValueError(
+                raise _ActivationConflict(
                     f"Timepoint {name!r} asks for activation {alpha:.4f}, but "
                     f"{established} already set it to {current:.4f}. One activation "
                     f"fraction is shared across all timepoints -- only the branching "

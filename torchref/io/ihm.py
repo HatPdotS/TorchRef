@@ -60,16 +60,18 @@ def _add_group_with_independent_populations(collection, name, fractions):
     arbitrary, independently deposited populations, and two groups may well disagree
     about how much of the sample is in the reference state.
 
-    So the group is registered at whatever activation the collection already holds and
-    its deposited fractions are installed as an override, which ``fractions`` returns
-    verbatim and ``write_ihm`` therefore round-trips unchanged.
+    So a conflicting group is registered at the activation the collection holds, and
+    its deposited fractions, validated as for any timepoint, are installed as an
+    override, which ``fractions`` returns verbatim and ``write_ihm`` round-trips.
     """
     import torch
+
+    from torchref.model.model_collection import _ActivationConflict
 
     try:
         collection.add_timepoint(name, fractions=fractions)
         return
-    except ValueError:
+    except _ActivationConflict:
         pass
 
     n = len(fractions)
