@@ -155,7 +155,7 @@ def read_link_definitions():
     Parsing the 4 MB library takes a few tenths of a second, so the result is
     cached process-wide and shared by every caller -- treat it as read-only.
     """
-    from torchref.io.cif_readers import CIFReader
+    from torchref.io.cif_readers import CIFReader, _category_table
 
     blocks = read_library_blocks()
 
@@ -164,7 +164,7 @@ def read_link_definitions():
     if "link_list" in blocks:
         reader = CIFReader.from_string(blocks["link_list"])
         if "chem_link" in reader.data:
-            df = reader.data["chem_link"]
+            df = _category_table(reader.data, "chem_link")
             # Strip CIF prefixes from column names
             df.columns = [c.split(".")[-1] for c in df.columns]
             link_list = df
@@ -193,7 +193,7 @@ def read_link_definitions():
         link_data = {}
         for cif_category, section_type in category_map.items():
             if cif_category in reader.data:
-                df = reader.data[cif_category]
+                df = _category_table(reader.data, cif_category)
                 # Strip CIF prefixes (e.g. "_chem_link_bond.atom_id_1" -> "atom_id_1")
                 df.columns = [c.split(".")[-1] for c in df.columns]
                 df = _standardize_link_columns(df, section_type)
