@@ -2,9 +2,9 @@
 
 :class:`Model` holds the refinable atomic parameters, with the crystallographic
 context, atom table and provenance split out into :class:`ModelContext`;
-:class:`ModelFT` adds
-structure-factor calculation on top, through :class:`SfFFT` or
-:class:`SfDS` (direct summation). :class:`MixedModel` combines ModelFT states
+:class:`ModelFT` adds structure-factor calculation through its :class:`SfFFT`
+engine; :class:`SfDS` is a standalone direct-summation engine that takes the same
+atom arrays. :class:`MixedModel` combines ModelFT states
 by population fraction (e.g. dark/light), and :class:`ModelCollection` keys
 mixtures by timepoint (``_SharedMixedModel`` is its non-re-registering variant).
 The wrappers from :mod:`torchref.model.parameter_wrappers` --

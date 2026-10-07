@@ -118,6 +118,20 @@ class TestValidation:
             mc.add_timepoint("t", [1.0])
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "fractions", [[1.5, -0.5], [-0.5, 1.5], [0.5, 0.7, -0.2], [float("nan"), 1.0]]
+    )
+    def test_fractions_must_be_non_negative(self, fractions):
+        """A negative population that still sums to 1 is refused, not clamped onto
+        the simplex."""
+        from torchref.model.model_collection import ModelCollection
+
+        models = [_StubModel(i) for i in range(len(fractions))]
+        mc = ModelCollection(models, verbose=0)
+        with pytest.raises(ValueError, match="non-negative"):
+            mc.add_timepoint("t", fractions)
+
+    @pytest.mark.unit
     def test_duplicate_timepoint_names_are_rejected(self, two_model_collection):
         with pytest.raises(ValueError, match="already exists"):
             two_model_collection.add_timepoint("light", [0.5, 0.5])
@@ -157,6 +171,24 @@ class TestFreezing:
         mc = two_model_collection
         mc.freeze_all_fractions()
         assert all(not p.requires_grad for p in mc.fraction_parameters())
+
+    @pytest.mark.unit
+    def test_freeze_structures_freezes_adps(self, pdb_dir):
+        """Freezing the structures stops coordinates and ADPs alike; unfreezing
+        re-applies each base model's refinable sets."""
+        from torchref.model import ModelCollection, ModelFT
+
+        model = ModelFT(max_res=3.0, verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb"))
+        mc = ModelCollection([model, model.copy()], verbose=0)
+
+        mc.freeze_structures()
+        for base in mc.base_models:
+            assert base.xyz.get_refinable_count() == 0
+            assert base.adp.get_refinable_count() == 0
+        mc.unfreeze_structures()
+        for base in mc.base_models:
+            assert base.xyz.get_refinable_count() == int(base.xyz_mask.sum())
+            assert base.adp.get_refinable_count() == int(base.adp_mask.sum()) > 0
 
 
 class TestOverride:
@@ -266,7 +298,7 @@ class TestForwardAndGradient:
         self, two_model_collection, hkl
     ):
         mixed = two_model_collection["light"]
-        parts = mixed.get_individual_fcalc(hkl, recalc=True)
+        parts = two_model_collection.compute_component_fcalcs(hkl, recalc=True)
         w = mixed.fractions
 
         expected = w[0] * parts[0] + w[1] * parts[1]

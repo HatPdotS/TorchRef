@@ -307,7 +307,7 @@ class TestModelMultipleStructures:
 
     @pytest.mark.integration
     def test_load_different_cif_files(self, cif_dir):
-        """Test loading different CIF files."""
+        """Each single-model CIF loads; the two-model IHM ensemble is refused."""
         from torchref.model.model import Model
         
         # All of them, in a fixed order: "the first three" of an unsorted glob depended on
@@ -318,6 +318,10 @@ class TestModelMultipleStructures:
         
         for cif_file in cif_files:
             model = Model()
+            if cif_file.name == "test_ihm_ensemble.cif":
+                with pytest.raises(ValueError, match="model_num"):
+                    model.load_cif(str(cif_file))
+                continue
             model.load_cif(str(cif_file))
             
             assert model.xyz().shape[0] > 0

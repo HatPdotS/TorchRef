@@ -320,7 +320,8 @@ def test_imaginary_density_follows_early_symmetry(pdb_dir):
     late = _F(model, hkl)
     model.fft.use_late_symmetry = False
     early = _F(model, hkl)
-    assert model.ed.is_complex()
+    iso, aniso = model.get_iso(), model.get_aniso()
+    assert model._add_anomalous_scattering(iso, aniso, include_fdp=True)[2] is not None
     assert _rel(early, late) < 1e-5
 
 
@@ -358,7 +359,6 @@ def test_wavelength_none_is_the_f0_path(pdb_dir):
             hkl, *model.get_iso(), *model.get_aniso(), apply_symmetry=True
         )
         F_off = _model(pdb_dir, "3E98", 2.5)(hkl, recalc=True, apply_anomalous=False)
-    assert not model.ed.is_complex()
     assert torch.equal(F_none, F_f0)
     assert torch.equal(F_none, F_off)
 

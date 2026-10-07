@@ -318,7 +318,10 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
                     or len(np.unique(frames.n1_row[members])) != 1
                 ):
                     raise ValueError("A torsion group must share one bonded axis")
-            self.register_buffer(name, torch.as_tensor(compact, device=self.device))
+            self.register_buffer(
+                name,
+                torch.as_tensor(compact, dtype=get_int_dtype(), device=self.device),
+            )
         self._rebuild_orientation_cache()
         requires_grad = self.refinable_params.requires_grad
         self.torsions = MixedTensor(
@@ -472,11 +475,6 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
         return (self._n_full, int(self.fixed_values.shape[1]))
 
     @property
-    def base_shape(self):
-        """Storage-space shape ``(N_base, 3)``."""
-        return () if self.fixed_values is None else tuple(self.fixed_values.shape)
-
-    @property
     def full_refinable_mask(self) -> torch.Tensor:
         """Refinable rows in full atom space; riding rows are never refinable."""
         return self._expand_mask(self.refinable_mask)
@@ -530,12 +528,6 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             orientation.refinable_params.zero_()
             orientation.fixed_values.zero_()
             orientation.reset_forward_cache()
-
-    def set_hydrogen_positions(self, h_xyz: torch.Tensor) -> None:
-        """Adopt new positions for the riding rows, in ``h_row`` order, ``(H, 3)``."""
-        full = self.forward().detach()
-        full[self.h_row] = h_xyz.to(dtype=self.dtype, device=self.device)
-        self.refresh_offsets(full)
 
     # ------------------------------------------------------------------
     # Mutation in full space
@@ -700,7 +692,9 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             ("rotations", frames.rotation_group),
         ):
             retained = torch.as_tensor(
-                np.unique(labels[labels >= 0]), device=self.device
+                np.unique(labels[labels >= 0]),
+                dtype=get_int_dtype(),
+                device=self.device,
             )
             getattr(result, name).update_refinable_mask(
                 getattr(self, name).refinable_mask[retained]
@@ -722,15 +716,6 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
     def copy(self) -> "RidingXYZTensor":
         """Alias for :meth:`clone`."""
         return self.clone()
-
-    def clip(self, min_value=None, max_value=None) -> "RidingXYZTensor":
-        """Clip the full table; riding rows re-derive from the clipped heavy atoms."""
-        full = self.forward().detach()
-        if min_value is not None:
-            full = torch.clamp(full, min=min_value)
-        if max_value is not None:
-            full = torch.clamp(full, max=max_value)
-        return self.with_values(full)
 
     def _after_load(self, module, incompatible_keys):
         self._build_index_cache()

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 import torch
 from torch import nn
 
+from torchref.model.mixed_model import _check_fractions
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference
@@ -232,10 +233,6 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         """Cartesian coordinates of the first shared base model."""
         return self._base_models[0].xyz()
 
-    def get_individual_fcalc(self, hkl, recalc=True):
-        """Per-model (unweighted) structure factors, one tensor per base model."""
-        return [m(hkl, recalc=recalc) for m in self._base_models]
-
     def __repr__(self):
         fracs = self.fractions.detach().tolist()
         frac_str = ", ".join(f"{f:.3f}" for f in fracs)
@@ -249,11 +246,11 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
 
 class ModelCollection(DeviceMovementMixin, nn.Module):
     """
-    Named dictionary of MixedModel instances at different timepoints.
+    Timepoint-keyed ``_SharedMixedModel`` views over shared base models.
 
-    All timepoint models share the same base structural models (ModelFT
-    objects stored once in an nn.ModuleList). Each timepoint gets its own
-    independent fraction parameters via _SharedMixedModel.
+    The ModelFT base models are stored once, in an ``nn.ModuleList``; the collection
+    owns the populations, ``w(t) = (1 - alpha) e_ref + alpha q(t)`` with one shared
+    ``alpha``; timepoints with independent populations use ``set_fraction_override``.
 
     Keys should match DatasetCollection keys so that collection-aware
     targets can automatically pair datasets with models.
@@ -340,9 +337,11 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         name : str
             Timepoint identifier (should match DatasetCollection key).
         fractions : List[float], optional
-            Initial population fractions. If None, uses equal fractions.
+            Initial population fractions, non-negative and summing to 1 within 1e-3
+            (then renormalized); ``ValueError`` otherwise. If None, uses equal
+            fractions.
         frozen_fractions : bool
-            If True, fractions are not updated during optimization.
+            If True, freeze every timepoint's populations; all start frozen regardless.
 
         Returns
         -------
@@ -355,14 +354,8 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         n = len(self._base_models)
         if fractions is None:
             fractions = [1.0 / n] * n
-        if len(fractions) != n:
-            raise ValueError(
-                f"Number of fractions ({len(fractions)}) must match "
-                f"number of models ({n})."
-            )
+        _check_fractions(fractions, n, atol=1e-3)
         total = sum(fractions)
-        if abs(total - 1.0) > 1e-3:
-            raise ValueError(f"Initial fractions must sum to 1.0, got {total:.6f}.")
         fractions = [f / total for f in fractions]
 
         index = len(self._order)
@@ -458,49 +451,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         # No frozen_fractions here: the reference is the alpha = 0 evaluation of the
         # shared parametrisation, so it owns nothing that could be frozen.
         return self.add_timepoint(self._dark_key, fractions)
-
-    @classmethod
-    def from_kinetics(
-        cls,
-        base_models: List["ModelFT"],
-        occ_model,
-        timepoint_names: List[str],
-        dark_key: str = "dark",
-        verbose: int = 0,
-    ) -> "ModelCollection":
-        """
-        Create a ModelCollection from a kinetics occupancy model.
-
-        Parameters
-        ----------
-        base_models : List[ModelFT]
-            Shared structural models.
-        occ_model : occupancies_kinetics
-            Kinetic occupancy model whose forward() returns
-            shape [n_states, n_timepoints].
-        timepoint_names : List[str]
-            Names for each timepoint column (excluding dark).
-        dark_key : str
-            Key for the dark entry.
-        verbose : int
-            Verbosity level.
-
-        Returns
-        -------
-        ModelCollection
-        """
-        collection = cls(base_models, dark_key=dark_key, verbose=verbose)
-        collection.add_dark()
-
-        with torch.no_grad():
-            occ = occ_model()  # [n_states, n_timepoints]
-
-        for t_idx, name in enumerate(timepoint_names):
-            # +1 because index 0 in occ is the dark timepoint
-            fracs = occ[:, t_idx + 1].tolist()
-            collection.add_timepoint(name, fracs)
-
-        return collection
 
     @classmethod
     def from_ihm(
@@ -859,33 +809,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             "tk,kr->tr", weights.to(component_fcalcs.dtype), component_fcalcs
         )
 
-    def compute_all_fcalc(
-        self, hkl: torch.Tensor, recalc: bool = False
-    ) -> torch.Tensor:
-        """Mixed ``F_calc`` for every timepoint at once.
-
-        Equivalent to calling each timepoint's ``forward`` in turn, but evaluates each
-        shared base model once instead of once per timepoint. Rows follow
-        :meth:`get_fractions_matrix`, i.e. insertion order.
-
-        Parameters
-        ----------
-        hkl : torch.Tensor
-            Miller indices of shape (n_reflections, 3); see
-            :meth:`compute_component_fcalcs` on the index convention.
-        recalc : bool, optional
-            Force recomputation rather than reusing each model's cached SF.
-
-        Returns
-        -------
-        torch.Tensor
-            Complex SFs of shape ``(n_timepoints, n_reflections)``.
-        """
-        component_fcalcs = self.compute_component_fcalcs(hkl, recalc=recalc)
-        return self.mix_component_fcalcs(
-            component_fcalcs, self.get_fractions_matrix()
-        )
-
     def freeze_all_fractions(self):
         """Exclude the population parameters from optimization.
 
@@ -908,16 +831,16 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             row.requires_grad_(True)
 
     def freeze_structures(self):
-        """Freeze xyz and adp on all base models."""
+        """Freeze xyz and the ADPs (``adp`` and ``u``) on all base models."""
         for model in self._base_models:
-            model.freeze("xyz")
-            model.freeze("b")
+            for target in ("xyz", "adp", "u"):
+                model.freeze(target)
 
     def unfreeze_structures(self):
-        """Unfreeze xyz and adp on all base models."""
+        """Unfreeze xyz and the ADPs on all base models, re-applying their masks."""
         for model in self._base_models:
-            model.unfreeze("xyz")
-            model.unfreeze("b")
+            for target in ("xyz", "adp", "u"):
+                model.unfreeze(target)
 
     def write_pdbs(self, outdir: str):
         """

@@ -7,14 +7,12 @@ same density as f0 rather than a separate sum, so every term of F_calc gets the 
 temperature factors and symmetry expansion (see :meth:`ModelFT.forward`).
 """
 
-import math
 from typing import NamedTuple, Optional, Tuple
 
 import gemmi
 import numpy as np
 import torch
 
-from torchref.base.fourier import fft, ifft
 from torchref.config import dtypes
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
@@ -55,6 +53,8 @@ class ModelFT(CachedForwardMixin, Model):
     ----------
     max_res : float, optional
         Maximum resolution for grid spacing in Angstroms. Default is 1.0.
+        (The splat radius is *not* set here: each atom is truncated at its own
+        ``torchref.sigma_cutoff_ed * sigma_eff``.)
     gridsize : tuple of int, optional
         Explicit grid size (nx, ny, nz). If None, computed from cell and max_res.
     wavelength : float or None, optional
@@ -64,8 +64,14 @@ class ModelFT(CachedForwardMixin, Model):
         wavelength the data were collected at, not a nominal one.
     anomalous_threshold : float, optional
         Significance threshold for anomalous scattering in electrons.
-        Atoms with |f'| > threshold or |f''| > threshold will have
+        Atoms with ``|f'| > threshold`` or ``|f''| > threshold`` will have
         anomalous corrections applied. Default is 0.5.
+    apply_bijvoet : bool, optional
+        Apply the imaginary f'' (Bijvoet) term, which breaks Friedel's law
+        (``F(+h) != F(-h)``). Default False, and correct only for
+        Friedel-unmerged data -- on merged data f'' cannot affect the
+        Friedel-mean amplitude. The dispersive f' is applied whenever a
+        wavelength is set. Bound from ``ReflectionData.friedel_merged``.
     *args
         Additional positional arguments passed to parent Model class.
     **kwargs
@@ -97,38 +103,7 @@ class ModelFT(CachedForwardMixin, Model):
         apply_bijvoet: bool = False,
         **kwargs,
     ):
-        """
-        Initialize an empty ModelFT shell.
-
-        Creates a model shell ready for file loading via load_pdb()/load_cif()
-        or state restoration via load_state_dict().
-
-        Parameters
-        ----------
-        max_res : float, optional
-            Maximum resolution for grid spacing in Angstroms. Default is 1.0.
-            (The splat radius is *not* set here: each atom is truncated at its own
-            ``torchref.sigma_cutoff_ed * sigma_eff``.)
-        gridsize : tuple of int, optional
-            Explicit grid size tuple (nx, ny, nz). If None, computed automatically.
-        wavelength : float or None, optional
-            X-ray wavelength of the data in Angstroms, which sets the anomalous
-            f' and f''. Default None: no anomalous scattering, f0 only.
-        anomalous_threshold : float, optional
-            Significance threshold for anomalous scattering in electrons.
-            Atoms with |f'| > threshold or |f''| > threshold will have
-            anomalous corrections applied. Default is 0.5.
-        apply_bijvoet : bool, optional
-            Apply the imaginary f'' (Bijvoet) term, which breaks Friedel's law
-            (``F(+h) != F(-h)``). Default False, and correct only for
-            Friedel-unmerged data -- on merged data f'' cannot affect the
-            Friedel-mean amplitude. The dispersive f' is applied whenever a
-            wavelength is set. Bound from ``ReflectionData.friedel_merged``.
-        *args
-            Passed to parent Model class.
-        **kwargs
-            Passed to parent Model class.
-        """
+        """Initialize an empty ModelFT; see the class docstring for the arguments."""
         super().__init__(*args, **kwargs)
 
         # The engine reads cell and space group off ``self.ctx`` as they are set;
@@ -155,6 +130,7 @@ class ModelFT(CachedForwardMixin, Model):
         )
         # (key, partition, _AnomalousTerms or None); see _get_anomalous_cache.
         self._anomalous_cache = None
+        self.map = None
 
     # =========================================================================
     # Engine binding and grid inputs
@@ -196,20 +172,22 @@ class ModelFT(CachedForwardMixin, Model):
         return self.fft.grid_key
 
     def _fingerprint_state(self):
-        """Fold the grid key and the anomalous settings into the forward-cache key.
+        """Fold the grid key and plain-attribute settings into the forward-cache key.
 
         Parameters and buffers alone would miss a cell, space-group or resolution
         change that leaves the grid buffers untouched until the next forward, and a
-        new ``wavelength`` or ``anomalous_threshold``, which are plain attributes.
+        new ``wavelength``, ``anomalous_threshold`` or ``hydrogens_in_xray``, which
+        are plain attributes.
         """
         return super()._fingerprint_state() + (
             self.wavelength,
             self.anomalous_threshold,
+            bool(self.ctx.hydrogens_in_xray),
             self.fft.grid_key,
         )
 
     # =========================================================================
-    # Backward-compatible properties for scattering parameters
+    # ITC92 scattering parameters, built on first use
     # =========================================================================
 
     @property
@@ -328,7 +306,7 @@ class ModelFT(CachedForwardMixin, Model):
         """
         self.fft.setup_grid(max_res=max_res, gridsize=gridsize)
 
-    def build_complete_map(self, radius=None, apply_symmetry=True):
+    def build_complete_map(self, apply_symmetry=True):
         """
         Build electron density map from all atoms.
 
@@ -337,10 +315,6 @@ class ModelFT(CachedForwardMixin, Model):
 
         Parameters
         ----------
-        radius : int, optional
-            Accepted for backward compatibility but unused; the density splat
-            radius is per-atom (``torchref.sigma_cutoff_ed`` sigmas), resolved
-            inside the density builder. Default is None.
         apply_symmetry : bool, optional
             If True and space group is not P1, apply symmetry operations
             to the map. Default is True.
@@ -398,7 +372,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         xyz_aniso, u_aniso, occ_aniso, A_aniso, B_aniso = self.get_aniso()
 
-        self.map = self._fft.build_density_map(
+        self.map = self.fft.build_density_map(
             xyz_iso=xyz_iso,
             adp_iso=adp_iso,
             occ_iso=occ_iso,
@@ -483,10 +457,6 @@ class ModelFT(CachedForwardMixin, Model):
         for module in self.children():
             if hasattr(module, "reset_forward_cache"):
                 module.reset_forward_cache()
-
-    def invalidate_cache(self):
-        """Alias for ``reset_cache()``."""
-        self.reset_cache()
 
     # =========================================================================
     # Anomalous scattering
@@ -698,8 +668,7 @@ class ModelFT(CachedForwardMixin, Model):
         f' and f'' are not added to F afterwards: they are folded into the atoms'
         form factors before the density is built, so the one splat and FFT apply
         each atom's isotropic or anisotropic temperature factor and the space-group
-        symmetry to them exactly as to f0. With f'' the density is complex, and so is
-        the map left in ``self.ed``.
+        symmetry to them exactly as to f0.
         """
         self._check_forward_dtype(hkl)
         iso, aniso, imaginary = self.get_iso(), self.get_aniso(), None
@@ -707,7 +676,7 @@ class ModelFT(CachedForwardMixin, Model):
             iso, aniso, imaginary = self._add_anomalous_scattering(
                 iso, aniso, include_fdp=bool(self.anomalous_bijvoet)
             )
-        sf, self.ed = self.fft.compute_structure_factors(
+        sf, _ = self.fft.compute_structure_factors(
             hkl, *iso, *aniso, apply_symmetry=True, imaginary=imaginary
         )
 
@@ -751,8 +720,8 @@ class ModelFT(CachedForwardMixin, Model):
         state[prefix + "wavelength"] = self.wavelength
         state[prefix + "anomalous_threshold"] = self.anomalous_threshold
 
-        # Deliberately not saved, all rebuildable: _parametrization (from _A/_B),
-        # _cache, _anomalous_cache (from the element list).
+        # Deliberately not saved, both rebuildable: the forward cache and
+        # _anomalous_cache (from the element list).
         return state
 
     def _subclass_kwargs(self) -> dict:

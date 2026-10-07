@@ -88,6 +88,25 @@ def test_engine_reads_the_model_context(pdb_path):
 
 
 @pytest.mark.unit
+def test_density_map_reads_the_model_context(pdb_path):
+    """A map built straight after a load or a copy, before anything else has asked
+    for the engine, is sized from that model's own crystal."""
+    for model in (_model(pdb_path), _model(pdb_path).copy()):
+        density = model.build_complete_map()
+        assert tuple(density.shape) == model.grid_shape
+
+
+@pytest.mark.unit
+def test_map_accessors_before_a_map_is_built(pdb_path, tmp_path):
+    """Until a map is built there is none: no statistics, and saving refuses."""
+    model = _model(pdb_path)
+    assert model.map is None
+    assert model.get_map_statistics() is None
+    with pytest.raises(ValueError, match="No map to save"):
+        model.save_map(str(tmp_path / "m.ccp4"))
+
+
+@pytest.mark.unit
 def test_explicit_gridsize_survives_every_path(pdb_path):
     explicit = (64, 32, 24)
     model = _model(pdb_path, gridsize=explicit)
