@@ -78,6 +78,23 @@ class TestCoordinateTransformations:
         assert torch.allclose(coords, cart_back, rtol=1e-5, atol=1e-5)
 
     @pytest.mark.unit
+    def test_fractional_to_cartesian_takes_the_coordinates_dtype(self):
+        """A cell-derived B is cast to the fractional coordinates' dtype."""
+        from torchref.base.math_torch import (
+            fractional_to_cartesian_torch,
+            get_fractional_matrix,
+        )
+
+        cell = torch.tensor([50.1, 60.2, 70.3, 80.0, 95.0, 100.0], dtype=torch.float64)
+        frac = torch.tensor([[0.1, 0.2, 0.3], [0.7, -0.4, 1.2]], dtype=torch.float32)
+
+        cart = fractional_to_cartesian_torch(frac, cell)
+
+        assert cart.dtype == torch.float32
+        B = get_fractional_matrix(cell).to(torch.float32)
+        torch.testing.assert_close(cart, frac @ B.T)
+
+    @pytest.mark.unit
     @pytest.mark.gpu
     def test_coordinate_transforms_gpu(self, mock_cell, random_coordinates, gpu_device):
         """Test coordinate transformations on GPU."""
@@ -103,9 +120,10 @@ class TestGridFunctions:
     def test_get_real_grid_shape(self, mock_cell):
         """Test real grid generation has correct shape."""
         from torchref.base.math_torch import get_real_grid
+        from torchref.symmetry import Cell
 
         cell = mock_cell
-        grid = get_real_grid(cell, max_res=2.0)
+        grid = get_real_grid(cell, gridsize=Cell(cell).compute_grid_size(2.0))
         
         # Should be 3D grid with xyz in last dimension
         assert len(grid.shape) == 4
@@ -126,15 +144,31 @@ class TestGridFunctions:
         assert grid.shape[3] == 3
 
     @pytest.mark.unit
-    def test_find_grid_size(self, mock_cell):
-        """Test automatic grid size calculation."""
-        from torchref.base.math_torch import find_grid_size
+    def test_place_on_grid_adds_only_missing_friedel_mates(self):
+        """A mate already in the input keeps its own value; a lone h gets conj at -h."""
+        from torchref.base.reciprocal.grid_operations import place_on_grid
 
-        cell = mock_cell
-        grid_size = find_grid_size(cell, max_res=1.0)
-        
-        assert grid_size.shape == (3,)
-        assert torch.all(grid_size > 0)
+        F = torch.tensor(2.0 + 1.0j)
+        hkl = torch.tensor([[1, 0, 0], [-1, 0, 0]])
+        pair = place_on_grid(hkl, torch.stack([F, F.conj()]), (8, 8, 8))
+        assert pair[1, 0, 0] == F and pair[-1, 0, 0] == F.conj()
+
+        lone = place_on_grid(hkl[:1], F.reshape(1), (8, 8, 8))
+        assert lone[1, 0, 0] == F and lone[-1, 0, 0] == F.conj()
+
+
+class TestFourierTransforms:
+    """Tests for the crystallographic fft/ifft pair."""
+
+    @pytest.mark.unit
+    def test_volume_scale_ignores_the_batch_axis(self):
+        """Each map of a (B, Nx, Ny, Nz) batch is scaled as if transformed alone."""
+        from torchref.base.fourier import fft, ifft
+
+        rho = torch.randn(3, 8, 10, 12, generator=torch.Generator().manual_seed(0))
+        F = ifft(rho, 1000.0)
+        assert torch.allclose(F[0], ifft(rho[0], 1000.0))
+        assert torch.allclose(fft(F, 1000.0)[0], fft(F[0], 1000.0))
 
 
 class TestTransformationMatrices:
@@ -201,6 +235,26 @@ class TestAlignment:
 
 class TestSmallestDiff:
     """Tests for periodic boundary difference calculations."""
+
+    @pytest.mark.unit
+    def test_smallest_diff_aniso_leaves_its_input_alone(self):
+        """(9, 0, 0) in a 10 Å cube maps to (-1, 0, 0); the input is not modified."""
+        from torchref.base.coordinates import (
+            get_fractional_matrix,
+            get_inv_fractional_matrix_torch,
+            smallest_diff,
+            smallest_diff_aniso,
+        )
+
+        cell = torch.tensor([10.0, 10.0, 10.0, 90.0, 90.0, 90.0])
+        inv_frac = get_inv_fractional_matrix_torch(cell)
+        frac = get_fractional_matrix(cell)
+        diff = torch.tensor([[9.0, 0.0, 0.0]])
+
+        image = smallest_diff_aniso(diff, inv_frac, frac)
+        assert torch.allclose(image, torch.tensor([[-1.0, 0.0, 0.0]]), atol=1e-5)
+        assert torch.equal(diff, torch.tensor([[9.0, 0.0, 0.0]]))
+        assert torch.allclose(smallest_diff(diff, inv_frac, frac), torch.ones(1))
 
     @pytest.mark.unit
     def test_smallest_diff_no_wrap(self, mock_cell):

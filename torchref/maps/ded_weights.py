@@ -62,7 +62,8 @@ class DedWeights:
         The scheme whose weights are in ``weights``; differs from ``scheme`` only after a
         fallback, which ``diagnostics["fallback_reason"]`` then names.
     weights
-        Per-reflection weights, shape ``(N,)``, mean one over finite positive entries.
+        Per-reflection weights, shape ``(N,)``, mean one over all entries (non-finite
+        entries set to zero; see :func:`normalise_mean_one`).
     diagnostics
         Scheme-specific record: for ``q`` the fitted exponent, sigma scale, centric
         factor, Chebyshev coefficients and their standard errors, and the weight range.

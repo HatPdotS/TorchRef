@@ -32,13 +32,6 @@ def get_d_spacing(hkl: torch.Tensor, cell: torch.Tensor, recB=None):
     return d_spacing
 
 
-def compute_d_spacing_batch(
-    hkl: torch.Tensor, cell: torch.Tensor, recB: Optional[torch.Tensor] = None
-) -> torch.Tensor:
-    """Alias for :func:`get_d_spacing`, which is already batched."""
-    return get_d_spacing(hkl, cell, recB=recB)
-
-
 def generate_possible_hkl(
     cell: torch.Tensor, d_min: float, device: Optional[torch.device] = None
 ) -> torch.Tensor:

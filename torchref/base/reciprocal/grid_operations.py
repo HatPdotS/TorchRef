@@ -4,8 +4,6 @@
 index convention (hkl taken mod the grid dimensions), so they round-trip.
 """
 
-import math
-
 import torch
 
 from torchref.config import get_int_dtype
@@ -36,9 +34,11 @@ def place_on_grid(
 
     Notes
     -----
-    ``enforce_hermitian=True`` index-adds each reflection's conjugate at ``-hkl``,
-    so input already holding both Friedel mates is double-counted -- pass only the
-    unique half. Placement is index-*add*, so duplicate hkl accumulate.
+    ``enforce_hermitian=True`` adds each reflection's conjugate at ``-hkl`` only
+    where no input reflection sits, as gemmi does, so a Friedel pair that is
+    already in the input (a centric reflection of a rotation-only P1 expansion)
+    keeps its two values once each. Placement is index-*add*, so duplicate hkl
+    accumulate.
     """
     batch_mode = True
     if structure_factor.ndim == 1:
@@ -66,7 +66,9 @@ def place_on_grid(
         ki_sym = torch.remainder(-k, Ny)
         li_sym = torch.remainder(-l, Nz)
         lin_sym = hi_sym * (Ny * Nz) + ki_sym * Nz + li_sym
-        vals_conj = torch.conj(structure_factor)
+        occupied = torch.zeros(Nx * Ny * Nz, dtype=torch.bool, device=device)
+        occupied[lin] = True
+        vals_conj = torch.where(occupied[lin_sym], 0, torch.conj(structure_factor))
         grid = grid.index_add(1, lin_sym, vals_conj)
 
     grid = grid.view(B, Nx, Ny, Nz)
@@ -118,40 +120,3 @@ def extract_structure_factor_from_grid(reciprocal_grid, hkls) -> torch.Tensor:
         structure_factors = structure_factors.squeeze(0)  # (N,)
 
     return structure_factors
-
-
-def apply_translation_phase(
-    F_calc: torch.Tensor,
-    hkl: torch.Tensor,
-    translation_frac: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Apply translation phase shift to structure factors.
-
-    For a translation t in fractional coordinates, the structure factor transforms as:
-    F'(hkl) = F(hkl) * exp(2πi * hkl · t)
-
-    Parameters
-    ----------
-    F_calc : torch.Tensor
-        Complex structure factors of shape (N,).
-    hkl : torch.Tensor
-        Miller indices of shape (N, 3).
-    translation_frac : torch.Tensor
-        Translation vector in fractional coordinates of shape (3,).
-
-    Returns
-    -------
-    torch.Tensor
-        Phase-shifted structure factors of shape (N,).
-
-    Notes
-    -----
-    The phase is computed in float32 regardless of input dtype and only then cast
-    to ``F_calc.dtype``, so a float64 caller does *not* get float64 phases.
-    """
-    phase = 2.0 * math.pi * (hkl.float() @ translation_frac.float())
-
-    phase_factor = torch.complex(torch.cos(phase), torch.sin(phase))
-
-    return F_calc * phase_factor.to(F_calc.dtype)

@@ -102,28 +102,6 @@ class ReciprocalSymmetryExtractor(DeviceMixin):
             self.equiv_hkls, Nx, Ny, Nz
         )
 
-    def __call__(self, density_map: torch.Tensor) -> torch.Tensor:
-        """Alias for :meth:`extract`."""
-        return self.extract(density_map)
-
-    def extract(self, density_map: torch.Tensor) -> torch.Tensor:
-        """Transform a P1 density map and extract symmetrized structure factors.
-
-        Parameters
-        ----------
-        density_map : torch.Tensor
-            **P1** electron density, shape ``(Nx, Ny, Nz)``. A symmetrized map
-            double-counts.
-
-        Returns
-        -------
-        torch.Tensor
-            Complex structure factors, shape ``(N,)``.
-        """
-        from torchref.base.fourier.fft import ifft
-
-        return self.extract_from_grid(ifft(density_map))
-
     def extract_from_grid(self, reciprocal_grid: torch.Tensor) -> torch.Tensor:
         """Extract structure factors from an already-transformed P1 grid.
 

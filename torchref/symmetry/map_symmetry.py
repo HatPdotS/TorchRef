@@ -1,8 +1,8 @@
 """Real-space map symmetrization, selected by grid compatibility.
 
 Two operators apply a :class:`~torchref.symmetry.symmetry.Symmetry` to a density map:
-:class:`_MapSymmetryDirect` indexes symmetry mates at exact integers, and
-:class:`~torchref.symmetry.map_symmetry_interpolation._MapSymmetryInterpolation`
+``_MapSymmetryDirect`` indexes symmetry mates at exact integers, and
+``_MapSymmetryInterpolation`` (:mod:`~torchref.symmetry.map_symmetry_interpolation`)
 falls back to ``grid_sample`` when the grid does not admit that.
 :func:`build_map_operator` picks between them.
 

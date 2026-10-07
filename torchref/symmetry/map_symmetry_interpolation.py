@@ -75,9 +75,9 @@ class _MapSymmetryInterpolation(DeviceMixin):
         # Wrap into [0, 1) for periodic boundaries.
         transformed = transformed - torch.floor(transformed)
 
-        shape_t = torch.tensor([nx, ny, nz], dtype=dtype, device=device)
-        # grid_coord = -1 + 2*N/(N-1) * frac, per dimension.
-        sampling = -1.0 + 2.0 * shape_t / (shape_t - 1.0) * transformed
+        # On the periodically padded map (N + 1 voxels per axis, see _resample) the
+        # fraction f sits at grid coordinate -1 + 2 f.
+        sampling = -1.0 + 2.0 * transformed
         sampling = sampling.reshape(self.n_ops, nx, ny, nz, 3)
 
         # grid_sample reads the last axis as [x, y, z] -> [W, H, D], i.e. the REVERSE
@@ -113,12 +113,16 @@ class _MapSymmetryInterpolation(DeviceMixin):
                 f"Operation index {op_index} out of range [0, {self.n_ops - 1}]"
             )
         self._check_shape(density_map)
+        return self._resample(_pad_periodic(density_map), op_index)
 
-        # align_corners=True maps -1 to index 0 and +1 to index N-1, matching the
-        # grid-edge convention above; padding_mode='border' is safe only because
-        # _build_sampling_grids already wrapped the coordinates.
+    def _resample(self, padded: torch.Tensor, op_index: int) -> torch.Tensor:
+        """Sample one operation's mate off a map from :func:`_pad_periodic`."""
+        # align_corners=True maps -1 and +1 to the first and last voxel of the padded
+        # map, fractions 0 and 1. The padding repeats index 0 at the end, so a mate
+        # in the last interval interpolates toward index 0 rather than clamping to
+        # N-1; 'border' only absorbs rounding at the edge.
         transformed = F.grid_sample(
-            density_map.unsqueeze(0).unsqueeze(0),
+            padded,
             self.sampling_grids[op_index].unsqueeze(0),
             mode="bilinear",
             padding_mode="border",
@@ -140,8 +144,9 @@ class _MapSymmetryInterpolation(DeviceMixin):
             Shape ``(n_ops, nx, ny, nz)``.
         """
         self._check_shape(density_map)
+        padded = _pad_periodic(density_map)
         return torch.stack(
-            [self.mate(density_map, i) for i in range(self.n_ops)], dim=0
+            [self._resample(padded, i) for i in range(self.n_ops)], dim=0
         )
 
     def symmetrize(
@@ -168,6 +173,11 @@ class _MapSymmetryInterpolation(DeviceMixin):
             f"_MapSymmetryInterpolation(n_ops={self.n_ops}, "
             f"map_shape={self.map_shape})"
         )
+
+
+def _pad_periodic(density_map: torch.Tensor) -> torch.Tensor:
+    """``density_map`` as ``(1, 1, nx + 1, ny + 1, nz + 1)``, index 0 repeated last."""
+    return F.pad(density_map[None, None], (0, 1, 0, 1, 0, 1), mode="circular")
 
 
 __all__ = ["_MapSymmetryInterpolation"]

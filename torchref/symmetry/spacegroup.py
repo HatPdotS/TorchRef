@@ -276,30 +276,6 @@ class SpaceGroup(Symmetry):
         return self._gemmi.operations()
 
     # =========================================================================
-    # Aliases retained for existing callers
-    # =========================================================================
-
-    @property
-    def spacegroup(self) -> gemmi.SpaceGroup:
-        """Alias for :attr:`gemmi`."""
-        return self._gemmi
-
-    @property
-    def space_group(self) -> gemmi.SpaceGroup:
-        """Alias for :attr:`gemmi`."""
-        return self._gemmi
-
-    @property
-    def space_group_name(self) -> str:
-        """Alias for :attr:`name`."""
-        return self.name
-
-    @property
-    def space_group_number(self) -> int:
-        """Alias for :attr:`number`."""
-        return self.number
-
-    # =========================================================================
     # Asymmetric-unit conventions
     # =========================================================================
     #
@@ -314,6 +290,8 @@ class SpaceGroup(Symmetry):
         include_friedel: bool = True,
         remove_absences: bool = True,
         device: Optional[torch.device] = None,
+        *,
+        return_friedel: bool = False,
     ):
         """Expand Miller indices from the asymmetric unit to P1.
 
@@ -327,6 +305,9 @@ class SpaceGroup(Symmetry):
             Drop systematically absent reflections.
         device : torch.device, optional
             Computation device. Defaults to ``hkl``'s.
+        return_friedel : bool, default False
+            Also return ``is_friedel``. Expanding phases with ``include_friedel``
+            needs it: a Friedel copy carries the negated phase.
 
         Returns
         -------
@@ -336,8 +317,13 @@ class SpaceGroup(Symmetry):
             Map expanded -> original, shape ``(M,)``, in the configured int dtype:
             ``F_exp = F_orig[orig_indices]``.
         phase_shifts : torch.Tensor
-            Translation phase offsets in radians, shape ``(M,)``:
-            ``phase_exp = phase_orig[orig_indices] + phase_shifts``.
+            Translation phase offsets in radians, shape ``(M,)``, in the configured
+            float dtype: ``phase_exp = where(is_friedel, -phase_orig[orig_indices],
+            phase_orig[orig_indices]) + phase_shifts``.
+        is_friedel : torch.Tensor
+            Boolean, shape ``(M,)``, True for the rows that are Friedel copies of a
+            rotated index; returned only with ``return_friedel``. All False when
+            ``include_friedel`` is False.
 
         Raises
         ------
@@ -354,6 +340,7 @@ class SpaceGroup(Symmetry):
             include_friedel=include_friedel,
             remove_absences=remove_absences,
             device=device,
+            return_friedel=return_friedel,
         )
 
     def equivalent_hkl(
@@ -396,75 +383,6 @@ class SpaceGroup(Symmetry):
             self, hkl, include_friedel=include_friedel, device=device
         )
 
-    def reduce_hkl(
-        self,
-        hkl_p1: torch.Tensor,
-        include_friedel: bool = True,
-        device: Optional[torch.device] = None,
-    ):
-        """Reduce P1 Miller indices to this group's asymmetric unit.
-
-        The inverse of :meth:`expand_hkl`.
-
-        Parameters
-        ----------
-        hkl_p1 : torch.Tensor
-            P1 Miller indices, shape ``(N, 3)``.
-        include_friedel : bool, default True
-            Consider Friedel mates when picking the ASU representative.
-        device : torch.device, optional
-            Computation device. Defaults to ``hkl_p1``'s.
-
-        Returns
-        -------
-        hkl_asu : torch.Tensor
-            Unique ASU indices, shape ``(M, 3)``, in the configured int dtype.
-        reduction_indices : torch.Tensor
-            Indices into ``hkl_p1`` per equivalent, shape ``(M, n_equiv)``, **-1 where
-            no P1 reflection exists** -- mask or clamp before gathering, or a -1
-            silently reads the last row.
-        phase_shifts : torch.Tensor
-            Phase shifts to apply before aggregation, shape ``(M, n_equiv)``.
-        """
-        from torchref.symmetry.reciprocal_symmetry import _reduce_hkl
-
-        return _reduce_hkl(
-            self, hkl_p1, include_friedel=include_friedel, device=device
-        )
-
-    def complete_hkl(
-        self,
-        input_hkl: torch.Tensor,
-        cell: torch.Tensor,
-        d_min: float,
-        device: Optional[torch.device] = None,
-    ):
-        """Identify reflections missing from a dataset, without expanding symmetry.
-
-        Parameters
-        ----------
-        input_hkl : torch.Tensor
-            Possibly incomplete Miller indices, shape ``(N, 3)``.
-        cell : torch.Tensor
-            Unit cell parameters ``[a, b, c, alpha, beta, gamma]``, shape ``(6,)``.
-        d_min : float
-            High-resolution limit in Angstroms.
-        device : torch.device, optional
-            Computation device. Defaults to ``input_hkl``'s.
-
-        Returns
-        -------
-        complete_hkl : torch.Tensor
-            Every index within ``d_min`` minus systematic absences, shape ``(M, 3)``.
-        input_indices : torch.Tensor
-            Map complete -> input, shape ``(M,)``, ``-1`` where missing.
-        missing_mask : torch.Tensor
-            Boolean, shape ``(M,)``, True where absent from the input.
-        """
-        from torchref.symmetry.reciprocal_symmetry import _complete_hkl
-
-        return _complete_hkl(self, input_hkl, cell, d_min, device=device)
-
     def canonicalize_hkl(
         self,
         hkl: torch.Tensor,
@@ -484,8 +402,8 @@ class SpaceGroup(Symmetry):
             reciprocal space has no pure-rotation representative in the Laue-based
             CCP4 ASU, and unmappable reflections raise.
         device : torch.device, optional
-            Output device. Defaults to ``hkl``'s. The lookup itself runs on CPU
-            whatever device this group is on, because the ASU tables are numpy-backed.
+            Output device. Defaults to ``hkl``'s. The mapping itself runs on CPU
+            with torch ops, whatever device this group or ``hkl`` is on.
         sort : bool, default True
             Sort the rows lexicographically by canonical ``(h, k, l)``. ``False``
             keeps the input row order and skips the sort, which callers that only
@@ -494,16 +412,17 @@ class SpaceGroup(Symmetry):
         Returns
         -------
         canonical_hkl : torch.Tensor
-            Remapped indices, shape ``(N, 3)``; sorted lexicographically when
-            ``sort``.
+            Remapped indices, shape ``(N, 3)``, in ``hkl``'s dtype; sorted
+            lexicographically when ``sort``.
         phase_shifts : torch.Tensor
-            Additive phase correction in radians, shape ``(N,)``, same row order.
+            Additive phase correction in radians, shape ``(N,)``, in the configured
+            float dtype, same row order.
         friedel_flags : torch.Tensor
             Boolean, shape ``(N,)``, True where Friedel conjugation was applied,
             same row order.
         sort_indices : torch.Tensor or None
-            Permutation from original to sorted order, shape ``(N,)``; ``None``
-            when ``sort=False``.
+            Permutation from original to sorted order, shape ``(N,)``, int64;
+            ``None`` when ``sort=False``.
 
         Notes
         -----

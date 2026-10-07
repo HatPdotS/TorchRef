@@ -2,10 +2,8 @@
 
 The algorithms behind :class:`~torchref.symmetry.spacegroup.SpaceGroup`'s HKL verbs:
 ``equivalent_hkl`` (every symmetry copy, with its source row), ``expand_hkl``
-(ASU -> P1, built on it), ``reduce_hkl`` (P1 -> ASU), ``complete_hkl`` (reflections
-missing from a dataset, same space group) and ``canonicalize_hkl`` (CCP4 ASU
-representative). All private -- call them through the space group, which is the only
-public entry point.
+(ASU -> P1, built on it) and ``canonicalize_hkl`` (CCP4 ASU representative). All
+private -- call them through the space group, which is the only public entry point.
 
 What makes these crystallographic rather than general symmetry is the choice of
 asymmetric unit: the CCP4 convention, read off gemmi's ``ReciprocalAsu`` and keyed by
@@ -16,7 +14,7 @@ Laue class. That is why they hang off
 Miller indices transform as ``h' = h @ R = R^T @ h`` with R the *real-space* rotation;
 :attr:`~torchref.symmetry.symmetry.Symmetry.reciprocal` already holds the transpose.
 Translations enter as phase shifts of ``-2 pi h.t``. That sign is load-bearing and a
-wrong one is invisible in P21/P212121/C2 -- see :func:`_expand_hkl` and
+wrong one is invisible in P21/P212121/C2 -- see ``_equivalent_hkl`` and
 ``tests/unit/symmetry/test_phase_convention.py``.
 """
 
@@ -35,35 +33,7 @@ def _equivalent_hkl(
     include_friedel: bool = True,
     device: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Every symmetry copy of every input row, without deduplication.
-
-    Copies are ordered by operation, then row: all rows under operation 0,
-    all under operation 1, ..., then (with ``include_friedel``) the Friedel
-    copies in the same order. Callers that keep the first copy per index
-    therefore prefer a real measurement over a Friedel copy.
-
-    Parameters
-    ----------
-    sym : SpaceGroup
-        The space group whose operations are applied.
-    hkl : torch.Tensor, shape (N, 3)
-        Input Miller indices.
-    include_friedel : bool, default True
-        Append the Friedel copy ``-h'`` of every rotated index.
-    device : torch.device, optional
-        Output device. Defaults to ``hkl``'s.
-
-    Returns
-    -------
-    copies : torch.Tensor, shape (M, 3), configured int dtype
-        ``M = n_ops * N``, doubled with ``include_friedel``.
-    source : torch.Tensor, shape (M,), configured int dtype
-        Input row of each copy.
-    phase_shifts : torch.Tensor, shape (M,)
-        Translation phase offset in radians of each copy.
-    is_friedel : torch.Tensor, shape (M,), dtype=bool
-        True for the Friedel copies.
-    """
+    """Implement ``SpaceGroup.equivalent_hkl``, which documents the contract."""
     if device is None:
         device = hkl.device
     hkl_float = hkl.to(dtype=get_float_dtype(), device=device)
@@ -98,45 +68,13 @@ def _expand_hkl(
     include_friedel: bool = True,
     remove_absences: bool = True,
     device: Optional[torch.device] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Expand Miller indices under crystallographic symmetry (ASU -> P1).
+    return_friedel: bool = False,
+) -> Tuple[torch.Tensor, ...]:
+    """Implement ``SpaceGroup.expand_hkl``, which documents the contract.
 
-    The low-level primitive: returns the expanded indices plus the index map and
-    phase offsets needed to expand any associated per-reflection data. Each P1
-    index takes its first copy in :func:`_equivalent_hkl` order, so a rotated
-    measurement wins over a Friedel copy -- which is what lets signed Bijvoet
-    rows (``+h`` and ``-h`` as separate rows) expand without colliding.
-
-    Parameters
-    ----------
-    sym : SpaceGroup
-        The space group whose asymmetric unit convention applies.
-    hkl : torch.Tensor, shape (N, 3)
-        Input Miller indices, no two of them symmetry-equivalent.
-    include_friedel : bool, default True
-        Include Friedel mates (-h, -k, -l).
-    remove_absences : bool, default True
-        Remove systematically absent reflections.
-    device : torch.device, optional
-        Computation device. If None, uses hkl's device.
-
-    Returns
-    -------
-    expanded_hkl : torch.Tensor, shape (M, 3), configured int dtype
-        All unique expanded Miller indices, in order of first occurrence.
-    orig_indices : torch.Tensor, shape (M,), configured int dtype
-        Index mapping expanded → original: ``F_expanded = F_orig[orig_indices]``.
-    phase_shifts : torch.Tensor, shape (M,), dtype=float32
-        Translation phase offsets in radians:
-        ``phase_expanded = phase_orig[orig_indices] + phase_shifts``.
-
-    Raises
-    ------
-    ValueError
-        If two different input rows produce the same P1 index by the same kind
-        of copy (rotation, or Friedel), i.e. the input holds symmetry-equivalent
-        rows. Keeping either would silently discard the other: merge them first,
-        or expand anomalous data from its signed indices.
+    Each P1 index keeps its first copy in ``_equivalent_hkl`` order, so a rotation
+    copy wins over a Friedel copy and signed Bijvoet rows expand without colliding;
+    two input rows reaching one index by the same kind of copy raise.
     """
     if device is None:
         device = hkl.device
@@ -168,231 +106,26 @@ def _expand_hkl(
     expanded_hkl = copies[keep]
     orig_idx_tensor = source[keep]
     phase_shifts = phase[keep]
+    friedel = is_friedel[keep]
 
     if remove_absences and sym.number != 1:
         keep_mask = ~sym.is_absent(expanded_hkl)
         expanded_hkl = expanded_hkl[keep_mask]
         phase_shifts = phase_shifts[keep_mask]
         orig_idx_tensor = orig_idx_tensor[keep_mask]
+        friedel = friedel[keep_mask]
 
+    if return_friedel:
+        return expanded_hkl, orig_idx_tensor, phase_shifts, friedel
     return expanded_hkl, orig_idx_tensor, phase_shifts
 
 
-def _complete_hkl(
-    sym,
-    input_hkl: torch.Tensor,
-    cell: torch.Tensor,
-    d_min: float,
-    device: Optional[torch.device] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Complete a set of Miller indices by identifying missing reflections.
-
-    Generates every reflection within ``d_min`` for ``sym`` (minus
-    systematic absences), then maps the input onto that complete set. This does
-    *not* expand symmetry -- the output stays in the input space group.
-
-    Parameters
-    ----------
-    sym : SpaceGroup
-        The space group whose asymmetric unit convention applies.
-    input_hkl : torch.Tensor, shape (N, 3)
-        Input Miller indices (may be incomplete).
-    cell : torch.Tensor, shape (6,)
-        Unit cell parameters [a, b, c, alpha, beta, gamma].
-    d_min : float
-        High resolution limit in Angstroms.
-    device : torch.device, optional
-        Computation device. If None, uses input_hkl's device.
-
-    Returns
-    -------
-    complete_hkl : torch.Tensor, shape (M, 3), dtype int32
-        All possible Miller indices within resolution (minus systematic absences).
-    input_indices : torch.Tensor, shape (M,), integer dtype
-        Index mapping complete → input, or -1 where missing. Use as
-        ``F_complete[~missing] = F_input[input_indices[~missing]]``.
-    missing_mask : torch.Tensor, shape (M,), dtype bool
-        True where reflection is missing from input.
-    """
-    from torchref.base.reciprocal import generate_possible_hkl
-
-    if device is None:
-        device = input_hkl.device
-
-    # Generate all possible HKL within resolution
-    all_hkl = generate_possible_hkl(cell, d_min, device=device)
-
-    # Get symmetry operations for absence check
-    if sym.number != 1:
-        all_hkl = all_hkl[~sym.is_absent(all_hkl)]
-
-    # Build lookup dictionary from input hkl to indices
-    input_hkl_np = input_hkl.cpu().numpy()
-    input_lookup = {}
-    for idx, hkl in enumerate(input_hkl_np):
-        key = tuple(hkl)
-        input_lookup[key] = idx
-
-    # Match complete set to input
-    all_hkl_np = all_hkl.cpu().numpy()
-    n_complete = len(all_hkl)
-
-    input_indices = torch.full((n_complete,), -1, dtype=get_int_dtype(), device=device)
-    missing_mask = torch.ones(n_complete, dtype=torch.bool, device=device)
-
-    for i, hkl in enumerate(all_hkl_np):
-        key = tuple(hkl)
-        if key in input_lookup:
-            input_indices[i] = input_lookup[key]
-            missing_mask[i] = False
-
-    return all_hkl, input_indices, missing_mask
-
-
-def _reduce_hkl(
-    sym,
-    hkl_p1: torch.Tensor,
-    include_friedel: bool = True,
-    device: Optional[torch.device] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Reduce P1 Miller indices to the asymmetric unit of a target space group.
-
-    The inverse of :meth:`~torchref.symmetry.spacegroup.SpaceGroup.expand_hkl`: symmetry-equivalent P1 reflections merge
-    into one ASU reflection. The index map has *constant multiplicity* -- its
-    second dimension is always ``n_equiv = n_ops * (2 if include_friedel else 1)``
-    however many equivalents actually exist in ``hkl_p1`` -- so aggregation needs
-    no variable-length ops.
-
-    Parameters
-    ----------
-    sym : SpaceGroup
-        The target space group.
-    hkl_p1 : torch.Tensor, shape (N, 3)
-        Input Miller indices in P1 (complete hemisphere).
-    include_friedel : bool, default True
-        If True, also consider Friedel mates when finding ASU representative.
-    device : torch.device, optional
-        Computation device. If None, uses hkl_p1's device.
-
-    Returns
-    -------
-    hkl_asu : torch.Tensor, shape (M, 3), dtype int32
-        Unique Miller indices in the asymmetric unit.
-    reduction_indices : torch.Tensor, shape (M, n_equiv), configured int dtype
-        Indices into ``hkl_p1`` for each ASU reflection's equivalents, **-1 where
-        no P1 reflection exists** -- mask or clamp before gathering, or a -1 will
-        silently read the last row: ``F_asu = aggregate(F_p1[reduction_indices], dim=1)``.
-    phase_shifts : torch.Tensor, shape (M, n_equiv), dtype float32
-        Phase shifts to apply before aggregation; negated for Friedel mates.
-    """
-    if device is None:
-        device = hkl_p1.device
-
-    # Get symmetry operations
-    n_ops = sym.n_ops
-    recip_matrices = sym.reciprocal.matrices.to(device=device)
-    translations = sym.translations.to(device=device)
-
-    # Total number of equivalent positions per ASU reflection
-    n_equiv = n_ops * (2 if include_friedel else 1)
-
-    # Convert hkl to float for matrix operations
-    hkl_float = hkl_p1.to(dtype=get_float_dtype(), device=device)
-    n_p1 = len(hkl_float)
-
-    # Build lookup from hkl tuple to index in P1 array
-    hkl_p1_np = hkl_p1.cpu().numpy()
-    p1_lookup = {tuple(h): idx for idx, h in enumerate(hkl_p1_np)}
-
-    # For each P1 reflection, find its "canonical" ASU representative
-    # The canonical form is the lexicographically smallest (h, k, l) among all equivalents
-    def get_canonical_hkl(hkl_single):
-        """Find canonical ASU representative for a single reflection."""
-        equivalents = []
-
-        for i in range(n_ops):
-            # h' = h @ R^T
-            hkl_trans = torch.round(torch.matmul(hkl_single, recip_matrices[i].T)).to(
-                get_int_dtype()
-            )
-            equivalents.append(hkl_trans)
-
-            if include_friedel:
-                equivalents.append(-hkl_trans)
-
-        # Stack and find lexicographically smallest
-        equiv_stack = torch.stack(equivalents, dim=0)
-
-        # Sort by (h, k, l) lexicographically
-        # Convert to tuple for comparison
-        equiv_np = equiv_stack.cpu().numpy()
-        equiv_tuples = [tuple(e) for e in equiv_np]
-        canonical = min(equiv_tuples)
-
-        return canonical
-
-    # Map each P1 reflection to its canonical ASU representative
-    p1_to_asu = {}  # maps P1 index to canonical ASU tuple
-    asu_reflections = (
-        {}
-    )  # maps canonical ASU tuple to list of (P1_idx, phase_shift, equiv_idx)
-
-    for p1_idx, hkl_single in enumerate(hkl_float):
-        canonical = get_canonical_hkl(hkl_single)
-
-        p1_to_asu[p1_idx] = canonical
-
-        if canonical not in asu_reflections:
-            asu_reflections[canonical] = []
-
-        # Find which equivalent this P1 reflection corresponds to
-        for equiv_idx in range(n_ops):
-            R = recip_matrices[equiv_idx]
-            t = translations[equiv_idx]
-
-            hkl_trans = torch.round(torch.matmul(hkl_single, R.T)).to(get_int_dtype())
-            # -2π h·t, same convention as expand_hkl (see the derivation there).
-            phase_shift = -2.0 * np.pi * torch.matmul(hkl_single, t)
-
-            if tuple(hkl_trans.cpu().numpy()) == canonical:
-                asu_reflections[canonical].append(
-                    (p1_idx, phase_shift.item(), equiv_idx)
-                )
-                break
-
-            if include_friedel:
-                if tuple((-hkl_trans).cpu().numpy()) == canonical:
-                    # Friedel mate: phase is negated
-                    asu_reflections[canonical].append(
-                        (p1_idx, -phase_shift.item(), equiv_idx + n_ops)
-                    )
-                    break
-
-    # Build output tensors
-    asu_list = sorted(asu_reflections.keys())
-    n_asu = len(asu_list)
-
-    hkl_asu = torch.tensor(asu_list, dtype=get_int_dtype(), device=device)
-    reduction_indices = torch.full(
-        (n_asu, n_equiv), -1, dtype=get_int_dtype(), device=device
-    )
-    phase_shifts = torch.zeros((n_asu, n_equiv), dtype=get_float_dtype(), device=device)
-
-    # Fill in the indices and phase shifts
-    for asu_idx, asu_hkl in enumerate(asu_list):
-        for p1_idx, phase, equiv_idx in asu_reflections[asu_hkl]:
-            reduction_indices[asu_idx, equiv_idx] = p1_idx
-            phase_shifts[asu_idx, equiv_idx] = phase
-
-    return hkl_asu, reduction_indices, phase_shifts
-
-
 def _asu_condition_vectorized(h, k, l, condition_key):
-    """Vectorized CCP4 ASU membership test over numpy ``h``/``k``/``l`` arrays.
+    """Vectorized CCP4 ASU membership test over torch ``h``/``k``/``l`` tensors.
 
     ``condition_key`` is a condition string from
-    ``gemmi.ReciprocalAsu.condition_str()``; an unrecognised one raises
-    ``ValueError``, which callers catch to fall back on ``gemmi``'s own scalar check.
+    ``gemmi.ReciprocalAsu.condition_str()``, which holds for indices in the
+    reference setting; an unrecognised one raises ``ValueError``.
     """
     # Map the 10 distinct CCP4 ASU conditions (covers all 230 space groups).
     _conditions = {
@@ -440,43 +173,11 @@ def _canonicalize_hkl(
     device: Optional[torch.device] = None,
     sort: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Map Miller indices to canonical CCP4 ASU representatives.
+    """Implement ``SpaceGroup.canonicalize_hkl``, which documents the contract.
 
-    Selects one representative per reflection under the standard CCP4 asymmetric
-    unit convention. Runs on CPU/numpy regardless of ``device`` (the ASU lookup
-    tables are numpy-backed), returning tensors on ``device``. Raises
-    ``ValueError`` if any reflection has no ASU representative, which happens for
-    the Friedel half of reciprocal space when ``include_friedel=False``.
-
-    Parameters
-    ----------
-    sym : SpaceGroup
-        The space group whose asymmetric unit convention applies.
-    hkl : torch.Tensor, shape (N, 3), integer dtype
-        Input Miller indices.
-    include_friedel : bool, default True
-        Whether Friedel mates are considered equivalent.
-    device : torch.device, optional
-        Computation device. If None, uses hkl's device.
-    sort : bool, default True
-        Return the rows sorted lexicographically by canonical (h, k, l). With
-        ``False`` the rows stay in input order and no permutation is formed.
-
-    Returns
-    -------
-    canonical_hkl : torch.Tensor, shape (N, 3), dtype of ``hkl``
-        Remapped indices, sorted lexicographically by (h, k, l) when ``sort``.
-    phase_shifts : torch.Tensor, shape (N,), configured float dtype
-        Additive phase correction in radians, in the same row order.
-    friedel_flags : torch.Tensor, shape (N,), dtype bool
-        True where Friedel conjugation was applied, in the same row order.
-    sort_indices : torch.Tensor or None, shape (N,), dtype int64
-        Permutation from original to sorted order; ``None`` when ``sort=False``.
-
-    Notes
-    -----
-    ``phase_shifts`` assumes the caller conjugates first — the contract is
-    ``phi_new = torch.where(friedel_flags, -phi_old, phi_old) + phase_shifts``.
+    Runs on CPU with torch ops whatever device ``sym`` or ``hkl`` is on. The phase
+    shift is ``-2 pi h.t`` (input ``h``, translation ``t`` of the mapping operation),
+    with the sign flipped on Friedel-conjugated rows.
     """
     import gemmi
 
@@ -493,12 +194,17 @@ def _canonicalize_hkl(
         empty_i = torch.empty(0, dtype=torch.int64, device=device) if sort else None
         return empty_hkl, empty_f, empty_b, empty_i
 
-    # The mapping runs on CPU whatever device ``sym`` or ``hkl`` live on (gemmi's
-    # scalar ASU test is the fallback); only the returned tensors honour ``device``.
-    # Torch rather than numpy for the per-row arithmetic: the work is a handful of
-    # elementwise passes over every reflection, which torch spreads over threads.
-    asu = gemmi.ReciprocalAsu(sym._gemmi)
-    condition_key = asu.condition_str()
+    # The mapping runs on CPU whatever device ``sym`` or ``hkl`` live on; only the
+    # returned tensors honour ``device``. Torch rather than numpy for the per-row
+    # arithmetic: the work is a handful of elementwise passes over every
+    # reflection, which torch spreads over threads.
+    group = sym._gemmi
+    condition_key = gemmi.ReciprocalAsu(group).condition_str()
+    # The condition holds in the reference setting. As gemmi's ReciprocalAsu.is_in
+    # does, an index of another setting is tested as hkl @ rot, with rot the
+    # setting's change of basis for Miller indices, scaled by 24 -- which the
+    # homogeneous conditions ignore.
+    to_reference = None if group.is_reference_setting() else group.basisop.as_hkl().rot
     # Reciprocal-space rotation matrices are always integer-valued (0, ±1).
     recip_ops = torch.round(sym.reciprocal.matrices.detach().cpu()).to(get_int_dtype())
     translations = sym.translations.detach().cpu()  # (n_ops, 3)
@@ -506,19 +212,15 @@ def _canonicalize_hkl(
     hkl_cpu = hkl.detach().to(device="cpu", dtype=get_int_dtype())  # (N, 3)
 
     def in_asu(h, k, l):
-        try:
-            return _asu_condition_vectorized(h, k, l, condition_key)
-        except ValueError:
-            return torch.tensor(
-                [
-                    asu.is_in([a, b, c])
-                    for a, b, c in zip(h.tolist(), k.tolist(), l.tolist())
-                ],
-                dtype=torch.bool,
-            )
+        if to_reference is not None:
+            h, k, l = [
+                rotate([row[i] for row in to_reference], h, k, l) for i in range(3)
+            ]
+        return _asu_condition_vectorized(h, k, l, condition_key)
 
     def rotate(row, h, k, l):
-        """``row . (h, k, l)`` for one row of an integer (0, ±1) rotation."""
+        """``row . (h, k, l)`` for one row of an integer matrix; 0 and ±1 add no
+        multiply."""
         out = None
         for coef, col in zip(row, (h, k, l)):
             if coef == 0:

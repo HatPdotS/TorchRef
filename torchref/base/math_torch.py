@@ -51,10 +51,6 @@ from torchref.base.reciprocal import (
     get_d_spacing,
     place_on_grid,
     extract_structure_factor_from_grid,
-    apply_translation_phase,
-    interpolate_structure_factor_from_grid,
-    interpolate_complex_from_grid,
-    trilinear_interpolate_patterson,
 )
 
 # =============================================================================
@@ -93,7 +89,6 @@ from torchref.base.fourier import (
     fft,
     ifft,
     get_real_grid,
-    find_grid_size,
 )
 
 # =============================================================================
@@ -279,10 +274,6 @@ __all__ = [
     "get_d_spacing",
     "place_on_grid",
     "extract_structure_factor_from_grid",
-    "apply_translation_phase",
-    "interpolate_structure_factor_from_grid",
-    "interpolate_complex_from_grid",
-    "trilinear_interpolate_patterson",
     # Structure factors
     "iso_structure_factor_torched",
     "iso_structure_factor_torched_no_complex",
@@ -306,7 +297,6 @@ __all__ = [
     "fft",
     "ifft",
     "get_real_grid",
-    "find_grid_size",
     # Alignment
     "rotate_coords_torch",
     "axis_angle_to_rotation_matrix",

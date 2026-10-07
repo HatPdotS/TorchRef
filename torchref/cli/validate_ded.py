@@ -488,7 +488,6 @@ def compute_ded_maps(
 
         real_space_grid = get_real_grid(
             ctx["cell_t"],
-            max_res=ctx["d_min"],
             gridsize=torch.tensor(ctx["gridsize"]),
             device=device,
         )

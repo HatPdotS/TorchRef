@@ -7,7 +7,7 @@ phases from a model, after scaling both datasets to a common reference.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
@@ -35,34 +35,37 @@ class DifferenceMap(Map):
         Model for computing phases.
     gridsize : tuple of int, optional
         Grid dimensions (nx, ny, nz). If None, determined automatically.
+    device : torch.device, optional
+        Computation device. ``data``, ``data_reference`` and ``model`` are moved onto
+        it in place; if None, onto ``data``'s device.
+    units : str, optional
+        ``"normalized"`` (default) or ``"electrons"``, as for :class:`Map`; electrons
+        per cubic Angstrom only when ``scale`` puts the differences on the absolute
+        scale.
+    scale : torch.Tensor, optional
+        Per-reflection observed-to-model scale, shape (N,); the differences are
+        divided by it, which puts them in electrons. Row-aligned with the
+        collection's reflections, the sorted canonical (ASU) union of both
+        datasets' indices that the map exposes as ``data_reference.hkl`` -- the
+        reference dataset's own order only when both share one reflection list.
+
+    Raises
+    ------
+    ValueError
+        If ``scale`` does not have one row per union reflection. A scale of the
+        right length in another row order is not detected.
 
     Attributes
     ----------
-    data_reference : ReflectionData
-        Reflection data for the reference state (e.g., dark, native).
-    data_perturbed : ReflectionData
-        Reflection data for the perturbed state (e.g., light, derivative).
+    data_reference, data_perturbed : ScaledDataset
+        The jointly scaled copies of the two inputs on the collection's union
+        reflection list; the input datasets themselves stay unscaled.
     map_data : torch.Tensor or None
         The computed 3D real-space difference map, or ``None`` before
         ``calculate()``.
     map_type : str
         Inherited from :class:`Map`; set to ``"Fcalc"`` as a placeholder
         because ``calculate()`` is overridden and does not use it.
-
-    Methods
-    -------
-    calculate()
-        Compute and return the 3D real-space isomorphous difference map.
-    write(filepath)
-        Inherited from :class:`Map`; write the map to a CCP4 file.
-    reset_cache()
-        Inherited from :class:`Map`; discard the cached map.
-
-    Notes
-    -----
-    The FFT uses ``torch.fft.fftn`` with ``norm="forward"`` (a 1/N
-    normalization), so the difference-map scale is in normalized units
-    (see :mod:`torchref.maps.map`).
     """
 
     def __init__(
@@ -92,6 +95,13 @@ class DifferenceMap(Map):
         self._collection.scale()
         self.data_reference = self._collection["reference"]
         self.data_perturbed = self._collection["perturbed"]
+        n_union = len(self.data_reference.hkl)
+        if scale is not None and len(scale) != n_union:
+            raise ValueError(
+                f"scale has {len(scale)} rows, but it must be row-aligned with the "
+                f"{n_union} reflections of the union of both datasets "
+                "(data_reference.hkl of the built map)."
+            )
 
         # Use reference dataset for cell, spacegroup, hkl via super().__init__
         super().__init__(
@@ -102,8 +112,6 @@ class DifferenceMap(Map):
             device=resolved,
             units=units,
         )
-        # Per-reflection observed-to-model scale over the reference dataset's full
-        # reflection list; dividing by it puts the differences in electrons.
         self.scale = scale
 
     def calculate(self) -> torch.Tensor:
@@ -129,8 +137,8 @@ class DifferenceMap(Map):
         delta_f = self.data_reference.bijvoet_mean(delta_f, mask_combined)[rows]
         hkl_asu = self.data_reference.hkl[rows]
 
-        # Expand to P1 without Friedel mates (expand_to_p1() would reset
-        # scaling, so expand manually via expand_hkl)
+        # delta_f is derived per reflection, which expand_to_p1 cannot carry: expand
+        # the indices.
         sg = self.data_reference.spacegroup or SpaceGroup("P1", device=hkl_asu.device)
         hkl_p1, orig_idx, _ = sg.expand_hkl(
             hkl_asu,

@@ -18,8 +18,7 @@ class TestSpaceGroupInitialization:
 
         sg = SpaceGroup("P1")
 
-        # space_group is a gemmi.SpaceGroup object
-        assert "P 1" in str(sg.space_group) or "P1" in str(sg.space_group)
+        assert "P 1" in str(sg.gemmi) or "P1" in str(sg.gemmi)
         assert sg.matrices is not None
         assert sg.translations is not None
         # P1 should have only identity
@@ -287,3 +286,35 @@ class TestSymmetryBase:
         # An inversion pair makes every reflection centric.
         hkl = torch.tensor([[1, 2, 3], [4, 0, 1]])
         assert bool(sym.is_centric(hkl).all())
+
+
+class TestInterpolatingMapOperator:
+    """The ``grid_sample`` fallback treats the map as periodic on every axis."""
+
+    @pytest.mark.unit
+    def test_last_interval_interpolates_toward_index_zero(self):
+        """P 1 21 1 on ny = 15 puts the 2_1 mate half a voxel off the grid; on the slab
+        whose mate lies between index 14 and index 0 the error is as small as on the
+        others."""
+        import math
+
+        from torchref.symmetry import SpaceGroup
+        from torchref.symmetry.map_symmetry_interpolation import (
+            _MapSymmetryInterpolation,
+        )
+
+        sg = SpaceGroup("P 1 21 1", device=torch.device("cpu"))
+        shape = (16, 15, 16)
+        operator = sg.map_operator(shape)
+        assert isinstance(operator, _MapSymmetryInterpolation)
+
+        def rho(x, y, z):
+            return torch.cos(2 * math.pi * y) + 0.5 * torch.sin(2 * math.pi * (x + z))
+
+        axes = [torch.arange(n, dtype=sg.dtype) / n for n in shape]
+        xyz = torch.stack(torch.meshgrid(*axes, indexing="ij"), dim=-1)
+        mate = operator.mate(rho(*xyz.unbind(-1)), 1)
+        want = rho(*(xyz @ sg.matrices[1].T + sg.translations[1]).unbind(-1))
+
+        error_per_slab = (mate - want).abs().amax(dim=(0, 2))
+        assert error_per_slab.max() < 0.03
