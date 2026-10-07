@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 
 import torch
 
+from torchref.symmetry import SpaceGroup
+
 from .base import CrystalDataset
 from .reflection_data import ReflectionData
 from .scaled_dataset import ScaledDataset
@@ -25,8 +27,11 @@ class DatasetCollection(CrystalDataset):
     Container for multiple related crystal datasets on a common HKL set.
 
     Members are copied onto the union HKL grid without changing input datasets.
-    The reference supplies cell and space-group metadata, not a fixed scale.
-    ``scale()`` installs ScaledDataset members backed by one shared scaler. Dict-like access via ``[]``, ``keys()``,
+    The reference supplies the space group, the centric flags and the phase
+    convention of :meth:`component_structure_factors`, not a fixed scale.
+    Members hold raw observations until ``scale()`` installs ScaledDataset
+    members backed by one shared scaler, and the ``stack_*`` accessors return
+    what the members hold. Dict-like access via ``[]``, ``keys()``,
     ``values()``, ``items()``, ``get()``, and iteration yields
     ``(name, dataset)`` in insertion order.
 
@@ -46,8 +51,8 @@ class DatasetCollection(CrystalDataset):
     datasets : Dict[str, ReflectionData]
         All member datasets keyed by name.
     reference_dataset : str or None
-        Name of the reference dataset (drives HKL alignment).
-    spacegroup : str or None
+        Name of the reference dataset.
+    spacegroup : SpaceGroup or None
         Space group of the reference dataset.
     """
 
@@ -56,7 +61,7 @@ class DatasetCollection(CrystalDataset):
     _dataset_order: List[str] = field(default_factory=list, repr=False)
     _reference_dataset: Optional[str] = field(default=None, repr=False)
     _common_hkl: Optional[torch.Tensor] = field(default=None, repr=False)
-    _spacegroup: Optional[str] = field(default=None, repr=False)
+    _spacegroup: Optional[SpaceGroup] = field(default=None, repr=False)
     scaler: Optional["DatasetScaler"] = field(default=None, repr=False)
     scaling_metrics: dict = field(default_factory=dict, repr=False)
 
@@ -72,7 +77,7 @@ class DatasetCollection(CrystalDataset):
         dataset : ReflectionData
             Raw or scaled observations; scaled inputs contribute their raw values.
         set_as_reference : bool
-            Use this dataset's cell and symmetry as collection metadata.
+            Make this dataset the reference, which is otherwise the first one added.
 
         Returns
         -------
@@ -151,12 +156,12 @@ class DatasetCollection(CrystalDataset):
         return self._reference_dataset
 
     @property
-    def spacegroup(self) -> Optional[str]:
+    def spacegroup(self) -> Optional[SpaceGroup]:
         """Space group of the reference dataset."""
         return self._spacegroup
 
     @spacegroup.setter
-    def spacegroup(self, value: Optional[str]) -> None:
+    def spacegroup(self, value: Optional[SpaceGroup]) -> None:
         """Set space group (redirects to _spacegroup)."""
         self._spacegroup = value
 
@@ -254,21 +259,21 @@ class DatasetCollection(CrystalDataset):
         return list(keys)
 
     def stack_F_obs(self, keys: Optional[List[str]] = None) -> torch.Tensor:
-        """Scaled observed amplitudes, shape ``(n_datasets, n_reflections)``."""
+        """Observed amplitudes, shape ``(n_datasets, n_reflections)``."""
         return torch.stack(
             [self._datasets[k].F for k in self._keys_or_all(keys)],
             dim=0,
         )
 
     def stack_F_sigma(self, keys: Optional[List[str]] = None) -> torch.Tensor:
-        """Scaled amplitude sigmas, shape ``(n_datasets, n_reflections)``."""
+        """Amplitude sigmas, shape ``(n_datasets, n_reflections)``."""
         return torch.stack(
             [self._datasets[k].F_sigma for k in self._keys_or_all(keys)],
             dim=0,
         )
 
     def stack_I_obs(self, keys: Optional[List[str]] = None) -> torch.Tensor:
-        """Scaled observed intensities, shape ``(n_datasets, n_reflections)``.
+        """Observed intensities, shape ``(n_datasets, n_reflections)``.
 
         Raises
         ------
@@ -281,7 +286,7 @@ class DatasetCollection(CrystalDataset):
         )
 
     def stack_I_sigma(self, keys: Optional[List[str]] = None) -> torch.Tensor:
-        """Scaled intensity sigmas, shape ``(n_datasets, n_reflections)``.
+        """Intensity sigmas, shape ``(n_datasets, n_reflections)``.
 
         Raises
         ------

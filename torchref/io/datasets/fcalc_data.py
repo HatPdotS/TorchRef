@@ -26,9 +26,6 @@ class FcalcDataset(CrystalDataset):
     """
     Dataset for storing calculated structure factors.
 
-    Unlike :class:`~torchref.io.datasets.base.CrystalDataset`, ``spacegroup`` here
-    holds a ``torchref.symmetry.SpaceGroup`` object, not a string.
-
     Parameters
     ----------
     hkl : torch.Tensor, optional
@@ -47,9 +44,6 @@ class FcalcDataset(CrystalDataset):
     device : torch.device
         Device for tensors.
     """
-
-    # Override spacegroup to use torchref.symmetry.SpaceGroup (not gemmi)
-    spacegroup: Optional[SpaceGroup] = None  # type: ignore[assignment]
 
     # Fcalc-specific fields
     fcalc: Optional[torch.Tensor] = None  # Complex (N,)

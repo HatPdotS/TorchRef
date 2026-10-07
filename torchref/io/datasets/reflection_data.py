@@ -171,7 +171,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
     Container for crystallographic reflection data.
 
     Loads and holds Miller indices, amplitudes, intensities and R-free flags as
-    PyTorch tensors, all on one device.
+    PyTorch tensors, all on one device. :meth:`load` reads indices, amplitudes
+    and intensities in the configured int and float dtypes (int32 and float32
+    by default); :meth:`from_tensors` keeps the dtypes it is given.
 
     Parameters
     ----------
@@ -183,20 +185,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
     Attributes
     ----------
     hkl : torch.Tensor
-        Miller indices of shape (N, 3), dtype int32.
+        Miller indices of shape (N, 3).
     F, F_sigma : torch.Tensor
-        Amplitudes and their uncertainties, shape (N,), dtype float32.
+        Amplitudes and their uncertainties, shape (N,).
     I, I_sigma : torch.Tensor
-        Intensities and their uncertainties, shape (N,), dtype float32.
+        Intensities and their uncertainties, shape (N,).
     rfree_flags : torch.Tensor
         Test-set flags of shape (N,), convention **1=work, 0=free**. Dtype is
         int32 when generated but bool when read from an MTZ FreeR column, so
         never assume one; internal accessors coerce to bool.
-    cell : torch.Tensor
-        Unit cell parameters [a, b, c, alpha, beta, gamma].
-    spacegroup : str
-        Annotated ``str``, but ``load`` / ``from_tensors`` store a
-        ``torchref.symmetry.SpaceGroup`` object here.
+    cell : Cell
+        Unit cell: a, b, c in Å; alpha, beta, gamma in degrees.
+    spacegroup : SpaceGroup
+        Space group of the data.
     resolution : torch.Tensor
         Resolution per reflection in Ångströms of shape (N,).
     """

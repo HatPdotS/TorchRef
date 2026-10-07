@@ -1,10 +1,6 @@
 """
 Base dataclass for crystallographic datasets: every optional tensor field,
 device management and save/load.
-
-Beware the ``spacegroup`` field: annotated ``Optional[str]`` here, but at
-runtime ``FcalcDataset`` *and* ``ReflectionData`` (which does not override the
-annotation) both store a ``torchref.symmetry.SpaceGroup`` object in it.
 """
 
 import warnings
@@ -64,7 +60,7 @@ class CrystalDataset(DeviceMovementMixin):
 
     # === Unit cell and symmetry ===
     cell: Optional[Cell] = None  # Cell object with [a, b, c, alpha, beta, gamma]
-    spacegroup: Optional[str] = None  # Space group name string
+    spacegroup: Optional[SpaceGroup] = None
 
     # === Metadata ===
     device: torch.device = field(default_factory=get_default_device)
