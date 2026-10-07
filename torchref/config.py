@@ -434,8 +434,8 @@ def _cuda_is_usable() -> bool:
             return True
     warnings.warn(
         f"TorchRef: CUDA device cuda:{idx} does not meet the auto-selection "
-        f"requirements (compute capability >= {min_supported[0]}.{min_supported[1]} and "
-        f">= {_MIN_CUDA_VRAM_GB} GB VRAM; PyTorch build supports sm_*: "
+        f"requirements (compute capability >= {min_supported[0]}.{min_supported[1]} "
+        f"and >= {_MIN_CUDA_VRAM_GB} GB VRAM; PyTorch build supports sm_*: "
         f"{arch_list}). Falling back to CPU. Set CUDA_VISIBLE_DEVICES to select "
         "another GPU, or TORCHREF_DEVICE=cuda to use this one anyway.",
         stacklevel=3,
