@@ -159,43 +159,6 @@ class EdgeBlock(DeviceMixin):
             origin_bounds={},
         )
 
-    @classmethod
-    def from_origins(
-        cls,
-        per_origin: Dict[str, np.ndarray],
-        arity: int,
-        edge_type: str,
-        device=None,
-    ) -> "EdgeBlock":
-        """Assemble a canonical block from ``{origin: (E_o, k) index array}``.
-
-        Origins are laid out in :data:`ORIGIN_ORDER` for ``edge_type``, and rows
-        within an origin are sorted lexicographically. Origins with no rows are
-        omitted from ``origin_bounds`` rather than recorded as empty ranges.
-
-        Parameters
-        ----------
-        per_origin : dict
-            Integer index arrays keyed by origin. Empty arrays are skipped.
-        arity : int
-            Atoms per edge (2 for bonds, 3 for angles, ...).
-        edge_type : str
-            Key into :data:`ORIGIN_ORDER`.
-        device : torch.device, optional
-            Where to place the block.
-
-        Returns
-        -------
-        EdgeBlock
-        """
-        indices, bounds, _ = assemble_origins(per_origin, arity, edge_type)
-        if len(indices) == 0:
-            return cls.empty(arity, device=device)
-        return cls(
-            indices=torch.as_tensor(indices, dtype=get_int_dtype(), device=device),
-            origin_bounds=bounds,
-        )
-
     @property
     def device(self) -> torch.device:
         """Where the block lives. Derived, so it cannot fall out of step."""

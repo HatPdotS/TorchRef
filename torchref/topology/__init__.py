@@ -27,12 +27,7 @@ non-bonded evaluation instead, so their sterics still count. Only one applies at
 from .atom_graph import AtomGraph
 from .build import build_topology, build_topology_with_values
 from .edges import ORIGIN_ORDER, EdgeBlock
-from .hydrogens import (
-    HydrogenPlan,
-    augment_atom_table,
-    optimise_free_torsions,
-    plan_hydrogens,
-)
+from .hydrogens import HydrogenPlan, optimise_free_torsions, plan_hydrogens
 from .residue_graph import ResidueGraph
 from .restraints import Restraints
 from .riding import (
@@ -61,7 +56,6 @@ __all__ = [
     "HydrogenPlan",
     "plan_hydrogens",
     "optimise_free_torsions",
-    "augment_atom_table",
     "HydrogenTopology",
     "build_hydrogen_topology",
     "build_h_candidate_pairs",

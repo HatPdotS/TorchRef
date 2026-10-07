@@ -7,6 +7,7 @@ the full space group. 6G9X (P 21 21 2, centroid at fractional x = 1.08) and 3E98
 runs the production builder and the riding-hydrogen candidates.
 """
 
+import math
 from collections import defaultdict
 
 import gemmi
@@ -16,7 +17,7 @@ import torch
 
 from torchref.base.coordinates import is_symmetry_image, symmetry_image_positions
 from torchref.base.targets.nonbonded import nonbonded_pair_positions
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 from torchref.model.model import Model
 from torchref.symmetry import SpaceGroup
 from torchref.symmetry.cell import Cell
@@ -196,6 +197,51 @@ def test_production_builder_keeps_its_contacts_under_a_lattice_shift(model_1daw)
     )
 
 
+def test_pair_indices_take_the_configured_int_dtype(model_1daw):
+    """Like the operation indices and cell offsets beside them, and every other
+    restraint index, the atom indices of the pair list are the configured int dtype."""
+    vdw = model_1daw.restraints.restraints["vdw"]
+    assert len(vdw["indices"]) > 0
+    for key in ("indices", "symop_indices", "cell_offsets"):
+        assert vdw[key].dtype == get_int_dtype(), key
+
+
+def test_no_atom_is_in_contact_with_its_own_image(model_1daw):
+    """HOH 392 sits on a two-fold: its image is the atom itself, not a 0 A clash. Only
+    an atom's genuine contacts with its own images, beyond gemmi's 0.8 A
+    special-position cutoff, stay in the list."""
+    vdw = model_1daw.restraints.restraints["vdw"]
+    cell, sg = model_1daw.cell, model_1daw.spacegroup
+    pos1, pos2 = nonbonded_pair_positions(
+        model_1daw.xyz().detach(),
+        vdw["indices"],
+        vdw["symop_indices"],
+        vdw["cell_offsets"],
+        sg.matrices,
+        sg.translations,
+        cell.fractional_matrix,
+        cell.inv_fractional_matrix,
+    )
+    own = vdw["indices"][:, 0] == vdw["indices"][:, 1]
+    assert own.sum() > 10
+    assert float((pos2 - pos1).norm(dim=1)[own].min()) > nb.SPECIAL_POSITION_CUTOFF
+
+
+def test_alternates_do_not_meet_across_a_crystal_contact(pdb_dir):
+    """3K7M models waters as alternates across crystal contacts (HOH 969 A against
+    HOH 1049 B 1.86 A away). As inside the asymmetric unit, two different altlocs are
+    never a contact, image pairs included."""
+    model = Model(verbose=0, device=torch.device("cpu"))
+    model.load_pdb(str(pdb_dir / "3K7M.pdb"))
+    vdw = model.restraints.restraints["vdw"]
+    altloc = np.char.strip(model.restraints.topology.atoms.altloc.astype(str))
+    i, j = vdw["indices"].T.cpu().numpy()
+    image = is_symmetry_image(vdw["symop_indices"], vdw["cell_offsets"]).cpu().numpy()
+    assert (image & (altloc[i] != "") & (altloc[j] != "")).any()
+    mixed = (altloc[i] != "") & (altloc[j] != "") & (altloc[i] != altloc[j])
+    assert not mixed.any()
+
+
 def test_riding_h_candidates_are_scored_near_their_heavy_contact(model_1daw):
     """An H candidate comes from a heavy pair closer than the cutoff, so with the image
     on the right atom it lies within the cutoff plus two X-H bonds."""
@@ -218,3 +264,153 @@ def test_riding_h_candidates_are_scored_near_their_heavy_contact(model_1daw):
     assert bool(image.any())
     reach = CUTOFF + 2.0 * float(h_topo.h_bond_length.max()) + _DIST_ATOL
     assert float((pos_j - pos_i).norm(dim=1).max()) < reach
+
+
+def _prolsq(pos1, pos2, minimum, target):
+    """Per-pair PROLSQ NLL as the kernels score it, sqrt epsilon included, float64."""
+    distance = torch.sqrt(((pos2 - pos1).double() ** 2).sum(dim=1) + 1e-8)
+    overlap = (minimum.double() - distance).clamp(min=0)
+    constant = math.log(target.sigma_vdw) + 0.5 * math.log(2.0 * math.pi)
+    return target.c_rep * overlap**target.r_exp + constant
+
+
+def test_a_crystal_contact_counts_once(model_1daw):
+    """Both pair lists hold a crystal contact from both of its ends, so the loss takes
+    half of every image pair: the intra-ASU pairs plus half the image pairs, heavy
+    atoms and riding H-H contacts alike. An H-heavy candidate is listed from its
+    hydrogen's end only and counts in full."""
+    from torchref.refinement.targets import NonBondedHTarget, NonBondedTarget
+
+    restraints = model_1daw.restraints
+    cell, sg = model_1daw.cell, model_1daw.spacegroup
+    tables = (
+        sg.matrices,
+        sg.translations,
+        cell.fractional_matrix,
+        cell.inv_fractional_matrix,
+    )
+    xyz = model_1daw.xyz().detach()
+    target = NonBondedHTarget(model_1daw)
+
+    vdw = restraints.restraints["vdw"]
+    positions = nonbonded_pair_positions(
+        xyz, vdw["indices"], vdw["symop_indices"], vdw["cell_offsets"], *tables
+    )
+    nll = _prolsq(*positions, vdw["min_distances"], target)
+    image = is_symmetry_image(vdw["symop_indices"], vdw["cell_offsets"])
+    heavy = nll[~image].sum() + 0.5 * nll[image].sum()
+
+    h_topo = restraints.h_topo
+    n_heavy = restraints.topology.n_atoms
+    cand = torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1)
+    positions = nonbonded_pair_positions(
+        torch.cat([xyz, place_riding_hydrogens(xyz, h_topo)]),
+        cand,
+        h_topo.cand_symop_idx,
+        h_topo.cand_cell_offset,
+        *tables,
+    )
+    nll = _prolsq(*positions, h_topo.cand_min_dist, target)
+    both_ends = is_symmetry_image(h_topo.cand_symop_idx, h_topo.cand_cell_offset)
+    both_ends &= (cand >= n_heavy).all(dim=1)
+    riding = nll[~both_ends].sum() + 0.5 * nll[both_ends].sum()
+
+    assert bool(image.any()) and bool(both_ends.any())
+    with torch.no_grad():
+        heavy_loss = float(NonBondedTarget(model_1daw).forward())
+        total_loss = float(target.forward())
+    assert heavy_loss == pytest.approx(float(heavy), rel=1e-4)
+    assert total_loss == pytest.approx(float(heavy + riding), rel=1e-4)
+
+
+def test_every_riding_h_pair_on_a_contact_between_residues_is_listed_once(
+    model_1daw,
+):
+    """Each pair of riding hydrogens on the two atoms of an intra-ASU contact between
+    two residues is an H-H candidate, and only once."""
+    restraints = model_1daw.restraints
+    h_topo = restraints.h_topo
+    n_heavy = restraints.topology.n_atoms
+    residue_of = restraints.topology.atoms.residue_of.tolist()
+    riding = defaultdict(list)
+    for h, parent in enumerate(h_topo.h_parent_idx.tolist()):
+        riding[parent].append(n_heavy + h)
+
+    vdw = restraints.restraints["vdw"]
+    intra = ~is_symmetry_image(vdw["symop_indices"], vdw["cell_offsets"])
+    expected = {
+        frozenset((h_a, h_b))
+        for a, b in vdw["indices"][intra].tolist()
+        if residue_of[a] != residue_of[b]
+        for h_a in riding[a]
+        for h_b in riding[b]
+    }
+
+    i, j = h_topo.cand_idx_i, h_topo.cand_idx_j
+    hh = ~is_symmetry_image(h_topo.cand_symop_idx, h_topo.cand_cell_offset)
+    hh &= (i >= n_heavy) & (j >= n_heavy)
+    listed = [frozenset(pair) for pair in zip(i[hh].tolist(), j[hh].tolist())]
+    assert len(expected) > 1000
+    assert len(listed) == len(set(listed))
+    assert set(listed) == expected
+
+
+def test_hydrogen_bonds_are_held_to_the_hydrogen_bond_distance(model_1daw):
+    """A backbone N...O=C contact, and its riding N-H against the O, are hydrogen
+    bonds: they get the ener_lib hydrogen-bond distance, not a radius sum, so the
+    deposited amide hydrogen bonds carry almost no overlap."""
+    from torchref.topology.nonbonded import HBOND_DISTANCE, HBOND_H_DISTANCE
+    from torchref.topology.riding import candidate_contact_distances
+
+    restraints = model_1daw.restraints
+    atoms = restraints.topology.atoms
+    kinds = atoms.energy_type.astype(str)
+    vdw = restraints.restraints["vdw"]
+    i, j = vdw["indices"].T.cpu().numpy()
+    amide = ((kinds[i] == "NH1") & (kinds[j] == "O")) | (
+        (kinds[i] == "O") & (kinds[j] == "NH1")
+    )
+    assert amide.sum() > 100
+    np.testing.assert_allclose(vdw["min_distances"][amide].cpu(), HBOND_DISTANCE)
+
+    h_topo = restraints.h_topo
+    radii = torch.as_tensor(atoms.vdw_radii, dtype=get_float_dtype())
+    minimum = candidate_contact_distances(h_topo, radii, atoms.hb_type)
+    n_heavy = atoms.n_atoms
+    cand_i, cand_j = h_topo.cand_idx_i.numpy(), h_topo.cand_idx_j.numpy()
+    riding = cand_i >= n_heavy
+    parent = h_topo.h_parent_idx.numpy()[np.where(riding, cand_i - n_heavy, 0)]
+    heavy_j = np.where(cand_j < n_heavy, cand_j, 0)
+    amide_h = riding & (cand_j < n_heavy) & (kinds[parent] == "NH1")
+    amide_h &= kinds[heavy_j] == "O"
+    assert amide_h.sum() > 100
+    np.testing.assert_allclose(minimum[amide_h], HBOND_H_DISTANCE)
+
+    xyz = model_1daw.xyz().detach()
+    cell, sg = model_1daw.cell, model_1daw.spacegroup
+    pos_i, pos_j = nonbonded_pair_positions(
+        torch.cat([xyz, place_riding_hydrogens(xyz, h_topo)]),
+        torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1),
+        h_topo.cand_symop_idx,
+        h_topo.cand_cell_offset,
+        sg.matrices,
+        sg.translations,
+        cell.fractional_matrix,
+        cell.inv_fractional_matrix,
+    )
+    overlap = (minimum - (pos_j - pos_i).norm(dim=1)).clamp(min=0)
+    assert float(overlap[amide_h].max()) < 0.2
+
+
+@pytest.mark.gpu
+def test_riding_contact_distances_take_roles_from_any_device(model_1daw, gpu_device):
+    """A rebuild forms the radii and the riding candidates on CPU while ``hb_type``
+    sits with the topology on the model device; the distances follow the radii."""
+    from torchref.topology.riding import candidate_contact_distances
+
+    restraints = model_1daw.restraints
+    h_topo, atoms = restraints.h_topo, restraints.topology.atoms
+    radii = torch.as_tensor(atoms.vdw_radii, dtype=get_float_dtype())
+    on_cpu = candidate_contact_distances(h_topo, radii, atoms.hb_type)
+    moved = candidate_contact_distances(h_topo, radii, atoms.hb_type.to(gpu_device))
+    torch.testing.assert_close(moved, on_cpu, rtol=0, atol=0)

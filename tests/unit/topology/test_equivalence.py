@@ -276,8 +276,10 @@ def test_connectivity_exclusions_match_brute_force():
     """
     import numpy as np
 
+    from torchref.config import get_int_dtype
     from torchref.topology import EdgeBlock
     from torchref.topology.atom_graph import AtomGraph
+    from torchref.topology.edges import assemble_origins
 
     bonds = [
         (0, 1),
@@ -292,11 +294,12 @@ def test_connectivity_exclusions_match_brute_force():
     n = 8
 
     def block(rows, arity, edge_type):
-        return EdgeBlock.from_origins(
+        indices, bounds, _ = assemble_origins(
             {"intra": np.asarray(rows, dtype=np.int64).reshape(-1, arity)},
             arity,
             edge_type,
         )
+        return EdgeBlock(torch.as_tensor(indices, dtype=get_int_dtype()), bounds)
 
     graph = AtomGraph(
         name=np.array([f"A{i}" for i in range(n)]),

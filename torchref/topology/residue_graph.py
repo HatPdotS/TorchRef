@@ -81,8 +81,8 @@ class ResidueGraph:
         Residue index pairs, shape ``(L, 2)``. For a peptide link the first entry
         donates its ``C`` and the second its ``N``.
     link_kind : numpy.ndarray
-        Link type per edge, shape ``(L,)``: ``'TRANS'``, ``'PTRANS'``, ``'disulf'`` or
-        ``'LINK'``.
+        Link type per edge, shape ``(L,)``: ``'TRANS'`` (proline links included),
+        ``'disulf'`` or ``'LINK'``.
     """
 
     chain: np.ndarray

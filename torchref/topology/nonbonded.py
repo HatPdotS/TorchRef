@@ -8,10 +8,15 @@ for distance computation. On CPU the pair search itself is a
 k-d tree instead (:func:`find_pairs_kdtree`), with the same output.
 
 All operations run under ``torch.no_grad()`` on whatever device
-the input coordinates live on (CPU or GPU). :func:`vdw_radii_for_elements`
-gives the per-atom radii the contact distances are summed from.
+the input coordinates live on (CPU or GPU).
+
+The contact distance each pair is scored against is :func:`contact_distances`: the sum
+of two per-atom radii (``AtomGraph.vdw_radii``, from :func:`energy_type_table` or, for
+an atom without a typed radius, :func:`vdw_radii_for_elements`), or a hydrogen-bond
+distance where ``AtomGraph.hb_type`` makes the pair a hydrogen bond.
 """
 
+from functools import lru_cache
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -64,6 +69,113 @@ def vdw_radii_for_elements(elements) -> np.ndarray:
     return np.array(
         [radius.get(e, _DEFAULT_VDW_RADIUS) for e in symbols], dtype=np.float64
     )
+
+
+#: Hydrogen-bond roles, as bit flags in ``AtomGraph.hb_type``: ener_lib's ``D`` is a
+#: donor, ``A`` an acceptor and ``B`` both; :data:`HB_HYDROGEN` marks a hydrogen on a
+#: donor, the end of a hydrogen bond that meets the acceptor.
+HB_DONOR = 1
+HB_ACCEPTOR = 2
+HB_HYDROGEN = 4
+
+#: Contact distance in Å of a donor-acceptor pair and of a polar hydrogen against an
+#: acceptor: the energy-minimum distances of ener_lib's ``_lib_hbond`` table for the
+#: backbone pair (``NH1``-``O`` and ``HNH1``-``O``). A radius sum would score every
+#: hydrogen bond as a clash.
+HBOND_DISTANCE = 2.85
+HBOND_H_DISTANCE = 1.85
+
+_HB_ROLES = {"D": HB_DONOR, "A": HB_ACCEPTOR, "B": HB_DONOR | HB_ACCEPTOR}
+
+
+@lru_cache(maxsize=None)
+def energy_type_table() -> Dict[str, Tuple[int, float, float]]:
+    """Contact properties of every CCP4 energy type, from ener_lib.
+
+    Read once from ``torchref/data/ener_lib_atoms.csv``; the returned dict is shared,
+    so do not modify it.
+
+    Returns
+    -------
+    dict
+        ``{energy type: (role, vdw_radius, vdwh_radius)}``: the ``HB_*`` flags of the
+        type's ``hb_type``, its contact radius in Å, and the radius in Å with its
+        hydrogens folded in. A radius ener_lib does not give is NaN.
+    """
+    import csv
+    import os
+
+    from torchref import PATH_TORCHREF_DATA
+
+    table: Dict[str, Tuple[int, float, float]] = {}
+    path = os.path.join(PATH_TORCHREF_DATA, "ener_lib_atoms.csv")
+    with open(path, newline="") as handle:
+        rows = csv.DictReader(line for line in handle if not line.startswith("#"))
+        for row in rows:
+            radii = (float(row[key] or "nan") for key in ("vdw_radius", "vdwh_radius"))
+            table.setdefault(row["type"], (_HB_ROLES.get(row["hb_type"], 0), *radii))
+    return table
+
+
+def hydrogen_roles(parent_roles: torch.Tensor) -> torch.Tensor:
+    """Hydrogen-bond role of hydrogens, from the roles of the atoms they are bonded to.
+
+    Templates type every hydrogen ``H``, which ener_lib gives no role, so a hydrogen's
+    role is read off its parent: :data:`HB_HYDROGEN` on a donor, none otherwise.
+
+    Parameters
+    ----------
+    parent_roles : torch.Tensor
+        ``HB_*`` flags of each hydrogen's parent, shape ``(H,)``, integer.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(H,)``, in ``parent_roles``' dtype.
+    """
+    polar = (parent_roles & HB_DONOR) != 0
+    return torch.where(polar, HB_HYDROGEN, 0).to(parent_roles.dtype)
+
+
+def contact_distances(
+    radii: torch.Tensor, roles: Optional[torch.Tensor], pairs: torch.Tensor
+) -> torch.Tensor:
+    """Minimum contact distance of each atom pair.
+
+    The sum of the two contact radii, except for a hydrogen bond: a donor against an
+    acceptor is held to :data:`HBOND_DISTANCE`, a polar hydrogen against an acceptor to
+    :data:`HBOND_H_DISTANCE`.
+
+    Parameters
+    ----------
+    radii : torch.Tensor
+        Contact radius per atom in Å, shape ``(N,)``.
+    roles : torch.Tensor or None
+        ``HB_*`` flags per atom, shape ``(N,)``, integer; None scores every pair by its
+        radius sum.
+    pairs : torch.Tensor
+        Atom indices into ``radii``, shape ``(P, 2)``.
+
+    Returns
+    -------
+    torch.Tensor
+        Distances in Å, shape ``(P,)``, in ``radii``'s dtype.
+    """
+    i, j = pairs[:, 0], pairs[:, 1]
+    distances = radii[i] + radii[j]
+    if roles is None:
+        return distances
+    role_i, role_j = roles[i], roles[j]
+    accepts_i = (role_i & HB_ACCEPTOR) != 0
+    accepts_j = (role_j & HB_ACCEPTOR) != 0
+
+    def bonds_to_acceptor(flag: int) -> torch.Tensor:
+        return (((role_i & flag) != 0) & accepts_j) | (
+            accepts_i & ((role_j & flag) != 0)
+        )
+
+    distances = torch.where(bonds_to_acceptor(HB_DONOR), HBOND_DISTANCE, distances)
+    return torch.where(bonds_to_acceptor(HB_HYDROGEN), HBOND_H_DISTANCE, distances)
 
 
 # ------------------------------------------------------------------ #
@@ -300,7 +412,6 @@ def _get_canonical_offsets_14(device: torch.device) -> torch.Tensor:
 def _build_padded_cells(
     cart_sorted: torch.Tensor,
     starts: torch.Tensor,
-    atom_idx_sorted: torch.Tensor,
     combo_idx_sorted: torch.Tensor,
     identity_combo: int,
     max_per_cell: int,
@@ -422,7 +533,6 @@ def find_pairs_periodic_grid_v2(
     padded_xyz, valid_mask, asu_mask = _build_padded_cells(
         cart_sorted=cart_sorted,
         starts=starts,
-        atom_idx_sorted=atom_idx_sorted,
         combo_idx_sorted=combo_idx_sorted,
         identity_combo=identity_combo,
         max_per_cell=max_per_cell,
@@ -642,6 +752,12 @@ def exclusion_set_to_hash(
     return torch.tensor(hashes, dtype=torch.long, device=device)
 
 
+#: An atom whose own symmetry image lies closer than this, in Å, sits on a special
+#: position: the image is the atom itself, not a contact. gemmi's ContactSearch
+#: ``special_pos_cutoff`` defaults to the same value.
+SPECIAL_POSITION_CUTOFF = 0.8
+
+
 def filter_pairs(
     pair_atom_i: torch.Tensor,
     pair_atom_j: torch.Tensor,
@@ -649,13 +765,18 @@ def filter_pairs(
     identity_combo: int,
     excl_hash: torch.Tensor,
     max_idx: int,
+    cart_pos: torch.Tensor,
+    n_combos: int,
     topology,
     inter_residue_only: bool = True,
 ) -> torch.Tensor:
-    """Apply exclusion, residue, and altloc filters. Returns keep mask.
+    """Apply exclusion, residue, altloc and special-position filters. Returns keep mask.
 
     Residues are the topology's ``(chain, resseq, icode)`` nodes, so atoms of residues
-    100 and 100A are in different residues.
+    100 and 100A are in different residues. ``cart_pos`` is the atom-major image table
+    of :func:`assign_to_grid` (entry ``atom * n_combos + combo``), from which an atom's
+    distance to its own image is read: below :data:`SPECIAL_POSITION_CUTOFF` that pair
+    is dropped.
     """
     device = pair_atom_i.device
     N = len(pair_atom_i)
@@ -674,6 +795,14 @@ def filter_pairs(
         is_excluded = excl_hash[ins] == pair_hash
         keep &= ~(is_excluded & is_intra_asu)
 
+    # An atom against its own image within the cutoff: the atom on a special position.
+    self_image = (pair_atom_i == pair_atom_j) & ~is_intra_asu
+    if bool(self_image.any()):
+        rows = self_image.nonzero(as_tuple=True)[0]
+        entry = pair_atom_i[rows] * n_combos
+        shift = cart_pos[entry + pair_combo_j[rows]] - cart_pos[entry + identity_combo]
+        keep[rows[shift.norm(dim=1) < SPECIAL_POSITION_CUTOFF]] = False
+
     # Same-residue filter – intra-ASU only
     ai_np = pair_atom_i.cpu().numpy()
     aj_np = pair_atom_j.cpu().numpy()
@@ -683,13 +812,13 @@ def filter_pairs(
         same_res_t = torch.tensor(same_res, dtype=torch.bool, device=device)
         keep &= ~(same_res_t & is_intra_asu)
 
-    # Altloc compatibility – intra-ASU only
+    # Two different alternates never meet, across a crystal contact either:
+    # alternates modelled there share labels, as gemmi's neighbour search assumes.
     altloc = topology.atoms.altloc
     alt_i = altloc[ai_np]
     alt_j = altloc[aj_np]
     incompat = (alt_i != " ") & (alt_j != " ") & (alt_i != alt_j)
-    incompat_t = torch.tensor(incompat, dtype=torch.bool, device=device)
-    keep &= ~(incompat_t & is_intra_asu)
+    keep &= ~torch.tensor(incompat, dtype=torch.bool, device=device)
 
     return keep
 
@@ -697,6 +826,14 @@ def filter_pairs(
 # ------------------------------------------------------------------ #
 # Orchestrator
 # ------------------------------------------------------------------ #
+
+#: Loss weight of a pair whose partner is a symmetry or lattice image. Such a row is one
+#: end of a crystal contact; the other end is the partner's row against the inverse
+#: image (the same row, for an atom and its image across a two-fold). Each end carries
+#: half, so a crystal contact counts once in the energy of the asymmetric unit, as a
+#: contact inside it does.
+IMAGE_PAIR_WEIGHT = 0.5
+
 
 @torch.no_grad()
 def build_vdw_restraints_gpu(
@@ -711,18 +848,19 @@ def build_vdw_restraints_gpu(
     inter_residue_only: bool = True,
     verbose: int = 0,
 ) -> Dict[str, torch.Tensor]:
-    """Build VDW restraints using GPU-native periodic grid search.
+    """Build the VDW pair list: grid search on an accelerator, k-d tree on CPU.
 
     Parameters
     ----------
     xyz : torch.Tensor
         ``(N, 3)`` Cartesian ASU coordinates in Å.
     vdw_radii : torch.Tensor
-        ``(N,)`` van der Waals radii in Å.
+        ``(N,)`` contact radii in Å.
     cell : Cell
     sg : SpaceGroup
     topology : Topology
-        Residue membership and altlocs for the same-residue and altloc filters.
+        Residue membership and altlocs for the same-residue and altloc filters, and
+        the hydrogen-bond roles (``atoms.hb_type``) :func:`contact_distances` reads.
     exclusion_set : set of (int, int) bonded exclusion pairs
     cutoff : float
         Contact distance cutoff in Angstrom.
@@ -733,7 +871,14 @@ def build_vdw_restraints_gpu(
 
     Returns
     -------
-    dict with keys: indices, min_distances, sigmas, symop_indices, cell_offsets
+    dict
+        ``indices`` ``(P, 2)``: the ASU atom and the atom imaged; ``symop_indices``
+        ``(P,)`` and ``cell_offsets`` ``(P, 3)``: the operation and fractional lattice
+        shift of that image (0 inside the ASU); ``min_distances`` ``(P,)``: the contact
+        distance in Å; ``sigmas`` ``(P,)``: ``sigma`` in Å; ``weights`` ``(P,)``:
+        :data:`IMAGE_PAIR_WEIGHT` for an image pair, else 1. Integer arrays in
+        ``get_int_dtype()``, float ones in ``get_float_dtype()``. An intra-ASU pair is
+        listed once, a crystal contact from both of its ends.
     """
     from torchref.symmetry.spacegroup import SpaceGroup as SG
 
@@ -750,6 +895,7 @@ def build_vdw_restraints_gpu(
         "sigmas": torch.zeros(0, dtype=get_float_dtype(), device=device),
         "symop_indices": torch.zeros(0, dtype=get_int_dtype(), device=device),
         "cell_offsets": torch.zeros(0, 3, dtype=get_int_dtype(), device=device),
+        "weights": torch.zeros(0, dtype=get_float_dtype(), device=device),
     }
 
     # Step 1: prefilter symop combos
@@ -838,9 +984,16 @@ def build_vdw_restraints_gpu(
     excl_hash = exclusion_set_to_hash(exclusion_set, max_idx, device)
 
     keep = filter_pairs(
-        pair_atom_i, pair_atom_j, pair_combo_j,
-        identity_combo, excl_hash, max_idx,
-        topology, inter_residue_only,
+        pair_atom_i,
+        pair_atom_j,
+        pair_combo_j,
+        identity_combo,
+        excl_hash,
+        max_idx,
+        cart_pos,
+        M,
+        topology,
+        inter_residue_only,
     )
 
     pair_atom_i = pair_atom_i[keep]
@@ -878,10 +1031,13 @@ def build_vdw_restraints_gpu(
     symop_indices = op_indices[pair_combo_j]
     pair_cell_offsets = cell_offsets_valid[pair_combo_j]
 
-    min_distances = vdw_radii[pair_atom_i] + vdw_radii[pair_atom_j]
-
     # Build output
-    indices = torch.stack([pair_atom_i, pair_atom_j], dim=1)
+    indices = torch.stack([pair_atom_i, pair_atom_j], dim=1).to(get_int_dtype())
+    roles = topology.atoms.hb_type
+    min_distances = contact_distances(
+        vdw_radii.to(device), None if roles is None else roles.to(device), indices
+    )
+    image = is_symmetry_image(symop_indices, pair_cell_offsets)
 
     result = {
         "indices": indices,
@@ -891,17 +1047,11 @@ def build_vdw_restraints_gpu(
         ),
         "symop_indices": symop_indices,
         "cell_offsets": pair_cell_offsets,
-        # Cached data for forward-time H-VDW pair search
-        "valid_op_indices": op_indices,
-        "valid_cell_offsets": cell_offsets_valid,
-        "grid_dims": grid_dims,
-        "identity_combo": torch.tensor(
-            identity_combo, dtype=get_int_dtype(), device=device
-        ),
+        "weights": torch.where(image, IMAGE_PAIR_WEIGHT, 1.0).to(get_float_dtype()),
     }
 
     if verbose > 0:
-        n_sym = is_symmetry_image(symop_indices, pair_cell_offsets).sum().item()
+        n_sym = image.sum().item()
         print(f"  Built {len(indices)} VDW restraints, {n_sym} symmetry contacts")
 
     return result

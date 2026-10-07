@@ -177,6 +177,37 @@ class TestNonBondedTarget:
         target = NonBondedTarget()
         assert target._model is None
 
+    def test_empty_pair_list_keeps_the_coordinate_dtype(self, tmp_path, double_cpu):
+        """A lone water has nothing to clash with; its zero loss and empty violation
+        arrays still come out in the model's float64, not torch's float32 default."""
+        from torchref.model.model import Model
+        from torchref.refinement.targets import NonBondedHTarget
+
+        path = tmp_path / "water.pdb"
+        path.write_text(
+            "CRYST1   30.000   30.000   30.000  90.00  90.00  90.00 P 1           1\n"
+            "HETATM    1  O   HOH A   1      10.000  10.000  10.000  1.00 20.00"
+            "           O\n"
+            "END\n"
+        )
+        model = Model(verbose=0).load_pdb(str(path))
+        assert len(model.restraints.restraints["vdw"]["indices"]) == 0
+        target = NonBondedHTarget(model)
+        assert target.forward().dtype == torch.float64
+        violations = target.get_violations()
+        for key in ("violations", "distances", "min_distances"):
+            assert violations[key].dtype == torch.float64, key
+
+    def test_reported_sigma_is_the_one_the_loss_uses(self, pdb_dir):
+        """``mean_sigma`` is the tolerance the PROLSQ loss is scored at, not the
+        per-pair sigmas the pair list carries."""
+        from torchref.model.model import Model
+        from torchref.refinement.targets import NonBondedTarget
+
+        model = Model(verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb"))
+        target = NonBondedTarget(model, sigma=0.25)
+        assert target.stats()["mean_sigma"].value == pytest.approx(0.25)
+
 
 @pytest.mark.unit
 class TestTotalGeometryTarget:

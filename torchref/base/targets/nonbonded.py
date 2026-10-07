@@ -1,9 +1,9 @@
-"""Non-bonded (VDW) heavy-heavy repulsion NLL — prolsq mode with symmetry mates.
+"""Non-bonded (VDW) repulsion NLL — PROLSQ form with symmetry mates.
 
 :func:`nonbonded_pair_positions` places both ends of every pair. The eager kernel
-here, the inline modes and statistics of ``NonBondedTarget`` and the riding-hydrogen
-term of ``NonBondedHTarget`` all read their positions from it; the Triton kernel
-(:mod:`torchref.base.targets.triton.nonbonded`) computes the same positions in-kernel.
+here and the statistics of ``NonBondedTarget`` and ``NonBondedHTarget`` all read their
+positions from it; the Triton kernel (:mod:`torchref.base.targets.triton.nonbonded`)
+computes the same positions in-kernel.
 """
 
 from typing import Optional
@@ -94,6 +94,7 @@ def _nonbonded_heavy_math_eager(
     r_exp: torch.Tensor,
     buffer: float,
     sigma_vdw: torch.Tensor,
+    weights: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     pos1, pos2 = nonbonded_pair_positions(
         xyz,
@@ -110,7 +111,9 @@ def _nonbonded_heavy_math_eager(
     violations = torch.clamp(min_distances + buffer - actual_distances, min=0.0)
     shape_energy = c_rep * (violations ** r_exp)
     per_pair_const = torch.log(sigma_vdw) + 0.5 * LOG_2PI
-    return shape_energy.sum() + per_pair_const * violations.shape[0]
+    if weights is None:
+        return shape_energy.sum() + per_pair_const * violations.shape[0]
+    return (weights * shape_energy).sum() + per_pair_const * weights.sum()
 
 
 def nonbonded_heavy_math(
@@ -127,11 +130,12 @@ def nonbonded_heavy_math(
     r_exp: torch.Tensor,
     buffer: float,
     sigma_vdw: torch.Tensor,
+    weights: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Heavy-heavy VDW prolsq repulsion NLL.
 
-    Matches the prolsq branch of ``NonBondedTarget.forward``, with pair positions
-    from :func:`nonbonded_pair_positions`. The H-VDW term ``NonBondedHTarget``
+    The loss of ``NonBondedTarget.forward``, with pair positions from
+    :func:`nonbonded_pair_positions`. The H-VDW term ``NonBondedHTarget``
     adds is **not** included here. Dispatches to
     :func:`torchref.base.targets.triton.nonbonded_heavy_math_triton` on CUDA float32
     (the gain coming mostly from the analytic backward), eager otherwise.
@@ -158,20 +162,44 @@ def nonbonded_heavy_math(
         Scalar repulsion coefficient, exponent, and effective tolerance.
     buffer : float
         Distance buffer in Å.
+    weights : torch.Tensor, optional
+        (N,) weight of each pair's NLL, its constant included. None weighs every
+        pair 1; the pair lists carry the weights to pass (``'weights'`` of the VDW
+        restraints, ``HydrogenTopology.cand_weight``), which count a crystal contact,
+        listed from both of its ends, once.
     """
     if use_triton(xyz):
         from .triton.nonbonded import nonbonded_heavy_math_triton
+
         return nonbonded_heavy_math_triton(
-            xyz, indices, min_distances,
-            symop_indices, cell_offsets,
-            symop_matrices, symop_translations,
-            fractional_matrix, inv_fractional_matrix,
-            c_rep, r_exp, buffer, sigma_vdw,
+            xyz,
+            indices,
+            min_distances,
+            symop_indices,
+            cell_offsets,
+            symop_matrices,
+            symop_translations,
+            fractional_matrix,
+            inv_fractional_matrix,
+            c_rep,
+            r_exp,
+            buffer,
+            sigma_vdw,
+            weights=weights,
         )
     return _nonbonded_heavy_math_eager(
-        xyz, indices, min_distances,
-        symop_indices, cell_offsets,
-        symop_matrices, symop_translations,
-        fractional_matrix, inv_fractional_matrix,
-        c_rep, r_exp, buffer, sigma_vdw,
+        xyz,
+        indices,
+        min_distances,
+        symop_indices,
+        cell_offsets,
+        symop_matrices,
+        symop_translations,
+        fractional_matrix,
+        inv_fractional_matrix,
+        c_rep,
+        r_exp,
+        buffer,
+        sigma_vdw,
+        weights,
     )

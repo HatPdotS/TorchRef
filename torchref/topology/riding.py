@@ -3,18 +3,20 @@
 For a model whose atoms are heavy only (loaded with ``hydrogens="strip"``, or from a
 file without hydrogens). A static map
 built once at restraint-construction time says how to reconstruct each absent hydrogen
-from its parent and the parent's bonded neighbours; ``place_riding_hydrogens`` then
+from its parent and the parent's bonded neighbours -- for a parent with a single heavy
+neighbour, that neighbour and an atom bonded to it, so the template's torsion holds --
+and ``place_riding_hydrogens`` then
 produces those positions in one vectorized pass at every non-bonded evaluation and
 throws them away again. The positions are a function of the heavy atoms, so gradients
 reach the heavy coordinates through them by ordinary autograd.
 
 Contrast :mod:`torchref.topology.hydrogens`, which *adds* hydrogens to the model as
-real atoms with their own parameters. That is the default, and where both apply it is
-the better answer: the hydrogen has a refinable position instead of one reconstructed
-each step, and it contributes to the structure factors. Riding hydrogens are what is
-left for the heavy-atom-only mode, and the two must not run together -- riding
-placement alongside real hydrogens puts phantom atoms in the structure that push the
-real ones around.
+real atoms with their own parameters (``hydrogens="add"``), the better answer where
+both apply: the hydrogen has a refinable position instead of one reconstructed each
+step, and it contributes to the structure factors. Riding hydrogens serve a model
+without any -- the default ``hydrogens="keep"`` on a heavy-only file, or ``"strip"`` --
+and the two must not run together: riding placement alongside real hydrogens puts
+phantom atoms in the structure that push the real ones around.
 """
 
 from dataclasses import dataclass, field
@@ -23,10 +25,13 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
+from torchref.base.coordinates.local_frame import frame_is_degenerate
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import dtypes, get_int_dtype, normalize_device
-from torchref.utils.device_resolution import resolve_device
+from torchref.topology.nonbonded import IMAGE_PAIR_WEIGHT
+from torchref.topology.residue_graph import build_residue_nodes
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.device_resolution import resolve_device
 
 # ---------------------------------------------------------------------------
 # Placement-type constants
@@ -42,10 +47,6 @@ NH2_B = 6  # 2 H on 1-neighbour parent, slot 1
 # Pre-computed tetrahedral geometry constants
 _COS_TET = -1.0 / 3.0  # cos(180 - 109.47) from axis
 _SIN_TET = np.sqrt(8.0 / 9.0)  # sin(180 - 109.47)
-_COS_120 = np.cos(2.0 * np.pi / 3.0)  # -0.5
-_SIN_120 = np.sin(2.0 * np.pi / 3.0)  # √3/2
-_COS_240 = np.cos(4.0 * np.pi / 3.0)  # -0.5
-_SIN_240 = np.sin(4.0 * np.pi / 3.0)  # -√3/2
 
 MAX_HEAVY_NB = 4  # Maximum heavy-atom neighbours to store per parent
 
@@ -91,18 +92,26 @@ class HydrogenTopology(DeviceMixin):
         padded.
     parent_neighbor_count : torch.Tensor
         Heavy-atom neighbour count per parent, ``(N_h,)`` int.
-    h_chainid_enc : torch.Tensor
-        Encoded chain ID, ``(N_h,)`` int, for same-residue filtering.
-    h_resseq : torch.Tensor
-        Residue sequence number, ``(N_h,)`` int, for same-residue filtering.
+    h_frame_atom : torch.Tensor
+        For a hydrogen whose parent has one heavy neighbour, an atom bonded to that
+        neighbour, completing the ``(parent, neighbour, frame atom)`` frame the
+        hydrogen rides in; ``-1`` otherwise, or where no such atom is found, which
+        leaves the rotation about the parent-neighbour bond arbitrary. ``(N_h,)`` int.
+    h_frame_direction : torch.Tensor
+        Unit parent-to-hydrogen direction in that frame's
+        :func:`~torchref.base.coordinates.local_frame_axes`, read off the template,
+        so the hydrogen keeps the template's bond angle and torsion (turned into the
+        plane where a plane restraint holds it). ``(N_h, 3)``.
     type_bounds : dict
         ``{placement_type: (start, end)}`` bounds into the type-sorted arrays.
     cand_idx_i, cand_idx_j, cand_symop_idx, cand_cell_offset : torch.Tensor
-        Precomputed H candidate pairs, sorted so the asymmetric-unit ones come first.
+        Precomputed H candidate pairs.
     cand_min_dist : torch.Tensor
         Per-pair minimum-distance scratch buffer, ``(P,)``.
-    n_asu_candidates : int
-        How many leading candidate pairs lie inside the asymmetric unit.
+    cand_weight : torch.Tensor
+        Loss weight per candidate pair, ``(P,)``:
+        :data:`~torchref.topology.nonbonded.IMAGE_PAIR_WEIGHT` for an H-H crystal
+        contact, which the list holds from both of its ends, 1 otherwise.
     """
 
     device: Optional[torch.device] = None
@@ -114,8 +123,8 @@ class HydrogenTopology(DeviceMixin):
     h_slot_in_parent: Optional[torch.Tensor] = None
     parent_neighbor_idx: Optional[torch.Tensor] = None
     parent_neighbor_count: Optional[torch.Tensor] = None
-    h_chainid_enc: Optional[torch.Tensor] = None
-    h_resseq: Optional[torch.Tensor] = None
+    h_frame_atom: Optional[torch.Tensor] = None
+    h_frame_direction: Optional[torch.Tensor] = None
     type_bounds: Dict[int, tuple] = field(default_factory=dict)
 
     cand_idx_i: Optional[torch.Tensor] = None
@@ -123,7 +132,7 @@ class HydrogenTopology(DeviceMixin):
     cand_symop_idx: Optional[torch.Tensor] = None
     cand_cell_offset: Optional[torch.Tensor] = None
     cand_min_dist: Optional[torch.Tensor] = None
-    n_asu_candidates: int = 0
+    cand_weight: Optional[torch.Tensor] = None
 
     # Derived at first placement and reused across steps; see reset_cache.
     _dir_coeffs: Optional[torch.Tensor] = field(default=None, repr=False)
@@ -170,103 +179,57 @@ class HydrogenTopology(DeviceMixin):
 # ---------------------------------------------------------------------------
 
 
-#: Parsed monomer templates, keyed by residue name, shared across calls. Values are
-#: None where the CIF is missing or carries no usable atom coordinates.
-_TEMPLATE_CACHE: Dict = {}
+def _template_frame(
+    info: Dict,
+    parent_name: str,
+    neighbour: int,
+    h_names,
+    model_names: np.ndarray,
+    name_to_global: Dict[str, int],
+    model_xyz: np.ndarray,
+) -> Optional[tuple]:
+    """Frame atom and template directions for hydrogens on a single-neighbour parent.
 
+    The frame atom is the neighbour's first template neighbour, other than the parent,
+    that the residue holds; the directions are the template's, in the
+    ``(parent, neighbour, frame atom)`` local frame
+    (:func:`torchref.topology.hydrogens._frame_directions`, which also turns a planar
+    group into its plane).
 
-def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
-    """``{resname: entry | None}`` H topology, ``None`` where the CIF is unusable.
-
-    Populates and returns :data:`_TEMPLATE_CACHE`. Each entry carries ``ids``,
-    ``elems``, ``coords``, ``is_h``, ``id_to_idx``, ``heavy_names``,
-    ``heavy_coords``, ``h_names``, ``h_coords``, ``parent_map``, ``ideal_bl`` and
-    ``heavy_neighbor_map``.
+    Returns
+    -------
+    tuple or None
+        ``(frame atom row, directions of shape (len(h_names), 3))``; None when the
+        template or the model lacks such an atom, or either frame is degenerate.
     """
-    from torchref.topology.monomer.library import MonomerLibraryManager
+    from torchref.topology.hydrogens import _frame_directions
 
-    lib = MonomerLibraryManager(verbose=0)
-    cache = _TEMPLATE_CACHE
-
-    for rn in pdb["resname"].unique():
-        rn_str = str(rn).strip()
-        if not rn_str:
-            continue
-        if rn_str in cache:
-            if cache[rn_str] is None or "heavy_neighbor_map" in cache[rn_str]:
-                continue
-            del cache[rn_str]
-
-        cif_path = lib.get_cif_file(rn_str)
-        if cif_path is None:
-            cache[rn_str] = None
-            continue
-
-        try:
-            import pandas as pd
-
-            from torchref.io.cif_readers import RestraintCIFReader
-
-            reader = RestraintCIFReader(str(cif_path))
-            all_data = reader.get_all_restraints()
-            comp_data = all_data.get(rn_str) or all_data.get(rn_str.upper())
-            if comp_data is None:
-                cache[rn_str] = None
-                continue
-            atom_df = comp_data.get("atoms", comp_data.get("atom"))
-            bond_df = comp_data.get("bonds", comp_data.get("bond"))
-            if atom_df is None or atom_df.empty or "x" not in atom_df.columns:
-                cache[rn_str] = None
-                continue
-        except Exception:
-            cache[rn_str] = None
-            continue
-
-        ids = atom_df["atom_id"].astype(str).str.strip().values
-        elems = atom_df["type_symbol"].astype(str).str.strip().values
-        coords = atom_df[["x", "y", "z"]].values.astype(np.float64)
-        is_h = np.array([e.upper() == "H" for e in elems])
-        id_to_idx = {n: i for i, n in enumerate(ids)}
-
-        parent_map = {}
-        ideal_bl = {}
-        heavy_neighbor_map = {}
-        if bond_df is not None and not bond_df.empty:
-            a1s = bond_df["atom1"].astype(str).str.strip().values
-            a2s = bond_df["atom2"].astype(str).str.strip().values
-            vals = pd.to_numeric(bond_df["value"], errors="coerce").values
-            h_set = set(ids[is_h])
-            for i in range(len(a1s)):
-                b1, b2 = a1s[i], a2s[i]
-                if b1 in h_set and b2 in id_to_idx and not is_h[id_to_idx[b2]]:
-                    parent_map[b1] = b2
-                    if np.isfinite(vals[i]):
-                        ideal_bl[b1] = float(vals[i])
-                elif b2 in h_set and b1 in id_to_idx and not is_h[id_to_idx[b1]]:
-                    parent_map[b2] = b1
-                    if np.isfinite(vals[i]):
-                        ideal_bl[b2] = float(vals[i])
-                i1, i2 = id_to_idx.get(b1), id_to_idx.get(b2)
-                if i1 is not None and i2 is not None and not is_h[i1] and not is_h[i2]:
-                    heavy_neighbor_map.setdefault(b1, []).append(b2)
-                    heavy_neighbor_map.setdefault(b2, []).append(b1)
-
-        cache[rn_str] = {
-            "ids": ids,
-            "elems": elems,
-            "coords": coords,
-            "is_h": is_h,
-            "id_to_idx": id_to_idx,
-            "heavy_names": ids[~is_h],
-            "heavy_coords": coords[~is_h],
-            "h_names": ids[is_h],
-            "h_coords": coords[is_h],
-            "parent_map": parent_map,
-            "ideal_bl": ideal_bl,
-            "heavy_neighbor_map": heavy_neighbor_map,
-        }
-
-    return cache
+    neighbour_name = model_names[neighbour]
+    if name_to_global.get(neighbour_name) != neighbour:
+        return None
+    rows = sorted(
+        name_to_global[name]
+        for name in info["heavy_adjacency"].get(neighbour_name, [])
+        if name != parent_name and name in name_to_global
+    )
+    if not rows:
+        return None
+    frame_names = (parent_name, neighbour_name, model_names[rows[0]])
+    index, coords = info["id_to_index"], info["coords"]
+    if any(name not in index for name in (*frame_names, *h_names)):
+        return None
+    directions = _frame_directions(
+        np.stack([coords[index[name]] for name in frame_names]),
+        np.stack([coords[index[name]] for name in h_names]),
+        bool(info["planar_h"] & set(h_names)),
+    )
+    if directions is None:
+        return None
+    model = model_xyz[[name_to_global[parent_name], neighbour, rows[0]]]
+    model = torch.as_tensor(model - model[0], dtype=directions.dtype)
+    if frame_is_degenerate(*model[:, None].unbind(0)).any():
+        return None
+    return rows[0], directions.numpy()
 
 
 def _classify_placement(n_h_on_parent: int, n_heavy_nb: int, slot: int) -> int:
@@ -294,6 +257,7 @@ def build_hydrogen_topology(
     pdb,
     device: torch.device = None,
     verbose: int = 0,
+    cif_dict: Optional[Dict] = None,
 ) -> HydrogenTopology:
     """Build riding-hydrogen topology from the model's heavy-atom DataFrame.
 
@@ -305,26 +269,40 @@ def build_hydrogen_topology(
         Target device for tensors.
     verbose : int
         Verbosity level.
+    cif_dict : dict, optional
+        Restraint dictionary keyed by residue name, such as ``Restraints.cif_dict``;
+        each residue's hydrogens are read from its template there. None looks every
+        residue up in the monomer library instead, whose last resort is a download.
 
     Returns
     -------
     HydrogenTopology
-        Module with registered buffer tensors.
+        Placement fields set; :func:`build_h_candidate_pairs` adds the candidate pairs.
     """
+    from torchref.topology.hydrogens import _template
+
     device = normalize_device(device)
-    cache = _load_cif_hydrogen_info(pdb, verbose)
+    resnames = pdb["resname"].astype(str).str.strip().unique()
+    if cif_dict is None:
+        from torchref.topology.monomer.cif import find_cif_file_in_library, read_cif
+
+        cif_dict = {}
+        for resname in resnames:
+            path = find_cif_file_in_library(resname) if resname else None
+            if path is None:
+                continue
+            try:
+                cif_dict.update(read_cif(str(path)))
+            except Exception:
+                # An unreadable entry leaves its residue without riding hydrogens,
+                # as a missing one does.
+                continue
+    templates = {resname: _template(cif_dict, resname) for resname in resnames}
 
     model_names = pdb["name"].astype(str).str.strip().values
     model_xyz = pdb[["x", "y", "z"]].values.astype(np.float64)
     model_elem = pdb["element"].astype(str).str.strip().values
     model_heavy_mask = np.array([e.upper() != "H" for e in model_elem])
-
-    # Encode chain IDs as integers for fast same-residue comparison
-    chain_vals = pdb["chainid"].values.astype(str)
-    unique_chains = np.unique(chain_vals)
-    chain_to_int = {c: i for i, c in enumerate(unique_chains)}
-    model_chainid_enc = np.array([chain_to_int[c] for c in chain_vals], dtype=np.int64)
-    model_resseq = pdb["resseq"].values.astype(np.int64)
 
     # Group residues
     group_cols = ["chainid", "resseq", "icode", "resname"]
@@ -346,18 +324,15 @@ def build_hydrogen_topology(
     acc_slot = []
     acc_nb_idx = []  # list of (MAX_HEAVY_NB,) arrays
     acc_nb_count = []
-    acc_chainid_enc = []
-    acc_resseq = []
+    acc_frame_atom = []
+    acc_frame_direction = []
 
     for gi in range(len(group_starts)):
         s, e = group_starts[gi], group_ends[gi]
         rn = str(group_keys[s, 3]).strip()
-        info = cache.get(rn)
+        info = templates.get(rn)
         if info is None:
             continue
-
-        chainid_enc = model_chainid_enc[s]
-        resseq = model_resseq[s]
 
         names_in_model = set(model_names[s:e])
         h_to_add_mask = np.array(
@@ -377,12 +352,11 @@ def build_hydrogen_topology(
         # Group H atoms by parent
         parent_to_h = {}
         for h_name in h_names_add:
-            pn = info["parent_map"].get(h_name)
+            pn = info["parent_of"].get(h_name)
             if pn is not None and pn in name_to_global:
                 parent_to_h.setdefault(pn, []).append(h_name)
 
-        hnm = info.get("heavy_neighbor_map", {})
-        id2i = info["id_to_idx"]
+        id2i = info["id_to_index"]
 
         for par_name, h_list in parent_to_h.items():
             pidx = name_to_global[par_name]
@@ -397,13 +371,26 @@ def build_hydrogen_topology(
             n_model_heavy = len(bonded)
 
             # Cap H count by expected valence
-            par_elem = info["elems"][id2i[par_name]].upper()
+            par_elem = info["elements"][id2i[par_name]].upper()
             expected_h = max(0, _std_val.get(par_elem, 4) - n_model_heavy)
             h_list_capped = sorted(h_list)[:expected_h]
             if not h_list_capped:
                 continue
 
             n_h = len(h_list_capped)
+            frame_atom, directions = -1, np.zeros((n_h, 3))
+            if n_model_heavy == 1:
+                frame = _template_frame(
+                    info,
+                    par_name,
+                    int(bonded[0]),
+                    h_list_capped,
+                    model_names,
+                    name_to_global,
+                    model_xyz,
+                )
+                if frame is not None:
+                    frame_atom, directions = frame
 
             # Neighbour index array (padded)
             nb_arr = np.full(MAX_HEAVY_NB, -1, dtype=np.int64)
@@ -411,7 +398,7 @@ def build_hydrogen_topology(
             nb_arr[:nb_count] = bonded[:nb_count]
 
             for slot, h_name in enumerate(h_list_capped):
-                bl = info["ideal_bl"].get(h_name, 0.97)
+                bl = info["ideal_length"].get(h_name, 0.97)
                 ptype = _classify_placement(n_h, n_model_heavy, slot)
 
                 if ptype < 0:
@@ -423,8 +410,8 @@ def build_hydrogen_topology(
                 acc_slot.append(slot)
                 acc_nb_idx.append(nb_arr.copy())
                 acc_nb_count.append(nb_count)
-                acc_chainid_enc.append(chainid_enc)
-                acc_resseq.append(resseq)
+                acc_frame_atom.append(frame_atom)
+                acc_frame_direction.append(directions[slot])
 
     # Seed the tracker with the device its buffers are about to be built on,
     # so a later ``resolve_device(h_topo, ...)`` sees the truth.
@@ -444,8 +431,8 @@ def build_hydrogen_topology(
         topo.parent_neighbor_count = torch.zeros(
             0, dtype=get_int_dtype(), device=device
         )
-        topo.h_chainid_enc = torch.zeros(0, dtype=get_int_dtype(), device=device)
-        topo.h_resseq = torch.zeros(0, dtype=get_int_dtype(), device=device)
+        topo.h_frame_atom = torch.zeros(0, dtype=get_int_dtype(), device=device)
+        topo.h_frame_direction = torch.zeros(0, 3, dtype=fdtype, device=device)
         return topo
 
     # Sort all topology arrays by placement type for contiguous slicing
@@ -458,8 +445,8 @@ def build_hydrogen_topology(
     acc_slot = [acc_slot[i] for i in sort_order]
     acc_nb_idx = [acc_nb_idx[i] for i in sort_order]
     acc_nb_count = [acc_nb_count[i] for i in sort_order]
-    acc_chainid_enc = [acc_chainid_enc[i] for i in sort_order]
-    acc_resseq = [acc_resseq[i] for i in sort_order]
+    acc_frame_atom = [acc_frame_atom[i] for i in sort_order]
+    acc_frame_direction = [acc_frame_direction[i] for i in sort_order]
 
     # Compute type boundaries: type_bounds[t] = (start, end) slice
     sorted_types = np.array(acc_placement_type, dtype=np.int64)
@@ -485,11 +472,13 @@ def build_hydrogen_topology(
     topo.parent_neighbor_count = torch.tensor(
         acc_nb_count, dtype=get_int_dtype(), device=device
     )
-    topo.type_bounds = type_bounds  # dict: type_code -> (start, end)
-    topo.h_chainid_enc = torch.tensor(
-        acc_chainid_enc, dtype=get_int_dtype(), device=device
+    topo.h_frame_atom = torch.tensor(
+        acc_frame_atom, dtype=get_int_dtype(), device=device
     )
-    topo.h_resseq = torch.tensor(acc_resseq, dtype=get_int_dtype(), device=device)
+    topo.h_frame_direction = torch.tensor(
+        np.stack(acc_frame_direction), dtype=fdtype, device=device
+    )
+    topo.type_bounds = type_bounds  # dict: type_code -> (start, end)
 
     if verbose > 0:
         print(f"  Hydrogen topology: {n_h_total} riding H atoms")
@@ -502,33 +491,13 @@ def build_hydrogen_topology(
 # ---------------------------------------------------------------------------
 
 
-def _safe_normalize(v: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    """Normalize vectors along last dimension with epsilon for stability."""
-    return v / (v.norm(dim=-1, keepdim=True) + eps)
-
-
-def _orthonormal_basis(axis: torch.Tensor) -> tuple:
-    """``(perp1, perp2)``, each (B, 3), right-handed with the (B, 3) unit ``axis``."""
-    B = axis.shape[0]
-    # Seed from the cardinal direction least aligned with axis, so the cross
-    # product cannot degenerate.
-    abs_ax = axis.abs()
-    min_idx = abs_ax.argmin(dim=-1)  # (B,)
-    cardinal = torch.zeros_like(axis)
-    cardinal[torch.arange(B, device=axis.device), min_idx] = 1.0
-
-    perp1 = torch.cross(axis, cardinal, dim=-1)
-    perp1 = _safe_normalize(perp1)
-    perp2 = torch.cross(axis, perp1, dim=-1)
-    return perp1, perp2
-
-
 def _precompute_direction_coefficients(topo: HydrogenTopology) -> torch.Tensor:
     """(N_h, 3) of ``(c_base, c_perp1, c_perp2)``, zeros if ``type_bounds`` is unset.
 
     Every riding-H direction is ``c0·base + c1·perp1 + c2·perp2`` in a frame built
-    from neighbour vectors; the coefficients depend only on placement type, so they
-    are constant across refinement steps.
+    from neighbour vectors; the coefficients depend only on placement type, or for a
+    framed hydrogen on its template direction, so they are constant across refinement
+    steps.
     """
     device = topo.h_placement_type.device
     fdtype = topo.h_bond_length.dtype
@@ -566,7 +535,33 @@ def _precompute_direction_coefficients(topo: HydrogenTopology) -> torch.Tensor:
         elif code == NH2_B:
             coeffs[s:e, 0] = 0.5
             coeffs[s:e, 1] = -np.sqrt(3.0) / 2.0
+    # A framed hydrogen's kernel frame is (base, perp1, perp2) = (-e1, e3, e2) of the
+    # local frame its template direction is expressed in; see _kernel_neighbours.
+    framed = topo.h_frame_atom >= 0
+    direction = topo.h_frame_direction[framed]
+    coeffs[framed] = torch.stack(
+        [-direction[:, 0], direction[:, 2], direction[:, 1]], dim=1
+    )
     return coeffs
+
+
+def _kernel_neighbours(topo: HydrogenTopology) -> tuple:
+    """Neighbour slots and slot weights the placement kernels read, ``(N_h, 4)`` each.
+
+    The kernels take ``base`` from the weighted sum of the slot vectors and ``perp1``
+    from the cross product of the first two. A framed hydrogen lists its frame atom in
+    slots 1 and 2 at weights +1 and -1: it orients ``perp1`` but cancels out of the
+    sum, so ``base`` still points away from the one real neighbour. Padding has
+    weight 0.
+    """
+    index = topo.parent_neighbor_idx.clone()
+    weight = (index >= 0).to(topo.h_bond_length.dtype)
+    framed = topo.h_frame_atom >= 0
+    index[framed, 1] = topo.h_frame_atom[framed]
+    index[framed, 2] = topo.h_frame_atom[framed]
+    weight[framed, 1] = 1.0
+    weight[framed, 2] = -1.0
+    return index, weight
 
 
 @torch.jit.script
@@ -581,9 +576,10 @@ def _place_h_jit(
     """JIT-compiled H placement kernel; returns (N_h, 3) H positions.
 
     ``nb_idx_clamped`` (N_h, 4) must already have -1 padding clamped to 0, with
-    ``nb_valid`` (N_h, 4, 1) carrying 1.0/0.0 to mask those slots back out --
-    passing raw -1 indices reads the wrong atoms instead of failing.
-    ``coeffs`` is (N_h, 3) from :func:`_precompute_direction_coefficients`.
+    ``nb_valid`` (N_h, 4, 1) weighting each slot (:func:`_kernel_neighbours`): 0.0
+    masks the padding back out -- passing raw -1 indices reads the wrong atoms
+    instead of failing. ``coeffs`` is (N_h, 3) from
+    :func:`_precompute_direction_coefficients`.
     """
     eps = 1e-8
     N_h = h_parent_idx.shape[0]
@@ -657,10 +653,9 @@ def place_riding_hydrogens(
 
     # Precompute static tensors on first call (avoid recomputing every step)
     if topo._nb_idx_clamped is None:
-        topo._nb_idx_clamped = topo.parent_neighbor_idx.clamp(min=0)
-        topo._nb_valid = (
-            (topo.parent_neighbor_idx >= 0).unsqueeze(-1).to(topo.h_bond_length.dtype)
-        )
+        index, weight = _kernel_neighbours(topo)
+        topo._nb_idx_clamped = index.clamp(min=0)
+        topo._nb_valid = weight.unsqueeze(-1)
         topo._bond_len_col = topo.h_bond_length.unsqueeze(-1)
 
     # On CUDA fp32 use the fused Triton forward + analytic Triton
@@ -721,9 +716,10 @@ def build_h_candidate_pairs(
     computes distances. An image pair's other direction comes from its reverse
     entry, B against A under the inverse operation, so the heavy list must hold both
     directions of every image contact, as ``build_vdw_restraints_gpu`` emits them.
-    Mutates ``h_topo`` in place, registering ``cand_idx_i``/``cand_idx_j``
-    (combined-array atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (the
-    image of the ``cand_idx_j`` end) and ``cand_min_dist`` (H + heavy radius sum).
+    Mutates ``h_topo`` in place, setting ``cand_idx_i``/``cand_idx_j`` (combined-array
+    atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (the image of the
+    ``cand_idx_j`` end), ``cand_weight``, and ``cand_min_dist`` as zeros for the caller
+    to fill with the contact distances (:func:`candidate_contact_distances`).
 
     Parameters
     ----------
@@ -732,15 +728,15 @@ def build_h_candidate_pairs(
         Output of ``build_vdw_restraints_gpu`` (keys: indices, symop_indices,
         cell_offsets, etc.).
     pdb : DataFrame
-        Heavy-atom DataFrame.
+        Heavy-atom table in the order of the pair list's atom indices; its
+        ``chainid``, ``resseq``, ``icode`` and ``resname`` columns give the residues.
     h_excl_hash : (E,) long
         Sorted exclusion hash tensor for H-specific 1-2/1-3 pairs.
     device : torch.device
     verbose : int
     """
-    # Buffers are registered onto ``h_topo`` below, so follow it rather than
-    # the global default -- otherwise they attach to a module living somewhere
-    # else.
+    # The candidate tensors are set on ``h_topo`` below, so they follow its device
+    # rather than the global default.
     device = resolve_device(h_topo, device=device)
     n_h = h_topo.n_hydrogens
     n_heavy = len(pdb)
@@ -752,6 +748,7 @@ def build_h_candidate_pairs(
             0, 3, dtype=get_int_dtype(), device=device
         )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
+        h_topo.cand_weight = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
     heavy_indices = vdw_data["indices"]  # (P, 2)
@@ -759,9 +756,6 @@ def build_h_candidate_pairs(
     heavy_offsets = vdw_data["cell_offsets"]  # (P, 3)
 
     parent_idx_np = h_topo.h_parent_idx.cpu().numpy()  # (N_h,)
-    h_vdw_np = h_topo.h_vdw_radius.cpu().numpy()  # (N_h,)
-    h_chain_np = h_topo.h_chainid_enc.cpu().numpy()  # (N_h,)
-    h_resseq_np = h_topo.h_resseq.cpu().numpy()  # (N_h,)
 
     # Build parent → H index mapping
     parent_to_h = {}
@@ -769,14 +763,13 @@ def build_h_candidate_pairs(
         p = int(parent_idx_np[hi])
         parent_to_h.setdefault(p, []).append(hi)
 
-    # Heavy atom chain/resseq for same-residue filter
-    chain_vals = pdb["chainid"].values.astype(str)
-    unique_chains = np.unique(chain_vals)
-    chain_to_int = {c: i for i, c in enumerate(unique_chains)}
-    heavy_chain_np = np.array(
-        [chain_to_int.get(c, -1) for c in chain_vals], dtype=np.int64
+    # The topology's residues, keyed (chain, resseq, icode): 100 and 100A are two.
+    nodes = build_residue_nodes(
+        *(pdb[column].values for column in ("chainid", "resseq", "icode", "resname"))
     )
-    heavy_resseq_np = pdb["resseq"].values.astype(np.int64)
+    residue_of = np.repeat(
+        np.arange(len(nodes["chain"])), nodes["atom_end"] - nodes["atom_start"]
+    )
 
     idx_A = heavy_indices[:, 0].cpu().numpy()
     idx_B = heavy_indices[:, 1].cpu().numpy()
@@ -784,9 +777,8 @@ def build_h_candidate_pairs(
     offsets_np = heavy_offsets.cpu().numpy()
     is_image_np = is_symmetry_image(heavy_symop, heavy_offsets).cpu().numpy()
 
-    # Per-pair VDW radius sums are not computed here: the cand_min_dist
-    # buffer is allocated as zeros below and is populated by the caller,
-    # which has the model's per-atom VDW radii.
+    # Contact distances are not computed here: cand_min_dist is allocated as zeros
+    # below for the caller, which has the model's radii and hydrogen-bond roles.
 
     # Candidate pairs stored as indices into the combined array:
     #   [0 .. n_heavy-1] = heavy atoms,  [n_heavy .. n_heavy+n_h-1] = H atoms
@@ -796,24 +788,21 @@ def build_h_candidate_pairs(
     acc_symop = []
     acc_offset = []
 
-    def _same_res(chain_a, resseq_a, chain_b, resseq_b):
-        return chain_a == chain_b and resseq_a == resseq_b
-
     for p_idx in range(len(idx_A)):
         A, B = int(idx_A[p_idx]), int(idx_B[p_idx])
         sym = int(symop_np[p_idx])
         off = offsets_np[p_idx]
         is_intra_asu = not is_image_np[p_idx]
+        # A hydrogen is in its parent's residue, so every candidate an intra-ASU
+        # same-residue pair would give is a same-residue contact.
+        if is_intra_asu and residue_of[A] == residue_of[B]:
+            continue
 
         h_on_A = parent_to_h.get(A, [])
         h_on_B = parent_to_h.get(B, [])
 
         # --- H on A ↔ heavy B ---
         for hi in h_on_A:
-            if is_intra_asu and _same_res(
-                h_chain_np[hi], h_resseq_np[hi], heavy_chain_np[B], heavy_resseq_np[B]
-            ):
-                continue
             acc_idx_i.append(n_heavy + hi)
             acc_idx_j.append(B)
             acc_symop.append(sym)
@@ -826,31 +815,15 @@ def build_h_candidate_pairs(
         # From here it could only carry this pair's operation, which images B, not A.
         if is_intra_asu:
             for hi in h_on_B:
-                if _same_res(
-                    h_chain_np[hi],
-                    h_resseq_np[hi],
-                    heavy_chain_np[A],
-                    heavy_resseq_np[A],
-                ):
-                    continue
                 acc_idx_i.append(n_heavy + hi)
                 acc_idx_j.append(A)
                 acc_symop.append(0)
                 acc_offset.append(np.zeros(3, dtype=np.int64))
 
         # --- H on A ↔ H on B  (H-H contacts) ---
+        # An intra-ASU heavy pair is listed once, so each of its H-H contacts is too.
         for hi_a in h_on_A:
             for hi_b in h_on_B:
-                if is_intra_asu and _same_res(
-                    h_chain_np[hi_a],
-                    h_resseq_np[hi_a],
-                    h_chain_np[hi_b],
-                    h_resseq_np[hi_b],
-                ):
-                    continue
-                # For intra-ASU, only keep hi_a < hi_b to avoid double-counting
-                if is_intra_asu and hi_a >= hi_b:
-                    continue
                 acc_idx_i.append(n_heavy + hi_a)
                 acc_idx_j.append(n_heavy + hi_b)
                 acc_symop.append(sym)
@@ -863,6 +836,7 @@ def build_h_candidate_pairs(
             0, 3, dtype=get_int_dtype(), device=device
         )
         h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
+        h_topo.cand_weight = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
     cand_i = torch.tensor(acc_idx_i, dtype=get_int_dtype(), device=device)
@@ -912,27 +886,65 @@ def build_h_candidate_pairs(
         cand_sym = cand_sym[mask]
         cand_off = cand_off[mask]
 
-    # Sort: ASU candidates first, symmetry last
-    is_asu = ~is_symmetry_image(cand_sym, cand_off)
-    sort_order = (~is_asu).long().argsort(stable=True)
-    cand_i = cand_i[sort_order]
-    cand_j = cand_j[sort_order]
-    cand_sym = cand_sym[sort_order]
-    cand_off = cand_off[sort_order]
-    n_asu_cand = is_asu.sum().item()
-
     h_topo.cand_idx_i = cand_i
     h_topo.cand_idx_j = cand_j
     h_topo.cand_symop_idx = cand_sym
     h_topo.cand_cell_offset = cand_off
-    h_topo.n_asu_candidates = n_asu_cand
 
     h_topo.cand_min_dist = torch.zeros(len(cand_i), dtype=dtypes.float, device=device)
 
+    # An H-H crystal contact comes from an image heavy pair and from its reverse, so
+    # it is listed from both ends; an H-heavy one only from its hydrogen's end, since
+    # the reverse heavy pair gives the other atom's hydrogens instead.
+    image = is_symmetry_image(cand_sym, cand_off)
+    both_h = (cand_i >= n_heavy) & (cand_j >= n_heavy)
+    h_topo.cand_weight = torch.where(image & both_h, IMAGE_PAIR_WEIGHT, 1.0).to(
+        dtypes.float
+    )
+
     if verbose > 0:
-        n_hh = ((cand_i >= n_heavy) & (cand_j >= n_heavy)).sum().item()
-        n_sym = (~is_asu).sum().item()
+        n_hh = both_h.sum().item()
+        n_sym = image.sum().item()
         print(
             f"  H candidate pairs: {len(cand_i)} "
             f"({n_hh} H-H, {len(cand_i)-n_hh} H-heavy, {n_sym} symmetry)"
         )
+
+
+def candidate_contact_distances(
+    h_topo: HydrogenTopology,
+    heavy_radii: torch.Tensor,
+    heavy_roles: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """Minimum contact distance of every candidate pair, for ``cand_min_dist``.
+
+    :func:`~torchref.topology.nonbonded.contact_distances` over the combined
+    ``[heavy | riding H]`` atoms the candidate indices address: each riding hydrogen
+    takes its ``h_vdw_radius``, and the polar-hydrogen role when its parent is a
+    hydrogen-bond donor, so an N-H...O hydrogen bond is not scored as a clash.
+
+    Parameters
+    ----------
+    h_topo : HydrogenTopology
+        Riding topology with candidate pairs built.
+    heavy_radii : torch.Tensor
+        Contact radius per heavy atom in Å, shape ``(N_heavy,)``.
+    heavy_roles : torch.Tensor or None
+        ``AtomGraph.hb_type`` of the heavy atoms, shape ``(N_heavy,)``, on any device;
+        None scores every pair by its radius sum.
+
+    Returns
+    -------
+    torch.Tensor
+        Distances in Å, shape ``(P,)``, in ``heavy_radii``' dtype.
+    """
+    from torchref.topology.nonbonded import contact_distances, hydrogen_roles
+
+    radii = torch.cat([heavy_radii, h_topo.h_vdw_radius.to(heavy_radii)])
+    roles = None
+    if heavy_roles is not None:
+        heavy_roles = heavy_roles.to(heavy_radii.device)
+        riding = hydrogen_roles(heavy_roles[h_topo.h_parent_idx])
+        roles = torch.cat([heavy_roles, riding])
+    pairs = torch.stack([h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1)
+    return contact_distances(radii, roles, pairs)

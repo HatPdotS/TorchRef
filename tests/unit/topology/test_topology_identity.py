@@ -2,7 +2,7 @@
 
 A node-only topology must describe the same atoms and residues as the connected one the
 restraint build produces, select the same atoms a direct reading of the table would,
-and insert hydrogens exactly where the table-level insertion does.
+and insert each hydrogen right after its own residue's atoms.
 """
 
 import numpy as np
@@ -11,7 +11,7 @@ import torch
 
 from torchref.io.pdb import PDBReader
 from torchref.model.model import Model
-from torchref.topology.hydrogens import augment_atom_table_with_maps, plan_hydrogens
+from torchref.topology.hydrogens import plan_hydrogens
 from torchref.topology.topology import IDENTITY_COLUMNS, Topology
 
 STRUCTURES = ["1DAW", "7L84", "1AK5_with_H"]
@@ -120,8 +120,8 @@ def test_water_and_polymer_masks(pdb_dir):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("code", ["1DAW", "7L84"])
-def test_hydrogen_insertion_matches_the_table_insertion(pdb_dir, code):
-    """Same row maps and the same identity, row for row, as the table-level insertion."""
+def test_hydrogen_insertion_places_each_hydrogen_in_its_residue(pdb_dir, code):
+    """Row maps agree with the gather, and every hydrogen joins its parent's residue."""
     model = Model(verbose=0, hydrogens="strip").load_pdb(str(pdb_dir / f"{code}.pdb"))
     restraints = model.ctx.build_restraints(model.xyz(), nonbonded=False, verbose=0)
     plan = plan_hydrogens(
@@ -129,23 +129,19 @@ def test_hydrogen_insertion_matches_the_table_insertion(pdb_dir, code):
     )
     assert plan.n_hydrogens > 0
 
-    augmented, old_to_new, plan_to_new = augment_atom_table_with_maps(
-        model.pdb, plan, restraints.topology
-    )
-    nodes, source, old_to_new_t, plan_to_new_t = Topology.from_table(
-        model.pdb
-    ).with_hydrogens(plan)
+    before = model.ctx.topology
+    nodes, source, old_to_new, plan_to_new = before.with_hydrogens(plan)
 
-    np.testing.assert_array_equal(old_to_new_t, old_to_new)
-    np.testing.assert_array_equal(plan_to_new_t, plan_to_new)
-    np.testing.assert_array_equal(source[old_to_new], np.arange(len(model.pdb)))
+    np.testing.assert_array_equal(source[old_to_new], np.arange(before.n_atoms))
     np.testing.assert_array_equal(source[plan_to_new], plan.parent)
-    expected = Topology.from_table(augmented)
-    for key, value in expected.columns().items():
-        np.testing.assert_array_equal(nodes.columns()[key], value, err_msg=key)
-    np.testing.assert_array_equal(
-        nodes.residues.atom_start, expected.residues.atom_start
-    )
+    assert nodes.n_residues == before.n_residues
+    residue_of = nodes.atoms.residue_of.cpu().numpy()
+    np.testing.assert_array_equal(residue_of[plan_to_new], plan.residue)
+    columns, inherited = nodes.columns(), before.columns()
+    for key in ("chain", "resseq", "icode", "resname", "is_hetatm"):
+        np.testing.assert_array_equal(columns[key], inherited[key][source], err_msg=key)
+    np.testing.assert_array_equal(columns["name"][plan_to_new], plan.name)
+    np.testing.assert_array_equal(columns["element"][plan_to_new], plan.element)
 
 
 @pytest.mark.unit

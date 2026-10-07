@@ -305,3 +305,37 @@ def test_generation_reads_every_compound_of_a_multi_block_cif(pdb_dir, test_file
     atoms = model.restraints.topology.atoms
     degree = atoms.degree().cpu().numpy()
     assert (degree[atoms.is_hydrogen.cpu().numpy()] > 0).all()
+
+
+@pytest.mark.unit
+def test_riding_hydrogens_read_the_dictionary_they_are_given(
+    pdb_dir, renamed_glu_cif, monkeypatch
+):
+    """A residue only the given dictionary defines gets its riding hydrogens from it,
+    with no monomer-library lookup: here 1DAW's GLU, renamed to a code the library
+    lacks, rides on exactly the parents the library GLU gives it."""
+    from torchref.topology.monomer.cif import read_cif
+    from torchref.topology.monomer.library import MonomerLibraryManager
+    from torchref.topology.riding import build_hydrogen_topology
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    restraints = model.restraints
+    table = restraints._riding_table(model.xyz())
+    reference = build_hydrogen_topology(table, cif_dict=restraints.cif_dict)
+
+    glu = (table["resname"].astype(str).str.strip() == "GLU").to_numpy()
+    table.loc[glu, "resname"] = "GLZ"
+    cif_dict = {k: v for k, v in restraints.cif_dict.items() if k != "GLU"}
+    cif_dict["GLZ"] = read_cif(renamed_glu_cif)["GLU"]
+
+    def no_library(self, resname):
+        raise AssertionError(f"{resname} was looked up in the monomer library")
+
+    monkeypatch.setattr(MonomerLibraryManager, "get_cif_file", no_library)
+    riding = build_hydrogen_topology(table, cif_dict=cif_dict)
+
+    expected = reference.h_parent_idx.numpy()
+    parents = riding.h_parent_idx.numpy()
+    assert glu[parents].sum() > 0
+    assert sorted(parents[glu[parents]]) == sorted(expected[glu[expected]])

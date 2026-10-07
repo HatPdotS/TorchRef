@@ -18,9 +18,11 @@ Two things the bond graph decides that a distance criterion previously guessed a
   read the graph rather than a distance sweep, which gets a distorted or predicted model
   wrong and cannot tell a bond from two atoms that merely sit close.
 * **Which hydrogens have a free torsion.** A hydrogen whose parent has exactly one heavy
-  neighbour -- hydroxyl, thiol, amine, methyl -- can rotate about the parent-neighbour
-  axis, and the template's angle for it is arbitrary. Those get scanned; the rest are
-  fully determined by the template and are left alone.
+  neighbour -- hydroxyl, thiol, ammonium, methyl -- can rotate about the
+  parent-neighbour axis, and the template's angle for it is arbitrary. Those get
+  scanned. A plane restraint on the hydrogen -- the conjugated NH2 of ASN, GLN and ARG
+  -- fixes that angle instead, and the group is placed in the plane of its
+  neighbour's substituents.
 """
 
 from dataclasses import dataclass
@@ -29,7 +31,12 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from torchref.config import get_float_dtype, get_int_dtype
+from torchref.base.coordinates.local_frame import (
+    frame_is_degenerate,
+    local_frame_coordinates,
+    place_local_frame,
+)
+from torchref.config import get_float_dtype
 
 #: Standard heavy-atom valences, one of the two budgets that cap how many hydrogens a
 #: parent may take. Elements not listed fall back to 4 and are then bounded only by the
@@ -175,6 +182,7 @@ def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
     -------
     dict or None
         None when the component is absent or its atoms carry no coordinates.
+        ``planar_h`` holds the hydrogens a plane restraint of the template contains.
     """
     component = cif_dict.get(resname)
     if component is None:
@@ -235,7 +243,16 @@ def _template(cif_dict: Dict, resname: str) -> Optional[Dict]:
         "h_count": h_count,
         "ideal_length": ideal_length,
         "heavy_adjacency": heavy_adjacency,
+        "planar_h": _planar_hydrogens(component, ids[is_h]),
     }
+
+
+def _planar_hydrogens(component: Dict, h_names) -> set:
+    """The hydrogens among ``h_names`` that a plane restraint of ``component`` holds."""
+    planes = component.get("planes")
+    if planes is None or len(planes) == 0:
+        return set()
+    return set(planes["atom"].astype(str).str.strip()).intersection(h_names)
 
 
 def _orthonormal_frame(axis: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -255,18 +272,33 @@ def _axis_frame_placement(
     parent_position: np.ndarray,
     neighbour_position: np.ndarray,
     h_names: List[str],
+    second_shell: Optional[Tuple[str, np.ndarray]] = None,
 ) -> Optional[np.ndarray]:
     """Hydrogen positions for a centre with a single heavy neighbour.
 
-    Maps the template's local geometry onto the model by carrying the parent-neighbour
-    axis across and completing the frame arbitrarily. Every bond angle at the parent is
-    preserved exactly; only the rotation about the axis is arbitrary, which is correct:
-    that is the degree of freedom the template cannot know, and
-    :func:`optimise_free_torsions` chooses it.
+    Maps the template's local geometry onto the model in the frame of the parent, its
+    neighbour and ``second_shell``, a ``(name, position)`` atom bonded to the neighbour
+    that the template also holds. That reproduces every bond angle at the parent and
+    the template's torsion about the parent-neighbour bond, turned into the plane for
+    a group a plane restraint holds (see :func:`_frame_directions`), which is what
+    puts a conjugated NH2 in its plane. Without a second-shell atom the frame is
+    completed arbitrarily: right only for a free torsion, which
+    :func:`optimise_free_torsions` then chooses.
     """
     index = template["id_to_index"]
     if parent_name not in index or neighbour_name not in index:
         return None
+    if any(name not in index for name in h_names):
+        return None
+    if second_shell is not None and second_shell[0] in index:
+        placed = _second_shell_placement(
+            template,
+            (parent_name, neighbour_name, second_shell[0]),
+            np.stack([parent_position, neighbour_position, second_shell[1]]),
+            h_names,
+        )
+        if placed is not None:
+            return placed
 
     template_axis = (
         template["coords"][index[parent_name]]
@@ -284,8 +316,6 @@ def _axis_frame_placement(
 
     positions = []
     for name in h_names:
-        if name not in index:
-            return None
         offset = (
             template["coords"][index[name]] - template["coords"][index[parent_name]]
         )
@@ -296,6 +326,80 @@ def _axis_frame_placement(
             + float(offset @ t_second) * m_second
         )
     return np.array(positions)
+
+
+def _frame_directions(
+    points: np.ndarray, hydrogens: np.ndarray, planar: bool
+) -> Optional[torch.Tensor]:
+    """Unit parent-to-hydrogen directions in the local frame of three template atoms.
+
+    Parameters
+    ----------
+    points : numpy.ndarray
+        Template positions of the parent, its heavy neighbour and an atom bonded to
+        that neighbour, shape ``(3, 3)``, in Å.
+    hydrogens : numpy.ndarray
+        Template positions of the parent's hydrogens, shape ``(H, 3)``, in Å.
+    planar : bool
+        Whether a plane restraint holds these hydrogens. They are then turned about
+        the parent-neighbour bond, bond angle kept, into the plane of the three
+        atoms: a trigonal parent with one heavy neighbour is conjugated with that
+        neighbour's substituents, which the library's ideal coordinates do not
+        always show -- its ASN, GLN and ARG templates twist the NH2 out of plane.
+
+    Returns
+    -------
+    torch.Tensor or None
+        Shape ``(H, 3)``, in the configured float dtype: components along the
+        :func:`~torchref.base.coordinates.local_frame_axes` of the three atoms. None
+        when they are collinear.
+    """
+
+    def relative(positions: np.ndarray) -> torch.Tensor:
+        return torch.as_tensor(positions - points[0], dtype=get_float_dtype())
+
+    frame = relative(points).expand(len(hydrogens), 3, 3).unbind(1)
+    if frame_is_degenerate(*frame).any():
+        return None
+    local = local_frame_coordinates(*frame, relative(hydrogens))
+    local = local / local.norm(dim=1, keepdim=True)
+    if planar:
+        side = torch.where(local[:, 1] < 0, -1.0, 1.0)
+        in_plane = side * local[:, 1:].norm(dim=1)
+        local = torch.stack([local[:, 0], in_plane, torch.zeros_like(in_plane)], 1)
+    return local
+
+
+def _second_shell_placement(
+    template: Dict,
+    frame_names: Tuple[str, str, str],
+    frame_positions: np.ndarray,
+    h_names: List[str],
+) -> Optional[np.ndarray]:
+    """Template hydrogens carried into the model's ``(parent, n1, n2)`` frame.
+
+    Each hydrogen keeps its :func:`_frame_directions` direction, so its bond angle
+    and torsion are the template's, turned into the plane where a plane restraint
+    holds it. Unit length: the caller sets the bond lengths. Positions are relative to
+    the parent until the end, which keeps single precision from rounding them against
+    absolute coordinates. None when either frame is degenerate.
+    """
+    index = template["id_to_index"]
+    directions = _frame_directions(
+        np.stack([template["coords"][index[name]] for name in frame_names]),
+        np.stack([template["coords"][index[name]] for name in h_names]),
+        bool(template["planar_h"] & set(h_names)),
+    )
+    if directions is None:
+        return None
+    relative = frame_positions - frame_positions[0]
+    target = torch.as_tensor(relative, dtype=directions.dtype)
+    p, n1, n2 = target.expand(len(h_names), 3, 3).unbind(1)
+    if frame_is_degenerate(p, n1, n2).any():
+        return None
+    valid = torch.ones(len(h_names), dtype=torch.bool)
+    placed = place_local_frame(p, n1, n2, directions, valid, torch.zeros_like(p))
+    return frame_positions[0] + placed.numpy().astype(np.float64)
 
 
 def _half_hydrogen_angle(template: Dict, parent_name: str, h_names: List[str]) -> float:
@@ -327,10 +431,9 @@ def _split_neighbours(
     copies lose its H. Blank-altloc neighbours always count.
 
     The hydrogen count is what makes generation idempotent and makes a partially
-    hydrogenated structure top up correctly. Both consume the parent's valence, so
-    subtracting only the heavy neighbours leaves budget for a hydrogen the parent
-    already carries -- which is how a second pass came to add the free-amino-acid ``H2``
-    to every backbone nitrogen that already had its ``H``.
+    hydrogenated structure top up correctly: hydrogens consume the parent's valence as
+    heavy neighbours do, so subtracting only the heavy neighbours would leave budget for
+    a hydrogen the parent already carries.
     """
     neighbours = topology.atoms.neighbors(atom_index)
     if neighbours.numel() == 0:
@@ -368,6 +471,7 @@ def _place_group(
     name_to_row: Dict[str, int],
     coords: np.ndarray,
     template_names_of: List[str],
+    second_shell: Optional[Tuple[str, np.ndarray]] = None,
 ) -> Optional[np.ndarray]:
     """Positions for the hydrogens on one parent, by the first strategy that applies.
 
@@ -380,7 +484,8 @@ def _place_group(
        centre whose template is missing a real substituent -- a peptide-linked backbone
        nitrogen being the common case.
     3. **Axis frame.** For a single-neighbour centre, the template geometry carried over
-       about the one bond, leaving the rotation about it for the scan to choose.
+       about the one bond, in the frame ``second_shell`` completes (see
+       :func:`_axis_frame_placement`).
 
     Returns None when none applies, so the caller can count the hydrogen as undetermined
     rather than putting it somewhere arbitrary.
@@ -462,6 +567,7 @@ def _place_group(
             parent_position,
             neighbour_positions[0],
             h_names,
+            second_shell,
         )
         if positions is None:
             return None
@@ -483,8 +589,8 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
     Parameters
     ----------
     topology : Topology
-        Supplies the residue partition, the per-residue template key and the bond graph
-        the valence cap and the free-torsion test read.
+        Supplies the residue partition, the residue names templates are looked up by,
+        and the bond graph and energy types the valence cap and free-torsion test read.
     cif_dict : dict
         Restraint dictionary, keyed by residue name; must carry an ``atoms`` section
         with coordinates for a residue to be hydrogenated.
@@ -624,6 +730,11 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
                     n_unplaceable += len(group)
                     continue
 
+                second_shell = None
+                if heavy_bonded == 1:
+                    _, n2 = _frame_atoms(topology, parent_row, altloc)
+                    if n2 >= 0 and name_to_row.get(names[n2]) == n2:
+                        second_shell = (names[n2], coords[n2])
                 placed = _place_group(
                     template,
                     parent_name,
@@ -639,15 +750,15 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
                         for n in template["heavy_adjacency"].get(parent_name, [])
                         if n in name_to_row
                     ],
+                    second_shell=second_shell,
                 )
                 if placed is None:
                     n_unplaceable += len(group)
                     continue
 
-                # One free-torsion group per parent with a single heavy neighbour: its
-                # hydrogens rotate together about that one bond.
+                # The hydrogens of one parent rotate together, about its one bond.
                 group_id = -1
-                if heavy_bonded == 1:
+                if _free_torsion(heavy_bonded, bool(template["planar_h"] & set(group))):
                     group_id = next_group
                     next_group += 1
 
@@ -698,6 +809,29 @@ def _conformer_rows(rows: np.ndarray, altlocs: np.ndarray):
     return [(altloc, rows[shared | (residue_altlocs == altloc)]) for altloc in unique]
 
 
+def _free_torsion(heavy_neighbours: int, in_plane: bool) -> bool:
+    """Whether the hydrogens on a parent rotate about its bond to its one neighbour.
+
+    The one rule :func:`plan_hydrogens` (which groups to scan) and
+    :func:`hydrogen_frames` (which groups carry a refinable torsion) share.
+
+    Parameters
+    ----------
+    heavy_neighbours : int
+        Heavy atoms bonded to the parent.
+    in_plane : bool
+        Whether a plane restraint contains one of its hydrogens.
+
+    Returns
+    -------
+    bool
+        True for a single heavy neighbour without a planar hydrogen: hydroxyl, thiol,
+        methyl and ammonium rotate, while the conjugated NH2 of ASN, GLN and ARG, held
+        in its plane, does not.
+    """
+    return heavy_neighbours == 1 and not in_plane
+
+
 def _alignment_for(
     template: Dict,
     parent_name: str,
@@ -706,16 +840,9 @@ def _alignment_for(
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """Template-to-model transform for one hydrogen-bearing centre.
 
-    Fitted over the parent and its **immediate** heavy neighbours only. That set is the
-    rigid unit which fixes the hydrogen directions: the bond lengths and angles at the
-    parent are library constants, while anything further out sits across a rotatable
-    torsion whose value is the model's, not the template's.
-
-    Reaching one bond further -- as a whole-residue or two-shell fit does -- makes the
-    rotation compromise between the real local geometry and a torsion the model does not
-    share, which lands hydrogens well off their parent. Measured on 7L84 the two-shell
-    fit around ``CB`` aligned to 0.75 A RMSD and put 12% of side-chain hydrogens beyond
-    1.5 A of the atom they belong to.
+    Fitted over the parent and its **immediate** heavy neighbours only: that set is the
+    rigid unit which fixes the hydrogen directions, while anything further out sits
+    across a rotatable torsion whose value is the model's, not the template's.
 
     Returns None when fewer than three neighbours match, which leaves the rotation
     undetermined; the caller then constructs the direction from the bond graph instead.
@@ -893,110 +1020,12 @@ __all__ = [
     "HydrogenFrames",
     "plan_hydrogens",
     "optimise_free_torsions",
-    "augment_atom_table",
-    "augment_atom_table_with_maps",
     "hydrogen_frames",
     "template_atom_types",
     "STANDARD_VALENCE",
     "MAX_PLACEMENT_DISTANCE",
     "TORSION_SCAN_STEPS",
 ]
-
-
-def augment_atom_table(pdb, plan: HydrogenPlan, topology):
-    """Insert a plan's hydrogens into an atom table.
-
-    Each hydrogen is inserted immediately after the residue it belongs to, not appended
-    at the end: the residue partition is built from contiguous runs of
-    ``(chain, resseq, icode)``, so appending would split every hydrogenated residue into
-    two nodes.
-
-    Rows are copied from the parent, then the hydrogen's own name, element and position
-    are written over them. Everything else -- chain, residue, altloc, occupancy,
-    B-factor, record type -- is inherited, so a hydrogen starts from its parent's
-    displacement parameter and refines from there.
-
-    Parameters
-    ----------
-    pdb : pandas.DataFrame
-        Atom table to extend.
-    plan : HydrogenPlan
-    topology : Topology
-        Supplies the residue partition the insertion points come from.
-
-    Returns
-    -------
-    pandas.DataFrame
-        A new table with ``serial`` and ``index`` renumbered.
-    """
-    return augment_atom_table_with_maps(pdb, plan, topology)[0]
-
-
-def augment_atom_table_with_maps(pdb, plan: HydrogenPlan, topology):
-    """:func:`augment_atom_table` plus the row maps the insertion implies.
-
-    Parameters
-    ----------
-    pdb : pandas.DataFrame
-        Atom table to extend.
-    plan : HydrogenPlan
-    topology : Topology
-        Supplies the residue partition the insertion points come from.
-
-    Returns
-    -------
-    augmented : pandas.DataFrame
-        The extended table, ``serial`` and ``index`` renumbered.
-    old_to_new : numpy.ndarray
-        New row of every old row, shape ``(N_old,)``. Existing rows are never dropped,
-        so every entry is valid.
-    plan_to_new : numpy.ndarray
-        New row of every planned hydrogen, shape ``(plan.n_hydrogens,)``.
-    """
-    import pandas as pd
-
-    n_old = len(pdb)
-    if plan.n_hydrogens == 0:
-        return pdb.copy(), np.arange(n_old, dtype=np.int64), np.zeros(0, dtype=np.int64)
-
-    by_residue: Dict[int, List[int]] = {}
-    for i, residue in enumerate(plan.residue.tolist()):
-        by_residue.setdefault(residue, []).append(i)
-
-    old_to_new = np.full(n_old, -1, dtype=np.int64)
-    plan_to_new = np.full(plan.n_hydrogens, -1, dtype=np.int64)
-    pieces = []
-    offset = 0
-    for residue in range(topology.n_residues):
-        start = int(topology.residues.atom_start[residue])
-        end = int(topology.residues.atom_end[residue])
-        pieces.append(pdb.iloc[start:end])
-        old_to_new[start:end] = offset + np.arange(end - start)
-        offset += end - start
-
-        members = by_residue.get(residue)
-        if not members:
-            continue
-        rows = pdb.loc[pdb.index[plan.parent[members]]].copy()
-        rows["name"] = plan.name[members]
-        rows["element"] = plan.element[members]
-        rows["altloc"] = plan.altloc[members]
-        rows[["x", "y", "z"]] = plan.position[members]
-        if "anisou_flag" in rows.columns:
-            rows["anisou_flag"] = False
-        for column in ("u11", "u22", "u33", "u12", "u13", "u23"):
-            if column in rows.columns:
-                rows[column] = float("nan")
-        pieces.append(rows)
-        plan_to_new[members] = offset + np.arange(len(members))
-        offset += len(members)
-
-    augmented = pd.concat(pieces, ignore_index=True)
-    augmented["index"] = augmented.index.to_numpy(dtype=int)
-    if "serial" in augmented.columns:
-        augmented["serial"] = augmented.index.to_numpy(dtype=int) + 1
-    augmented.attrs = dict(pdb.attrs)
-    return augmented, old_to_new, plan_to_new
 
 
 @dataclass
@@ -1017,8 +1046,7 @@ class HydrogenFrames:
     Parameters
     ----------
     h_row, parent_row, n1_row, n2_row : numpy.ndarray
-        ``int64`` rows, shape ``(H,)``. ``h_row`` is ``-1`` for a planned hydrogen
-        that has not been inserted into a table yet; :meth:`fill_planned_rows` sets it.
+        ``int64`` rows, shape ``(H,)``.
     frame_valid : numpy.ndarray
         Boolean ``(H,)``; False where the frame is incomplete.
     torsion_group, rotation_group : numpy.ndarray, optional
@@ -1060,11 +1088,6 @@ class HydrogenFrames:
         """How many hydrogens ride."""
         return len(self.h_row)
 
-    @property
-    def n_planned(self) -> int:
-        """How many entries still await a row from :meth:`fill_planned_rows`."""
-        return int((self.h_row < 0).sum())
-
     def remap(self, old_to_new: np.ndarray) -> "HydrogenFrames":
         """The frames over a reindexed table.
 
@@ -1077,8 +1100,7 @@ class HydrogenFrames:
         -------
         HydrogenFrames
             Entries whose hydrogen or parent was dropped are removed; a lost ``n1`` or
-            ``n2`` leaves the entry with ``frame_valid`` False. Planned entries
-            (``h_row == -1``) are kept as planned.
+            ``n2`` leaves the entry with ``frame_valid`` False.
         """
         table = np.asarray(old_to_new, dtype=np.int64)
 
@@ -1089,11 +1111,10 @@ class HydrogenFrames:
             return out
 
         h = follow(self.h_row)
-        h[self.h_row < 0] = -1
         parent = follow(self.parent_row)
         n1 = follow(self.n1_row)
         n2 = follow(self.n2_row)
-        keep = (parent >= 0) & ((h >= 0) | (self.h_row < 0))
+        keep = (parent >= 0) & (h >= 0)
         return HydrogenFrames(
             h_row=h[keep],
             parent_row=parent[keep],
@@ -1103,65 +1124,6 @@ class HydrogenFrames:
             torsion_group=np.where(n1[keep] >= 0, self.torsion_group[keep], -1),
             rotation_group=self.rotation_group[keep],
         )
-
-    def fill_planned_rows(self, rows: np.ndarray) -> "HydrogenFrames":
-        """Give the planned entries their table rows, in plan order.
-
-        Parameters
-        ----------
-        rows : numpy.ndarray
-            New row of each planned hydrogen, shape ``(n_planned,)``.
-        """
-        rows = np.asarray(rows, dtype=np.int64)
-        planned = self.h_row < 0
-        if int(planned.sum()) != len(rows):
-            raise ValueError(
-                f"{int(planned.sum())} planned hydrogens but {len(rows)} rows given"
-            )
-        h = self.h_row.copy()
-        h[planned] = rows
-        return HydrogenFrames(
-            h,
-            self.parent_row.copy(),
-            self.n1_row.copy(),
-            self.n2_row.copy(),
-            self.frame_valid.copy(),
-            self.torsion_group.copy(),
-            self.rotation_group.copy(),
-        )
-
-    def sorted_by_row(self) -> "HydrogenFrames":
-        """The same frames ordered by ``h_row``."""
-        order = np.argsort(self.h_row, kind="stable")
-        return HydrogenFrames(
-            self.h_row[order],
-            self.parent_row[order],
-            self.n1_row[order],
-            self.n2_row[order],
-            self.frame_valid[order],
-            self.torsion_group[order],
-            self.rotation_group[order],
-        )
-
-    def to_tensors(self, device=None) -> Dict[str, torch.Tensor]:
-        """Return frame and orientation arrays as tensors, keyed by field name."""
-        return {
-            "h_row": torch.as_tensor(self.h_row, dtype=get_int_dtype(), device=device),
-            "parent_row": torch.as_tensor(
-                self.parent_row, dtype=get_int_dtype(), device=device
-            ),
-            "n1_row": torch.as_tensor(
-                self.n1_row, dtype=get_int_dtype(), device=device
-            ),
-            "n2_row": torch.as_tensor(
-                self.n2_row, dtype=get_int_dtype(), device=device
-            ),
-            "frame_valid": torch.as_tensor(
-                self.frame_valid, dtype=torch.bool, device=device
-            ),
-            "torsion_group": torch.as_tensor(self.torsion_group, device=device),
-            "rotation_group": torch.as_tensor(self.rotation_group, device=device),
-        }
 
     @classmethod
     def from_tensors(
@@ -1174,7 +1136,7 @@ class HydrogenFrames:
         torsion_group: Optional[torch.Tensor] = None,
         rotation_group: Optional[torch.Tensor] = None,
     ) -> "HydrogenFrames":
-        """Rebuild from the tensors :meth:`to_tensors` produced."""
+        """Rebuild from integer row tensors, e.g. a riding tensor's buffers."""
         as_np = lambda t: np.asarray(t.detach().cpu().numpy(), dtype=np.int64)
         return cls(
             as_np(h_row),
@@ -1189,7 +1151,7 @@ class HydrogenFrames:
     def __repr__(self) -> str:
         return (
             f"HydrogenFrames(n_hydrogens={self.n_hydrogens}, "
-            f"planned={self.n_planned}, rigid={int((~self.frame_valid).sum())})"
+            f"rigid={int((~self.frame_valid).sum())})"
         )
 
 
@@ -1210,8 +1172,8 @@ def _frame_atoms(topology, parent_row: int, altloc: str) -> Tuple[int, int]:
     return n1, (int(grand[0]) if len(grand) else -1)
 
 
-def hydrogen_frames(topology, plan: Optional[HydrogenPlan] = None) -> HydrogenFrames:
-    """Riding frames for every hydrogen the table has, plus the ones a plan adds.
+def hydrogen_frames(topology) -> HydrogenFrames:
+    """Riding frames for every hydrogen the table has.
 
     Read off the bond graph, not off distances, so a stretched or predicted model
     still frames each hydrogen on its bonded parent.
@@ -1220,17 +1182,12 @@ def hydrogen_frames(topology, plan: Optional[HydrogenPlan] = None) -> HydrogenFr
     ----------
     topology : Topology
         Connectivity of the table the frames index into.
-    plan : HydrogenPlan, optional
-        Hydrogens about to be inserted. Their entries carry ``h_row == -1`` until
-        :meth:`HydrogenFrames.fill_planned_rows` is given the rows the insertion made;
-        their parent and frame atoms are rows of the *current* table, to be carried
-        through :meth:`HydrogenFrames.remap` with everything else.
 
     Returns
     -------
     HydrogenFrames
-        Deposited hydrogens first, in row order, then planned ones in plan order. A
-        hydrogen bonded to no heavy atom is left out: nothing can carry it.
+        Hydrogens in row order. A hydrogen bonded to no heavy atom is left out:
+        nothing can carry it.
     """
     atoms = topology.atoms
     is_h = atoms.is_hydrogen.cpu().numpy()
@@ -1247,35 +1204,24 @@ def hydrogen_frames(topology, plan: Optional[HydrogenPlan] = None) -> HydrogenFr
         n1, n2 = _frame_atoms(topology, parent, altloc)
         rows.append((h, parent, n1, n2))
 
-    if plan is not None:
-        for k in range(plan.n_hydrogens):
-            parent = int(plan.parent[k])
-            n1, n2 = _frame_atoms(topology, parent, str(plan.altloc[k]).strip())
-            rows.append((-1, parent, n1, n2))
-
     if not rows:
         return HydrogenFrames.empty()
     arr = np.array(rows, dtype=np.int64)
     torsion = np.full(len(rows), -1, dtype=np.int64)
     rotation = np.full(len(rows), -1, dtype=np.int64)
-    elements = np.char.upper(np.char.strip(atoms.element.astype(str)))
+    planar = np.zeros(atoms.n_atoms, dtype=bool)
+    for block in atoms.planes.values():
+        planar[block.indices.cpu().numpy().ravel()] = True
     groups = {}
-    n_existing = len(rows) - (0 if plan is None else plan.n_hydrogens)
     for i, (h, parent, _, _) in enumerate(rows):
-        altloc = str(altlocs[h]) if h >= 0 else str(plan.altloc[i - n_existing]).strip()
-        groups.setdefault((parent, altloc), []).append(i)
+        groups.setdefault((parent, str(altlocs[h])), []).append(i)
     for group, ((parent, altloc), members) in enumerate(groups.items()):
         heavy, _ = _split_neighbours(topology, parent, altloc)
         residue = int(atoms.residue_of[parent])
         is_water = str(topology.residues.resname[residue]).strip() == "HOH"
         if len(heavy) == 0 or is_water:
             rotation[members] = group
-        elif len(heavy) == 1 and (
-            (elements[parent] == "C" and len(members) == 3)
-            or elements[parent] in ("O", "S")
-        ):
-            # Planar amide NH2 groups also have one heavy neighbour, but their
-            # orientation is constrained by conjugation rather than freely rotatable.
+        elif _free_torsion(len(heavy), bool(planar[arr[members, 0]].any())):
             torsion[members] = group
     return HydrogenFrames(
         h_row=arr[:, 0],

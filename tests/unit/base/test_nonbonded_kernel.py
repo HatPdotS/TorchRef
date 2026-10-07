@@ -190,3 +190,43 @@ def test_triton_matches_eager_on_image_pairs(pdb, pdb_dir):
     assert abs(float(loss_unshifted - loss_e)) > 1.0
     torch.testing.assert_close(loss_t, loss_e, rtol=1e-5, atol=1e-2)
     assert_grads_agree([grad_t], [grad_e], min_cos=0.9999, ratio_tol=1e-3, ctx="vdw ")
+
+
+@pytest.mark.cuda
+def test_triton_weighs_each_pair_as_eager_does(pdb_dir):
+    """Per-pair weights scale a pair's whole NLL, constant included, and its gradient,
+    in the Triton kernel as in the eager one. The weights alternate 1/2 and 1, the two
+    the pair lists carry, so a kernel that dropped or misplaced them would differ."""
+    from tests.helpers.grad_asserts import assert_grads_agree
+
+    host = _image_pairs(pdb_dir / "3E98.pdb")
+    dev = torch.device("cuda")
+    xyz = host["xyz"].to(dev, torch.float32)
+    min_distances = host["min_distances"].to(dev, torch.float32)
+    tables = [t.to(dev, torch.float32) for t in host["tables"]]
+    pair_args = (
+        host["indices"].to(dev),
+        min_distances,
+        host["symop_indices"].to(dev),
+        host["cell_offsets"].to(dev),
+        *tables,
+    )
+    one = torch.ones((), device=dev, dtype=torch.float32)
+    scalars = (_C_REP * one, _R_EXP * one, 0.0, _SIGMA * one)
+    alternate = torch.arange(len(min_distances), device=dev) % 2 == 0
+    weights = torch.where(alternate, 0.5, 1.0).to(torch.float32)
+    assert use_triton(xyz), "the Triton arm would compare eager against eager"
+
+    def run(fn, w):
+        x = xyz.clone().requires_grad_(True)
+        loss = fn(x, *pair_args, *scalars, w)
+        (grad,) = torch.autograd.grad(loss, x)
+        return loss.detach(), grad
+
+    loss_t, grad_t = run(nonbonded_heavy_math, weights)
+    loss_e, grad_e = run(_nonbonded_heavy_math_eager, weights)
+    loss_unweighted, _ = run(_nonbonded_heavy_math_eager, None)
+
+    assert abs(float(loss_unweighted - loss_e)) > 1.0
+    torch.testing.assert_close(loss_t, loss_e, rtol=1e-5, atol=1e-2)
+    assert_grads_agree([grad_t], [grad_e], min_cos=0.9999, ratio_tol=1e-3, ctx="vdw ")

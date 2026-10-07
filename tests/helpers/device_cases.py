@@ -116,17 +116,21 @@ def _map_symmetry_interpolation(device):
     return _MapSymmetryInterpolation(SpaceGroup(_SG, device=device), (15, 15, 15))
 
 
-def _edge_block(device):
-    """A small bond block, origin-sorted, built straight from index arrays."""
+def _edge_block(device, rows=((0, 1), (1, 2), (2, 3)), arity=2, edge_type="bond"):
+    """A small origin-sorted block, built straight from index arrays."""
     import numpy as np
 
+    from torchref.config import get_int_dtype
     from torchref.topology import EdgeBlock
+    from torchref.topology.edges import assemble_origins
 
-    return EdgeBlock.from_origins(
-        {"intra": np.array([[0, 1], [1, 2], [2, 3]], dtype=np.int64)},
-        2,
-        "bond",
-        device=device,
+    indices, bounds, _ = assemble_origins(
+        {"intra": np.asarray(rows, dtype=np.int64).reshape(-1, arity)},
+        arity,
+        edge_type,
+    )
+    return EdgeBlock(
+        torch.as_tensor(indices, dtype=get_int_dtype(), device=device), bounds
     )
 
 
@@ -134,16 +138,10 @@ def _atom_graph(device):
     """A four-atom chain: enough to exercise the edge blocks and the CSR adjacency."""
     import numpy as np
 
-    from torchref.topology import EdgeBlock
     from torchref.topology.atom_graph import AtomGraph
 
     def block(rows, arity, edge_type):
-        return EdgeBlock.from_origins(
-            {"intra": np.asarray(rows, dtype=np.int64).reshape(-1, arity)},
-            arity,
-            edge_type,
-            device=device,
-        )
+        return _edge_block(device, rows, arity, edge_type)
 
     return AtomGraph(
         name=np.array(["N", "CA", "C", "O"]),

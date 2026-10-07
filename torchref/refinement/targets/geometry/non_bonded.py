@@ -5,9 +5,9 @@ with symmetry mates. Violation counts reported by ``stats`` / ``get_violations``
 deliberately exclude the ``buffer`` onset that ``forward`` penalizes.
 """
 
-import numpy as np
-import torch
 from typing import TYPE_CHECKING, Dict, Tuple
+
+import torch
 
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import get_int_dtype
@@ -15,7 +15,6 @@ from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
-    StatEntry,
     stat,
 )
 
@@ -41,12 +40,12 @@ class NonBondedTarget(GeometryTarget):
     at :math:`c_{\text{rep}} = 1/(p\sigma^{p})`, but :math:`\sigma` is the
     exposed knob since it reads as an overlap tolerance; the 0.3 Å default is
     near the classical ``c_rep=16, r_exp=4`` (:math:`\sigma \approx 0.354`).
-    Modes: ``'prolsq'`` (above, default), ``'gaussian'`` (Gaussian NLL on the
-    overlap with per-pair sigmas), ``'soft'`` (linear core past a threshold).
 
     With cell and spacegroup on the model, ASU-to-symmetry-mate contacts are
-    included; mate positions are recomputed from current ASU coordinates each
-    call, so gradients reach both atoms of a pair.
+    included, each at half weight: the pair list holds a crystal contact from both
+    of its ends, so it counts once, as a contact inside the ASU does. Mate positions
+    are recomputed from current ASU coordinates each call, so gradients reach both
+    atoms of a pair.
 
     Reference: cctbx/geometry_restraints/nonbonded.h, PROLSQ documentation,
     MolProbity clash criterion (Davis et al., NAR 2007).
@@ -55,8 +54,6 @@ class NonBondedTarget(GeometryTarget):
     ----------
     model : Model, optional
         Reference to Model object.
-    mode : str, optional
-        One of 'prolsq', 'gaussian', 'soft'. Default is 'prolsq'.
     sigma : float, optional
         Overlap tolerance (Å), default 0.3. Stored as the ``_sigma_vdw`` buffer
         (exposed as ``sigma_vdw``); it sets the shape coefficient only when
@@ -75,9 +72,6 @@ class NonBondedTarget(GeometryTarget):
         list. Default 1.0; that method gives the bound this must respect.
     verbose : int, optional
         Verbosity level. Default is 0.
-    scale : float, optional
-        Stored as ``self.scale`` (default 10.0) but **not** consumed by
-        ``forward()`` -- it does not scale the loss.
     """
 
     name: str = "geometry/nonbonded"
@@ -85,23 +79,19 @@ class NonBondedTarget(GeometryTarget):
     def __init__(
         self,
         model: "Model" = None,
-        mode: str = "prolsq",
         sigma: float = 0.3,
         r_exp: float = 4.0,
         c_rep: "float | None" = None,
         buffer: float = 0.0,
         rebuild_threshold: float = 1.0,
         verbose: int = 0,
-        scale: float = 10.0,
         device=None,
     ):
         """Initialize non-bonded target; see the class docstring for parameters."""
         super().__init__(model, verbose, device=device)
-        self.mode = mode
-        self.scale = scale
         # Tunables that reach the kernel must be buffers on the target's device
-        # and float dtype: the prolsq branch hands these straight to a Triton
-        # kernel, where a CPU tensor is a host pointer, not a promotable scalar.
+        # and float dtype: forward hands these straight to a Triton kernel,
+        # where a CPU tensor is a host pointer, not a promotable scalar.
         self._register_scalar("_sigma_vdw", float(sigma))
         self._register_scalar("_r_exp", float(r_exp))
         if c_rep is None:
@@ -239,7 +229,7 @@ class NonBondedTarget(GeometryTarget):
 
         Positions come from
         :func:`~torchref.base.targets.nonbonded.nonbonded_pair_positions`, as in the
-        prolsq kernel, so every mode and the statistics see a pair at one distance.
+        prolsq kernel, so the loss and the statistics see a pair at one distance.
         Mate positions are recomputed from ``xyz``, so gradients reach both atoms.
         """
         from torchref.base.targets.nonbonded import nonbonded_pair_positions
@@ -257,59 +247,31 @@ class NonBondedTarget(GeometryTarget):
     def forward(self) -> torch.Tensor:
         """Summed VDW repulsion loss; 0.0 if the model has no VDW pair list."""
         from torchref.base.targets.nonbonded import nonbonded_heavy_math
+
         xyz = self.model.xyz()
-        device = xyz.device
 
         if "vdw" not in self.restraints.restraints:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         vdw_data = self.restraints.restraints["vdw"]
         indices = vdw_data.get("indices")
 
         if indices is None or len(indices) == 0:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
-        sigmas = vdw_data["sigmas"]
-
-        # The prolsq branch goes through the math dispatcher — Triton on
-        # CUDA fp32, eager otherwise. Other modes (gaussian, soft) keep
-        # the inline path below.
-        if self.mode == "prolsq":
-            return nonbonded_heavy_math(
-                xyz, indices,
-                vdw_data["min_distances"],
-                vdw_data.get("symop_indices"),
-                vdw_data.get("cell_offsets"),
-                *self._symmetry_tables(),
-                self._c_rep, self._r_exp,
-                self._buffer, self._sigma_vdw,
-            )
-
-        pos1, pos2, min_distances = self._compute_positions(xyz)
-
-        # The epsilon keeps the sqrt gradient finite at coincident atoms.
-        diff = pos2 - pos1
-        actual_distances = torch.sqrt((diff**2).sum(dim=-1) + 1e-8)
-
-        violations = torch.clamp(min_distances + self._buffer - actual_distances, min=0.0)
-
-        if self.mode == "gaussian":
-            log_2pi = torch.log(
-                torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
-            )
-            nll = 0.5 * (violations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
-            return nll.sum()
-
-        elif self.mode == "soft":
-            threshold = 0.5  # Å - switch to linear below this
-            quadratic_mask = violations <= threshold
-            quadratic_energy = self._c_rep * (violations**2)
-            linear_energy = self._c_rep * (2 * threshold * violations - threshold**2)
-            energy = torch.where(quadratic_mask, quadratic_energy, linear_energy)
-            return energy.sum()
-
-        else:
-            raise ValueError(f"Unknown non-bonded mode: {self.mode}")
+        return nonbonded_heavy_math(
+            xyz,
+            indices,
+            vdw_data["min_distances"],
+            vdw_data.get("symop_indices"),
+            vdw_data.get("cell_offsets"),
+            *self._symmetry_tables(),
+            self._c_rep,
+            self._r_exp,
+            self._buffer,
+            self._sigma_vdw,
+            vdw_data["weights"],
+        )
 
     def get_violations(self, threshold: float = 0.0) -> Dict[str, torch.Tensor]:
         """
@@ -341,9 +303,9 @@ class NonBondedTarget(GeometryTarget):
                 "indices": torch.tensor(
                     [], dtype=get_int_dtype(), device=device
                 ).reshape(0, 2),
-                "violations": torch.tensor([], device=device),
-                "distances": torch.tensor([], device=device),
-                "min_distances": torch.tensor([], device=device),
+                "violations": xyz.new_zeros(0),
+                "distances": xyz.new_zeros(0),
+                "min_distances": xyz.new_zeros(0),
             }
 
         vdw_data = self.restraints.restraints["vdw"]
@@ -354,9 +316,9 @@ class NonBondedTarget(GeometryTarget):
                 "indices": torch.tensor(
                     [], dtype=get_int_dtype(), device=device
                 ).reshape(0, 2),
-                "violations": torch.tensor([], device=device),
-                "distances": torch.tensor([], device=device),
-                "min_distances": torch.tensor([], device=device),
+                "violations": xyz.new_zeros(0),
+                "distances": xyz.new_zeros(0),
+                "min_distances": xyz.new_zeros(0),
             }
 
         pos1, pos2, min_distances = self._compute_positions(xyz)
@@ -380,6 +342,7 @@ class NonBondedTarget(GeometryTarget):
         Reported violation counts use ``min_distances - actual_distances``
         and exclude the ``buffer`` onset that ``forward()`` penalizes, so
         when ``buffer > 0`` they differ from the pairs the loss penalizes.
+        ``mean_sigma`` is :attr:`sigma_vdw`, the tolerance the loss uses.
         """
         xyz = self.model.xyz()
         device = xyz.device
@@ -392,8 +355,6 @@ class NonBondedTarget(GeometryTarget):
 
         if indices is None or len(indices) == 0:
             return {}
-
-        sigmas = vdw_data["sigmas"]
 
         pos1, pos2, min_distances = self._compute_positions(xyz)
         actual_distances = torch.norm(pos2 - pos1, dim=-1)
@@ -419,7 +380,7 @@ class NonBondedTarget(GeometryTarget):
             "n_violations": stat(n_violations, VERBOSITY_DETAILED),
             "rms_violation": stat(rms_violation, VERBOSITY_DETAILED),
             "max_violation": stat(max_violation, VERBOSITY_DEBUG),
-            "mean_sigma": stat(sigmas.mean().item(), VERBOSITY_DEBUG),
+            "mean_sigma": stat(self.sigma_vdw, VERBOSITY_DEBUG),
         }
 
         symop_indices = vdw_data.get("symop_indices")
