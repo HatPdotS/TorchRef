@@ -306,6 +306,26 @@ class TestIHMReader:
         _assert_fixture_timepoints(mapping)
         assert [s.model_num for s in mapping.states] == [1, 2]
 
+    def test_cell_and_space_group_read_as_model_cif_reader_does(self, tmp_path):
+        """A ``.`` angle is 90 degrees and a DDL2-only space group is found."""
+        import gemmi
+
+        from torchref.io.cif_readers import ModelCIFReader
+        from torchref.io.ihm import IHMReader
+
+        doc = gemmi.cif.read(str(TEST_IHM_FILE))
+        doc[0].set_pair("_cell.angle_beta", ".")
+        doc[0].find_mmcif_category("_symmetry.").erase()
+        doc[0].set_pair("_space_group.name_H-M_alt", gemmi.cif.quote("P 21 21 21"))
+        path = tmp_path / "ddl2.cif"
+        doc.write_file(str(path))
+
+        mapping = IHMReader(str(path), verbose=0).read_mapping()
+        reader = ModelCIFReader(str(path))
+        assert mapping.cell == reader.get_cell_parameters()
+        assert mapping.cell == [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
+        assert mapping.spacegroup == reader.get_space_group() == "P 21 21 21"
+
     def test_states_load_the_model_their_groups_hold(self, tmp_path):
         """A state's coordinates are its linked model, not the k-th model."""
         import gemmi
@@ -514,6 +534,34 @@ class TestModelCollectionIHM:
         )
         assert mc.n_base_models >= 1
         assert isinstance(mapping, IHMEnsembleMapping)
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [("1.100", "-0.100"), ("0.500", "-0.500"), ("nan", "0.100")],
+    )
+    def test_from_ihm_refuses_a_negative_population(self, tmp_path, first, second):
+        """A negative or NaN deposited population is refused, whatever the group sums to.
+
+        Only an all-zero group falls back to equal fractions.
+        """
+        import gemmi
+        import torch
+
+        from torchref.model.model_collection import ModelCollection
+
+        doc = gemmi.cif.read(str(TEST_IHM_FILE))
+        table = doc[0].find(
+            "_ihm_multi_state_modeling.", ["state_id", "population_fraction"]
+        )
+        for row in table:
+            row[1] = {"3": first, "4": second}.get(row[0], row[1])
+        path = tmp_path / "negative.cif"
+        doc.write_file(str(path))
+
+        with pytest.raises(ValueError, match="non-negative"):
+            ModelCollection.from_ihm(
+                str(path), max_res=3.0, device=torch.device("cpu"), verbose=0
+            )
 
     def test_write_ihm(self):
         """Test writing via ModelCollection method."""

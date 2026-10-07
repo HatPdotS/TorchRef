@@ -671,8 +671,9 @@ class ModelContext(DeviceMixin):
     def chain_sequences(self) -> List[Tuple[str, str]]:
         """Per-chain one-letter sequences, ``[(chain_id, sequence), ...]``.
 
-        HETATM records are excluded, numbering gaps become ``?`` and unrecognized
-        residues ``X``.
+        Over the residues :func:`~torchref.topology.residue_graph.polymer_type`
+        classes as protein or nucleic acid, whatever their record type; numbering gaps
+        become ``?`` and unrecognized residues ``X``.
         """
         result = []
         for chain, residues in self._polymer_residues():
@@ -687,18 +688,18 @@ class ModelContext(DeviceMixin):
         return result
 
     def _polymer_residues(self) -> List[Tuple[str, List[Tuple[int, str]]]]:
-        """``(chain, [(resseq, resname), ...])`` over ATOM records, in file order.
+        """``(chain, [(resseq, resname), ...])`` over polymer residues, in file order.
 
         One entry per ``(resseq, icode)``, sorted by ``resseq`` (stably, so insertion
         codes keep their file order).
         """
+        from torchref.topology.residue_graph import polymer_type
+
         if self.topology is None:
             return []
         residues = self.topology.residues
-        first = residues.atom_start.astype(np.int64)
-        polymer = ~self.topology.atoms.is_hetatm[first] if len(first) else []
         chains: Dict[str, Dict[tuple, Tuple[int, str]]] = {}
-        for r in np.nonzero(polymer)[0]:
+        for r in np.nonzero(polymer_type(residues.resname) != "")[0]:
             chain, resseq, icode = residues.key(int(r))
             seen = chains.setdefault(chain, {})
             seen.setdefault((resseq, icode), (resseq, str(residues.resname[r])))

@@ -192,7 +192,6 @@ def _metrics(ref: LBFGSRefinement) -> dict:
         rwork, rfree = ref.get_rfactor()
         model = ref.model
         restraints = model.restraints
-        restraints.cat_dict()
         heavy = torch.as_tensor(
             ~model.pdb.element.str.strip().isin(["H", "D"]).to_numpy(),
             device=model.device,

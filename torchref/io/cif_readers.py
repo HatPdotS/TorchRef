@@ -512,12 +512,11 @@ def _space_group(data: Dict[str, Any]) -> str:
 def _free_flags(values: pd.Series, numeric: bool) -> np.ndarray:
     """R-free flags as ReflectionData.load reads them: 0 free, 1 work, -1 excluded.
 
-    Status letters map ``o`` to work and ``f`` to free; every other letter
-    (``x``, ``<``, ``-``, ``h``, ``l``) and a missing value exclude the row, as
-    :func:`torchref.io.rfree.excluded_rows` does. A numeric column such as
-    ``pdbx_r_free_flag`` is read by :func:`torchref.io.rfree.read_free_set`, which
-    tells CCP4 ``0..K`` (0 = free) from a binary column whose majority value is
-    work (Phenix: 1 = free). The free set is passed on unjudged.
+    Split by :func:`torchref.io.rfree.work_free_flags`, as
+    :func:`torchref.io.rfree.read_sf_file` splits the same file: status letters, or
+    a numeric column such as ``pdbx_r_free_flag`` read by
+    :func:`torchref.io.rfree.read_free_set`. A numeric column without a usable value
+    excludes every row. The free set is passed on unjudged.
 
     Parameters
     ----------
@@ -531,21 +530,17 @@ def _free_flags(values: pd.Series, numeric: bool) -> np.ndarray:
     numpy.ndarray
         int32 flags, shape (N,).
     """
-    if not numeric:
-        letters = values.str.lower().map({"o": 1, "f": 0})
-        return letters.fillna(-1).to_numpy(dtype=np.int32)
     import reciprocalspaceship as rs
 
-    from torchref.io.rfree import read_free_set
+    from torchref.io.rfree import read_free_set, work_free_flags
 
+    if not numeric:
+        return work_free_flags(status=values.to_numpy())
     numbers = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
-    flags = np.full(len(numbers), -1, dtype=np.int32)
     # read_free_set refuses a column without a usable value; all rows stay excluded.
-    if (numbers >= 0).any():
-        free_set = read_free_set(rs.DataSet({"flag": numbers}), "flag")
-        flags[~free_set["excluded"]] = 1
-        flags[free_set["free"]] = 0
-    return flags
+    if not (numbers >= 0).any():
+        return np.full(len(numbers), -1, dtype=np.int32)
+    return work_free_flags(read_free_set(rs.DataSet({"flag": numbers}), "flag"))
 
 
 class ReflectionCIFReader:

@@ -119,28 +119,6 @@ def test_expected_properties_present(restraints, key):
 
 
 @pytest.mark.unit
-def test_cat_dict_is_idempotent(restraints):
-    """Repeated calls leave the restraint counts alone.
-
-    The previous implementation registered ``'all'`` as an origin when it wrote the
-    combined group, so a second call concatenated the group into itself and doubled
-    every bond, angle and torsion -- a silent 2x on the geometry weight. Deriving the
-    group as a span of the block makes that unrepresentable.
-    """
-    before = {
-        edge_type: restraints.restraints[edge_type]["all"]["indices"].shape[0]
-        for edge_type in KEYED_TYPES
-    }
-    restraints.cat_dict()
-    restraints.cat_dict()
-    after = {
-        edge_type: restraints.restraints[edge_type]["all"]["indices"].shape[0]
-        for edge_type in KEYED_TYPES
-    }
-    assert before == after
-
-
-@pytest.mark.unit
 def test_entries_survive_a_device_apply(restraints):
     """A ``.to()`` re-slices the entries instead of leaving them stale or duplicated.
 

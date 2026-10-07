@@ -461,7 +461,7 @@ class MTZReader:
         one with no valid flag, is skipped with a warning naming it.
         """
         # rfree imports this module for its flag names.
-        from torchref.io.rfree import read_free_set
+        from torchref.io.rfree import read_free_set, work_free_flags
 
         available_cols = set(self.mtz_data.columns)
 
@@ -471,8 +471,7 @@ class MTZReader:
                 if "int" in dtype.lower() or "flag" in dtype.lower() or "I" in dtype:
                     try:
                         free_set = read_free_set(self.mtz_data, col)
-                        rfree_flags = np.where(free_set["free"], 0, 1).astype(np.int32)
-                        rfree_flags[free_set["excluded"]] = -1
+                        rfree_flags = work_free_flags(free_set)
                         if self.verbose > 0:
                             print(
                                 f"   R-free flags from '{col}': "
@@ -927,6 +926,15 @@ def _anomalous_table(data, fcalc):
         table["SIGF-obs(+)"], table["SIGF-obs(-)"] = mirror_centric(
             plus_of(sig), minus_of(sig)
         )
+    # The measurements go out with their amplitudes, as in the merged layout: re-read
+    # without them, the outlier test would judge intensities rebuilt from
+    # French-Wilson's F and pass reflections it rejected on the measured ones.
+    if data.I is not None:
+        for label, values in (("I-obs", data.I), ("SIGI-obs", data.I_sigma)):
+            if values is not None:
+                table[f"{label}(+)"], table[f"{label}(-)"] = mirror_centric(
+                    plus_of(_np(values)), minus_of(_np(values))
+                )
     for label, flags in _flag_columns(data).items():
         table[label] = np.full(m, -1, dtype=int)
         table[label][inverse.numpy()] = flags  # both mates share a flag
@@ -943,9 +951,9 @@ def write_reflections(
     """Write a :class:`~torchref.io.datasets.reflection_data.ReflectionData` to MTZ.
 
     Labels on disk are the :func:`reflection_table` column names. Merged: F-obs,
-    SIGF-obs, I-obs, SIGI-obs; anomalous: F-obs, F-obs(+)/(-), SIGF-obs(+)/(-) and
-    no intensities; both: R-free-flags (1 = work, 0 = free, -1 = excluded by the
-    input's flags) and Validation_flag. With ``fcalc`` both add FWT/PHWT (2Fo-Fc),
+    SIGF-obs, I-obs, SIGI-obs; anomalous: F-obs and the (+)/(-) columns of the rest;
+    both: R-free-flags (1 = work, 0 = free, -1 = excluded by the input's flags) and
+    Validation_flag. With ``fcalc`` both add FWT/PHWT (2Fo-Fc),
     DELFWT/PHDELWT (Fo-Fc) and F-model/PH-model, the unweighted m = 1, D = 1
     coefficients of :func:`~torchref.base.fourier.map_coefficients`, not 2mFo-DFc;
     anomalous also F-model(+)/(-), PHIF-model(+)/(-) and ANOM/PANOM.

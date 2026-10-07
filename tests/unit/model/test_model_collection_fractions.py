@@ -1,5 +1,8 @@
 """Population fractions, shared ownership, constraints and gradients."""
 
+import warnings
+from contextlib import contextmanager
+
 import pytest
 import torch
 from torch import nn
@@ -38,6 +41,23 @@ class _StubModel(nn.Module):
         )
         amp = (base * float(self._seed + 1)) + self.anchor
         return amp.to(get_complex_dtype())
+
+
+@contextmanager
+def _scalar_reads_of_live_tensors_raise():
+    """Raise torch's warning on ``float()`` of a tensor that requires grad.
+
+    torch emits it once per process unless warn-always is on, so any earlier test
+    could otherwise have used it up.
+    """
+    previous = torch.is_warn_always_enabled()
+    torch.set_warn_always(True)
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", message=".*requires_grad")
+            yield
+    finally:
+        torch.set_warn_always(previous)
 
 
 @pytest.fixture
@@ -383,6 +403,19 @@ class TestSharedActivation:
         mc.add_dark()
         assert float(mc.alpha_mean) == pytest.approx(0.22, abs=1e-5)
 
+    @pytest.mark.unit
+    def test_a_timepoint_may_be_added_while_populations_refine(self):
+        """Checking the shared activation reads the live parameter without warning."""
+        from torchref.model.model_collection import ModelCollection
+
+        mc = ModelCollection([_StubModel(i) for i in range(3)], verbose=0)
+        mc.add_dark()
+        mc.add_timepoint("early", [0.7, 0.3, 0.0])
+        mc.unfreeze_all_fractions()
+        with _scalar_reads_of_live_tensors_raise():
+            mc.add_timepoint("late", [0.7, 0.0, 0.3])
+        assert float(mc.alpha_mean.detach()) == pytest.approx(0.3, abs=1e-5)
+
 
 class TestActivationJacobian:
     @pytest.mark.unit
@@ -498,3 +531,13 @@ class TestActivationDispersion:
         mc.set_lambda_twin(0.0, refinable=True)
         value = float(mc.lambda_twin.detach())
         assert 0.0 < value < 1.0
+
+    @pytest.mark.unit
+    def test_fixing_a_refined_lambda_keeps_its_value(self, two_model_collection):
+        """Fixing reads the live parameter without warning and stores its value."""
+        mc = two_model_collection
+        mc.set_lambda_twin(0.4, refinable=True)
+        with _scalar_reads_of_live_tensors_raise():
+            mc.set_lambda_twin(None)
+        assert mc._lambda_logit.requires_grad is False
+        assert float(mc.lambda_twin) == pytest.approx(0.4, abs=1e-6)

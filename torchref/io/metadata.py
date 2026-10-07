@@ -92,9 +92,10 @@ class RefinementMetadata:
         Atomic B-factor statistics in A**2.
     rmsd_bond_lengths, rmsd_bond_angles : float, optional
         Geometry deviations from ideal (Angstroms, degrees).
-    n_atoms_total, n_atoms_protein, n_atoms_solvent : int, optional
-        Non-hydrogen atom counts: all, in polymer residues, and in waters.
-        Ligand atoms count only in the total.
+    n_atoms_total, n_atoms_protein, n_atoms_nucleic_acid : int, optional
+        Non-hydrogen atom counts: all, and in protein and nucleic-acid residues.
+    n_atoms_solvent : int, optional
+        Non-hydrogen atoms of waters. Ligand atoms count only in the total.
     solvent_model_ksol, solvent_model_bsol : float, optional
         Bulk-solvent scale, and the equivalent single ``B`` for the fitted falloff.
     cell, spacegroup
@@ -155,6 +156,7 @@ class RefinementMetadata:
     # Model contents
     n_atoms_total: Optional[int] = None
     n_atoms_protein: Optional[int] = None
+    n_atoms_nucleic_acid: Optional[int] = None
     n_atoms_solvent: Optional[int] = None
 
     # Solvent model
@@ -363,18 +365,23 @@ class RefinementMetadata:
     def _set_atom_counts(self, model) -> None:
         """Set the non-hydrogen atom counts from ``model.ctx.topology``.
 
-        Polymer residues count as protein and waters as solvent; ligands and
-        ions count only in the total, as in a deposited ``_refine_hist``.
+        Residues count as protein or nucleic acid by their chemical-component type
+        (:func:`~torchref.topology.residue_graph.polymer_type`) and waters as solvent;
+        ligands and ions count only in the total, as in a deposited ``_refine_hist``.
 
         Parameters
         ----------
         model : Model
             The refined model.
         """
+        from torchref.topology.residue_graph import polymer_type
+
         topology = model.ctx.topology
         heavy = ~topology.atoms.is_hydrogen.cpu().numpy()
+        kind = polymer_type(topology.columns()["resname"])
         self.n_atoms_total = int(heavy.sum())
-        self.n_atoms_protein = int((heavy & topology.is_polymer).sum())
+        self.n_atoms_protein = int((heavy & (kind == "protein")).sum())
+        self.n_atoms_nucleic_acid = int((heavy & (kind == "nucleic_acid")).sum())
         self.n_atoms_solvent = int((heavy & topology.is_water).sum())
 
     # ------------------------------------------------------------------ #
@@ -699,6 +706,7 @@ class RefinementMetadata:
 
         lines.append("REMARK   3  NUMBER OF NON-HYDROGEN ATOMS USED IN REFINEMENT.")
         _remark3(lines, "PROTEIN ATOMS", self.n_atoms_protein, "d")
+        _remark3(lines, "NUCLEIC ACID ATOMS", self.n_atoms_nucleic_acid, "d")
         _remark3(lines, "SOLVENT ATOMS", self.n_atoms_solvent, "d")
         _remark3(lines, "TOTAL", self.n_atoms_total, "d")
         lines.append("REMARK   3")
@@ -859,6 +867,10 @@ class RefinementMetadata:
             if self.n_atoms_protein is not None:
                 hist["_refine_hist.pdbx_number_atoms_protein"] = str(
                     self.n_atoms_protein
+                )
+            if self.n_atoms_nucleic_acid is not None:
+                hist["_refine_hist.pdbx_number_atoms_nucleic_acid"] = str(
+                    self.n_atoms_nucleic_acid
                 )
             if self.n_atoms_solvent is not None:
                 hist["_refine_hist.number_atoms_solvent"] = str(self.n_atoms_solvent)
