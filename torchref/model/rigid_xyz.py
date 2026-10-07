@@ -440,9 +440,8 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     # Materialize back into a regular MixedTensor.
     # -----------------------------------------------------------------------
     def to_mixed_tensor(self):
-        """A per-atom :class:`~torchref.model.parameter_wrappers.MixedTensor` holding
-        the current transformed coordinates, for handing per-atom refinement back to
-        ``Model``.
+        """A per-atom :class:`~.parameter_wrappers.MixedTensor` holding the current
+        transformed coordinates, for handing per-atom refinement back to ``Model``.
         """
         from torchref.model.parameter_wrappers import MixedTensor
 

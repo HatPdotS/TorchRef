@@ -9,9 +9,7 @@ with a soft, distance-derived expansion in place of a fixed integer assignment: 
 holds one row per node, ``forward()`` one B or U per atom. Two index spaces therefore
 meet in this class, and callers must not mix them --- masks handed to
 :meth:`~DisorderFieldTensor.update_refinable_mask` are in ATOM space, while
-``refinable_mask`` and
-:meth:`~torchref.model.parameter_wrappers.MixedTensor.get_refinable_count` are in
-NODE space.
+``refinable_mask`` and ``get_refinable_count()`` are in NODE space.
 
 A node's position is anchored, not free: it is the centroid of the atoms in its anchor
 cluster, plus an optional refinable offset. Anchoring keeps a node inside the molecule

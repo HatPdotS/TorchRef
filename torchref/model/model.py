@@ -490,8 +490,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def load(self, reader):
         """
         Populate the model from a reader callable, through
-        :meth:`~torchref.model.context.ModelContext.from_atoms`; ``load_pdb`` /
-        ``load_cif`` come through here.
+        :meth:`~.context.ModelContext.from_atoms`; ``load_pdb``/``load_cif`` call this.
 
         Parameters
         ----------
@@ -1632,10 +1631,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return (p for p in super().parameters(recurse) if p.numel() > 0)
 
     def named_mixed_tensors(self):
-        """Yield ``(name, wrapper)`` for every ``MixedTensor`` submodule.
+        """Yield ``(name, wrapper)`` for each :class:`~.parameter_wrappers.MixedTensor`.
 
-        Subclasses of :class:`~torchref.model.parameter_wrappers.MixedTensor` are
-        included; ``RigidXYZTensor`` is not.
+        Subclasses are included; ``RigidXYZTensor`` is not.
         """
         for name, module in self.named_modules():
             if isinstance(module, MixedTensor) and module != self:
@@ -2029,9 +2027,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Return a boolean mask for atoms matching a Phenix-style selection.
 
-        Evaluated on the topology
-        (:meth:`~torchref.topology.topology.Topology.select`); the result can be handed
-        straight to ``MixedTensor.set()``.
+        Evaluated on the topology (:meth:`~.topology.topology.Topology.select`); the
+        result can be handed straight to ``MixedTensor.set()``.
 
         Parameters
         ----------
@@ -2240,10 +2237,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     @property
     def hydrogen_mode(self) -> str:
-        """``"atoms"`` or ``"riding"``, as held by the context.
-
-        See :class:`~torchref.model.context.ModelContext`.
-        """
+        """``"atoms"`` or ``"riding"``; see :class:`~.context.ModelContext`."""
         return self.ctx.hydrogen_mode
 
     def hydrogen_frames(self):
@@ -2336,8 +2330,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def use_rigid_xyz(self) -> "Model":
         """
-        Swap ``self.xyz`` for a per-chain
-        :class:`~torchref.model.rigid_xyz.RigidXYZTensor`.
+        Swap ``self.xyz`` for a per-chain :class:`~.rigid_xyz.RigidXYZTensor`.
 
         The only refinable leaves become per-chain Euler angles and translations,
         with chains auto-detected from the topology's chain ids (waters and
@@ -2450,9 +2443,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Parameters
         ----------
         commit : bool, optional
-            If ``True`` (default), bake the current rotated/translated
-            coordinates into a fresh
-            :class:`~torchref.model.parameter_wrappers.MixedTensor` and install that
+            If ``True`` (default), bake the current rotated/translated coordinates
+            into a fresh :class:`~.parameter_wrappers.MixedTensor` and install that
             as ``self.xyz``. If ``False``, restore the original container
             untouched (discarding the rigid transform).
 
