@@ -19,6 +19,7 @@ from torchref.scaling.scaler_base import (
     DEFAULT_SCALE_TARGET,
     SCALE_TARGETS,
     ScalerBase,
+    _u_penalty_target,
 )
 from torchref.scaling.solvent import SS_HALF_BOUNDS, SolventModel
 from torchref.utils.utils import ModuleReference
@@ -496,7 +497,6 @@ class CollectionScaler(ScalerBase):
                 for n in fcalc_cache
             )
         _norm = 1.0 / max(ssq, 1e-30)
-        scaler_self = self
 
         class _CollectionScalerJointTarget(nn.Module):
             """The table rows, closed over their detached ``fcalc``."""
@@ -514,23 +514,9 @@ class CollectionScaler(ScalerBase):
                     if maint is not None:
                         maint()
 
-        class _CollectionScalerUPenalty(nn.Module):
-            """``sum(U**2)`` on the anisotropic scale tensor.
-
-            Its normaliser is pinned to **amplitudes** rather than following the
-            objective. Sharing ``_norm`` would make the penalty's weight relative to the
-            likelihood depend on which objective was selected, which is a silent change
-            of regularisation strength dressed up as a change of objective.
-            """
-
-            name = "scaler/u_penalty"
-
-            def forward(self):
-                return torch.sum(scaler_self.U**2) * _norm
-
         state = LossState(device=self.device)
         state.register_target("scaler/joint", _CollectionScalerJointTarget())
-        state.register_target("scaler/u_penalty", _CollectionScalerUPenalty())
+        state.register_target("scaler/u_penalty", _u_penalty_target(self, _norm))
 
         optimizer = torch.optim.LBFGS(
             self.parameters(),

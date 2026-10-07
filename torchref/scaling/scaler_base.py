@@ -48,6 +48,22 @@ SCALE_TARGETS = ("nll", "ml_noalpha", "ls")
 DEFAULT_SCALE_TARGET = "ls"
 
 
+def _u_penalty_target(scaler: "ScalerBase", norm: float) -> nn.Module:
+    """The ``scaler/u_penalty`` target of a scale fit: ``sum(U**2) * norm``.
+
+    ``norm`` is the fit's amplitude normaliser, shared with the likelihood; the penalty
+    is a target of its own so it shows in the loss breakdown.
+    """
+
+    class _UPenalty(nn.Module):
+        name = "scaler/u_penalty"
+
+        def forward(self):
+            return torch.sum(scaler.U**2) * norm
+
+    return _UPenalty()
+
+
 class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     """
     Base scaler class for crystallographic scaling without model dependency.
@@ -437,7 +453,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             verbose=0,
             device=self.device,
         )
-        scaler_self = self
 
         # One constant applied to EVERY term below, so the objective is an exact
         # rescaling: same minimiser, same gradient direction, same relative weight
@@ -475,22 +490,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 if maint is not None:
                     maint()
 
-        class _ScalerUPenalty(nn.Module):
-            """``sum(U**2)`` on the anisotropic scale tensor.
-
-            A scaler regularizer rather than part of any likelihood, registered as its own
-            target so it stays visible in the loss breakdown and leaves the x-ray term
-            directly comparable to the body target's.
-            """
-
-            name = "scaler/u_penalty"
-
-            def forward(self):
-                return torch.sum(scaler_self.U**2) * _norm
-
         state = LossState(device=self.device)
         state.register_target("scaler/xray", _ScalerXrayTarget())
-        state.register_target("scaler/u_penalty", _ScalerUPenalty())
+        state.register_target("scaler/u_penalty", _u_penalty_target(self, _norm))
 
         optimizer = torch.optim.LBFGS(
             self.parameters(),
