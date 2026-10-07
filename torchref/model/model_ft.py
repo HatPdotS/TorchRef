@@ -172,7 +172,7 @@ class ModelFT(CachedForwardMixin, Model):
         return self.fft.grid_key
 
     def _fingerprint_state(self):
-        """Fold the grid key and the plain-attribute settings into the forward-cache key.
+        """Fold the grid key and plain-attribute settings into the forward-cache key.
 
         Parameters and buffers alone would miss a cell, space-group or resolution
         change that leaves the grid buffers untouched until the next forward, and a
