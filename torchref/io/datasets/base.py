@@ -1,25 +1,17 @@
 """
 Base dataclass for crystallographic datasets: every optional tensor field,
 device management and save/load.
-
-Beware the ``spacegroup`` field: annotated ``Optional[str]`` here, but at
-runtime ``FcalcDataset`` *and* ``ReflectionData`` (which does not override the
-annotation) both store a ``torchref.symmetry.SpaceGroup`` object in it.
 """
 
 import warnings
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import Any, Dict, Optional
 
-import gemmi
 import torch
 
 from torchref.config import get_default_device, get_float_dtype, normalize_device
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.device_mixin import DeviceMovementMixin
-
-if TYPE_CHECKING:
-    pass
 
 
 @dataclass
@@ -68,7 +60,7 @@ class CrystalDataset(DeviceMovementMixin):
 
     # === Unit cell and symmetry ===
     cell: Optional[Cell] = None  # Cell object with [a, b, c, alpha, beta, gamma]
-    spacegroup: Optional[str] = None  # Space group name string
+    spacegroup: Optional[SpaceGroup] = None
 
     # === Metadata ===
     device: torch.device = field(default_factory=get_default_device)
@@ -95,18 +87,6 @@ class CrystalDataset(DeviceMovementMixin):
 
         if not hasattr(self, "masks") or self.masks is None:
             self.masks = TensorMasks(device=self.device)
-
-    # ========== DEVICE MANAGEMENT ==========
-
-    def _tensor_fields(self):
-        """Yield ``(name, tensor)`` for every tensor field.
-
-        ``Cell`` objects are NOT included -- ``to()`` moves those separately.
-        """
-        for f in fields(self):
-            val = getattr(self, f.name)
-            if isinstance(val, torch.Tensor):
-                yield f.name, val
 
     # ========== SERIALIZATION ==========
 
@@ -252,18 +232,18 @@ class CrystalDataset(DeviceMovementMixin):
         """Get space group name as string (short form, e.g., 'P212121')."""
         if self.spacegroup is None:
             return None
-        return gemmi.SpaceGroup(self.spacegroup).short_name()
+        return self.spacegroup.name
 
     @property
     def spacegroup_hm(self) -> Optional[str]:
         """Get space group Hermann-Mauguin name with spaces (e.g., 'P 21 21 21')."""
         if self.spacegroup is None:
             return None
-        return gemmi.SpaceGroup(self.spacegroup).hm
+        return self.spacegroup.hm
 
     @property
     def spacegroup_number(self) -> Optional[int]:
         """Get space group number (1-230)."""
         if self.spacegroup is None:
             return None
-        return gemmi.SpaceGroup(self.spacegroup).number
+        return self.spacegroup.number

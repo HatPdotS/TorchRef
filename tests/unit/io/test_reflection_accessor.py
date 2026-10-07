@@ -89,3 +89,11 @@ class TestReflectionSubset:
         d.filter_by_resolution(d_min=3.0)  # adds a "resolution" mask
         n_after = d.work.indices.numel()
         assert n_after < n_before  # cache rebuilt against the new mask
+
+
+@pytest.mark.unit
+def test_resolution_filter_reports_the_range_it_applies(data_1daw, capsys):
+    """Without d_min the filter keeps everything up to d_max: the range is [d_max - 0]."""
+    data_1daw.verbose = 1
+    data_1daw.filter_by_resolution(d_max=10.0)
+    assert "[10.0 - 0] Å" in capsys.readouterr().out

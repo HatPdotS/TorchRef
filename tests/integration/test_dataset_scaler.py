@@ -104,7 +104,6 @@ def test_live_access_scales_both_sigmas_and_all_entrypoints(loaded_reflection_da
             torch.testing.assert_close(
                 getattr(subset, subset_attr + "_raw"), raw[subset.mask]
             )
-    torch.testing.assert_close(dc(mask=False)["0"][1], data.F)
     torch.testing.assert_close(data.get_corrected_data(), (data.F, data.F_sigma))
     torch.testing.assert_close(data.get_corrected_intensities(), (data.I, data.I_sigma))
     dc.scaler.requires_grad_(True)

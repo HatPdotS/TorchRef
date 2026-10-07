@@ -14,9 +14,11 @@ closed form,
 
 whose ``Phi`` argument is exactly :func:`~torchref.base.french_wilson.french_wilson_h`.
 The lower tail of the same density, :func:`wilson_log_lower_tail`, catches
-intensities too negative to be noise. Neither tail is a cut on ``h`` itself:
-where ``sigma/S`` is large, an observation that is plain noise has a very
-negative ``h`` and an ordinary probability. Real outliers -- zingers, ice rings,
+intensities too negative to be noise. A centric reflection's prior is
+``S chi^2_1``, for which neither tail has a closed form; both are then a
+one-dimensional integral, evaluated by quadrature. Neither tail is a cut on
+``h`` itself: where ``sigma/S`` is large, an observation that is plain noise has
+a very negative ``h`` and an ordinary probability. Real outliers -- zingers, ice rings,
 overlapped or mis-integrated spots -- are mostly on the strong side.
 
 Two things decide whether the test means anything, and both are about ``S``:
@@ -39,6 +41,7 @@ show up as an implausible rejection rate rather than as an error.
 
 import math
 
+import numpy as np
 import torch
 
 from torchref.base.french_wilson import french_wilson_h
@@ -59,6 +62,15 @@ _LOG_PHI_CF_BELOW = -2.0
 #: the cost is 40 divisions on a tensor evaluated once per dataset.
 _LOG_PHI_CF_TERMS = 40
 _LOG_SQRT_2PI = 0.5 * math.log(2.0 * math.pi)
+#: Gauss-Legendre nodes for the centric tails: 48 hold both within 1e-8 nats of
+#: an mpmath quadrature for z in [-200, 1000] and sigma/S in [2e-4, 2e3].
+_CENTRIC_TAIL_NODES = 48
+_GAUSS_LEGENDRE = np.polynomial.legendre.leggauss(_CENTRIC_TAIL_NODES)
+#: The quadrature covers the ``s`` where ``phi(c - s)`` is within ``exp(-40)`` of
+#: its largest value on ``s >= 0``; nothing outside reaches the sum's resolution.
+_CENTRIC_TAIL_WINDOW = math.sqrt(80.0)
+#: Rows per quadrature batch, bounding the (rows, nodes) temporaries.
+_CENTRIC_TAIL_CHUNK = 65536
 
 
 def log_normal_cdf(x: torch.Tensor) -> torch.Tensor:
@@ -78,8 +90,8 @@ def log_normal_cdf(x: torch.Tensor) -> torch.Tensor:
     Returns
     -------
     torch.Tensor
-        ``log Phi(x)``, same shape. Agrees with ``torch.special.log_ndtr`` to
-        better than 1e-6 absolute over ``[-40, 10]`` in float32, on every device.
+        ``log Phi(x)``, same shape. Within 1e-6 of ``log_ndtr`` over ``[-40, 10]`` in
+        float64; in float32 within 3e-7 times ``max(1, |log Phi|)``, 2.4e-4 at -40.
     """
     far = x < _LOG_PHI_CF_BELOW
     # Both branches are evaluated everywhere, so each input is first clamped into
@@ -115,6 +127,74 @@ def _log_mills(x: torch.Tensor) -> torch.Tensor:
     )
 
 
+def _sigma_over_S(
+    sigma: torch.Tensor, mean_intensity: torch.Tensor, is_centric
+) -> torch.Tensor:
+    """``a = sigma/S_eff``, the gap ``z - h`` between ``I/sigma`` and ``h``.
+
+    Read off :func:`~torchref.base.french_wilson.french_wilson_h` at ``I = 0``, so
+    the two tails take the centric factor of two from the same place ``h`` does.
+    Not formed as ``z - h``: for a strong, precise reflection that difference
+    cancels in float32 exactly where ``z a``, a term of the log tail, is large.
+    """
+    return -french_wilson_h(torch.zeros_like(sigma), sigma, mean_intensity, is_centric)
+
+
+def _centric_rows(is_centric, like: torch.Tensor):
+    """``is_centric`` as a boolean mask shaped like ``like``, or None if no row is."""
+    if is_centric is None or is_centric is False:
+        return None
+    if is_centric is True:
+        return torch.ones_like(like, dtype=torch.bool)
+    return is_centric.to(device=like.device, dtype=torch.bool)
+
+
+def _log_centric_integral(
+    c: torch.Tensor, a: torch.Tensor, upper: bool
+) -> torch.Tensor:
+    """``log`` of ``int_0^inf phi(c - s) g(sqrt(a s)) ds``, ``g`` erfcx or erf.
+
+    The integral both centric tails reduce to (see :func:`wilson_log_upper_tail`
+    and :func:`wilson_log_lower_tail`), by Gauss-Legendre quadrature over the
+    window of ``s >= 0`` that ``phi(c - s)`` occupies. Writing
+    ``s = s_lo + span u^2`` absorbs the square-root kink of ``g`` at ``s = 0``,
+    and ``s - c`` is built from the window's offset rather than as a difference
+    of two large numbers. ``c`` and ``a`` are 1-D; ``a`` must be positive.
+    """
+    nodes, weights = (
+        torch.as_tensor(v, dtype=c.dtype).to(c.device) for v in _GAUSS_LEGENDRE
+    )
+    u, w = 0.5 * (nodes + 1.0), 0.5 * weights
+    width = _CENTRIC_TAIL_WINDOW
+    logs = []
+    for c_k, a_k in zip(c.split(_CENTRIC_TAIL_CHUNK), a.split(_CENTRIC_TAIL_CHUNK)):
+        # Window start minus c. Below zero the Gaussian decays from s = 0 over
+        # width^2 / (2|c|), not over the width.
+        offset = -torch.clamp(c_k, max=width)
+        span = torch.where(
+            c_k >= 0,
+            width - offset,
+            width * width / (torch.sqrt(c_k * c_k + width * width) - c_k),
+        )
+        q = span.unsqueeze(-1) * u * u
+        s = (c_k + offset).unsqueeze(-1) + q
+        diff = offset.unsqueeze(-1) + q
+        x = torch.sqrt(a_k.unsqueeze(-1) * s)
+        if upper:
+            # erfcx(x) = sqrt(2/pi) R(sqrt(2) x), without erfc's underflow.
+            log_g = 0.5 * math.log(2.0 / math.pi) + _log_mills(math.sqrt(2.0) * x)
+        else:
+            log_g = torch.log(torch.erf(x))
+        terms = (
+            log_g
+            - 0.5 * diff * diff
+            - _LOG_SQRT_2PI
+            + torch.log(2.0 * span.unsqueeze(-1) * u * w)
+        )
+        logs.append(torch.logsumexp(terms, dim=-1))
+    return torch.cat(logs) if logs else c.clone()
+
+
 def wilson_log_upper_tail(
     I: torch.Tensor,
     sigma: torch.Tensor,
@@ -125,7 +205,15 @@ def wilson_log_upper_tail(
 
     The upper tail of the Wilson prior convolved with Gaussian measurement error,
     evaluated in log space because ``exp(sigma^2/(2 S^2) - I/S)`` overflows
-    float32 long before the tail probability underflows.
+    float32 long before the tail probability underflows. With ``z = I/sigma``,
+    ``h`` from :func:`~torchref.base.french_wilson.french_wilson_h` and
+    ``a = z - h``,
+
+        P(I' > I) = Q(z) + exp(a^2/2 - z a) int_0^inf phi(h - s) g(sqrt(a s)) ds
+
+    with ``g = 1`` for an acentric reflection, where the integral is ``Phi(h)``,
+    and ``g = erfcx`` for a centric one, whose ``S chi^2_1`` prior leaves it to
+    quadrature.
 
     Parameters
     ----------
@@ -137,8 +225,10 @@ def wilson_log_upper_tail(
         Wilson ``Sigma`` for each reflection -- the shell mean already divided by
         the multiplicity ``epsilon``. Same shape, must be positive.
     is_centric : torch.Tensor or bool, optional
-        As for :func:`~torchref.base.french_wilson.french_wilson_h`, which
-        supplies the centric factor of two. None treats everything as acentric.
+        Boolean mask of centric reflections, or a plain ``bool`` for an input
+        that is all one or the other. None treats everything as acentric.
+        Centric rows are selected by boolean indexing, a GPU->CPU sync whenever
+        any row is centric.
 
     Returns
     -------
@@ -147,13 +237,14 @@ def wilson_log_upper_tail(
         below for very negative ``I``.
     """
     z = I / sigma
-    # h is the French-Wilson parameter, so sigma/S_eff falls out of it rather
-    # than being recomputed -- the two tails then cannot disagree about the
-    # centric convention.
     h = french_wilson_h(I, sigma, mean_intensity, is_centric)
-    a = z - h
+    a = _sigma_over_S(sigma, mean_intensity, is_centric)
+    log_signal = log_normal_cdf(h)
+    centric = _centric_rows(is_centric, I)
+    if centric is not None and bool(centric.any()):
+        log_signal[centric] = _log_centric_integral(h[centric], a[centric], True)
     # I/S_eff == z*a, so S_eff itself is never needed here.
-    return torch.logaddexp(log_normal_cdf(-z), 0.5 * a * a - z * a + log_normal_cdf(h))
+    return torch.logaddexp(log_normal_cdf(-z), 0.5 * a * a - z * a + log_signal)
 
 
 def wilson_log_lower_tail(
@@ -173,7 +264,9 @@ def wilson_log_lower_tail(
     ratio. Through ``R`` the exponential and ``Phi(h)``, each of which can be
     astronomically large or small, cancel exactly; what is left is a ratio of
     Mills ratios. Where ``S << sigma`` it tends to ``Phi(z)``, the probability
-    of the noise alone, however negative ``h`` is.
+    of the noise alone, however negative ``h`` is. That is the acentric form; a
+    centric reflection takes ``int_0^inf phi(z - s) erf(sqrt(a s)) ds`` by
+    quadrature, which has no cancellation to avoid.
 
     Parameters
     ----------
@@ -185,7 +278,7 @@ def wilson_log_lower_tail(
         Wilson ``Sigma`` for each reflection, as for
         :func:`wilson_log_upper_tail`. Same shape, must be positive.
     is_centric : torch.Tensor or bool, optional
-        As for :func:`~torchref.base.french_wilson.french_wilson_h`. None treats
+        As for :func:`wilson_log_upper_tail`, including the host sync. None treats
         everything as acentric.
 
     Returns
@@ -195,7 +288,7 @@ def wilson_log_lower_tail(
     """
     z = I / sigma
     h = french_wilson_h(I, sigma, mean_intensity, is_centric)
-    a = z - h
+    a = _sigma_over_S(sigma, mean_intensity, is_centric)
     # log R(-h) - log R(-z). With both arguments below 2 it goes through log Phi,
     # and the Gaussian factors' difference h^2/2 - z^2/2 is written as
     # -a (h + z)/2: for a strong, precise reflection both squares are huge and
@@ -208,7 +301,11 @@ def wilson_log_lower_tail(
     )
     gap_far = _log_mills(-h) - _log_mills(-z)
     gap = torch.where(near, gap_near, gap_far)
-    return log_normal_cdf(z) + torch.log(-torch.expm1(gap))
+    log_p = log_normal_cdf(z) + torch.log(-torch.expm1(gap))
+    centric = _centric_rows(is_centric, I)
+    if centric is not None and bool(centric.any()):
+        log_p[centric] = _log_centric_integral(z[centric], a[centric], False)
+    return log_p
 
 
 def robust_mean_intensity(

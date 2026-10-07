@@ -205,3 +205,26 @@ class TestAnomalousLayoutUnaffected:
         spread.index_add_(0, inverse[flag], amp[flag])
         spread.index_add_(0, inverse[~flag], -amp[~flag])
         assert float(spread[paired].abs().max()) > 1e-3
+
+
+def test_quiet_builds_write_nothing(mtz_dir, capsys):
+    """verbose=0 reindexing onto the CCP4 ASU, and generating an HKL set, are silent."""
+    from torchref.io import FcalcDataset
+
+    src = ReflectionData(verbose=0)
+    src.load_mtz(str(mtz_dir / "1DAW.mtz"))
+    capsys.readouterr()
+
+    neg = ReflectionData.from_tensors(
+        -src.hkl,
+        src.F,
+        src.F_sigma,
+        src.cell,
+        src.spacegroup,
+        rfree_flags=src.rfree_flags,
+        verbose=0,
+    )
+    FcalcDataset.from_cell_and_resolution(src.cell, src.spacegroup, d_min=3.0)
+
+    assert bool(neg.friedel_flags.any()), "the reindexing branch must have run"
+    assert capsys.readouterr().out == ""

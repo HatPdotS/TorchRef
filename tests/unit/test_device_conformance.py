@@ -118,6 +118,35 @@ def test_every_device_bearing_class_is_accounted_for():
 
 
 @pytest.mark.unit
+def test_dataset_space_group_follows_the_requested_device(mtz_dir, monkeypatch):
+    """A dataset builds its SpaceGroup on the device it was given, not the process
+    default, and copies a SpaceGroup passed in from elsewhere onto it."""
+    from torchref import config
+    from torchref.io import FcalcDataset, ReflectionData
+    from torchref.symmetry import SpaceGroup
+
+    src = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    monkeypatch.setattr(config.device, "_device", torch.device("meta"))
+
+    fcalc = FcalcDataset.from_cell_and_resolution(
+        src.cell.data, "C 1 2 1", d_min=4.0, device="cpu"
+    )
+    data = ReflectionData.from_tensors(
+        src.hkl,
+        src.F,
+        src.F_sigma,
+        src.cell.data,
+        SpaceGroup("C 1 2 1", device="meta"),
+        rfree_flags=src.rfree_flags,
+        device="cpu",
+        verbose=0,
+    )
+
+    assert fcalc.spacegroup.device.type == "cpu"
+    assert data.spacegroup.device.type == "cpu"
+
+
+@pytest.mark.unit
 def test_uncovered_entries_still_exist():
     """Stop ``UNCOVERED`` accumulating excuses for classes that are long gone."""
     package_root = Path(__file__).resolve().parents[2] / "torchref"

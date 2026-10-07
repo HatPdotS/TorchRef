@@ -31,7 +31,6 @@ from pathlib import Path
 
 import torch
 
-from torchref.base.french_wilson import french_wilson_auto
 from torchref.cli._common import (
     add_all_columns_arg,
     add_ded_weight_args,
@@ -54,6 +53,7 @@ from torchref.cli._common import (
     validate_cif_files,
     validate_files,
 )
+from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.maps.ded_weights import (
     DEFAULT_SCHEME,
     WEIGHT_COLUMNS,

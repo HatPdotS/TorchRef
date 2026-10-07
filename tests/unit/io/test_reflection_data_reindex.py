@@ -52,7 +52,7 @@ class TestValidateHklReindex:
     """The reported crash lives in validate_hkl (collection HKL alignment)."""
 
     def test_carries_all_per_reflection_fields(self):
-        grid = _base_grid()
+        grid = _asu_unique(_base_grid())
         n = grid.shape[0]
         # ``light`` lacks the last 10%; the reference grid lacks the first 10%,
         # so the two sets genuinely differ (each has reflections the other lacks).
@@ -74,7 +74,7 @@ class TestValidateHklReindex:
         light._assert_per_reflection_consistent()
 
     def test_identical_hkl_preserves_count(self):
-        grid = _base_grid(6, 6, 6)
+        grid = _asu_unique(_base_grid(6, 6, 6))
         d = _synthetic(grid, seed=2)
         n0 = len(d.hkl)
         d.validate_hkl(d.hkl.clone())

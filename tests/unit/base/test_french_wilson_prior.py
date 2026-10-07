@@ -9,18 +9,19 @@ intensity: on deposited data, when sigma grows with the intensity, and next to
 a single reflection whose sigma dwarfs everything around it.
 """
 
+from functools import partial
+
 import pytest
 import torch
 
 from torchref.base.french_wilson import (
-    _anisotropy_design,
     _bspline,
     fit_mean_intensity,
     french_wilson,
-    french_wilson_auto,
     french_wilson_h,
     french_wilson_valid_mask,
 )
+from torchref.io.datasets.french_wilson import _anisotropy_design, french_wilson_auto
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.symmetry import Cell, SpaceGroup
 
@@ -119,6 +120,23 @@ def test_non_positive_prior_gives_no_amplitude(centric):
     torch.testing.assert_close(F[3:], F_alone)
     torch.testing.assert_close(sigma_F[3:], sigma_F_alone)
     assert bool(keep[3]) and bool(keep_alone[0])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("centric", [False, True])
+def test_a_row_without_a_positive_sigma_is_not_kept(centric):
+    """It has no amplitude, and a negative sigma_I flips the sign of the cut."""
+    I = torch.tensor([-20.0, 20.0, 5.0, 40.0])
+    sigma_I = torch.tensor([-2.0, -2.0, 0.0, 5.0])
+    Sigma = torch.full_like(I, 80.0)
+    is_centric = torch.full((4,), centric)
+
+    F, sigma_F, keep = french_wilson(I, sigma_I, Sigma, is_centric=is_centric)
+
+    assert torch.isnan(F[:3]).all() and torch.isnan(sigma_F[:3]).all()
+    assert not keep[:3].any()
+    assert not french_wilson_valid_mask(I, sigma_I, Sigma, centric)[:3].any()
+    assert bool(keep[3])
 
 
 @pytest.mark.unit
@@ -422,7 +440,11 @@ def test_anisotropic_prior_recovers_an_ellipsoidal_fall_off():
     centric = SpaceGroup("P 1 21 1").is_centric(hkl)
 
     aniso = fit_mean_intensity(
-        I, sigma, d, hkl=hkl, space_group="P 1 21 1", is_centric=centric
+        I,
+        sigma,
+        d,
+        anisotropy=partial(_anisotropy_design, hkl, "P 1 21 1"),
+        is_centric=centric,
     )
     iso = fit_mean_intensity(I, sigma, d, fit_mask=~centric)
 
@@ -457,8 +479,7 @@ def test_reflections_on_symmetry_axes_get_epsilon_times_the_prior(mtz_dir):
             I,
             sigma_I,
             d,
-            hkl=hkl,
-            space_group=group,
+            anisotropy=partial(_anisotropy_design, hkl, group),
             is_centric=group.is_centric(hkl),
             epsilon=epsilon,
         )

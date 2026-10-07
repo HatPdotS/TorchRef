@@ -7,7 +7,7 @@ as pseudo-observations.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
 import pandas as pd
 import torch
@@ -25,9 +25,6 @@ if TYPE_CHECKING:
 class FcalcDataset(CrystalDataset):
     """
     Dataset for storing calculated structure factors.
-
-    Unlike :class:`CrystalDataset`, ``spacegroup`` here holds a
-    ``torchref.symmetry.SpaceGroup`` object, not a string.
 
     Parameters
     ----------
@@ -47,9 +44,6 @@ class FcalcDataset(CrystalDataset):
     device : torch.device
         Device for tensors.
     """
-
-    # Override spacegroup to use torchref.symmetry.SpaceGroup (not gemmi)
-    spacegroup: Optional[SpaceGroup] = None  # type: ignore[assignment]
 
     # Fcalc-specific fields
     fcalc: Optional[torch.Tensor] = None  # Complex (N,)
@@ -76,6 +70,7 @@ class FcalcDataset(CrystalDataset):
             is moved IN PLACE if ``device`` disagrees with it.
         spacegroup : SpaceGroupLike
             Space group (str, int, gemmi.SpaceGroup, or torchref.symmetry.SpaceGroup).
+            The dataset holds its own copy, on ``device``.
         d_min : float, optional
             High resolution limit in Angstroms. Default is 2.0.
         d_max : float, optional
@@ -115,10 +110,7 @@ class FcalcDataset(CrystalDataset):
                 cell_tensor = cell.to(device=device, dtype=dtype)
             cell_obj = Cell(cell_tensor, dtype=dtype, device=device)
 
-        if isinstance(spacegroup, SpaceGroup):
-            sg_obj = spacegroup
-        else:
-            sg_obj = SpaceGroup(spacegroup)
+        sg_obj = SpaceGroup(spacegroup, dtype=dtype, device=device)
 
         cell_list = cell_tensor.cpu().tolist()
         gemmi_cell = gemmi.UnitCell(
@@ -141,8 +133,6 @@ class FcalcDataset(CrystalDataset):
             mask = resolution <= d_max
             hkl = hkl[mask]
             resolution = resolution[mask]
-
-        print(f"Generated dataset with {len(hkl)} reflections.")
 
         return FcalcDataset(
             hkl=hkl,
@@ -384,7 +374,8 @@ class FcalcDataset(CrystalDataset):
     ) -> None:
         """
         Write Fcalc to MTZ as pseudo-observations, readable back by
-        :meth:`ReflectionData.load_mtz` as if measured.
+        :meth:`~torchref.io.datasets.reflection_data.ReflectionData.load_mtz` as if
+        measured.
 
         Sigmas are fabricated as ``sigma_frac * |F|``, not measured.
 
@@ -393,7 +384,7 @@ class FcalcDataset(CrystalDataset):
         filepath : str
             Output MTZ filename.
         sigma_frac : float, optional
-            Sigma as a fraction of |F|. Default is 0.05 (5%).
+            Sigma as a fraction of ``|F|``. Default is 0.05 (5%).
         f_column : str, optional
             Column name for amplitudes. Default is 'F-obs'.
         sigf_column : str, optional
@@ -434,47 +425,6 @@ class FcalcDataset(CrystalDataset):
         df = pd.DataFrame(columns)
         mtz.write(df, self.cell.data, self.spacegroup, filepath)
 
-    # ========== SERIALIZATION OVERRIDES ==========
-
-    def _get_state(self) -> Dict[str, Any]:
-        """As the base, but ``spacegroup`` is flattened via its ``hm`` symbol."""
-        state = super()._get_state()
-        if self.spacegroup is not None:
-            state["spacegroup"] = self.spacegroup.hm
-        return state
-
-    @classmethod
-    def _from_state(cls, state: Dict[str, Any], device=None) -> "FcalcDataset":
-        """Rebuild from a :meth:`_get_state` dict, rewrapping the H-M string as a
-        ``SpaceGroup``. Pops ``"masks"``, so ``state`` is mutated.
-        """
-        from torchref.utils.utils import TensorMasks
-
-        device = normalize_device(device)
-
-        masks_state = state.pop("masks", {})
-        state = cls._drop_stale_state_keys(state)
-
-        if "device" in state:
-            state["device"] = torch.device(state["device"])
-
-        if "spacegroup" in state and state["spacegroup"] is not None:
-            if isinstance(state["spacegroup"], str):
-                state["spacegroup"] = SpaceGroup(state["spacegroup"])
-
-        if "cell" in state and state["cell"] is not None:
-            if isinstance(state["cell"], torch.Tensor):
-                state["cell"] = Cell(
-                    state["cell"], dtype=get_float_dtype(), device=device
-                )
-
-        obj = cls(**state)
-
-        if masks_state:
-            obj.masks = TensorMasks(data=masks_state, device=device)
-
-        return obj.to(device)
-
     # ========== UTILITY METHODS ==========
 
     def __repr__(self) -> str:
@@ -486,24 +436,3 @@ class FcalcDataset(CrystalDataset):
             f"{self.__class__.__name__}(n_reflections={n_refl}, "
             f"spacegroup='{sg}', fcalc={has_fcalc}, device={self.device})"
         )
-
-    @property
-    def spacegroup_name(self) -> Optional[str]:
-        """Get space group name as string (short form, e.g., 'P212121')."""
-        if self.spacegroup is None:
-            return None
-        return self.spacegroup.name
-
-    @property
-    def spacegroup_hm(self) -> Optional[str]:
-        """Get space group Hermann-Mauguin name with spaces (e.g., 'P 21 21 21')."""
-        if self.spacegroup is None:
-            return None
-        return self.spacegroup.hm
-
-    @property
-    def spacegroup_number(self) -> Optional[int]:
-        """Get space group number (1-230)."""
-        if self.spacegroup is None:
-            return None
-        return self.spacegroup.number

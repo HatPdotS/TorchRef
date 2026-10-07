@@ -142,6 +142,44 @@ class TestReflectionDataProperties:
 
         assert data.amplitude_source is None
 
+    @pytest.mark.unit
+    def test_space_group_identity_of_loaded_data_and_collection(self, mtz_dir):
+        """The name, H-M symbol and number come from the stored SpaceGroup."""
+        from torchref.io import DatasetCollection, FcalcDataset, ReflectionData
+
+        data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+        collection = DatasetCollection(verbose=0).add_dataset("1DAW", data)
+        fcalc = FcalcDataset.from_cell_and_resolution(
+            data.cell, data.spacegroup, d_min=4.0
+        )
+
+        for dataset in (data, collection, fcalc):
+            assert dataset.spacegroup_name == "C2"
+            assert dataset.spacegroup_hm == "C 1 2 1"
+            assert dataset.spacegroup_number == 5
+
+    @pytest.mark.unit
+    def test_from_tensors_copies_a_tensor_cell_into_a_cell(self, mtz_dir):
+        """A cell given as a tensor becomes a Cell of its own, as a list does."""
+        from torchref.io import ReflectionData
+        from torchref.symmetry import Cell
+
+        src = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+        cell = src.cell.data.clone()
+        data = ReflectionData.from_tensors(
+            src.hkl,
+            src.F,
+            src.F_sigma,
+            cell,
+            src.spacegroup,
+            rfree_flags=src.rfree_flags,
+            verbose=0,
+        )
+
+        assert isinstance(data.cell, Cell)
+        assert data.cell.data is not cell
+        torch.testing.assert_close(data.cell.volume, src.cell.volume)
+
 
 class TestMockReflectionData:
     """Tests using mock reflection data."""

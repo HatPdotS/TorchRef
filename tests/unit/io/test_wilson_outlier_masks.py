@@ -16,7 +16,7 @@ outlier rate.
 import pytest
 import torch
 
-from torchref.base.french_wilson import french_wilson_auto
+from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.io.datasets.reflection_data import ReflectionData
 
 CELL = (50.0, 60.0, 70.0, 90.0, 90.0, 90.0)

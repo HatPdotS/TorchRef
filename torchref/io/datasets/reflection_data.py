@@ -15,10 +15,10 @@ import numpy as np
 import torch
 
 from torchref.base import math_torch
-from torchref.base.french_wilson import french_wilson_auto
 from torchref.config import dtypes, get_int_dtype, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
+from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorMasks
@@ -171,7 +171,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
     Container for crystallographic reflection data.
 
     Loads and holds Miller indices, amplitudes, intensities and R-free flags as
-    PyTorch tensors, all on one device.
+    PyTorch tensors, all on one device. :meth:`load` reads indices, amplitudes
+    and intensities in the configured int and float dtypes (int32 and float32
+    by default); :meth:`from_tensors` keeps the dtypes it is given.
 
     Parameters
     ----------
@@ -183,20 +185,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
     Attributes
     ----------
     hkl : torch.Tensor
-        Miller indices of shape (N, 3), dtype int32.
+        Miller indices of shape (N, 3).
     F, F_sigma : torch.Tensor
-        Amplitudes and their uncertainties, shape (N,), dtype float32.
+        Amplitudes and their uncertainties, shape (N,).
     I, I_sigma : torch.Tensor
-        Intensities and their uncertainties, shape (N,), dtype float32.
+        Intensities and their uncertainties, shape (N,).
     rfree_flags : torch.Tensor
         Test-set flags of shape (N,), convention **1=work, 0=free**. Dtype is
         int32 when generated but bool when read from an MTZ FreeR column, so
         never assume one; internal accessors coerce to bool.
-    cell : torch.Tensor
-        Unit cell parameters [a, b, c, alpha, beta, gamma].
-    spacegroup : str
-        Annotated ``str``, but ``load`` / ``from_tensors`` store a
-        ``torchref.symmetry.SpaceGroup`` object here.
+    cell : Cell
+        Unit cell: a, b, c in Å; alpha, beta, gamma in degrees.
+    spacegroup : SpaceGroup
+        Space group of the data.
     resolution : torch.Tensor
         Resolution per reflection in Ångströms of shape (N,).
     """
@@ -204,9 +205,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
     # Additional fields specific to ReflectionData (beyond CrystalDataset)
     # Note: Most fields are inherited from CrystalDataset dataclass
 
-    # Provenance: the dataset this one was derived from, and the operation.
+    # Provenance: the dataset this one was derived from.
     source: Optional["ReflectionData"] = field(default=None, repr=False)
-    last_op: Optional[str] = field(default=None, repr=False)
 
     def __post_init__(self):
         """
@@ -537,10 +537,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         n_flipped = int(friedel_flags.sum())
         if n_flipped:
-            print(
-                f"  Reindexed {n_flipped}/{len(self.hkl)} reflections to the "
-                f"CCP4 ASU (output is written on that index, not the input one)."
-            )
+            if self.verbose > 0:
+                print(
+                    f"  Reindexed {n_flipped}/{len(self.hkl)} reflections to the "
+                    f"CCP4 ASU (output is written on that index, not the input one)."
+                )
             # A row needing conjugation to reach the ASU does NOT by itself mean
             # the data are Bijvoet-unmerged: a merged dataset indexed in another
             # convention flags rows while carrying no mate at all. Real mates
@@ -585,7 +586,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """Move complex structure factors between the signed and canonical index.
 
         Rows flagged in :attr:`friedel_flags` are evaluated at ``-h`` by
-        :meth:`_hkl_for_sf` while :attr:`hkl` holds ``+h``; ``F(-h)`` is the
+        ``_hkl_for_sf`` while :attr:`hkl` holds ``+h``; ``F(-h)`` is the
         conjugate of ``F(h)`` up to the anomalous ``f''`` term. Conjugating
         exactly those rows re-expresses the array on the other index. The
         operation is its own inverse, so it converts in both directions.
@@ -741,7 +742,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 return torch.arange(len(self.hkl), device=self.device)
             return torch.nonzero(valid).squeeze(-1)
         group_id, n_groups = self.asu_group_indices()
-        rows = self._group_representative_rows(group_id, n_groups)
+        rows = self._group_representative_rows(group_id)
         if valid is not None:
             rows = rows[self._group_any(valid, group_id, n_groups)]
         return torch.sort(rows).values
@@ -762,9 +763,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         return counts > 0
 
     @staticmethod
-    def _group_representative_rows(
-        group_id: torch.Tensor, n_groups: int
-    ) -> torch.Tensor:
+    def _group_representative_rows(group_id: torch.Tensor) -> torch.Tensor:
         """One row index per ASU group, ordered by group id.
 
         The lowest-numbered row of each group, via a stable sort. Used for
@@ -805,6 +804,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ------
         ValueError
             If unit cell parameters are missing or no amplitude/intensity data found.
+
+        Warns
+        -----
+        UserWarning
+            If the reader's R-free flags mark no measured reflection free, or more
+            free than a quarter of the work set; the flags are kept. If they mark
+            none work, they are dropped and new flags generated.
         """
 
         data_dict, cell, spacegroup = reader()
@@ -895,7 +901,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             self.amplitude_source = data_dict.get("F_col", "Unknown")
 
         else:
-            raise ValueError("No amplitude or intensity data found in MTZ file")
+            raise ValueError(
+                f"No amplitude or intensity data found by {type(reader).__name__}"
+            )
 
         if "R-free-flags" in data_dict:
             rfree = torch.tensor(
@@ -921,6 +929,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     requires_grad=False,
                 ).to(torch.bool)
                 self.rfree_source = f"{reader_name} FreeR+Validation"
+            measured = torch.isfinite(self.I if use_intensities else self.F)
+            if not self._free_set_usable(rfree, measured & ~flagged, reader_name):
+                self.rfree_flags = self.validation_flags = self.rfree_source = None
+                del self.masks["flagged_initial"]
 
         self._post_load_cleanup()
 
@@ -935,6 +947,39 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 self.sanitize_F()
 
         return self
+
+    @staticmethod
+    def _free_set_usable(
+        work: torch.Tensor, counted: torch.Tensor, source: str
+    ) -> bool:
+        """Whether a file's free set can be used, warning where it looks wrong.
+
+        ``work`` (N,) holds the flags, False for free, and only the ``counted``
+        rows, those with a measurement and a non-negative flag, count. No free
+        row, or more free rows than a quarter of the work rows (about 20% of the
+        measured reflections), is warned about but usable: a deposited set is
+        honoured whenever it can be. False only when no counted row is work.
+        """
+        n_work = int((counted & work).sum())
+        n_free = int((counted & ~work).sum())
+        if n_work == 0:
+            warnings.warn(
+                f"{source} R-free flags mark no measured reflection as work "
+                f"({n_free} free); ignoring them and generating a new free set."
+            )
+            return False
+        if n_free == 0:
+            warnings.warn(
+                f"{source} R-free flags mark no measured reflection as free "
+                f"({n_work} work); keeping them, so there is no free set."
+            )
+        elif 4 * n_free > n_work:
+            warnings.warn(
+                f"{source} R-free flags mark {n_free} measured reflections free "
+                f"against {n_work} work, more than a quarter of the work set; "
+                "keeping them."
+            )
+        return True
 
     def _convert_intensities(self, held_out: torch.Tensor | None) -> None:
         """Set ``F``/``F_sigma`` from ``I``/``I_sigma`` by French-Wilson.
@@ -977,8 +1022,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         self._canonicalize_in_place()
         self.sanitize_F()
-        # No-op when ``load`` already installed French-Wilson's own mask from the
-        # true intensities; this covers the amplitude-only path.
         self.flag_wilson_outliers()
         return self
 
@@ -1015,9 +1058,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         F_sigma : torch.Tensor
             Amplitude uncertainties of shape (N,).
         cell : Cell
-            Unit cell parameters.
+            Unit cell, shared and moved IN PLACE to ``device``. Its six
+            parameters (a, b, c in Å; alpha, beta, gamma in degrees) as a list,
+            array or tensor are copied into a new Cell instead.
         spacegroup : SpaceGroup
-            Space group.
+            Space group. The dataset holds its own copy, on ``device``.
         rfree_flags : torch.Tensor, optional
             Flags of shape (N,), convention 1=work, 0=free. If None, generated
             (2% free) as int32; the stored dtype is not guaranteed bool.
@@ -1064,14 +1109,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
         data.F_sigma = _prep(F_sigma).to(device=data.device)
         data.cell = (
             cell.to(device=data.device)
-            if hasattr(cell, "to")
+            if isinstance(cell, Cell)
             else Cell(cell, device=data.device)
         )
-        data.spacegroup = (
-            spacegroup
-            if isinstance(spacegroup, SpaceGroup)
-            else SpaceGroup(spacegroup, device=data.device)
-        )
+        data.spacegroup = SpaceGroup(spacegroup, device=data.device)
 
         if rfree_flags is not None:
             data.rfree_flags = _prep(rfree_flags).to(
@@ -1293,7 +1334,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
             group_valid = torch.ones_like(group_valid)
 
-        group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
+        group_bin = bin_indices[self._group_representative_rows(group_id)]
         group_free = self._stratified_group_draw(
             group_valid,
             group_bin,
@@ -1510,7 +1551,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
             valid = self.masks().sum().item()
             print(
                 f"Filtering: {mask.sum()}/{len(mask)} reflections in range "
-                f"[{d_max if d_max else 'inf'} - {d_min if d_min else 'inf'}] "
+                f"[{d_max if d_max is not None else 'inf'} - "
+                f"{d_min if d_min is not None else 0}] "
                 f"\u00c5 ({valid} valid after all masks)"
             )
 
@@ -1595,7 +1637,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             return self.__select__(key)
         raise TypeError(f"Unsupported index type: {type(key)}")
 
-    def __select__(self, indices: torch.Tensor, op=None) -> "ReflectionData":
+    def __select__(self, indices: torch.Tensor) -> "ReflectionData":
         """
         Select reflections by boolean mask or integer indices.
 
@@ -1606,8 +1648,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ----------
         indices : torch.Tensor
             Boolean mask of shape (N,) or integer indices for selection.
-        op : str, optional
-            Operation name for tracking purposes.
 
         Returns
         -------
@@ -1630,7 +1670,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         selected.masks = self._gathered_masks(indices)
 
         selected.source = self
-        selected.last_op = op
         return selected
 
     def sanitize_F(self):
@@ -1641,15 +1680,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         from F and F_sigma.
         """
         mask = torch.zeros(len(self.F), dtype=torch.bool, device=self.device)
-        if self.F is not None:
-            # ~isfinite catches NaN AND +/-Inf (isnan alone let Inf through).
-            nonfinite = ~torch.isfinite(self.F)
-            if self.verbose > 0:
-                print(
-                    "found non-finite F values (NaN/Inf): ",
-                    nonfinite.sum().item(),
-                )
-            mask |= nonfinite
+        # ~isfinite rather than isnan, so +/-Inf is caught along with NaN.
+        nonfinite = ~torch.isfinite(self.F)
+        if self.verbose > 0:
+            print(
+                "found non-finite F values (NaN/Inf): ",
+                nonfinite.sum().item(),
+            )
+        mask |= nonfinite
         if self.F_sigma is not None:
             nonfinite_sigma = ~torch.isfinite(self.F_sigma)
             if self.verbose > 0:
@@ -1706,11 +1744,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Signed anomalous indices of shape (N, 3), distinguishing Bijvoet
             observations that share a canonical HKL. When supplied, match these
             against the dataset's signed indices and preserve their identities.
+            Required when this dataset holds Bijvoet pairs.
 
         Returns
         -------
         ReflectionData
             Self, mutated.
+
+        Raises
+        ------
+        ValueError
+            If two rows share the key they are matched on (the canonical HKL,
+            or the signed index with ``identity_hkl``): one would silently
+            replace the other.
         """
         if self.hkl is None:
             raise ValueError("No Miller indices loaded in ReflectionData")
@@ -1734,6 +1780,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         source_hkl = self.hkl if identity_hkl is None else self._hkl_for_sf()
         hkl_data_np = source_hkl.cpu().numpy()
         data_hkl_to_idx = {tuple(hkl): idx for idx, hkl in enumerate(hkl_data_np)}
+        if len(data_hkl_to_idx) < n_data:
+            raise ValueError(
+                f"validate_hkl: {n_data - len(data_hkl_to_idx)} of {n_data} rows "
+                "repeat another row's index and would be dropped. Bijvoet mates "
+                "share a canonical HKL: pass their signed indices as identity_hkl."
+            )
 
         # For each reference HKL, find the corresponding data index (or -1 if missing)
         lookup_hkl = hkl_ref if identity_hkl is None else identity_hkl
@@ -1855,9 +1907,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         from torchref.base.french_wilson import intensities_from_amplitudes
         from torchref.base.wilson_outliers import wilson_outlier_mask
-        from torchref.refinement.model_error_estimation.sigma_a import (
-            epsilon_from_hkl,
-        )
 
         if self.F is None or self.F_sigma is None or self.resolution is None:
             return
@@ -1875,13 +1924,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if int(usable.sum()) == 0:
             return
 
+        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
         keep, info = wilson_outlier_mask(
             I,
             sigma_I,
             self.hkl,
             self.resolution,
             self.cell.data,
-            epsilon=epsilon_from_hkl(self.hkl, self.spacegroup),
+            epsilon=sg.epsilon(self.hkl),
             is_centric=self.centric,
             usable=usable,
             alpha=alpha,
@@ -1980,7 +2030,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         index_mapping: torch.Tensor,
         phase_shifts: Optional[torch.Tensor] = None,
         spacegroup=None,
-        op_name: str = "remap",
     ) -> "ReflectionData":
         """
         Create new ReflectionData with remapped HKL set and data.
@@ -2000,8 +2049,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Phase offsets to apply (e.g., from symmetry translations).
         spacegroup : str, int, gemmi.SpaceGroup, or None
             New spacegroup. If None, keeps original.
-        op_name : str
-            Operation name for provenance tracking.
 
         Returns
         -------
@@ -2009,7 +2056,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             New object with remapped data. Missing reflections get:
             - 0.0 for F, I, phase, fom
             - 1.0 for F_sigma, I_sigma (conservative uncertainty)
-            - True for masks['missing']
+            - False in masks['missing'] (a keep-mask, True for rows in the source)
         """
         from torchref.symmetry.spacegroup import SpaceGroup
 
@@ -2046,7 +2093,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Track provenance
         remapped.source = self
-        remapped.last_op = op_name
 
         # Add missing mask
         missing_mask = index_mapping < 0
@@ -2089,7 +2135,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             reflection. Per-reflection fields are indexed from the original,
             ``phase`` additionally gets the translation phase shift, and
             ``resolution`` is recomputed. ``hkl_anomalous`` equals ``hkl``: each
-            P1 row is its own index. ``source``/``last_op`` record the provenance.
+            P1 row is its own index. ``source`` records the provenance.
 
         Raises
         ------
@@ -2113,7 +2159,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             new_hkl=hkl_p1,
             index_mapping=indices,
             spacegroup="P1",
-            op_name=f"expand_to_p1(include_friedel={include_friedel})",
         )
         if p1.phase is not None:
             phase = p1.phase
@@ -2133,9 +2178,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         Get scattering vectors (s-vectors) from hkl and cell.
 
-        The s-vector for a reflection hkl is defined as:
-            s = B* @ hkl
-        where B* is the reciprocal basis matrix.
+        The s-vector of a reflection is ``s = h a* + k b* + l c*``, i.e. ``hkl @ B*``
+        with ``B* = Cell.reciprocal_basis_matrix``, whose rows are a*, b*, c*.
 
         Returns
         -------
@@ -2189,7 +2233,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         the separate boolean :attr:`validation_flags`, leaving
         :attr:`rfree_flags` untouched. The work/free/validation subsets are
         disjoint (validation is carved out of free) -- see
-        :meth:`_subset_indices` and the ``work``/``free``/``validation``
+        ``_subset_indices`` and the ``work``/``free``/``validation``
         accessors. Like :meth:`generate_rfree_flags`, the split is over whole
         ASU groups so Bijvoet mates stay together (see
         :meth:`asu_group_indices`).
@@ -2224,7 +2268,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         group_free = self._group_any(free_mask, group_id, n_groups)
 
         bin_indices, n_bins = self.get_bins(n_bins=20, min_per_bin=20)
-        group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
+        group_bin = bin_indices[self._group_representative_rows(group_id)]
         group_val = self._stratified_group_draw(
             group_free,
             group_bin,

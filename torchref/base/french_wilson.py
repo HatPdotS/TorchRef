@@ -6,10 +6,29 @@ Reference: French, S. & Wilson, K. (1978). Acta Cryst. A34, 517-525.
 The conversion has two parts:
 
 - **The prior.** :func:`fit_mean_intensity` fits the expected intensity of every
-  reflection, ``epsilon Sigma(h)``: a smooth radial curve in resolution, an
-  ellipsoidal anisotropy restricted to what the Laue class allows, and the
-  multiplicity ``epsilon``. It is a fit rather than a shell average, so it is
-  positive everywhere and has no shell edges.
+  reflection, ``epsilon Sigma(h)``. ``log Sigma`` is a cubic B-spline in
+  ``s^3 = 1/d^3`` with evenly spaced knots; reflections are spread evenly over
+  ``s^3``, so the knots are equal-count, as shells are, and no end of the curve
+  rests on a handful of reflections. An ellipsoidal anisotropy ``h^T M h``, with
+  ``M`` restricted to what the Laue class allows and its isotropic part left to
+  the radial curve, adds at most five parameters, each informed by every
+  reflection. The multiplicity enters as a fixed offset ``log epsilon``: on a
+  symmetry element the copies of each atom that map ``h`` onto itself scatter
+  in phase.
+
+  The fit is a quasi-likelihood with the first two moments of an acentric
+  Wilson intensity measured with error, ``E[I] = Sigma`` and
+  ``Var[I] = Sigma^2 + sbar^2``, where ``sbar(s)``, a smooth fit to
+  ``log sigma_I``, is the typical measurement error at that resolution. Its
+  estimating equation,
+  ``sum_h x_h (I_h - Sigma_h) Sigma_h / (Sigma_h^2 + sbar_h^2) = 0``, makes
+  ``Sigma`` a resolution-local mean intensity, as a shell mean is, but with no
+  shell edges and positive everywhere: where the local mean is zero or below,
+  the weight vanishes with ``Sigma`` and the fit settles towards zero instead
+  of crossing it. Reflections at one resolution share the weight ``sbar``
+  rather than taking their own sigmas, which correlate with the intensity
+  (counting statistics, merging) and would bias the mean; a reflection more
+  than ten times noisier than typical takes ``sigma_I / 10`` in place of ``sbar``.
 - **The posterior.** :func:`french_wilson` turns ``I``, ``sigma_I`` and the
   prior into posterior amplitudes: French and Wilson's tables, their expansion
   for large ``h``, and the corresponding series for ``h`` below the tables, so
@@ -18,17 +37,11 @@ The conversion has two parts:
   not discarded. :func:`french_wilson_valid_mask` rejects only intensities too
   negative for their own sigma.
 
-:func:`french_wilson_auto` does both from ``hkl``, ``d`` and a space group.
-:func:`french_wilson_h` is the standardized argument shared by the posterior and
-the Wilson outlier test in :mod:`torchref.base.wilson_outliers`.
-
-Usage::
-
-        from torchref.base.french_wilson import french_wilson_auto
-
-        F, sigma_F, valid = french_wilson_auto(
-            I, sigma_I, hkl, d_spacings, space_group='P212121'
-        )
+:func:`~torchref.io.datasets.french_wilson.french_wilson_auto` does both from
+``hkl``, ``d`` and a space group; the symmetry it needs lives in that layer, so
+nothing here depends on :mod:`torchref.symmetry`. :func:`french_wilson_h` is the
+standardized argument shared by the posterior and the Wilson outlier test in
+:mod:`torchref.base.wilson_outliers`.
 
 These are plain functions on purpose: the conversion runs once per dataset, and
 a cached estimator holding per-row buffers goes stale the moment the rows are
@@ -36,11 +49,11 @@ reordered (as ``ReflectionData`` canonicalization does).
 """
 
 import math
+from collections.abc import Callable
 
 import torch
 
 from torchref.config import get_float_dtype, get_int_dtype
-from torchref.symmetry import SpaceGroup, SpaceGroupLike
 
 #: B-spline coefficients in ``log Sigma``. Enough to follow the low-resolution
 #: solvent deficit and the shoulder near 4-5 Å to within the scatter of shell
@@ -49,10 +62,10 @@ DEFAULT_N_COEFF = 16
 #: Fitted reflections per coefficient; a small dataset gets a stiffer curve
 #: rather than a noisy one.
 _ROWS_PER_COEFF = 400
-#: A reflection whose sigma exceeds this multiple of the typical sigma at its
-#: resolution is weighted by its own sigma. Below it every reflection counts the
-#: same; the spread of sigmas within a resolution range, which follows the
-#: intensity, stays well below it.
+#: A reflection's noise is ``max(sbar, sigma / _NOISY_SIGMA_RATIO)``, ``sbar``
+#: the typical sigma at its resolution: continuous at the threshold, and ``sbar``
+#: for all but the far noisier reflections, since the spread of sigmas within a
+#: resolution range, which follows the intensity, stays well below it.
 _NOISY_SIGMA_RATIO = 10.0
 #: Step halvings allowed per Fisher-scoring iteration before the fit is taken
 #: as converged, and the iteration cap, a runaway guard that should never bind.
@@ -428,22 +441,13 @@ def french_wilson_h(
     is_centric: torch.Tensor | bool | None = None,
 ) -> torch.Tensor:
     """
-    The French-Wilson normalized parameter ``h``.
+    Compute the French-Wilson normalized parameter ``h``.
 
-    ``h`` is not merely an interpolation coordinate for the lookup tables: it is
-    the standardized argument of the Wilson-predictive density of the
-    *observation*. Convolving the acentric Wilson prior
-    ``P(J) = (1/S)exp(-J/S)`` with the Gaussian measurement error
-    ``I|J ~ N(J, sigma^2)`` gives
-
-        p(I) = (1/S) exp(sigma^2/(2 S^2) - I/S) Phi(I/sigma - sigma/S)
-
-    whose ``Phi`` argument is exactly the acentric ``h`` below. The centric prior
-    ``J^(-1/2) exp(-J/2S)`` yields the factor of two. ``h`` is not itself a
-    tail probability: where ``sigma/S`` is large the exponential factor
-    compensates for ``Phi``, and an observation that is plain noise has a very
-    negative ``h`` and an ordinary ``p(I)``. That is why nothing here is
-    rejected on ``h``.
+    ``h = I/sigma_I - sigma_I/S``, with ``2S`` in place of ``S`` for a centric
+    reflection: the standardized argument of the Wilson-predictive density of
+    the observation (see :mod:`torchref.base.wilson_outliers`). It is not a tail
+    probability -- plain noise where ``sigma_I/S`` is large has a very negative
+    ``h`` -- so nothing is rejected on it.
 
     Parameters
     ----------
@@ -483,11 +487,11 @@ def _keep(
     h: torch.Tensor, I: torch.Tensor, sigma_I: torch.Tensor, min_i_over_sigma: float
 ) -> torch.Tensor:
     """The rejection rule on an already computed ``h``."""
-    # A non-finite h means sigma_I was degenerate or the prior mean was not a
-    # positive number; such a reflection has no posterior and must not be kept
-    # on the strength of a NaN comparison (which is False anyway, but not by
-    # intent).
-    return torch.isfinite(h) & (I / sigma_I >= min_i_over_sigma)
+    # No posterior, so never kept: a non-finite h (sigma_I zero or NaN, or a
+    # prior mean that is not a positive number), or a negative sigma_I, whose h
+    # is finite but whose amplitude scales with sqrt(sigma_I) -- and which flips
+    # the sign of I/sigma_I, so a strongly negative I would pass the cut.
+    return torch.isfinite(h) & (sigma_I > 0) & (I / sigma_I >= min_i_over_sigma)
 
 
 def french_wilson_valid_mask(
@@ -501,7 +505,7 @@ def french_wilson_valid_mask(
     Which reflections French-Wilson converts, as a keep-mask.
 
     A reflection is kept when it has a posterior -- a positive prior mean and
-    a usable sigma -- and its intensity is not too negative for its own sigma:
+    a positive sigma -- and its intensity is not too negative for its own sigma:
     ``I/sigma_I >= min_i_over_sigma``. That cut asks whether *any* true
     intensity ``J >= 0`` could have produced the measurement, so it does not
     depend on the prior. A weak reflection whose prior lies far below the
@@ -701,20 +705,10 @@ def intensities_from_amplitudes(
     """
     Approximate intensities from amplitudes, for datasets that supply only F.
 
-    Uses ``I = F^2`` and the delta-method ``sigma_I = 2 F sigma_F``.
-
-    **This is not an inverse of French-Wilson.** In the acentric asymptotic
-    branch the conversion satisfies ``F^2 = h sigma_I = I - sigma_I^2/S``, and
-    the table-driven branch has no closed form at all, so the round trip is
-    lossy in a specific and unavoidable direction: French-Wilson output ``F`` is
-    a strictly positive posterior mean, so every trace of a negative intensity
-    is gone.
-
-    The consequence for outlier detection is that on an amplitude-only dataset
-    the French-Wilson guard cannot detect an inexplicably negative intensity --
-    only an absurd ``sigma_F``. That is a property of amplitudes as input, not a
-    deficiency of this function; nothing can recover information the posterior
-    mean discarded.
+    Uses ``I = F^2`` and the delta-method ``sigma_I = 2 F sigma_F``. Not an
+    inverse of French-Wilson: its ``F`` is a positive posterior mean, so an
+    inexplicably negative intensity cannot be recovered (the French-Wilson
+    guard only catches an absurd ``sigma_F`` here).
 
     Parameters
     ----------
@@ -783,117 +777,6 @@ def _solve_normal(A: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return torch.linalg.solve(A, rhs).squeeze(-1)
     y = torch.linalg.solve_triangular(chol.L, rhs, upper=False)
     return torch.linalg.solve_triangular(chol.L.mT, y, upper=True).squeeze(-1)
-
-
-def _anisotropy_design(
-    hkl: torch.Tensor,
-    space_group: SpaceGroupLike,
-    radial: torch.Tensor,
-    s2: torch.Tensor,
-    rows: torch.Tensor,
-) -> torch.Tensor:
-    """Direction-only quadratic forms in the Miller indices the Laue group allows.
-
-    An ellipsoidal fall-off ``exp(-2 pi^2 s^T U s)`` is ``exp(h^T M h)`` with
-    the cell folded into ``M``, so it needs only ``hkl``. Averaging ``h_i h_j``
-    over the symmetry copies of each reflection leaves the forms the Laue group
-    allows. Each then loses, by least squares over ``rows``, whatever the
-    radial curve or ``s^2`` itself can represent -- ``s^2 = h^T G* h`` is the
-    isotropic form, which the radial curve does not reproduce exactly at low
-    resolution. What is left is direction only, and nothing in the fit
-    duplicates the radial columns. The result is orthonormal over ``rows``.
-
-    How many directions are left is fixed by symmetry, not by the data: it is
-    the dimension of the Laue-invariant quadratic forms, the trace of the
-    averaging operator over the group's rotations, less the isotropic one -- 5
-    for triclinic down to 0 for cubic. Reading it off the data instead would
-    let rounding in a nearly isotropic direction pass for anisotropy.
-
-    Parameters
-    ----------
-    hkl : torch.Tensor
-        Miller indices, shape (n, 3).
-    space_group : SpaceGroupLike
-        The data's space group.
-    radial : torch.Tensor
-        The radial basis evaluated at every row, shape (n, m).
-    s2 : torch.Tensor
-        ``1/d^2`` in Å⁻², shape (n,), zero where ``d`` is not finite.
-    rows : torch.Tensor
-        Boolean mask of shape (n,) of the rows the fit uses.
-
-    Returns
-    -------
-    torch.Tensor
-        Shape (n, r) with ``r`` between 0 and 5.
-    """
-    dtype = radial.dtype
-    group = SpaceGroup(space_group, device=hkl.device)
-    copies, _, _, _ = group.equivalent_hkl(
-        hkl, include_friedel=False, device=hkl.device
-    )
-
-    # Rotations acting on h, recovered as the images of the unit vectors. The
-    # averaging operator maps M to mean(R M R^T); in the coordinates
-    # (M00, M11, M22, M01, M02, M12) its trace counts the invariant forms.
-    unit = torch.eye(3, dtype=hkl.dtype, device=hkl.device)
-    images, _, _, _ = group.equivalent_hkl(
-        unit, include_friedel=False, device=hkl.device
-    )
-    R = images.to(dtype).cpu().reshape(-1, 3, 3)
-    trace = 0.0
-    for i, j in [(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)]:
-        E = torch.zeros(3, 3, dtype=dtype)
-        E[i, j] = E[j, i] = 1.0
-        trace += float((R @ E @ R.mT).mean(0)[i, j])
-    n_directions = round(trace) - 1
-    if n_directions < 1:
-        return torch.zeros(hkl.shape[0], 0, dtype=dtype, device=hkl.device)
-    n_ops = copies.shape[0] // hkl.shape[0]
-    h = copies.to(dtype).reshape(n_ops, hkl.shape[0], 3)
-    forms = torch.stack(
-        [
-            h[..., 0] * h[..., 0],
-            h[..., 1] * h[..., 1],
-            h[..., 2] * h[..., 2],
-            2.0 * h[..., 0] * h[..., 1],
-            2.0 * h[..., 0] * h[..., 2],
-            2.0 * h[..., 1] * h[..., 2],
-        ],
-        dim=-1,
-    ).mean(0)
-    # Unit scale before any sums: raw h_i h_j reach 1e4, and their squares
-    # summed over 1e5 rows lose the digits that separate the anisotropic part
-    # from the isotropic one in float32.
-    forms = forms / forms[rows].pow(2).mean(0).sqrt().clamp(min=1e-30)
-
-    # Two projections in turn rather than one onto [radial, s^2]: s^2 is nearly
-    # a radial function, and the joint normal equations lose in float32 the
-    # very difference that is being kept.
-    on_rows = radial[rows]
-    gram = on_rows.T @ on_rows
-
-    def off_radial(columns):
-        coefficients = torch.stack(
-            [_solve_normal(gram, on_rows.T @ col[rows]) for col in columns.T], dim=1
-        )
-        return columns - radial @ coefficients
-
-    residual = off_radial(forms)
-    s2_off = off_radial((s2 / s2[rows].pow(2).mean().sqrt()).unsqueeze(1))[:, 0]
-    w = s2_off[rows]
-    residual = residual - s2_off.unsqueeze(1) * (
-        (residual[rows].T @ w) / (w @ w).clamp(min=1e-30)
-    )
-
-    # A 6x6 eigenproblem, solved on the host: it is tiny, and MPS has no eigh.
-    # The leading directions are the anisotropic ones; what follows them is
-    # what the symmetry or the projection removed, down to rounding.
-    fitted = residual[rows]
-    values, vectors = torch.linalg.eigh((fitted.T @ fitted / fitted.shape[0]).cpu())
-    values, vectors = values[-n_directions:], vectors[:, -n_directions:]
-    basis = (vectors / values.clamp(min=1e-30).sqrt()).to(device=hkl.device)
-    return residual @ basis
 
 
 def _fisher_scoring(
@@ -969,54 +852,17 @@ def fit_mean_intensity(
     fit_mask: torch.Tensor | None = None,
     n_coeff: int = DEFAULT_N_COEFF,
     *,
-    hkl: torch.Tensor | None = None,
-    space_group: SpaceGroupLike | None = None,
+    anisotropy: (
+        Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor] | None
+    ) = None,
     is_centric: torch.Tensor | None = None,
     epsilon: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Wilson mean intensity ``Sigma`` per reflection, as a smooth positive curve.
+    """Fit the Wilson mean intensity ``Sigma`` per reflection as a positive curve.
 
-    ``log Sigma`` is a cubic B-spline in ``s^3 = 1/d^3`` with evenly spaced
-    knots. Reflections are spread evenly over ``s^3``, so the knots are
-    equal-count, as shells are; each basis function has local support, so
-    neither end of the curve rests on a handful of reflections the way the end
-    of a single high-degree polynomial does.
-
-    It is fitted by quasi-likelihood with the first two moments of an acentric
-    Wilson intensity measured with error, ``E[I] = Sigma`` and
-    ``Var[I] = Sigma^2 + sbar^2``, where ``sbar(s)`` is the typical measurement
-    error at that resolution, a smooth least-squares fit to ``log sigma_I``.
-    The estimating equation,
-
-        sum_h  x_h (I_h - Sigma_h) Sigma_h / (Sigma_h^2 + sbar_h^2) = 0,
-
-    makes ``Sigma`` a resolution-local mean intensity, as a shell mean is, but:
-
-    - ``Sigma > 0`` everywhere. Where the local mean is zero or below, as in a
-      region of pure noise, the weight vanishes with ``Sigma`` and the fit
-      settles towards zero instead of crossing it.
-    - There are no shell edges, and one reflection's pull is spread over the
-      support of its basis functions instead of landing on its own shell.
-    - Reflections at a given resolution get the same weight. Per-reflection
-      sigmas are not used for weighting because they correlate with the
-      intensity -- counting statistics make strong reflections noisier, and
-      merging can understate the error of rarely measured ones -- and
-      weighting by them would bias the mean in whichever direction that
-      correlation runs. The exception is a reflection more than ten times
-      noisier than typical, which takes its own sigma in place of ``sbar``
-      and so cannot drag the curve with an intensity that is mostly noise.
-
-    Given ``hkl`` and ``space_group``, ``log Sigma`` also carries an
-    ellipsoidal anisotropy, ``h^T M h`` with ``M`` restricted to what the Laue
-    group allows, its isotropic part left to the radial curve (see
-    :func:`_anisotropy_design`): at most five parameters, each informed by
-    every reflection. Without them the curve is isotropic.
-
-    Given ``epsilon``, a reflection's expected intensity is ``epsilon Sigma``:
-    on a symmetry element the copies of each atom that map ``h`` onto itself
-    scatter in phase, so the symmetry concentrates the same total intensity on
-    fewer, stronger reflections. It enters the fit as a fixed offset on
-    ``log Sigma``, and the result is returned multiplied by it.
+    ``log Sigma`` is a cubic B-spline in ``s^3 = 1/d^3``, plus the columns of
+    ``anisotropy`` when given, fitted by the quasi-likelihood the module
+    docstring derives.
 
     Parameters
     ----------
@@ -1036,11 +882,14 @@ def fit_mean_intensity(
         B-spline coefficients. Reduced to one per 400 fitted reflections, so a
         small dataset gets a stiffer curve; ``1`` gives a single mean
         intensity.
-    hkl : torch.Tensor, optional
-        Miller indices of shape (n, 3). With ``space_group``, makes the prior
-        anisotropic.
-    space_group : str, int, or gemmi.SpaceGroup, optional
-        The data's space group; see ``hkl``.
+    anisotropy : callable, optional
+        ``anisotropy(radial, s2, rows)`` returns the direction-only design
+        columns of the anisotropy, shape (n, r), from the radial basis (n, m),
+        ``1/d^2`` in Å⁻² (n,), zero where ``d`` is not finite, and the boolean
+        mask of fitted rows (n,).
+        :func:`~torchref.io.datasets.french_wilson.french_wilson_auto` binds the
+        Laue-restricted design to the data's ``hkl`` and space group. None fits
+        an isotropic curve.
     is_centric : torch.Tensor, optional
         Boolean mask of shape (n,). Centric rows that inform the fit are given
         the centric variance, ``2 Sigma^2 + sbar^2``; their mean is the same
@@ -1101,11 +950,9 @@ def fit_mean_intensity(
     log_noise = torch.maximum(log_sbar, log_sigma - math.log(_NOISY_SIGMA_RATIO))
 
     design = radial
-    if hkl is not None and space_group is not None:
+    if anisotropy is not None:
         s2 = torch.where(placed, 1.0 / (d_spacings.detach() ** 2), 0.0).to(I.dtype)
-        design = torch.cat(
-            [radial, _anisotropy_design(hkl, space_group, radial, s2, usable)], dim=1
-        )
+        design = torch.cat([radial, anisotropy(radial, s2, usable)], dim=1)
 
     # Start from a flat curve at the mean intensity, or at the noise level when
     # the data average to nothing; only the scale of the start matters. Equal
@@ -1124,139 +971,3 @@ def fit_mean_intensity(
     log_Sigma = torch.clamp(design[placed] @ coeff, min=log_floor)
     expected[placed] = torch.exp(log_Sigma + log_epsilon[placed])
     return expected
-
-
-def french_wilson_auto(
-    I: torch.Tensor,
-    sigma_I: torch.Tensor,
-    hkl: torch.Tensor,
-    d_spacings: torch.Tensor,
-    space_group: SpaceGroupLike = "P1",
-    min_i_over_sigma: float = DEFAULT_MIN_I_OVER_SIGMA,
-    *,
-    n_coeff: int = DEFAULT_N_COEFF,
-    exclude_from_fit: torch.Tensor | None = None,
-    anisotropic: bool = True,
-    epsilon: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Convert intensities to amplitudes, fitting the prior from the data.
-
-    Every per-reflection input must be row-aligned: the prior and centric flag
-    of row ``i`` are taken from ``hkl[i]`` and ``d_spacings[i]``.
-
-    The prior is :func:`fit_mean_intensity`. Anisotropic, it is fitted to every
-    row, centric ones with their own variance. Isotropic, it is fitted to the
-    acentric rows only: a centric zone is a single plane of reciprocal space,
-    and on anisotropic data its mean intensity is that of one direction, not
-    of the shell. Systematic absences never inform the prior: their intensity
-    is zero by symmetry, not a sample of the Wilson distribution.
-
-    Parameters
-    ----------
-    I : torch.Tensor
-        Measured intensities of shape (n_reflections,).
-    sigma_I : torch.Tensor
-        Standard deviations of intensities of shape (n_reflections,).
-    hkl : torch.Tensor
-        Miller indices of shape (n_reflections, 3).
-    d_spacings : torch.Tensor
-        Resolution (d-spacing) in Å for each reflection of shape
-        (n_reflections,).
-    space_group : str, int, or gemmi.SpaceGroup, optional
-        Space group specification. Default is "P1".
-    min_i_over_sigma : float, optional
-        Lower cut on ``I/sigma_I``, as for :func:`french_wilson_valid_mask`.
-        Default -3.7.
-    n_coeff : int, optional
-        B-spline coefficients in ``log Sigma``, as for
-        :func:`fit_mean_intensity`.
-    exclude_from_fit : torch.Tensor, optional
-        Boolean mask of shape (n_reflections,) of rows that must not inform the
-        prior -- the free (test) set, so that nothing fitted has seen it. They
-        are still given a prior from the curve and converted like every other
-        row. Ignored if it would leave no row to fit.
-    anisotropic : bool, optional
-        Fit an ellipsoidal anisotropy into the prior. Default True.
-    epsilon : bool, optional
-        Give each reflection the expected intensity ``epsilon Sigma``, with
-        ``epsilon`` counted from ``space_group``, which must therefore be the
-        crystal's true symmetry: a reflection on a symmetry element is that
-        much stronger whatever group the data were merged in. Default True.
-        Absences take the general value.
-
-    Returns
-    -------
-    F : torch.Tensor
-        Structure factor amplitudes of shape (n_reflections,).
-    sigma_F : torch.Tensor
-        Standard deviations of F of shape (n_reflections,).
-    valid_mask : torch.Tensor
-        Boolean mask, ``True`` = keep. ``False`` both for rows too negative
-        for their own sigma and for rows with NaN ``I`` or ``sigma_I`` or a
-        non-finite ``d``, whose ``F`` and ``sigma_F`` are NaN.
-
-    Examples
-    --------
-    ::
-
-        hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-        I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-        sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-        d_spacings = torch.tensor([2.5, 3.0, 2.8, 2.0])
-        F, sigma_F, valid = french_wilson_auto(I, sigma_I, hkl, d_spacings, "P212121")
-    """
-    F = torch.full_like(I, float("nan"))
-    sigma_F = torch.full_like(sigma_I, float("nan"))
-    # NaN rows are never converted, so they are not kept either.
-    valid_mask = torch.zeros_like(I, dtype=torch.bool)
-
-    finite = ~(torch.isnan(I) | torch.isnan(sigma_I))
-    if not finite.any():
-        return F, sigma_F, valid_mask
-    hkl_f = hkl[finite]
-
-    group = SpaceGroup(space_group, device=hkl.device)
-    is_centric = group.is_centric(hkl_f)
-    absent = group.is_absent(hkl_f)
-
-    fit_mask = ~absent
-    if not anisotropic and bool((~is_centric).any()):
-        fit_mask = fit_mask & ~is_centric
-    if exclude_from_fit is not None:
-        held_out = exclude_from_fit.to(device=I.device, dtype=torch.bool)[finite]
-        fit_mask = fit_mask & ~held_out
-    # A test set drawn on a tiny dataset can cover every row; with nothing left
-    # to fit there would be no prior at all.
-    if not bool(fit_mask.any()):
-        fit_mask = torch.ones_like(fit_mask)
-
-    multiplicity = None
-    if epsilon:
-        # Operations whose rotation is the identity are the lattice centrings;
-        # their count is epsilon for a general reflection, and for an absence.
-        eye = torch.eye(3, dtype=group.matrices.dtype, device=group.matrices.device)
-        centrings = (group.matrices - eye).abs().amax(dim=(1, 2)) < 1e-6
-        multiplicity = group.epsilon(hkl_f, friedel=False).to(I.dtype)
-        multiplicity = torch.where(absent, float(centrings.sum()), multiplicity)
-
-    mean_intensity = fit_mean_intensity(
-        I[finite],
-        sigma_I[finite],
-        d_spacings[finite],
-        fit_mask=fit_mask,
-        n_coeff=n_coeff,
-        hkl=hkl_f if anisotropic else None,
-        space_group=space_group if anisotropic else None,
-        is_centric=is_centric,
-        epsilon=multiplicity,
-    )
-
-    F[finite], sigma_F[finite], valid_mask[finite] = french_wilson(
-        I[finite],
-        sigma_I[finite],
-        mean_intensity,
-        is_centric=is_centric,
-        min_i_over_sigma=min_i_over_sigma,
-    )
-    return F, sigma_F, valid_mask

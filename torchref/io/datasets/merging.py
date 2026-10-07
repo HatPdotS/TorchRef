@@ -1,7 +1,8 @@
 """
 Merge a reflection dataset into another space group and report how well it merges.
 
-:func:`merge_to_spacegroup` takes any :class:`ReflectionData`, generates every
+:func:`merge_to_spacegroup` takes any
+:class:`~torchref.io.datasets.reflection_data.ReflectionData`, generates every
 source-symmetry equivalent of every usable observation (the route through P1),
 maps each onto the target group's CCP4 asymmetric unit, and merges what lands
 together. The accompanying :class:`MergeStats` answers whether the target
@@ -19,8 +20,8 @@ from typing import List, Optional, Tuple
 import gemmi
 import torch
 
-from torchref.base.french_wilson import french_wilson_auto
 from torchref.base.reciprocal.hkl import get_d_spacing
+from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
 
@@ -297,7 +298,6 @@ def merge_to_spacegroup(
         validation_flags=validation,
     )
     merged.source = data
-    merged.last_op = f"merge_to_spacegroup({target.hm})"
     if data.verbose > 0:
         print(stats)
     return merged, stats
