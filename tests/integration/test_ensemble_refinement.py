@@ -51,9 +51,9 @@ def test_default_construction_has_no_amber_target(refinement):
     assert refinement.amber_target is None
 
 
-def _build_with_amber():
+def _build_with_amber(data_file=TEST_MTZ):
     return EnsembleRefinement(
-        data_file=TEST_MTZ,
+        data_file=data_file,
         pdb=TEST_PDB,
         n_members=4,
         amber_weight=1.0,
@@ -63,10 +63,10 @@ def _build_with_amber():
     )
 
 
-def test_amber_without_openmm_raises(monkeypatch):
+def test_amber_without_openmm_raises_before_loading_data(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "openmm", None)
     with pytest.raises(ImportError, match="OpenMM"):
-        _build_with_amber()
+        _build_with_amber(data_file=str(tmp_path / "missing.mtz"))
 
 
 def test_amber_on_hydrogen_stripped_ensemble_raises(monkeypatch):

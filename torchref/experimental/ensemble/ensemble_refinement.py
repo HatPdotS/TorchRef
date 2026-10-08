@@ -25,7 +25,7 @@ Composes:
 
 Geometry and ADP targets are intentionally not registered — they would
 collapse the ensemble. Restraints come from the Wilson prior, the
-quasi-crystal Amber supercell, and (optionally) the rank penalty.
+optional rank penalty and, with ``amber_weight > 0``, the Amber supercell.
 """
 
 from __future__ import annotations
