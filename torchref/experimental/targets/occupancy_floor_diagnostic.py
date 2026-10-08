@@ -136,13 +136,11 @@ class OccupancyFloorDiagnostic:
         Returns
         -------
         dict
-            Dictionary with analysis results including:
-            - 'rho_dark': Dark model density at atom positions
-            - 'rho_light': Light model density at atom positions
-            - 'rho_ratio': ρ_light / ρ_dark (should be ≥ 0)
-            - 'negative_mask': Boolean mask of atoms with negative light density
-            - 'alpha_floor': Estimated lower bound on activation fraction
-            - 'worst_atoms': Indices of atoms with most negative density
+            ``rho_dark``, ``rho_light``, ``rho_ratio`` (ρ_light / ρ_dark) and
+            ``negative_mask`` (ρ_light < 0) per analysed atom; the counts
+            ``n_negative``, ``n_total``, ``fraction_negative``; ``min_rho_light``;
+            ``correction_factor`` (max of -ρ_light / ρ_dark over negative atoms,
+            0 if none) and ``worst_atoms`` (indices of the 5 lowest ρ_light).
         """
         # Get atom positions in fractional coordinates
         xyz_dark = self.model_dark.xyz()
@@ -220,11 +218,10 @@ class OccupancyFloorDiagnostic:
         sigma_cutoff: float = 3.0,
     ) -> Dict:
         """
-        Estimate alpha floor from significant negative peaks in difference map.
+        Estimate alpha floor from significantly negative difference amplitudes.
 
-        For each significant negative peak in the difference map, estimate
-        the minimum α that could produce that peak without requiring negative
-        density in the light state.
+        For the most negative reflections with ΔF/σ below ``-sigma_cutoff``,
+        estimate α as ``|ΔF_obs| / |F_calc,dark|`` and report the largest.
 
         Parameters
         ----------
@@ -235,14 +232,16 @@ class OccupancyFloorDiagnostic:
         sigma_diff : torch.Tensor
             Uncertainties on difference amplitudes.
         n_peaks : int, optional
-            Number of peaks to analyze. Default is 10.
+            Number of most negative reflections to analyze. Default is 10.
         sigma_cutoff : float, optional
-            Minimum significance (|ΔF|/σ) for peaks. Default is 3.0.
+            Minimum significance (-ΔF/σ) for a reflection. Default is 3.0.
 
         Returns
         -------
         dict
-            Dictionary with alpha floor estimates.
+            ``alpha_floor`` and ``n_negative_peaks``; when reflections pass the
+            cutoff also ``alpha_estimates``, ``peak_indices`` and ``peak_dF``,
+            otherwise ``message``.
         """
         # Find significant negative differences
         significance = delta_F_obs / sigma_diff
