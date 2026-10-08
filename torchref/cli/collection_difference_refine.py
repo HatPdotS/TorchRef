@@ -8,9 +8,7 @@ parameters (overall scale, anisotropy, bulk-solvent k_sol and falloff) is shared
 across the dark and light datasets.
 
 Writes refined dark and light models (PDB/CIF), a JSON summary, and a difference MTZ.
-See :func:`write_results_mtz` for the columns and why each is where it is -- the table
-used to live here, four hundred lines from the function that writes it, which is part of
-how the output drifted from its own documentation.
+See :func:`write_results_mtz` for the columns and why each is where it is.
 
 Examples
 --------
@@ -480,7 +478,7 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     w_two_moment = sig_I_light**2 / np.maximum(sig_I_light**2 + variance, 1e-12)
 
     columns = {
-        # The corrected difference map, on the same dark phases as DELFWT.
+        # dF_corr times the selected weight, on the dark phases PHDELWT.
         "DELFWT_corr": dF_corr * weights,
         "Fo_light_corr": F_corr,
         "SIGFo_light_corr": sig_F_corr,
@@ -612,11 +610,11 @@ def _phasing_columns(mc, scaler, hkl_all, mask, *, fcalc_dark, Fobs_dark_vals,
 
     Under ``all_columns`` the phased difference residual coefficients come too --
     ``(|Fo_light e^{i phi_mixed} - Fo_dark e^{i phi_dark}| - |dFc|) * w`` on
-    ``PHIC_diff``. These are a *different object* from the plain difference Fourier in
-    ``DELFWT``, not a refinement of it: the light state's model phases enter the observed
-    amplitude, so they are model-biased where ``DELFWT`` is not. They are kept because
-    they are informative once that is understood, and gated because the name alone does
-    not say it.
+    ``PHIC_diff``. These are a *different object* from the plain difference Fourier
+    ``dF`` on ``PHDELWT``, not a refinement of it: the light state's model phases
+    enter the observed amplitude, so they are model-biased where ``dF`` is not. They
+    are kept because they are informative once that is understood, and gated because
+    the name alone does not say it.
 
     Returns ``(columns, types, ctx)``. ``ctx`` carries the intermediates the
     extrapolation and two-moment layers need, so nothing is computed twice.
