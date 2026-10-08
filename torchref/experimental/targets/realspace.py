@@ -10,8 +10,8 @@ maps in real space rather than reciprocal space. Two targets are provided:
 2. RealSpaceDifferenceTarget: Minimizes mean squared Fo-Fc difference density
 
 Both targets use a molecular mask (inverse of solvent mask) to restrict
-comparison to the protein region, and follow the phase detachment pattern
-from PhaseInformedDifferenceTarget to ensure correct gradient flow.
+comparison to the protein region, and detach the model phases in the
+observed map so its gradient flows only through the amplitudes.
 """
 
 from typing import TYPE_CHECKING, Dict, Tuple
@@ -170,7 +170,7 @@ class RealSpaceTarget(DataTarget):
         fcalc_asu = self.get_fcalc_scaled()
         fcalc_p1 = self._expand_to_p1(fcalc_asu)
 
-        # Detach phases (following PhaseInformedDifferenceTarget pattern)
+        # Detached phases: the observed map's gradient flows only through |Fcalc|.
         phi_calc = torch.angle(fcalc_p1).detach()
 
         if self.map_type == "2mFo-DFc":
