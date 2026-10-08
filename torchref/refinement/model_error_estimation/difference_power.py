@@ -11,16 +11,24 @@ A light-minus-dark amplitude difference ``dF_obs = dF_true + noise`` is modelled
 with :math:`T_j` the Chebyshev polynomials of :func:`torchref.scaling.basis.
 chebyshev_design` in :math:`x_h = \\sin\\theta/\\lambda` over the fitted range (the
 abscissa every smooth resolution curve in the package uses), :math:`k` a single scale on
-the reported sigmas and :math:`c_h` a free factor on centric reflections. Every
+the reported sigmas and :math:`c_h` a free factor on centric reflections. Every free
 parameter is fitted jointly by Newton's method on the per-reflection negative
 log-likelihood, so there are no resolution shells, no clamped moments and no
 interpolation: ``S`` is positive and smooth by construction.
 
 The ``gamma * log F_dark`` term needs no per-resolution normalisation of ``F_dark``:
 ``log <F_dark>(d*^2)`` is itself a smooth function of resolution, so the polynomial
-absorbs it. The sigma scale ``k`` is identifiable because the reported sigmas vary
-many-fold between reflections at one resolution while ``S`` does not; it is what keeps
-inflated sigmas from reading as an absence of signal.
+absorbs it.
+
+The sigma scale ``k`` is 1 unless asked for: the reported sigmas are the noise. A fitted
+``k`` is identified only by how the variance of the differences follows the sigmas
+between reflections at one resolution, and only if the sigmas are off by one factor at
+every resolution. Merged sigmas rarely are: posterior amplitude sigmas (French-Wilson,
+Bayesian merging) overstate the scatter of a difference increasingly toward high
+resolution, where the prior dominates. A free ``k`` then settles at the noise-only outer
+shells and the smooth ``S`` absorbs the noise the inner shells still carry, so noise
+reads as signal everywhere. Fit ``k`` (``sigma_scale=None``) only for sigmas known to be
+off by one factor throughout.
 
 Given a model difference ``dF_calc``, the mean becomes :math:`\\alpha(x_h) dF_{calc,h}`
 with :math:`\\alpha` a low-order Chebyshev series in the same abscissa, and ``S`` is the
@@ -48,10 +56,11 @@ from torchref.scaling.basis import chebyshev_design
 #: fall-off (quadratic in this abscissa) plus low-resolution curvature; the fit
 #: carries the standard errors to judge whether a higher order is supported.
 DEFAULT_ORDER = 4
-#: Signal-to-noise floor of :func:`bounded_wiener_weight`. One half reproduces the
-#: q-weight's noise-only limit (``S`` floored at half the raw difference power gives
-#: ``w = 1/3``), so a reflection without signal keeps a third of the full weight.
-DEFAULT_SNR_FLOOR = 0.5
+#: Signal-to-noise floor of :func:`bounded_wiener_weight`. A reflection without signal
+#: keeps ``0.1 / 1.1``, about a tenth, of the full weight: low enough that a
+#: noise-dominated resolution range does not dilute the map, never zero so no range is
+#: removed.
+DEFAULT_SNR_FLOOR = 0.1
 #: Chebyshev order of the model coupling ``alpha``. Quadratic follows the fall of the
 #: coupling with resolution, which is smooth and far less structured than ``S``.
 DEFAULT_ALPHA_ORDER = 2
@@ -61,24 +70,40 @@ DEFAULT_NU = 4.0
 #: difference) and converges in ~10.
 MAX_ITER = 60
 _GAMMA_BOUNDS = (-1.0, 3.0)
-#: Bounds on the sigma scale ``k``. No merge misreports its sigmas tenfold; outside
-#: these the data hold no noise to calibrate against (identical datasets drive ``k``
-#: to zero), and a zero noise would give an infinite SNR and zero sigmas downstream.
+#: Bounds on the sigma scale ``k``, fixed or fitted. No merge misreports its sigmas
+#: tenfold; outside these the data hold no noise to calibrate against (identical
+#: datasets drive a fitted ``k`` to zero), and a zero noise would give an infinite SNR
+#: and zero sigmas downstream.
 SIGMA_SCALE_BOUNDS = (0.1, 10.0)
 _LOG_K_BOUNDS = tuple(math.log(b) for b in SIGMA_SCALE_BOUNDS)
 # Bounds on the log centric factor, so a fit without signal cannot underflow it to zero.
 _LOG_CENTRIC_BOUNDS = (-7.0, 7.0)
 
 
+def _check_sigma_scale(sigma_scale: float | None) -> float | None:
+    """``sigma_scale`` as a float within :data:`SIGMA_SCALE_BOUNDS`, or ``None``."""
+    if sigma_scale is None:
+        return None
+    k = float(sigma_scale)
+    lo, hi = SIGMA_SCALE_BOUNDS
+    if not (lo <= k <= hi):
+        raise ValueError(f"sigma_scale must lie in {SIGMA_SCALE_BOUNDS}, got {k}")
+    return k
+
+
 @dataclass(frozen=True)
 class DifferencePowerConfig:
-    """The user-facing knob of the difference-power fit, as one value.
+    """The user-facing knobs of the difference-power fit.
 
     ``gamma=None`` fits the dark-amplitude exponent; a float fixes it, within the
-    fit's bounds. Frozen, so two consumers sharing a config cannot drift apart.
+    fit's bounds. ``sigma_scale`` is the factor ``k`` on the reported sigmas: 1 takes
+    them as reported, another float within :data:`SIGMA_SCALE_BOUNDS` fixes it, and
+    ``None`` fits it (see the module docstring for when that is safe). Frozen, so two
+    consumers sharing a config cannot drift apart.
     """
 
     gamma: float | None = None
+    sigma_scale: float | None = 1.0
 
     def __post_init__(self):
         if self.gamma is not None:
@@ -87,6 +112,7 @@ class DifferencePowerConfig:
             if not (lo <= g <= hi):
                 raise ValueError(f"gamma must lie in {_GAMMA_BOUNDS}, got {g}")
             object.__setattr__(self, "gamma", g)
+        object.__setattr__(self, "sigma_scale", _check_sigma_scale(self.sigma_scale))
 
 
 @dataclass(frozen=True)
@@ -102,10 +128,13 @@ class DifferencePowerFit:
         Exponent on ``F_dark``; ``0`` when no dark amplitude was used.
     sigma_scale : float
         The factor ``k`` on the reported sigmas, within :data:`SIGMA_SCALE_BOUNDS`;
-        ``1`` when not fitted.
+        the fixed value when not fitted.
+    sigma_scale_fitted : bool
+        Whether ``k`` was fitted rather than fixed.
     sigma_scale_at_bound : bool
-        Whether ``k`` stopped at a bound: the reported sigmas and the scatter of the
-        differences disagree beyond any plausible miscalibration.
+        Whether a fitted ``k`` stopped at a bound: the reported sigmas and the scatter
+        of the differences disagree beyond any plausible miscalibration. Always
+        ``False`` for a fixed ``k``.
     centric_factor : float
         Power of a centric reflection relative to an acentric one at equal resolution;
         ``1`` when no centric flags were given.
@@ -133,6 +162,7 @@ class DifferencePowerFit:
     coeffs: torch.Tensor
     gamma: float
     sigma_scale: float
+    sigma_scale_fitted: bool
     sigma_scale_at_bound: bool
     centric_factor: float
     stol_range: tuple
@@ -229,7 +259,7 @@ def fit_difference_power(
     order: int = DEFAULT_ORDER,
     alpha_order: int = DEFAULT_ALPHA_ORDER,
     gamma: float | None = None,
-    fit_sigma_scale: bool = True,
+    sigma_scale: float | None = 1.0,
     robust: bool = False,
     nu: float = DEFAULT_NU,
 ) -> DifferencePowerFit:
@@ -262,9 +292,11 @@ def fit_difference_power(
         Chebyshev order of ``alpha``; used only with ``delta_calc``.
     gamma : float, optional
         Fix the ``F_dark`` exponent instead of fitting it.
-    fit_sigma_scale : bool
-        Fit the scale ``k`` on the reported sigmas. Off, the sigmas are taken as
-        calibrated.
+    sigma_scale : float, optional
+        The scale ``k`` on the reported sigmas: 1 takes them as calibrated, another
+        float within :data:`SIGMA_SCALE_BOUNDS` fixes it, ``None`` fits it. A fitted
+        ``k`` is reliable only when the sigmas are off by one factor at every
+        resolution; otherwise it reads noise as signal (see the module docstring).
     robust : bool
         Use a Student-t likelihood with ``nu`` degrees of freedom, so a large
         difference loses influence on the fit smoothly instead of dominating it.
@@ -282,8 +314,11 @@ def fit_difference_power(
     Raises
     ------
     ValueError
-        If fewer than ``order + 4`` reflections are usable.
+        If fewer than ``order + 4`` reflections are usable, or ``sigma_scale`` lies
+        outside :data:`SIGMA_SCALE_BOUNDS`.
     """
+    sigma_scale = _check_sigma_scale(sigma_scale)
+    fit_sigma_scale = sigma_scale is None
     dtype = torch.promote_types(get_float_dtype(), delta_obs.dtype)
     dev = delta_obs.device
     d = delta_obs.detach().reshape(-1).to(dev, dtype)
@@ -355,7 +390,9 @@ def fit_difference_power(
         cc = float(c_std.square().mean())
         theta[i_a] = float((d_std * c_std).mean()) / cc if cc > 0 else 1.0
         d2 = (d_std - theta[i_a] * c_std).square()
-    noise = float(log_sig2.exp().mean())
+    k0 = 1.0 if fit_sigma_scale else sigma_scale
+    theta[n_c + 1] = math.log(k0)
+    noise = k0**2 * float(log_sig2.exp().mean())
     excess = float(d2.mean()) - noise
     # Start below the noise when the residual holds no power -- all differences zero, or
     # exactly explained by the model -- so the log is always defined.
@@ -435,7 +472,8 @@ def fit_difference_power(
     return DifferencePowerFit(
         coeffs=theta[:n_c].clone(),
         gamma=float(theta[n_c]) if use_f else 0.0,
-        sigma_scale=float(theta[n_c + 1].exp()),
+        sigma_scale=float(theta[n_c + 1].exp()) if fit_sigma_scale else sigma_scale,
+        sigma_scale_fitted=fit_sigma_scale,
         sigma_scale_at_bound=bool(
             fit_sigma_scale
             and min(abs(float(theta[n_c + 1]) - b) for b in _LOG_K_BOUNDS) < 1e-4
@@ -464,8 +502,8 @@ class DifferencePowerEstimator:
     Parameters
     ----------
     config : DifferencePowerConfig, optional
-        Its ``gamma`` is passed to every fit that does not name one; module defaults
-        when omitted.
+        Its ``gamma`` and ``sigma_scale`` are passed to every fit that does not name
+        them; module defaults when omitted.
     """
 
     def __init__(self, config: DifferencePowerConfig | None = None):
@@ -496,6 +534,7 @@ class DifferencePowerEstimator:
         """
         if self._fit is None:
             kwargs.setdefault("gamma", self.config.gamma)
+            kwargs.setdefault("sigma_scale", self.config.sigma_scale)
             self._fit = fit_difference_power(delta_obs, sigma_diff, d_star_sq, **kwargs)
         return self._fit
 
