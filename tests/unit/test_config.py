@@ -46,6 +46,20 @@ def test_unfit_current_gpu_falls_back_although_another_qualifies(monkeypatch, gp
         assert config._auto_detect_device() == torch.device("cpu")
 
 
+def test_cuda_that_fails_to_initialise_falls_back_to_cpu(monkeypatch):
+    """``is_available()`` True but CUDA init raising falls back to CPU with a warning."""
+    _fake_gpus(monkeypatch, [((8, 0), 40 * _GB)], current=0)
+
+    def _init_fails(*args):
+        raise RuntimeError("CUDA driver initialization failed")
+
+    monkeypatch.setattr(torch.cuda, "current_device", _init_fails)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", _init_fails)
+
+    with pytest.warns(UserWarning, match="Falling back to CPU"):
+        assert config._auto_detect_device() == torch.device("cpu")
+
+
 def test_fit_current_gpu_is_selected(monkeypatch):
     """A current GPU that passes the gates is auto-selected without a warning."""
     _fake_gpus(monkeypatch, [((6, 1), 4 * _GB), ((8, 0), 40 * _GB)], current=1)

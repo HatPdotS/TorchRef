@@ -400,8 +400,11 @@ def _cuda_is_usable() -> bool:
     if not supported:
         return True
     min_supported = min(supported)
-    idx = torch.cuda.current_device()
+    idx = 0
     try:
+        # current_device() initialises CUDA, which can fail although is_available() is
+        # True (driver or container errors); that must fall back to CPU, not raise.
+        idx = torch.cuda.current_device()
         capable = torch.cuda.get_device_capability(idx) >= min_supported
     except Exception:
         capable = False
