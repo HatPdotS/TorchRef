@@ -97,8 +97,9 @@ restraints.
 ``--fraction`` (light-state population fraction, singular),
 ``--weight-schedule`` annealing schedule (default ``5,3,2``),
 ``-n``/``--n-cycles`` macro-cycles, ``--difference-target {difference,difference_sd}``
-(the difference row the schedule drives; default ``difference``), ``--ded-weight`` and
-``--difference-gamma`` for the difference MTZ (see ``torchref.difference-map``).
+(the difference row the schedule drives; default ``difference``), ``--ded-weight``,
+``--difference-gamma`` and ``--difference-sigma-scale`` for the difference MTZ (see
+``torchref.difference-map``).
 
 :API: :mod:`torchref.cli.collection_difference_refine`
 
@@ -267,6 +268,10 @@ model-phased and two-moment difference columns carry (default ``q``; its fit use
 intensity differences when the data carry ``I``/``SIGI``, and falls back to inverse
 variance with a warning when too few reflections exist to fit); ``--difference-gamma``
 fixes the dark-amplitude exponent of the difference power law instead of fitting it;
+``--difference-sigma-scale`` scales the reported sigmas the ``q`` weight and the
+extrapolation take as the noise (default 1; ``fit`` estimates the scale from the
+differences, which reads noise as signal when the sigmas' calibration changes with
+resolution, as French-Wilson and other posterior amplitude sigmas' does);
 ``--all-columns`` writes every alternative map coefficient and diagnostic -- the
 model-phased difference, the two other extrapolations and the intensity block -- at
 the cost of two further scale fits.

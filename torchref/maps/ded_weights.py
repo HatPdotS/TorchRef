@@ -13,14 +13,18 @@ comparable scales. Three schemes are registered:
 ``q``
     The q-weight: a Wiener weight ``(snr + b) / (snr + 1 + b)`` on the per-reflection
     signal-to-noise ratio of :func:`difference_snr`, the default. The floor ``b`` keeps
-    a reflection without signal at ``b / (1 + b)`` of the full weight (one third at the
-    default), so a noisy resolution range is down-weighted, never removed.
+    a reflection without signal at ``b / (1 + b)`` of the full weight (about a tenth at
+    the default), so a noisy resolution range is down-weighted, never removed.
 
 :func:`difference_snr` is the one estimate of how much of each observed difference is
 signal; the extrapolated amplitudes of ``torchref.difference-map`` shrink by the same
-ratio. It prefers intensities: French-Wilson amplitude sigmas describe the posterior of
-one amplitude, not the noise of a difference between two, and overstate it increasingly
-toward high resolution, where intensity sigmas are the measurement noise itself.
+ratio. It takes the reported sigmas as the noise unless told otherwise: a scale on them
+fitted from one dataset is not identified when their calibration changes with
+resolution, and then reads noise as signal (see
+:mod:`~torchref.refinement.model_error_estimation.difference_power`). It prefers
+intensities: French-Wilson amplitude sigmas describe the posterior of one amplitude,
+not the noise of a difference between two, and overstate it increasingly toward high
+resolution, where intensity sigmas are the measurement noise itself.
 
 Plain tensors in and out. The weights live on the device of ``delta_obs``. The
 difference-power fit is imported inside the scheme that needs it so that
@@ -65,8 +69,10 @@ class DedWeights:
         Per-reflection weights, shape ``(N,)``, mean one over all entries (non-finite
         entries set to zero; see :func:`normalise_mean_one`).
     diagnostics
-        Scheme-specific record: for ``q`` the fitted exponent, sigma scale, centric
-        factor, Chebyshev coefficients and their standard errors, and the weight range.
+        Scheme-specific record: for ``q`` the fitted exponent, the sigma scale and
+        whether it was fitted (and why it fell back to the reported sigmas, if it
+        did), centric factor, Chebyshev coefficients and their standard errors, and the
+        weight range.
     """
 
     scheme: str
@@ -119,12 +125,16 @@ class DifferenceSNR:
         The fit ``snr`` came from.
     source : str
         ``"intensity"`` or ``"amplitude"``: which observations were fitted.
+    sigma_scale_fallback : str or None
+        Why a requested sigma-scale fit was replaced by the reported sigmas, or
+        ``None`` when it was not.
     """
 
     snr: torch.Tensor
     noise: torch.Tensor
     fit: object
     source: str
+    sigma_scale_fallback: str | None = None
 
 
 def difference_snr(
@@ -139,6 +149,7 @@ def difference_snr(
     sigma_delta_intensity: torch.Tensor | None = None,
     fit_mask: torch.Tensor | None = None,
     gamma: float | None = None,
+    sigma_scale: float | None = 1.0,
 ) -> DifferenceSNR:
     """Fit the expected difference power and return each reflection's SNR.
 
@@ -170,6 +181,12 @@ def difference_snr(
         Reflections entering the fit; default every finite one.
     gamma : float, optional
         Fix the ``F_dark`` exponent.
+    sigma_scale : float, optional
+        Scale ``k`` on the reported sigmas: 1 (default) takes them as the noise,
+        another float fixes ``k``, ``None`` fits it. A fitted ``k`` that stops at a
+        bound of :data:`~torchref.refinement.model_error_estimation.difference_power.
+        SIGMA_SCALE_BOUNDS` is replaced by the reported sigmas with a
+        :class:`DedWeightFallbackWarning`.
 
     Returns
     -------
@@ -178,7 +195,8 @@ def difference_snr(
     Raises
     ------
     ValueError
-        If too few reflections are usable for the fit.
+        If too few reflections are usable for the fit, or ``sigma_scale`` is out of
+        bounds.
     """
     from torchref.refinement.model_error_estimation.difference_power import (
         fit_difference_power,
@@ -209,22 +227,32 @@ def difference_snr(
         g = 0.0 if gamma is None else gamma
     else:
         values, sigma, g = d, sig, gamma
-    fit = fit_difference_power(
-        values,
-        sigma,
-        dss,
-        epsilon=eps,
-        f_dark=f,
-        centric=centric,
-        fit_mask=fit_mask,
-        gamma=g,
-    )
+    kw = {
+        "epsilon": eps,
+        "f_dark": f,
+        "centric": centric,
+        "fit_mask": fit_mask,
+        "gamma": g,
+    }
+    fit = fit_difference_power(values, sigma, dss, sigma_scale=sigma_scale, **kw)
+    fallback = None
+    if fit.sigma_scale_at_bound:
+        fallback = (
+            f"the fitted sigma scale stopped at its bound k = {fit.sigma_scale:.3g}"
+        )
+        warnings.warn(
+            f"difference SNR: {fallback}; using the reported sigmas (k = 1) instead",
+            DedWeightFallbackWarning,
+            stacklevel=2,
+        )
+        fit = fit_difference_power(values, sigma, dss, sigma_scale=1.0, **kw)
     snr = fit.snr(sigma, d_star_sq=dss, epsilon=eps, f_dark=f, centric=centric)
     return DifferenceSNR(
         snr=snr,
         noise=fit.sigma_scale * sigma,
         fit=fit,
         source="intensity" if use_intensity else "amplitude",
+        sigma_scale_fallback=fallback,
     )
 
 
@@ -255,6 +283,7 @@ def compute_ded_weights(
     sigma_delta_intensity: torch.Tensor | None = None,
     fit_mask: torch.Tensor | None = None,
     gamma: float | None = None,
+    sigma_scale: float | None = 1.0,
     snr_floor: float | None = None,
     snr_estimate: DifferenceSNR | ValueError | None = None,
 ) -> DedWeights:
@@ -283,6 +312,9 @@ def compute_ded_weights(
         Reflections entering the ``q`` fit; default every finite one.
     gamma : float, optional
         Fix the ``F_dark`` exponent of the ``q`` fit instead of fitting it.
+    sigma_scale : float, optional
+        Scale on the reported sigmas in the ``q`` fit; 1 takes them as the noise,
+        ``None`` fits it (see :func:`difference_snr`).
     snr_floor : float, optional
         Signal-to-noise floor of the ``q`` weight; default
         :data:`~torchref.refinement.model_error_estimation.difference_power.
@@ -298,6 +330,11 @@ def compute_ded_weights(
         Mean-one weights on ``delta_obs.device``. When the ``q`` fit has too few
         usable reflections, the inverse-variance weights are returned with
         ``applied="inverse_variance"`` and a :class:`DedWeightFallbackWarning`.
+
+    Raises
+    ------
+    ValueError
+        If ``sigma_scale`` lies outside the fit's bounds.
     """
     if scheme not in SCHEMES:
         raise ValueError(f"Unknown DED weight scheme {scheme!r}; choose from {SCHEMES}")
@@ -311,9 +348,12 @@ def compute_ded_weights(
 
     from torchref.refinement.model_error_estimation.difference_power import (
         DEFAULT_SNR_FLOOR,
+        _check_sigma_scale,
         bounded_wiener_weight,
     )
 
+    # Checked before the fit, whose ValueError means "cannot fit" and falls back.
+    _check_sigma_scale(sigma_scale)
     floor = DEFAULT_SNR_FLOOR if snr_floor is None else float(snr_floor)
     try:
         if isinstance(snr_estimate, ValueError):
@@ -329,6 +369,7 @@ def compute_ded_weights(
             sigma_delta_intensity=sigma_delta_intensity,
             fit_mask=fit_mask,
             gamma=gamma,
+            sigma_scale=sigma_scale,
         )
     except ValueError as err:
         reason = str(err)
@@ -353,6 +394,7 @@ def compute_ded_weights(
             gamma is None and est.source == "amplitude" and f_dark is not None
         ),
         "sigma_scale": fit.sigma_scale,
+        "sigma_scale_fitted": fit.sigma_scale_fitted,
         "sigma_scale_at_bound": fit.sigma_scale_at_bound,
         "centric_factor": fit.centric_factor,
         "order": len(fit.coeffs) - 1,
@@ -365,6 +407,8 @@ def compute_ded_weights(
         "weight_min": float(w[ok].min()) if bool(ok.any()) else float("nan"),
         "weight_max": float(w[ok].max()) if bool(ok.any()) else float("nan"),
     }
+    if est.sigma_scale_fallback is not None:
+        diagnostics["sigma_scale_fallback"] = est.sigma_scale_fallback
     return DedWeights(scheme, scheme, normalise_mean_one(w), diagnostics)
 
 

@@ -389,8 +389,23 @@ def add_all_columns_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _sigma_scale_arg(value: str) -> float | None:
+    """``--difference-sigma-scale``: ``fit`` (``None``) or a scale within bounds."""
+    from torchref.refinement.model_error_estimation.difference_power import (
+        _check_sigma_scale,
+    )
+
+    if value.strip().lower() == "fit":
+        return None
+    try:
+        return _check_sigma_scale(float(value))
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(str(err)) from None
+
+
 def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
-    """Add ``--ded-weight`` and ``--difference-gamma`` for the difference-map writers.
+    """Add ``--ded-weight``, ``--difference-gamma`` and ``--difference-sigma-scale``
+    for the difference-map writers.
 
     Every registered scheme's weight is written to the difference MTZ regardless; the
     choice here decides which one the headline products (validate-ded correlations,
@@ -404,7 +419,7 @@ def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_SCHEME,
         help="Per-reflection weight for difference coefficients: 'q' is the "
         "q-weight, a Wiener weight from a shell-free fit of the expected difference "
-        "power that down-weights noisy reflections to no less than a third, "
+        "power that down-weights noisy reflections to no less than a tenth, "
         "'inverse_variance' is 1/sigma^2, 'none' is flat (default: "
         f"{DEFAULT_SCHEME}). All weights are written as columns.",
     )
@@ -416,6 +431,17 @@ def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
         help="Fix the dark-amplitude exponent of the difference power law in [-1, 3] "
         "instead of fitting it; used by the q-weight on amplitude data and by the "
         "difference_sd target (default: fitted, or 0 on intensity data).",
+    )
+    parser.add_argument(
+        "--difference-sigma-scale",
+        type=_sigma_scale_arg,
+        default=1.0,
+        metavar="K|fit",
+        help="Scale on the reported sigmas in the q-weight and extrapolation SNR: a "
+        "number multiplies them (e.g. 1.5 for sigmas known to be 1.5x too small), "
+        "'fit' estimates it from the differences, which reads noise as signal when the "
+        "sigmas' calibration changes with resolution, as it does for French-Wilson and "
+        "other posterior amplitudes (default: 1, the sigmas as reported).",
     )
 
 
@@ -450,12 +476,16 @@ def intensity_difference(data_dark, data_light, mask=None):
 
 def difference_config_from_args(args: argparse.Namespace):
     """The :class:`~torchref.refinement.model_error_estimation.difference_power.
-    DifferencePowerConfig` selected by ``--difference-gamma``."""
+    DifferencePowerConfig` selected by ``--difference-gamma`` and
+    ``--difference-sigma-scale``."""
     from torchref.refinement.model_error_estimation.difference_power import (
         DifferencePowerConfig,
     )
 
-    return DifferencePowerConfig(gamma=getattr(args, "difference_gamma", None))
+    return DifferencePowerConfig(
+        gamma=getattr(args, "difference_gamma", None),
+        sigma_scale=getattr(args, "difference_sigma_scale", 1.0),
+    )
 
 
 def add_output_format_args(parser: argparse.ArgumentParser) -> None:

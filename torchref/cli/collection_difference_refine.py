@@ -967,7 +967,9 @@ def write_results_mtz(
         Weight scheme for the model-phased and two-moment difference columns; one of
         :data:`torchref.maps.ded_weights.SCHEMES`.
     difference_config : DifferencePowerConfig, optional
-        Its ``gamma`` fixes the ``F_dark`` exponent of the ``q`` scheme.
+        Its ``gamma`` fixes the ``F_dark`` exponent of the ``q`` scheme and its
+        ``sigma_scale`` the scale on the reported sigmas of the SNR the ``q`` weights
+        and the extrapolation share.
 
     Returns
     -------
@@ -1031,6 +1033,9 @@ def write_results_mtz(
         delta_intensity=delta_I,
         sigma_delta_intensity=sig_delta_I,
         gamma=difference_config.gamma if difference_config is not None else None,
+        sigma_scale=(
+            difference_config.sigma_scale if difference_config is not None else 1.0
+        ),
     )
     # One fit serves the weights and the extrapolation, with one failure policy: when it
     # cannot be made, the q weights fall back to inverse variance and the extrapolated
@@ -1069,10 +1074,13 @@ def write_results_mtz(
         if "fallback_reason" in q_diag:
             print(f"  q-weight fallback: {q_diag['fallback_reason']}")
         else:
+            if "sigma_scale_fallback" in q_diag:
+                print(f"  q-weight sigma scale: {q_diag['sigma_scale_fallback']}")
+            k_how = "fitted" if q_diag["sigma_scale_fitted"] else "fixed"
             print(
                 f"  q-weight fit on {q_diag['source']} differences: "
                 f"gamma = {q_diag['gamma']:.3f}, "
-                f"sigma scale k = {q_diag['sigma_scale']:.3f}, "
+                f"sigma scale k = {q_diag['sigma_scale']:.3f} ({k_how}), "
                 f"centric factor = {q_diag['centric_factor']:.3f}, "
                 f"weights {q_diag['weight_min']:.3f}-{q_diag['weight_max']:.3f} "
                 f"before normalisation"
