@@ -1,9 +1,9 @@
 """
 DeviceMixin - unified device and dtype movement for TorchRef.
 
-One mixin hijacks ``.to()``/``.cuda()``/``.cpu()`` (and indirectly ``.float()`` and
-friends, which funnel through ``nn.Module._apply``) for both ``nn.Module`` subclasses and
-plain Python classes, recursively moving: params, buffers and child modules via the
+One mixin hijacks ``.to()``/``.cuda()``/``.cpu()`` for both ``nn.Module`` subclasses and
+plain Python classes (on module subclasses only, ``.float()`` and friends funnel through
+the same ``_apply``), recursively moving: params, buffers and child modules via the
 standard machinery; raw tensor attributes on ``self``; non-Module sub-objects exposing
 ``_apply``; tensors nested in ``list``/``tuple``/``dict`` attributes; and unregistered
 ``nn.Module`` instances held as plain attributes.
@@ -449,11 +449,13 @@ class DeviceMixin:
     """Unified device/dtype movement.
 
     Inherit **before** ``nn.Module`` in the MRO (``class Foo(DeviceMixin, nn.Module)``),
-    or use it alone on a plain class or dataclass. Every mover -- ``.to()``, ``.cuda()``,
-    ``.cpu()``, ``.float()``, ``.double()``, ``.half()`` -- routes through ``_apply``,
-    which runs ``nn.Module._apply`` where applicable, walks ``self.__dict__`` for plain
-    tensors, nested containers and non-Module sub-objects, refreshes the device/dtype
-    trackers, and calls ``reset_forward_cache()``/``reset_cache()`` if defined.
+    or use it alone on a plain class or dataclass. ``.to()``, ``.cuda()`` and ``.cpu()``
+    route through ``_apply`` on every class; ``nn.Module``'s ``.float()``, ``.double()``
+    and ``.half()`` do so on module subclasses only, and a plain class has none of them.
+    ``_apply`` runs ``nn.Module._apply`` where applicable, walks ``self.__dict__`` for
+    plain tensors, nested containers and non-Module sub-objects, refreshes the
+    device/dtype trackers, and calls ``reset_forward_cache()``/``reset_cache()`` if
+    defined.
     """
 
     # ---- to / cuda / cpu -------------------------------------------------
