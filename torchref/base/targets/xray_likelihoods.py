@@ -377,8 +377,9 @@ def rice_marginal_math(
     Pass ``idx`` from :func:`~torchref.base.targets.xray_ml_full.parity_indices` to avoid a
     device sync per call. ``li0`` overrides the log-Bessel implementation (default: the
     exact one for float64 inputs, the fast piecewise one otherwise). The quadrature
-    internals live in
-    :mod:`torchref.base.targets.xray_ml_full`; this is their single public entry point.
+    internals live in :mod:`torchref.base.targets.xray_ml_full`; their entry points are
+    :func:`rice_marginal_per_refl`, which the ``ml_full`` target calls, and this masked
+    sum.
     """
     return _masked_sum(
         rice_marginal_per_refl(
