@@ -10,7 +10,14 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
+
+if TYPE_CHECKING:
+    # Annotation-only: importing torch and the models here would slow every --help.
+    import torch
+
+    from torchref.io.datasets.reflection_data import ReflectionData
+    from torchref.model.model_ft import ModelFT
 
 
 # ---------------------------------------------------------------------------
