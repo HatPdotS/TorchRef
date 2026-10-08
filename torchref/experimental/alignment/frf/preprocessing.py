@@ -161,33 +161,21 @@ def bulk_solvent_factor(
 
         solTerm(s²) = max(SIGA_MIN, 1 − fsol · exp(−bsol · s²/4))
 
-    Models the bulk solvent's contribution to the structure factor via Babinet's
-    principle. At low resolution (s→0) the term → ``1 − fsol`` ≈ 0.05 (with the
-    default ``fsol=0.95``), aggressively suppressing the calc — physically, the
-    model represents only the macromolecule, but the diffraction data sees
-    macromolecule + bulk solvent, and at low resolution the solvent's flat
-    average density partially cancels the macromolecule's contribution. At high
-    resolution (s→∞) the term → 1 (no effect).
-
-    Phaser folds this into the effective σ_A via
-    ``σ_A_eff(s) = solTerm(s²) · DLuzzati(s², vrms)`` (EnsemblePDB.cc:96-100).
-    For callers that work in σ_A space (the rescore, the FRF eterm), multiplying
-    by this factor reproduces that behaviour.
-
-    Defaults match Phaser (``DEF_SOLPAR_BULK_FSOL=0.95``,
-    ``DEF_SOLPAR_BULK_BSOL=300``, ``DEF_SOLPAR_SIGA_MIN=0.01``).
+    Phaser folds it into σ_A as ``solTerm(s²) · DLuzzati(s², vrms)``
+    (EnsemblePDB.cc:96-100). Defaults match Phaser (``DEF_SOLPAR_BULK_FSOL``,
+    ``DEF_SOLPAR_BULK_BSOL``, ``DEF_SOLPAR_SIGA_MIN``).
 
     Parameters
     ----------
-    s_mag : tensor
+    s_mag : torch.Tensor
         Per-reflection reciprocal-space magnitude |s| (Å^-1).
     fsol, bsol, sigA_min : float
-        Babinet parameters. Defaults match Phaser.
+        Solvent fraction scale, solvent B-factor (Å²) and the result's floor.
 
     Returns
     -------
     torch.Tensor
-        Per-reflection solvent multiplier, same shape as ``s_mag``. Always in
+        Per-reflection solvent multiplier, same shape as ``s_mag``, in
         ``[sigA_min, 1]``.
     """
     s2 = s_mag * s_mag
