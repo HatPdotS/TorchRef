@@ -7,8 +7,8 @@ scatter, both measured at ~50 GB/s -- the stages are bandwidth-bound, and the
 arithmetic underneath is a small fraction of the time.
 
 float32 throughout, matching the rest of this codebase's kernels. The radial
-Bessel recurrence is a separate stage and keeps its float64 internals, where the
-downward recurrence's cancellation actually needs them.
+Bessel recurrence is a separate stage and runs at the same working precision,
+kept in range by its power-of-two rescaling.
 
 Fusing them removes the round trip: one cluster's three rows are 1.2 kB of stack,
 so ``cur`` is produced, multiplied and accumulated without ever reaching memory.
