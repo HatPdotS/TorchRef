@@ -75,74 +75,62 @@ from torchref.experimental.kinetic.kinetics import KineticModel
 class occupancies_kinetics(DeviceMixin, nn.Module):
     """
     Kinetics-constrained occupancy model.
-    
-    This model uses a kinetic scheme to constrain occupancies at different timepoints.
-    Instead of independent parameters for each timepoint, the occupancies are derived
-    from rate constants and a kinetic flow chart (efficiencies are frozen at 1.0).
-    
-    This provides several advantages over unrestrained refinement:
-    1. Physical constraints: occupancies follow kinetic laws
-    2. Reduced parameters: n_rates instead of n_states * n_timepoints
-    3. Extrapolation: can predict occupancies at unmeasured timepoints
-    4. Interpretability: rate constants have physical meaning
+
+    Derives per-structure, per-timepoint occupancies from the rate constants of
+    a kinetic flow chart (through :class:`KineticModel`) instead of refining
+    every timepoint independently. ``forward()`` returns occupancies of shape
+    (n_structural_states, n_timepoints).
 
     Parameters
     ----------
     flow_chart : str
-        Kinetic scheme, e.g., "A->B,B->C,C->D" or "A->B,B->A,B->C" (with back-reaction)
+        Kinetic scheme, e.g. "A->B,B->C,C->D" or "A->B,B->A,B->C".
     time : list or tensor
-        Time points at which to evaluate occupancies
+        Time points at which to evaluate occupancies.
     rate_constants : dict or None, optional
-        Initial rate constants as {"A->B": value, ...}. If None, uses smart initialization.
+        Initial rate constants as {"A->B": value, ...}. None uses the
+        observability-based initialization of :class:`KineticModel`.
     efficiencies : dict or None, optional
-        Accepted for backward compatibility but ignored: efficiencies are frozen
-        at 1.0 (degenerate with rate constants) and are not refinable.
+        Ignored: efficiencies are frozen at 1.0.
     instrument_function : str, optional
-        Instrument response function model, either 'none' or 'gaussian'.
-        Default: 'none'. Note this overrides :class:`KineticModel`'s own default
-        of ``'gaussian'``, so constructing through this wrapper applies no IRF
-        unless ``'gaussian'`` is requested explicitly.
+        'none' (default, unlike :class:`KineticModel`) or 'gaussian'. The
+        Gaussian is integrated over the measured timepoints only, so it is
+        accurate only when their spacing is much smaller than its sigma, and
+        biased for sparse or log-spaced series.
     instrument_width : float, optional
-        Instrument response function width (Gaussian sigma). Default: 10
+        Gaussian sigma, in the units of ``time``. Default: 10
     light_activated : bool, optional
-        If True, products returning to ground state become inactive. Default: False
+        If True, products returning to the initial state enter an inactive copy
+        of it (initial state + ``'*'``, e.g. "A*") that cannot react again.
+        Default: False
     state_mapping : dict or None, optional
-        Mapping from kinetic states to structural model indices.
-        E.g., {"A": 0, "B": 1, "C": 2, "D": 3} or {"A": 0, "B": 1, "C": 1, "D": 2}
-        The latter allows multiple kinetic states to map to the same structure.
-        If None, assumes sequential mapping (A=0, B=1, ...).
+        Kinetic state -> structural model index, e.g. {"A": 0, "B": 1, "C": 1};
+        several states may share a structure. None numbers the states in
+        flow-chart order. Every kinetic state must be mapped (ValueError
+        otherwise), except the inactive copy, which defaults to its parent.
     regularization : dict or None, optional
-        Regularization settings:
-        - 'rate_prior_weight': weight for log-normal prior on rates
-        - 'rate_prior_mean': mean of log-rate prior (default: based on time range)
-        - 'rate_prior_std': std of log-rate prior (default: 2.0, allows ~2 orders of magnitude)
-        - 'efficiency_prior_weight': weight for efficiency prior (favoring 1.0)
+        'rate_prior_weight' (default 0, off), 'rate_prior_mean' (default
+        log(3 / time range)) and 'rate_prior_std' (default 2.0) of the
+        log-normal rate prior returned by :meth:`get_regularization_loss`.
     verbose : int, optional
         Verbosity level. Default: 1
-    
+    activation_level : float or None, optional
+        Fraction of the initial state that takes part in the kinetics. The
+        rest, ``1 - activation_level``, stays in the initial state as a
+        constant, non-refined baseline, so at the default of 0.5 half of it
+        never reacts. None means 1.0. Default: 0.5
+
     Examples
     --------
-    >>> # Simple sequential kinetics: A -> B -> C -> D
     >>> occ = occupancies_kinetics(
     ...     flow_chart="A->B,B->C,C->D",
     ...     time=torch.linspace(0, 100, 50),
-    ...     rate_constants={"A->B": 1.0, "B->C": 0.1, "C->D": 0.01}
+    ...     rate_constants={"A->B": 1.0, "B->C": 0.1, "C->D": 0.01},
+    ...     activation_level=1.0,
+    ...     verbose=0,
     ... )
-    >>> occupancies = occ()  # Shape: [n_states, n_timepoints]
-    
-    >>> # With back-reaction
-    >>> occ = occupancies_kinetics(
-    ...     flow_chart="A->B,B->A,B->C",
-    ...     time=times,
-    ...     light_activated=True  # Products returning to A become inactive
-    ... )
-    
-    >>> # Mapping multiple kinetic states to same structure
-    >>> occ = occupancies_kinetics(
-    ...     flow_chart="A->B,B->C,C->D",
-    ...     time=times,
-    ...     state_mapping={"A": 0, "B": 1, "C": 1, "D": 0}  # B and C share structure
-    ... )
+    >>> occ().shape
+    torch.Size([4, 50])
     """
     
     def __init__(
@@ -156,7 +144,8 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         light_activated: bool = False,
         state_mapping: Optional[Dict[str, int]] = None,
         regularization: Optional[Dict[str, float]] = None,
-        verbose: int = 1
+        verbose: int = 1,
+        activation_level: Optional[float] = 0.5,
     ):
         super(occupancies_kinetics, self).__init__()
 
@@ -176,7 +165,8 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
             instrument_function=instrument_function,
             instrument_width=instrument_width,
             light_activated=light_activated,
-            verbose=verbose
+            activation_level=activation_level,
+            verbose=verbose,
         )
         
         # Setup state mapping (kinetic states to structural model indices)
@@ -202,11 +192,27 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         2. Reordering of states if kinetic and structural order differ
         """
         kinetic_states = self.kinetics.states
-        
+        inactive = None
+        if self.kinetics.light_activated:
+            inactive = self.kinetics.initial_state + "*"
+
         if state_mapping is None:
-            # Default: sequential mapping (A=0, B=1, C=2, ...)
-            state_mapping = {state: i for i, state in enumerate(kinetic_states)}
-        
+            active = [state for state in kinetic_states if state != inactive]
+            state_mapping = {state: i for i, state in enumerate(active)}
+        else:
+            state_mapping = dict(state_mapping)
+        # An unmapped column of the mapping matrix would silently drop that
+        # state's population from the structural occupancies.
+        missing = [
+            s for s in kinetic_states if s not in state_mapping and s != inactive
+        ]
+        if missing:
+            raise ValueError(f"state_mapping does not map kinetic states {missing}")
+        # The inactive copy is the same structure as its parent; only its
+        # photoactivity differs.
+        if inactive is not None and inactive not in state_mapping:
+            state_mapping[inactive] = state_mapping[self.kinetics.initial_state]
+
         self.state_mapping = state_mapping
         
         # Number of unique structural states

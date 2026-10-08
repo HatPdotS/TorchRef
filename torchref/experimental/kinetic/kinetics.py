@@ -11,6 +11,8 @@ This module is part of the experimental ``torchref.experimental.kinetic``
 subpackage; its API is under active development and may change without notice.
 """
 
+import math
+
 import torch
 from torch.nn import Module as nnModule
 from torch.nn import Parameter
@@ -19,6 +21,27 @@ from torchref.config import get_float_dtype
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Optional, Union
 import numpy as np
+
+
+def _zero_column_sums(E: torch.Tensor) -> torch.Tensor:
+    """Reset the diagonal of ``E`` to minus its off-diagonal column sums.
+
+    ``exp(K t)`` of a rate matrix conserves population, so ``exp(K t) - I`` has
+    zero column sums. Without this projection, rounding in the column sums
+    doubles with every squaring and populations stop summing to 1.
+
+    Parameters
+    ----------
+    E : torch.Tensor
+        Matrices of shape (..., n_states, n_states).
+
+    Returns
+    -------
+    torch.Tensor
+        ``E`` with its diagonal replaced, same shape.
+    """
+    off = E - torch.diag_embed(torch.diagonal(E, dim1=-2, dim2=-1))
+    return off - torch.diag_embed(off.sum(dim=-2))
 
 
 class KineticModel(DeviceMixin, nnModule):
@@ -53,16 +76,16 @@ class KineticModel(DeviceMixin, nnModule):
         Initial rate constants. Can be:
         - Dict mapping "A->B" to float value
         - List of floats (same order as transitions in flow_chart)
-        - None (random initialization)
+        - None (deterministic, observability-based initialization)
     efficiencies : dict or list, optional
         Accepted for API compatibility but currently ignored: efficiencies
         are always frozen at 1.0 (100% efficient) and are not refinable.
     instrument_function : str, optional
-        Type of instrument response function. Options: 'gaussian', 'none'
-        Default: 'gaussian'
+        'gaussian' (default) or 'none'. The Gaussian is integrated over the
+        measured timepoints only, so it is accurate only when their spacing is
+        much smaller than its sigma, and biased for sparse or log-spaced series.
     instrument_width : float, optional
-        Width parameter for the instrument function (e.g., sigma for gaussian)
-        Default: 10
+        Gaussian sigma, in the units of ``timepoints``. Default: 10
     initial_state : str, optional
         Which state starts with population 1. Default: first state in flow chart
     light_activated : bool, optional
@@ -73,7 +96,8 @@ class KineticModel(DeviceMixin, nnModule):
     activation_level : float, optional
         Fraction of the initial state that is reactive. The non-reactive
         remainder (1 - activation_level) is set as a constant baseline
-        occupancy on the initial state. Default: 0.5.
+        occupancy on the initial state. Default: 0.5. None means 1.0 (no
+        baseline).
     verbose : int, optional
         Verbosity level. Default: 1
     """
@@ -93,7 +117,9 @@ class KineticModel(DeviceMixin, nnModule):
 
     ):
         super(KineticModel, self).__init__()
-        
+        if activation_level is None:
+            activation_level = 1.0
+
         self.flow_chart = flow_chart
         self.verbose = verbose
         
@@ -108,13 +134,13 @@ class KineticModel(DeviceMixin, nnModule):
         self.state_to_idx = {state: idx for idx, state in enumerate(self.states)}
         self.n_transitions = len(self.transitions)
         
+        if initial_state is None:
+            initial_state = self.states[0]
+        self.initial_state = initial_state
+
         # Handle light-activated reactions
         self.light_activated = light_activated
         if light_activated:
-            # Identify initial state
-            if initial_state is None:
-                initial_state = self.states[0]
-            
             # Create an inactive version of the initial state (e.g., A -> A*)
             inactive_state = initial_state + '*'
             
@@ -164,9 +190,6 @@ class KineticModel(DeviceMixin, nnModule):
         )
         
         # Initial population
-        if initial_state is None:
-            initial_state = self.states[0]
-        self.initial_state = initial_state
         initial_populations = torch.zeros(self.n_states)
         initial_populations[self.state_to_idx[initial_state]] = 1.0
         self.register_buffer('initial_populations', initial_populations)
@@ -259,7 +282,7 @@ class KineticModel(DeviceMixin, nnModule):
         Rules:
         1. First transition (photoabsorption): quasi-instant, limited by instrument function
            τ_1 = σ/3, so k_1 = 3/σ
-        2. For observable states: 2*k_in ≈ k_out (state reaches ~50% occupancy)
+        2. Each later transition: k_out = k_in/3 (an intermediate peaks near 58%)
         3. Scale rates based on timeframe to ensure observability
         
         Parameters
@@ -300,9 +323,7 @@ class KineticModel(DeviceMixin, nnModule):
             state_out_indices[from_state].append(idx)
             state_in_indices[to_state].append(idx)
         
-        # Identify the first transition (from initial state, i.e. the sorted-first state)
-        initial_state = self.states[0]
-        first_transition_indices = state_out_indices[initial_state]
+        first_transition_indices = state_out_indices[self.initial_state]
         
         # Initialize first transition(s): quasi-instant, limited by instrument function
         # τ = σ/3, so k = 3/σ
@@ -318,7 +339,7 @@ class KineticModel(DeviceMixin, nnModule):
                 print(f"  First transition {from_s}->{to_s}: k = {k_first:.3f} (τ = {1/k_first:.3f})")
         
         # For remaining transitions: apply observability constraint
-        # Work through the chain, ensuring 2*k_in ≈ k_out
+        # Work through the chain, setting k_out = k_in / 3
         processed = set(first_transition_indices)
         
         # Process states in order of connectivity
@@ -341,8 +362,7 @@ class KineticModel(DeviceMixin, nnModule):
                     # Calculate average incoming rate
                     avg_k_in = torch.mean(init_k[incoming_set]).item()
                     
-                    # Observability: 2*k_in ≈ k_out for state to reach ~50% occupancy
-                    # This ensures the state is observable
+                    # An intermediate fed at k_in and drained at k_in / 3 peaks near 58%
                     k_out = avg_k_in / 3.0
                     
                     # Also consider timeframe - states should be observable within the time range
@@ -403,14 +423,14 @@ class KineticModel(DeviceMixin, nnModule):
         Returns
         -------
         states : List[str]
-            Ordered list of unique states
+            Unique states in order of first appearance in the flow chart
         transitions : List[Tuple[str, str]]
             List of (from_state, to_state) tuples
         """
         # Split by comma to get individual transitions or standalone states
         transition_strings = [t.strip() for t in flow_chart.split(',')]
         
-        states_set = set()
+        states = {}
         transitions = []
         
         for trans_str in transition_strings:
@@ -426,20 +446,17 @@ class KineticModel(DeviceMixin, nnModule):
                 if not from_state or not to_state:
                     raise ValueError(f"Empty state name in transition: '{trans_str}'")
                 
-                states_set.add(from_state)
-                states_set.add(to_state)
+                states.setdefault(from_state)
+                states.setdefault(to_state)
                 transitions.append((from_state, to_state))
             else:
                 # It's a standalone (non-reactive) state
                 state_name = trans_str.strip()
                 if not state_name:
                     raise ValueError("Empty state name in flow chart")
-                states_set.add(state_name)
-        
-        # Sort states to ensure consistent ordering
-        states = sorted(states_set)
-        
-        return states, transitions
+                states.setdefault(state_name)
+
+        return list(states), transitions
     
     def _build_rate_matrix(self, rate_constants: torch.Tensor, efficiencies: torch.Tensor) -> torch.Tensor:
         """
@@ -492,9 +509,12 @@ class KineticModel(DeviceMixin, nnModule):
         P(t) = exp(K * t) @ P(0)  for t >= 0
         P(t) = P(0)                for t < 0
 
-        torch.matrix_exp uses Padé approximation with scaling-and-squaring,
-        which handles large ||K*t|| safely. No element-wise clipping is needed
-        (clipping would destroy the row-sum-to-zero structure of the rate matrix).
+        All timepoints are evaluated in one batch, in the dtype of
+        ``rate_matrix``, by scaling and squaring on ``E = exp(K t) - I`` with
+        every column of ``E`` summing to exactly zero. This keeps stiff schemes
+        (rates spanning many decades over long times) accurate and
+        population-conserving in float32, unless the caller enables TF32 matmuls
+        on CUDA. Choosing the number of squarings costs one GPU->CPU sync.
 
         Parameters
         ----------
@@ -507,35 +527,36 @@ class KineticModel(DeviceMixin, nnModule):
             Population of each state at each timepoint
             Shape: (n_timepoints, n_states)
         """
-        populations = []
-        orig_dtype = rate_matrix.dtype
+        t = self.timepoints.to(rate_matrix.dtype).clamp(min=0)
+        p0 = self.initial_populations.to(rate_matrix.dtype)
 
-        # Use float64 for matrix exponential to maintain precision
-        # when ||K*t|| is large (e.g. fast rates × long times).
-        K64 = rate_matrix.double()
-        P0_64 = self.initial_populations.double()
+        # Scale every K t to a 1-norm <= 1/4, where 12 Taylor terms of expm1
+        # are exact to float64 round-off.
+        with torch.no_grad():
+            scale = 4.0 * (rate_matrix.abs().sum(dim=0).max() * t.max()).item()
+        # A non-finite rate propagates as NaN to the loss rather than raising.
+        n_squarings = math.ceil(math.log2(scale)) if 1.0 < scale < math.inf else 0
+        A = rate_matrix * (t * 2.0**-n_squarings)[:, None, None]
 
-        for t in self.timepoints:
-            t_val = t.item() if torch.is_tensor(t) else t
+        identity = torch.eye(A.shape[-1], dtype=A.dtype, device=A.device)
+        E = A / 12
+        for m in range(11, 0, -1):
+            E = A @ (identity + E) / m
+        E = _zero_column_sums(E)
+        # (I + E)^2 = I + 2E + E^2. Squaring E itself keeps transition
+        # probabilities far below 1 from being rounded away against the
+        # diagonal 1 of I + E.
+        for _ in range(n_squarings):
+            E = _zero_column_sums(2 * E + E @ E)
+        return p0 + E @ p0
 
-            if t_val < 0:
-                P_t = P0_64.clone()
-            else:
-                Kt = K64 * t_val
-                exp_Kt = torch.matrix_exp(Kt)
-                P_t = exp_Kt @ P0_64
-            populations.append(P_t)
-
-        populations = torch.stack(populations, dim=0).to(orig_dtype)
-        return populations
-    
     def _apply_instrument_function(self, populations: torch.Tensor) -> torch.Tensor:
         """
         Apply instrument response function to account for time resolution.
 
         Performs convolution in real time space using a kernel matrix that
         accounts for the actual time differences between measurement points.
-        This is essential for non-uniformly spaced time grids (e.g. logarithmic).
+        Quadrature uses only the measured timepoints: accurate only if spacing << σ.
 
         For Gaussian IRF:
             S(t_i) = Σ_j P(t_j) * G(t_i - t_j) * w_j  /  Σ_j G(t_i - t_j) * w_j
@@ -598,8 +619,8 @@ class KineticModel(DeviceMixin, nnModule):
         Returns
         -------
         populations : torch.Tensor
-            Population of each state at each timepoint
-            Shape: (n_timepoints, n_states)
+            Population of each state at each timepoint, shape (n_timepoints, n_states).
+            Columns follow ``self.states``: flow-chart order, inactive copy (A*) last.
         """
         # Get rate constants (ensure positivity via exp)
         rate_constants = torch.exp(self.log_rate_constants)
@@ -813,19 +834,9 @@ class KineticModel(DeviceMixin, nnModule):
                      for key, rate in eff_rate_dict.items()}
         return time_dict
     
-    def parameters(self) -> Dict[str, torch.Tensor]:
+    def parameter_dict(self) -> Dict[str, torch.Tensor]:
         """
         Get all flexible (learnable) parameters as a dictionary.
-
-        Note
-        ----
-        This **overrides** :meth:`torch.nn.Module.parameters` (which returns an
-        iterator of :class:`~torch.nn.Parameter`) and instead returns a dict, so
-        the standard ``optimizer = Adam(model.parameters())`` idiom does not work
-        directly -- pass ``.values()`` to the optimizer (see the example below).
-        The :class:`~torchref.experimental.kinetic.occupancies.occupancies_kinetics`
-        wrapper does *not* override ``parameters()``, so callers that go through
-        it keep the standard ``nn.Module`` iterator behavior.
 
         Returns
         -------
@@ -834,13 +845,6 @@ class KineticModel(DeviceMixin, nnModule):
             - 'log_rate_constants': log-transformed rate constants
             - 'log_instrument_width': log-transformed instrument width (if refinable)
             - 'baseline_{state}': refinable baseline for specific states (if any)
-        
-        Examples
-        --------
-        >>> model = KineticModel(...)
-        >>> params = model.parameters()
-        >>> print(params.keys())
-        >>> # Use with optimizer: optimizer = torch.optim.Adam(params.values(), lr=0.01)
         """
         params = {
             'log_rate_constants': self.log_rate_constants,
@@ -908,6 +912,9 @@ class KineticModel(DeviceMixin, nnModule):
         ----------
         outpath : str
             Path to save the plot (e.g., 'kinetics.png')
+        times : torch.Tensor or array-like, optional
+            Time points to plot instead of the model's own; the model's
+            ``timepoints`` are restored afterwards. Default: the model's
         log : bool, optional
             If True, use log scale for x-axis. Default: False
         figsize : Tuple[int, int], optional
@@ -917,16 +924,18 @@ class KineticModel(DeviceMixin, nnModule):
         title : str, optional
             Custom title for the plot. If None, uses flow chart string
         """
-        # Compute populations
+
+        timepoints = self.timepoints
         if times is not None:
-            # Temporarily override timepoints
-            original_timepoints = self.timepoints
-            self.timepoints = times
-
-        with torch.no_grad():
-            populations = self().detach().cpu().numpy()
-
-        t = self.timepoints.cpu().numpy()
+            self.timepoints = torch.as_tensor(
+                times, dtype=timepoints.dtype, device=timepoints.device
+            )
+        try:
+            with torch.no_grad():
+                populations = self().detach().cpu().numpy()
+            t = self.timepoints.cpu().numpy()
+        finally:
+            self.timepoints = timepoints
 
         # Create figure
         plt.figure(figsize=figsize)
@@ -936,8 +945,7 @@ class KineticModel(DeviceMixin, nnModule):
         plotted_populations = []
         
         if self.light_activated:
-            # Find initial state and its inactive version
-            initial_state = self.states[0]
+            initial_state = self.initial_state
             inactive_state = initial_state + '*'
             
             # Combine A and A* populations

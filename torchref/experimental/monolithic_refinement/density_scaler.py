@@ -9,7 +9,7 @@ Two pieces:
 ``DensityDerivedSolvent``
     A thin ``nn.Module`` exposing the exact interface ``ScalerBase.forward``
     expects from its ``solvent`` attribute (``get_rec_solvent`` / ``log_k_solvent``
-    / falloff / ``optimize_phase``), backed by a ``DensitySolventModel``.
+    / falloff), backed by a ``DensitySolventModel``.
     Unlike the vdW-mask ``SolventModel`` (whose mask FFT is detached / static),
     ``get_rec_solvent`` here is **live** -- it stays in the autograd graph, so
     ``F_sol`` tracks atom moves and gradients flow ``rho -> xyz/adp``. The raw
@@ -85,7 +85,6 @@ class DensityDerivedSolvent(nn.Module):
         super().__init__()
         device = device or get_default_device()
         dtype = dtype or get_float_dtype()
-        self.optimize_phase = False
         # rho_s frozen at 1: the scaler's k_sol is the refinable contrast, so the
         # raw solvent SF returned here is pure density shape (ifft(M)).
         self.density = DensitySolventModel(

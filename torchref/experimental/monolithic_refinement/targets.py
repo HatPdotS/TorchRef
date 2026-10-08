@@ -3,9 +3,8 @@
 EXPERIMENTAL. This is the :class:`MLNoAlphaXrayTarget` Read-MLF Rice
 likelihood, but the per-reflection conditional variance ``Sigma = epsilon * beta``
 is built from the *differentiable* Fisher model-error variance ``sigma_m**2``
-(estimated from the atomic B-factor distribution, reused from
-the retired ``BhattacharyyaXrayTarget``)
-instead of the free-set root-find ``beta``. Concretely ``beta := c * sigma_m**2``
+(estimated from the atomic B-factor distribution) instead of the free-set
+root-find ``beta``. Concretely ``beta := c * sigma_m**2``
 with ``c`` a small, bounded, **co-refined** calibration *owned by this target*
 (``log_sigma_m_scale``).
 
@@ -42,8 +41,8 @@ class RiceSigmaMXrayTarget(XrayTarget):
     """Read-MLF Rice target with ``beta = c * sigma_m**2`` (differentiable, co-refined).
 
     Owns a :class:`~torchref.refinement.model_error_estimation.sigma_m.SigmaMEstimator` (the Fisher
-    machinery extracted from the retired Bhattacharyya target: cache, soft B-histogram,
-    per-reflection variance) and keeps ``sigma_m`` **in the autograd graph**, feeding
+    machinery: cache, soft B-histogram, per-reflection variance) and keeps ``sigma_m``
+    **in the autograd graph**, feeding
     ``c * sigma_m**2`` into the validated Read-MLF Rice likelihood
     (:func:`~torchref.base.targets.xray_likelihoods.rice_math`) in the slot the
     free-set ``beta`` normally
@@ -82,16 +81,9 @@ class RiceSigmaMXrayTarget(XrayTarget):
             verbose=verbose,
             **kwargs,
         )
-        # The structure-driven model-error estimator, extracted from the retired
-        # Bhattacharyya target. It returns an UNSCALED variance: this target refines its
-        # own calibration (`log_sigma_m_scale`), so a second scale applied underneath
+        # The estimator returns an UNSCALED variance: this target refines its own
+        # calibration (`log_sigma_m_scale`), so a second scale applied underneath
         # would be degenerate with it.
-        #
-        # A `sigma_m_scale` constructor argument used to sit here, documented as "the
-        # initial value of that calibration". It was never used: the calibration is
-        # initialised to `zeros` below regardless, so the comment was false and the whole
-        # thread from `--sigma-m-scale` down was dead end to end -- the factory swallowed it
-        # too. Removed 2026-08 along with the CLI flag.
         self._sigma_m = SigmaMEstimator()
         self.sigma_m_calib_bins = int(sigma_m_calib_bins)
         if shared_log_sigma_m_scale is not None:
@@ -163,7 +155,7 @@ class RiceSigmaMXrayTarget(XrayTarget):
         pass
 
     def stats(self, fcalc: torch.Tensor = None) -> Dict[str, StatEntry]:
-        """Inherit the sigma_m/sigma_d diagnostics; add the calibration value."""
+        """Return the base X-ray stats (loss, n, rwork, rfree) and calibration mean."""
         base = super().stats(fcalc=fcalc)
         with torch.no_grad():
             base["sigma_m_calib_mean"] = stat(
