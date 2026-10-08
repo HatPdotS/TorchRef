@@ -49,3 +49,9 @@ def test_help_shows_no_difference_weight(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         _run(monkeypatch, "--help")
     assert '"xray/difference' not in capsys.readouterr().out
+
+
+def test_fraction_one_is_refused(monkeypatch, capsys):
+    """The shared parser admits the pure light state; difference refinement does not."""
+    assert _run(monkeypatch, "--fraction", "1.0") == 1
+    assert "--fraction must be below 1" in capsys.readouterr().err

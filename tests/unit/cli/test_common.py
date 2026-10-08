@@ -1,12 +1,15 @@
 """Shared argument helpers of the torchref command-line tools."""
 
+import argparse
 import json
 
 import pytest
 
-from torchref.cli._common import parse_weights
+from torchref.cli._common import add_dual_model_args, parse_weights
 
 pytestmark = pytest.mark.unit
+
+_DUAL_INPUTS = ["-dm", "d.pdb", "-lm", "l.pdb", "-dsf", "d.mtz", "-lsf", "l.mtz"]
 
 
 def test_parse_weights_long_inline_json(tmp_path):
@@ -30,3 +33,18 @@ def test_parse_weights_reports_unreadable_input(tmp_path):
     assert weights == {"xray": 1.0}
     assert "--weights" in err
 
+
+@pytest.mark.parametrize("value", ["1.5", "0", "-0.2"])
+def test_fraction_range_refuses(value):
+    parser = argparse.ArgumentParser()
+    add_dual_model_args(parser, fraction_required=False)
+    with pytest.raises(SystemExit):
+        parser.parse_args([*_DUAL_INPUTS, "--fraction", value])
+
+
+@pytest.mark.parametrize("value", [0.37, 1.0])
+def test_fraction_range_accepts(value):
+    parser = argparse.ArgumentParser()
+    add_dual_model_args(parser, fraction_required=False)
+    args = parser.parse_args([*_DUAL_INPUTS, "--fraction", str(value)])
+    assert args.fraction == value

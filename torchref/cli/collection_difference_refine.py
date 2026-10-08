@@ -1282,9 +1282,11 @@ Examples:
     register_timing()
 
     # --- Parse fractions ---
-    if not (0.0 < args.fraction < 1.0):
-        print(f"Error: --fraction must be between 0 and 1 (got {args.fraction})",
-              file=sys.stderr)
+    if args.fraction == 1.0:
+        print(
+            "Error: --fraction must be below 1 for difference refinement",
+            file=sys.stderr,
+        )
         return 1
     fractions = [1.0 - args.fraction, args.fraction]
 

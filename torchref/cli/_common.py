@@ -307,6 +307,18 @@ def add_single_model_args(parser: argparse.ArgumentParser) -> None:
     add_column_args(col)
 
 
+def _light_fraction(value: str) -> float:
+    """Parse ``--fraction``, refusing values outside ``0 < f <= 1``.
+
+    1.0 is the pure light state; 0 would leave no light model to extrapolate to,
+    and the population parametrisation clamps anything outside the range silently.
+    """
+    fraction = float(value)
+    if not 0.0 < fraction <= 1.0:
+        raise argparse.ArgumentTypeError(f"must satisfy 0 < fraction <= 1, got {value}")
+    return fraction
+
+
 def add_dual_model_args(
     parser: argparse.ArgumentParser,
     fraction_required: bool = True,
@@ -356,8 +368,8 @@ def add_dual_model_args(
         help="Light / triggered state structure factor file (MTZ or CIF)",
     )
     frac_kwargs = {
-        "type": float,
-        "help": "Occupancy fraction of the light/excited state "
+        "type": _light_fraction,
+        "help": "Occupancy fraction of the light/excited state, 0 < fraction <= 1 "
                 "(e.g. 0.37). Dark fraction is computed as 1 - fraction.",
     }
     if fraction_required:
