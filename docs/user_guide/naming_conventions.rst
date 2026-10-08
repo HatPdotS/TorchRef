@@ -42,8 +42,8 @@ Atomic Displacement Parameters
 
 - ``adp`` — isotropic model ADPs (B-factors, Ų): ``model.adp()``
 - ``u`` — anisotropic U tensor, 6 components per atom: ``model.u()``
-- ``b`` — a B-factor used for *scaling*, not a model parameter (e.g. the
-  scaler's ``b_solvent``)
+- ``b`` — a B-factor reported for *scaling*, not a model parameter (e.g.
+  ``SolventModel.b_solvent_equivalent()``, the B fitted to the solvent falloff)
 
 Coordinates and Occupancy
 -------------------------
