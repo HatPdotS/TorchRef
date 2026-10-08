@@ -541,7 +541,7 @@ class EnsembleModel(ModelFT):
                 src["y"] = src["y"].astype(float) + noise[:, 1]
                 src["z"] = src["z"].astype(float) + noise[:, 2]
             src["tempfactor"] = float(b_const)
-            src["occupancy"] = 1.0 / float(n_members)
+            src["occupancy"] = 1.0 / float(pool)
             for c in ("u11", "u22", "u33", "u12", "u13", "u23"):
                 if c in src.columns:
                     src[c] = 0.0
@@ -946,19 +946,21 @@ class EnsembleModel(ModelFT):
         return occupancy
 
     def _inject_population(self, occupancy: torch.Tensor, adp: torch.Tensor):
-        """Substitute live per-member softmax occupancy / softplus ADP.
+        """Substitute per-member occupancy (and softplus ADP) for the stored values.
 
-        Only when population refinement is on and the per-atom vector aligns
-        with the full ensemble layout (``get_iso`` covers all atoms; the
-        all-isotropic ensemble leaves ``get_aniso`` empty, so its shorter
-        vector simply skips the swap). The returned tensors are live, so
-        autograd reaches ``occ_logits``/``b_raw`` through the FFT SF path.
+        Dead slots get zero occupancy. Without population refinement the alive
+        members share it equally (``1/n_alive``); with it they carry the live
+        softmax weights, so autograd reaches ``occ_logits``/``b_raw`` through
+        the FFT SF path. Applies only when the per-atom vector aligns with the
+        full ensemble layout (``get_iso`` covers all atoms; the all-isotropic
+        ensemble leaves ``get_aniso`` empty, so its shorter vector skips this).
         """
+        idx = getattr(self, "_member_index", None)
+        if idx is None or occupancy.numel() != idx.numel():
+            return occupancy, adp
         if not getattr(self, "_refine_population", False):
-            return occupancy, adp
-        if occupancy.numel() != self._member_index.numel():
-            return occupancy, adp
-        idx = self._member_index
+            alive = self._alive.to(occupancy.dtype)
+            return (alive / alive.sum())[idx], adp
         occupancy = self.member_weights()[idx]
         # B stays frozen at b_const unless explicitly refined (free B -> 0 on
         # the weighted members = delta-function overfit; default off).

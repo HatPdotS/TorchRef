@@ -205,3 +205,34 @@ def test_copy_keeps_a_low_rank_xyz():
     with torch.no_grad():
         dup.xyz.amplitudes.add_(1.0)
     assert not torch.allclose(dup.xyz(), ens.xyz())
+
+
+# --------------------------------------------------------------------------
+# Spare (dead) slots of a population pool
+# --------------------------------------------------------------------------
+
+_POOL_KW = dict(perturb_sigma=0.2, b_const=5.0, seed=42, verbose=0)
+
+
+def _member_occupancy(ens):
+    occ = ens.get_iso()[2].detach().cpu()
+    return occ.view(ens.n_members, ens.n_atoms_per_member)[:, 0]
+
+
+def test_dead_slots_do_not_contribute_to_fcalc():
+    """A pool with dead spare slots scatters like the alive members alone."""
+    pool = EnsembleModel.from_single(TEST_PDB, n_members=3, n_max=5, **_POOL_KW)
+    plain = EnsembleModel.from_single(TEST_PDB, n_members=3, **_POOL_KW)
+    assert torch.equal(pool.xyz_per_member[:3], plain.xyz_per_member)
+    assert torch.allclose(_member_occupancy(pool), torch.tensor([1 / 3] * 3 + [0, 0]))
+    pool.setup_grid(max_res=2.5)
+    plain.setup_grid(max_res=2.5)
+    hkl = _dropout_hkl(pool)
+    assert torch.allclose(pool(hkl), plain(hkl), rtol=1e-4, atol=1e-3)
+
+
+def test_multimodel_pool_occupancy_sums_to_one(tmp_path, small_ensemble):
+    path = str(tmp_path / "ens.pdb")
+    small_ensemble.write_pdb(path)
+    ens = EnsembleModel.from_multimodel_pdb(path, n_members=2, n_max=4, verbose=0)
+    assert torch.allclose(_member_occupancy(ens), torch.tensor([0.5, 0.5, 0.0, 0.0]))
