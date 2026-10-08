@@ -623,7 +623,7 @@ class EnsembleModel(ModelFT):
             b_raw0.to(self.dtype_float), requires_grad=False
         )
         # Only xyz refines — B-factors fixed (ensemble spread IS the disorder),
-        # anisotropic U is unused, and occupancy is fixed at 1/N by default
+        # anisotropic U is unused, and occupancy is fixed at 1/n_alive by default
         # (per-member occupancy can be opted into via
         # enable_population_refinement, but is a known dead de-overfit lever).
         for tgt in ("adp", "u", "occupancy"):
@@ -688,7 +688,7 @@ class EnsembleModel(ModelFT):
         """Turn per-member occupancy (and optionally ADP) injection on/off.
 
         When on, ``get_iso``/``get_aniso`` substitute the live per-member
-        softmax occupancy ``w_m`` for the frozen 1/N, so
+        softmax occupancy ``w_m`` for the frozen 1/n_alive, so
         ``F̄ = Σ_{m alive} w_m·DWF(B_m)·F_m`` and gradients flow to
         ``occ_logits``. With ``refine_b=True`` the per-member softplus ADP
         ``B_m`` is also injected (gradients to ``b_raw``); otherwise B stays
@@ -891,7 +891,7 @@ class EnsembleModel(ModelFT):
         X-ray/Wilson gradient — but their geometry is still restrained by
         Amber (which reads coordinates, not occupancy). This breaks the member
         co-adaptation that lets an overparameterized ensemble memorize
-        work-set noise. Disabling restores the full ``1/N`` average.
+        work-set noise. Disabling restores the full ``1/n_alive`` average.
         """
         self.dropout_active = bool(active)
         if dropout_min is not None:
