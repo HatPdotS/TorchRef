@@ -194,7 +194,7 @@ columns, expands to P1, and computes a real-space map via FFT.
 
 .. code-block:: bash
 
-   torchref.mtz2map -sf refined.mtz -csf 2FOFCWT -cphi PH2FOFCWT -o map.ccp4
+   torchref.mtz2map -sf refined.mtz -csf FWT -cphi PHWT -o map.ccp4
    torchref.mtz2map -sf diff.mtz -csf dF -cw W_Q -cphi PHDELWT -o diff.ccp4
    torchref.mtz2map -sf diff.mtz -csf dF -cw W_Q -cphi PHDELWT --units electrons -o diff_e.ccp4
 
