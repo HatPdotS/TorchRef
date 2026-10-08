@@ -90,14 +90,13 @@ DS_BACKENDS = BackendTable(
                 "_checkpointed_iso",
                 "_checkpointed_aniso",
             ),
-            # METAL is here because there is no Metal DS kernel; see the module docstring.
-            # TRITON is absent, which is what makes that engine strict.
+            # The base case: no device or dtype restriction, so it serves MPS (there is no
+            # Metal DS kernel) and every call the Triton row declines.
             expect_available="always",
             on_failure="raise",
             # First-order only: the backward replays each chunk under ``enable_grad`` but
             # without ``create_graph``, so a second derivative raises rather than returning
-            # something wrong. ``_eager_*`` is the double-differentiable reference and is
-            # deliberately not in this table -- it is not a production dispatch target.
+            # something wrong.
             second_order=False,
         ),
     ),

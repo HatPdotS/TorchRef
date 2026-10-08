@@ -37,32 +37,15 @@ from torchref.base.reciprocal import (
 )
 
 # =============================================================================
-# Re-exports from direct_summation submodule
-# =============================================================================
-from torchref.base.direct_summation import (
-    iso_structure_factor_torched,
-    iso_structure_factor_torched_no_complex,
-    aniso_structure_factor_torched,
-    aniso_structure_factor_torched_no_complex,
-    anharmonic_correction,
-    anharmonic_correction_no_complex,
-    core_deformation,
-    multiplication_quasi_complex_tensor,
-)
-
-# =============================================================================
 # Re-exports from electron_density submodule
 # =============================================================================
 from torchref.base.electron_density import (
     vectorized_add_to_map,
     vectorized_add_to_map_aniso,
     scatter_add_nd,
-    scatter_add_nd_super_slow,
     find_relevant_voxels,
     excise_angstrom_radius_around_coord,
     add_to_solvent_mask,
-    add_to_phenix_mask,
-    find_solvent_voids,
 )
 
 # =============================================================================
@@ -115,25 +98,13 @@ __all__ = [
     "get_d_spacing",
     "place_on_grid",
     "extract_structure_factor_from_grid",
-    # Structure factors
-    "iso_structure_factor_torched",
-    "iso_structure_factor_torched_no_complex",
-    "aniso_structure_factor_torched",
-    "aniso_structure_factor_torched_no_complex",
-    "anharmonic_correction",
-    "anharmonic_correction_no_complex",
-    "core_deformation",
-    "multiplication_quasi_complex_tensor",
     # Electron density
     "vectorized_add_to_map",
     "vectorized_add_to_map_aniso",
     "scatter_add_nd",
-    "scatter_add_nd_super_slow",
     "find_relevant_voxels",
     "excise_angstrom_radius_around_coord",
     "add_to_solvent_mask",
-    "add_to_phenix_mask",
-    "find_solvent_voids",
     # Fourier
     "fft",
     "ifft",

@@ -2,10 +2,10 @@
 
 The build is a single in-process ``torch.mps.compile_shader`` call -- no ninja, build
 directory or file locking, since PyTorch caches the compiled pipeline-state objects
-itself. ``mps_kernels_available()`` is what ``torchref.utils.should_use_metal`` consults
-and returns False whenever MPS is absent, ``compile_shader`` is missing (torch < 2.9), or
-the shader fails to build; the caller then falls back to the portable plain splat and
-warns, while ``why_unavailable()`` reports :func:`last_error`.
+itself. ``why_unavailable()``, the probe of the ``mps_metal`` row of
+``DENSITY_BACKENDS``, returns a reason whenever MPS is absent, ``compile_shader`` is
+missing (torch < 2.9), or the shader fails to build; dispatch then uses the portable plain
+splat, and :func:`last_error` holds the build diagnostic.
 """
 
 from __future__ import annotations
@@ -75,29 +75,6 @@ def why_unavailable() -> Optional[str]:
         f"the Metal splat kernels are not available ({reason}); see "
         "torchref.base.electron_density.kernels.mps.compile.last_error()"
     )
-
-
-def mps_kernels_available() -> bool:
-    """Whether the Metal splat kernels compiled and are ready to dispatch.
-
-    Derived from :func:`why_unavailable` rather than re-testing, so there is one
-    availability check here, not two that can drift.
-    """
-    return why_unavailable() is None
-
-
-def warmup() -> bool:
-    """Eagerly trigger compilation (e.g. to move the one-time cost off the
-    first refinement step). Returns availability."""
-    return _get_lib() is not None
-
-
-def clear_cache() -> None:
-    """Forget the compiled library and failure state (recompiled on next use)."""
-    global _lib, _lib_failed, _lib_error
-    _lib = None
-    _lib_failed = False
-    _lib_error = None
 
 
 def last_error() -> Optional[Tuple[str, str]]:

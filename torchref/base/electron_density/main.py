@@ -12,8 +12,10 @@ no global splat radius, no grid-dependent requantization, no diagonal metric, no
 Which kernel runs, and whether a runtime failure may degrade, is read from
 :data:`._backends.DENSITY_BACKENDS` -- the only place those criteria are written down.
 Selection needs no configuration and there are no env-var knobs: the fastest kernel for
-the device and dtype wins, and a missing or throwing accelerator degrades to the
-portable splat with a warning. The one override is ``force_portable`` (per call, or
+the device and dtype wins. An unavailable accelerator falls through to the next row
+silently (CI catches it through ``expect_available``), a CUDA or Metal kernel that throws
+degrades to the portable splat with a ``TorchRefDegradationWarning``, and the C++
+kernel's runtime errors propagate. The one override is ``force_portable`` (per call, or
 ``with use_portable(): ...``), for the single failure automatic fallback cannot detect
 -- a kernel that runs and returns *wrong numbers* rather than raising.
 """
@@ -26,10 +28,6 @@ from torchref.config import get_float_dtype, get_sigma_cutoff_ed
 from torchref.utils.backends import run_or_degrade, select
 
 from torchref.base.electron_density._backends import DENSITY_BACKENDS
-
-# Re-imported to preserve this namespace: ``scaling/solvent.py`` imports
-# ``_get_radius_offsets`` from here, not from its defining module.
-from torchref.base.electron_density.kernels.offsets import _get_radius_offsets
 from torchref.base.electron_density.radius_policy import (
     per_atom_radius_aniso,
     per_atom_radius_iso,

@@ -21,8 +21,6 @@ metrics
     R-factors, amplitude-space likelihoods and per-bin scaling.
 targets
     Tensor-only kernels behind the refinement targets, eager and Triton.
-kernels
-    Compatibility shim re-exporting :mod:`torchref.base.electron_density.kernels`.
 
 Modules
 -------
@@ -36,9 +34,10 @@ math_torch
 
 Re-exported here (``__all__``): every subpackage above except ``targets``, and the
 commonly used functions of ``coordinates``, ``reciprocal``, ``direct_summation``,
-``electron_density``, ``fourier``, ``metrics`` and ``kernels``. Not re-exported: the
-names of ``scattering``, ``alignment`` and ``targets`` and the three modules, which
-are imported from their own paths; ``math_torch`` is not imported at all.
+``electron_density`` (with its kernel-cache helpers), ``fourier`` and ``metrics``.
+Not re-exported: the names of ``scattering``, ``alignment`` and ``targets`` and the
+three modules, which are imported from their own paths; ``math_torch`` is not
+imported at all.
 """
 
 # =============================================================================
@@ -53,7 +52,6 @@ from . import (
     scattering,
     alignment,
     metrics,
-    kernels,
 )
 
 # =============================================================================
@@ -86,32 +84,15 @@ from .reciprocal import (
 )
 
 # =============================================================================
-# Structure factors (from direct_summation submodule)
-# =============================================================================
-from .direct_summation import (
-    iso_structure_factor_torched,
-    iso_structure_factor_torched_no_complex,
-    aniso_structure_factor_torched,
-    aniso_structure_factor_torched_no_complex,
-    anharmonic_correction,
-    anharmonic_correction_no_complex,
-    core_deformation,
-    multiplication_quasi_complex_tensor,
-)
-
-# =============================================================================
 # Electron density (from electron_density submodule)
 # =============================================================================
 from .electron_density import (
     vectorized_add_to_map,
     vectorized_add_to_map_aniso,
     scatter_add_nd,
-    scatter_add_nd_super_slow,
     find_relevant_voxels,
     excise_angstrom_radius_around_coord,
     add_to_solvent_mask,
-    add_to_phenix_mask,
-    find_solvent_voids,
 )
 
 # =============================================================================
@@ -143,9 +124,9 @@ from .metrics import (
 )
 
 # =============================================================================
-# Kernels (from kernels submodule)
+# Kernels (from electron_density.kernels)
 # =============================================================================
-from .kernels import (
+from .electron_density.kernels import (
     compute_metric_tensor,
     precompute_fractional_coords,
     warmup,
@@ -168,7 +149,6 @@ __all__ = [
     "scattering",
     "alignment",
     "metrics",
-    "kernels",
     # -------------------------------------------------------------------------
     # Classes
     # -------------------------------------------------------------------------
@@ -191,28 +171,15 @@ __all__ = [
     "generate_possible_hkl",
     "place_on_grid",
     "extract_structure_factor_from_grid",
-    # Structure factors
-    # -------------------------------------------------------------------------
-    "iso_structure_factor_torched",
-    "iso_structure_factor_torched_no_complex",
-    "aniso_structure_factor_torched",
-    "aniso_structure_factor_torched_no_complex",
-    "anharmonic_correction",
-    "anharmonic_correction_no_complex",
-    "core_deformation",
-    "multiplication_quasi_complex_tensor",
     # -------------------------------------------------------------------------
     # Electron density
     # -------------------------------------------------------------------------
     "vectorized_add_to_map",
     "vectorized_add_to_map_aniso",
     "scatter_add_nd",
-    "scatter_add_nd_super_slow",
     "find_relevant_voxels",
     "excise_angstrom_radius_around_coord",
     "add_to_solvent_mask",
-    "add_to_phenix_mask",
-    "find_solvent_voids",
     # -------------------------------------------------------------------------
     # Fourier
     # -------------------------------------------------------------------------

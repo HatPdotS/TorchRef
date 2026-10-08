@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 
 import itertools
+import math
 from dataclasses import dataclass, fields
 from typing import Optional, Sequence
 
@@ -27,8 +28,9 @@ import torch
 
 from torchref.utils import use_portable
 
+from torchref.base.direct_summation import compute_scattering_factors_batch
 from torchref.base.direct_summation._backends import DS_BACKENDS
-from torchref.base.direct_summation.dispatch import _eager_aniso, _eager_iso
+from torchref.base.direct_summation.dispatch import _chunk_ranges
 from torchref.base.electron_density._backends import DENSITY_BACKENDS
 from torchref.base.reciprocal import get_scattering_vectors, reciprocal_basis_matrix
 from torchref.base.scattering.scattering_table import get_scattering_params_by_z
@@ -269,9 +271,8 @@ def synthetic_scene(
     Two degeneracies are deliberately avoided, both of which once survived in two test
     files at the same time:
 
-    * ``occ`` is never exactly 1.0. The kernels recover ``d/d_occ`` by dividing the
-      accumulated gradient by ``occ``, and at ``occ == 1`` that division is a no-op that
-      hides a wrong scaling.
+    * ``occ`` is never exactly 1.0. The kernels scale the xyz and ADP gradients by
+      ``occ``, and at ``occ == 1`` that factor is a no-op that hides a wrong scaling.
     * the ADP off-diagonals are non-zero **and signed**. Zero off-diagonals mean every
       ellipsoid is axis-aligned, which leaves the cross-term arithmetic completely
       uncovered -- the ``p01``/``p02``/``p12`` entries of the inverted 3x3, and the
@@ -391,6 +392,58 @@ def gemmi_sf(structure, hkl_list: Sequence, *, dtype=torch.complex128) -> torch.
 # ---------------------------------------------------------------------------
 # Oracles
 # ---------------------------------------------------------------------------
+def _p1_sum(hkl, xyz_frac, terms):
+    """``sum_j terms_j exp(2 pi i h.x_j)``, shape ``(R,)``, for ``terms`` ``(R, N)``."""
+    pidot = 2 * math.pi * torch.matmul(hkl.to(xyz_frac.dtype), xyz_frac.T)
+    return torch.sum(terms * (1j * torch.sin(pidot) + torch.cos(pidot)), dim=1)
+
+
+def _eager_iso(hkl, s, xyz_frac, occ, adp, A, B, max_memory_gb):
+    """Isotropic P1 ``F(hkl)``, shape ``(R,)``, by eager direct summation.
+
+    Plain autograd ops, so it differentiates to any order. ``xyz_frac`` is fractional,
+    ``adp`` the isotropic B in A^2; ``max_memory_gb`` bounds the reflection chunk as on
+    the production path.
+    """
+
+    def chunk(start, end):
+        s_col = s[start:end].reshape(-1, 1)
+        dw = torch.exp(-adp.reshape(1, -1) * (s_col**2) / 4)
+        f = compute_scattering_factors_batch(s[start:end], A, B)
+        return _p1_sum(hkl[start:end], xyz_frac, f * dw * occ)
+
+    ranges = _chunk_ranges(hkl.shape[0], xyz_frac.shape[0], max_memory_gb, 50)
+    return torch.cat([chunk(start, end) for start, end in ranges])
+
+
+def _eager_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, max_memory_gb):
+    """Anisotropic P1 ``F(hkl)``, shape ``(R,)``, by eager direct summation.
+
+    As :func:`_eager_iso`, with ``s_vec`` the Cartesian scattering vectors ``(R, 3)`` and
+    ``U`` ``(N, 6)`` ``[U11, U22, U33, U12, U13, U23]`` in A^2, contracted as the full
+    matrix ``s^T U s`` -- a different formulation from the production expansion.
+    """
+    U_matrix = torch.stack(
+        [
+            torch.stack([U[:, 0], U[:, 3], U[:, 4]], dim=0),
+            torch.stack([U[:, 3], U[:, 1], U[:, 5]], dim=0),
+            torch.stack([U[:, 4], U[:, 5], U[:, 2]], dim=0),
+        ],
+        dim=0,
+    )  # (3, 3, N)
+
+    def chunk(start, end):
+        sv = s_vec[start:end]
+        U_dot_s = torch.einsum("jik,li->jkl", U_matrix, sv)  # (3, N, R_c)
+        StUS = torch.einsum("li,ikl->lk", sv, U_dot_s)  # (R_c, N)
+        f = compute_scattering_factors_batch(torch.norm(sv, dim=1), A, B)
+        dw = torch.exp(-2 * (math.pi**2) * StUS)
+        return _p1_sum(hkl[start:end], xyz_frac, f * dw * occ)
+
+    ranges = _chunk_ranges(hkl.shape[0], xyz_frac.shape[0], max_memory_gb, 80)
+    return torch.cat([chunk(start, end) for start, end in ranges])
+
+
 def ds_iso_oracle(scene: Scene, xyz=None, occ=None, adp=None) -> torch.Tensor:
     """Isotropic ``F(hkl)`` from the pure-torch eager path.
 

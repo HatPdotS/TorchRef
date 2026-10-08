@@ -20,15 +20,8 @@ from typing import Optional
 
 import torch
 
+from torchref.base.direct_summation import compute_scattering_factors_batch
 from torchref.config import get_complex_dtype
-from torchref.base.direct_summation.isotropic import (
-    _estimate_batch_size,
-    iso_structure_factor_torched,
-)
-from torchref.base.direct_summation.anisotropic import (
-    _estimate_batch_size_aniso,
-    aniso_structure_factor_torched,
-)
 from torchref.utils.backends import run_or_degrade, select
 
 TWO_PI = 2.0 * math.pi
@@ -36,29 +29,14 @@ NEG_TWO_PI_SQ = -2.0 * (math.pi**2)
 
 
 # ---------------------------------------------------------------------------
-# P1 identity symmetry (lives here, not in sf_ds)
-# ---------------------------------------------------------------------------
-def _p1_symmetry(coords_3N: torch.Tensor) -> torch.Tensor:
-    """Identity 'symmetry': (3, N) -> (3, N, 1)."""
-    return coords_3N.unsqueeze(2)
-
-
-# ---------------------------------------------------------------------------
 # Plain-torch chunk math — single source of truth for the checkpointed path
 # ---------------------------------------------------------------------------
-def _scattering_factors(s_mag: torch.Tensor, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
-    """ITC92 5-Gaussian f(s) for a reflection chunk: (R_c, N)."""
-    s_sq = (s_mag.reshape(-1, 1, 1) ** 2) / 4  # (R_c, 1, 1)
-    exp_terms = torch.exp(-B.unsqueeze(0) * s_sq)  # (R_c, N, 5)
-    return torch.sum(A.unsqueeze(0) * exp_terms, dim=-1)  # (R_c, N)
-
-
 def _chunk_math_iso(hkl_c, s_c, xyz_frac, occ, adp, A, B):
     """Real/imag P1 structure factor for a reflection chunk (isotropic).
 
     Forms only a ``(R_c, N)`` tile. Returns ``(Fr_c, Fi_c)`` of shape ``(R_c,)``.
     """
-    f = _scattering_factors(s_c, A, B)  # (R_c, N)
+    f = compute_scattering_factors_batch(s_c, A, B)  # (R_c, N)
     dw = torch.exp(-adp.reshape(1, -1) * (s_c.reshape(-1, 1) ** 2) / 4)  # (R_c, N)
     c = occ.reshape(1, -1) * f * dw  # (R_c, N)
     phi = TWO_PI * torch.matmul(hkl_c.to(xyz_frac.dtype), xyz_frac.T)  # (R_c, N)
@@ -70,7 +48,7 @@ def _chunk_math_iso(hkl_c, s_c, xyz_frac, occ, adp, A, B):
 def _chunk_math_aniso(hkl_c, s_vec_c, xyz_frac, occ, U, A, B):
     """Real/imag P1 structure factor for a reflection chunk (anisotropic)."""
     s_mag = torch.norm(s_vec_c, dim=1)  # (R_c,)
-    f = _scattering_factors(s_mag, A, B)  # (R_c, N)
+    f = compute_scattering_factors_batch(s_mag, A, B)  # (R_c, N)
     sx, sy, sz = s_vec_c[:, 0], s_vec_c[:, 1], s_vec_c[:, 2]  # (R_c,)
     # sT U s with U=[U11,U22,U33,U12,U13,U23]; broadcast (R_c,1)*(1,N)
     sUs = (
@@ -196,25 +174,6 @@ def _checkpointed_iso(hkl, s, xyz_frac, occ, adp, A, B, max_memory_gb):
 def _checkpointed_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, max_memory_gb):
     return _CheckpointedSF.apply(
         _chunk_math_aniso, (hkl, s_vec), max_memory_gb, 80, xyz_frac, occ, U, A, B
-    )
-
-
-# ---------------------------------------------------------------------------
-# Eager (autograd) backend — the existing reference implementation
-# ---------------------------------------------------------------------------
-def _eager_iso(hkl, s, xyz_frac, occ, adp, A, B, max_memory_gb):
-    return iso_structure_factor_torched(
-        hkl=hkl, s=s, xyz_fractional=xyz_frac, occ=occ,
-        scattering_factors=None, adp=adp, spacegroup=_p1_symmetry,
-        max_memory_gb=max_memory_gb, A=A, B_coeff=B,
-    )
-
-
-def _eager_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, max_memory_gb):
-    return aniso_structure_factor_torched(
-        hkl=hkl, s_vector=s_vec, xyz_fractional=xyz_frac, occ=occ,
-        scattering_factors=None, U=U, spacegroup=_p1_symmetry,
-        max_memory_gb=max_memory_gb, A=A, B_coeff=B,
     )
 
 

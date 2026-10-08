@@ -2,9 +2,9 @@
 
 The density splat implementations were moved out of
 ``torchref.base.electron_density.main`` into one-file-per-backend modules under
-``torchref.base.kernels``. These tests assert that every public name and every
-historically-imported private name still resolves at its original import path,
-so the move cannot silently break a downstream import.
+``torchref.base.electron_density.kernels``. These tests assert that every public name
+and every historically-imported private name still resolves at its original import
+path, so the move cannot silently break a downstream import.
 """
 
 import importlib
@@ -18,21 +18,6 @@ _needs_triton = pytest.mark.skipif(
 )
 
 
-def test_kernels_public_api_resolves():
-    kernels = importlib.import_module("torchref.base.kernels")
-    expected = [
-        "vectorized_add_to_map",
-        "build_electron_density",
-        "compute_metric_tensor",
-        "precompute_fractional_coords",
-        "warmup",
-        "get_cache_dir",
-        "clear_cache",
-    ]
-    for name in expected:
-        assert hasattr(kernels, name), f"missing torchref.base.kernels.{name}"
-
-
 def test_electron_density_public_api_resolves():
     ed = importlib.import_module("torchref.base.electron_density")
     expected = [
@@ -41,7 +26,6 @@ def test_electron_density_public_api_resolves():
         "vectorized_add_to_map",
         "vectorized_add_to_map_aniso",
         "scatter_add_nd",
-        "scatter_add_nd_super_slow",
         "excise_angstrom_radius_around_coord",
     ]
     for name in expected:
@@ -59,21 +43,9 @@ def test_math_torch_legacy_reexports_resolve():
 
 
 def test_main_namespace_preserves_moved_symbols():
-    """``main`` keeps the names other modules and tests reach for.
-
-    Only two things need to resolve here now. ``_get_radius_offsets`` because
-    ``torchref.scaling.solvent`` imports it from ``main`` rather than from its defining
-    module, and the two dispatchers because they are ``main``'s own API.
-
-    The list used to also carry ``_do_structured_scatter``, ``_get_cpp_scatter``,
-    ``_separable_density`` and ``_aniso_density_cube``. Those were re-exported for a
-    grouped-separable/cube splat chain that the fused sphere kernel superseded; nothing
-    called it, and it has been deleted along with the four modules behind it.
-    """
+    """``main`` keeps its two dispatchers, which tests reach for by name."""
     main = importlib.import_module("torchref.base.electron_density.main")
     moved = [
-        "_get_radius_offsets",
-        # dispatchers stay defined here
         "_add_isotropic",
         "_add_anisotropic",
     ]
@@ -81,16 +53,10 @@ def test_main_namespace_preserves_moved_symbols():
         assert hasattr(main, name), f"missing torchref.base.electron_density.main.{name}"
 
 
-def test_solvent_radius_offsets_import_path():
-    """solvent.py does ``from ...electron_density.main import _get_radius_offsets``."""
-    from torchref.base.electron_density.main import _get_radius_offsets  # noqa: F401
-
-
 @pytest.mark.parametrize(
     "modname",
     [
         "torchref.base.electron_density.kernels",
-        "torchref.base.electron_density.kernels.offsets",
         "torchref.base.electron_density.kernels.cpu.jit_reference",
         "torchref.base.electron_density.kernels.cpu.variable_radius",
         # CUDA/Triton backend: importing pulls in `triton`, absent on non-CUDA
@@ -112,18 +78,3 @@ def test_solvent_radius_offsets_import_path():
 )
 def test_new_kernel_modules_import(modname):
     importlib.import_module(modname)
-
-
-def test_legacy_kernels_compat_shim():
-    """``torchref.base.kernels`` stays a compat shim re-exporting the public API."""
-    shim = importlib.import_module("torchref.base.kernels")
-    for name in (
-        "vectorized_add_to_map",
-        "build_electron_density",
-        "compute_metric_tensor",
-        "precompute_fractional_coords",
-        "warmup",
-        "get_cache_dir",
-        "clear_cache",
-    ):
-        assert hasattr(shim, name), f"compat shim missing {name}"
