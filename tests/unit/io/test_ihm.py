@@ -496,7 +496,7 @@ class TestIHMWriter:
     def test_nucleic_acid_chains_keep_their_polymer_type(self, tmp_path):
         """A DNA and an RNA chain are written as polydeoxyribonucleotide and
         polyribonucleotide entities of their own residues, a peptide chain beside
-        them as polypeptide(L)."""
+        them as polypeptide(L), its MSE as MSE with the canonical code M."""
         from types import SimpleNamespace
 
         import gemmi
@@ -540,8 +540,15 @@ class TestIHMWriter:
         assert sequence == {
             "polydeoxyribonucleotide": ["DA", "DC", "5CM"],
             "polyribonucleotide": ["A", "U"],
-            "polypeptide(L)": ["GLY", "MET"],
+            "polypeptide(L)": ["GLY", "MSE"],
         }
+        assert ["GM"] == [
+            can
+            for kind, can in block.find(
+                "_entity_poly.", ["type", "pdbx_seq_one_letter_code_can"]
+            )
+            if kind == "polypeptide(L)"
+        ]
 
     def test_identical_chains_share_one_entity(self, tmp_path):
         """Two chains of one sequence (a homodimer) are one entity with two asym
@@ -632,6 +639,250 @@ class TestIHMWriter:
         assert set(written) <= set(asym_entity)
         for asym_id, comps in written.items():
             assert comps == entity_seq[asym_entity[asym_id]]
+
+    @staticmethod
+    def _write_one_state(table, out):
+        """Write ``table`` as a one-state IHM file and return its gemmi block."""
+        from types import SimpleNamespace
+
+        import gemmi
+
+        from torchref.io.ihm import IHMWriter
+        from torchref.model.context import ModelContext
+        from torchref.topology import Topology
+
+        model = SimpleNamespace(
+            ctx=ModelContext(topology=Topology.from_table(table)),
+            to_dataframe=lambda: table,
+        )
+        mapping = IHMEnsembleMapping(
+            states=[IHMStateInfo(state_id=1, name="only", details="", model_num=1)],
+            model_groups=[
+                IHMModelGroupInfo(group_id=1, name="t0", state_fractions={1: 1.0})
+            ],
+        )
+        collection = SimpleNamespace(n_base_models=1, base_models=[model])
+        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+        return gemmi.cif.read(str(out)).sole_block()
+
+    def test_ligands_and_waters_get_entities_and_label_seq_id_counts_from_one(
+        self, pdb_dir, tmp_path
+    ):
+        """1DAW (chain A from residue 7, ANP, two MG, waters): a polymer atom's
+        label_seq_id is its 1-based place in the entity sequence, and every ligand
+        and water atom has a non-polymer or water asym unit and label_seq_id '.'."""
+        from torchref.io import pdb
+
+        table = pdb.read(str(pdb_dir / "1DAW.pdb"))()[0]
+        block = self._write_one_state(table, tmp_path / "1daw.cif")
+
+        entity_type = dict(block.find("_entity.", ["id", "type"]))
+        asym_entity = dict(block.find("_struct_asym.", ["id", "entity_id"]))
+        sequence = {}
+        for entity_id, mon_id in block.find(
+            "_entity_poly_seq.", ["entity_id", "mon_id"]
+        ):
+            sequence.setdefault(entity_id, []).append(mon_id)
+        asym_comps = {}
+        for asym_id, seq_id, comp, auth_seq in block.find(
+            "_atom_site.",
+            ["label_asym_id", "label_seq_id", "label_comp_id", "auth_seq_id"],
+        ):
+            entity = asym_entity[asym_id]
+            asym_comps.setdefault(asym_id, set()).add(comp)
+            if entity_type[entity] == "polymer":
+                assert sequence[entity][int(seq_id) - 1] == comp
+                if auth_seq == "7":
+                    assert seq_id == "1"
+            else:
+                assert seq_id == "."
+                assert entity_type[entity] == (
+                    "water" if comp == "HOH" else "non-polymer"
+                )
+        ligand_asyms = sorted(
+            "".join(comps) for comps in asym_comps.values() if comps != {"HOH"}
+        )
+        assert ligand_asyms.count("MG") == 2 and "ANP" in ligand_asyms
+        assert sum(comps == {"HOH"} for comps in asym_comps.values()) == 1
+
+    @pytest.mark.parametrize("blank", ["", float("nan")])
+    def test_blank_chain_gets_an_asym_id(self, tmp_path, blank):
+        """A blank chain id is written as an asym id no other chain uses, so
+        _atom_site reads back with one asym unit per chain and ligand."""
+        table = pd.DataFrame(
+            [
+                (blank, 5, "GLY", "CA"),
+                (blank, 6, "ALA", "CA"),
+                (blank, 7, "SO4", "S"),
+                ("A", 1, "SER", "CA"),
+            ],
+            columns=["chainid", "resseq", "resname", "name"],
+        ).assign(x=0.0, y=0.0, z=0.0)
+        block = self._write_one_state(table, tmp_path / "blank.cif")
+
+        struct_asym = list(block.find_values("_struct_asym.id"))
+        rows = list(
+            block.find("_atom_site.", ["label_asym_id", "label_seq_id", "auth_asym_id"])
+        )
+        assert len(rows) == 4 and len(set(struct_asym)) == 3
+        assert all(row[0] in struct_asym and row[2] not in ("", ".") for row in rows)
+        assert [row[1] for row in rows] == ["1", "2", ".", "1"]
+        assert len({rows[0][0], rows[2][0], rows[3][0]}) == 3
+
+    def test_insertion_codes_take_consecutive_positions(self, tmp_path):
+        """Residues 51, 52, 52A, 52B, 53 take label_seq_id 1 to 5, and _atom_site
+        and _pdbx_poly_seq_scheme pair each position with its author number."""
+        table = pd.DataFrame(
+            [
+                ("A", 51, "", "GLY"),
+                ("A", 52, "", "ALA"),
+                ("A", 52, "A", "SER"),
+                ("A", 52, "B", "THR"),
+                ("A", 53, "", "LYS"),
+            ],
+            columns=["chainid", "resseq", "icode", "resname"],
+        ).assign(name="CA", x=0.0, y=0.0, z=0.0)
+        block = self._write_one_state(table, tmp_path / "icode.cif")
+
+        expected = [
+            ["1", "51", "."],
+            ["2", "52", "."],
+            ["3", "52", "A"],
+            ["4", "52", "B"],
+            ["5", "53", "."],
+        ]
+        atoms = block.find(
+            "_atom_site.", ["label_seq_id", "auth_seq_id", "pdbx_PDB_ins_code"]
+        )
+        scheme = block.find(
+            "_pdbx_poly_seq_scheme.", ["seq_id", "auth_seq_num", "pdb_ins_code"]
+        )
+        assert [list(row) for row in atoms] == expected
+        assert [list(row) for row in scheme] == expected
+
+    def test_waters_keep_their_residue_name(self, tmp_path):
+        """A water named DOD or WAT is written as a water entity under that name, so
+        each _pdbx_nonpoly_scheme mon_id is its _atom_site label_comp_id."""
+        table = pd.DataFrame(
+            [
+                ("A", 1, "GLY", "CA"),
+                ("A", 2, "ALA", "CA"),
+                ("A", 101, "HOH", "O"),
+                ("A", 102, "DOD", "O"),
+                ("A", 103, "WAT", "O"),
+            ],
+            columns=["chainid", "resseq", "resname", "name"],
+        ).assign(x=0.0, y=0.0, z=0.0)
+        block = self._write_one_state(table, tmp_path / "waters.cif")
+
+        entity_type = dict(block.find("_entity.", ["id", "type"]))
+        asym_entity = dict(block.find("_struct_asym.", ["id", "entity_id"]))
+        scheme = {
+            (asym_id, seq): mon_id
+            for asym_id, seq, mon_id in block.find(
+                "_pdbx_nonpoly_scheme.", ["asym_id", "auth_seq_num", "mon_id"]
+            )
+        }
+        waters = [
+            row
+            for row in block.find(
+                "_atom_site.", ["label_asym_id", "auth_seq_id", "label_comp_id"]
+            )
+            if row[2] in ("HOH", "DOD", "WAT")
+        ]
+        assert len(waters) == 3
+        for asym_id, seq, comp in waters:
+            assert scheme[(asym_id, seq)] == comp
+            assert entity_type[asym_entity[asym_id]] == "water"
+
+    def test_state_with_a_residue_the_first_lacks_is_refused(self, tmp_path):
+        """All states share the first state's entities and asym units, so a later
+        state with an extra residue raises a ValueError naming it, before any file
+        is written."""
+        from types import SimpleNamespace
+
+        from torchref.io.ihm import IHMWriter
+        from torchref.model.context import ModelContext
+        from torchref.topology import Topology
+
+        first = pd.DataFrame(
+            [("A", 1, "GLY", "CA"), ("A", 2, "ALA", "CA")],
+            columns=["chainid", "resseq", "resname", "name"],
+        ).assign(x=0.0, y=0.0, z=0.0)
+        extra = first.iloc[[0]].assign(resseq=999, resname="HOH", name="O")
+        second = pd.concat([first, extra], ignore_index=True)
+        models = [
+            SimpleNamespace(
+                ctx=ModelContext(topology=Topology.from_table(table)),
+                to_dataframe=lambda table=table: table,
+            )
+            for table in (first, second)
+        ]
+        mapping = IHMEnsembleMapping(
+            states=[
+                IHMStateInfo(state_id=i, name=f"s{i}", details="", model_num=i)
+                for i in (1, 2)
+            ],
+            model_groups=[
+                IHMModelGroupInfo(
+                    group_id=1, name="t0", state_fractions={1: 0.5, 2: 0.5}
+                )
+            ],
+        )
+        collection = SimpleNamespace(n_base_models=2, base_models=models)
+        out = tmp_path / "two.cif"
+        with pytest.raises(ValueError, match="HOH A999"):
+            IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+        assert not out.exists()
+
+    @pytest.mark.parametrize("n_states", [1, 2])
+    def test_primed_atom_names_read_back(self, pdb_dir, tmp_path, n_states):
+        """A written 1DAW reads back all 3051 atoms in every state, ANP's O5', C5',
+        ... among them, with the atom names gemmi reads from the file."""
+        from types import SimpleNamespace
+
+        import gemmi
+
+        from torchref.io import pdb
+        from torchref.io.ihm import IHMReader, IHMWriter
+        from torchref.model.context import ModelContext
+        from torchref.topology import Topology
+
+        table = pdb.read(str(pdb_dir / "1DAW.pdb"))()[0]
+        model = SimpleNamespace(
+            ctx=ModelContext(topology=Topology.from_table(table)),
+            to_dataframe=lambda: table,
+        )
+        states = range(1, n_states + 1)
+        mapping = IHMEnsembleMapping(
+            states=[
+                IHMStateInfo(state_id=i, name=f"s{i}", details="", model_num=i)
+                for i in states
+            ],
+            model_groups=[
+                IHMModelGroupInfo(
+                    group_id=1,
+                    name="t0",
+                    state_fractions={i: 1 / n_states for i in states},
+                )
+            ],
+        )
+        collection = SimpleNamespace(
+            n_base_models=n_states, base_models=[model] * n_states
+        )
+        out = tmp_path / "1daw.cif"
+        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+
+        block = gemmi.cif.read(str(out)).sole_block()
+        names = [
+            gemmi.cif.as_string(n)
+            for n in block.find_values("_atom_site.label_atom_id")
+        ]
+        reader = IHMReader(str(out))
+        atoms = reader.read_atom_data(reader.read_mapping())
+        assert [len(df) for df in atoms.values()] == [3051] * n_states
+        assert [name for df in atoms.values() for name in df["name"]] == names
+        assert "O5'" in names
 
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
