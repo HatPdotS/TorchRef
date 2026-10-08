@@ -269,8 +269,7 @@ def fit_overall_anisotropy(
     min_count: int = 20,
     n_iter: int = 12,
 ) -> torch.Tensor:
-    """
-    Fit the overall anisotropy tensor U from F_obs alone (no model needed).
+    """Fit the overall anisotropy tensor U from F_obs alone (no model needed).
 
     The Popov-Bourenkov correction models the observed intensities as a
     per-shell isotropic Wilson piece modulated by an overall anisotropic
@@ -278,47 +277,38 @@ def fit_overall_anisotropy(
 
         E[ I(h) / <I>_shell ] = c * exp(-2 pi^2 s.U.s)
 
-    That expectation is exact in **intensity** space, which is where this fits
-    it: a free constant ``c`` absorbs the overall scale, the weights come from
-    ``Var(I/<I>)`` -- 1 for acentric reflections and 2 for centric ones -- and
-    non-positive or non-finite amplitudes are dropped. Gauss-Newton from
-    ``U = 0``.
-
-    Fitting the same relation in log space instead is what the earlier version
-    did, and it is biased: ``E[ln(I/<I>)]`` is ``-gamma = -0.577`` for acentric
-    and ``-gamma - ln 2`` for centric reflections, not zero. Without a constant
-    term that offset can only be absorbed by the quadratic form, so U comes back
-    with a large spurious component -- and because centric reflections lie on
-    the zones perpendicular to the symmetry axes, the bias is
-    direction-dependent rather than a harmless overall scale.
-
-    The returned U is the correction to *apply* in the form::
-
-        F_obs_corrected(h) = F_obs(h) * exp(+pi^2 s.U.s)
-
-    so the corrected amplitudes have the same mean square in every direction.
-    Project it onto the point group with :func:`symmetrize_anisotropy` before
-    applying it: an unconstrained six-component fit can return a tensor the
-    lattice forbids.
+    Fitted in intensity space, because the log-space form is biased by the
+    Euler-gamma offset of ``E[ln(I/<I>)]``, which differs between centric and
+    acentric zones and so leaks into U by direction. A free constant ``c`` absorbs
+    the scale, the weights are ``1/Var(I/<I>)`` (1 acentric, 1/2 centric),
+    non-positive or non-finite amplitudes are dropped, and Gauss-Newton starts
+    from ``U = 0``. The returned U is the correction to *apply*,
+    ``F_corrected = F_obs * exp(+pi^2 s.U.s)``; project it with
+    :func:`symmetrize_anisotropy` first.
 
     Parameters
     ----------
-    F_obs : (N,) real
-    s_vectors : (N, 3) real, reciprocal-space Cartesian (1/Angstrom)
-    shell_idx : (N,) int64 -- shell of each reflection, in [0, P); negative
-        entries are excluded
-    centric : (N,) bool
-    P : int, number of shells
-    min_count : int, optional
-        Shells with fewer reflections than this are dropped, since their mean
-        intensity is too noisy to normalise against.
-    n_iter : int, optional
+    F_obs : torch.Tensor
+        Amplitudes of shape (N,).
+    s_vectors : torch.Tensor
+        Cartesian reciprocal-space vectors of shape (N, 3), in Å⁻¹.
+    shell_idx : torch.Tensor
+        Shell of each reflection in [0, P), shape (N,); negative entries are
+        excluded.
+    centric : torch.Tensor
+        Centric flags of shape (N,), bool.
+    P : int
+        Number of shells.
+    min_count : int
+        Shells with fewer reflections are dropped as too noisy to normalise by.
+    n_iter : int
         Gauss-Newton iterations.
 
     Returns
     -------
-    U : (3, 3) symmetric real tensor (Angstrom squared). Zero if too few
-        reflections survive to constrain seven parameters.
+    torch.Tensor
+        Symmetric U of shape (3, 3) in Å², at ``F_obs``'s dtype and device; zero
+        if fewer than 50 reflections survive to constrain seven parameters.
     """
     valid = shell_idx >= 0
     # The fit runs at the amplitudes' own width, wherever they are. It used to
