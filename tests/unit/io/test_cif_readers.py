@@ -225,6 +225,19 @@ def test_a_one_sided_free_set_is_passed_on(cif_sf_dir, tmp_path, status, flag):
 
 
 @pytest.mark.unit
+def test_an_empty_quoted_value_keeps_its_column():
+    """``''`` in a loop row is a value: the columns after it stay in place."""
+    from torchref.topology.monomer.cif import read_component_groups, read_library_blocks
+
+    comps = CIFReader.from_string(read_library_blocks()["comp_list"])["chem_comp"]
+
+    assert comps.set_index("_chem_comp.id").loc["01G", "_chem_comp.name"] == ""
+    assert dict(zip(comps["_chem_comp.id"], comps["_chem_comp.group"])) == (
+        read_component_groups()
+    )
+
+
+@pytest.mark.unit
 def test_torsions_keep_their_id():
     path = get_library_manager(verbose=0).get_cif_file("DA")
     torsions = RestraintCIFReader(str(path)).get_all_restraints()["DA"]["torsions"]
