@@ -283,6 +283,24 @@ class TestRealSpaceTargetsIntegration:
         assert loss.item() < 2.0   # 1 - RSCC < 2
 
     @pytest.mark.integration
+    def test_model_density_matches_splatted_density(self, model_data_pair):
+        """The Fcalc synthesis reproduces the model's real-space density."""
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
+
+        model, data = model_data_pair
+        target = RealSpaceCorrelationTarget(
+            data=data, model=model, mask_solvent=False, verbose=0
+        )
+        with torch.no_grad():
+            synthesised = target._compute_model_density().flatten()
+            splatted = model.build_complete_map().flatten()
+
+        synthesised = synthesised - synthesised.mean()
+        splatted = splatted - splatted.mean()
+        cc = (synthesised * splatted).sum() / (synthesised.norm() * splatted.norm())
+        assert cc > 0.95
+
+    @pytest.mark.integration
     def test_difference_target_forward(self, model_data_pair):
         """Difference target forward pass should produce finite positive value."""
         from torchref.experimental.targets import RealSpaceDifferenceTarget
