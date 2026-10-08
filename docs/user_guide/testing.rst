@@ -167,7 +167,7 @@ free of file I/O:
         def test_load_cif(self, sample_cif_file):
             model = Model()
             model.load_cif(str(sample_cif_file))
-            assert model.initialized
+            assert model.ctx.initialized
             assert model.n_atoms > 0
 
 Cover the edge cases that actually bite here: empty selections, degenerate
