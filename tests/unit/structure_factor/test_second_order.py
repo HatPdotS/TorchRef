@@ -125,16 +125,14 @@ _FIRST_ORDER_ONLY = "the second derivative is not implemented"
 #: The extra term is the case ``once_differentiable`` misses: the first gradient still
 #: requires grad through ``(x**2).sum()``, so without the guard the second derivative
 #: comes back finite and silently missing the kernel's curvature.
-_LINEAR_TERM = pytest.mark.parametrize(
-    "linear_term", [False, True], ids=["ls", "ls+x2"]
-)
+_OWN_TERM = pytest.mark.parametrize("x2_term", [False, True], ids=["ls", "ls+x2"])
 
 
-@_LINEAR_TERM
+@_OWN_TERM
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
 @pytest.mark.parametrize("device,dtype,kernel", DS_DEVICE_DTYPE_KERNELS)
 def test_ds_kernel_rejects_double_backward(
-    scene_small, device, dtype, kernel, kind, linear_term
+    scene_small, device, dtype, kernel, kind, x2_term
 ):
     """Every production DS kernel, ``ds_*``/``SfDS``'s, raises under ``create_graph=True``.
 
@@ -149,9 +147,10 @@ def test_ds_kernel_rejects_double_backward(
     F = H.ds_direct(scene, kernel, x, scene.occ, third, aniso=aniso)
     with torch.no_grad():
         obs = H.synthetic_obs(F)
-    loss = H.ls_target(F, obs) + ((x**2).sum() if linear_term else 0.0)
+    loss = H.ls_target(F, obs) + ((x**2).sum() if x2_term else 0.0)
 
-    with pytest.raises(RuntimeError, match=_FIRST_ORDER_ONLY):
+    named = rf"(_CheckpointedSF|_DS(Iso|Aniso)Triton)\.backward: {_FIRST_ORDER_ONLY}"
+    with pytest.raises(RuntimeError, match=named):
         torch.autograd.grad(loss, x, create_graph=True)
 
 
@@ -413,11 +412,11 @@ def test_kernel_hvp_matches_ds(scene_fine, oracle_fine, device, dtype, kernel, k
     assert rel < RTOL_HVP, f"{device.type}/{dtype}/{kernel}/{kind}: HVP rel {rel:.3e}"
 
 
-@_LINEAR_TERM
+@_OWN_TERM
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
 @pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
 def test_kernel_rejects_double_backward(
-    scene_fine, oracle_fine, device, dtype, kernel, kind, linear_term
+    scene_fine, oracle_fine, device, dtype, kernel, kind, x2_term
 ):
     """First-order-only kernels must raise under ``create_graph=True``, not return garbage.
 
@@ -437,7 +436,7 @@ def test_kernel_rejects_double_backward(
 
     x = scene.xyz.clone().requires_grad_(True)
     F = H.density_to_F(scene, H.splat_direct(scene, kernel, x, occ, third, aniso=aniso))
-    loss = H.ls_target(F, obs) + ((x**2).sum() if linear_term else 0.0)
+    loss = H.ls_target(F, obs) + ((x**2).sum() if x2_term else 0.0)
 
     with pytest.raises(RuntimeError, match=_FIRST_ORDER_ONLY):
         torch.autograd.grad(loss, x, create_graph=True)
