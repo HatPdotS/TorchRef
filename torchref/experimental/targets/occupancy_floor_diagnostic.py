@@ -139,8 +139,8 @@ class OccupancyFloorDiagnostic:
             ``rho_dark``, ``rho_light``, ``rho_ratio`` (ρ_light / ρ_dark) and
             ``negative_mask`` (ρ_light < 0) per analysed atom; the counts
             ``n_negative``, ``n_total``, ``fraction_negative``; ``min_rho_light``;
-            ``correction_factor`` (max of -ρ_light / ρ_dark over negative atoms,
-            0 if none) and ``worst_atoms`` (indices of the 5 lowest ρ_light).
+            ``correction_factor`` (max -ρ_light / ρ_dark over negative atoms, else 0)
+            and ``worst_atoms`` (indices of the 5 lowest ρ_light, empty if none < 0).
         """
         # Get atom positions in fractional coordinates
         xyz_dark = self.model_dark.xyz()
