@@ -5,9 +5,10 @@ Pinned: the three schemes exist with their MTZ column names; ``none`` is flat;
 reflections more weight than weak ones where inverse variance cannot, keeps every
 reflection at or above its floor when noise dominates, and falls back to inverse
 variance with a warning that names why when too few reflections exist to fit. The SNR
-prefers intensity differences, calibrates their sigmas and is reused when supplied; the
-extrapolated shrinkage keeps every reflection and its weight does not depend on the
-occupancy.
+prefers intensity differences, takes their sigmas as reported unless asked to calibrate
+them, replaces a calibration that stops at its bound by the reported sigmas with a
+warning, and is reused when supplied; the extrapolated shrinkage keeps every reflection
+and its weight does not depend on the occupancy.
 """
 
 import pytest
@@ -125,7 +126,7 @@ def test_q_favours_strong_reflections_where_inverse_variance_cannot(any_device):
     assert q.diagnostics["converged"]
     # The strong half carries more weight; inverse variance cannot tell the halves apart
     # because the sigmas are constant. The floor compresses the weights into at most a
-    # factor three, so the margin is smaller than an unbounded Wiener weight would give.
+    # factor eleven, so the margin is smaller than an unbounded Wiener weight would give.
     f, w = d["f_dark"], q.weights
     strong, weak = f > f.median(), f <= f.median()
     assert float(w[strong].mean()) > 1.2 * float(w[weak].mean())
@@ -195,17 +196,40 @@ def _intensity_inputs(n=20000, inflation=1.0, seed=3):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("inflation", [1.0, 1.5])
-def test_snr_prefers_intensities_and_calibrates_their_sigmas(inflation):
+def test_snr_prefers_intensities_and_calibrates_their_sigmas_on_request(inflation):
     est = difference_snr(**_intensity_inputs(inflation=inflation))
     assert est.source == "intensity"
     assert est.fit.gamma == 0.0
-    assert est.fit.sigma_scale == pytest.approx(1.0 / inflation, rel=0.1)
+    assert est.fit.sigma_scale == 1.0 and not est.fit.sigma_scale_fitted
     assert bool((est.snr > 0).all()) and bool(torch.isfinite(est.snr).all())
+    fitted = difference_snr(**_intensity_inputs(inflation=inflation), sigma_scale=None)
+    assert fitted.fit.sigma_scale_fitted and fitted.sigma_scale_fallback is None
+    assert fitted.fit.sigma_scale == pytest.approx(1.0 / inflation, rel=0.1)
     kw = _intensity_inputs(inflation=inflation)
     q = compute_ded_weights("q", **kw)
     assert q.diagnostics["source"] == "intensity"
+    assert q.diagnostics["sigma_scale"] == 1.0
+    assert not q.diagnostics["sigma_scale_fitted"]
     del kw["delta_intensity"], kw["sigma_delta_intensity"]
     assert difference_snr(**kw).source == "amplitude"
+
+
+@pytest.mark.unit
+def test_a_sigma_scale_fit_at_its_bound_falls_back_to_the_reported_sigmas():
+    # Differences far below their sigmas, as identical dark and light data give: a
+    # fitted scale runs to its lower bound.
+    d, hkl, cell, sg = _inputs(n=5000)
+    noise = 1e-3 * torch.randn(5000, generator=torch.Generator().manual_seed(11))
+    kw = {"delta_obs": noise, "sigma_diff": d["sigma_diff"], "hkl": hkl, "cell": cell}
+    kw.update(spacegroup=sg, f_dark=d["f_dark"], sigma_scale=None)
+    with pytest.warns(DedWeightFallbackWarning, match="bound k = 0.1"):
+        q = compute_ded_weights("q", **kw)
+    assert q.applied == "q" and "bound" in q.diagnostics["sigma_scale_fallback"]
+    assert q.diagnostics["sigma_scale"] == 1.0
+    assert not q.diagnostics["sigma_scale_fitted"]
+    # An out-of-range scale is the caller's error, not a fit to fall back from.
+    with pytest.raises(ValueError, match="sigma_scale"):
+        compute_ded_weights("q", **{**kw, "sigma_scale": 0.0})
 
 
 @pytest.mark.unit
@@ -362,3 +386,18 @@ def test_intensity_snr_controls_weight_with_amplitude_uncertainty():
     torch.testing.assert_close(w, 1 / (1 + 1 / est.snr))
     torch.testing.assert_close(var, (1 - w) ** 2 * sd**2 + w**2 * sl**2)
     assert torch.isfinite(amp).all()
+
+
+@pytest.mark.unit
+def test_cli_sigma_scale_defaults_to_the_reported_sigmas():
+    import argparse
+
+    from torchref.cli._common import add_ded_weight_args, difference_config_from_args
+
+    parser = argparse.ArgumentParser()
+    add_ded_weight_args(parser)
+    for argv, expect in (([], 1.0), (["fit"], None), (["1.5"], 1.5)):
+        args = parser.parse_args(["--difference-sigma-scale", *argv] if argv else [])
+        assert difference_config_from_args(args).sigma_scale == expect
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--difference-sigma-scale", "0"])

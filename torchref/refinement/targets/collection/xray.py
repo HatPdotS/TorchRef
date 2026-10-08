@@ -212,7 +212,9 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
     Parameters
     ----------
     difference_config : DifferencePowerConfig, optional
-        Its ``gamma`` fixes the dark-amplitude exponent; fitted when omitted.
+        Its ``gamma`` fixes the dark-amplitude exponent; fitted when omitted. Its
+        ``sigma_scale`` is not used: the fit takes the reported sigmas as calibrated,
+        as the likelihood itself does.
     """
 
     name: str = "difference_sigma_d_xray"
@@ -300,7 +302,7 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
                 centric=centric.repeat(n_rows) if centric is not None else None,
                 fit_mask=fit_mask,
                 delta_calc=torch.cat([delta_calc[i].detach() for i in rows]),
-                fit_sigma_scale=False,
+                sigma_scale=1.0,
             )
         alpha = fit.alpha_at(dss)
         beta = fit.signal_power(dss, epsilon=eps, f_dark=f_dark, centric=centric)

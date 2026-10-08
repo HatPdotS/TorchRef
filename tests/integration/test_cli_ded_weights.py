@@ -297,4 +297,5 @@ def test_difference_refine_runs_the_sigma_d_row(project_root, pair):
     results = json.loads(summaries[0].read_text())["results"]
     assert results["ded_weights"]["scheme"] == "q"
     assert results["ded_weights"]["applied"] == "q"
-    assert "sigma_scale" in results["ded_weights"]["q"]
+    assert results["ded_weights"]["q"]["sigma_scale"] == 1.0
+    assert results["ded_weights"]["q"]["sigma_scale_fitted"] is False

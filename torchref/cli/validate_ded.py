@@ -307,6 +307,9 @@ def setup_ded_context(
         spacegroup=data_dark.spacegroup,
         f_dark=F_dark,
         gamma=difference_config.gamma if difference_config is not None else None,
+        sigma_scale=(
+            difference_config.sigma_scale if difference_config is not None else 1.0
+        ),
     )
     selected = all_w[ded_weight]
     weights = selected.weights
@@ -733,6 +736,8 @@ def run_validation(args):
                     "gamma",
                     "gamma_fitted",
                     "sigma_scale",
+                    "sigma_scale_fitted",
+                    "sigma_scale_fallback",
                     "centric_factor",
                     "snr_floor",
                     "fallback_reason",
