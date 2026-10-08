@@ -479,9 +479,9 @@ def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tup
     Polymer chains become one polymer entity per distinct sequence and an asym unit
     per chain, its id the chain id. Following the wwPDB convention, each ligand
     residue is an asym unit of a non-polymer entity per residue name, and each
-    chain's waters one asym unit of the water entity. Ligand and water asym ids, and
-    the name of a blank chain, are ids no chain uses: a blank ``label_asym_id``
-    would leave its ``_atom_site`` row a column short.
+    chain's waters one asym unit of a water entity per name (HOH, DOD, ...). Ligand
+    and water asym ids, and the name of a blank chain, are ids no chain uses: a
+    blank ``label_asym_id`` would leave its ``_atom_site`` row a column short.
 
     Parameters
     ----------
@@ -561,13 +561,13 @@ def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tup
         entity.description = "Chain " + ", ".join(entity_chains)
 
     ligands: Dict[str, ihm.Entity] = {}
-    waters: Dict[str, list] = {}
+    waters: Dict[Tuple[str, str], list] = {}
     for key, resname in found.items():
         chain, resseq, icode = auth[key[0]], key[1], key[2]
         if key in labels:
             continue
         if resname in WATER_RESNAMES:
-            waters.setdefault(chain, []).append(key)
+            waters.setdefault((resname, chain), []).append(key)
         else:
             entity = ligands.setdefault(
                 resname,
@@ -582,10 +582,17 @@ def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tup
             )
             asym_units.append(asym)
             labels[key] = (asym.id, chain, ".")
-    water = ihm.Entity([ihm.WaterChemComp()], description="water")
-    for chain, keys in waters.items():
+    water_entities: Dict[str, ihm.Entity] = {}
+    for (resname, chain), keys in waters.items():
+        if resname not in water_entities:
+            # python-ihm calls an entity water only if its component's code is
+            # HOH, so a DOD or WAT keeps that code under its own id.
+            comp = ihm.WaterChemComp()
+            if resname != comp.id:
+                comp.id, comp.formula = resname, None
+            water_entities[resname] = ihm.Entity([comp], description="water")
         asym = ihm.WaterAsymUnit(
-            water,
+            water_entities[resname],
             len(keys),
             details=f"Water, chain {chain}",
             id=next(new_id),
@@ -597,8 +604,7 @@ def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tup
 
     system.entities.extend(entity for entity, _ in entities.values())
     system.entities.extend(ligands.values())
-    if waters:
-        system.entities.append(water)
+    system.entities.extend(water_entities.values())
     system.asym_units.extend(asym_units)
     return asym_units, labels
 

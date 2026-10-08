@@ -753,6 +753,41 @@ class TestIHMWriter:
         assert [list(row) for row in atoms] == expected
         assert [list(row) for row in scheme] == expected
 
+    def test_waters_keep_their_residue_name(self, tmp_path):
+        """A water named DOD or WAT is written as a water entity under that name, so
+        each _pdbx_nonpoly_scheme mon_id is its _atom_site label_comp_id."""
+        table = pd.DataFrame(
+            [
+                ("A", 1, "GLY", "CA"),
+                ("A", 2, "ALA", "CA"),
+                ("A", 101, "HOH", "O"),
+                ("A", 102, "DOD", "O"),
+                ("A", 103, "WAT", "O"),
+            ],
+            columns=["chainid", "resseq", "resname", "name"],
+        ).assign(x=0.0, y=0.0, z=0.0)
+        block = self._write_one_state(table, tmp_path / "waters.cif")
+
+        entity_type = dict(block.find("_entity.", ["id", "type"]))
+        asym_entity = dict(block.find("_struct_asym.", ["id", "entity_id"]))
+        scheme = {
+            (asym_id, seq): mon_id
+            for asym_id, seq, mon_id in block.find(
+                "_pdbx_nonpoly_scheme.", ["asym_id", "auth_seq_num", "mon_id"]
+            )
+        }
+        waters = [
+            row
+            for row in block.find(
+                "_atom_site.", ["label_asym_id", "auth_seq_id", "label_comp_id"]
+            )
+            if row[2] in ("HOH", "DOD", "WAT")
+        ]
+        assert len(waters) == 3
+        for asym_id, seq, comp in waters:
+            assert scheme[(asym_id, seq)] == comp
+            assert entity_type[asym_entity[asym_id]] == "water"
+
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
         import torch
