@@ -121,20 +121,8 @@ def log_i0(z: torch.Tensor) -> torch.Tensor:
 
 
 # =====================================================================
-# log-integrand and its analytic Laplace centre
+# analytic Laplace centre of the log-integrand
 # =====================================================================
-
-
-def _log_h_acentric(t, F_obs, sigma, Fc, Sigma, li0):
-    """``log[ Rice(t; Fc, Sigma) * N(F_obs; t, sigma) ]``."""
-    inv_S = 1.0 / Sigma
-    return (
-        torch.log(2.0 * t * inv_S)
-        - (t * t + Fc * Fc) * inv_S
-        + li0(2.0 * t * Fc * inv_S)
-        - 0.5 * (LOG_2PI + 2.0 * torch.log(sigma))
-        - (F_obs - t) ** 2 / (2.0 * sigma**2)
-    )
 
 
 def _laplace_centre_acentric(F_obs, sigma, Fc, Sigma):
@@ -252,7 +240,9 @@ def _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, li0):
         half = (hi - lo) * 0.5
         mid = (hi + lo) * 0.5
         # Shift computed on the t-dependent part alone, so `const` cancels out of
-        # the loop entirely rather than being added and subtracted 32 times.
+        # the loop entirely rather than being added and subtracted 32 times. All
+        # three probes are needed: t0 alone underestimates the peak when the two
+        # densities are far apart, and exp(h - shift) then overflows.
         shift = torch.maximum(
             log_h_var(torch.clamp(t0, min=1e-30)),
             torch.maximum(
@@ -267,25 +257,6 @@ def _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, li0):
         t = torch.clamp(mid + half * x[k], min=1e-30)
         acc = acc + w[k] * torch.exp(log_h_var(t) - shift)
     return -(torch.log(acc) + torch.log(half) + shift + const)
-
-
-def _log_shift(F_obs, sigma, Fc, Sigma, t0, li0):
-    """Log-sum-exp shift: ``max h`` over three cheap candidate peak locations.
-
-    A fixed analytic shift (not a running max) keeps the node loop at one ``exp``
-    per node with no ``(n, n_quad)`` intermediate. All three probes are needed:
-    ``t0`` alone *under*estimates the peak when the measurement spike and model
-    density are far apart, and an under-estimated shift overflows ``exp(h - shift)``.
-    """
-    out = None
-    for t in (
-        torch.clamp(t0, min=1e-30),
-        torch.clamp(F_obs, min=1e-30),
-        torch.clamp(Fc, min=1e-30),
-    ):
-        h = _log_h_acentric(t, F_obs, sigma, Fc, Sigma, li0)
-        out = h if out is None else torch.maximum(out, h)
-    return out
 
 
 # =====================================================================
