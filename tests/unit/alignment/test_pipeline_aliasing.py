@@ -35,6 +35,16 @@ def small_model(pdb_dir):
     return ModelFT(verbose=0).load_pdb(str(p))
 
 
+@pytest.fixture(scope="module")
+def small_data(mtz_dir):
+    from torchref.io.datasets.reflection_data import ReflectionData
+
+    p = mtz_dir / "1DAW.mtz"
+    if not p.exists():
+        pytest.skip("1DAW.mtz not available")
+    return ReflectionData().load_mtz(str(p))
+
+
 def _peak(alpha, beta, gamma):
     from torchref.experimental.alignment.frf.types import RotationPeak
 
@@ -53,12 +63,13 @@ def test_rotate_mutates_in_place_and_returns_self(small_model):
     assert not torch.allclose(m.xyz(), before), "rotate no longer mutates in place"
 
 
-def test_make_rotated_leaves_the_search_model_untouched(small_model):
+def test_make_rotated_leaves_the_search_model_untouched(small_model, small_data):
     """The pipeline's own model must survive candidate generation."""
     from torchref.experimental.alignment.pipeline import MolecularReplacementPipeline
 
     pipe = object.__new__(MolecularReplacementPipeline)
     pipe.model = small_model
+    pipe.data = small_data
     reference = small_model.xyz().clone()
 
     rotated, _ = pipe._make_rotated(_peak(0.3, 0.7, 1.1))
@@ -69,12 +80,13 @@ def test_make_rotated_leaves_the_search_model_untouched(small_model):
     )
 
 
-def test_successive_candidates_do_not_compound(small_model):
+def test_successive_candidates_do_not_compound(small_model, small_data):
     """Candidate k+1 must not be rotated on top of candidate k."""
     from torchref.experimental.alignment.pipeline import MolecularReplacementPipeline
 
     pipe = object.__new__(MolecularReplacementPipeline)
     pipe.model = small_model
+    pipe.data = small_data
 
     p1 = _peak(0.3, 0.7, 1.1)
     p2 = _peak(2.0, 1.3, 0.4)
@@ -85,6 +97,7 @@ def test_successive_candidates_do_not_compound(small_model):
     # A fresh pipeline that only ever sees p2 is the ground truth for p2.
     solo = object.__new__(MolecularReplacementPipeline)
     solo.model = small_model.copy()
+    solo.data = small_data
     expected, _ = solo._make_rotated(p2)
 
     assert torch.allclose(second.xyz(), expected.xyz(), atol=1e-5), (
