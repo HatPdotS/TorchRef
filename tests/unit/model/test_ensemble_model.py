@@ -274,7 +274,8 @@ def test_write_pdb_writes_alive_members_with_their_weights(tmp_path):
             first_atoms.append(float(ln[54:60]))
             in_model = False
     expected = ens.member_weights()[:3].detach().cpu()
-    assert torch.allclose(torch.tensor(first_atoms), expected, atol=6e-3)
+    written = torch.tensor(first_atoms, dtype=expected.dtype)
+    assert torch.allclose(written, expected, atol=6e-3)
     assert EnsembleModel.from_multimodel_pdb(str(path), verbose=0).n_members == 3
 
 
