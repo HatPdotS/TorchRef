@@ -151,8 +151,6 @@ def read_component_groups() -> dict[str, str]:
     """
     import gemmi
 
-    # gemmi rather than CIFReader, whose tokenizer drops an empty quoted name ('')
-    # and so shifts the group column of that row.
     block = gemmi.cif.read_string(read_library_blocks()["comp_list"]).sole_block()
     rows = block.find("_chem_comp.", ["id", "group"])
     return {row.str(0): row.str(1) for row in rows}
