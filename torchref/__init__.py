@@ -19,15 +19,13 @@ model
     Atomic structure models (coordinates, B-factors, occupancies).
 refinement
     Core refinement framework with targets and weighting schemes.
-restraints
-    Geometry restraints (bonds, angles, torsions, planes); initialized lazily, since it
-    needs the monomer library downloaded.
+topology
+    Connectivity graph, geometry restraints and hydrogens; the monomer library is
+    resolved lazily.
 scaling
     Structure factor scaling and bulk solvent models.
 symmetry
     Crystallographic symmetry operations.
-alignment
-    Patterson-based structure alignment.
 maps
     Map calculation, including difference maps (``Map``, ``DifferenceMap``).
 base
@@ -35,7 +33,8 @@ base
 cli
     Command-line entry points (``torchref.refine``, ``torchref.difference-refine``, ...).
 experimental
-    Experimental features (e.g. kinetic targets, monolithic refinement).
+    Experimental features (e.g. kinetic targets, monolithic refinement, Patterson
+    alignment).
 utils
     General utilities and debugging tools.
 """
