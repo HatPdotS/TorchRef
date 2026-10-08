@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Working notes for AI agents (and humans) editing TorchRef. This file is the authority on
-conventions; where `.github/instructions/*.md` disagrees with it, this file wins.
+conventions.
 
 TorchRef is GPU-accelerated **crystallographic refinement** built on PyTorch: models are
 `nn.Module`s, targets are losses, and gradients come from autograd. The domain is X-ray
