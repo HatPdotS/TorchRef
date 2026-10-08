@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict
 
+from torchref.utils.serialization import convert_to_serializable
+
 # Verbosity levels
 VERBOSITY_ESSENTIAL = 0  # Major weights (ADP, GEOM, Xray), R-factors
 VERBOSITY_STANDARD = 1  # Component weights / component losses
@@ -64,22 +66,9 @@ class StatEntryEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, StatEntry):
             return obj.value
-        try:
-            import torch
-
-            if isinstance(obj, torch.Tensor):
-                return obj.tolist() if obj.numel() > 1 else obj.item()
-        except ImportError:
-            pass
-        try:
-            import numpy as np
-
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, (np.integer, np.floating)):
-                return obj.item()
-        except ImportError:
-            pass
+        converted = convert_to_serializable(obj)
+        if converted is not obj:
+            return converted
         return super().default(obj)
 
 

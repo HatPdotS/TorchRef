@@ -126,3 +126,27 @@ class TestModuleReference:
 
         assert not hasattr(ref, "_apply")
         assert ref.in_features == 2
+
+
+class TestSerialization:
+    """One tensor-to-JSON rule, shared by convert_to_serializable and the encoder."""
+
+    @pytest.mark.unit
+    def test_empty_tensor_becomes_an_empty_list(self):
+        import json
+
+        from torchref.utils.serialization import convert_to_serializable
+
+        assert convert_to_serializable({"empty": torch.zeros(0)}) == {"empty": []}
+        assert json.dumps(torch.zeros(0)) == "[]"
+
+    @pytest.mark.unit
+    def test_one_element_tensor_stays_a_scalar(self):
+        import json
+
+        from torchref.utils.serialization import convert_to_serializable
+        from torchref.utils.stats import stat
+
+        assert convert_to_serializable(torch.zeros(1)) == 0.0
+        assert json.dumps({"r": stat(torch.ones(1))}) == '{"r": 1.0}'
+        assert json.dumps(torch.arange(3)) == "[0, 1, 2]"
