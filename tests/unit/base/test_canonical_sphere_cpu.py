@@ -244,8 +244,8 @@ def test_fused_float32_total_density_is_unbiased(pdb_dir):
     if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
     df, cell, _ = PDBReader().read(str(pdb_dir / "1DAW.pdb"))()
-    cell = Cell(cell)
     f32 = torch.float32
+    cell = Cell(cell, device="cpu", dtype=f32)
     xyz = torch.tensor(df[["x", "y", "z"]].to_numpy(), dtype=f32)
     adp = torch.tensor(df["tempfactor"].to_numpy(), dtype=f32)
     occ = torch.tensor(df["occupancy"].to_numpy(), dtype=f32)

@@ -30,6 +30,7 @@ from torchref.base.french_wilson import (
     french_wilson,
 )
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
+from torchref.utils.matmul import matmul
 
 __all__ = ["french_wilson_auto"]
 
@@ -120,11 +121,12 @@ def _anisotropy_design(
     # a radial function, and the joint normal equations lose in float32 the
     # very difference that is being kept.
     on_rows = radial[rows]
-    gram = on_rows.T @ on_rows
+    gram = matmul(on_rows.T, on_rows)
 
     def off_radial(columns):
         coefficients = torch.stack(
-            [_solve_normal(gram, on_rows.T @ col[rows]) for col in columns.T], dim=1
+            [_solve_normal(gram, matmul(on_rows.T, col[rows])) for col in columns.T],
+            dim=1,
         )
         return columns - radial @ coefficients
 
@@ -132,14 +134,15 @@ def _anisotropy_design(
     s2_off = off_radial((s2 / s2[rows].pow(2).mean().sqrt()).unsqueeze(1))[:, 0]
     w = s2_off[rows]
     residual = residual - s2_off.unsqueeze(1) * (
-        (residual[rows].T @ w) / (w @ w).clamp(min=1e-30)
+        matmul(residual[rows].T, w) / matmul(w, w).clamp(min=1e-30)
     )
 
     # A 6x6 eigenproblem, solved on the host: it is tiny, and MPS has no eigh.
     # The leading directions are the anisotropic ones; what follows them is
     # what the symmetry or the projection removed, down to rounding.
     fitted = residual[rows]
-    values, vectors = torch.linalg.eigh((fitted.T @ fitted / fitted.shape[0]).cpu())
+    covariance = matmul(fitted.T, fitted) / fitted.shape[0]
+    values, vectors = torch.linalg.eigh(covariance.cpu())
     values, vectors = values[-n_directions:], vectors[:, -n_directions:]
     basis = (vectors / values.clamp(min=1e-30).sqrt()).to(device=hkl.device)
     return residual @ basis

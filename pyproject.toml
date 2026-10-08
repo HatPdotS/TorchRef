@@ -71,6 +71,7 @@ forcefield = [
 
 amber = [
     "openmm>=8.0.0",
+    "parmed",
     "pdbfixer",
 ]
 
@@ -123,7 +124,7 @@ markers = [
     "cuda_only: Deprecated alias for 'cuda'",
     "slow: Long-running tests (skipped in quick runs)",
     "openmm: Tests requiring OpenMM (the [amber] extra); skipped if absent",
-    "amber: Tests requiring OpenMM + AmberTools (antechamber/tleap); skipped if absent",
+    "amber: Tests requiring OpenMM + AmberTools (antechamber/parmchk2); skipped if absent",
 ]
 
 filterwarnings = [

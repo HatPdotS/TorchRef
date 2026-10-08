@@ -33,8 +33,10 @@ For development, add the extras (pytest, black, isort, ruff):
 
    pip install -e ".[dev]"
 
-The optional ``[amber]`` extra pulls in OpenMM for the Amber target; see
-:doc:`user_guide/testing` for what it gates.
+The optional ``[amber]`` extra pulls in OpenMM and parmed for the Amber target;
+residues the AMBER force fields do not cover (ligands) also need AmberTools
+(``conda install -c conda-forge ambertools``). See :doc:`user_guide/testing` for
+what each gates.
 
 Verifying Installation
 ----------------------

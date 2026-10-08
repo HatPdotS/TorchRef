@@ -12,16 +12,11 @@ Per-member AMBER energy over an ensemble, with an optional entropy regularizer.
    instead, which abandoned the per-member entropy/KL approach (see below).
    The targets here are retained for standalone / comparison use only.
 
-Two targets, both subclasses of the single-molecule
-:class:`~torchref.experimental.targets.amber_target.AmberTarget`:
-
 - :class:`EnsembleAmberTarget` — the AMBER energy of every ensemble member
-  (``N`` non-interacting copies of one chemistry), averaged. It **inherits**
-  the full AmberTarget machinery (OpenMM system build via antechamber /
-  ForceField, atom map, autograd bridge):
-  the single-copy chemistry/topology is built once from the ensemble's
-  ``_pdb_single`` and each member's coordinates are fed through the inherited
-  per-conformation energy (:meth:`AmberTarget._energy`).
+  (``N`` non-interacting copies of one chemistry), averaged. One OpenMM system is
+  built for the single-copy chemistry by
+  :class:`~torchref.experimental.mm.OpenMMAdapter`, and each member's coordinates
+  are evaluated in it in turn.
 
 - :class:`EnsembleAmberKLTarget` — adds the variational-Boltzmann entropy
   regularizer on top of the mean energy::
@@ -40,26 +35,28 @@ Two targets, both subclasses of the single-molecule
   crystal contacts replace the entropy term. Retained here for
   standalone / comparison use, not as the production restraint.
 
-Hydrogens must already be present in the ensemble: as in the single-molecule
-target, every member's hydrogen coordinates are read from the model, never
-generated or placed here.
+Hydrogens are the ensemble's own atoms, as for the single-model target: build the
+ensemble with ``hydrogens="add"``.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional, Sequence
 
-import numpy as np
 import torch
 
-from torchref.config import get_int_dtype
-from torchref.experimental.targets.amber_target import AMBER14_STANDARD, AmberTarget
+from torchref.experimental.mm import OpenMMAdapter
+from torchref.experimental.mm.adapter import DEFAULT_FORCEFIELD, template_coverage
+from torchref.experimental.targets.amber_target import require_openmm
+from torchref.refinement.targets.base import ModelTarget
+
+from .ensemble_model import build_single_copy_model
 
 if TYPE_CHECKING:
     from .ensemble_model import EnsembleModel
 
 
-class EnsembleAmberTarget(AmberTarget):
+class EnsembleAmberTarget(ModelTarget):
     """Mean per-member AMBER energy over an ensemble (``N`` independent copies).
 
     .. warning::
@@ -68,31 +65,25 @@ class EnsembleAmberTarget(AmberTarget):
        (:class:`QuasiCrystalAmberTarget` is). API and behaviour may change
        without notice.
 
-    Subclass of :class:`~torchref.experimental.targets.amber_target.AmberTarget`.
-    The expensive chemistry/topology is built **once** from the ensemble's
-    single-copy PDB (``EnsembleModel._pdb_single``); ``forward`` evaluates the
-    inherited per-conformation energy for each member and returns the mean.
-    The OpenMM system (and any antechamber parameterisation for non-standard
-    residues) is built eagerly in ``__init__``.
-
     Parameters
     ----------
     model : EnsembleModel
-        Ensemble whose members are evaluated. ``forward`` reads
-        :attr:`EnsembleModel.xyz_per_member`.
+        Ensemble whose members are evaluated; ``forward`` reads
+        :attr:`EnsembleModel.xyz_per_member`. Must carry the hydrogens AMBER needs.
     cutoff : float
         AMBER non-bonded cutoff (Å).
     normalize_by_atoms : bool
-        Report each member's energy per-atom (forwarded to the base).
-    gaff2_files, residue_charges : dict, optional
-        Forwarded to the base for non-standard residue parameterisation.
+        Report each member's energy per atom.
+    residue_charges : dict, optional
+        Net charge per GAFF2 residue name, overriding the dictionary's formal charges.
     restrict_to_standard : bool
-        If True, drop atoms in non-:data:`AMBER14_STANDARD` residues from the
-        Amber chemistry (and from each member's coordinates), so the OpenMM
-        topology builds without antechamber/tleap. The X-ray side still sees
-        the full model.
+        If True, leave out of the Amber system the residues no force-field XML
+        template matches, so no GAFF2 parameterisation is needed. The X-ray side still
+        sees the full model.
+    forcefield : sequence of str
+        OpenMM force-field XML files.
     charge_method : str
-        antechamber charge method ('gas' default, no QM; or 'bcc').
+        antechamber charge method for GAFF2 residues ('gas' default, or 'bcc').
     verbose : int
         Verbosity.
     """
@@ -104,87 +95,45 @@ class EnsembleAmberTarget(AmberTarget):
         model: "EnsembleModel" = None,
         cutoff: float = 5.0,
         normalize_by_atoms: bool = True,
-        gaff2_files=None,
-        residue_charges=None,
+        residue_charges: Optional[Dict[str, int]] = None,
         restrict_to_standard: bool = False,
+        forcefield: Sequence[str] = DEFAULT_FORCEFIELD,
         charge_method: str = "gas",
         verbose: int = 0,
     ):
+        require_openmm()
+        super().__init__(model=model, verbose=verbose)
         self.restrict_to_standard = bool(restrict_to_standard)
-
-        # Build the single-conformation chemistry model (and the kept-atom
-        # subset) BEFORE the base __init__ so the inherited build targets it.
-        chem_model = None
-        atom_idx_np: Optional[np.ndarray] = None
-        if model is not None:
-            chem_model, atom_idx_np = self._make_chem_model(model, verbose)
-
-        super().__init__(
-            model=model,
-            chem_model=chem_model,
-            cutoff=cutoff,
-            normalize_by_atoms=normalize_by_atoms,
-            gaff2_files=gaff2_files,
-            residue_charges=residue_charges,
+        self._normalize = normalize_by_atoms
+        self.adapter: Optional[OpenMMAdapter] = None
+        if model is None:
+            return
+        chemistry = build_single_copy_model(model, verbose=verbose)
+        atoms = (
+            template_coverage(chemistry, forcefield) if restrict_to_standard else None
+        )
+        self.adapter = OpenMMAdapter.from_model(
+            chemistry,
+            atoms=atoms,
+            forcefield=forcefield,
             charge_method=charge_method,
+            residue_charges=residue_charges,
+            cutoff=cutoff,
+            hydrogens_added=getattr(model, "hydrogen_source", "keep") == "add",
             verbose=verbose,
         )
 
-        # Register the kept-atom indices now that nn.Module is initialised, so
-        # the buffer moves with .to(device). None → use all atoms.
-        if atom_idx_np is not None:
-            self.register_buffer(
-                "_member_atom_idx",
-                torch.as_tensor(
-                    atom_idx_np, dtype=get_int_dtype(), device=self._model.device
-                ),
-            )
-        else:
-            self._member_atom_idx = None
-
-    def _make_chem_model(self, ensemble: "EnsembleModel", verbose: int):
-        """Build a single-conformation :class:`Model` for the Amber chemistry.
-
-        Returns ``(chem_model, atom_idx_np)`` where ``atom_idx_np`` indexes the
-        kept atoms into the per-member atom layout (``None`` ⇒ all atoms). When
-        ``restrict_to_standard`` is set, non-standard residues are dropped so
-        the OpenMM topology builds without antechamber/tleap.
-        """
-        from .ensemble_model import build_single_copy_model
-
-        atom_idx_np: Optional[np.ndarray] = None
-        if self.restrict_to_standard:
-            resnames = ensemble._pdb_single["resname"].astype(str).str.strip()
-            mask = resnames.isin(AMBER14_STANDARD).values
-            n_dropped = int((~mask).sum())
-            if n_dropped > 0:
-                if verbose > 0:
-                    dropped = sorted(set(resnames[~mask].tolist()))
-                    print(
-                        f"[{type(self).__name__}] restrict_to_standard: dropping "
-                        f"{n_dropped} atom(s) in non-standard residues: {dropped}"
-                    )
-                atom_idx_np = np.nonzero(mask)[0].astype(np.int64)
-
-        chem = build_single_copy_model(ensemble, atom_idx=atom_idx_np, verbose=verbose)
-        return chem, atom_idx_np
-
-    def _member_xyz(self, i: int) -> torch.Tensor:
-        """Member ``i`` coordinates ``(n_chem_atoms, 3)``, subset to kept atoms.
-
-        The returned ordering matches the rows of ``self._chem_model.to_dataframe()``
-        (what the OpenMM atom map was built on), so it can be fed straight to
-        :meth:`AmberTarget._energy`.
-        """
-        xyz = self._model.xyz_per_member[i]
-        if self._member_atom_idx is not None:
-            xyz = xyz.index_select(0, self._member_atom_idx)
-        return xyz
+    def _member_energy(self, xyz: torch.Tensor) -> torch.Tensor:
+        """One member's energy, ``xyz`` of shape ``(n_atoms_per_member, 3)`` in Å."""
+        energy = self.adapter.energy(xyz)
+        return energy / self.adapter.n_particles if self._normalize else energy
 
     def forward(self) -> torch.Tensor:
-        """Mean of the inherited per-conformation AMBER energy over all members."""
-        n_members = int(self._model.n_members)
-        energies = [self._energy(self._member_xyz(i)) for i in range(n_members)]
+        """Mean of the per-member AMBER energies."""
+        xyz = self._model.xyz_per_member
+        energies = [
+            self._member_energy(xyz[i]) for i in range(int(self._model.n_members))
+        ]
         return torch.stack(energies).mean()
 
     def stats(self) -> Dict:
@@ -221,12 +170,14 @@ class EnsembleAmberKLTarget(EnsembleAmberTarget):
     eps : float
         Numerical floor inside ``log`` of the per-atom variance.
     normalize_by_atoms : bool
-        Forwarded to the base so the per-member energy is reported per-atom.
-    gaff2_files, residue_charges : dict, optional
-        Forwarded to the base for non-standard residue parameterisation.
+        Report each member's energy per atom.
+    residue_charges : dict, optional
+        Net charge per GAFF2 residue name.
     restrict_to_standard : bool
-        Drop non-standard residues from the Amber chemistry (see
+        Leave out the residues no force-field XML template matches (see
         :class:`EnsembleAmberTarget`).
+    forcefield : sequence of str
+        OpenMM force-field XML files.
     charge_method : str
         antechamber charge method ('gas' default).
     verbose : int
@@ -243,9 +194,9 @@ class EnsembleAmberKLTarget(EnsembleAmberTarget):
         cutoff: float = 5.0,
         eps: float = 1e-4,
         normalize_by_atoms: bool = True,
-        gaff2_files=None,
-        residue_charges=None,
+        residue_charges: Optional[Dict[str, int]] = None,
         restrict_to_standard: bool = False,
+        forcefield: Sequence[str] = DEFAULT_FORCEFIELD,
         charge_method: str = "gas",
         verbose: int = 0,
     ):
@@ -253,9 +204,9 @@ class EnsembleAmberKLTarget(EnsembleAmberTarget):
             model=model,
             cutoff=cutoff,
             normalize_by_atoms=normalize_by_atoms,
-            gaff2_files=gaff2_files,
             residue_charges=residue_charges,
             restrict_to_standard=restrict_to_standard,
+            forcefield=forcefield,
             charge_method=charge_method,
             verbose=verbose,
         )

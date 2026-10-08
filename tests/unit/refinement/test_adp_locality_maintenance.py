@@ -22,6 +22,7 @@ def test_maintenance_rebuilds_the_neighbour_list_after_a_step(pdb_dir):
     params = model.xyz.refinable_params
     generator = torch.Generator().manual_seed(0)
     step = torch.randn(params.shape, generator=generator, dtype=params.dtype)
+    step = step.to(params.device)
     with torch.no_grad():
         params.add_(step / step.norm(dim=-1, keepdim=True))
     model.xyz.reset_forward_cache()

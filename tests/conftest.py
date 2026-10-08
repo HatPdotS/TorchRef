@@ -19,7 +19,7 @@ pytest_plugins = (
 )
 
 _HAS_OPENMM = importlib.util.find_spec("openmm") is not None
-_HAS_AMBERTOOLS = bool(shutil.which("antechamber") and shutil.which("tleap"))
+_HAS_AMBERTOOLS = bool(shutil.which("antechamber") and shutil.which("parmchk2"))
 
 
 def pytest_addoption(parser):
@@ -76,7 +76,7 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "amber: Needs OpenMM + AmberTools (antechamber/tleap); skipped if absent",
+        "amber: Needs OpenMM + AmberTools (antechamber/parmchk2); skipped if absent",
     )
 
     if config.getoption("--run-gpu"):
@@ -146,7 +146,7 @@ def pytest_collection_modifyitems(config, items):
         reason="OpenMM not installed (pip install '.[amber]')"
     )
     skip_amber = pytest.mark.skip(
-        reason="AmberTools (antechamber/tleap) not on PATH (conda install ambertools)"
+        reason="AmberTools (antechamber/parmchk2) not on PATH (conda install ambertools)"
     )
     skip_cuda = pytest.mark.skip(reason="No CUDA device on this host")
     skip_mps = pytest.mark.skip(reason="No MPS device on this host")

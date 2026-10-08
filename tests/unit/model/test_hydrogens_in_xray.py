@@ -80,9 +80,14 @@ def test_toggling_the_flag_recomputes_fcalc(pdb_dir):
         model.hydrogens_in_xray = False
         without_h = model(hkl)
         assert not torch.equal(without_h, with_h)
-        assert torch.allclose(without_h, model(hkl, recalc=True))
+        recalculated = model(hkl, recalc=True)
         model.hydrogens_in_xray = True
-        assert torch.allclose(model(hkl), with_h)
+        served = model(hkl)
+    # Relative to the largest |F|: a recomputation differs from the cached one by
+    # float32 rounding, which on F ~ 1e3 is ~1e-4 absolute in components that are zero.
+    for got, want in ((without_h, recalculated), (served, with_h)):
+        scale = float(want.abs().max())
+        torch.testing.assert_close(got, want, rtol=1e-4, atol=1e-4 * scale)
 
 
 @pytest.mark.unit

@@ -114,14 +114,19 @@ class EnsembleRefinement(LBFGSRefinement):
     xray_weight, amber_weight : float
         Dimensionless multipliers on the X-ray work term and the
         quasi-crystal Amber restraint (both O(1) on the per-ASU scale).
-        ``amber_weight`` defaults to 0 (no Amber target). The ensembles built
-        here are hydrogen-stripped, so ``amber_weight > 0`` raises
-        ``ValueError`` (``ImportError`` without OpenMM).
+        ``amber_weight`` defaults to 0 (no Amber target); ``amber_weight > 0``
+        raises ``ImportError`` without OpenMM.
     amber_charge_method, amber_relax_on_init, amber_force_clamp, amber_every
         Amber settings: antechamber charge method (``'gas'``); OpenMM
         minimisation at construction, writing the relaxed coordinates back
         into the ensemble (default ``True``); per-atom force clamp
         (kJ/mol/nm); evaluate Amber on every ``amber_every``-th step only.
+    hydrogens : {"add", "keep", "strip"}, optional
+        Where the ensemble's hydrogens come from (see
+        :meth:`EnsembleModel.from_multimodel_pdb`). Default ``"add"`` when the Amber
+        restraint is on, since AMBER needs every hydrogen, else ``"strip"``. The
+        X-ray model carries them too. ``"keep"`` uses the file's own and warns;
+        ``"strip"`` with the Amber restraint on raises ``ValueError``.
     val_fraction_of_free : float
         Fraction of the free set split off as validation set if the MTZ has none.
     xray_mode : str
@@ -166,6 +171,7 @@ class EnsembleRefinement(LBFGSRefinement):
         amber_charge_method: str = "gas",
         amber_relax_on_init: bool = True,
         amber_force_clamp: float = 10000.0,
+        hydrogens: Optional[str] = None,
         low_rank_modes: int = 0,
         rank_weight: float = 0.0,
         rank_weight_start: Optional[float] = None,
@@ -328,6 +334,14 @@ class EnsembleRefinement(LBFGSRefinement):
         self.amber_charge_method = amber_charge_method
         self.amber_relax_on_init = bool(amber_relax_on_init)
         self.amber_force_clamp = float(amber_force_clamp)
+        if hydrogens is None:
+            hydrogens = "add" if self.amber_weight > 0.0 else "strip"
+        if hydrogens == "strip" and self.amber_weight > 0.0:
+            raise ValueError(
+                "The Amber restraint needs hydrogens; use hydrogens='add' (or 'keep' "
+                "for a hydrogenated file), or amber_weight=0."
+            )
+        self.hydrogens = hydrogens
         self.low_rank_modes = int(low_rank_modes)
         self.rank_weight = float(rank_weight)
         self.rank_weight_start = (
@@ -434,16 +448,9 @@ class EnsembleRefinement(LBFGSRefinement):
             seed=seed,
             verbose=verbose,
             device=self.device,
+            hydrogens=self.hydrogens,
             max_res=self.max_res,
         )
-        if self.amber_weight > 0.0 and not bool(
-            self.model.ctx.topology.atoms.is_hydrogen.any()
-        ):
-            raise ValueError(
-                "amber_weight > 0 needs an ensemble with hydrogens, but "
-                "EnsembleRefinement builds hydrogen-stripped ensembles; set "
-                "amber_weight=0."
-            )
         if self.refine_population:
             self.model.enable_population_refinement(
                 True, refine_b=self.refine_member_b

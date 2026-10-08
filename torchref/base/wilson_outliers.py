@@ -47,6 +47,7 @@ import torch
 from torchref.base.french_wilson import french_wilson_h
 from torchref.base.reciprocal.basis import get_scattering_vectors
 from torchref.base.targets.adp import U_to_matrix
+from torchref.utils.matmul import matmul
 
 #: median of Exp(1) is ln 2, so ``Sigma = median(I) / ln 2`` for acentrics.
 _ACENTRIC_MEDIAN = math.log(2.0)
@@ -465,13 +466,13 @@ def fit_anisotropic_scale(
         dim=1,
     )
 
-    gram = design.T @ design
+    gram = matmul(design.T, design)
     # A ridge proportional to the trace keeps the solve well posed when a
     # direction is barely sampled (thin resolution wedges, low-symmetry cells).
     ridge = 1e-6 * torch.diagonal(gram).mean()
     gram = gram + ridge * torch.eye(7, dtype=gram.dtype, device=gram.device)
     try:
-        coefficients = torch.linalg.solve(gram, design.T @ y)
+        coefficients = torch.linalg.solve(gram, matmul(design.T, y))
     except RuntimeError:
         return zero
     if not bool(torch.isfinite(coefficients).all()):

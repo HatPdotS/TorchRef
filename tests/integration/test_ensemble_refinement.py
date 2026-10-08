@@ -51,13 +51,14 @@ def test_default_construction_has_no_amber_target(refinement):
     assert refinement.amber_target is None
 
 
-def _build_with_amber(data_file=TEST_MTZ):
+def _build_with_amber(data_file=TEST_MTZ, **kwargs):
     return EnsembleRefinement(
         data_file=data_file,
         pdb=TEST_PDB,
         n_members=4,
         amber_weight=1.0,
         seed=42,
+        **kwargs,
         verbose=0,
         max_res=3.0,
     )
@@ -70,10 +71,10 @@ def test_amber_without_openmm_raises_before_loading_data(monkeypatch, tmp_path):
 
 
 def test_amber_on_hydrogen_stripped_ensemble_raises(monkeypatch):
-    """The driver's ensembles carry no hydrogens, which the Amber target needs."""
+    """Stripping the hydrogens the Amber target needs raises at construction."""
     monkeypatch.setitem(sys.modules, "openmm", types.ModuleType("openmm"))
-    with pytest.raises(ValueError, match="amber_weight=0"):
-        _build_with_amber()
+    with pytest.raises(ValueError, match="needs hydrogens"):
+        _build_with_amber(hydrogens="strip")
 
 
 @pytest.fixture(scope="module")

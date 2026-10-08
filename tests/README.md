@@ -122,7 +122,7 @@ Tests are marked with the following pytest markers:
 - `@pytest.mark.mps` - Needs MPS specifically (Metal kernels)
 - `@pytest.mark.slow` - Slow tests (>30 seconds)
 - `@pytest.mark.openmm` - Needs OpenMM (the `[amber]` extra); skipped if absent
-- `@pytest.mark.amber` - Needs OpenMM + AmberTools (antechamber/tleap); skipped if absent
+- `@pytest.mark.amber` - Needs OpenMM + AmberTools (antechamber/parmchk2); skipped if absent
 
 ### Selecting tests
 

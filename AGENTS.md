@@ -199,7 +199,7 @@ Black, 88 columns, `isort` with the black profile. Ruff lint with
 | `symmetry/` | `Symmetry` (operations plus everything derived from them), `SpaceGroup` (adds the crystallographic identity and the CCP4 ASU verbs), `Cell`. All dataclasses over `DeviceMixin`, not `nn.Module` — they hold no refinable parameters. Map and reciprocal-grid operators are private, reached through `Symmetry` |
 | `maps/` | `Map` (2Fo−Fc, Fcalc), `DifferenceMap` |
 | `cli/` | Entry points: `torchref.refine`, `torchref.difference-refine`, `torchref.mtz2map`, `torchref.validate-ded`, `torchref.difference-map`, `torchref.add-metadata`, `torchref.strip-altlocs`, `torchref.uniform-rfree`, `torchref.simulate-noisy-data` |
-| `experimental/` | APIs that may change without notice: `alignment/` (Patterson MR), `kinetic/` (time-resolved), `ensemble/`, `monolithic_refinement/`, `targets/` (AMBER/GAFF2, real-space, occupancy-floor diagnostic) |
+| `experimental/` | APIs that may change without notice: `alignment/` (Patterson MR), `kinetic/` (time-resolved), `ensemble/`, `monolithic_refinement/`, `targets/` (AMBER/GAFF2, real-space, occupancy-floor diagnostic), `mm/` (the OpenMM adapter the AMBER targets sit on: system built from `model.ctx`, symmetry copies, GAFF2 ligands) |
 | `utils/` | See §5 |
 | `config.py` | See §4 |
 
@@ -271,6 +271,7 @@ must be imported from its own module.
 | `backends.py` | `triton_available`, `force_portable`, `set_force_portable`, `use_portable`; module-only: `Backend`, `BackendTable`, `select`, `will_use`, `run_or_degrade`, `TorchRefDegradationWarning` | Declarative kernel dispatch — see §6 |
 | `loss_validation.py` | `validate_loss`, `NonFiniteLossError`, `reset_diagnostic_budget` | Checks the loss (and, with `check_grads`, the parameters' gradients; parameter values are only reported) and dumps a per-target breakdown on failure. With `raise_on_fail=False` **the caller must reject the step itself** — in an L-BFGS closure: zero grads and return `+inf` so strong-Wolfe backtracks. Costs one GPU→CPU sync (two with `check_grads=True`) |
 | `autograd_introspection.py` | `collect_loss_leaves` | Walks a loss's autograd graph to find the leaf `nn.Parameter`s it touches; used by `LossState` to disable `requires_grad` on leaves the optimizer wasn't built with |
+| `matmul.py` | module-only: `matmul` | `a @ b` that splits reductions of 32767 or more on MPS: M1/M2 kernels over-read past the operands there and return silently wrong values or NaN. **Route every product that sums over reflections, atoms or voxels through it** |
 | `autograd_ops.py` | module-only: `gather_with_index_add` | 1-D gather whose backward uses `index_add_` instead of the radix-sorting `_index_put_impl_`. **Not bit-reproducible on CUDA** (atomics) |
 | `stats.py` | `stat`, `StatEntry`, `filter_stats`, `flatten_stats`, `format_stats_table`; module-only: `StatEntryEncoder` | Verbosity-tagged reporting: `VERBOSITY_ESSENTIAL` (0) … `_DEBUG` (3). **Import side effect: replaces stdlib `json.dumps`/`json.dump` process-wide** to default `cls=StatEntryEncoder` |
 | `debug_utils.py` | `DebugMixin`, `print_module_summary` | Module introspection |

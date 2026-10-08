@@ -33,6 +33,7 @@ from torchref.model.parameter_wrappers import (
     u6_to_matrix,
     u6_to_raw6,
 )
+from torchref.utils.matmul import matmul
 from torchref.utils.utils import ModuleReference
 
 __all__ = [
@@ -516,10 +517,10 @@ def _ridged_solve(w_dense, target):
                 w_dense.shape[1], target.shape[-1],
                 dtype=w_dense.dtype, device=w_dense.device,
             )
-    gram = w_dense.T @ w_dense
+    gram = matmul(w_dense.T, w_dense)
     ridge = 1e-6 * torch.diagonal(gram).mean().clamp(min=1e-30)
     eye = torch.eye(gram.shape[0], dtype=gram.dtype, device=gram.device)
-    return torch.linalg.solve(gram + ridge * eye, w_dense.T @ target)
+    return torch.linalg.solve(gram + ridge * eye, matmul(w_dense.T, target))
 
 
 #: Stable integer code per payload, so a saved field can rebuild the one it had.
