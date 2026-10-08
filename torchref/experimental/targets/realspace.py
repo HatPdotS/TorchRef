@@ -58,8 +58,8 @@ class RealSpaceTarget(DataTarget):
         Observed reflection data.
     model : ModelFT
         Model for computing Fcalc.
-    scaler : Scaler, optional
-        Scaler for Fcalc (applied before map coefficient computation).
+    scaler : Scaler
+        Scaler for Fcalc, required for the observed map (``ValueError`` if None).
     map_type : str
         ``"2mFo-DFc"`` or ``"Fo-Fc"``. Note the ``"2mFo-DFc"`` option is the
         *unweighted* 2Fo-Fc approximation (figure-of-merit ``m=1``, sigma_a
@@ -159,6 +159,12 @@ class RealSpaceTarget(DataTarget):
         torch.Tensor
             3D real-space density map.
         """
+        if self._scaler is None:
+            raise ValueError(
+                f"{type(self).__name__} needs a scaler: F_obs and unscaled F_calc "
+                "are on different scales, which inverts the 2Fo-Fc map and "
+                "distorts the Fo-Fc map"
+            )
         self._ensure_p1_expansion()
 
         # Expand Fobs to P1 using the same index mapping as Fcalc
@@ -261,8 +267,8 @@ class RealSpaceCorrelationTarget(RealSpaceTarget):
         Observed reflection data.
     model : ModelFT
         Model for computing Fcalc.
-    scaler : Scaler, optional
-        Scaler for Fcalc.
+    scaler : Scaler
+        Scaler for Fcalc; ``forward()`` and ``stats()`` raise without one.
     mask_solvent : bool
         Whether to apply molecular mask. Default True.
     solvent_radius : float
@@ -372,8 +378,8 @@ class RealSpaceDifferenceTarget(RealSpaceTarget):
         Observed reflection data.
     model : ModelFT
         Model for computing Fcalc.
-    scaler : Scaler, optional
-        Scaler for Fcalc.
+    scaler : Scaler
+        Scaler for Fcalc; ``forward()`` and ``stats()`` raise without one.
     mask_solvent : bool
         Whether to apply molecular mask. Default True.
     solvent_radius : float
