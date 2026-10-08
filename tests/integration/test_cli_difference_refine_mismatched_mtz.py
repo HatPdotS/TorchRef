@@ -147,3 +147,13 @@ def test_difference_refine_mismatched_mtz_cpu(
     for tag in ("_refine.ls_number_reflns_R_work", "_refine.ls_number_reflns_R_free"):
         assert light.find_value(tag) is not None
         assert merged_block.find_value(tag) == light.find_value(tag)
+
+    # Geometry deviations of the refined light model in the header's units: bond
+    # lengths in Å, angles in degrees (near 0.01 Å and 1-2 degrees; radians would
+    # read ~0.03).
+    devs = {
+        gemmi.cif.as_string(row[0]): float(row[1])
+        for row in light.find("_refine_ls_restr.", ["type", "dev_ideal"])
+    }
+    assert 0.001 < devs["f_bond_d"] < 0.1
+    assert 0.3 < devs["f_angle_d"] < 5.0
