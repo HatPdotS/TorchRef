@@ -118,8 +118,8 @@ def validate_loss(
     Returns
     -------
     bool
-        ``True`` if everything is finite. ``False`` only reaches the caller when
-        ``raise_on_fail=False``.
+        ``True`` if the loss, and with ``check_grads`` the parameters' gradients, are
+        finite. ``False`` only reaches the caller when ``raise_on_fail=False``.
 
     Raises
     ------
