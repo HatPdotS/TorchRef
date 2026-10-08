@@ -28,7 +28,7 @@ import torch
 from torchref.base.coordinates.local_frame import frame_is_degenerate
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import dtypes, get_int_dtype, normalize_device
-from torchref.topology.nonbonded import IMAGE_PAIR_WEIGHT
+from torchref.topology.nonbonded import IMAGE_PAIR_WEIGHT, first_occurrence_mask
 from torchref.topology.residue_graph import build_residue_nodes
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
@@ -869,18 +869,8 @@ def build_h_candidate_pairs(
         rows = torch.cat(
             [torch.stack([cand_i, cand_j, cand_sym], dim=1), cand_off], dim=1
         )
-        _, first_idx = torch.unique(rows, dim=0, return_inverse=True)
-        # MPS does not support int64 scatter_reduce; use configured int dtype.
-        _int_dtype = dtypes.int
-        first_idx_i = first_idx.to(_int_dtype)
-        perm = torch.arange(len(cand_i), device=device, dtype=_int_dtype)
-        n_unique = first_idx.max().item() + 1
-        first_occ = torch.full(
-            (n_unique,), len(cand_i), dtype=_int_dtype, device=device
-        )
-        first_occ.scatter_reduce_(0, first_idx_i, perm, reduce="amin")
-        mask = torch.zeros(len(cand_i), dtype=torch.bool, device=device)
-        mask[first_occ] = True
+        _, inverse = torch.unique(rows, dim=0, return_inverse=True)
+        mask = first_occurrence_mask(inverse)
         cand_i = cand_i[mask]
         cand_j = cand_j[mask]
         cand_sym = cand_sym[mask]

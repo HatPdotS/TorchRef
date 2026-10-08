@@ -178,3 +178,30 @@ def test_bonded_pairs_are_not_in_the_vdw_list(pdb_dir):
         b = parent[b - n_heavy] if b >= n_heavy else b
         bonded += b in _bond_ball(neighbours, a, reach)
     assert bonded == 0
+
+
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+def test_first_occurrence_mask_keeps_each_labels_lowest_index(dtype):
+    labels = torch.tensor([3, 1, 3, 0, 1, 1, 2, 0], dtype=dtype)
+
+    mask = nb.first_occurrence_mask(labels)
+
+    assert mask.tolist() == [True, True, False, True, False, False, True, False]
+
+
+def test_pair_deduplication_needs_no_int64_scatter_index(pdb_dir, monkeypatch):
+    """The VDW and riding-hydrogen first-occurrence dedups run where
+    ``scatter_reduce_`` takes only int64 indices (torch < 2.8), mimicked here."""
+    scatter_reduce_ = torch.Tensor.scatter_reduce_
+
+    def int64_index_only(self, dim, index, *args, **kwargs):
+        if index.dtype != torch.int64:
+            raise RuntimeError("scatter_reduce_(): Expected dtype int64 for index")
+        return scatter_reduce_(self, dim, index, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "scatter_reduce_", int64_index_only)
+    model = Model(verbose=0, device=torch.device("cpu"))
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+
+    assert model.restraints.restraints["vdw"]["indices"].shape[0] > 0
+    assert model.restraints.h_topo.has_candidates

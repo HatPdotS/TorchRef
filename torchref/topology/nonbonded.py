@@ -733,6 +733,35 @@ def find_pairs_kdtree(
 # Step 5 – filtering
 # ------------------------------------------------------------------ #
 
+def first_occurrence_mask(inverse: torch.Tensor) -> torch.Tensor:
+    """Mark the first element of each group, in input order.
+
+    Parameters
+    ----------
+    inverse : torch.Tensor
+        Group label per element, shape ``(N,)``, any integer dtype -- typically the
+        ``return_inverse`` of :func:`torch.unique`.
+
+    Returns
+    -------
+    torch.Tensor
+        Boolean mask of shape ``(N,)``, True at the lowest index of every label.
+
+    Notes
+    -----
+    A stable sort puts each group's first element at the head of its run, so no
+    scatter is needed: ``scatter_reduce_`` takes only int64 indices before torch 2.8
+    and has no int64 ``amin`` on MPS.
+    """
+    order = torch.argsort(inverse, stable=True)
+    sorted_labels = inverse[order]
+    head = torch.ones_like(sorted_labels, dtype=torch.bool)
+    head[1:] = sorted_labels[1:] != sorted_labels[:-1]
+    mask = torch.zeros_like(inverse, dtype=torch.bool)
+    mask[order[head]] = True
+    return mask
+
+
 def exclusion_set_to_hash(
     exclusion_set: Set[Tuple[int, int]],
     max_idx: int,
@@ -1003,21 +1032,8 @@ def build_vdw_restraints_gpu(
 
     # Deduplicate: keep first occurrence of each (atom_i, atom_j, combo_j)
     dedup_hash = pair_atom_i * (n_asu * M) + pair_atom_j * M + pair_combo_j
-    _, inverse, counts = torch.unique(
-        dedup_hash, return_inverse=True, return_counts=True
-    )
-    # First occurrence: for each unique hash, the minimum index.
-    # Use the configured int dtype (int32 by default) — MPS does not support
-    # int64 scatter_reduce and N_pairs fits comfortably in int32.
-    _int_dtype = dtypes.int
-    inverse_i = inverse.to(_int_dtype)
-    perm = torch.arange(len(inverse), device=device, dtype=_int_dtype)
-    first_occ = torch.full(
-        (counts.shape[0],), len(inverse), device=device, dtype=_int_dtype
-    )
-    first_occ.scatter_reduce_(0, inverse_i, perm, reduce="amin")
-    first_mask = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-    first_mask[first_occ] = True
+    _, inverse = torch.unique(dedup_hash, return_inverse=True)
+    first_mask = first_occurrence_mask(inverse)
 
     pair_atom_i = pair_atom_i[first_mask]
     pair_atom_j = pair_atom_j[first_mask]
