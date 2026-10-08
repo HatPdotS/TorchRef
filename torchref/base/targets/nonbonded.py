@@ -30,8 +30,8 @@ def nonbonded_pair_positions(
 
     The first atom of a pair is the asymmetric-unit atom itself; the second is the
     image ``(symop, cell_offset)`` of an ASU atom, placed by
-    :func:`~torchref.base.coordinates.symmetry_image_positions` from the current
-    coordinates, so gradients reach both atoms.
+    :func:`~torchref.base.coordinates.symmetry_images.symmetry_image_positions` from the
+    current coordinates, so gradients reach both atoms.
 
     Parameters
     ----------
@@ -137,8 +137,8 @@ def nonbonded_heavy_math(
     The loss of ``NonBondedTarget.forward``, with pair positions from
     :func:`nonbonded_pair_positions`. The H-VDW term ``NonBondedHTarget``
     adds is **not** included here. Dispatches to
-    :func:`torchref.base.targets.triton.nonbonded_heavy_math_triton` on CUDA float32
-    (the gain coming mostly from the analytic backward), eager otherwise.
+    :func:`torchref.base.targets.triton.nonbonded.nonbonded_heavy_math_triton` on CUDA
+    float32 (the gain coming mostly from the analytic backward), eager otherwise.
 
     Parameters
     ----------
