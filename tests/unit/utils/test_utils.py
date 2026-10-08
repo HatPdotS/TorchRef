@@ -157,3 +157,44 @@ def test_tensordict_repr_is_balanced():
     from torchref.utils.utils import TensorDict
 
     assert repr(TensorDict({"a": torch.ones(1)})) == "TensorDict({a: tensor([1.])})"
+
+
+class TestTensorMasksMutators:
+    """Every dict mutator validates, moves and refreshes the combined mask."""
+
+    @staticmethod
+    def _masks():
+        from torchref.utils.utils import TensorMasks
+
+        masks = TensorMasks({"a": torch.tensor([True, True, False])}, device="cpu")
+        masks()  # populate the cached combined mask
+        return masks
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("how", ["update", "setdefault", "ior"])
+    def test_insertion_refreshes_the_combined_mask(self, how):
+        masks = self._masks()
+        b = torch.tensor([False, True, True])
+        if how == "update":
+            masks.update({"b": b})
+        elif how == "setdefault":
+            masks.setdefault("b", b)
+        else:
+            masks |= {"b": b}
+
+        assert torch.equal(masks(), torch.tensor([False, True, False]))
+
+    @pytest.mark.unit
+    def test_update_validates_dtype(self):
+        masks = self._masks()
+        with pytest.raises(ValueError, match="boolean"):
+            masks.update({"bad": torch.zeros(3)})
+
+    @pytest.mark.unit
+    def test_popitem_refreshes_the_combined_mask(self):
+        masks = self._masks()
+        masks["b"] = torch.tensor([False, True, True])
+        masks()
+        masks.popitem()
+
+        assert torch.equal(masks(), torch.tensor([True, True, False]))

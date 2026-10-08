@@ -238,10 +238,28 @@ class TensorMasks(DeviceMovementMixin, dict):
         super().__setitem__(key, tensor)
         self._updated = True
 
-    # Removal must invalidate the combined mask exactly as assignment does.
-    # ``dict`` does not route its removal methods through ``__setitem__``, so each
-    # needs its own override; without them a removed mask keeps constraining
-    # ``__call__``'s cached result until something else happens to assign.
+    # ``dict`` routes none of its other mutators through ``__setitem__``, so each needs
+    # its own override: insertions must be validated, moved and invalidate the combined
+    # mask exactly as assignment does, and without the removal overrides a removed mask
+    # keeps constraining ``__call__``'s cached result until something else assigns.
+    def update(self, *args, **kwargs):
+        for key, tensor in dict(*args, **kwargs).items():
+            self[key] = tensor
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self[key] = default
+        return self[key]
+
+    def __ior__(self, other):
+        self.update(other)
+        return self
+
+    def popitem(self):
+        out = super().popitem()
+        self._updated = True
+        return out
+
     def __delitem__(self, key: str):
         super().__delitem__(key)
         self._updated = True
