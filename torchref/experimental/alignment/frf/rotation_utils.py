@@ -1,4 +1,4 @@
-"""Pure-geometry helpers shared by the FRF, the rescore, and tests.
+"""Pure-geometry helpers shared by the FRF, the MR pipeline, and tests.
 
 Edmonds active ZYZ convention throughout: a rotation matrix is built as
 ``R = R_z(α) R_y(β) R_z(γ)``.  ``α, γ ∈ [0, 2π)``, ``β ∈ [0, π]``.
@@ -16,8 +16,8 @@ def rotation_matrix_from_edmonds_euler(
 ) -> torch.Tensor:
     """Build ``R = R_z(α) R_y(β) R_z(γ)`` (Edmonds active ZYZ).
 
-    Equivalent to passing ``[γ, β, α]`` to
-    ``torchref.experimental.alignment.transform.rotation_matrix_from_euler``.
+    Equivalent to
+    ``torchref.base.alignment.rotation.rotation_matrix_euler_zyz([α, β, γ])``.
     """
     ca, sa = math.cos(alpha), math.sin(alpha)
     cb, sb = math.cos(beta), math.sin(beta)
@@ -57,11 +57,6 @@ def axis_angle_to_matrix(omega: torch.Tensor) -> torch.Tensor:
     and returns ``(3, 3)`` or ``(..., 3, 3)``. The small-θ limit is handled
     implicitly (sin θ→0, (1−cos θ)→0 ⇒ R→I); ``clamp(min=1e-30)`` guards the
     axis normalisation at θ=0.
-
-    Preferred over ``base.alignment.rotation.axis_angle_to_rotation_matrix``,
-    which accepts only ``(3,)``/``(N, 3)`` and switches the axis to ``[0, 0, 1]``
-    below θ = 1e-10 rather than letting the trigonometric factors vanish. Above
-    that threshold the two agree term for term.
     """
     if omega.dtype not in (torch.float32, torch.float64):  # dtype-ok: 3x3 rotation algebra in double on the host
         omega = omega.to(torch.float64)  # dtype-ok: 3x3 rotation algebra in double on the host

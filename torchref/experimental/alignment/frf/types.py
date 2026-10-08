@@ -55,7 +55,7 @@ class AdaptiveRotationFunction:
 class RotationPeak:
     """A single rotation function peak.
 
-    Single source of truth across the FRF, the rescore, and the tests.
+    Single source of truth across the FRF, the MR pipeline, and the tests.
     Convention: Edmonds ZYZ Euler in radians.
     """
 
