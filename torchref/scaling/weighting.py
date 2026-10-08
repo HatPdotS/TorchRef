@@ -125,53 +125,27 @@ def empirical_sigma_a(
     *,
     floor: float = 1e-3,
 ) -> torch.Tensor:
-    """Model reliability measured, rather than assumed, from two Wilson curves.
+    """Model reliability ``sigma_A`` from the data and model Wilson curves.
 
-    ``sigma_A`` in a rotation search is normally a *prior*: a Luzzati falloff
-    from a coordinate error guessed off the residue count, patched at low
-    resolution by Babinet's two universal constants. It never sees a residual.
-
-    It does not have to. Total scattering per shell is **rotation-invariant**,
-    so the resolution-dependent disagreement between model and data is
-    measurable before the molecule is placed, even though the per-reflection
-    disagreement is not. Normalise both sides to ``<E^2> = 1`` and their fitted
-    curves' ratio is exactly that disagreement:
-
-        R(s) = Sigma_obs(s) / Sigma_calc(s)
-
-    ``R < 1`` means the model predicts more scattering than is there, which at
-    low resolution is the bulk solvent it does not have; ``R > 1`` means it
-    predicts less. Either way the shared fraction is bounded by
-    ``min(R, 1/R)``, and ``sigma_A`` is its square root because ``sigma_A^2`` is
-    the fraction of intensity the model accounts for.
-
-    **This is safe to estimate from the data being scored**, which normally it
-    would not be: the quantity is identical for every candidate orientation, so
-    it shifts all scores together and cannot bias the ranking toward any of
-    them.
-
-    What it conflates -- solvent, an overall B mismatch, missing atoms, genuine
-    coordinate error -- it conflates deliberately. For deciding how far to trust
-    a resolution range the cause does not matter, only the size. What it cannot
-    see is *completeness*: forcing both sides to unit mean absorbs a uniform
-    factor, so a model that is half the asymmetric unit looks like a model that
-    is all of it, and only the tilt survives.
-
-    That uniform factor is removed here, by dividing each curve by its geometric
-    mean over the points supplied. The two fits carry their own absolute
-    scales -- the data's arbitrary one and the model's electron scale -- and
-    without this step the ratio's *level* set the answer rather than its shape:
-    measured 0.02-0.06 on 1DAW and 2DQ6 and 8-12 on 3K7M, giving a flat
-    ``sigma_A`` of 0.15-0.35 that said nothing about resolution.
+    With ``R = Sigma_obs / Sigma_calc``, each curve first divided by its geometric mean
+    over the points supplied, ``sigma_A = sqrt(min(R, 1/R))``, clamped to
+    ``[floor, 1)``. Total scattering per shell is rotation-invariant, so this needs no
+    placed model and shifts every orientation's score alike. The unit-mean normalisation
+    makes a uniform completeness deficit invisible: only the resolution tilt survives.
 
     Parameters
     ----------
     sigma_obs, sigma_calc : torch.Tensor
-        ``(N,)`` fitted Wilson curves evaluated at the same ``|s|``. They must
-        come from fits sharing an abscissa, or each is frozen flat outside its
-        own range and the ratio is meaningless there.
+        ``(N,)`` fitted Wilson curves evaluated at the same ``|s|``. They must come from
+        fits sharing an abscissa, or each is frozen flat outside its own range and the
+        ratio is meaningless there.
     floor : float, optional
         Lower bound on the returned ``sigma_A``.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(N,)`` ``sigma_A`` in ``[floor, 1)``.
     """
     log_r = (sigma_obs.clamp(min=1e-30).log()
              - sigma_calc.clamp(min=1e-30).log())
