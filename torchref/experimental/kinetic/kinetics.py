@@ -81,11 +81,11 @@ class KineticModel(DeviceMixin, nnModule):
         Accepted for API compatibility but currently ignored: efficiencies
         are always frozen at 1.0 (100% efficient) and are not refinable.
     instrument_function : str, optional
-        Type of instrument response function. Options: 'gaussian', 'none'
-        Default: 'gaussian'
+        'gaussian' (default) or 'none'. The Gaussian is integrated over the
+        measured timepoints only, so it is accurate only when their spacing is
+        much smaller than its sigma, and biased for sparse or log-spaced series.
     instrument_width : float, optional
-        Width parameter for the instrument function (e.g., sigma for gaussian)
-        Default: 10
+        Gaussian sigma, in the units of ``timepoints``. Default: 10
     initial_state : str, optional
         Which state starts with population 1. Default: first state in flow chart
     light_activated : bool, optional

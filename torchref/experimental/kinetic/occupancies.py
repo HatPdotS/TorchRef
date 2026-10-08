@@ -98,12 +98,12 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         Accepted for backward compatibility but ignored: efficiencies are frozen
         at 1.0 (degenerate with rate constants) and are not refinable.
     instrument_function : str, optional
-        Instrument response function model, either 'none' or 'gaussian'.
-        Default: 'none'. Note this overrides :class:`KineticModel`'s own default
-        of ``'gaussian'``, so constructing through this wrapper applies no IRF
-        unless ``'gaussian'`` is requested explicitly.
+        'none' (default, unlike :class:`KineticModel`) or 'gaussian'. The
+        Gaussian is integrated over the measured timepoints only, so it is
+        accurate only when their spacing is much smaller than its sigma, and
+        biased for sparse or log-spaced series.
     instrument_width : float, optional
-        Instrument response function width (Gaussian sigma). Default: 10
+        Gaussian sigma, in the units of ``time``. Default: 10
     light_activated : bool, optional
         If True, products returning to ground state become inactive. Default: False
     state_mapping : dict or None, optional
