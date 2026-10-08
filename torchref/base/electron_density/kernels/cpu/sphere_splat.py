@@ -22,9 +22,7 @@ uses ``std::exp``, a float64 caller being precision-motivated by definition.
 Gradients flow to ``xyz``, ``adp``/``u`` and ``occ`` with identity to the incoming
 ``density_map``; ``A``/``B`` and the cell matrices get none, as in the CUDA and Metal
 kernels. **Backward is first-order only**; a ``create_graph=True`` backward is re-derived
-through the portable splat (:func:`_double_backward_vjp`). Unlike the CUDA and Metal
-entry points this kernel takes no per-Gaussian ``coeff_mask`` -- that argument is
-all-ones at every call site, so it is omitted rather than allocated.
+through the portable splat (:func:`_double_backward_vjp`).
 """
 
 from __future__ import annotations
