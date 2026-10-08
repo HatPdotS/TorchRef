@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Dict, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from torchref.config import get_int_dtype
 from torchref.experimental.mm.layout import CrystalLayout
 from torchref.experimental.mm.topology import (
     MIN_HYDROGEN_FRACTION,
@@ -46,25 +45,48 @@ class _OpenMMEnergy(torch.autograd.Function):
     """OpenMM energy of particle positions in nm, with OpenMM's forces as gradient.
 
     Forward returns the potential energy in kJ/mol; backward returns minus the force in
-    kJ/mol/nm, clipped per particle at ``adapter.max_force``.
+    kJ/mol/nm, clipped per particle at ``adapter.max_force``. OpenMM hands its forces
+    over as float64; they are cast once to the positions' dtype and device and clipped
+    there.
     """
 
     @staticmethod
     def forward(ctx, positions_nm: torch.Tensor, adapter: "OpenMMAdapter"):
         energy, forces = adapter._evaluate(positions_nm.detach().cpu().numpy())
-        norms = np.linalg.norm(forces, axis=1, keepdims=True)
-        forces = forces * np.minimum(adapter.max_force / np.maximum(norms, 1e-10), 1.0)
-        ctx.save_for_backward(
-            torch.as_tensor(
-                forces, dtype=positions_nm.dtype, device=positions_nm.device
-            )
+        forces = torch.from_numpy(forces).to(
+            device=positions_nm.device, dtype=positions_nm.dtype
         )
+        norms = forces.norm(dim=1, keepdim=True).clamp_min(1e-10)
+        forces = forces * (adapter.max_force / norms).clamp(max=1.0)
+        ctx.save_for_backward(forces)
         return positions_nm.new_tensor(energy)
 
     @staticmethod
     def backward(ctx, grad_output):
         (forces,) = ctx.saved_tensors
         return -forces * grad_output, None
+
+
+class _TakeRows(torch.autograd.Function):
+    """``values[index]`` for an index without repeats; backward copies, not adds.
+
+    The particle map never repeats a row, so the gradient can be written with
+    ``index_copy_``. Autograd's own backward of ``index_select`` adds with the index it
+    was given, and ``index_add_`` with an int32 index takes a slow path on CPU: 23 ms
+    against 0.4 ms for ``index_copy_`` on a 262k-particle supercell.
+    """
+
+    @staticmethod
+    def forward(ctx, values: torch.Tensor, index: torch.Tensor):
+        ctx.save_for_backward(index)
+        ctx.n_rows = values.shape[0]
+        return values.index_select(0, index)
+
+    @staticmethod
+    def backward(ctx, grad):
+        (index,) = ctx.saved_tensors
+        full = grad.new_zeros((ctx.n_rows,) + tuple(grad.shape[1:]))
+        return full.index_copy_(0, index, grad), None
 
 
 class OpenMMAdapter:
@@ -125,6 +147,9 @@ class OpenMMAdapter:
         self._context = None
         self._device_type = "cpu"
         self._index: Dict[torch.device, torch.Tensor] = {}
+        self._identity = np.array_equal(
+            self.particles, np.arange(layout.n_copies * self.n_model_atoms)
+        )
         if system.getNumParticles() != len(self.particles):
             raise ValueError(
                 f"System has {system.getNumParticles()} particles but the map names "
@@ -337,7 +362,9 @@ class OpenMMAdapter:
                 f"Expected {self.n_model_atoms} atoms per coordinate set, got "
                 f"{copies.shape[1]}; rebuild after changing the model's atoms."
             )
-        flat = copies.reshape(-1, 3).index_select(0, self._index_on(xyz.device))
+        flat = copies.reshape(-1, 3)
+        if not self._identity:
+            flat = _TakeRows.apply(flat, self._index_on(xyz.device))
         return flat * _NM_PER_ANGSTROM
 
     def energy(self, xyz: torch.Tensor) -> torch.Tensor:
@@ -463,9 +490,9 @@ class OpenMMAdapter:
     def _index_on(self, device: torch.device) -> torch.Tensor:
         """:attr:`particles` as an index tensor on ``device``, cached."""
         if device not in self._index:
-            self._index[device] = torch.as_tensor(
-                self.particles, dtype=get_int_dtype(), device=device
-            )
+            # dtype-ok: index_copy_ in _TakeRows' backward requires int64 indices
+            index = torch.as_tensor(self.particles, dtype=torch.int64, device=device)
+            self._index[device] = index
         return self._index[device]
 
     def _set_positions(self, positions_nm: np.ndarray) -> None:

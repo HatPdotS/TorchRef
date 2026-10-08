@@ -23,8 +23,6 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from torchref.config import get_int_dtype
-
 if TYPE_CHECKING:
     from torchref.symmetry import Cell, SpaceGroup
 
@@ -219,7 +217,14 @@ class CrystalLayout:
         if self.is_identity:
             return xyz
         rotation, translation, source = self._on(xyz)
-        picked = xyz.index_select(0, source)
+        if self.n_sources == self.n_copies and not np.any(
+            self.source - np.arange(self.n_copies)
+        ):
+            picked = xyz
+        elif self.n_sources == 1:
+            picked = xyz.expand(self.n_copies, -1, -1)
+        else:
+            picked = xyz.index_select(0, source)
         return torch.einsum("cij,cnj->cni", rotation, picked) + translation[:, None]
 
     def to_source_frame(self, positions: np.ndarray) -> np.ndarray:
@@ -387,7 +392,8 @@ class CrystalLayout:
             self._tensors[key] = (
                 torch.as_tensor(self.rotation, dtype=xyz.dtype, device=xyz.device),
                 torch.as_tensor(self.translation, dtype=xyz.dtype, device=xyz.device),
-                torch.as_tensor(self.source, dtype=get_int_dtype(), device=xyz.device),
+                # dtype-ok: an int32 index sends index_select's backward down a slow path
+                torch.as_tensor(self.source, dtype=torch.int64, device=xyz.device),
             )
         return self._tensors[key]
 

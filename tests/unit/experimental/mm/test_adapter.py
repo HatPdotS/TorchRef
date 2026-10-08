@@ -29,7 +29,8 @@ def protein(pdb_dir):
 
 @pytest.fixture(scope="module")
 def adapter(protein):
-    return OpenMMAdapter.from_model(protein)
+    """On the Reference platform, so a second OpenMM evaluation repeats the first."""
+    return OpenMMAdapter.from_model(protein, platform="Reference")
 
 
 @pytest.fixture(scope="module")
@@ -76,19 +77,24 @@ def test_positions_forces_units_and_sign(adapter, protein):
     )
     norms = np.linalg.norm(forces, axis=1, keepdims=True)
     clipped = forces * np.minimum(adapter.max_force / np.maximum(norms, 1e-10), 1.0)
-    np.testing.assert_allclose(gradient.numpy(), -clipped * 0.1, rtol=3e-6, atol=1e-5)
+    np.testing.assert_allclose(gradient.numpy(), -clipped * 0.1, rtol=1e-6, atol=1e-6)
     reference = state.getPotentialEnergy().value_in_unit(unit.kilojoules_per_mole)
     assert energy.item() == pytest.approx(reference, rel=1e-6)
     assert gradient[hydrogens].abs().sum() > 0
 
 
-def test_energy_and_forces_matches_autograd_below_the_clip(adapter, protein):
-    """Two CPU-platform evaluations, which sum over threads in mixed precision."""
+def test_energy_and_forces_matches_autograd_below_the_clip(protein):
+    """The diagnostic forces equal the autograd gradient wherever no clip applies.
+
+    On the deterministic Reference platform, so the two evaluations agree to the
+    float32 cast of the gradient.
+    """
+    adapter = OpenMMAdapter.from_model(protein, platform="Reference")
     xyz = protein.xyz().detach().clone().requires_grad_()
     energy, forces = adapter.energy_and_forces(xyz)
     gradient = torch.autograd.grad(adapter.energy(xyz), xyz)[0].numpy()
     small = np.linalg.norm(forces[0], axis=1) * 10 < adapter.max_force
-    np.testing.assert_allclose(-forces[0][small], gradient[small], rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(-forces[0][small], gradient[small], rtol=1e-6, atol=1e-6)
     assert energy == pytest.approx(adapter.energy(xyz).item(), rel=1e-6)
 
 
@@ -180,3 +186,16 @@ def test_pme_needs_a_periodic_layout(waters):
         OpenMMAdapter.from_model(
             waters, nonbonded="pme", layout=CrystalLayout.isolated()
         )
+
+
+def test_particle_gather_gradient_is_exact():
+    """The row gather's copy-backward equals the gradient of plain indexing."""
+    from torchref.experimental.mm.adapter import _TakeRows
+
+    values = torch.randn(12, 3, dtype=torch.float64, requires_grad=True)
+    index = torch.tensor([7, 0, 3, 11, 5], dtype=torch.int64)
+    assert torch.autograd.gradcheck(lambda v: _TakeRows.apply(v, index), (values,))
+
+
+def test_whole_isolated_model_skips_the_gather(adapter):
+    assert adapter._identity
