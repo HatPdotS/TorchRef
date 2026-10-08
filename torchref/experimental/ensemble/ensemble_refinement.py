@@ -628,9 +628,7 @@ class EnsembleRefinement(LBFGSRefinement):
         - **restraints/amber_kl** — :class:`QuasiCrystalAmberTarget` with
           ``normalize_per_asu=True`` returns supercell energy divided by
           the number of ASU copies it contains. Units: kJ/mol / ASU. The
-          ``_kl`` in the key is historical (carried over from the abandoned
-          :class:`EnsembleAmberKLTarget`); the active target has **no**
-          KL / entropy term.
+          target has **no** KL / entropy term despite the key name.
 
         With every term on a per-ASU scale, the user-facing weights
         (``xray_weight``, ``wilson_weight``, ``amber_weight``) are
@@ -882,14 +880,9 @@ class EnsembleRefinement(LBFGSRefinement):
             # preconditioner (which distorts both the sampled distribution and
             # — via the noise inflating v — the effective lr). Trade-off: one
             # global lr is poorly conditioned on the stiff amber landscape, so
-            # it mixes slower and needs its own (smaller) lr.
-            # NOTE (3GR5 experiment): plain SGD diverges here at any usable lr
-            # (≥1e-5 explodes) — the unnormalized xray NLL gradient is ~1e5+
-            # while amber's is force-clamped at 1e4, so a single global lr can't
-            # serve both. The ill-conditioning that mandates Adam also dooms
-            # clean isotropic SGLD. Kept for completeness / better-conditioned
-            # problems; for entropy injection on stiff landscapes use a
-            # preconditioned sampler instead.
+            # it mixes slower and needs its own (smaller) lr. With Amber on, it
+            # diverges at any lr >= 1e-5: the X-ray NLL gradient (~1e5) and the
+            # force-clamped Amber gradient (1e4) admit no common lr.
             optimizer = torch.optim.SGD(params, lr=self.adam_lr, momentum=0.0)
         else:
             optimizer = torch.optim.Adam(
@@ -1129,10 +1122,10 @@ class EnsembleRefinement(LBFGSRefinement):
         # where nll_gap = (nll_free_per_refl / nll_work_per_refl), updated
         # every Adam step from a fresh no-grad forward of the free target.
         # The slope log2(F) means: each doubling of gap cuts xray weight by F×
-        # (with F=5 (default): 2× → 0.2, 4× → 0.04, 8× → 0.008). F=10 was
-        # the original try and turned out to be too aggressive — the natural
-        # sampling gap of ~2-4 already drove weight to 0.01-0.1, starving
-        # the work fit. EMA half-life in Adam steps smooths per-step noise.
+        # (with F=5 (default): 2× → 0.2, 4× → 0.04, 8× → 0.008). F=5 is the
+        # default because F=10 starves the work fit: the natural sampling gap
+        # of ~2-4 already drives its weight to 0.01-0.1. EMA half-life in Adam
+        # steps smooths per-step noise.
         adaptive_slope = math.log2(max(self.xray_adaptive_doubling_factor, 1.0001))
         # Free-set-aware PENALTY: w_rank(step) = rank_adaptive_base · EMA(gap)^(+log2 F_rank)
         # — mirror of adaptive-F but on the regularizer: each doubling of the

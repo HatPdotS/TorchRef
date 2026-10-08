@@ -130,12 +130,10 @@ class RankPenaltyTarget(ModelTarget):
         Xc = self._centered()
         N = float(Xc.shape[0])
         if self._mode == "diverse":
-            # ORTHOGONAL PAIR (participation ⟂ similarity), the corrected
-            # diversity formulation. The earlier "maxent" used spectral entropy
-            # H(p) as "diversity", but H is a function of the eigenVALUES only —
-            # the SAME axis as participation — so maximizing it fought the rank
-            # reduction (eff_rank climbed 58→80+). Here the two terms act on
-            # genuinely different objects:
+            # ORTHOGONAL PAIR (participation ⟂ similarity). Unlike "maxent",
+            # whose spectral entropy H(p) lies on the same eigenvalue axis as
+            # participation and so fights the rank reduction, the two terms
+            # act on genuinely different objects:
             #
             #  (1) PARTICIPATION  — minimize the participation ratio
             #      PR = (Σσ²)²/Σσ⁴ (the logged eff_rank). Scale-INVARIANT, a
