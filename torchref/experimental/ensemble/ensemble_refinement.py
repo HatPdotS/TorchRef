@@ -482,7 +482,7 @@ class EnsembleRefinement(LBFGSRefinement):
     # ------------------------------------------------------------------
 
     def _init_targets(self, xray_mode: str = "ml"):
-        """Register X-ray (work/free/val), Wilson, and optional Amber-KL targets."""
+        """Register X-ray (work/free/val), Wilson, optional Amber and rank targets."""
         # Don't error if the ensemble pieces aren't built yet (during the
         # base-class super().__init__ pre-pass). Detect by checking for
         # EnsembleModel.
@@ -1284,10 +1284,6 @@ class EnsembleRefinement(LBFGSRefinement):
             os.replace(tmp, checkpoint_path)
 
         for cycle in range(start_cycle, macro_cycles):
-            # H positions are derived from heavy atoms via local-frame
-            # placement inside ``AmberTarget._place_hydrogens`` on every
-            # forward — no per-cycle refresh needed.
-
             # Guided MD excludes the scaler from the integrator; refit it to the
             # current ensemble at the start of each macro-cycle (deterministic,
             # treats |F_calc| as fixed, so atoms are not moved by the scale fit).
@@ -1632,9 +1628,8 @@ class EnsembleRefinement(LBFGSRefinement):
 
         Masses come from the model's per-atom ``element`` column (member-
         contiguous, aligned row-for-row with ``xyz.refinable_params``) via
-        gemmi's atomic weights. Hydrogens are absent from the refinable set
-        (they are placed analytically and slaved to heavy atoms), so only
-        heavy-atom masses are needed.
+        gemmi's atomic weights; hydrogen rows, when present, get their own
+        mass like any other atom.
 
         Returns ``None`` when the layout is not the standard flat coordinate
         parameter (e.g. a PCA/low-rank reparameterization) or the element list
@@ -1666,7 +1661,7 @@ class EnsembleRefinement(LBFGSRefinement):
         """R-factor on the validation set (monitoring only)."""
         with torch.no_grad():
             # get_data() returns compact arrays already restricted to the set
-            # (the trailing element is the _ReflectionSubset view, not a mask).
+            # (the trailing element is the ReflectionSubset view, not a mask).
             F_obs, F_calc, _sigma, _centric, _sub = (
                 self.xray_target_validation.get_data()
             )
