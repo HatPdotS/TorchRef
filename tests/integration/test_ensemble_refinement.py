@@ -124,3 +124,8 @@ def test_refine_decreases_rwork_and_keeps_ensemble_spread(refinement):
     xyz = refinement.model.xyz_per_member.detach()
     var_per_atom = xyz.var(dim=0, unbiased=False).sum(dim=-1)
     assert float(var_per_atom.mean()) > 1e-5
+
+
+def test_refine_rejects_an_unknown_lr_schedule():
+    with pytest.raises(ValueError, match="lr_schedule"):
+        EnsembleRefinement(verbose=0, lr_schedule="linear").refine(macro_cycles=1)

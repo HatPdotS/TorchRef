@@ -788,82 +788,63 @@ class EnsembleRefinement(LBFGSRefinement):
         checkpoint_path: Optional[str] = None,
         resume_state: Optional[dict] = None,
     ):
-        """
-        Macro-cycle loop with Adam over ``xyz + scaler`` parameters.
+        """Run ``macro_cycles`` macro cycles of Adam (or SGD, or guided MD).
+
+        A macro cycle is ``adam_steps_per_cycle`` steps through
+        :meth:`LossState.run`, then R-factors and NLLs on the full ensemble and,
+        with population refinement, a birth–death sweep. The optimizer moves the
+        xyz leaves (μ, A and V after :meth:`enable_pca`), the scaler (not under
+        guided MD) and, with ``refine_population``, ``occ_logits`` (plus
+        ``b_raw`` with ``refine_member_b``).
 
         Parameters
         ----------
         macro_cycles : int
-            Number of macro cycles (each is ``adam_steps_per_cycle`` Adam steps).
+            Number of macro cycles.
         snapshot_every : int, optional
-            If > 0 and ``on_snapshot`` is given, invoke ``on_snapshot`` every
-            this many macro cycles. Lets long runs persist intermediate state
-            (structure + metrics) so a kill mid-run doesn't lose everything and
-            the trajectory can be inspected. 0 disables (default).
+            If > 0, call ``on_snapshot`` and write ``checkpoint_path`` every this
+            many cycles; a failed write is logged, not raised. 0 disables.
         on_snapshot : callable, optional
-            ``on_snapshot(completed_cycles: int, hist: dict) -> None``. Receives
-            the same history dict shape as the final return, truncated to the
-            cycles completed so far (``sampling_summary`` is None mid-run). The
-            caller owns serialization (e.g. write a checkpoint PDB + JSON).
+            ``on_snapshot(completed_cycles: int, hist: dict) -> None``, with
+            ``hist`` shaped like the return value up to the cycles done so far.
         checkpoint_path : str, optional
-            If given (with ``snapshot_every > 0``), write a full *resume*
-            checkpoint here every ``snapshot_every`` cycles (atomically, single
-            rolling file). Captures model + scaler + Adam optimizer state +
-            ``global_step`` + lr/noise schedule position + adaptive-xray EMA +
-            RNG + histories — everything needed to continue with identical
-            dynamics. The PDB/JSON snapshot is for humans; this is for resume.
+            Rolling, atomically written resume checkpoint: model, scaler,
+            optimizer state, global step, adaptive-weight EMA, RNG, histories.
         resume_state : dict, optional
-            A checkpoint dict (``torch.load`` of a prior ``checkpoint_path``,
-            mapped to this model's device) to resume from. Restores all of the
-            above and continues the macro-cycle loop from where it stopped. The
-            schedule (``macro_cycles`` × ``adam_steps_per_cycle``) must match the
-            original run, else the lr/noise curves would misalign — validated.
+            A loaded ``checkpoint_path`` dict to continue from. ``macro_cycles``
+            and ``adam_steps_per_cycle`` must match the original run (the
+            schedules are functions of the global step), else ``ValueError``.
 
-        Why Adam, not LBFGS: the loss landscape under (a) the
-        ensemble-coordinate redundancy, (b) the Wilson regularizer, and
-        (c) the quasi-crystal Amber energy is highly non-convex with
-        ~30k+ xyz parameters per macro cycle. LBFGS's quasi-Newton
-        curvature approximation is wrong for this kind of landscape
-        and gets stuck. Adam's per-parameter step sizing + momentum is
-        the standard choice for ensemble / variational refinement.
+        Returns
+        -------
+        dict
+            Per-cycle histories (``rwork``, ``rfree``, ``rval``, ``loss``,
+            ``lr``, ...) plus ``burnin_cycles`` and ``sampling_summary``.
 
-        Guided-MD path: if ``integrator == "langevin_baoab"`` the loop runs a
-        thermostatted BAOAB Langevin integrator on the xyz DOF instead of
-        Adam — physical atomic masses, a constant bath temperature
-        (``md_temperature``), the X-ray term as a weighted force, and the
-        Amber supercell as the physical force field. This path differs from
-        the gradient-descent path: the scaler is excluded from the integrator
-        and refit deterministically per macro cycle, Amber is forced every
-        step (``amber_every = 1``), and the post-hoc SGLD/noise-floor noise is
-        disabled (the thermostat owns the noise).
+        Notes
+        -----
+        ``lr_schedule`` runs over the global step: ``'cosine'`` makes
+        ``lr_cycles`` ``(1-cos)/2`` bumps from ``warmup_start_factor·adam_lr``
+        up to ``adam_lr`` and back; ``'sawtooth'`` makes one such bump, then
+        ``lr_cycles`` jumps to ``adam_lr`` each cosine-decayed to the floor;
+        ``'warmup'`` ramps linearly over ``warmup_steps``, then holds. Any other
+        value raises ``ValueError``. ``sampling_fraction > 0`` overrides the
+        schedule: warmup and cosine anneal to ``sampling_lr_factor·adam_lr``
+        over the burn-in, then that constant LR with the adaptive weights frozen.
+        ``wilson_weight_start`` ramps the Wilson weight linearly to
+        ``wilson_weight``.
 
-        Driven through :meth:`LossState.run`, which already handles:
-        non-finite-loss validation, ``requires_grad`` toggling on leaves
-        outside the optimizer's intent set, cache resets, and target
-        maintenance hooks. Adam accepts the same ``closure(...) -> loss``
-        contract LossState builds for LBFGS.
-
-        One macro cycle = ``self.adam_steps_per_cycle`` Adam steps.
-        B-factors and occupancies are frozen at construction time, so
-        the optimizer only touches xyz and scaler parameters.
-
-        Two schedules run over the *global* step index (0 .. T-1, with
-        T = macro_cycles * adam_steps_per_cycle):
-
-        - **LR** (``lr_schedule``):
-          - ``'cosine'`` — one (or ``lr_cycles``) ``(1-cos)/2`` bump(s).
-            LR starts at ``warmup_start_factor * adam_lr``, rises to
-            ``adam_lr`` at the cycle midpoint, anneals back to the floor
-            by the cycle end. Starting low doubles as warmup (Adam's
-            early bias-corrected second moment is unstable); annealing
-            low at the end gives gentle convergence.
-          - ``'warmup'`` — legacy linear warmup then constant.
-        - **Wilson weight** (opt-in; only when ``wilson_weight_start`` is set,
-          which defaults to ``None`` = no ramp): ramps linearly from
-          ``wilson_weight_start`` to ``wilson_weight`` over the run.
-          Curriculum: fit the data first, then progressively tighten the
-          Wilson prior as the ensemble starts to overfit.
+        ``integrator='langevin_baoab'`` runs BAOAB Langevin dynamics on xyz at
+        ``md_temperature`` with physical masses instead; the scaler is refit
+        each macro cycle outside the integrator, Amber runs every step and the
+        post-step noise is off.
         """
+
+        if self.lr_schedule not in ("cosine", "sawtooth", "warmup"):
+            raise ValueError(
+                "lr_schedule must be 'cosine', 'sawtooth' or 'warmup'; "
+                f"got {self.lr_schedule!r}"
+            )
         # PCAEnsembleParam refines THREE leaves (μ, A, V); parameters_of_types
         # returns only the single `.refinable_params`, so collect all of them.
         from .pca_model import PCAEnsembleParam
@@ -1003,7 +984,6 @@ class EnsembleRefinement(LBFGSRefinement):
                 t_in = ((global_step - seg) % seg) / seg    # 0->1 within a sawtooth
                 decay = (1.0 + math.cos(math.pi * t_in)) / 2.0  # 1->0: max at jump, floor at end
                 return lr_floor + (self.adam_lr - lr_floor) * decay
-            # legacy linear warmup
             if self.warmup_steps <= 0 or global_step >= self.warmup_steps:
                 return self.adam_lr
             frac = global_step / float(self.warmup_steps)
