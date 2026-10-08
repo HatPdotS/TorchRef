@@ -138,9 +138,8 @@ class MRSolution:
         Position of this orientation in the rotation function's own ordering,
         so the depth of shortlist a solution came from can be read off.
     model : ModelFT or None
-        The rotated and translated model. Built for the winner only -- copying
-        and moving a 20k-atom model 25 times was a quarter of the run on the
-        large structures, to produce 24 models nobody reads.
+        The rotated and translated model. Built for the winner only, since
+        copying a large model per candidate is costly;
         :meth:`MolecularReplacementPipeline.place` builds it for any other
         solution on request.
     """
@@ -215,13 +214,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         n_rotation_peaks: int = 500,
         model_error_A: Optional[float] = None,
         # --- candidate tree ---
-        # Distinct orientations carried into the translation search. A safety
-        # margin, not a requirement: with symmetry mates suppressed the
-        # rotation function's FIRST peak is the true orientation in 50 of 50
-        # pose-gated cells (10 structures x 5 seeds), and the panel is 30/30 at
-        # 10 as at 25. Measured on the deposited models as search models; raise
-        # it for poorer models, since every candidate costs a structure-factor
-        # evaluation and a translation FFT.
+        # Distinct orientations carried into the translation search. A margin:
+        # with deposited models as search models the first peak was the true
+        # orientation on every panel cell. Raise it for poorer models.
         n_rotation_candidates: int = 10,
         # Peaks of the fast translation function re-scored by the likelihood
         # for each orientation. The fast map only has to get the true peak
@@ -435,12 +430,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         )
         timer.stop("3_rotation_search")
 
-        # Rank by the FRF's own score and hand the shortlist to the
-        # translation search. There is no rescore here by design: an ML
-        # re-ranking of these peaks was measured to lower end-to-end pose
-        # recovery from 24/30 to 18/30 (McNemar p = 0.031), because it reorders
-        # a shortlist that already contains truth and sometimes pushes truth
-        # out of it. The translation function does the discrimination.
+        # No rescore between the stages: re-ranking a shortlist that already
+        # contains truth can push truth out of it, and lowered pose recovery.
+        # The translation function does the discrimination.
         return sorted(peaks, key=lambda p: p.score, reverse=True)
 
     def place(self, solution: MRSolution) -> "ModelFT":

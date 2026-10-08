@@ -12,10 +12,9 @@ search's LERF1 intensity, ``cw (E_obs^2 - 1) w sigma_A^2``, built from a Wilson
 fit over the translation set; the calculated side is the oriented model's transform
 divided by its own Wilson curve, so ``<|E_calc(h, t)|^2> = 1`` per shell for
 every candidate. The score is then a covariance of two normalised intensities
-and every resolution shell carries the weight the model error gives it. The
-previous form divided raw ``|F_calc|^2`` by its own sum, which is not a
-correlation: on 2DQ6 it was 0.665 at a position 41 A from the deposited pose
-and 0.350 at the pose itself, and the search followed it there.
+and every resolution shell carries the weight the model error gives it; raw
+``|F_calc|^2`` would let the strongest calculated reflections pull the peak off
+the true position.
 
 The grid is sized to the resolution of the translation set, one FFT per
 candidate, and the best few peaks are re-scored with the full Rice/Woolfson
