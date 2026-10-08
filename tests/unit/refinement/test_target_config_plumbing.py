@@ -300,7 +300,7 @@ def test_shrink_passes_is_a_deprecated_on_off_alias():
 
     for passes, expected in ((0, False), (1, True), (3, True)):
         ns = argparse.Namespace(sigma_a_max=None, no_shrink=False, shrink_passes=passes)
-        with pytest.warns(DeprecationWarning, match="--no-shrink"):
+        with pytest.warns(FutureWarning, match="--no-shrink"):
             assert _sigma_a_kwargs(ns) == {"shrink": expected}
 
 
