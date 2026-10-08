@@ -477,3 +477,16 @@ def test_triton_splat_decodes_every_box_voxel():
     )
     assert iso <= 1e-5 * top and aniso <= 1e-5 * top, (iso, aniso, top)
 
+@pytest.mark.cuda
+def test_triton_splat_wraps_a_box_wider_than_the_cell():
+    """A 7 Å radius in a 4.8 Å cell edge: the box spans the cell more than once.
+
+    Every voxel index must wrap fully into the map, as the portable, C++ and Metal splats
+    do, so periodic images of the same atom add into the same voxels. The large ADP keeps
+    the density at the far x faces of the box well above float noise.
+    """
+    iso, aniso, top = _one_atom_triton_vs_portable(
+        (4.8, 20.0, 20.0), (16, 56, 56), (0.3, 0.5, 0.5), 7.0, 300.0,
+        torch.device("cuda"),
+    )
+    assert iso <= 1e-5 * top and aniso <= 1e-5 * top, (iso, aniso, top)

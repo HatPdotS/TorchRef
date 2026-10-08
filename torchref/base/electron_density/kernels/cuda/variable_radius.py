@@ -154,10 +154,11 @@ if _HAVE_TRITON:
             wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
-            # write index (PBC wrap); coords use the unwrapped offset above
-            vix = cix + off_x; vix = vix - tl.where(vix >= nx, nx, 0); vix = vix + tl.where(vix < 0, nx, 0)
-            viy = ciy + off_y; viy = viy - tl.where(viy >= ny, ny, 0); viy = viy + tl.where(viy < 0, ny, 0)
-            viz = ciz + off_z; viz = viz - tl.where(viz >= nz, nz, 0); viz = viz + tl.where(viz < 0, nz, 0)
+            # Write index, wrapped fully (the box may span the cell more than once) as
+            # wrap_idx does in the C++ kernel; % takes the dividend's sign, hence the add.
+            vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
+            viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
+            viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)
             r2 = wx * wx + wy * wy + wz * wz
             wmask = vmask & (r2 <= r2cut)
             density = (
@@ -278,10 +279,11 @@ if _HAVE_TRITON:
             wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
-            # write index (PBC wrap); coords use the unwrapped offset above
-            vix = cix + off_x; vix = vix - tl.where(vix >= nx, nx, 0); vix = vix + tl.where(vix < 0, nx, 0)
-            viy = ciy + off_y; viy = viy - tl.where(viy >= ny, ny, 0); viy = viy + tl.where(viy < 0, ny, 0)
-            viz = ciz + off_z; viz = viz - tl.where(viz >= nz, nz, 0); viz = viz + tl.where(viz < 0, nz, 0)
+            # Write index, wrapped fully (the box may span the cell more than once) as
+            # wrap_idx does in the C++ kernel; % takes the dividend's sign, hence the add.
+            vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
+            viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
+            viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)
             r2 = wx * wx + wy * wy + wz * wz
             wmask = vmask & (r2 <= r2cut)
 
@@ -433,10 +435,11 @@ if _HAVE_TRITON:
             wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
-            # write index (PBC wrap); coords use the unwrapped offset above
-            vix = cix + off_x; vix = vix - tl.where(vix >= nx, nx, 0); vix = vix + tl.where(vix < 0, nx, 0)
-            viy = ciy + off_y; viy = viy - tl.where(viy >= ny, ny, 0); viy = viy + tl.where(viy < 0, ny, 0)
-            viz = ciz + off_z; viz = viz - tl.where(viz >= nz, nz, 0); viz = viz + tl.where(viz < 0, nz, 0)
+            # Write index, wrapped fully (the box may span the cell more than once) as
+            # wrap_idx does in the C++ kernel; % takes the dividend's sign, hence the add.
+            vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
+            viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
+            viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)
             r2 = wx * wx + wy * wy + wz * wz
             wmask = vmask & (r2 <= r2cut)
             xx = wx * wx; yy = wy * wy; zz = wz * wz
@@ -570,10 +573,11 @@ if _HAVE_TRITON:
             wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
-            # write index (PBC wrap); coords use the unwrapped offset above
-            vix = cix + off_x; vix = vix - tl.where(vix >= nx, nx, 0); vix = vix + tl.where(vix < 0, nx, 0)
-            viy = ciy + off_y; viy = viy - tl.where(viy >= ny, ny, 0); viy = viy + tl.where(viy < 0, ny, 0)
-            viz = ciz + off_z; viz = viz - tl.where(viz >= nz, nz, 0); viz = viz + tl.where(viz < 0, nz, 0)
+            # Write index, wrapped fully (the box may span the cell more than once) as
+            # wrap_idx does in the C++ kernel; % takes the dividend's sign, hence the add.
+            vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
+            viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
+            viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)
             r2 = wx * wx + wy * wy + wz * wz
             wmask = vmask & (r2 <= r2cut)
 
