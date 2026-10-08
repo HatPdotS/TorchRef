@@ -154,7 +154,8 @@ class EnsembleRefinement(LBFGSRefinement):
       ``maxent_div_weight``, ``rank_adaptive`` (+ ``rank_adaptive_base``,
       ``rank_adaptive_doubling_factor``). See
       :class:`~torchref.experimental.ensemble.rank_penalty.RankPenaltyTarget`.
-    - **Low-rank / PCA reparameterization**: ``low_rank_modes``.
+    - **Low-rank reparameterization**: ``low_rank_modes > 0`` runs
+      :meth:`enable_low_rank` at the end of construction.
     - **Birth/death population dynamics**: ``refine_population``,
       ``refine_member_b``, ``n_max`` (slot pool), ``death_rate``,
       ``birth_rate``, ``bifurcation_sigma``, ``birth_death_every``. Note
@@ -498,6 +499,8 @@ class EnsembleRefinement(LBFGSRefinement):
 
         # Re-create our targets pointing at the ensemble model + new scaler.
         self._init_targets(xray_mode=xray_mode)
+        if self.low_rank_modes > 0:
+            self.enable_low_rank(self.low_rank_modes)
         # Force loss-state rebuild on next access.
         self.reset_loss_state()
 

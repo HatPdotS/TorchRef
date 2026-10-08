@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from torchref.experimental.ensemble import EnsembleModel
-from torchref.experimental.ensemble import EnsembleRefinement
+from torchref.experimental.ensemble import EnsembleRefinement, LowRankXYZ
 
 TEST_MTZ = os.path.join(
     os.path.dirname(__file__), "..", "files", "mtz", "1DAW.mtz"
@@ -75,6 +75,20 @@ def test_amber_on_hydrogen_stripped_ensemble_raises(monkeypatch):
     monkeypatch.setitem(sys.modules, "openmm", types.ModuleType("openmm"))
     with pytest.raises(ValueError, match="amber_weight=0"):
         _build_with_amber()
+
+
+def test_low_rank_modes_swaps_in_a_low_rank_xyz():
+    ref = EnsembleRefinement(
+        data_file=TEST_MTZ,
+        pdb=TEST_PDB,
+        n_members=4,
+        low_rank_modes=2,
+        seed=42,
+        verbose=0,
+        max_res=3.0,
+    )
+    assert isinstance(ref.model.xyz, LowRankXYZ)
+    assert ref.model.xyz.K == 2
 
 
 def test_validation_set_was_generated(refinement):
