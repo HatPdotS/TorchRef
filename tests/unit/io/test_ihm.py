@@ -835,6 +835,55 @@ class TestIHMWriter:
             IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
         assert not out.exists()
 
+    @pytest.mark.parametrize("n_states", [1, 2])
+    def test_primed_atom_names_read_back(self, pdb_dir, tmp_path, n_states):
+        """A written 1DAW reads back all 3051 atoms in every state, ANP's O5', C5',
+        ... among them, with the atom names gemmi reads from the file."""
+        from types import SimpleNamespace
+
+        import gemmi
+
+        from torchref.io import pdb
+        from torchref.io.ihm import IHMReader, IHMWriter
+        from torchref.model.context import ModelContext
+        from torchref.topology import Topology
+
+        table = pdb.read(str(pdb_dir / "1DAW.pdb"))()[0]
+        model = SimpleNamespace(
+            ctx=ModelContext(topology=Topology.from_table(table)),
+            to_dataframe=lambda: table,
+        )
+        states = range(1, n_states + 1)
+        mapping = IHMEnsembleMapping(
+            states=[
+                IHMStateInfo(state_id=i, name=f"s{i}", details="", model_num=i)
+                for i in states
+            ],
+            model_groups=[
+                IHMModelGroupInfo(
+                    group_id=1,
+                    name="t0",
+                    state_fractions={i: 1 / n_states for i in states},
+                )
+            ],
+        )
+        collection = SimpleNamespace(
+            n_base_models=n_states, base_models=[model] * n_states
+        )
+        out = tmp_path / "1daw.cif"
+        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+
+        block = gemmi.cif.read(str(out)).sole_block()
+        names = [
+            gemmi.cif.as_string(n)
+            for n in block.find_values("_atom_site.label_atom_id")
+        ]
+        reader = IHMReader(str(out))
+        atoms = reader.read_atom_data(reader.read_mapping())
+        assert [len(df) for df in atoms.values()] == [3051] * n_states
+        assert [name for df in atoms.values() for name in df["name"]] == names
+        assert "O5'" in names
+
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
         import torch
