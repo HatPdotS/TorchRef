@@ -87,7 +87,7 @@ def _expand_hkl(
     # backends, and this runs once per expansion on integer data.
     copies_cpu = copies.cpu()
     source_cpu, friedel_cpu = source.cpu(), is_friedel.cpu()
-    uniq, inverse = torch.unique(copies_cpu, dim=0, return_inverse=True)
+    _, inverse = torch.unique(copies_cpu, dim=0, return_inverse=True)
     first = first_index_per_group(inverse)
 
     competing = friedel_cpu == friedel_cpu[first][inverse]

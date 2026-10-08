@@ -352,12 +352,8 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             labels = getattr(self, kind + "_group")
             rows = (labels >= 0).nonzero(as_tuple=True)[0]
             groups = labels[rows]
-            if rows.numel():
-                first_rows = rows[first_index_per_group(groups)]
-                parents = self.parent_row[first_rows]
-            else:
-                first_rows = rows
-                parents = self.parent_row[:0]
+            first_rows = rows[first_index_per_group(groups)]
+            parents = self.parent_row[first_rows]
             setattr(self, "_" + kind + "_h", rows)
             setattr(self, "_" + kind + "_inverse", groups)
             setattr(self, "_" + kind + "_parents", parents)
