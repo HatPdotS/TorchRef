@@ -1,8 +1,7 @@
 """Regression guards for the full-form MLF target (``xray_ml_full``).
 
-These lock in what the one-off screening study in ``sigma_a_rework/quad_screen.py``
-established. Several of them exist because the corresponding bug was actually made
-and caught during development, which is noted where relevant.
+These pin the quadrature accuracy that ``N_QUAD`` and ``N_SIGMA`` were chosen for,
+and the numerical traps noted where relevant.
 """
 
 import math

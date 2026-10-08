@@ -14,9 +14,8 @@ marginalised (MLF of Pannu & Read, 1996)::
 
 Centric reflections have an exact closed form (:func:`centric_nll`); acentric
 ones have none and go through 1-D Gauss-Legendre quadrature
-(:func:`acentric_nll`). ``N_QUAD`` / ``N_SIGMA`` are empirical -- do not change
-them without re-running ``sigma_a_rework/quad_screen.py``; see
-``QUAD_PROVENANCE`` below.
+(:func:`acentric_nll`), whose node count ``N_QUAD`` and window ``N_SIGMA`` are
+empirical; the comment on them states the accuracy they were chosen for.
 """
 
 import math
@@ -28,48 +27,12 @@ from torchref.config import get_compile_targets
 
 LOG_2PI = math.log(2.0 * math.pi)
 
-# --- screened quadrature parameters ----------------------------------------
-# Do NOT change these without re-running sigma_a_rework/quad_screen.py.
+# Gauss-Legendre nodes and window half-width in Laplace widths. Against a float64
+# reference (max|dNLL| < 1e-6, |bias| < 1e-8, relative gradient error < 1e-5) the
+# smallest passing setting is 24/6; 32/8 adds a grid level and avoids n_sigma=6's
+# 1.5e-8 truncation floor. tests/unit/refinement/test_ml_full.py pins the result.
 N_QUAD = 32
 N_SIGMA = 8.0
-
-QUAD_PROVENANCE = """
-Gauss-Legendre, N_QUAD=32 nodes, window +-8 Laplace widths. From
-sigma_a_rework/quad_screen.py over 990 dimensionless grid points x both parities
-(sigma_obs/sqrt(Sigma) 1e-3..1e2, Fc/sqrt(Sigma) 0..50, F_obs/sigma_obs 0..200),
-in float64 against an adaptive-quadrature reference that is itself validated
-against the exact centric closed form to 3.6e-12.
-
-Achieved at N=32, n_sigma=8 (acentric):
-    max |dNLL|            7.3e-12   (the reference's own floor)
-    signed bias           1.2e-12   -> 1.2e-7 summed over 1e5 reflections
-    max rel. grad error   1.0e-8
-Accept criterion, fixed in advance: max|dNLL| < 1e-6, |bias| < 1e-8,
-max relative gradient error < 1e-5.
-
-Why these values and not smaller:
-  * Smallest passing config was N=24, n_sigma=6; N=32 is one grid level of margin.
-  * n_sigma=6 imposes a TRUNCATION FLOOR at 1.5e-8 that no node count removes
-    (identical from N=24 through N=128). n_sigma=8 converges instead. Cost is
-    linear in N and independent of n_sigma, so the wider window is free.
-  * n_sigma=3 would be badly wrong: truncating a Gaussian at 3 sigma discards
-    2.7e-3 of the mass, which lands directly in the NLL.
-  * Gauss-Hermite (nodes symmetric about the peak) was screened head-to-head and
-    lost by ~10 orders of magnitude: 1.3e-2 at N=32 vs 7.3e-12 for GL, with far
-    worse gradients. It has to drop nodes at t<0, which is exactly the weak-data
-    regime this target exists to handle.
-
-Worst grid points at the adopted config:
-    value    F_obs=0, sigma_obs=1,  Fc=0,   Sigma=1
-    gradient F_obs=0, sigma_obs=10, Fc=0.1, Sigma=1
-
-float32 (the production dtype) is the binding limit, not the quadrature:
-max|f32-f64| = 2.3e-3, set by the magnitude of the per-reflection NLL rather than
-by the integration. That is not a regression -- it is far BETTER conditioned than
-the current `ml` target, which reaches max|NLL| ~ 4e8 (f32 error 13.1) on the same
-grid because with no measurement error a large residual is charged entirely to
-model error. ml_full caps max|NLL| at ~2e4.
-"""
 
 _GL_CACHE: dict = {}
 _SIGMA_FLOOR = 1e-6
