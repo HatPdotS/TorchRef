@@ -442,8 +442,8 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer.stop("3_rotation_search")
 
         # No rescore between the stages: re-ranking a shortlist that already
-        # contains truth can push truth out of it, and lowered pose recovery.
-        # The translation function does the discrimination.
+        # contains truth can push truth out of it, and on the panel it lowered
+        # pose recovery. The translation function does the discrimination.
         return sorted(peaks, key=lambda p: p.score, reverse=True)
 
     def place(self, solution: MRSolution) -> "ModelFT":
