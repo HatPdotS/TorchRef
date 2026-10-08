@@ -116,8 +116,7 @@ def test_integer_hkl_is_accepted_and_lossless():
 
 
 def test_eager_oracle_is_independent_of_the_memory_budget():
-    """The eager oracle derives ``f(s)`` from the ITC92 A/B coefficients whether or not a
-    ``max_memory_gb`` budget is given, and the budget must not change the answer."""
+    """A ``max_memory_gb`` budget leaves the eager oracle's F unchanged."""
     from .helpers import _eager_aniso, _eager_iso
 
     g = torch.Generator().manual_seed(0)
