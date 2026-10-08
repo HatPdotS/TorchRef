@@ -195,40 +195,15 @@ def adp_sigd_math(
 ) -> torch.Tensor:
     """Shifted inverse-gamma (SIGD) prior NLL on the B-factor distribution.
 
-    Masmaliyeva & Murshudov (2019), *Acta Cryst.* D **75**, 505-518, showed that
-    macromolecular B values follow a shifted inverse-gamma distribution rather
-    than the log-normal that a Gaussian-in-log(B) restraint assumes. For
-    ``x = B - B0`` distributed as ``InvGamma(alpha, beta)``::
-
-        -log p(x) = -alpha log(beta) + lgamma(alpha)
-                    + (alpha + 1) log(x) + beta / x
-
-    The scale is set from the **detached** mean so that the prior's mean matches
-    the data's, ``beta = mean(x).detach() * (alpha - 1)``. That is the direct
-    analogue of the detached ``mu_data`` in the log-normal KL term this replaces:
-    the restraint cannot drive the overall B level up or down, it only penalises
-    departures from the SIGD *shape*.
-
-    The returned per-atom NLL is offset by its value at the distribution mode
-    ``x_mode = beta / (alpha + 1)``, so each atom's contribution is ``>= 0``,
-    vanishing only for an atom sitting exactly at the mode. The *sum* does not
-    reach zero for real data: ``beta`` tracks the data mean, so ``x_mode`` is
-    ``(alpha-1)/(alpha+1)`` of it and a uniform B distribution still costs
-    ``(alpha+1) log((alpha+1)/(alpha-1)) - 2`` per atom (0.645 at alpha=3.5).
-    The offset is a fixed reference, not an attainable floor. Because ``beta``
-    is detached, the two
-    B-independent terms (``-alpha log beta`` and ``lgamma(alpha)``) cancel
-    exactly against that offset, leaving::
+    Masmaliyeva & Murshudov (2019), *Acta Cryst.* D **75**, 505-518. With
+    ``x = clamp(B - B0, min=1e-3)`` and the mode ``x_mode = beta / (alpha + 1)``,
+    each atom contributes the inverse-gamma NLL offset by its value at the mode::
 
         loss_i = (alpha + 1) log(x_i / x_mode) + beta (1/x_i - 1/x_mode)
 
-    which is what is evaluated -- algebraically identical to the offset NLL, with
-    no ``lgamma`` call and no large cancelling terms.
-
-    Two properties this form has and the log-normal KL it replaces did not:
-    it is finite for a perfectly uniform B distribution (the KL diverged there),
-    and it is monotonically increasing in ``std(log B)``, so it can never reward
-    spreading the distribution out.
+    ``beta = mean(x).detach() * (alpha - 1)`` is detached, so the prior cannot move
+    the overall B level, only penalise departures from the SIGD shape; the rationale
+    is on :class:`~torchref.refinement.targets.adp.sigd.ADPSigdTarget`.
 
     Parameters
     ----------
