@@ -10,7 +10,7 @@ Where :class:`~torchref.experimental.ensemble.low_rank_ensemble.LowRankXYZ` free
 basis (only amplitudes refine), this module refines **all three** factors of the
 low-rank decomposition::
 
-    xyz_i = μ + Σ_k a_{ik} v_k          (Xc = A Vᵀ, rank K)
+    xyz_i = μ + Σ_k a_{ik} v_k          (Xc = A V, rank K)
 
 with ``μ`` (mean structure), ``V`` (K basis modes) and ``A`` (per-member
 amplitudes) all ``nn.Parameter``. Seeded by an SVD of an existing refined
@@ -21,8 +21,8 @@ refining in collective-coordinate space is an easier
 landscape than raw Cartesian, and the explicit spectrum is the natural place for
 the maxent (shrink + diversity) regularizer to act.
 
-The loss depends only on the product ``μ + A Vᵀ``, which is gauge-invariant
-under ``A → A R``, ``V → R⁻ᵀ V`` — so the A↔V rotational redundancy is harmless
+The loss depends only on the product ``μ + A V``, which is gauge-invariant
+under ``A → A R``, ``V → R⁻¹ V`` — so the A↔V rotational redundancy is harmless
 to the optimizer (no gauge-fixing needed); a post-hoc SVD of the reconstruction
 recovers a clean orthonormal PCA. ``K = N-1`` is a complete reparameterization
 (same expressiveness as full Cartesian); smaller K is a hard rank cap.
@@ -41,7 +41,7 @@ from torch import nn
 
 
 class PCAEnsembleParam(nn.Module):
-    """Refinable low-rank PCA parameterization ``xyz = μ + A Vᵀ``.
+    """Refinable low-rank PCA parameterization ``xyz = μ + A V``.
 
     .. warning::
 
