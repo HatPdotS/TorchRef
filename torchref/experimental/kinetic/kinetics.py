@@ -808,19 +808,9 @@ class KineticModel(DeviceMixin, nnModule):
                      for key, rate in eff_rate_dict.items()}
         return time_dict
     
-    def parameters(self) -> Dict[str, torch.Tensor]:
+    def parameter_dict(self) -> Dict[str, torch.Tensor]:
         """
         Get all flexible (learnable) parameters as a dictionary.
-
-        Note
-        ----
-        This **overrides** :meth:`torch.nn.Module.parameters` (which returns an
-        iterator of :class:`~torch.nn.Parameter`) and instead returns a dict, so
-        the standard ``optimizer = Adam(model.parameters())`` idiom does not work
-        directly -- pass ``.values()`` to the optimizer (see the example below).
-        The :class:`~torchref.experimental.kinetic.occupancies.occupancies_kinetics`
-        wrapper does *not* override ``parameters()``, so callers that go through
-        it keep the standard ``nn.Module`` iterator behavior.
 
         Returns
         -------
@@ -829,13 +819,6 @@ class KineticModel(DeviceMixin, nnModule):
             - 'log_rate_constants': log-transformed rate constants
             - 'log_instrument_width': log-transformed instrument width (if refinable)
             - 'baseline_{state}': refinable baseline for specific states (if any)
-        
-        Examples
-        --------
-        >>> model = KineticModel(...)
-        >>> params = model.parameters()
-        >>> print(params.keys())
-        >>> # Use with optimizer: optimizer = torch.optim.Adam(params.values(), lr=0.01)
         """
         params = {
             'log_rate_constants': self.log_rate_constants,

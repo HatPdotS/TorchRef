@@ -121,3 +121,20 @@ class TestLightActivatedMapping:
     def test_unmapped_state_is_rejected(self):
         with pytest.raises(ValueError, match="C"):
             self._wrapper(state_mapping={"A": 0, "B": 1})
+
+
+class TestModuleParameters:
+    def test_nn_module_parameter_api(self):
+        km = _model("A->B,B->C", [0.0, 1.0, 10.0], instrument_function="gaussian")
+        km.set_baseline("C", 0.1, refinable=True)
+        km().sum().backward()
+        km.zero_grad()
+        km.requires_grad_(False)
+        params = list(km.parameters())
+        assert all(isinstance(p, torch.nn.Parameter) for p in params)
+        assert not any(p.requires_grad for p in params)
+        assert set(km.parameter_dict()) == {
+            "log_rate_constants",
+            "log_instrument_width",
+            "baseline_C",
+        }
