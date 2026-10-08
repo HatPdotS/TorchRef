@@ -13,8 +13,7 @@ directly:
 * :mod:`torchref.experimental.monolithic_refinement` -- macrocycle-free
   refinement with a differentiable, co-refined model-error variance.
 * :mod:`torchref.experimental.targets` -- experimental refinement
-  targets (AMBER14/GAFF2 force field, real-space, sampled-ML phase,
-  occupancy diagnostics).
+  targets (AMBER14/GAFF2 force field, real-space, occupancy diagnostics).
 
 Submodules are not imported eagerly, so importing ``torchref.experimental``
 stays cheap and pulls in no optional dependency (e.g. OpenMM for the AMBER
