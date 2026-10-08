@@ -13,6 +13,7 @@ gradient is OpenMM's force, returned through the layout to the coordinates.
 from __future__ import annotations
 
 import io
+import warnings
 from typing import TYPE_CHECKING, Dict, Optional, Sequence, Tuple
 
 import numpy as np
@@ -247,6 +248,22 @@ class OpenMMAdapter:
         present = layout.presence(
             sources[:, asu.rows], asu.molecule_of, asu.is_heavy, overlap_cutoff
         )
+        clashes = layout.overlaps(
+            sources[:, asu.rows], asu.molecule_of, asu.is_heavy, present, overlap_cutoff
+        )
+        if clashes:
+            examples = [
+                f"{_molecule_label(asu, a)} (copy {ca}) / "
+                f"{_molecule_label(asu, b)} (copy {cb})"
+                for ca, a, cb, b in clashes[:5]
+            ]
+            warnings.warn(
+                f"{len(clashes)} pairs of different molecules overlap within "
+                f"{overlap_cutoff} Å in the crystal, e.g. {examples}; their copies "
+                "stack on each other. Check the model there.",
+                UserWarning,
+                stacklevel=2,
+            )
         box_nm = None if layout.box is None else layout.box * _NM_PER_ANGSTROM
         topology, particles, origin = asu.to_openmm(present, box_nm)
         residue_templates = {
@@ -521,6 +538,12 @@ def template_coverage(
     for r in unmatched:
         mask[asu.rows[asu.residue_start[r] : asu.residue_start[r + 1]]] = False
     return mask
+
+
+def _molecule_label(asu, molecule: int) -> str:
+    """Label of a molecule's first residue."""
+    first = int(np.flatnonzero(asu.molecule_of == molecule)[0])
+    return asu.residue_label(int(asu.residue_of[first]))
 
 
 def _refuse_incomplete(ff, asu, unmatched) -> None:

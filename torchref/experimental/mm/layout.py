@@ -18,7 +18,7 @@ from __future__ import annotations
 import itertools
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -305,6 +305,80 @@ class CrystalLayout:
                         present[c, m] = False
                         break
         return present
+
+    def overlaps(
+        self,
+        xyz: np.ndarray,
+        molecule_of: np.ndarray,
+        heavy: np.ndarray,
+        present: np.ndarray,
+        cutoff: float,
+    ) -> List[Tuple[int, int, int, int]]:
+        """Copies of different molecules whose heavy atoms coincide.
+
+        The overlaps :meth:`presence` leaves alone: two different molecules -- say a
+        water modelled where a symmetry copy of another one already sits -- closer than
+        ``cutoff`` under the minimum image of the box.
+
+        Parameters
+        ----------
+        xyz, molecule_of, heavy, cutoff
+            As for :meth:`presence`.
+        present : numpy.ndarray
+            Shape ``(C, M)``, from :meth:`presence`.
+
+        Returns
+        -------
+        list of tuple
+            ``(copy_a, molecule_a, copy_b, molecule_b)`` per overlapping pair of
+            molecule copies, ``molecule_a < molecule_b``. Empty for a non-periodic
+            layout.
+        """
+        from scipy.spatial import cKDTree
+
+        if not self.periodic or cutoff <= 0:
+            return []
+        placed = (
+            np.einsum(
+                "cij,cnj->cni",
+                self.rotation,
+                np.asarray(xyz, dtype=np.float64)[self.source][:, heavy],
+            )
+            + self.translation[:, None]
+        )
+        molecules = molecule_of[heavy]
+        held = present[:, molecules]
+        copy = np.broadcast_to(np.arange(self.n_copies)[:, None], held.shape)[held]
+        molecule = np.broadcast_to(molecules, held.shape)[held]
+        frac = placed[held] @ np.linalg.inv(self.box).T
+        frac -= np.floor(frac)
+        # Periodic images only of the atoms within the cutoff of a face.
+        reach = cutoff * np.linalg.norm(np.linalg.inv(self.box), axis=1)
+        points, owner = [frac @ self.box.T], [np.arange(len(frac))]
+        for shift in itertools.product((-1, 0, 1), repeat=3):
+            if not any(shift):
+                continue
+            near = np.ones(len(frac), dtype=bool)
+            for k, step in enumerate(shift):
+                if step == 1:
+                    near &= frac[:, k] < reach[k]
+                elif step == -1:
+                    near &= frac[:, k] > 1.0 - reach[k]
+            rows = np.flatnonzero(near)
+            points.append((frac[rows] + shift) @ self.box.T)
+            owner.append(rows)
+        owner = np.concatenate(owner)
+        pairs = cKDTree(np.concatenate(points)).query_pairs(
+            cutoff, output_type="ndarray"
+        )
+        i, j = owner[pairs[:, 0]], owner[pairs[:, 1]]
+        different = molecule[i] != molecule[j]
+        found = set()
+        for a, b in zip(i[different], j[different]):
+            if molecule[a] > molecule[b]:
+                a, b = b, a
+            found.add((int(copy[a]), int(molecule[a]), int(copy[b]), int(molecule[b])))
+        return sorted(found)
 
     def _on(self, xyz: torch.Tensor):
         """``(rotation, translation, source)`` as tensors on ``xyz``'s device and dtype."""

@@ -161,3 +161,31 @@ def test_wrong_source_count_raises():
         layout.positions(torch.randn(3, 2, 3))
     with pytest.raises(ValueError, match="n_disorder"):
         CrystalLayout.quasi_crystal(cell, sg, n_disorder=0)
+
+
+@pytest.mark.unit
+def test_overlap_of_different_molecules_is_reported():
+    """A second ion placed on the symmetry copy of the first is named, not merged."""
+    cell, sg = _cubic("P 1 2 1")
+    layout = CrystalLayout.unit_cell(cell, sg, cutoff=4.0)
+    # (-2, 3, -4) is where operation 1 puts (2, 3, 4): the two ions coincide.
+    xyz = np.array([[[2.0, 3.0, 4.0], [-2.0, 3.0, -4.0], [0.0, 0.0, 3.0]]])
+    molecules = np.array([0, 1, 2])
+    heavy = np.ones(3, dtype=bool)
+    present = layout.presence(xyz, molecules, heavy, cutoff=1.5)
+    assert present.all()
+    assert layout.overlaps(xyz, molecules, heavy, present, cutoff=1.5) == [
+        (0, 0, 1, 1),
+        (1, 0, 0, 1),
+    ]
+
+
+@pytest.mark.unit
+def test_overlap_report_sees_across_the_boundary():
+    cell, sg = _cubic("P 1")
+    layout = CrystalLayout.unit_cell(cell, sg, cutoff=4.0)
+    xyz = np.array([[[0.2, 5.0, 5.0], [9.9, 5.0, 5.0]]])
+    molecules = np.array([0, 1])
+    heavy = np.ones(2, dtype=bool)
+    present = layout.presence(xyz, molecules, heavy, cutoff=1.5)
+    assert layout.overlaps(xyz, molecules, heavy, present, cutoff=1.5) == [(0, 0, 0, 1)]

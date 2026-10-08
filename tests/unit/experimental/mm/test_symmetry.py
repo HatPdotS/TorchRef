@@ -6,6 +6,8 @@ operations. The ensemble's quasi-crystal layout with identical members is the sa
 system. A molecule on a special position is held once per distinct site.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 import torch
@@ -155,3 +157,11 @@ def test_special_position_water_is_held_once_per_site(pdb_dir):
     assert (~adapter.present).sum() == 6
     energy = adapter.energy(model.xyz().detach().double()).item()
     assert np.isfinite(energy) and abs(energy) < 1e7
+
+
+def test_deposited_crystal_has_no_overlaps(protein):
+    """7L84's crystal, special-position waters held once, raises no overlap report."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        adapter = _cell_adapter(protein)
+    assert (~adapter.present).sum() > 0
