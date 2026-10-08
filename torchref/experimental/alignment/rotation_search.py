@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype
 from torchref.scaling.weighting import (DEFAULT_SNR_CAP,
                                         DEFAULT_TRUST_CAP)
 from .sh import (
@@ -43,8 +43,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ...model.model_ft import ModelFT
     from .frf.types import RotationPeak
 
-__all__ = ["FRFInputs", "RotationSolutions", "prepare_frf_inputs",
-           "rotation_search"]
+__all__ = ["RotationSolutions", "rotation_search"]
 
 # Note for anyone reaching for the constants below programmatically: the package
 # re-exports `rotation_search` (the function) under this module's own name, so
@@ -157,6 +156,15 @@ class RotationSolutions:
         return int(self.rotations.shape[0])
 
 
+def _valid_mask(data: "ReflectionData", device) -> torch.Tensor:
+    """The data's combined validity mask, ``(n_reflections,)`` bool on ``device``."""
+    masks = getattr(data, "masks", None)
+    valid = None if masks is None else masks()
+    if valid is None:
+        return torch.ones(data.hkl.shape[0], dtype=torch.bool, device=device)
+    return valid.to(device=device, dtype=torch.bool)
+
+
 def fit_anisotropy(
     data: "ReflectionData",
     *,
@@ -195,6 +203,7 @@ def fit_anisotropy(
     s_vec_all = hkl @ rec_basis
     s_mag_all = s_vec_all.norm(dim=-1)
     keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
+    keep = keep & _valid_mask(data, dev)
     if int(keep.sum()) < n_shells * 5:
         raise ValueError(
             f"Only {int(keep.sum())} reflections in [{d_min}, {d_max}] A, too "
@@ -218,88 +227,6 @@ def fit_anisotropy(
         data.spacegroup.matrices.detach().to(device=dev, dtype=real), rec_basis,
     )
     return symmetrize_anisotropy(U, sym_cart)
-
-
-
-@dataclass
-class FRFInputs:
-    """The observations the rotation search runs on, masked and corrected.
-
-    ``F_obs`` is anisotropy-corrected. ``sig_F`` carries the same correction,
-    which is a multiplicative factor, so ``F/sigma`` survives it unchanged -- it
-    is here because the engine builds its measurement weight from the sigmas and
-    the earlier code discarded them immediately after the Wilson step. ``None``
-    when the data carry no sigmas.
-    """
-
-    F_obs: torch.Tensor              # (N,) anisotropy-corrected amplitudes
-    sig_F: Optional[torch.Tensor]    # (N,) their sigmas, same correction
-    hkl: torch.Tensor                # (N, 3) integer Miller indices
-    s_vec: torch.Tensor              # (N, 3) reciprocal-space Cartesian
-    s_mag: torch.Tensor              # (N,) inverse Angstrom
-    centric: torch.Tensor            # (N,) bool
-    U_aniso: torch.Tensor            # (3, 3) Popov-Bourenkov U
-    device: torch.device
-
-
-def prepare_frf_inputs(
-    model: "ModelFT",
-    data: "ReflectionData",
-    *,
-    d_min: float,
-    d_max: float,
-    n_shells: int,
-    verbose: int = 0,
-) -> FRFInputs:
-    """Mask the observations to ``[d_min, d_max]`` and correct their anisotropy.
-
-    The anisotropy tensor comes from :func:`fit_anisotropy`, which is also what
-    the public :func:`rotation_search` uses. It used to be refitted here by a
-    second copy of the same six lines over the same window -- two paths to one
-    number is how they drift apart.
-
-    Everything lands on the configured default device, not on whichever device
-    ``model`` happens to sit on.
-    """
-    device = get_default_device()
-    real = get_float_dtype()
-
-    F_obs = data.F.to(real).abs()
-    hkl_all = data.hkl
-    rec_basis = data.cell.reciprocal_basis_matrix.to(real)
-    s_vec_all = hkl_all.to(real) @ rec_basis
-    s_mag_all = s_vec_all.norm(dim=-1)
-    keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
-    if keep.sum().item() < n_shells * 5:
-        raise ValueError(
-            f"Too few reflections ({keep.sum().item()}) in [{d_min},{d_max}] A "
-            f"for {n_shells} shells; widen the resolution range."
-        )
-    F_obs = F_obs[keep].to(device)
-    sig_F = getattr(data, "F_sigma", None)
-    if sig_F is not None:
-        sig_F = sig_F.to(real)[keep].to(device)
-    hkl = hkl_all[keep].to(device)
-    s_vec = s_vec_all[keep].to(device)
-    s_mag = s_mag_all[keep].to(device)
-    centric = (
-        data.centric[keep].to(torch.bool).to(device)
-        if hasattr(data, "centric")
-        else torch.zeros_like(F_obs, dtype=torch.bool)
-    )
-
-    U_aniso = fit_anisotropy(
-        data, d_min=d_min, d_max=d_max, n_shells=n_shells, device=device,
-    )
-    F_obs_aniso = apply_overall_anisotropy(F_obs, s_vec, U_aniso)
-    # Same multiplicative factor, so F/sigma survives the correction intact.
-    sig_F_aniso = (None if sig_F is None
-                   else apply_overall_anisotropy(sig_F, s_vec, U_aniso))
-
-    return FRFInputs(
-        F_obs=F_obs_aniso, sig_F=sig_F_aniso, hkl=hkl, s_vec=s_vec,
-        s_mag=s_mag, centric=centric, U_aniso=U_aniso, device=device,
-    )
 
 
 def search_peaks(
@@ -362,14 +289,19 @@ def search_peaks(
         # The low-resolution half is live, not decorative: 3K7M carries two
         # reflections beyond 100 A that it removes.
         keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
+        keep = keep & _valid_mask(data, device)
 
         s_asu = s_vec_all[keep]
         s_mag_asu = s_mag_all[keep]
         F_obs = apply_overall_anisotropy(
             data.F.to(real).abs().to(device)[keep], s_asu, U_aniso,
         )
+        # The same multiplicative factor as F_obs, so F/sigma, and with it the
+        # inverse-variance weight, is unchanged by the correction.
         sigF = (
-            data.F_sigma.to(real).to(device)[keep]
+            apply_overall_anisotropy(
+                data.F_sigma.to(real).to(device)[keep], s_asu, U_aniso,
+            )
             if getattr(data, "F_sigma", None) is not None
             else None
         )

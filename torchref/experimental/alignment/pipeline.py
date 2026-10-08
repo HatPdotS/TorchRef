@@ -62,7 +62,7 @@ from torchref.utils.device_mixin import DeviceMixin
 
 from .frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from .frf.types import RotationPeak
-from .rotation_search import prepare_frf_inputs, search_peaks
+from .rotation_search import _valid_mask, fit_anisotropy, search_peaks
 from .translation import (
     TranslationObs,
     analytic_r_at,
@@ -304,7 +304,6 @@ class MolecularReplacementPipeline(DeviceMixin):
 
         self._timer = _StageTimer(enabled=verbose >= 2)
         # Filled in by run().
-        self._frf = None
         self._obs = None
         self._tmask = None
         # One P1 copy of the search model, re-oriented in place per candidate
@@ -382,16 +381,14 @@ class MolecularReplacementPipeline(DeviceMixin):
 
         timer = self._timer
         timer.start("0_data_prep")
-        frf = prepare_frf_inputs(
-            self.model, self.data,
-            d_min=self.d_min, d_max=self.d_max, n_shells=self.n_shells,
-            verbose=self.verbose,
+        U_aniso = fit_anisotropy(
+            self.data, d_min=self.d_min, d_max=self.d_max,
+            n_shells=self.n_shells, device=get_default_device(),
         )
         timer.stop("0_data_prep")
-        self._frf = frf
 
         # --- Stage 1: FRF rotation search ---
-        candidates = self._rotation_candidates(frf)
+        candidates = self._rotation_candidates(U_aniso)
         if not candidates:
             raise RuntimeError("Rotation search produced no peaks.")
 
@@ -498,7 +495,7 @@ class MolecularReplacementPipeline(DeviceMixin):
     # ------------------------------------------------------------------
     # Stage 1: rotation search
     # ------------------------------------------------------------------
-    def _rotation_candidates(self, frf) -> list:
+    def _rotation_candidates(self, U_aniso: torch.Tensor) -> list:
         """FRF rotation search; the peaks it returns, ranked by its own score."""
         timer = self._timer
 
@@ -507,7 +504,7 @@ class MolecularReplacementPipeline(DeviceMixin):
                      f"model error {self.model_error_A:.2f} A)…")
         peaks, _lmax, _d_min = search_peaks(
             self.model, self.data, self.model_error_A,
-            U_aniso=frf.U_aniso, n_peaks=self.n_rotation_peaks,
+            U_aniso=U_aniso, n_peaks=self.n_rotation_peaks,
             verbose=self.verbose,
         )
         timer.stop("3_rotation_search")
@@ -604,12 +601,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         device = self.device
         hkl_full = data.hkl
         F_obs_full = data.F
-        if getattr(data, "masks", None) is not None:
-            tmask = data.masks()
-        else:
-            tmask = torch.ones(
-                F_obs_full.shape[0], dtype=torch.bool, device=F_obs_full.device,
-            )
+        tmask = _valid_mask(data, F_obs_full.device)
         real = get_float_dtype()
         rec_basis = data.cell.reciprocal_basis_matrix.to(real)
         s_all = (hkl_full.to(real) @ rec_basis.to(hkl_full.device)).norm(dim=-1)

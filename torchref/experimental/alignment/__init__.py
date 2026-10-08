@@ -60,9 +60,7 @@ from .frf import (
     rotation_matrix_from_edmonds_euler,
 )
 from .rotation_search import (
-    FRFInputs,
     RotationSolutions,
-    prepare_frf_inputs,
     rotation_search,
 )
 from .translation import (
@@ -89,8 +87,6 @@ __all__ = [
     "rotation_search",
     "RotationSolutions",
     "FastRotationFunction",
-    "FRFInputs",
-    "prepare_frf_inputs",
     "phaser_lmax_resolution",
     "dense_calc_via_box",
     "RotationPeak",
