@@ -61,6 +61,22 @@ class TestInitialState:
         km.plot_occupancies(str(tmp_path / "occ.png"))
         assert labels == ["State G", "State E"]
 
+    def test_light_activated_plot_merges_explicit_start_state(
+        self, tmp_path, monkeypatch
+    ):
+        km = _model(
+            "E->G,G->E", [0.0, 1.0, 10.0], initial_state="G", light_activated=True
+        )
+        labels = []
+        plot = kinetics_module.plt.plot
+        monkeypatch.setattr(
+            kinetics_module.plt,
+            "plot",
+            lambda *a, **kw: labels.append(kw.get("label")) or plot(*a, **kw),
+        )
+        km.plot_occupancies(str(tmp_path / "occ.png"))
+        assert labels == ["State G", "State E"]
+
 
 class TestPlotTimes:
     def test_plot_with_times_leaves_model_timepoints(self, tmp_path):

@@ -619,8 +619,8 @@ class KineticModel(DeviceMixin, nnModule):
         Returns
         -------
         populations : torch.Tensor
-            Population of each state at each timepoint
-            Shape: (n_timepoints, n_states)
+            Population of each state at each timepoint, shape (n_timepoints, n_states).
+            Columns follow ``self.states``: flow-chart order, inactive copy (A*) last.
         """
         # Get rate constants (ensure positivity via exp)
         rate_constants = torch.exp(self.log_rate_constants)
