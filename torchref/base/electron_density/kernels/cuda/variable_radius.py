@@ -93,8 +93,9 @@ if _HAVE_TRITON:
         sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
         syz = sy_ * sz_
         n = sx_ * syz
-        # float reciprocals for the decode (avoid the integer-divide on the int pipe;
-        # exact for v < 2^24, i.e. any physical box: bh<=~14 -> n=side^3 << 2^24)
+        # Float reciprocals for the decode, avoiding the integer divide. Decoding at the
+        # half index is exact for every box side up to 123 voxels with a reciprocal up to
+        # 2 ulp off (175 if correctly rounded), checked exhaustively in float32 emulation.
         inv_syz = 1.0 / syz.to(tl.float32)
         inv_sz = 1.0 / sz_.to(tl.float32)
 
@@ -142,9 +143,9 @@ if _HAVE_TRITON:
         while v_start < n:
             v = v_start + v_lane
             vmask = v < n
-            ix = (v.to(tl.float32) * inv_syz).to(tl.int32)  # floor via trunc (v >= 0)
+            ix = ((v.to(tl.float32) + 0.5) * inv_syz).to(tl.int32)  # floor via trunc
             rem = v - ix * syz
-            iy = (rem.to(tl.float32) * inv_sz).to(tl.int32)
+            iy = ((rem.to(tl.float32) + 0.5) * inv_sz).to(tl.int32)
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
@@ -208,8 +209,9 @@ if _HAVE_TRITON:
         sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
         syz = sy_ * sz_
         n = sx_ * syz
-        # float reciprocals for the decode (avoid the integer-divide on the int pipe;
-        # exact for v < 2^24, i.e. any physical box: bh<=~14 -> n=side^3 << 2^24)
+        # Float reciprocals for the decode, avoiding the integer divide. Decoding at the
+        # half index is exact for every box side up to 123 voxels with a reciprocal up to
+        # 2 ulp off (175 if correctly rounded), checked exhaustively in float32 emulation.
         inv_syz = 1.0 / syz.to(tl.float32)
         inv_sz = 1.0 / sz_.to(tl.float32)
 
@@ -265,9 +267,9 @@ if _HAVE_TRITON:
         while v_start < n:
             v = v_start + v_lane
             vmask = v < n
-            ix = (v.to(tl.float32) * inv_syz).to(tl.int32)  # floor via trunc (v >= 0)
+            ix = ((v.to(tl.float32) + 0.5) * inv_syz).to(tl.int32)  # floor via trunc
             rem = v - ix * syz
-            iy = (rem.to(tl.float32) * inv_sz).to(tl.int32)
+            iy = ((rem.to(tl.float32) + 0.5) * inv_sz).to(tl.int32)
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
@@ -356,8 +358,9 @@ if _HAVE_TRITON:
         sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
         syz = sy_ * sz_
         n = sx_ * syz
-        # float reciprocals for the decode (avoid the integer-divide on the int pipe;
-        # exact for v < 2^24, i.e. any physical box: bh<=~14 -> n=side^3 << 2^24)
+        # Float reciprocals for the decode, avoiding the integer divide. Decoding at the
+        # half index is exact for every box side up to 123 voxels with a reciprocal up to
+        # 2 ulp off (175 if correctly rounded), checked exhaustively in float32 emulation.
         inv_syz = 1.0 / syz.to(tl.float32)
         inv_sz = 1.0 / sz_.to(tl.float32)
 
@@ -419,9 +422,9 @@ if _HAVE_TRITON:
         while v_start < n:
             v = v_start + v_lane
             vmask = v < n
-            ix = (v.to(tl.float32) * inv_syz).to(tl.int32)  # floor via trunc (v >= 0)
+            ix = ((v.to(tl.float32) + 0.5) * inv_syz).to(tl.int32)  # floor via trunc
             rem = v - ix * syz
-            iy = (rem.to(tl.float32) * inv_sz).to(tl.int32)
+            iy = ((rem.to(tl.float32) + 0.5) * inv_sz).to(tl.int32)
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
@@ -489,8 +492,9 @@ if _HAVE_TRITON:
         sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
         syz = sy_ * sz_
         n = sx_ * syz
-        # float reciprocals for the decode (avoid the integer-divide on the int pipe;
-        # exact for v < 2^24, i.e. any physical box: bh<=~14 -> n=side^3 << 2^24)
+        # Float reciprocals for the decode, avoiding the integer divide. Decoding at the
+        # half index is exact for every box side up to 123 voxels with a reciprocal up to
+        # 2 ulp off (175 if correctly rounded), checked exhaustively in float32 emulation.
         inv_syz = 1.0 / syz.to(tl.float32)
         inv_sz = 1.0 / sz_.to(tl.float32)
 
@@ -555,9 +559,9 @@ if _HAVE_TRITON:
         while v_start < n:
             v = v_start + v_lane
             vmask = v < n
-            ix = (v.to(tl.float32) * inv_syz).to(tl.int32)  # floor via trunc (v >= 0)
+            ix = ((v.to(tl.float32) + 0.5) * inv_syz).to(tl.int32)  # floor via trunc
             rem = v - ix * syz
-            iy = (rem.to(tl.float32) * inv_sz).to(tl.int32)
+            iy = ((rem.to(tl.float32) + 0.5) * inv_sz).to(tl.int32)
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
