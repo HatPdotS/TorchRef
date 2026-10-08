@@ -189,7 +189,11 @@ def test_only_one_scale_fit_entry_point():
 @pytest.mark.unit
 def test_refine_scaler_does_not_minimise_the_body_loss():
     """The regression guard. The body loss carries the alpha-centred mean."""
-    src = inspect.getsource(Refinement.refine_scaler)
+    func = ast.parse(textwrap.dedent(inspect.getsource(Refinement.refine_scaler))).body[0]
+    # The docstring links LossState; only the code may not touch the body loss.
+    if ast.get_docstring(func) is not None:
+        func.body = func.body[1:]
+    src = ast.unparse(func)
     for forbidden in ("complete_loss_state", "xray_target_work", "loss_state"):
         assert forbidden not in src, (
             f"refine_scaler references {forbidden!r}: fitting the scale against the body "
