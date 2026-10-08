@@ -14,7 +14,6 @@ import json
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from torchref import Model
@@ -154,13 +153,9 @@ def _gradient_snapshot(ref: LBFGSRefinement, amber: AmberTarget) -> tuple[dict, 
             forces = forces[0]
             # The clip is per atom at max_force kJ/mol/nm; forces here are per Å.
             result[name]["clipped_atom_fraction"] = float(
-                (np.linalg.norm(forces, axis=1) * 10 > amber.adapter.max_force).mean()
+                (forces.norm(dim=1) * 10 > amber.adapter.max_force).float().mean()
             )
-            unclipped = torch.as_tensor(
-                -forces / len(xyz),
-                dtype=xyz.dtype,
-                device=xyz.device,
-            )
+            unclipped = -forces / len(xyz)
             result["amber_unclipped"] = {
                 "heavy": _magnitude(unclipped[heavy]),
                 "hydrogen": _magnitude(unclipped[~heavy]),

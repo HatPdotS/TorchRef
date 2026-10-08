@@ -92,9 +92,11 @@ def test_energy_and_forces_matches_autograd_below_the_clip(protein):
     adapter = OpenMMAdapter.from_model(protein, platform="Reference")
     xyz = protein.xyz().detach().clone().requires_grad_()
     energy, forces = adapter.energy_and_forces(xyz)
+    assert forces.dtype == xyz.dtype and forces.device == xyz.device
+    forces = forces[0].numpy()
     gradient = torch.autograd.grad(adapter.energy(xyz), xyz)[0].numpy()
-    small = np.linalg.norm(forces[0], axis=1) * 10 < adapter.max_force
-    np.testing.assert_allclose(-forces[0][small], gradient[small], rtol=1e-6, atol=1e-6)
+    small = np.linalg.norm(forces, axis=1) * 10 < adapter.max_force
+    np.testing.assert_allclose(-forces[small], gradient[small], rtol=1e-6, atol=1e-6)
     assert energy == pytest.approx(adapter.energy(xyz).item(), rel=1e-6)
 
 
@@ -199,3 +201,35 @@ def test_particle_gather_gradient_is_exact():
 
 def test_whole_isolated_model_skips_the_gather(adapter):
     assert adapter._identity
+
+
+def test_float64_configuration_is_kept(pdb_dir, double_cpu):
+    """Under the float64 reference configuration nothing narrows to float32.
+
+    The model, the isolated and the crystal system, the diagnostic forces and the
+    target all stay in the configured dtype, and the platform preference follows the
+    configured device.
+    """
+    from torchref.config import get_default_device, get_float_dtype
+    from torchref.experimental.targets.amber_target import AmberTarget
+
+    model = Model(verbose=0, hydrogens="add").load_pdb(str(pdb_dir / "7L84.pdb"))
+    model = model.strip_altlocs()
+    assert model.xyz().dtype == get_float_dtype() == torch.float64
+    for layout, nonbonded in (
+        (None, "cutoff"),
+        (CrystalLayout.unit_cell(model.cell, model.spacegroup, 8.0), "pme"),
+    ):
+        adapter = OpenMMAdapter.from_model(
+            model, layout=layout, nonbonded=nonbonded, cutoff=8.0
+        )
+        assert adapter._device_type == get_default_device().type
+        xyz = model.xyz().detach().clone().requires_grad_()
+        energy = adapter.energy(xyz)
+        gradient = torch.autograd.grad(energy, xyz)[0]
+        assert energy.dtype == gradient.dtype == torch.float64
+        assert adapter.positions(xyz).dtype == torch.float64
+        _, forces = adapter.energy_and_forces(xyz)
+        assert forces.dtype == torch.float64
+    target = AmberTarget(model=model)
+    assert target.forward().dtype == torch.float64

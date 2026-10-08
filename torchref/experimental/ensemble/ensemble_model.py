@@ -267,19 +267,20 @@ HYDROGEN_SOURCES = ("strip", "keep", "add")
 
 
 def _add_hydrogens_df(
-    df: pd.DataFrame, cell, spacegroup, seed: Optional[int]
+    df: pd.DataFrame, cell, spacegroup, seed: Optional[int], device=None
 ) -> pd.DataFrame:
     """One copy's atom table with the hydrogens its monomer templates name.
 
     Generated in memory through a :class:`~torchref.model.model.Model` loaded with
-    ``hydrogens="add"``; free water orientations are drawn under ``seed``.
+    ``hydrogens="add"`` on ``device`` (default: the configured device); free water
+    orientations are drawn under ``seed``.
     """
     from torchref.model.model import Model
 
     with torch.random.fork_rng():
         if seed is not None:
             torch.manual_seed(seed)
-        single = Model(verbose=0, hydrogens="add", device="cpu")
+        single = Model(verbose=0, hydrogens="add", device=device)
         single.load(_SyntheticPDBReader(df.reset_index(drop=True), cell, spacegroup))
     return single.to_dataframe().reset_index(drop=True)
 
@@ -492,7 +493,7 @@ class EnsembleModel(ModelFT):
         df = _strip_altlocs_df(df)
         df.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"], inplace=True)
         if hydrogens == "add":
-            df = _add_hydrogens_df(df, cell, spacegroup, seed)
+            df = _add_hydrogens_df(df, cell, spacegroup, seed, device)
 
         pool = max(int(n_members), int(n_max) if n_max else int(n_members))
         rng = np.random.default_rng(seed)
@@ -572,7 +573,9 @@ class EnsembleModel(ModelFT):
         cell_reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
         cell, spacegroup = cell_reader.cell, cell_reader.spacegroup
         if hydrogens == "add":
-            models = [_add_hydrogens_df(m, cell, spacegroup, seed) for m in models]
+            models = [
+                _add_hydrogens_df(m, cell, spacegroup, seed, device) for m in models
+            ]
             identity = ["chainid", "resseq", "icode", "resname", "name"]
             for k, m in enumerate(models[1:], start=2):
                 if not m[identity].equals(models[0][identity]):

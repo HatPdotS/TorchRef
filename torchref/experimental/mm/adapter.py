@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
+from torchref.config import get_default_device
 from torchref.experimental.mm.layout import CrystalLayout
 from torchref.experimental.mm.topology import (
     MIN_HYDROGEN_FRACTION,
@@ -145,7 +146,7 @@ class OpenMMAdapter:
         self.verbose = int(verbose)
         self.platform_name = "none"
         self._context = None
-        self._device_type = "cpu"
+        self._device_type = get_default_device().type
         self._index: Dict[torch.device, torch.Tensor] = {}
         self._identity = np.array_equal(
             self.particles, np.arange(layout.n_copies * self.n_model_atoms)
@@ -384,7 +385,7 @@ class OpenMMAdapter:
         """
         return _OpenMMEnergy.apply(self.positions(xyz), self)
 
-    def energy_and_forces(self, xyz: torch.Tensor) -> Tuple[float, np.ndarray]:
+    def energy_and_forces(self, xyz: torch.Tensor) -> Tuple[float, torch.Tensor]:
         """Energy and unclipped forces on the coordinate sets, without autograd.
 
         Parameters
@@ -396,9 +397,10 @@ class OpenMMAdapter:
         -------
         energy : float
             kJ/mol.
-        forces : numpy.ndarray
-            ``-dE/dxyz`` in kJ/mol/Å, shape ``(S, n_model_atoms, 3)``: each copy's
-            particle forces rotated back to its source and summed.
+        forces : torch.Tensor
+            ``-dE/dxyz`` in kJ/mol/Å, shape ``(S, n_model_atoms, 3)``, on ``xyz``'s
+            device and dtype: each copy's particle forces rotated back to its source
+            and summed.
         """
         with torch.no_grad():
             positions = self.positions(xyz).cpu().numpy()
@@ -409,7 +411,7 @@ class OpenMMAdapter:
         back = np.einsum("cji,cnj->cni", self.layout.rotation, per_copy)
         result = np.zeros((self.layout.n_sources, self.n_model_atoms, 3))
         np.add.at(result, self.layout.source, back)
-        return energy, result
+        return energy, torch.as_tensor(result, dtype=xyz.dtype, device=xyz.device)
 
     def group_energies(self, xyz: torch.Tensor) -> Dict[str, float]:
         """Energy of each force in kJ/mol, keyed by its class name.

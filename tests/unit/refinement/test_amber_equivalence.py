@@ -120,7 +120,7 @@ def test_ligand_matches_tleap(pdb_dir, code, resname):
     energy, forces = adapter.energy_and_forces(torch.as_tensor(reference["xyz"]))
     assert energy == pytest.approx(float(reference["energy"]), rel=1e-4)
     np.testing.assert_allclose(
-        forces[0],
+        forces[0].numpy(),
         reference["forces"],
         rtol=1e-4,
         atol=1e-4 * np.abs(reference["forces"]).max(),
