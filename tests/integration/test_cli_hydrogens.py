@@ -133,3 +133,37 @@ def test_cli_refuses_riding_on_stripped_hydrogens(
     monkeypatch.setattr(sys, "argv", argv)
     with pytest.raises(ValueError, match="requires hydrogens=.keep. or .add."):
         refine.main()
+
+
+@pytest.mark.integration
+def test_difference_refine_keeps_input_hydrogens(
+    test_files_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """difference-refine writes the hydrogens its models were refined with."""
+    import gemmi
+
+    from torchref.cli import collection_difference_refine
+
+    pdb = test_files_dir / "pdb" / "1AK5_with_H.pdb"
+    mtz = test_files_dir / "mtz" / "1AK5.mtz"
+    outdir = tmp_path / "diff"
+    argv = [
+        "torchref.difference-refine",
+        "-dm", str(pdb), "-lm", str(pdb),
+        "-dsf", str(mtz), "-lsf", str(mtz),
+        "--fraction", "0.3",
+        "--n-cycles", "0",
+        "--output-format", "pdb",
+        "--no-header",
+        "--device", "cpu",
+        "-o", str(outdir),
+        "-v", "0",
+    ]  # fmt: skip
+    monkeypatch.setattr(sys, "argv", argv)
+    assert collection_difference_refine.main() == 0
+
+    def n_hydrogens(path: Path) -> int:
+        structure = gemmi.read_structure(str(path))
+        return sum(cra.atom.is_hydrogen() for cra in structure[0].all())
+
+    assert n_hydrogens(outdir / "fractions_70_30_light.pdb") == n_hydrogens(pdb) > 0

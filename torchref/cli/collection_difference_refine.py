@@ -1567,11 +1567,6 @@ Examples:
     diff_mtz_out = str(outdir / f"{prefix}_difference_data.mtz")
     summary_path = str(outdir / f"{prefix}_summary.json")
 
-    # Strip hydrogens for output (H were only needed for VDW restraints).
-    # strip_hydrogens() returns new models with consistent pdb + tensors.
-    model_dark = model_dark.strip_hydrogens()
-    model_light = model_light.strip_hydrogens()
-
     no_header = getattr(args, "no_header", False)
     output_format = getattr(args, "output_format", "both")
     dark_meta = light_meta = None
