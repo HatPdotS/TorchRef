@@ -893,25 +893,14 @@ def write_results_mtz(
 ):
     """Write the difference map, and map coefficients when a light model is given.
 
-    The default output is the **difference map**: ``dF``/``SIGdF`` on the dark model's
-    phases ``PHDELWT``, with one mean-one weight column per registered scheme
-    (``W_Q``, ``W_InVa``) and the observed-to-model scale ``KSCALE``; see
-    :func:`_difference_columns`. ``ded_weight`` selects the scheme the model-phased
-    difference columns and the two-moment columns are weighted with. That needs no
-    light-state model, which is why ``mc`` is optional -- with a dark model alone this
-    writes a difference map and nothing else, and no scale fit is run beyond the one that
-    produced ``scaler``.
-
-    Given ``mc``, the layers that need the light state follow: its amplitude and phase,
-    the extrapolated amplitudes, and the two-moment correction. ``all_columns`` adds the
-    alternatives within each layer -- see :func:`_phasing_columns` and
-    :func:`_extrapolation_columns` for what each contains and why it is gated.
-
-    Column labels are the standard CCP4 ones, so Coot auto-opens ``FWT``/``PHWT`` --
-    here the *extrapolated light-state* map, not a ``2mFo-DFc``. What each label means
-    is recorded in the file: the columns are grouped into MTZ datasets (``observed``,
-    ``difference``, ``light_model``, ``extrapolated_light``, ``two_moment``) with one
-    history line describing each.
+    The default output is the difference map on the dark model's phases
+    (:func:`_difference_columns`). It needs no light-state model, which is why ``mc``
+    is optional: with a dark model alone this writes a difference map and nothing else,
+    and runs no scale fit beyond the one that produced ``scaler``. Given ``mc``, the
+    light-state, extrapolated and two-moment layers follow (:func:`_phasing_columns`,
+    :func:`_extrapolation_columns`), grouped into MTZ datasets by
+    :func:`_annotate_mtz`. Coot auto-opens ``FWT``/``PHWT``, which here is the
+    *extrapolated light-state* map, not a ``2mFo-DFc``.
 
     Parameters
     ----------
@@ -922,10 +911,14 @@ def write_results_mtz(
     scaler : Scaler or CollectionScaler
         Scales ``dark_model`` against the dark data. A ``CollectionScaler`` when ``mc``
         is given, a single-dataset ``Scaler`` otherwise.
-    mc : ModelCollection, optional
-        The dark+light collection. Absent means difference map only.
     filename : str
         Output MTZ path.
+    mc : ModelCollection, optional
+        The dark+light collection. Absent means difference map only.
+    all_columns : bool
+        Also write the alternatives within each layer.
+    verbose : int
+        Verbosity level.
     ded_weight : str, optional
         Weight scheme for the model-phased and two-moment difference columns; one of
         :data:`torchref.maps.ded_weights.SCHEMES`.
