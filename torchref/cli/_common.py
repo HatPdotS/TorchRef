@@ -754,18 +754,22 @@ def parse_weights(
     if weights_arg is None:
         return weights, None
 
+    # JSON first: a long inline dict is not a valid path, and probing it as one
+    # raises OSError (file name too long).
     try:
-        if Path(weights_arg).is_file():
+        user_weights = json.loads(weights_arg)
+    except json.JSONDecodeError:
+        try:
             with open(weights_arg) as f:
                 user_weights = json.load(f)
-        else:
-            user_weights = json.loads(weights_arg)
-        if not isinstance(user_weights, dict):
-            return weights, "--weights must be a JSON dictionary"
-        weights.update(user_weights)
-        return weights, None
-    except (json.JSONDecodeError, ValueError) as e:
-        return weights, f"Invalid JSON for --weights: {e}"
+        except OSError as e:
+            return weights, f"--weights is neither JSON nor a readable file: {e}"
+        except ValueError as e:
+            return weights, f"Invalid JSON for --weights: {e}"
+    if not isinstance(user_weights, dict):
+        return weights, "--weights must be a JSON dictionary"
+    weights.update(user_weights)
+    return weights, None
 
 
 # ---------------------------------------------------------------------------
