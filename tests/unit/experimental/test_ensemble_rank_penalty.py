@@ -38,6 +38,17 @@ def test_dead_slots_do_not_enter_the_penalty(pool_and_plain, mode):
     assert torch.all(grad[4:] == 0)
 
 
+@pytest.mark.parametrize("mode", MODES)
+def test_a_lone_alive_member_gives_a_finite_penalty(mode):
+    """Birth/death can leave one member alive; the penalty stays finite."""
+    model = EnsembleModel.from_single(TEST_PDB, n_members=2, **_KW)
+    assert model.kill_member(1)
+    loss = RankPenaltyTarget(model=model, mode=mode, target_rank=1).forward()
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert torch.isfinite(model.xyz.refinable_params.grad).all()
+
+
 def test_spectrum_diagnostics_stay_in_the_working_dtype(monkeypatch, pool_and_plain):
     """No float64 cast, so the per-cycle diagnostics also run on MPS."""
     _, plain = pool_and_plain

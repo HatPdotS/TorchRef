@@ -153,6 +153,9 @@ class RankPenaltyTarget(ModelTarget):
             s2 = torch.linalg.svdvals(Xc) ** 2
             PR = (s2.sum() ** 2) / (s2 ** 2).sum().clamp_min(1e-30)
             Nn = Xc.shape[0]
+            if Nn < 2:
+                # Birth/death can leave one member alive: no pairs, no similarity.
+                return self._maxent_shrink * PR
             d2 = torch.cdist(Xc, Xc) ** 2                   # (N, N), differentiable
             off = ~torch.eye(Nn, dtype=torch.bool, device=Xc.device)
             with torch.no_grad():
