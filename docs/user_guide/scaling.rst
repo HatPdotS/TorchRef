@@ -79,11 +79,9 @@ another program transfers unchanged. Larger :math:`n` gives a plateau followed b
 sharper cutoff, which is the shape a flat bulk-solvent prior actually has: it
 describes the data well at low resolution and then stops being informative.
 
-The refined parameters are ``log_k_solvent``, ``log_ss_half``, ``log_n_exp`` and
-``phase_offset``; each falloff parameter is refined in log space so it stays
-positive, and is clamped to ``SS_HALF_BOUNDS`` / ``N_EXP_BOUNDS``. The phase offset
-blends the mask phases toward the protein phases and is only active when
-``optimize_phase`` is set.
+The refined parameters are ``log_k_solvent``, ``log_ss_half`` and ``log_n_exp``;
+each falloff parameter is refined in log space so it stays positive, and is clamped
+to ``SS_HALF_BOUNDS`` / ``N_EXP_BOUNDS``.
 
 PDB ``REMARK 3`` and mmCIF carry a single solvent B, which this form does not have;
 ``SolventModel.b_solvent_equivalent`` back-fits one from the curve for deposition.
