@@ -37,7 +37,8 @@ def setup():
     a, b, c, al, be, ga = model.cell.key
     model.cell = Cell(
         [a * 1.25, b * 1.1, c * 0.9, al, be, ga],
-        dtype=model.dtype_float, device=model.device,
+        dtype=model.dtype_float,
+        device=model.device,
     )
     model.spacegroup = "P 1"
     return data, model
@@ -48,8 +49,11 @@ def test_placed_model_is_in_the_data_cell(setup):
     pipe = MolecularReplacementPipeline(data, model)
     t = np.array([0.5, 0.0, 0.0])
     sol = MRSolution(
-        rotation=np.eye(3), translation=t, rotation_score=0.0,
-        translation_score=0.0, r_factor=0.0,
+        rotation=np.eye(3),
+        translation=t,
+        rotation_score=0.0,
+        translation_score=0.0,
+        r_factor=0.0,
     )
     placed = pipe.place(sol)
 
