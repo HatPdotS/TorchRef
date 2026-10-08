@@ -11,11 +11,11 @@ float64), ``TORCHREF_DTYPE_INT`` (int32 / int64), ``TORCHREF_DTYPE_COMPLEX``
     torchref.sigma_cutoff_ed.value = 4.0   # density splat truncation, in sigmas
     torchref.config.caching.value = False  # recompute every cached forward()
 
-The default device is auto-detected cuda -> mps -> cpu, and a CUDA device is picked only
-if its compute capability is >= the minimum sm_* in this PyTorch build *and* its VRAM is
->= ``_MIN_CUDA_VRAM_GB``; otherwise auto-detection falls back with a warning naming the
-failing requirement. An explicit ``TORCHREF_DEVICE`` bypasses those gates but still fails
-fast if the backend is unavailable.
+The default device is auto-detected cuda -> mps -> cpu, and the current CUDA device is
+picked only if its compute capability is >= the minimum sm_* in this PyTorch build *and*
+its VRAM is >= ``_MIN_CUDA_VRAM_GB``; otherwise auto-detection falls back with a warning
+naming the device and the failing requirement. An explicit ``TORCHREF_DEVICE`` bypasses
+those gates but still fails fast if the backend is unavailable.
 
 **MPS supports neither float64 nor complex128.** Resolving to MPS with float64
 configured warns at import; set ``TORCHREF_DTYPE_FLOAT=float32`` or
@@ -165,17 +165,10 @@ def get_complex_dtype() -> torch.dtype:
 # ---------------------------------------------------------------------------
 # Number of sigmas at which each atom's Gaussian density is truncated. The
 # per-atom real-space splat radius is r_i = clamp(ceil_0.25(N_sigma * sigma_eff_i),
-# [2, 7] A), with sigma_eff_i = sqrt((b_form_i + B_i) / 8pi^2). Because the
-# truncation is expressed in sigmas, every atom carries the same fractional tail
-# mass regardless of its B-factor (3 sigma -> ~0.4%, 3.5 sigma -> ~0.09%,
-# 4 sigma -> ~0.013% per-axis tail), so this single knob governs the structure-wide
-# F-truncation residual. It replaces the old per-structure scalar ``radius_angstrom``.
-#
-# Default 3.0: an N_sigma sweep vs the direct-summation oracle (1DAW/3GR5/4BX9/7L84/
-# 5BOV, 1.6-2.6 A) showed the F-residual at 3.0 is identical to 3.5 for 4/5 cases and
-# only 1.0e-4 vs 3.3e-5 on the most demanding (4BX9) -- negligible against the ~1e-3
-# floor from grid sampling -- while using ~33% fewer splat voxels. 2.5 is too tight
-# (4BX9 degrades to 6.8e-4, 20x worse), so 3.0 is the floor.
+# [2, 7] A), with sigma_eff_i = sqrt((b_form_i + B_i) / 8pi^2), so every atom keeps the
+# same fractional tail mass whatever its B-factor and this one knob sets the
+# F-truncation residual. 3.0 is the floor: 2.5 degrades the F-residual 20x on the worst
+# test case.
 _DEFAULT_SIGMA_CUTOFF_ED = 3.0
 
 
@@ -241,24 +234,11 @@ class CompileTargetsConfig:
 
     ``compile_targets.value`` reads or sets it; initialised from
     ``TORCHREF_COMPILE_TARGETS`` ("1"/"true"/"yes"/"on"). Applies to the full-form MLF
-    target (``--xray-mode ml_full``), whose per-reflection fixed-node quadrature is bound by
-    dispatch and memory traffic in eager mode, so fusing it is worth roughly an order of
-    magnitude.
-
-    **Off by default because of compile latency, which autograd dominates**: compiling the
-    backward costs ~2 minutes on the first call, so a short refinement of a small structure
-    gets slower, not faster. It pays off for big datasets (the target scales with reflection
-    count) and for long or repeated runs in one process (ensembles, collection/PanDDA
-    refinements, interactive sessions) where the compile amortises.
-
-    Only the reflection-count dimension varies, so the kernels compile with ``dynamic=True``
-    and **one** compilation serves every dataset size, work/free subset and gathered tensor
-    -- no chunking or padding layer is needed. To cut latency point
-    ``TORCHINDUCTOR_CACHE_DIR`` at node-local disk (never gpfs) so codegen is reused across
-    processes; artifacts are ~22 MB.
-
-    **Keep it off for float64 and gradient-verification work regardless**: that path is the
-    eager reference and is deliberately unfused.
+    target (``--xray-mode ml_full``). Off by default because the first backward compile
+    takes minutes, so it pays only on large datasets or long and repeated runs in one
+    process. The kernels compile with ``dynamic=True``, so one compilation serves every
+    reflection count. Keep it off for float64 and gradient verification: that path is
+    the eager reference.
     """
 
     def __init__(self):
@@ -270,7 +250,7 @@ class CompileTargetsConfig:
 
     @property
     def value(self) -> bool:
-        """Whether quadrature target kernels are ``torch.compile``d."""
+        """Whether quadrature target kernels are compiled with ``torch.compile``."""
         return self._value
 
     @value.setter
@@ -289,7 +269,7 @@ compile_targets = CompileTargetsConfig()
 
 
 def get_compile_targets() -> bool:
-    """Whether quadrature X-ray target kernels should be ``torch.compile``d."""
+    """Whether to compile quadrature X-ray target kernels with ``torch.compile``."""
     return compile_targets.value
 
 
@@ -323,7 +303,7 @@ _DEFAULT_CACHING = True
 
 
 class CachingConfig:
-    """Whether :class:`torchref.utils.CachedForwardMixin` serves cached results.
+    """Whether :class:`torchref.utils.caching.CachedForwardMixin` serves cached results.
 
     ``caching.value`` reads or sets it; initialised from ``TORCHREF_CACHING``
     ("1"/"true"/"yes"/"on" vs "0"/"false"/"no"/"off"), on by default. Turning it off makes
@@ -339,7 +319,7 @@ class CachingConfig:
     Intended for diagnosis rather than production: if refinement produces stale-looking
     numbers, rerunning with ``TORCHREF_CACHING=0`` says in one step whether the forward cache
     is responsible. Also useful as an eager reference when changing the mixin's fingerprinting.
-    Use :func:`torchref.utils.no_caching` to scope the change to a block.
+    Use :func:`torchref.utils.caching.no_caching` to scope the change to a block.
     """
 
     def __init__(self):
@@ -385,13 +365,15 @@ _MIN_CUDA_VRAM_GB = 10
 
 
 def _cuda_is_usable() -> bool:
-    """True iff a visible CUDA device is fit to auto-select as the default.
+    """True iff the current CUDA device is fit to auto-select as the default.
 
     Requires ``torch.cuda.is_available()``, a compute capability >= the minimum sm_* in this
     PyTorch wheel (older GPUs fail at the first kernel launch), and VRAM >=
     ``_MIN_CUDA_VRAM_GB`` (a too-small GPU OOMs on real refinements, so CPU is preferred).
+    Only ``torch.cuda.current_device()`` is checked, because that is the GPU
+    ``torch.device("cuda")`` resolves to; a fitter GPU at another index is not used.
     If ``get_arch_list`` is missing or empty the capability check is skipped and
-    ``is_available()`` trusted. On failure one warning names the requirement missed.
+    ``is_available()`` trusted. On failure one warning names the device and requirement.
     """
     if not torch.cuda.is_available():
         return False
@@ -418,26 +400,27 @@ def _cuda_is_usable() -> bool:
     if not supported:
         return True
     min_supported = min(supported)
-    min_vram_bytes = _MIN_CUDA_VRAM_GB * (1024**3)
-    for idx in range(torch.cuda.device_count()):
-        try:
-            cap = torch.cuda.get_device_capability(idx)
-        except Exception:
-            continue
-        if cap < min_supported:
-            continue
+    idx = 0
+    try:
+        # current_device() initialises CUDA, which can fail although is_available() is
+        # True (driver or container errors); that must fall back to CPU, not raise.
+        idx = torch.cuda.current_device()
+        capable = torch.cuda.get_device_capability(idx) >= min_supported
+    except Exception:
+        capable = False
+    if capable:
         try:
             total_mem = torch.cuda.get_device_properties(idx).total_memory
         except Exception:
             total_mem = 0
-        if total_mem >= min_vram_bytes:
+        if total_mem >= _MIN_CUDA_VRAM_GB * (1024**3):
             return True
     warnings.warn(
-        "TorchRef: no detected CUDA GPU meets the auto-selection requirements "
-        f"(compute capability >= {min_supported[0]}.{min_supported[1]} and "
-        f">= {_MIN_CUDA_VRAM_GB} GB VRAM; PyTorch build supports sm_*: "
-        f"{arch_list}). Falling back to CPU. Set TORCHREF_DEVICE=cuda "
-        "explicitly to override.",
+        f"TorchRef: CUDA device cuda:{idx} does not meet the auto-selection "
+        f"requirements (compute capability >= {min_supported[0]}.{min_supported[1]} "
+        f"and >= {_MIN_CUDA_VRAM_GB} GB VRAM; PyTorch build supports sm_*: "
+        f"{arch_list}). Falling back to CPU. Set CUDA_VISIBLE_DEVICES to select "
+        "another GPU, or TORCHREF_DEVICE=cuda to use this one anyway.",
         stacklevel=3,
     )
     return False
@@ -485,8 +468,8 @@ def normalize_device(dev=None) -> torch.device:
     """Coerce a user-supplied ``device`` (or ``None``) to a canonical device.
 
     ``None`` resolves to :func:`get_default_device`. The pure, side-effect-free counterpart
-    of :func:`torchref.utils.resolve_device`, which *moves* the objects it is given: use
-    this for one device source, that one to reconcile several.
+    of :func:`~torchref.utils.device_resolution.resolve_device`, which *moves* the
+    objects it is given: use this for one device source, that one to reconcile several.
     """
     if dev is None:
         return get_default_device()
@@ -496,7 +479,7 @@ def normalize_device(dev=None) -> torch.device:
 class DeviceConfig:
     """The active device: ``device.current`` reads it, assignment sets it.
 
-    Resolved once at import cuda -> mps -> cpu by :func:`_auto_detect_device`, which gates
+    Resolved once at import cuda -> mps -> cpu by ``_auto_detect_device``, which gates
     CUDA on compute capability and ``_MIN_CUDA_VRAM_GB`` of VRAM; ``TORCHREF_DEVICE``
     overrides that, bypassing the gates but raising if the backend is unavailable. The
     setter mirrors it -- a bad value raises ``ValueError``/``RuntimeError`` rather than
@@ -568,38 +551,3 @@ device = DeviceConfig()
 def get_default_device() -> torch.device:
     """Get the current default device."""
     return device.current
-
-
-# ---------------------------------------------------------------------------
-# Double-precision availability
-# ---------------------------------------------------------------------------
-#: Device types with no float64 at all. MPS is the live case and it *raises*
-#: rather than quietly downcasting, so a float64 tensor there is an error and not
-#: merely slow.
-_NO_DOUBLE_DEVICE_TYPES = ("mps",)
-
-
-def supports_double(dev=None) -> bool:
-    """Whether ``dev`` can hold float64 / complex128 at all."""
-    return normalize_device(dev).type not in _NO_DOUBLE_DEVICE_TYPES
-
-
-def widest_float_dtype(dev=None) -> torch.dtype:
-    """``float64`` where the device has it, else the configured working float.
-
-    For computations whose *precision* is load-bearing rather than their storage:
-    accumulating single-precision data in double is the ordinary remedy, and the
-    dynamic range of an unnormalised recurrence is a hard requirement rather than
-    a preference. The right width for those is a property of the device, so it
-    belongs here and not in a constant at the call site.
-
-    Where the device lacks float64 the caller gets the working dtype and whatever
-    accuracy that implies. That is the only option there, not a choice -- callers
-    that care should say what it costs in their own docstring.
-    """
-    return torch.float64 if supports_double(dev) else get_float_dtype()
-
-
-def widest_complex_dtype(dev=None) -> torch.dtype:
-    """``complex128`` where the device has it, else the configured working complex."""
-    return torch.complex128 if supports_double(dev) else get_complex_dtype()

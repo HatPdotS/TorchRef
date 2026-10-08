@@ -70,6 +70,63 @@ def test_changed_argument_still_misses_while_enabled(module):
     assert torch.allclose(second, module.p * 3.0)
 
 
+def test_tensordict_assignment_invalidates_a_cached_forward():
+    """A same-shape ``TensorDict`` assignment is a write the cache must see."""
+    from torchref.utils import TensorDict
+
+    class _StoreBacked(CachedForwardMixin, nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.store = TensorDict({"k": torch.zeros(3)})
+            self.n_forward = 0
+
+        def forward(self):
+            self.n_forward += 1
+            return self.store["k"] * 2.0
+
+    cfg.caching.value = True
+    module = _StoreBacked()
+    module()
+
+    module.store["k"] = torch.tensor([1.0, 2.0, 3.0])
+
+    assert torch.equal(module(), torch.tensor([2.0, 4.0, 6.0]))
+    assert module.n_forward == 2
+
+
+def test_result_computed_without_grad_is_not_served_with_grad(module):
+    cfg.caching.value = True
+
+    with torch.no_grad():
+        module()
+    result = module()
+
+    assert result.grad_fn is not None
+    assert module.n_forward == 2
+
+
+def test_unfreezing_a_parameter_recomputes(module):
+    cfg.caching.value = True
+
+    module.p.requires_grad_(False)
+    module()
+    module.p.requires_grad_(True)
+
+    assert module().requires_grad
+    assert module.n_forward == 2
+
+
+def test_graph_carrying_result_is_still_served_without_grad(module):
+    cfg.caching.value = True
+
+    first = module()
+    with torch.no_grad():
+        second = module()
+
+    assert second is first
+    assert module.n_forward == 1
+
+
 # ---------------------------------------------------------------------------
 # Caching disabled
 # ---------------------------------------------------------------------------

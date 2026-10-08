@@ -8,8 +8,8 @@ The grammar is the contract. Terms: ``chain <id>``, ``resseq <num>``,
 case-insensitively; ``chain`` and ``altloc`` do not.
 
 A selection is evaluated against a mapping of per-atom arrays rather than an atom table,
-so the same parser serves :meth:`torchref.topology.Topology.select` and anything else
-that can produce the columns.
+so the same parser serves :meth:`torchref.topology.topology.Topology.select` and
+anything else that can produce the columns.
 """
 
 import re

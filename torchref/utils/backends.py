@@ -146,10 +146,10 @@ class Backend:
         ``False`` for complex as well as for integers.
     require_uniform_dtype : bool
         Whether every probed float tensor must share **one** dtype, rather than each
-        independently being in ``dtypes``. Memory safety, not taste: the fused CPU kernel
-        picks one ``scalar_t`` from the output map and reads every other tensor through a
-        raw pointer of that type, so a float64 map beside float32 atoms is a 2x
-        out-of-bounds read -- which ``dtypes=(f32, f64)`` alone *admits*.
+        independently being in ``dtypes``. The fused CPU kernel picks one ``scalar_t``
+        from the output map and reads every tensor through ``data_ptr<scalar_t>()``,
+        which raises ``RuntimeError`` on any other dtype; this sends a mixed-dtype call,
+        which ``dtypes=(f32, f64)`` alone *admits*, to the base case instead.
     probes : tuple[int, ...], optional
         Which argument positions carry the device/dtype contract; ``None`` probes all. Set
         per table, because for some kernels the dtype is a capability and for others only

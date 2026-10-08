@@ -1,9 +1,9 @@
 """
 DeviceMixin - unified device and dtype movement for TorchRef.
 
-One mixin hijacks ``.to()``/``.cuda()``/``.cpu()`` (and indirectly ``.float()`` and
-friends, which funnel through ``nn.Module._apply``) for both ``nn.Module`` subclasses and
-plain Python classes, recursively moving: params, buffers and child modules via the
+One mixin hijacks ``.to()``/``.cuda()``/``.cpu()`` for both ``nn.Module`` subclasses and
+plain Python classes (on module subclasses only, ``.float()`` and friends funnel through
+the same ``_apply``), recursively moving: params, buffers and child modules via the
 standard machinery; raw tensor attributes on ``self``; non-Module sub-objects exposing
 ``_apply``; tensors nested in ``list``/``tuple``/``dict`` attributes; and unregistered
 ``nn.Module`` instances held as plain attributes.
@@ -278,13 +278,6 @@ def _owned_tensors(obj):
                 yield val
 
 
-def _representative_tensor(obj):
-    """Return one tensor reflecting *obj*'s own device, or ``None``."""
-    for tensor in _owned_tensors(obj):
-        return tensor
-    return None
-
-
 def _observed_state(obj):
     """Return ``(device, floating_dtype)`` observed from *obj*'s own tensors.
 
@@ -449,11 +442,13 @@ class DeviceMixin:
     """Unified device/dtype movement.
 
     Inherit **before** ``nn.Module`` in the MRO (``class Foo(DeviceMixin, nn.Module)``),
-    or use it alone on a plain class or dataclass. Every mover -- ``.to()``, ``.cuda()``,
-    ``.cpu()``, ``.float()``, ``.double()``, ``.half()`` -- routes through :meth:`_apply`,
-    which runs ``nn.Module._apply`` where applicable, walks ``self.__dict__`` for plain
-    tensors, nested containers and non-Module sub-objects, refreshes the device/dtype
-    trackers, and calls ``reset_forward_cache()``/``reset_cache()`` if defined.
+    or use it alone on a plain class or dataclass. ``.to()``, ``.cuda()`` and ``.cpu()``
+    route through ``_apply`` on every class; ``nn.Module``'s ``.float()``, ``.double()``
+    and ``.half()`` do so on module subclasses only, and a plain class has none of them.
+    ``_apply`` runs ``nn.Module._apply`` where applicable, walks ``self.__dict__`` for
+    plain tensors, nested containers and non-Module sub-objects, refreshes the
+    device/dtype trackers, and calls ``reset_forward_cache()``/``reset_cache()`` if
+    defined.
     """
 
     # ---- to / cuda / cpu -------------------------------------------------
@@ -462,10 +457,10 @@ class DeviceMixin:
         """Move ``self`` to a device and/or dtype, returning ``self``.
 
         Accepts the usual ``nn.Module.to`` argument forms (device, dtype,
-        or both). For ``nn.Module`` subclasses this defers to the standard
-        ``nn.Module.to``; for plain (non-Module) classes the (device, dtype)
-        pair is parsed and applied via :meth:`_apply`. A call that resolves
-        to neither a device nor a dtype is a no-op that returns ``self``.
+        both, or a tensor) and follows its rules on plain classes too: a dtype
+        casts only floating and complex tensors, so integer and boolean ones
+        keep theirs, and a non-floating dtype raises ``TypeError``. A call that
+        resolves to neither a device nor a dtype is a no-op that returns ``self``.
         """
         if _PARSE_TO is not None:
             # Let PyTorch's own parser raise on invalid arguments.
@@ -486,15 +481,9 @@ class DeviceMixin:
                 return super().to(*args, **kwargs)
             if device is None and dtype is None:
                 return self
-
-            # Forward the caller's original arguments rather than the parsed
-            # pair, so overloads and options the parser folds away --
-            # ``.to(other_tensor)``, ``non_blocking=``, ``memory_format=`` --
-            # reach the tensors intact.
-            def fn(t):
-                return t.to(*args, **kwargs)
-
-            return self._apply(fn)
+            # ``nn.Module.to`` needs nothing from ``self`` but ``_apply``, so a plain
+            # class reuses its parser and its floating/complex-only converter.
+            return nn.Module.to(self, *args, **kwargs)
         finally:
             _pop_request(prev_request)
             _exit_traversal(token)

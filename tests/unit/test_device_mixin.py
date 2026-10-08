@@ -206,6 +206,24 @@ def test_nested_module_in_dict_attribute_moves():
 
 
 @pytest.mark.unit
+def test_module_reference_referent_is_not_moved():
+    """``.to()`` moves what a module owns, never a module it holds by reference."""
+    from torchref.utils.utils import ModuleReference
+
+    class _Holder(DeviceMixin, nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.own = nn.Parameter(torch.zeros(2, dtype=torch.float32))
+            self.borrowed = ModuleReference(nn.Linear(2, 2))
+
+    holder = _Holder()
+    holder.to(torch.float64)
+
+    assert holder.own.dtype == torch.float64
+    assert holder.borrowed.weight.dtype == torch.float32
+
+
+@pytest.mark.unit
 def test_tensormasks_traversal_moves_dict_items():
     """``TensorMasks`` stores masks as ``dict`` items, not in ``__dict__``.
 
@@ -233,6 +251,32 @@ def test_tensormasks_traversal_moves_dict_items():
     new = m()
     assert new is not None
     assert new.dtype == torch.bool
+
+
+@pytest.mark.unit
+def test_plain_dtype_move_keeps_integer_and_bool_tensors(mtz_dir):
+    """On a plain class a dtype casts only floating tensors, like ``nn.Module.to``."""
+    from torchref.io import ReflectionData
+    from torchref.utils.utils import TensorMasks
+
+    rd = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    exact = {
+        name: t.dtype
+        for name, t in vars(rd).items()
+        if isinstance(t, torch.Tensor) and not t.is_floating_point()
+    }
+    combined = rd.masks().clone()
+
+    rd.to(torch.float64)
+
+    assert {name: getattr(rd, name).dtype for name in exact} == exact
+    assert all(m.dtype == torch.bool for m in rd.masks.values())
+    assert rd.F.dtype == torch.float64
+    assert torch.equal(rd.masks(), combined)
+
+    masks = TensorMasks({"a": torch.tensor([True, False])}, device="cpu")
+    masks.to(torch.float64)
+    assert masks["a"].dtype == torch.bool
 
 
 @pytest.mark.unit

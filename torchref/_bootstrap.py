@@ -2,17 +2,21 @@
 
 Bootstrap module to configure threading before importing heavy libraries.
 
-Is imported automatically when torchref is imported.
-If you are not on a slurm node and want to customize threading,
-call `configure_threading()` before importing torchref.
+torchref/__init__.py calls ``configure_threading`` itself before importing torch, and
+it overwrites OMP_NUM_THREADS, MKL_NUM_THREADS and OPENBLAS_NUM_THREADS. To choose the
+thread count, set TORCHREF_NUM_THREADS before importing torchref.
 
 """
 
 import os
 
 
-def detect_available_cpus(max_if_not_slurm=4) -> int:
-    """Detect actual available CPUs, respecting SLURM and CPU affinity."""
+def detect_available_cpus(max_if_not_slurm: int = 4) -> int:
+    """Return the number of CPUs to use.
+
+    SLURM_CPUS_PER_TASK wins uncapped when set; otherwise the CPU affinity (or
+    ``os.cpu_count()`` where affinity is unavailable), capped at ``max_if_not_slurm``.
+    """
 
     # 1. Check SLURM first (most reliable on HPC)
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
@@ -21,12 +25,12 @@ def detect_available_cpus(max_if_not_slurm=4) -> int:
 
     # 2. Check CPU affinity
     try:
-        return min(len(os.sched_getaffinity(0)), 4)
+        return min(len(os.sched_getaffinity(0)), max_if_not_slurm)
     except (AttributeError, OSError):
         pass
 
     # 3. Fallback to os.cpu_count() but cap it sensibly
-    return min(os.cpu_count() or 1, 4)
+    return min(os.cpu_count() or 1, max_if_not_slurm)
 
 
 def configure_threading(num_threads: int = None, pin_threads=False) -> int:

@@ -77,3 +77,137 @@ class TestModuleReference:
         repr_str = repr(ref)
         assert "ModuleReference" in repr_str
         assert "Linear" in repr_str
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("how", ["copy", "deepcopy", "pickle"])
+    def test_module_reference_copies_and_pickles(self, how):
+        """``copy`` shares the referent; ``deepcopy`` and pickling copy it."""
+        import copy
+        import pickle
+
+        from torchref.utils.utils import ModuleReference
+
+        inner = nn.Linear(2, 2)
+        clone = {
+            "copy": copy.copy,
+            "deepcopy": copy.deepcopy,
+            "pickle": lambda r: pickle.loads(pickle.dumps(r)),
+        }[how](ModuleReference(inner))
+
+        assert isinstance(clone, ModuleReference)
+        assert (clone.module is inner) == (how == "copy")
+        torch.testing.assert_close(clone.weight, inner.weight)
+
+    @pytest.mark.unit
+    def test_module_reference_deepcopy_follows_the_copied_graph(self):
+        """A deep-copied owner's reference points at the owner's copied child."""
+        import copy
+
+        from torchref.utils.utils import ModuleReference
+
+        class Owner(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.child = nn.Linear(2, 2)
+                self.ref = ModuleReference(self.child)
+
+        owner = Owner()
+        clone = copy.deepcopy(owner)
+
+        assert clone.child is not owner.child
+        assert clone.ref.module is clone.child
+
+    @pytest.mark.unit
+    def test_module_reference_does_not_forward_private_names(self):
+        """Underscore lookups stop at the reference; public ones reach the referent."""
+        from torchref.utils.utils import ModuleReference
+
+        ref = ModuleReference(nn.Linear(2, 2))
+
+        assert not hasattr(ref, "_apply")
+        assert ref.in_features == 2
+
+
+class TestSerialization:
+    """One tensor-to-JSON rule, shared by convert_to_serializable and the encoder."""
+
+    @pytest.mark.unit
+    def test_empty_tensor_becomes_an_empty_list(self):
+        import json
+
+        from torchref.utils.serialization import convert_to_serializable
+
+        assert convert_to_serializable({"empty": torch.zeros(0)}) == {"empty": []}
+        assert json.dumps(torch.zeros(0)) == "[]"
+
+    @pytest.mark.unit
+    def test_one_element_tensor_stays_a_scalar(self):
+        import json
+
+        from torchref.utils.serialization import convert_to_serializable
+        from torchref.utils.stats import stat
+
+        assert convert_to_serializable(torch.zeros(1)) == 0.0
+        assert json.dumps({"r": stat(torch.ones(1))}) == '{"r": 1.0}'
+        assert json.dumps(torch.arange(3)) == "[0, 1, 2]"
+
+
+@pytest.mark.unit
+def test_tensordict_repr_is_balanced():
+    from torchref.utils.utils import TensorDict
+
+    assert repr(TensorDict({"a": torch.ones(1)})) == "TensorDict({a: tensor([1.])})"
+
+
+@pytest.mark.unit
+def test_tensordict_write_keeps_the_new_dtype():
+    """A same-shape write of another dtype replaces the buffer instead of casting."""
+    from torchref.utils.utils import TensorDict
+
+    td = TensorDict({"x": torch.zeros(3, dtype=torch.int32)})
+    value = torch.tensor([1.7, 2.2, -0.5], dtype=torch.float64)
+    td["x"] = value
+
+    assert td["x"].dtype == torch.float64
+    assert torch.equal(td["x"], value)
+
+
+class TestTensorMasksMutators:
+    """Every dict mutator validates, moves and refreshes the combined mask."""
+
+    @staticmethod
+    def _masks():
+        from torchref.utils.utils import TensorMasks
+
+        masks = TensorMasks({"a": torch.tensor([True, True, False])}, device="cpu")
+        masks()  # populate the cached combined mask
+        return masks
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("how", ["update", "setdefault", "ior"])
+    def test_insertion_refreshes_the_combined_mask(self, how):
+        masks = self._masks()
+        b = torch.tensor([False, True, True])
+        if how == "update":
+            masks.update({"b": b})
+        elif how == "setdefault":
+            masks.setdefault("b", b)
+        else:
+            masks |= {"b": b}
+
+        assert torch.equal(masks(), torch.tensor([False, True, False]))
+
+    @pytest.mark.unit
+    def test_update_validates_dtype(self):
+        masks = self._masks()
+        with pytest.raises(ValueError, match="boolean"):
+            masks.update({"bad": torch.zeros(3)})
+
+    @pytest.mark.unit
+    def test_popitem_refreshes_the_combined_mask(self):
+        masks = self._masks()
+        masks["b"] = torch.tensor([False, True, True])
+        masks()
+        masks.popitem()
+
+        assert torch.equal(masks(), torch.tensor([True, True, False]))
