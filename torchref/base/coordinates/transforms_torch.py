@@ -6,7 +6,7 @@ for use in optimization and refinement.
 
 :func:`get_fractional_matrix` is the one place the cell metric is written out; the
 reciprocal basis (:func:`~torchref.base.reciprocal.basis.reciprocal_basis_matrix`) and
-:attr:`torchref.symmetry.Cell.volume` are derived from it.
+:attr:`torchref.symmetry.cell.Cell.volume` are derived from it.
 """
 
 import torch

@@ -9,7 +9,7 @@ coordinate systems used in crystallography:
 - Symmetry images: a position under a space-group operation and lattice translation
 
 All of them are PyTorch functions; the cell metric is written out once, in
-:func:`get_fractional_matrix`.
+:func:`~.transforms_torch.get_fractional_matrix`.
 """
 
 from .transforms_torch import (
