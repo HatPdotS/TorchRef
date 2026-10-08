@@ -547,13 +547,6 @@ class EnsembleRefinement(LBFGSRefinement):
         else:
             self.rank_target = None
 
-        # Set up the component weighting if it exists in the base class.
-        if hasattr(self, "setup_component_weighting"):
-            try:
-                self.setup_component_weighting()
-            except Exception:
-                pass
-
     # ------------------------------------------------------------------
     # Low-rank reparameterization
     # ------------------------------------------------------------------
