@@ -511,7 +511,6 @@ class TestIHMWriter:
             ("B", 3, "5CM"),
             ("R", 1, "A"),
             ("R", 2, "U"),
-            ("R", 3, "PSU"),
             ("P", 1, "GLY"),
             ("P", 2, "MSE"),
         ]
@@ -540,7 +539,7 @@ class TestIHMWriter:
             sequence.setdefault(entity_type[entity], []).append(comp)
         assert sequence == {
             "polydeoxyribonucleotide": ["DA", "DC", "5CM"],
-            "polyribonucleotide": ["A", "U", "PSU"],
+            "polyribonucleotide": ["A", "U"],
             "polypeptide(L)": ["GLY", "MET"],
         }
 
