@@ -1,6 +1,6 @@
 """
-Ensemble atomic model: ``n_members`` (default 100) coordinate copies of the
-same chemistry sharing one Fourier transform.
+Ensemble atomic model: a pool of ``n_members`` coordinate copies of the same
+chemistry sharing one Fourier transform.
 
 .. warning::
 
@@ -310,9 +310,9 @@ class EnsembleModel(ModelFT):
 
        Experimental — API and behaviour may change without notice.
 
-    ``n_members`` (default 100) is rounded to a multiple of ``N_sym`` and, when
-    birth/death population dynamics are used, is the number of *alive* members
-    within a pre-allocated ``n_max`` slot pool — not a fixed copy count.
+    ``n_members`` is the size of the member-slot pool and :attr:`n_alive` the
+    number of live slots; they differ only when a factory's ``n_max`` adds dead
+    spare slots for birth/death population dynamics.
 
     Parameters
     ----------
@@ -415,7 +415,7 @@ class EnsembleModel(ModelFT):
             Path to input PDB. May contain multiple models — only the first
             is used (use :meth:`from_multimodel_pdb` to consume all).
         n_members : int
-            Number of ensemble members.
+            Number of alive members; the pool holds ``max(n_members, n_max)``.
         perturb_sigma : float
             Std-dev (Å) of Gaussian noise added to xyz of each replicated copy.
             Default 0.01 Å — only large enough to break gradient degeneracy
@@ -423,8 +423,8 @@ class EnsembleModel(ModelFT):
             LJ clashes (atoms walking inside vdW radii), which makes any
             downstream force-field restraint (AmberTarget, geometry terms)
             return huge energies / gradients. The ensemble's real disorder
-            should develop from the X-ray gradient + entropy regularizer
-            during refinement, not from the initial noise.
+            should develop from the X-ray and restraint gradients during
+            refinement, not from the initial noise.
         b_const : float
             Fixed isotropic B-factor (Å²) for every atom in every member.
             Small but non-zero to avoid FFT grid aliasing.
