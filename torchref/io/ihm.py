@@ -607,7 +607,9 @@ class IHMWriter:
                     entity = ihm.Entity(seq)
                     entity, chains = entities.setdefault(entity, (entity, []))
                     chains.append(chain_id)
-                    asym = ihm.AsymUnit(entity, details=f"Chain {chain_id}")
+                    asym = ihm.AsymUnit(
+                        entity, details=f"Chain {chain_id}", id=chain_id
+                    )
                     system.asym_units.append(asym)
                     asym_units.append(asym)
             for entity, chains in entities.values():

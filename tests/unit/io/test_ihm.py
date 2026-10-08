@@ -587,6 +587,52 @@ class TestIHMWriter:
         ]
         assert len(entity_type) == 2
 
+    def test_atom_site_asym_ids_name_their_struct_asym(self, tmp_path):
+        """Each _atom_site.label_asym_id is a _struct_asym.id whose entity carries
+        the residues written under it, whatever the chain ids and their order."""
+        from types import SimpleNamespace
+
+        import gemmi
+
+        from torchref.io.ihm import IHMWriter
+        from torchref.model.context import ModelContext
+        from torchref.topology import Topology
+
+        residues = [("B", 1, "GLY"), ("B", 2, "ALA"), ("A", 1, "SER"), ("A", 2, "LYS")]
+        table = pd.DataFrame(
+            [(c, r, n, "CA", 0.0, 0.0, 0.0) for c, r, n in residues],
+            columns=["chainid", "resseq", "resname", "name", "x", "y", "z"],
+        )
+        model = SimpleNamespace(
+            ctx=ModelContext(topology=Topology.from_table(table)),
+            to_dataframe=lambda: table,
+        )
+        collection = SimpleNamespace(n_base_models=1, base_models=[model])
+        mapping = IHMEnsembleMapping(
+            states=[IHMStateInfo(state_id=1, name="only", details="", model_num=1)],
+            model_groups=[
+                IHMModelGroupInfo(group_id=1, name="t0", state_fractions={1: 1.0})
+            ],
+        )
+        out = tmp_path / "pair.cif"
+        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+
+        block = gemmi.cif.read(str(out)).sole_block()
+        asym_entity = dict(block.find("_struct_asym.", ["id", "entity_id"]))
+        entity_seq = {}
+        for entity_id, mon_id in block.find(
+            "_entity_poly_seq.", ["entity_id", "mon_id"]
+        ):
+            entity_seq.setdefault(entity_id, []).append(mon_id)
+        written = {}
+        for asym_id, comp in block.find(
+            "_atom_site.", ["label_asym_id", "label_comp_id"]
+        ):
+            written.setdefault(asym_id, []).append(comp)
+        assert set(written) <= set(asym_entity)
+        for asym_id, comps in written.items():
+            assert comps == entity_seq[asym_entity[asym_id]]
+
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
         import torch
