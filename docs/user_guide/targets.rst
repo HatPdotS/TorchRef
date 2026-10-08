@@ -117,15 +117,19 @@ ADP Targets
 -----------
 
 :class:`~torchref.refinement.targets.TotalADPTarget` combines three components.
-``locality`` and ``KL`` work in ``log B`` (B is positive and right-skewed, so
-log B is the natural scale); ``simu`` restrains the raw ΔB of bonded atoms:
+``locality`` works in ``log B`` (B is positive and right-skewed, so log B is the
+natural scale); ``simu`` restrains the raw ΔB of bonded atoms; ``sigd`` is a
+prior on the B distribution:
 
 - ``simu`` (:class:`~torchref.refinement.targets.ADPSimilarityTarget`) — bonded atoms should have similar B.
 - ``locality`` (:class:`~torchref.refinement.targets.ADPLocalityTarget`) — K-NN spatial smoothness with
   distance-scaled sigma.
-- ``KL`` (:class:`~torchref.refinement.targets.ADPEntropyTarget`) — KL divergence against a fixed-spread
-  Gaussian, which controls the *spread* of the B distribution. Despite the class
-  name it is not an entropy term.
+- ``sigd`` (:class:`~torchref.refinement.targets.ADPSigdTarget`) — shifted
+  inverse-gamma prior on the B distribution (Masmaliyeva & Murshudov 2019); it
+  restrains the shape of the distribution, never the overall B level.
+
+The node-field ADP modes (``adp_mode="field"`` / ``"field_aniso"``) register
+``sigd``, ``node_load`` and ``node_smoothness`` instead.
 
 :class:`~torchref.refinement.targets.RigidBondTarget` (``adp/delu``, the DELU rigid-bond restraint) exists but
 is not part of ``TotalADPTarget``; register it yourself if you want it.
