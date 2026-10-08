@@ -96,7 +96,7 @@ restraints.
 ``-dsf``/``--dark-structure-factor``, ``-lsf``/``--light-structure-factor``,
 ``--fraction`` (light-state population fraction, singular),
 ``--weight-schedule`` annealing schedule (default ``5,3,2``),
-``-n``/``--n-cycles`` macro-cycles, ``--difference-target {difference,difference_sd}``
+``--n-cycles`` macro-cycles (default 3), ``--difference-target {difference,difference_sd}``
 (the difference row the schedule drives; default ``difference``), ``--ded-weight`` and
 ``--difference-gamma`` for the difference MTZ (see ``torchref.difference-map``).
 
