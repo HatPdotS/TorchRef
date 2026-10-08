@@ -89,22 +89,25 @@ class Scaler(ScalerBase):
             device=resolved_device,
         )
 
-        # Wrap in ModuleReference to avoid registering the model as a
-        # submodule (which would leak its state into the scaler's state_dict).
-        self._model_ref = ModuleReference(model) if model is not None else None
+        self.model = model
+
+    def __setattr__(self, name, value):
+        # nn.Module.__setattr__ registers any Module value before a property setter
+        # could run, which would put the model's parameters into the scaler's
+        # optimizer and state_dict; the scaler only borrows the model.
+        if name == "model":
+            ref = ModuleReference(value) if value is not None else None
+            object.__setattr__(self, "_model_ref", ref)
+        else:
+            super().__setattr__(name, value)
 
     @property
     def model(self):
-        """Access the model object (not a registered submodule)."""
+        """The bound ``Model``, held unregistered: absent from ``parameters()`` and
+        ``state_dict()``."""
         if self._model_ref is None:
             return None
         return self._model_ref.module
-
-    @model.setter
-    def model(self, value):
-        """Set the model reference, bypassing nn.Module submodule registration."""
-        ref = ModuleReference(value) if value is not None else None
-        object.__setattr__(self, "_model_ref", ref)
 
     def set_model_and_data(self, model: "Model", data: ReflectionData):
         """
@@ -126,9 +129,7 @@ class Scaler(ScalerBase):
         ``model`` and ``data`` are moved onto *its* device.
         """
         resolve_device(self, model, data)
-        # Set _model_ref directly: `self.model = model` would be intercepted by
-        # nn.Module.__setattr__ and registered as a submodule.
-        self._model_ref = ModuleReference(model) if model is not None else None
+        self.model = model
         self.set_data(data)
 
     def initialize(self, fcalc: torch.Tensor = None):

@@ -34,6 +34,23 @@ class TestScalerInitialization:
         assert isinstance(scaler, nn.Module)
 
     @pytest.mark.unit
+    def test_assigned_model_is_held_unregistered(self):
+        """``scaler.model = m`` binds m without adding it as a submodule."""
+        from torchref.scaling.scaler import Scaler
+
+        scaler = Scaler(verbose=0)
+        model = nn.Linear(2, 2)
+        scaler.model = model
+
+        assert scaler.model is model
+        assert list(scaler.parameters()) == []
+        assert list(scaler.children()) == []
+        assert not any(k.startswith("model") for k in scaler.state_dict())
+
+        scaler.model = None
+        assert scaler.model is None
+
+    @pytest.mark.unit
     def test_scaler_default_nbins(self):
         """Test default number of resolution bins."""
         from torchref.scaling.scaler import Scaler
