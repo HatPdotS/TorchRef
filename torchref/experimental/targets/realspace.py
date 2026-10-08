@@ -10,8 +10,8 @@ maps in real space rather than reciprocal space. Two targets are provided:
 2. RealSpaceDifferenceTarget: Minimizes mean squared Fo-Fc difference density
 
 Both targets use a molecular mask (inverse of solvent mask) to restrict
-comparison to the protein region, and detach the model phases in the
-observed map so its gradient flows only through the amplitudes.
+comparison to the protein region and detach the model phases: the observed
+2Fo-Fc map carries no gradient, the Fo-Fc map only through |Fcalc|.
 """
 
 from typing import TYPE_CHECKING, Dict, Tuple
