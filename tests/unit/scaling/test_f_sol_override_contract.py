@@ -11,8 +11,6 @@ from torchref.config import get_complex_dtype, get_float_dtype, get_int_dtype
 class _StubSolvent:
     """Minimal stand-in for :class:`SolventModel` on the k_sol/falloff path."""
 
-    optimize_phase = False
-
     def __init__(self, device, value: float = 1.0):
         self.device = device
         self.value = value

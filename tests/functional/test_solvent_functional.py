@@ -69,18 +69,27 @@ class TestSolventParameters:
         )
         assert torch.isclose(solvent.n_exp(), torch.tensor(3.0), rtol=1e-5)
 
-    def test_phase_offset_parameter(self):
-        """Test phase offset parameter."""
+    def test_phase_offset_is_a_zero_buffer_and_not_refined(self):
+        """``phase_offset`` is a zero buffer, never a parameter, whatever is passed."""
+        import warnings
+
         from torchref.scaling.solvent import SolventModel
-        
-        # With optimize_phase=True
-        solvent = SolventModel(optimize_phase=True, initial_phase_offset=0.1)
-        assert hasattr(solvent, 'phase_offset')
-        assert torch.isclose(solvent.phase_offset, torch.tensor(0.1))
-        
-        # With optimize_phase=False
-        solvent2 = SolventModel(optimize_phase=False)
-        assert hasattr(solvent2, 'phase_offset')
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            plain = SolventModel()
+            SolventModel(optimize_phase=False)
+        with pytest.warns(DeprecationWarning, match="phase offset"):
+            asked = SolventModel(optimize_phase=True, initial_phase_offset=0.1)
+
+        for solvent in (plain, asked):
+            assert "phase_offset" in dict(solvent.named_buffers())
+            assert "phase_offset" not in dict(solvent.named_parameters())
+            assert solvent.phase_offset.item() == 0.0
+            assert solvent.optimize_phase is False
+            refined = solvent.parameters()
+            assert len(refined) == 3
+            assert all(p is not solvent.phase_offset for p in refined)
 
 
 @pytest.mark.integration
@@ -122,14 +131,16 @@ class TestSolventStateDictFunctional:
         """Test state dict contains expected keys."""
         from torchref.scaling.solvent import SolventModel
         
-        solvent = SolventModel(k_solvent=0.35, optimize_phase=True)
+        solvent = SolventModel(k_solvent=0.35)
         state_dict = solvent.state_dict()
-        
-        # Should contain parameters
+
         assert 'log_k_solvent' in state_dict
         assert 'log_ss_half' in state_dict
         assert 'log_n_exp' in state_dict
-        assert 'phase_offset' in state_dict
+        # Still saved, so state dicts that carry the key keep loading strictly.
+        assert "phase_offset" in state_dict
+        assert state_dict["phase_offset"].item() == 0.0
+        SolventModel().load_state_dict(state_dict, strict=True)
 
     def test_save_and_load_state(self, tmp_path):
         """Test saving and loading state dict."""

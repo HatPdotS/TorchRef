@@ -313,8 +313,7 @@ class CollectionScaler(ScalerBase):
 
         The fraction-weighted raw solvent goes to ``ScalerBase.forward()`` as
         ``f_sol_override`` (the cached ``_f_sol_raw`` is untouched), which applies
-        k_sol, the ss_half/n_exp falloff, the phase offset and the isotropic and
-        anisotropic scales.
+        k_sol, the ss_half/n_exp falloff and the isotropic and anisotropic scales.
 
         Parameters
         ----------

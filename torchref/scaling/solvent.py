@@ -2,6 +2,8 @@
 A class for modelling solvent contribution to structure factors.
 """
 
+import warnings
+
 import torch
 import torch.nn as nn
 
@@ -118,13 +120,14 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
     solvent_radius, erosion_radius : float
         Probe radius for dilation and radius for the erosion step (Å).
     optimize_phase : bool
-        Whether the phase offset is refined.
+        Always False: the solvent phase offset is neither refined nor applied.
     log_k_solvent, log_ss_half, log_n_exp : torch.nn.Parameter
         Log solvent scattering scale, and the logs of the falloff half-point and
         exponent. Refined in log space so each stays positive.
-    phase_offset : torch.nn.Parameter or buffer
-        Phase offset in radians: a trainable parameter when
-        ``optimize_phase=True``, otherwise a buffer fixed at 0.0.
+    phase_offset : torch.Tensor
+        Zero buffer, kept so state dicts that carry the key still load. Never refined
+        and never applied: ``F_mask`` is the transform of a real, symmetric mask, so it
+        already obeys the centric phase restriction and any rotation would break it.
     """
 
     def __init__(
@@ -135,7 +138,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         d_half=3.59,
         n_exp=5.0,
         erosion_radius=0.9,
-        optimize_phase=True,
+        optimize_phase=False,
         initial_phase_offset=0.0,
         verbose=1,
         float_type=None,
@@ -163,10 +166,18 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             Falloff exponent. ``1.0`` reduces the form to ``exp(-B ss)``.
         erosion_radius : float, default 0.9
             Radius in Angstroms for erosion step.
-        optimize_phase : bool, default True
-            Whether to optimize phase offset parameter.
+        optimize_phase : bool, default False
+            Accepted and ignored; ``True`` emits a ``DeprecationWarning``.
+
+            .. deprecated:: 0.7.0
+                The bulk-solvent phase offset is not refined or applied. This keyword
+                will be removed.
         initial_phase_offset : float, default 0.0
-            Initial phase offset in radians.
+            Accepted and ignored; a non-zero value emits a ``DeprecationWarning``.
+
+            .. deprecated:: 0.7.0
+                The bulk-solvent phase offset is not refined or applied. This keyword
+                will be removed.
         verbose : int, default 1
             Verbosity level.
         ignore_hydrogens : bool, default True
@@ -189,7 +200,19 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         self.float_type = float_type
         self.solvent_radius = radius
         self.erosion_radius = erosion_radius
-        self.optimize_phase = optimize_phase
+        if optimize_phase or initial_phase_offset != 0.0:
+            warnings.warn(
+                "SolventModel: the bulk-solvent phase offset is not refined or "
+                "applied; 'optimize_phase' and 'initial_phase_offset' are ignored "
+                "and will be removed.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self.optimize_phase = False
+        self.register_buffer(
+            "phase_offset",
+            torch.tensor(0.0, dtype=self.float_type, device=self.device),
+        )
         # Heavy-atom radii already stand in for the hydrogens they carry, so a mask
         # built over hydrogen rows too would exclude solvent twice.
         self.ignore_hydrogens = bool(ignore_hydrogens)
@@ -205,17 +228,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 )
             )
             self._init_falloff(d_half, n_exp)
-            if self.optimize_phase:
-                self.phase_offset = nn.Parameter(
-                    torch.tensor(
-                        initial_phase_offset, dtype=self.float_type, device=self.device
-                    )
-                )
-            else:
-                self.register_buffer(
-                    "phase_offset",
-                    torch.tensor(0.0, dtype=self.float_type, device=self.device),
-                )
             return
 
         # Full initialization with model
@@ -239,21 +251,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             k_solvent = k_solvent.to(dtype=self.float_type, device=self.device)
         self.log_k_solvent = nn.Parameter(torch.log(k_solvent))
         self._init_falloff(d_half, n_exp)
-
-        # Phase offset parameter to align solvent phases with protein phases
-        # This is critical because FFT of a mask gives arbitrary phases
-        self.optimize_phase = optimize_phase
-        if self.optimize_phase:
-            self.phase_offset = nn.Parameter(
-                torch.tensor(
-                    initial_phase_offset, dtype=self.float_type, device=self.device
-                )
-            )
-        else:
-            self.register_buffer(
-                "phase_offset",
-                torch.tensor(0.0, dtype=self.float_type, device=self.device),
-            )
 
     def _init_falloff(self, d_half, n_exp):
         """Register ``log_ss_half`` / ``log_n_exp`` from a resolution and an exponent."""
@@ -599,7 +596,5 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         return fsol
 
     def parameters(self):
-        """Refinable solvent parameters as a list (phase offset only if refined)."""
-        return [self.log_k_solvent, self.log_ss_half, self.log_n_exp] + (
-            [self.phase_offset] if self.optimize_phase else []
-        )
+        """Refinable solvent parameters: ``[log_k_solvent, log_ss_half, log_n_exp]``."""
+        return [self.log_k_solvent, self.log_ss_half, self.log_n_exp]

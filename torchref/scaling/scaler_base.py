@@ -19,7 +19,7 @@ from torchref.base.metrics import (
     rfactor_work_free,
 )
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.config import get_complex_dtype, get_float_dtype, get_int_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
@@ -579,7 +579,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             already-masked subset and the scaler masks its own per-reflection terms to match.
         f_sol_override : torch.Tensor, optional
             Raw solvent structure factors used instead of the cached ``_f_sol_raw`` for this
-            call only (k_sol, ss_half/n_exp falloff and phase offset still applied); the
+            call only (k_sol and the ss_half/n_exp falloff still applied); the
             cache is left untouched. Shape ``(N,)`` or ``(B, N)``; a batched override
             keeps the batch axis. Used by ``CollectionScaler``.
 
@@ -632,17 +632,14 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 f_sol_raw_local[..., mask] if apply_internal_mask else f_sol_raw_local
             )
 
-            # k_sol * exp(i*phase) * falloff(ss) * f_mask, falloff from
-            # SolventModel.damping.
+            # k_sol * falloff(ss) * f_mask, falloff from SolventModel.damping. No phase
+            # rotation: F_mask already obeys the centric phase restriction.
             sol = self.solvent
             k_sol = sol.k_solvent()
             s_half_sq = (
                 self._s_half_sq[mask] if apply_internal_mask else self._s_half_sq
             )
             b_factor = sol.damping(s_half_sq)
-            if sol.optimize_phase:
-                j = torch.tensor(1j, dtype=get_complex_dtype(), device=self.device)
-                f_sol_raw = f_sol_raw * torch.exp(j * sol.phase_offset)
             f_sol = k_sol * f_sol_raw * b_factor
         else:
             f_sol = torch.tensor(0.0, device=self.device, dtype=fcalc.dtype)
