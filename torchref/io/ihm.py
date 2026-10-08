@@ -716,6 +716,11 @@ class IHMWriter:
         ----------
         filepath : str
             Output file path.
+
+        Raises
+        ------
+        ValueError
+            If a base model has a residue that base model 0 lacks; nothing is written.
         """
         import ihm
         import ihm.dumper
@@ -733,6 +738,16 @@ class IHMWriter:
             if mc.n_base_models > 0
             else ([], {})
         )
+        for i in range(1, mc.n_base_models):
+            residues = mc.base_models[i].ctx.topology.residues
+            for r in range(residues.n_residues):
+                chain, resseq, icode = _residue_key(*residues.key(r))
+                if (chain, resseq, icode) not in labels:
+                    raise ValueError(
+                        f"Base model {i} has residue {residues.resname[r]} "
+                        f"{chain}{resseq}{icode}, which base model 0 lacks: one IHM "
+                        "file describes all its models with one set of asym units."
+                    )
         if not asym_units:
             entity = ihm.Entity(
                 [ihm.LPeptideAlphabet()["UNK"]],

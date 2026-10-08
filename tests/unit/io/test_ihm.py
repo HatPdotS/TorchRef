@@ -788,6 +788,46 @@ class TestIHMWriter:
             assert scheme[(asym_id, seq)] == comp
             assert entity_type[asym_entity[asym_id]] == "water"
 
+    def test_state_with_a_residue_the_first_lacks_is_refused(self, tmp_path):
+        """All states share the first state's entities and asym units, so a later
+        state with an extra residue raises a ValueError naming it, before any file
+        is written."""
+        from types import SimpleNamespace
+
+        from torchref.io.ihm import IHMWriter
+        from torchref.model.context import ModelContext
+        from torchref.topology import Topology
+
+        first = pd.DataFrame(
+            [("A", 1, "GLY", "CA"), ("A", 2, "ALA", "CA")],
+            columns=["chainid", "resseq", "resname", "name"],
+        ).assign(x=0.0, y=0.0, z=0.0)
+        extra = first.iloc[[0]].assign(resseq=999, resname="HOH", name="O")
+        second = pd.concat([first, extra], ignore_index=True)
+        models = [
+            SimpleNamespace(
+                ctx=ModelContext(topology=Topology.from_table(table)),
+                to_dataframe=lambda table=table: table,
+            )
+            for table in (first, second)
+        ]
+        mapping = IHMEnsembleMapping(
+            states=[
+                IHMStateInfo(state_id=i, name=f"s{i}", details="", model_num=i)
+                for i in (1, 2)
+            ],
+            model_groups=[
+                IHMModelGroupInfo(
+                    group_id=1, name="t0", state_fractions={1: 0.5, 2: 0.5}
+                )
+            ],
+        )
+        collection = SimpleNamespace(n_base_models=2, base_models=models)
+        out = tmp_path / "two.cif"
+        with pytest.raises(ValueError, match="HOH A999"):
+            IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+        assert not out.exists()
+
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
         import torch
