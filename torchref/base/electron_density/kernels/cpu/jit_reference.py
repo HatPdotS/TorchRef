@@ -40,7 +40,6 @@ __all__ = [
 # =============================================================================
 
 _jit_cpu_kernel = None
-_jit_gpu_kernel = None
 
 # Triton kernel (lazy import, with fallback)
 _triton_kernel = None
@@ -187,102 +186,6 @@ def _get_jit_cpu_kernel():
         pass
 
     return _jit_cpu_kernel
-
-
-# =============================================================================
-# GPU JIT kernel - uses batch matmul (more efficient on GPU than einsum)
-# =============================================================================
-
-_JIT_GPU_CACHE_PATH = os.path.join(_CACHE_DIR, "jit_gpu_kernel.pt")
-
-
-class _GpuDensityKernel(torch.nn.Module):
-    """JIT-scriptable GPU density computation kernel."""
-
-    def forward(
-        self,
-        surrounding_coords: torch.Tensor,
-        voxel_indices: torch.Tensor,
-        density_map: torch.Tensor,
-        xyz: torch.Tensor,
-        b: torch.Tensor,
-        inv_frac_matrix: torch.Tensor,
-        frac_matrix: torch.Tensor,
-        A: torch.Tensor,
-        B: torch.Tensor,
-        occ: torch.Tensor,
-    ) -> torch.Tensor:
-        # Compute diff in Cartesian space
-        diff = surrounding_coords - xyz[:, None, :]
-
-        # Apply PBC using batch matmul (efficient on GPU)
-        diff_frac = torch.matmul(diff, inv_frac_matrix.T)
-        translation = torch.round(diff_frac)
-        correction = torch.matmul(translation, frac_matrix.T)
-        diff_wrapped = diff - correction
-
-        # Compute r²
-        r_squared = (diff_wrapped * diff_wrapped).sum(dim=-1)
-
-        # Compute B_total with clamp
-        B_total = ((B + b[:, None]) * 0.25).clamp(min=0.1)
-
-        # Normalization = (π / B_total)^1.5
-        pi: float = 3.141592653589793
-        pi_sq: float = pi * pi
-        pi_1p5: float = pi * 1.7724538509055159  # sqrt(pi)
-        normalization = pi_1p5 / (B_total * torch.sqrt(B_total))
-
-        # A_normalized
-        A_normalized = A * occ[:, None] * normalization
-
-        # Gaussian terms
-        exponents = -pi_sq * r_squared[:, :, None] / B_total[:, None, :]
-        gaussian_terms = torch.exp(exponents)
-
-        # Density
-        density = (A_normalized[:, None, :] * gaussian_terms).sum(dim=-1)
-
-        # Scatter add to density map
-        ny: int = density_map.shape[1]
-        nz: int = density_map.shape[2]
-        index_flat = (
-            voxel_indices[:, :, 0].to(torch.int64) * (ny * nz)  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
-            + voxel_indices[:, :, 1].to(torch.int64) * nz  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
-            + voxel_indices[:, :, 2].to(torch.int64)  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
-        ).flatten()
-
-        density_map.view(-1).scatter_add_(0, index_flat, density.flatten())
-        return density_map
-
-
-def _get_jit_gpu_kernel():
-    """Get or create the JIT-scripted GPU kernel."""
-    global _jit_gpu_kernel
-
-    if _jit_gpu_kernel is not None:
-        return _jit_gpu_kernel
-
-    # Try loading from cache
-    if os.path.exists(_JIT_GPU_CACHE_PATH):
-        try:
-            _jit_gpu_kernel = torch.jit.load(_JIT_GPU_CACHE_PATH)
-            return _jit_gpu_kernel
-        except Exception:
-            pass  # Cache corrupted, will recreate
-
-    # Create and script the kernel
-    kernel = _GpuDensityKernel()
-    _jit_gpu_kernel = torch.jit.script(kernel)
-
-    # Save to cache
-    try:
-        os.makedirs(os.path.dirname(_JIT_GPU_CACHE_PATH), exist_ok=True)
-        torch.jit.save(_jit_gpu_kernel, _JIT_GPU_CACHE_PATH)
-    except Exception:
-        pass
-
-    return _jit_gpu_kernel
 
 
 # =============================================================================
@@ -488,9 +391,8 @@ def clear_cache() -> None:
     directory and anything else in it are kept, since ``TORCHREF_COMPILE_CACHE`` may
     name a directory shared with other caches.
     """
-    global _jit_cpu_kernel, _jit_gpu_kernel
+    global _jit_cpu_kernel
     _jit_cpu_kernel = None
-    _jit_gpu_kernel = None
 
     for path in glob.glob(os.path.join(_CACHE_DIR, "jit_cpu_kernel*.pt")):
         os.remove(path)
