@@ -1,6 +1,6 @@
 #!/bin/bash
 # Quick interactive test runner for torchref
-# Run this with: srun -c 8 -p day -t 1-00:00:00 tests/scripts/run_tests.sh [options]
+# Run this with: srun -c 8 -p <partition> tests/scripts/run_tests.sh [options]
 #
 # Usage:
 #   ./tests/scripts/run_tests.sh              # Run every test this host supports

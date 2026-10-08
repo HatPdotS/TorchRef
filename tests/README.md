@@ -73,9 +73,13 @@ python -m pytest tests/unit -k "test_coordinate" -v
 
 ### Interactive Run (on compute node)
 
+Partition names are site-specific: pick one with idle nodes from `sinfo -s` (AGENTS.md §1).
+The runner scripts activate a site-specific conda environment, and the `.sbatch` files name a
+partition; edit both before use.
+
 ```bash
 # Start an interactive session
-srun -c 8 -p day -t 1-00:00:00 --pty bash
+srun -c 8 -p <partition> --pty bash
 
 # Then run tests
 ./tests/scripts/run_tests.sh unit
@@ -85,7 +89,7 @@ srun -c 8 -p day -t 1-00:00:00 --pty bash
 
 Or use the convenience script directly:
 ```bash
-srun -c 8 -p day -t 1-00:00:00 tests/scripts/run_tests.sh unit
+srun -c 8 -p <partition> tests/scripts/run_tests.sh unit
 ```
 
 ### Detached Run (via SLURM)
@@ -117,6 +121,8 @@ Tests are marked with the following pytest markers:
 - `@pytest.mark.cuda` - Needs CUDA specifically (e.g. Triton kernels)
 - `@pytest.mark.mps` - Needs MPS specifically (Metal kernels)
 - `@pytest.mark.slow` - Slow tests (>30 seconds)
+- `@pytest.mark.openmm` - Needs OpenMM (the `[amber]` extra); skipped if absent
+- `@pytest.mark.amber` - Needs OpenMM + AmberTools (antechamber/tleap); skipped if absent
 
 ### Selecting tests
 
@@ -152,7 +158,7 @@ open htmlcov/index.html
 ## GitHub Actions
 
 Tests are automatically run on GitHub via Actions:
-- Unit tests run on Python 3.9, 3.10, 3.11
+- Unit tests run on Python 3.10–3.13
 - Coverage is uploaded to Codecov
 - Integration tests run after unit tests pass
 
