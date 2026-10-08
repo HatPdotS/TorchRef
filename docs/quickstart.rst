@@ -307,7 +307,8 @@ LossState Workflow
 
 The LossState object manages targets, weights, and metadata for refinement.
 Use ``complete_loss_state()``, which returns the refinement's persistent state
-with its cached losses refreshed, rather than assembling one yourself:
+(it evaluates nothing; ``aggregate()`` computes the losses), rather than
+assembling one yourself:
 
 .. testcode::
 
