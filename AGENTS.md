@@ -185,7 +185,7 @@ Black, 88 columns, `isort` with the black profile. Ruff lint with
 
 ## 3. Package structure
 
-`torchref/` — 260 modules, ~92k lines. Top-level exports live in `torchref/__init__.py`
+`torchref/` — 289 modules, ~93k lines. Top-level exports live in `torchref/__init__.py`
 (`Model`, `ModelFT`, `LBFGSRefinement`, `ReflectionData`, `Cell`, `SpaceGroup`, `Map`, …).
 
 | Package | Contents |
@@ -195,10 +195,10 @@ Black, 88 columns, `isort` with the black profile. Ruff lint with
 | `model/` | `Model` (refinable atomic parameters), `ModelContext` (the cell, space group, atom identity as a node-only `ctx.topology`, links, provenance, hydrogen policy and geometry restraints a model is loaded with — `model.cell` / `.spacegroup` / `.restraints` forward to it, the rest is `model.ctx.*`). **Identity is read from `ctx.topology`, values only through the wrappers (`model.xyz()`, `.adp()`, `.u()`, `.occupancy()`, `aniso_flag`); a pandas atom table appears only at construction (`ModelContext.from_atoms`, the one place a table is settled) and output (`Model.to_dataframe()`) — never read `model.pdb`, a deprecated view.** `Model._install_parameters` is the one place wrappers are built. `ModelFT` (adds F_calc via `SfFFT`; `SfDS` is a standalone direct-summation engine), `MixedModel`, `ModelCollection`, and the parametrizations in `parameter_wrappers.py` / `rigid_xyz.py` that decide what is refinable |
 | `refinement/` | Drivers (`Refinement`, `LBFGSRefinement`, `RigidBodyRefinementStep`), `targets/` (`xray/`, `geometry/`, `adp/`, `collection/`, `combined.py`), `weighting/`, `optimizers/` (Langevin simulated annealing), `model_error_estimation/` (σ_A, σ_M), `loss_state.py`, `logger.py` |
 | `topology/` | The connectivity graph (`Topology`, `AtomGraph`, `ResidueGraph`) and the restraint layer over it (`Restraints`: bonds, angles, torsions, planes, chirals, VDW pair list), hydrogen generation (`hydrogens.py`) and riding frames. Built from the CCP4 Monomer Library, resolved lazily via `monomer.library.get_library_manager()` — importing this package must not trigger a library download. `Restraints` holds no reference to a model: evaluations take the coordinates they score |
-| `scaling/` | `ScalerBase` (model-independent), `Scaler`, `CollectionScaler`, `SolventModel` (k_sol, B_sol) |
+| `scaling/` | `ScalerBase` (model-independent), `Scaler`, `CollectionScaler`, `SolventModel` (k_sol, ss_half/n_exp falloff) |
 | `symmetry/` | `Symmetry` (operations plus everything derived from them), `SpaceGroup` (adds the crystallographic identity and the CCP4 ASU verbs), `Cell`. All dataclasses over `DeviceMixin`, not `nn.Module` — they hold no refinable parameters. Map and reciprocal-grid operators are private, reached through `Symmetry` |
 | `maps/` | `Map` (2Fo−Fc, Fcalc), `DifferenceMap` |
-| `cli/` | Entry points: `torchref.refine`, `torchref.difference-refine`, `torchref.mtz2map`, `torchref.validate-ded`, `torchref.difference-map`, `torchref.add-metadata`, `torchref.strip-altlocs` |
+| `cli/` | Entry points: `torchref.refine`, `torchref.difference-refine`, `torchref.mtz2map`, `torchref.validate-ded`, `torchref.difference-map`, `torchref.add-metadata`, `torchref.strip-altlocs`, `torchref.uniform-rfree`, `torchref.simulate-noisy-data` |
 | `experimental/` | APIs that may change without notice: `alignment/` (Patterson MR), `kinetic/` (time-resolved), `ensemble/`, `monolithic_refinement/`, `targets/` (AMBER/GAFF2, real-space, sampled-ML phase) |
 | `utils/` | See §5 |
 | `config.py` | See §4 |
@@ -209,9 +209,9 @@ downward from `base` or `utils` into the higher layers.
 
 Two conventions worth knowing before adding re-exports: `__all__` in a package `__init__.py`
 is the public surface, and several packages deliberately keep helpers out of it (e.g.
-`torchref.utils.timing.register_timing`, the `restraints` builder classes). Where a name
-exists in two modules, the docstring says which is the source of truth — don't re-export the
-copy.
+`torchref.utils.timing.register_timing`, the `torchref.topology.builders` classes). Where a
+name exists in two modules, the docstring says which is the source of truth — don't re-export
+the copy.
 
 ---
 
@@ -238,7 +238,7 @@ torchref.config.caching.value = False
 | `TORCHREF_COMPILE_TARGETS` | `compile_targets.value` / `get_compile_targets()` | `False` | `torch.compile` the quadrature X-ray target kernels (`--xray-mode ml_full`). Off by default: ~2 min backward-compile latency. Keep off for float64 and gradient verification |
 | `TORCHREF_CACHING` | `caching.value` / `get_caching_enabled()` | `True` | Gates `CachedForwardMixin` **only**. Off ⇒ every `forward()` recomputes; numbers unchanged. Primary use is diagnosing stale-looking results in one step |
 | `TORCHREF_NUM_THREADS` | `torchref.N_CPUS` | `SLURM_CPUS_PER_TASK` if set, else CPU affinity capped at 4 | Thread count, read by `torchref/__init__.py` before torch is imported; `import torchref` overwrites `OMP_`/`MKL_`/`OPENBLAS_NUM_THREADS` with it |
-| `TORCHREF_MONOMER_LIB` | `restraints.library` | unset | Path to a local CCP4 monomer library install, checked first |
+| `TORCHREF_MONOMER_LIB` | `topology.monomer.library` | unset | Path to a local CCP4 monomer library install, checked first |
 
 Also in `config.py`, not env-configurable:
 
