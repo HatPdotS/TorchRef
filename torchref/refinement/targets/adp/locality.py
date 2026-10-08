@@ -26,8 +26,8 @@ class ADPLocalityTarget(ADPTarget):
     Built on a k-d tree rather than a full N×N distance matrix, so it scales to
     arbitrarily large structures, and rebuilt by :meth:`maintenance` whenever the
     coordinates have moved. Bonded neighbours are included; SIMU
-    (:class:`~torchref.refinement.targets.adp.ADPSimilarityTarget`) restrains them
-    separately.
+    (:class:`~torchref.refinement.targets.adp.similarity.ADPSimilarityTarget`)
+    restrains them separately.
 
     Parameters
     ----------
