@@ -339,7 +339,9 @@ assembling one yourself:
 Saving and Loading State
 ------------------------
 
-Save complete refinement state for later continuation:
+Save the refinement state for later continuation. The checkpoint holds no
+reflection data, so ``load_state`` restores it into a refinement built from the
+same input files:
 
 .. testcode::
 
