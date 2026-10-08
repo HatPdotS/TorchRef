@@ -125,7 +125,7 @@ def test_construction_pme_box_matches_supercell(small_setup):
 def test_forward_returns_finite_energy_with_gradient(small_setup):
     """forward() returns a protein-scale energy and a bounded gradient.
 
-    3GR5's HOH 224 sits on a two-fold axis; held once per site, it no longer stacks
+    3GR5's HOH 224 sits on a two-fold axis; held once per site, it does not stack
     on its own copy. Generated hydrogens of neighbouring copies can still clash, and
     the per-atom clip (10000 kJ/mol/nm) bounds the gradient there.
     """
