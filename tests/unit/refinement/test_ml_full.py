@@ -424,6 +424,47 @@ def test_compile_switch_is_respected_and_float64_stays_eager():
         F._COMPILED.clear()
 
 
+def test_a_compiled_kernel_that_fails_degrades_to_eager_once(monkeypatch):
+    """``torch.compile`` builds lazily, so codegen fails on the first call, not at
+    construction. That call must fall back to eager with one
+    ``TorchRefDegradationWarning`` and later calls must stay eager without warning.
+    """
+    import warnings
+
+    import torchref.config as cfg
+    from torchref.utils.backends import TorchRefDegradationWarning
+
+    def failing_build(fn, **kwargs):
+        def compiled(*args):
+            raise RuntimeError("codegen failed")
+
+        return compiled
+
+    g = torch.Generator().manual_seed(0)
+    x = [torch.rand(64, generator=g) * 10 + 1 for _ in range(4)]
+    expected = F._acentric_nll_eager(*x, F.N_QUAD, F.N_SIGMA, F.log_i0)
+
+    monkeypatch.setattr(torch, "compile", failing_build)
+    cfg.compile_targets.value = True
+    try:
+        F._COMPILED.clear()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            first = F.acentric_nll(*x)
+            second = F.acentric_nll(*x)
+        degraded = [
+            w for w in caught if issubclass(w.category, TorchRefDegradationWarning)
+        ]
+        assert len(degraded) == 1
+        assert "codegen failed" in str(degraded[0].message)
+        torch.testing.assert_close(first, expected)
+        torch.testing.assert_close(second, expected)
+        assert F._COMPILED[(F.N_QUAD, float(F.N_SIGMA))] is None
+    finally:
+        cfg.compile_targets.value = False
+        F._COMPILED.clear()
+
+
 # ---------------------------------------------------------------------------
 # 7. the Luzzati mean coupling alpha
 # ---------------------------------------------------------------------------

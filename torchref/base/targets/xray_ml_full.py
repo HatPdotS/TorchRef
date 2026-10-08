@@ -19,11 +19,13 @@ empirical; the comment on them states the accuracy they were chosen for.
 """
 
 import math
+import warnings
 
 import numpy as np
 import torch
 
 from torchref.config import get_compile_targets
+from torchref.utils.backends import TorchRefDegradationWarning
 
 LOG_2PI = math.log(2.0 * math.pi)
 
@@ -162,7 +164,9 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=None):
     ``torchref.config.compile_targets`` is on (off by default;
     ``TORCHREF_COMPILE_TARGETS``) and the standard configuration is in use -- eager
     costs ~20 array passes per node, so fusing is worth an order of magnitude. See
-    :class:`torchref.config.CompileTargetsConfig`.
+    :class:`torchref.config.CompileTargetsConfig`. A compiled kernel that fails falls
+    back to eager for the rest of the process with one
+    :class:`~torchref.utils.backends.TorchRefDegradationWarning`.
     """
     n_quad = N_QUAD if n_quad is None else n_quad
     n_sigma = N_SIGMA if n_sigma is None else n_sigma
@@ -177,9 +181,20 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=None):
         and F_obs.numel() > 1  # 0/1-specialisation would force a 2nd compile
         and get_compile_targets()
     ):
-        fn = _compiled_acentric(n_quad, n_sigma)
-        if fn is not None:
-            return fn(F_obs, sigma, Fc, Sigma)
+        key = (n_quad, float(n_sigma))
+        try:
+            fn = _compiled_acentric(key)
+            if fn is not None:
+                return fn(F_obs, sigma, Fc, Sigma)
+        except Exception as exc:  # noqa: BLE001 - the fallback is the point
+            # torch.compile builds lazily, so codegen fails here on the first call.
+            _COMPILED[key] = None
+            warnings.warn(
+                "acentric_nll: the compiled kernel failed and fell back to eager "
+                f"({type(exc).__name__}: {exc}). Results are correct but slower.",
+                TorchRefDegradationWarning,
+                stacklevel=2,
+            )
 
     return _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, li0)
 
@@ -187,22 +202,21 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=None):
 _COMPILED: dict = {}
 
 
-def _compiled_acentric(n_quad: int, n_sigma: float):
-    """Lazily-built compiled kernel, one per ``(n_quad, n_sigma)``.
+def _compiled_acentric(key: tuple):
+    """Lazily-built compiled kernel for ``key = (n_quad, n_sigma)``; ``None`` once
+    it has failed.
 
     Both are closed over rather than passed, so the unrolled node loop is a
     compile-time constant; only the leading dimension varies, and ``dynamic=True``
     then gives one compilation for every dataset size.
     """
-    key = (n_quad, float(n_sigma))
     if key not in _COMPILED:
+        n_quad, n_sigma = key
+
         def worker(F_obs, sigma, Fc, Sigma):
             return _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, log_i0)
 
-        try:
-            _COMPILED[key] = torch.compile(worker, dynamic=True)
-        except Exception:  # pragma: no cover - no inductor/triton available
-            _COMPILED[key] = None
+        _COMPILED[key] = torch.compile(worker, dynamic=True)
     return _COMPILED[key]
 
 
