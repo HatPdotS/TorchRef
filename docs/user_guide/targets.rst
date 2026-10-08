@@ -206,7 +206,7 @@ evaluations, and tracks what needs recomputing between line-search steps.
 
     state = refinement.complete_loss_state()
     optimizer = LBFGS(refinement.model.parameters(), lr=1.0, max_iter=100)
-    state.run(optimizer, n_steps=1)      # equivalent to state.step(optimizer)
+    state.run(optimizer, nsteps=1)       # equivalent to state.step(optimizer)
 
 Observed-dataset scaling target
 -------------------------------
