@@ -245,8 +245,9 @@ def test_dropout_draws_only_alive_members():
         assert ens.resample_dropout() == 2
         mult = ens._dropout_occ_mult.view(ens.n_members, -1)[:, 0].cpu()
         assert torch.all(mult[4:] == 0)
-        assert torch.allclose(mult[mult > 0], torch.full((2,), 2.0))
-        assert torch.allclose(_member_occupancy(ens).sum(), torch.tensor(1.0))
+        assert torch.allclose(mult[mult > 0], torch.full((2,), 2.0, dtype=mult.dtype))
+        total = _member_occupancy(ens).sum()
+        assert torch.allclose(total, torch.tensor(1.0, dtype=total.dtype))
 
 
 def test_inactive_dropout_reports_the_alive_count():
