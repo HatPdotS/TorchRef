@@ -762,8 +762,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         nuisance-magnitude fit that need not carry a model-error term, ``alpha`` is degenerate
         with the scale being fitted, and for ``ml_full`` the body target would put a 32-node
         quadrature inside every line-search evaluation. The fit runs on the same
-        :class:`~torchref.refinement.LossState` machinery as the body steps, differing
-        only in the loss and in exposing only the scaler's parameters to the optimizer;
+        :class:`~torchref.refinement.loss_state.LossState` machinery as the body steps,
+        differing only in the loss and in exposing only the scaler's parameters to it;
         see :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`.
 
         Returns
