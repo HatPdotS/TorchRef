@@ -913,10 +913,10 @@ class EnsembleModel(ModelFT):
         the alive members uniformly at random, sets their per-atom multiplier
         to ``n_alive/k`` (so effective occupancy is ``(1/n_alive)·(n_alive/k)
         = 1/k``) and the rest, dead slots included, to 0. Returns ``k`` (or
-        ``n_members`` when dropout is inactive, which is a no-op).
+        :attr:`n_alive` when dropout is inactive, which is a no-op).
         """
         if not self.dropout_active or self._dropout_occ_mult is None:
-            return self.n_members
+            return self.n_alive
         alive = self._alive.nonzero(as_tuple=False).flatten()
         n_alive = int(alive.numel())
         lo = min(max(1, int(self.dropout_min)), n_alive)

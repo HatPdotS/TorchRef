@@ -247,6 +247,11 @@ def test_dropout_draws_only_alive_members():
         assert torch.allclose(_member_occupancy(ens).sum(), torch.tensor(1.0))
 
 
+def test_inactive_dropout_reports_the_alive_count():
+    ens = EnsembleModel.from_single(TEST_PDB, n_members=4, n_max=6, **_POOL_KW)
+    assert ens.resample_dropout() == 4
+
+
 def test_write_pdb_writes_alive_members_with_their_weights(tmp_path):
     ens = EnsembleModel.from_single(TEST_PDB, n_members=4, n_max=6, **_POOL_KW)
     ens.enable_population_refinement(True)
