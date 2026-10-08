@@ -26,10 +26,8 @@ _PORTABLE = "torchref.base.electron_density.kernels.cpu.variable_radius"
 
 #: Argument positions carrying the device/dtype contract:
 #: ``density_map, xyz, adp_or_u, occ, A, B``. The trailing three -- the two cell matrices
-#: and the per-atom radius -- are excluded because no gate has ever probed them, and
-#: widening the contract to cover them would make two currently-working backends stricter
-#: for no demonstrated bug. They *are* read as raw pointers by the C++ and CUDA kernels, so
-#: that remains an open question rather than a settled one.
+#: and the per-atom radius -- are not probed; a cell matrix of another dtype raises the
+#: same ``data_ptr`` RuntimeError in the C++ kernel instead of reading out of bounds.
 _ATOM_ARGS = (0, 1, 2, 3, 4, 5)
 
 DENSITY_BACKENDS = BackendTable(
@@ -68,8 +66,8 @@ DENSITY_BACKENDS = BackendTable(
             device="cpu",
             dtypes=(torch.float32, torch.float64),  # dtype-ok: backend capability declaration, not an allocation
             # Uniformity, not membership: the kernel picks one ``scalar_t`` from the output
-            # map and then reads every other tensor through a raw pointer of that type, so a
-            # float64 map beside float32 atoms would be a 2x out-of-bounds read.
+            # map and ``data_ptr<scalar_t>()`` raises on any other dtype, so this sends a
+            # mixed-dtype call to the portable splat instead of to that RuntimeError.
             require_uniform_dtype=True,
             probes=_ATOM_ARGS,
             probe=(_SPHERE, "why_unavailable"),
