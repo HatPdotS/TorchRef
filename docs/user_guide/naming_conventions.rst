@@ -30,20 +30,12 @@ Case distinguishes complex from amplitude:
    F_sigma = dataset.F_sigma        # uncertainty on F
    I, I_sigma = dataset.I, dataset.I_sigma      # intensities, if present
 
-   hkl, F, F_sigma, rfree = dataset()           # legacy accessor (deprecated)
-
-The property and the call are not interchangeable. ``dataset.F`` is a plain
-tensor of everything as read; ``dataset()`` returns ``F`` and ``F_sigma`` as
-``torch.masked.MaskedTensor``, scaled, with invalid reflections marked rather
-than removed — so aggregations skip them but indices still line up with ``hkl``.
-Pass ``mask=False`` / ``scale=False`` to opt out.
-
-Two traps on the call. The masked ``F`` / ``F_sigma`` are **detached clones**, so
-no gradient flows through them; and the call itself is deprecated (it emits a
-``DeprecationWarning``). Prefer the subset accessor — ``dataset.work.F``,
-``dataset.free.F``, ``.sigF`` / ``.hkl`` / ``.select(...)`` — or
-``dataset.get_corrected_data()`` for the full scaled ``(F, F_sigma)`` with the
-graph intact.
+These are plain, full-length tensors aligned with ``dataset.hkl`` and
+``dataset.rfree_flags``, masked-out reflections included. For split data use the
+subset views ``dataset.work``, ``dataset.free`` and ``dataset.validation``
+(``.F``, ``.sigF``, ``.hkl``, ``.select(t)``), which also drop masked-out
+reflections. A ``ScaledDataset`` in a ``DatasetCollection`` exposes its live
+scale correction through the same attributes.
 
 Atomic Displacement Parameters
 ------------------------------
