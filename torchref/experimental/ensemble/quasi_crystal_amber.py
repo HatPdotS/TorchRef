@@ -479,9 +479,6 @@ class QuasiCrystalAmberTarget(AmberTarget):
         pos_nm = state.getPositions(asNumpy=True).value_in_unit(u_omm.nanometer)
         pos_nm = np.asarray(pos_nm, dtype=np.float64)
 
-        # Update the buffer that holds unmapped slots (e.g. tleap-added atoms
-        # we don't track in the model) so future forwards see the relaxed
-        # positions for those slots too.
         self._pos_buf = pos_nm.copy()
         # Invalidate the lazy torch buffer cache so it picks up the new positions.
         self._buffers_device = None
@@ -619,8 +616,8 @@ class QuasiCrystalAmberTarget(AmberTarget):
         """Amber energy on the unified supercell.
 
         Reads :attr:`EnsembleModel.xyz_per_member`, applies the sym + tile
-        transform via the :class:`SupercellLayout`, scatters heavy atoms
-        into the OpenMM atom layout, places H atoms analytically, and calls
+        transform via the :class:`SupercellLayout`, gathers every OpenMM
+        slot, hydrogens included, from those model coordinates, and calls
         the existing :class:`_OpenMMAMBERFunction` autograd bridge for
         energy + analytical forces. Returns kJ/mol/ASU (default) — supercell
         total energy divided by the number of ASU copies it contains
