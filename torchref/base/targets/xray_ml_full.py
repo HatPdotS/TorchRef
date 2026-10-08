@@ -159,9 +159,10 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=None):
     float64 inputs and the fast :func:`log_i0` otherwise.
 
     Routes through a ``torch.compile(dynamic=True)`` build when
-    ``torchref.compile_targets`` is on (the default) and the standard configuration
-    is in use -- eager costs ~20 array passes per node, so fusing is worth an order
-    of magnitude. See :class:`torchref.config.CompileTargetsConfig`.
+    ``torchref.config.compile_targets`` is on (off by default;
+    ``TORCHREF_COMPILE_TARGETS``) and the standard configuration is in use -- eager
+    costs ~20 array passes per node, so fusing is worth an order of magnitude. See
+    :class:`torchref.config.CompileTargetsConfig`.
     """
     n_quad = N_QUAD if n_quad is None else n_quad
     n_sigma = N_SIGMA if n_sigma is None else n_sigma
