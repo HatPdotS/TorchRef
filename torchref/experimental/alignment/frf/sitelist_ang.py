@@ -60,7 +60,7 @@ def build_dense_map_per_beta(
     """Return the dense FFT map ``M_β(α, γ)`` for every β.
 
     Phaser source: ``DoRfftStuff`` (FastRot.cc:19-88), but tensor-batched
-    over β and with a single 2D ``torch.fft.ifft2`` per β instead of a
+    over β and with a single forward 2D ``torch.fft.fft2`` per β instead of a
     cctbx ``real_to_complex_3d`` of shape ``(1, amax, amax)`` — they
     produce equivalent dense (α, γ) grids.
 
@@ -72,7 +72,7 @@ def build_dense_map_per_beta(
         β values in radians.
     fft_size : int
         Fixed FFT grid size N. The map ``M_β`` will be ``(N, N)`` for every β,
-        indexed as ``M[k', l'] = RF(2π k'/N, β, 2π l'/N) / N²``.
+        indexed as ``M[k, l] = RF(2π k/N, β, 2π l/N)``.
 
     Returns
     -------
