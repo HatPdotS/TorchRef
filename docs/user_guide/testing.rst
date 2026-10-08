@@ -10,8 +10,9 @@ Test Categories
 
 - ``tests/unit/`` — fast, isolated, mock data, no file I/O. Mirrors the package
   layout (``model/``, ``io/``, ``refinement/``, ``scaling/``, ``symmetry/``,
-  ``restraints/``, ``structure_factor/``, ``scattering/``, ``maps/``, ``base/``,
-  ``utils/``, ``experimental/``).
+  ``topology/``, ``monomer/``, ``structure_factor/``, ``scattering/``, ``maps/``,
+  ``base/``, ``utils/``, ``cli/``, ``alignment/``, ``frf_separate/``,
+  ``experimental/``).
 - ``tests/integration/`` — real file I/O and complete pipelines.
 - ``tests/functional/`` — multi-component workflows on pre-loaded objects.
 - ``tests/files/`` — test data: ``cif/``, ``pdb/``, ``mtz/``, ``cif_sf/``.
