@@ -964,8 +964,8 @@ def write_reflections(
     both: R-free-flags (1 = work, 0 = free, -1 = excluded by the input's flags) and
     Validation_flag. With ``fcalc`` both add FWT/PHWT (2Fo-Fc),
     DELFWT/PHDELWT (Fo-Fc) and F-model/PH-model, the unweighted m = 1, D = 1
-    coefficients of :func:`~torchref.base.fourier.map_coefficients`, not 2mFo-DFc;
-    anomalous also F-model(+)/(-), PHIF-model(+)/(-) and ANOM/PANOM.
+    coefficients of :func:`~torchref.base.fourier.coefficients.map_coefficients`, not
+    2mFo-DFc; anomalous also F-model(+)/(-), PHIF-model(+)/(-) and ANOM/PANOM.
     R-free-flags is Phenix's label with the CCP4 free value 0, so tell Phenix
     the test-flag value rather than letting it assume 1.
 

@@ -1,5 +1,4 @@
-"""
-I/O for crystallographic data files: dataset containers, MTZ/PDB/CIF format
+"""I/O for crystallographic data files: dataset containers, MTZ/PDB/CIF format
 modules, and the top-level object-creation readers.
 
 The three layers, loosest to tightest::
@@ -8,8 +7,9 @@ The three layers, loosest to tightest::
     data = ReflectionData(verbose=1); data.load_mtz('structure.mtz')
     data_dict, cell, spacegroup = mtz.read('data.mtz')()
 
-:class:`DatasetCollection` handles several datasets jointly. The IHM reader and
-writer need ``python-ihm``; :class:`IHMEnsembleMapping` does not.
+:class:`~.datasets.collection.DatasetCollection` handles several datasets jointly.
+The IHM reader and writer need ``python-ihm``; :class:`~.ihm_mapping.IHMEnsembleMapping`
+does not.
 """
 
 # Format modules
