@@ -16,7 +16,6 @@ project = 'TorchRef'
 copyright = '2026, Hans Peter Seidel'
 author = 'Hans Peter Seidel'
 
-# Single source of truth for the version: torchref/__init__.py __version__.
 import torchref  # noqa: E402
 
 release = torchref.__version__
