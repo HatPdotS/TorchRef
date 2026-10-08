@@ -25,28 +25,18 @@ _PROFILE = bool(os.environ.get("FRF_PROFILE"))
 
 #: Byte budget for the per-chunk transients in :func:`bessel_sh_expand`.
 #:
-#: The chunk holds the Legendre recurrence's rolling rows, so this is really a
-#: cache-residency knob, and it has an interior optimum. Measured on an EPYC
-#: 9335 at four threads, seconds for the whole rotation function at cap 100 on
-#: 3K7M: 24.9 at 2 MB, 12.1 at 8, **9.6 at 32**, 9.9 at 128, 11.0 at 256, 12.3
-#: at 1024. Same shape at cap 64. Below the optimum the 100-iteration loop over
-#: l is re-run for too many chunks and Python and dispatch overhead dominate;
-#: above it the rolling rows stop fitting in cache and the recurrence becomes
-#: memory-bound. The truth rank was identical at every setting.
+#: The chunk holds the Legendre recurrence's rolling rows, so this is a
+#: cache-residency knob with an interior optimum near 32 MB: smaller chunks re-run
+#: the loop over l too often, larger ones push the rows out of cache.
 CLUSTER_CHUNK_BYTES = 32_000_000
 
 
 #: Grouping resolution for |s|, i.e. for the RADIAL factor. Reflections whose |s|
 #: agrees to 1/this share one Bessel evaluation.
 #:
-#: This one has to be fine. The Bessel argument is `bessel_h_scale * |s|`, of
-#: order 250 for a protein at L=64, and j_u oscillates on a scale of 2*pi in its
-#: argument -- so an error in |s| is amplified by ~250 before it reaches j_u.
-#: Against an ungrouped reference the expansion is bitwise exact at 1e9 and
-#: 1.8e-8 to 7.5e-8 relative at 1e7, where this used to sit: a systematic error
-#: at or above the engine's own run-to-run spread. Costs nothing where the
-#: grouping pays most: the dense P1 calc box is exactly degenerate, so it groups
-#: identically at 1e7, 1e9 and 1e11 alike.
+#: This one has to be fine: the Bessel argument is `bessel_h_scale * |s|`, of
+#: order 250 for a protein at L=64, so an error in |s| is amplified ~250x before it
+#: reaches j_u, and the key must resolve |s| to 1e-7.
 _GROUP_SCALE_S = 10_000_000
 
 #: Grouping resolution for cos(theta), i.e. for the ANGULAR factor.
@@ -82,11 +72,9 @@ __all__ = [
 #: ~35 -- most of the resolution range. Rescaling by a fixed factor whenever the
 #: running value crosses it keeps the ladder in range at ANY working precision.
 #:
-#: It has to be a power of two. Dividing by one only decrements the exponent, so
-#: the mantissas of every stored value and of the closing renormalisation are
-#: untouched and the rescale introduces no rounding at all -- the table comes out
-#: bit-identical to the un-rescaled version. Measured event counts over the FRF's
-#: range: 5 rescales at x=1.26, 4 at 1.9, 3 at 5, 2 at 10, 1 at 20, 0 at 64.
+#: It has to be a power of two: dividing by one only decrements the exponent, so
+#: the rescale introduces no rounding and the table is bit-identical to the
+#: un-rescaled version.
 _BESSEL_RESCALE_EXP = 100
 
 
