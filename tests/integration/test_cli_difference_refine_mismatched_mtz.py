@@ -75,7 +75,7 @@ def test_difference_refine_mismatched_mtz_cpu(
             "-lm", str(mismatched_mtz_pair["pdb"]),
             "-dsf", str(mismatched_mtz_pair["dark"]),
             "-lsf", str(mismatched_mtz_pair["light"]),
-            "--fraction", "0.3",
+            "--fraction", "0.29",
             "--refine-fractions",
             "--title", "Dark and light states",
             "--output-remarks", "Refined against mismatched halves",
@@ -103,7 +103,8 @@ def test_difference_refine_mismatched_mtz_cpu(
     # The exact stale-tensor shape mismatch must not reappear.
     assert "must match the size of tensor" not in result.stderr
 
-    prefix = "fractions_70_30"
+    # Rounded, not truncated: int(0.29 * 100) is 28.
+    prefix = "fractions_71_29"
     summary = outdir / f"{prefix}_summary.json"
     diff_mtz = outdir / f"{prefix}_difference_data.mtz"
     assert summary.exists(), "summary JSON not written"

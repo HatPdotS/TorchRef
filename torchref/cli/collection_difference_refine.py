@@ -1568,7 +1568,7 @@ Examples:
         sys.stdout.flush()
 
     # --- Save outputs ---
-    prefix = f"fractions_{int(fractions[0]*100)}_{int(fractions[1]*100)}"
+    prefix = f"fractions_{round(fractions[0] * 100)}_{round(fractions[1] * 100)}"
 
     dark_pdb_out = str(outdir / f"{prefix}_dark.pdb")
     light_pdb_out = str(outdir / f"{prefix}_light.pdb")
