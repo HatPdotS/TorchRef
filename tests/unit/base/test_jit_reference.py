@@ -180,3 +180,20 @@ def test_fused_cuda_splat_passes_the_gradient_to_its_input_map(pdb_dir):
     assert got is not None, "no gradient reached the first splat's atoms"
     rel = float((got.cpu() - want).norm() / want.norm())
     assert rel < 1e-3, f"CUDA vs CPU first-group xyz gradient rel L2 {rel:.2e}"
+
+
+def test_clear_cache_deletes_only_the_kernel_files(tmp_path, monkeypatch):
+    """``clear_cache`` removes the cached kernel files and keeps everything else."""
+    from torchref.base.electron_density.kernels.cpu import jit_reference
+
+    monkeypatch.setattr(jit_reference, "_CACHE_DIR", str(tmp_path))
+    keep = tmp_path / "keep.txt"
+    keep.write_text("not a kernel")
+    kernel = tmp_path / "jit_cpu_kernel-0.0-0123456789abcdef.pt"
+    kernel.write_bytes(b"")
+
+    jit_reference.clear_cache()
+
+    assert keep.exists()
+    assert not kernel.exists()
+    assert jit_reference._jit_cpu_kernel is None

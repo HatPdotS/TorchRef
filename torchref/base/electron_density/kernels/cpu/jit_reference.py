@@ -8,6 +8,7 @@ double-differentiable ``_add_to_map_gpu_simple``. The CPU JIT and simple GPU pat
 fully differentiable; the CPU kernel is scripted on first use, or by :func:`warmup`.
 """
 
+import glob
 import hashlib
 import inspect
 import os
@@ -481,13 +482,15 @@ def get_cache_dir() -> str:
 
 
 def clear_cache() -> None:
-    """Clear the JIT kernel cache."""
-    import shutil
+    """Drop the scripted kernel from memory and delete its cache files.
 
+    Only the ``jit_cpu_kernel*.pt`` files in :func:`get_cache_dir` are removed; the
+    directory and anything else in it are kept, since ``TORCHREF_COMPILE_CACHE`` may
+    name a directory shared with other caches.
+    """
     global _jit_cpu_kernel, _jit_gpu_kernel
     _jit_cpu_kernel = None
     _jit_gpu_kernel = None
 
-    if os.path.exists(_CACHE_DIR):
-        shutil.rmtree(_CACHE_DIR)
-        os.makedirs(_CACHE_DIR, exist_ok=True)
+    for path in glob.glob(os.path.join(_CACHE_DIR, "jit_cpu_kernel*.pt")):
+        os.remove(path)
