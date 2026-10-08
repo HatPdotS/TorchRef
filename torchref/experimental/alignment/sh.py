@@ -308,13 +308,10 @@ def fit_overall_anisotropy(
         if fewer than 50 reflections survive to constrain seven parameters.
     """
     valid = shell_idx >= 0
-    # The fit runs at the amplitudes' own width, wherever they are. It used to
-    # force double on the host, which was measured against this: over the 16
-    # datasets in ``tests/files/mtz``, float32 reproduces U to 3.3e-5 relative
-    # and the correction it exists to apply, exp(+pi^2 s.U.s), to 4.5e-6. The
-    # design matrix is well scaled by construction -- a constant column beside
-    # 2 pi^2 s.s terms of order 0.1-1 over the fitting window -- so there is no
-    # precision cliff for seven parameters to fall off.
+    # The fit runs at the amplitudes' own width, wherever they are: the design
+    # matrix is well scaled by construction -- a constant column beside
+    # 2 pi^2 s.s terms of order 0.1-1 over the fitting window -- so float32
+    # reproduces U and its correction to ~1e-5 relative.
     work = F_obs.dtype if F_obs.is_floating_point() else get_float_dtype()
     F = F_obs[valid].to(work)
     s = s_vectors[valid].to(work)
@@ -408,10 +405,8 @@ def hkl_symops_to_cartesian(
     # S^T, not S: reciprocal space transforms as h' = h.S, so the operator
     # acting on Cartesian s as a column vector is (B^-1 S B)^T = M S^T M^-1
     # with M = B^T. Using S here returns matrices that are not rotations at all
-    # in a non-orthogonal basis -- measured orthogonality error 5.33 for
-    # P 3_1 2 1 and P 6_5 2 2, versus 2e-7 with the transpose. The two agree
-    # whenever the symmetry matrices are orthogonal, i.e. everywhere except
-    # trigonal/hexagonal, which is why this survived.
+    # in a non-orthogonal basis; the two agree only where the symmetry matrices
+    # are orthogonal, i.e. everywhere except trigonal/hexagonal.
     return torch.einsum("ij,klj,lm->kim", M, S, M_inv)
 
 
