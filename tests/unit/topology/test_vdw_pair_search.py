@@ -36,7 +36,7 @@ def _image_table(path):
     op_indices, offsets = nb.prefilter_symop_offsets(cell, sg, xyz, CUTOFF)
     identity = ((op_indices == 0) & (offsets == 0).all(dim=1)).nonzero()[0].item()
     lengths = torch.stack([cell.a, cell.b, cell.c]).to(dtypes.float)
-    grid_dims = torch.clamp((lengths / CUTOFF).long(), min=1)
+    grid_dims = torch.clamp((lengths / CUTOFF).to(dtypes.int), min=1)
     flat_cell, atom_idx, combo_idx, cart_pos = nb.assign_to_grid(
         xyz, cell, sg, op_indices, offsets, grid_dims
     )
@@ -110,6 +110,10 @@ def test_kdtree_output_convention(table):
     intra = c == t["identity"]
     assert bool((i[intra] < j[intra]).all()), "intra-ASU pairs once, i < j, no self"
     assert i.dtype == j.dtype == c.dtype == torch.int64
+
+
+def test_grid_cells_take_the_configured_int_dtype(table):
+    assert table["flat_cell"].dtype == dtypes.int
 
 
 def test_grid_is_the_kdtree_minus_its_cell_width_shortfall(table):

@@ -380,9 +380,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
 
             xyz_frac = xyz @ inv_frac.T  # (N, 3)
             xyz_frac_wrapped = xyz_frac % 1.0
-            center_idx = torch.round(
-                xyz_frac_wrapped * grid_shape_float
-            ).long()  # (N, 3)
+            center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).to(
+                get_int_dtype()
+            )  # (N, 3)
 
             protein_chunks = []
             boundary_chunks = []
@@ -454,11 +454,15 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                     gd = grid_dims.to(float_dtype)
 
                     p_frac = protein_voxels.to(float_dtype) / gd
-                    p_idx = (torch.round((p_frac @ R.T + t) * gd) % grid_dims).long()
+                    p_idx = (torch.round((p_frac @ R.T + t) * gd) % grid_dims).to(
+                        get_int_dtype()
+                    )
                     del p_frac
 
                     b_frac = boundary_voxels.to(float_dtype) / gd
-                    b_idx = (torch.round((b_frac @ R.T + t) * gd) % grid_dims).long()
+                    b_idx = (torch.round((b_frac @ R.T + t) * gd) % grid_dims).to(
+                        get_int_dtype()
+                    )
                     del b_frac
 
                 protein_mask[p_idx[:, 0], p_idx[:, 1], p_idx[:, 2]] = True

@@ -574,20 +574,31 @@ class IHMWriter:
         # --- Build entities and asym units from first base model ---
         import ihm.representation
 
-        lpep = ihm.LPeptideAlphabet()
+        from torchref.model.context import THREE_TO_ONE
+        from torchref.topology.monomer.cif import read_component_groups
+        from torchref.topology.residue_graph import polymer_type
+
+        lpep, dna, rna = ihm.LPeptideAlphabet(), ihm.DNAAlphabet(), ihm.RNAAlphabet()
         asym_units = []
 
         if mc.n_base_models > 0:
-            model0 = mc.base_models[0]
-            for chain_id, seq_str in model0.ctx.chain_sequences:
+            groups = read_component_groups()
+            for chain_id, residues in mc.base_models[0].ctx._polymer_residues():
+                names = [resname for _, resname in residues]
                 seq = []
-                for char in seq_str:
-                    if char == "?":
-                        continue  # skip gaps
-                    try:
-                        seq.append(lpep[char])
-                    except KeyError:
-                        seq.append(lpep["UNK"])
+                for name, kind in zip(names, polymer_type(names)):
+                    if kind == "protein":
+                        seq.append(lpep[THREE_TO_ONE.get(name, "UNK")])
+                    elif name in dna:
+                        seq.append(dna[name])
+                    elif name in rna:
+                        seq.append(rna[name])
+                    # A modified nucleotide keeps its own name rather than
+                    # collapsing onto a standard base; its library group types it.
+                    elif "DNA" in groups.get(name, "").upper():
+                        seq.append(ihm.DNAChemComp(name, name, "N"))
+                    else:
+                        seq.append(ihm.RNAChemComp(name, name, "N"))
                 if seq:
                     entity = ihm.Entity(seq, description=f"Chain {chain_id}")
                     system.entities.append(entity)

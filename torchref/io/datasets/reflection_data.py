@@ -1175,9 +1175,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             intensities. See :meth:`load`.
         anomalous : bool, optional
             Anomalous (Bijvoet) handling. If None (default), ``F(+)/F(-)`` (or
-            ``I(+)/I(-)``) columns are auto-detected and loaded as explicit
-            Friedel pairs when present (anomalous preferred). True forces this;
-            False forces a merged load even when anomalous columns are present.
+            ``I(+)/I(-)``) columns are loaded as explicit Friedel pairs when
+            present, unless ``column_names`` pins a merged F or I. True forces
+            this; False forces a merged load even when anomalous columns are present.
 
         Returns
         -------

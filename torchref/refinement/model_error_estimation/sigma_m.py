@@ -204,6 +204,7 @@ class SigmaMEstimator:
         log_b = torch.log(b.clamp(min=1e-6))
         log_b_clamped = torch.clamp(log_b, self._log_b_min, self._log_b_max)
         idx_f = (log_b_clamped - self._log_b_min) / self._log_b_step
+        # dtype-ok: idx_lo builds a scatter_add index; int64 required on torch < 2.8
         idx_lo = idx_f.floor().long().clamp(0, self.b_grid_n - 2)
         frac = (idx_f - idx_lo.to(idx_f.dtype)).clamp(0.0, 1.0)
         return idx_lo, frac

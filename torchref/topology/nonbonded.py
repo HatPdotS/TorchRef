@@ -287,11 +287,11 @@ def assign_to_grid(
     sg : SpaceGroup
     op_indices : (M,) int
     cell_offsets : (M, 3) int
-    grid_dims : (3,) long – number of grid cells per axis
+    grid_dims : (3,) int – number of grid cells per axis
 
     Returns
     -------
-    flat_cell : (N*M,) long – flat grid cell index per entry
+    flat_cell : (N*M,) int – flat grid cell index per entry
     atom_idx : (N*M,) long – ASU atom index
     combo_idx : (N*M,) long – index into op_indices / cell_offsets
     cart_pos : (N*M, 3) float – Cartesian positions (reused in step 4)
@@ -317,7 +317,7 @@ def assign_to_grid(
     # Wrap to [0, 1) for grid assignment only; distances use the unwrapped images.
     frac_wrapped = (images @ B_inv.T) % 1.0
     gd = grid_dims.to(device=device, dtype=fdtype)
-    cell_ijk = (frac_wrapped * gd[None, None, :]).long()
+    cell_ijk = (frac_wrapped * gd[None, None, :]).to(get_int_dtype())
     cell_ijk = cell_ijk.clamp(
         min=torch.zeros(3, dtype=get_int_dtype(), device=device),
         max=(grid_dims - 1).to(device),
@@ -349,7 +349,7 @@ def build_cell_list(
     Returns
     -------
     sort_order : (E,) long
-    unique_cells : (C,) long – occupied cell indices
+    unique_cells : (C,) int – occupied cell indices
     starts : (C+1,) int – CSR boundaries into sorted arrays
     cell_lookup : (n_grid_total,) int – maps flat cell → index in
         unique_cells, or -1 if empty.
@@ -481,13 +481,13 @@ def find_pairs_periodic_grid_v2(
         Cartesian image positions, sorted into CSR cell order.
     atom_idx_sorted, combo_idx_sorted : (E,) long
         ASU atom index and (symop, offset) combo index per entry.
-    unique_cells : (C,) long
+    unique_cells : (C,) int
         Occupied flat grid-cell indices.
     starts : (C+1,) int
         CSR boundaries into the sorted arrays.
     cell_lookup : (n_grid_total,) int
         Maps a flat cell index to its position in ``unique_cells`` (-1 empty).
-    grid_dims : (3,) long
+    grid_dims : (3,) int
         Number of grid cells per axis.
     cutoff : float
         Cartesian distance cutoff in Angstrom.
@@ -927,7 +927,7 @@ def build_vdw_restraints_gpu(
         cell.a.item(), cell.b.item(), cell.c.item()
     ], dtype=fdtype, device=device)
     grid_dims = torch.clamp(
-        (cell_lengths / cutoff).long(), min=1
+        (cell_lengths / cutoff).to(get_int_dtype()), min=1
     )  # (3,)
 
     flat_cell, atom_idx, combo_idx, cart_pos = assign_to_grid(
@@ -1017,7 +1017,7 @@ def build_vdw_restraints_gpu(
     )
     first_occ.scatter_reduce_(0, inverse_i, perm, reduce="amin")
     first_mask = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-    first_mask[first_occ.long()] = True
+    first_mask[first_occ] = True
 
     pair_atom_i = pair_atom_i[first_mask]
     pair_atom_j = pair_atom_j[first_mask]

@@ -349,11 +349,11 @@ class CIFReader:
                 continue
 
             if char == quote_char and in_quotes:
+                # A closed quote is a value even when empty: ``''`` keeps its column.
                 in_quotes = False
                 quote_char = None
-                if current_token:
-                    tokens.append("".join(current_token))
-                    current_token = []
+                tokens.append("".join(current_token))
+                current_token = []
                 i += 1
                 continue
 

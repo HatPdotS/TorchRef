@@ -167,10 +167,10 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Derive amplitudes from intensities via French-Wilson. Set False to use
             existing ``F``/``SIGF`` columns when the MTZ also carries intensities.
         anomalous : bool, optional
-            Anomalous (Bijvoet) load preference. None (default) loads Friedel pairs
-            when a ``wavelength`` is given and the file has ``F(+)/F(-)`` (or
-            ``I(+)/I(-)``), enabling the model's f'' term; True forces it; False
-            forces a merged load.
+            Anomalous (Bijvoet) load preference. None (default) loads Friedel pairs,
+            enabling the model's f'' term, when a ``wavelength`` is given, the file has
+            ``F(+)/F(-)`` (or ``I(+)/I(-)``) and no merged F or I is pinned in
+            ``column_names``; True forces it; False forces a merged load.
         adp_mode : str, optional
             ADP parametrization: ``"isotropic"`` (default) refines a per-atom
             B-factor, ``"anisotropic"`` a 6-component U tensor for the atoms
