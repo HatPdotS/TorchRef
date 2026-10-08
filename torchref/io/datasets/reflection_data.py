@@ -595,11 +595,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
     def conjugate_friedel(self, fcalc: torch.Tensor) -> torch.Tensor:
         """Move complex structure factors between the signed and canonical index.
 
-        Rows flagged in :attr:`friedel_flags` are evaluated at ``-h`` by
-        ``_hkl_for_sf`` while :attr:`hkl` holds ``+h``; ``F(-h)`` is the
-        conjugate of ``F(h)`` up to the anomalous ``f''`` term. Conjugating
-        exactly those rows re-expresses the array on the other index. The
-        operation is its own inverse, so it converts in both directions.
+        Rows flagged in :attr:`~.CrystalDataset.friedel_flags` are evaluated at ``-h``
+        by ``_hkl_for_sf`` while :attr:`~.CrystalDataset.hkl` holds ``+h``; ``F(-h)``
+        is the conjugate of ``F(h)`` up to the anomalous ``f''`` term. Conjugating
+        exactly those rows re-expresses the array on the other index. The operation
+        is its own inverse, so it converts in both directions.
 
         Amplitudes are unaffected -- only phases move.
 
@@ -624,9 +624,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """Complex ``F_calc`` from ``model``, on the canonical ASU index.
 
         Evaluates the model at the signed indices so Bijvoet mates get distinct
-        ``|F_calc|``, then returns the result on :attr:`hkl` -- the index this
-        dataset writes as ``H,K,L``. Structure factors are in this convention
-        everywhere in TorchRef; the signed index does not escape this method.
+        ``|F_calc|``, then returns the result on :attr:`~.CrystalDataset.hkl` -- the
+        index this dataset writes as ``H,K,L``. Structure factors are in this
+        convention everywhere in TorchRef; the signed index never escapes this method.
 
         Parameters
         ----------
@@ -642,7 +642,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         -------
         torch.Tensor
             Complex structure factors of shape (N,), row-aligned with
-            :attr:`hkl`.
+            :attr:`~.CrystalDataset.hkl`.
         """
         hkl = self._hkl_for_sf()
         fcalc = model(hkl, recalc=recalc) if cached else model.forward(hkl)
@@ -651,11 +651,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
     def asu_group_indices(self) -> Tuple[torch.Tensor, int]:
         """Group rows that describe the same unique reflection.
 
-        After canonicalization :attr:`hkl` holds CCP4-ASU indices and may
-        contain duplicate rows: the two members of a Bijvoet pair share one
-        canonical index and are distinguished only by :attr:`friedel_flags`
-        (and the signed :attr:`hkl_anomalous`). Symmetry-equivalent rows that
-        survive merging collapse the same way.
+        After canonicalization :attr:`~.CrystalDataset.hkl` holds CCP4-ASU indices and
+        may contain duplicate rows: a Bijvoet pair's two members share one canonical
+        index and are distinguished only by :attr:`~.CrystalDataset.friedel_flags` (and
+        the signed :attr:`~.CrystalDataset.hkl_anomalous`). Symmetry-equivalent rows
+        that survive merging collapse the same way.
 
         Anything that must treat such rows as a *single* observation has to
         group by canonical index rather than by row -- the work/free partition
@@ -673,9 +673,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Raises
         ------
         RuntimeError
-            If :attr:`hkl` is missing, or the data have not been canonicalized.
-            Grouping raw indices would silently fail to unite ``+h`` with
-            ``-h``, which is precisely the case this exists to handle.
+            If :attr:`~.CrystalDataset.hkl` is missing, or the data have not been
+            canonicalized. Grouping raw indices would silently fail to unite ``+h``
+            with ``-h``, which is precisely the case this exists to handle.
         """
         if self.hkl is None:
             raise RuntimeError("No hkl present; cannot group reflections.")
@@ -1971,7 +1971,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Output MTZ filename.
         fcalc : torch.Tensor, optional
             Complex structure factors of shape (N,), row-aligned with
-            :attr:`hkl` in the canonical-ASU convention (as returned by
+            :attr:`~.CrystalDataset.hkl` in the canonical-ASU convention (as returned by
             :meth:`structure_factors`) and on the scale of ``F``. Adds model
             and 2Fo-Fc / Fo-Fc columns.
         model_ft : ModelFT, optional
@@ -1983,7 +1983,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Raises
         ------
         ValueError
-            If ``fcalc`` is not row-aligned with :attr:`hkl`.
+            If ``fcalc`` is not row-aligned with :attr:`~.CrystalDataset.hkl`.
         """
         # One fallback for both layouts, so ``fcalc`` means the same thing
         # whether the caller supplied it or it was derived here. cached=False
@@ -2227,9 +2227,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         but downstream code (e.g. ensemble refinement) needs a third held-out
         set for hyperparameter tuning. Free reflections are split
         resolution-stratified; ``val_fraction_of_free`` of them are marked in
-        the separate boolean :attr:`validation_flags`, leaving
-        :attr:`rfree_flags` untouched. The work/free/validation subsets are
-        disjoint (validation is carved out of free) -- see
+        the separate boolean :attr:`~.CrystalDataset.validation_flags`, leaving
+        :attr:`~.CrystalDataset.rfree_flags` untouched. The work/free/validation
+        subsets are disjoint (validation is carved out of free) -- see
         ``_subset_indices`` and the ``work``/``free``/``validation``
         accessors. Like :meth:`generate_rfree_flags`, the split is over whole
         ASU groups so Bijvoet mates stay together (see
