@@ -134,9 +134,9 @@ class MTZReader:
             other, so ``{"F": "FP"}`` loads amplitudes even when the file also
             has intensities, and French-Wilson does not run.
         anomalous : bool, optional
-            None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into explicit
-            Friedel pairs when such columns exist; True forces that (a notice at
-            verbose > 0 if none exist); False forces a merged load, averaging pairs.
+            None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into Friedel pairs
+            when such columns exist and no merged F or I is pinned; True forces
+            stacking (notice at verbose > 0 if none exist); False averages pairs.
         """
         self.verbose = verbose
         # A copy: pins are re-keyed by MTZ type when a file is read.
@@ -232,6 +232,14 @@ class MTZReader:
             # columns (no coexisting merged column), average the pairs into merged
             # base columns so extraction can read them.
             self._merge_anomalous_columns()
+            return
+        # A pinned merged column means merged data: stacking would replace it with
+        # the Bijvoet pairs of whatever (+)/(-) columns sit beside it.
+        if self.anomalous is None and any(
+            self.column_names.get(key) in self.mtz_data.columns
+            and not self.column_names[key].endswith(("(+)", "(-)"))
+            for key in ("F", "I")
+        ):
             return
 
         cols = list(self.mtz_data.columns)
