@@ -53,7 +53,7 @@ Running Tests
 
 .. code-block:: bash
 
-    pytest -m "not gpu and not slow" -v     # recommended during development
+    pytest tests/ -v                        # everything this host supports; slow tests need --run-slow
     pytest tests/unit -v                    # by category
     pytest tests/unit/model/ -v             # by module
     pytest tests/unit/model/test_model.py::TestModelInitialization -v
