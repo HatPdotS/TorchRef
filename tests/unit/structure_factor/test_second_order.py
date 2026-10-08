@@ -219,7 +219,7 @@ def test_fused_cpu_kernel_uses_the_double_backward_fallback(
     """
     from torchref.base.electron_density.kernels.cpu import sphere_splat
 
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU sphere splat unavailable: {sphere_splat.last_error()}")
 
     calls = {"fallback": 0}

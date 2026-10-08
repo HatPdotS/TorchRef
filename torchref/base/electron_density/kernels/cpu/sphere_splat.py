@@ -523,15 +523,6 @@ def why_unavailable() -> Optional[str]:
     )
 
 
-def sphere_splat_available() -> bool:
-    """Whether the fused CPU splat compiled and is ready to dispatch.
-
-    Derived from :func:`why_unavailable` rather than re-testing, so there is one
-    availability check here, not two that can drift.
-    """
-    return why_unavailable() is None
-
-
 def last_error() -> Optional[Tuple[str, str]]:
     """The ``(message, traceback)`` of the last build failure, if any."""
     return _module_error

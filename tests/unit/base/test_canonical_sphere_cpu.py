@@ -176,7 +176,7 @@ def _empty_iso(dtype):
 
 @pytest.mark.parametrize("beta", _BETAS)
 def test_fused_iso_matches_contract(beta):
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
     frac, inv_frac, dims, f64 = _cell(beta)
     xyz, adp, occ, A, B = _iso_atoms(f64)
@@ -188,7 +188,7 @@ def test_fused_iso_matches_contract(beta):
 
 @pytest.mark.parametrize("beta", _BETAS)
 def test_fused_aniso_matches_contract(beta):
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
     frac, inv_frac, dims, f64 = _cell(beta)
     xyz, u, occ, A, B = _aniso_atoms(f64)
@@ -223,7 +223,7 @@ def test_portable_aniso_matches_contract(beta):
 
 def test_fused_float64_is_exact():
     """float64 uses std::exp, so only fp rounding separates it from the reference."""
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip("fused CPU splat unavailable")
     frac, inv_frac, dims, f64 = _cell(100.0, dtype=torch.float64, dims=(32, 28, 24))
     xyz, adp, occ, A, B = _iso_atoms(f64, dtype=torch.float64)
@@ -359,7 +359,7 @@ def test_auto_actually_dispatches_the_fused_kernel(dtype, monkeypatch):
     used to patch ``main`` instead, because the ladder there resolved the name from its own
     globals.
     """
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip("fused CPU splat unavailable")
     frac, inv_frac, dims, f64 = _cell(100.0, dtype=dtype)
     calls = []
@@ -477,7 +477,7 @@ def test_fused_kernel_is_thread_invariant(n_threads):
     ``test_cpu_scatter.py``, which exercised the C++ structured scatter -- no longer
     reachable from the dispatch.
     """
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU sphere splat unavailable: {sphere_splat.last_error()}")
 
     frac, inv_frac, dims, f64 = _cell(115.0, dtype=torch.float32)
@@ -546,7 +546,7 @@ def test_fused_extension_compiles():
     """The fused sphere splat must actually build. Fails rather than skipping.
 
     Every other test in this file -- and in ``tests/unit/structure_factor`` -- calls
-    ``pytest.skip`` when ``sphere_splat_available()`` is False, which is right for them:
+    ``pytest.skip`` when ``why_unavailable()`` returns a reason, which is right for them:
     they are testing numerics, and without the extension there is nothing to test. But if
     *every* test skips, a build that has stopped working produces an all-green run while
     the CPU production path has silently degraded to the portable splat. Dispatch is designed
@@ -564,7 +564,7 @@ def test_fused_extension_compiles():
     That guard previously protected the C++ structured scatter, a helper; it now protects
     the production CPU splat, so it matters more than it did.
     """
-    if sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is None:
         return
 
     import os
