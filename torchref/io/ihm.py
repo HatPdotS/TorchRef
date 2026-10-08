@@ -530,7 +530,12 @@ def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tup
         seq = []
         for name, kind in zip(names, polymer_type(names)):
             if kind == "protein":
-                seq.append(lpep[THREE_TO_ONE.get(name, "UNK")])
+                comp = lpep[THREE_TO_ONE.get(name, "UNK")]
+                # PDBx names a modified residue (MSE) in the sequence as in
+                # _atom_site; only the canonical code is its parent's (M).
+                if comp.id != name:
+                    comp = ihm.LPeptideChemComp(name, name, comp.code_canonical)
+                seq.append(comp)
             elif name in dna:
                 seq.append(dna[name])
             elif name in rna:

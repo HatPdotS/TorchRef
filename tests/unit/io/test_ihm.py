@@ -496,7 +496,7 @@ class TestIHMWriter:
     def test_nucleic_acid_chains_keep_their_polymer_type(self, tmp_path):
         """A DNA and an RNA chain are written as polydeoxyribonucleotide and
         polyribonucleotide entities of their own residues, a peptide chain beside
-        them as polypeptide(L)."""
+        them as polypeptide(L), its MSE as MSE with the canonical code M."""
         from types import SimpleNamespace
 
         import gemmi
@@ -540,8 +540,15 @@ class TestIHMWriter:
         assert sequence == {
             "polydeoxyribonucleotide": ["DA", "DC", "5CM"],
             "polyribonucleotide": ["A", "U"],
-            "polypeptide(L)": ["GLY", "MET"],
+            "polypeptide(L)": ["GLY", "MSE"],
         }
+        assert ["GM"] == [
+            can
+            for kind, can in block.find(
+                "_entity_poly.", ["type", "pdbx_seq_one_letter_code_can"]
+            )
+            if kind == "polypeptide(L)"
+        ]
 
     def test_identical_chains_share_one_entity(self, tmp_path):
         """Two chains of one sequence (a homodimer) are one entity with two asym
