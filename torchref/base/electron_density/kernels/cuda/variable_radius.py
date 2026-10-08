@@ -243,11 +243,13 @@ if _HAVE_TRITON:
         clamp2 = ((B2 + b_iso) * 0.25 > 0.1).to(tl.float32)
         clamp3 = ((B3 + b_iso) * 0.25 > 0.1).to(tl.float32)
         clamp4 = ((B4 + b_iso) * 0.25 > 0.1).to(tl.float32)
-        An0 = m0 * A0 * occ * PI_1P5 / (Bt0 * tl.sqrt(Bt0))
-        An1 = m1 * A1 * occ * PI_1P5 / (Bt1 * tl.sqrt(Bt1))
-        An2 = m2 * A2 * occ * PI_1P5 / (Bt2 * tl.sqrt(Bt2))
-        An3 = m3 * A3 * occ * PI_1P5 / (Bt3 * tl.sqrt(Bt3))
-        An4 = m4 * A4 * occ * PI_1P5 / (Bt4 * tl.sqrt(Bt4))
+        # Occupancy-free amplitudes: the density is linear in occ, so its gradient is
+        # the occ = 1 density, and occ scales only the other gradients.
+        An0 = m0 * A0 * PI_1P5 / (Bt0 * tl.sqrt(Bt0))
+        An1 = m1 * A1 * PI_1P5 / (Bt1 * tl.sqrt(Bt1))
+        An2 = m2 * A2 * PI_1P5 / (Bt2 * tl.sqrt(Bt2))
+        An3 = m3 * A3 * PI_1P5 / (Bt3 * tl.sqrt(Bt3))
+        An4 = m4 * A4 * PI_1P5 / (Bt4 * tl.sqrt(Bt4))
 
         frac_x = ax * if0 + ay * if1 + az * if2
         frac_y = ax * if3 + ay * if4 + az * if5
@@ -309,14 +311,13 @@ if _HAVE_TRITON:
             db4 = An4 * e4 * (-1.5 / Bt4 + PI_SQ * r2 / (Bt4 * Bt4)) * clamp4
             g_b += tl.sum(tl.where(wmask, grad_out * 0.25 * (db0 + db1 + db2 + db3 + db4), 0.0), axis=0)
             dens = An0 * e0 + An1 * e1 + An2 * e2 + An3 * e3 + An4 * e4
-            g_occ += tl.sum(
-                tl.where(wmask, grad_out * tl.where(occ != 0.0, dens / occ, 0.0), 0.0), axis=0)
+            g_occ += tl.sum(tl.where(wmask, grad_out * dens, 0.0), axis=0)
             v_start += BLOCK_V
 
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 0, g_ax)
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 1, g_ay)
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 2, g_az)
-        tl.atomic_add(grad_b_ptr + atom, g_b)
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 0, occ * g_ax)
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 1, occ * g_ay)
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 2, occ * g_az)
+        tl.atomic_add(grad_b_ptr + atom, occ * g_b)
         tl.atomic_add(grad_occ_ptr + atom, g_occ)
 
     # ====================================================================
@@ -471,7 +472,7 @@ if _HAVE_TRITON:
     ):
         """Anisotropic backward. v = Minv w; grad_xyz = sum_g 2*pi^2*dg*v_g;
         grad_U via S = -0.5*Minv + pi^2 v v^T (diag *2pi^2, offdiag *4pi^2);
-        grad_occ = sum_g dg/occ. Out-of-sphere voxels masked as in the forward."""
+        grad_occ = sum_g dg at occ = 1. Out-of-sphere voxels masked as in the forward."""
         if0 = tl.load(inv_frac_ptr + 0); if1 = tl.load(inv_frac_ptr + 1); if2 = tl.load(inv_frac_ptr + 2)
         if3 = tl.load(inv_frac_ptr + 3); if4 = tl.load(inv_frac_ptr + 4); if5 = tl.load(inv_frac_ptr + 5)
         if6 = tl.load(inv_frac_ptr + 6); if7 = tl.load(inv_frac_ptr + 7); if8 = tl.load(inv_frac_ptr + 8)
@@ -533,7 +534,8 @@ if _HAVE_TRITON:
             tl.load(B_ptr + atom * 5 + 4) * 0.25 + du,
             tl.load(B_ptr + atom * 5 + 4) * 0.25 + dv,
             tl.load(B_ptr + atom * 5 + 4) * 0.25 + dw, dd, ee, ff)
-        oc = occ * PI_1P5
+        # Occupancy-free amplitudes, as in _wq_grid_bwd_kernel.
+        oc = PI_1P5
         An0 = tl.load(mask_ptr + atom * 5 + 0) * tl.load(A_ptr + atom * 5 + 0) * oc / tl.sqrt(tl.maximum(dt0, 1e-10))
         An1 = tl.load(mask_ptr + atom * 5 + 1) * tl.load(A_ptr + atom * 5 + 1) * oc / tl.sqrt(tl.maximum(dt1, 1e-10))
         An2 = tl.load(mask_ptr + atom * 5 + 2) * tl.load(A_ptr + atom * 5 + 2) * oc / tl.sqrt(tl.maximum(dt2, 1e-10))
@@ -648,19 +650,18 @@ if _HAVE_TRITON:
             g_u3 += tl.sum(tl.where(wmask, grad_out * 4.0 * PI_SQ * gu3_l, 0.0), axis=0)
             g_u4 += tl.sum(tl.where(wmask, grad_out * 4.0 * PI_SQ * gu4_l, 0.0), axis=0)
             g_u5 += tl.sum(tl.where(wmask, grad_out * 4.0 * PI_SQ * gu5_l, 0.0), axis=0)
-            g_occ += tl.sum(
-                tl.where(wmask, grad_out * tl.where(occ != 0.0, dens / occ, 0.0), 0.0), axis=0)
+            g_occ += tl.sum(tl.where(wmask, grad_out * dens, 0.0), axis=0)
             v_start += BLOCK_V
 
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 0, g_ax)
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 1, g_ay)
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 2, g_az)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 0, g_u0)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 1, g_u1)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 2, g_u2)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 3, g_u3)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 4, g_u4)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 5, g_u5)
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 0, occ * g_ax)
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 1, occ * g_ay)
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 2, occ * g_az)
+        tl.atomic_add(grad_u_ptr + atom * 6 + 0, occ * g_u0)
+        tl.atomic_add(grad_u_ptr + atom * 6 + 1, occ * g_u1)
+        tl.atomic_add(grad_u_ptr + atom * 6 + 2, occ * g_u2)
+        tl.atomic_add(grad_u_ptr + atom * 6 + 3, occ * g_u3)
+        tl.atomic_add(grad_u_ptr + atom * 6 + 4, occ * g_u4)
+        tl.atomic_add(grad_u_ptr + atom * 6 + 5, occ * g_u5)
         tl.atomic_add(grad_occ_ptr + atom, g_occ)
 
 

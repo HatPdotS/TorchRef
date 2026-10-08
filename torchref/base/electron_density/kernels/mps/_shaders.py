@@ -185,7 +185,7 @@ kernel void iso_splat_bwd(
         float raw = (B[5*a+g]+b_iso)*0.25f;
         float Bt_g = max(raw, 0.1f);
         Bt[g] = Bt_g;
-        An[g] = mask[5*a+g]*A[5*a+g]*occa*PI_1P5/(Bt_g*sqrt(Bt_g));
+        An[g] = mask[5*a+g]*A[5*a+g]*PI_1P5/(Bt_g*sqrt(Bt_g));   // occupancy-free
         clampf[g] = (raw > 0.1f) ? 1.0f : 0.0f;   // d(clamped Bt)/d(adp)=0 in clamp region
     }
 
@@ -220,9 +220,11 @@ kernel void iso_splat_bwd(
         }
       }
     }
-    grad_xyz[3*a+0]=gx; grad_xyz[3*a+1]=gy; grad_xyz[3*a+2]=gz;
-    grad_adp[a]=gb;
-    grad_occ[a]=(occa!=0.0f) ? go/occa : 0.0f;
+    // The density is linear in occ: its gradient is the occ = 1 density, and occ
+    // scales only the other gradients.
+    grad_xyz[3*a+0]=occa*gx; grad_xyz[3*a+1]=occa*gy; grad_xyz[3*a+2]=occa*gz;
+    grad_adp[a]=occa*gb;
+    grad_occ[a]=go;
 }
 
 constant float TWO_PI_SQ = 19.739208802178716f;   // 2*pi^2  (= 8*pi^2 / 4)
@@ -319,7 +321,8 @@ kernel void aniso_splat_fwd(
 // Anisotropic backward: grads to xyz, U (6), occ. v_g = Minv_g w; dg_g =
 // A_norm_g exp(-pi^2 w.v_g). grad_xyz = go*2pi^2*sum dg v; grad_U diag =
 // go*2pi^2*sum dg(-0.5 p_ii + pi^2 v_i^2); grad_U offdiag = go*4pi^2*sum
-// dg(-0.5 p_ij + pi^2 v_i v_j); grad_occ = go*sum dg / occ. One thread/atom.
+// dg(-0.5 p_ij + pi^2 v_i v_j), each times occ, with dg taken at occ = 1;
+// grad_occ = go*sum dg. One thread/atom.
 // ---------------------------------------------------------------------------
 kernel void aniso_splat_bwd(
     device float*        grad_xyz   [[buffer(0)]],   // (n,3)
@@ -372,7 +375,7 @@ kernel void aniso_splat_bwd(
         float inv=1.0f/det;
         p00[g]=(mb*mc-mf*mf)*inv; p11[g]=(ma*mc-me*me)*inv; p22[g]=(ma*mb-md*md)*inv;
         p01[g]=(me*mf-md*mc)*inv; p02[g]=(md*mf-me*mb)*inv; p12[g]=(md*me-ma*mf)*inv;
-        An[g]=mask[5*a+g]*A[5*a+g]*occa*PI_1P5/sqrt(max(det,1e-10f));
+        An[g]=mask[5*a+g]*A[5*a+g]*PI_1P5/sqrt(max(det,1e-10f));   // occupancy-free
     }
 
     float gx=0,gy=0,gz=0,gu0=0,gu1=0,gu2=0,gu3=0,gu4=0,gu5=0,go=0;
@@ -418,9 +421,9 @@ kernel void aniso_splat_bwd(
         }
       }
     }
-    grad_xyz[3*a+0]=gx; grad_xyz[3*a+1]=gy; grad_xyz[3*a+2]=gz;
-    grad_u[6*a+0]=gu0; grad_u[6*a+1]=gu1; grad_u[6*a+2]=gu2;
-    grad_u[6*a+3]=gu3; grad_u[6*a+4]=gu4; grad_u[6*a+5]=gu5;
-    grad_occ[a]=(occa!=0.0f) ? go/occa : 0.0f;
+    grad_xyz[3*a+0]=occa*gx; grad_xyz[3*a+1]=occa*gy; grad_xyz[3*a+2]=occa*gz;
+    grad_u[6*a+0]=occa*gu0; grad_u[6*a+1]=occa*gu1; grad_u[6*a+2]=occa*gu2;
+    grad_u[6*a+3]=occa*gu3; grad_u[6*a+4]=occa*gu4; grad_u[6*a+5]=occa*gu5;
+    grad_occ[a]=go;
 }
 """

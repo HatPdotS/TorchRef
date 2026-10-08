@@ -229,11 +229,13 @@ def _density_bwd_kernel(
     clamp4 = ((B4 + b_iso) * 0.25 > 0.1).to(tl.float32)
 
     pi_1p5: tl.constexpr = 5.568327996831708
-    An0 = A0 * occ * pi_1p5 / (Bt0 * tl.sqrt(Bt0))
-    An1 = A1 * occ * pi_1p5 / (Bt1 * tl.sqrt(Bt1))
-    An2 = A2 * occ * pi_1p5 / (Bt2 * tl.sqrt(Bt2))
-    An3 = A3 * occ * pi_1p5 / (Bt3 * tl.sqrt(Bt3))
-    An4 = A4 * occ * pi_1p5 / (Bt4 * tl.sqrt(Bt4))
+    # Occupancy-free amplitudes: the density is linear in occ, so its gradient is the
+    # occ = 1 density, and occ scales only the other gradients.
+    An0 = A0 * pi_1p5 / (Bt0 * tl.sqrt(Bt0))
+    An1 = A1 * pi_1p5 / (Bt1 * tl.sqrt(Bt1))
+    An2 = A2 * pi_1p5 / (Bt2 * tl.sqrt(Bt2))
+    An3 = A3 * pi_1p5 / (Bt3 * tl.sqrt(Bt3))
+    An4 = A4 * pi_1p5 / (Bt4 * tl.sqrt(Bt4))
 
     # Matrices
     if0 = tl.load(inv_frac_ptr + 0); if1 = tl.load(inv_frac_ptr + 1); if2 = tl.load(inv_frac_ptr + 2)
@@ -322,17 +324,14 @@ def _density_bwd_kernel(
         db4 = An4 * e4 * (-1.5 / Bt4 + pi_sq * r2 / (Bt4 * Bt4)) * clamp4
         g_b += tl.sum(tl.where(mask, grad_out * 0.25 * (db0 + db1 + db2 + db3 + db4), 0.0), axis=0)
 
-        # --- Gradient w.r.t. occ ---
-        # d(density)/d(occ) = density / occ  (since An_g is linear in occ)
         density = An0 * e0 + An1 * e1 + An2 * e2 + An3 * e3 + An4 * e4
-        # Avoid division by zero; if occ==0 the gradient is the density formula without occ
-        g_occ += tl.sum(tl.where(mask, grad_out * tl.where(occ != 0.0, density / occ, 0.0), 0.0), axis=0)
+        g_occ += tl.sum(tl.where(mask, grad_out * density, 0.0), axis=0)
 
     # Write accumulated gradients
-    tl.store(grad_xyz_ptr + atom * 3 + 0, g_ax)
-    tl.store(grad_xyz_ptr + atom * 3 + 1, g_ay)
-    tl.store(grad_xyz_ptr + atom * 3 + 2, g_az)
-    tl.store(grad_b_ptr + atom, g_b)
+    tl.store(grad_xyz_ptr + atom * 3 + 0, occ * g_ax)
+    tl.store(grad_xyz_ptr + atom * 3 + 1, occ * g_ay)
+    tl.store(grad_xyz_ptr + atom * 3 + 2, occ * g_az)
+    tl.store(grad_b_ptr + atom, occ * g_b)
     tl.store(grad_occ_ptr + atom, g_occ)
 
 

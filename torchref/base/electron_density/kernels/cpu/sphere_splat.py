@@ -233,13 +233,15 @@ static void iso_bwd_impl(scalar_t* g_xyz, scalar_t* g_adp, scalar_t* g_occ,
     at::parallel_for(0, n_at, 1, [&](int64_t a0, int64_t a1) {
       for (int64_t a = a0; a < a1; ++a) {
         const Anchor<scalar_t> g = make_anchor(c, xyz, fm, im, a, r2cut[a]);
+        // Occupancy-free amplitudes: the density is linear in occ, so its gradient is
+        // the occ = 1 density, and occ scales only the other gradients.
         scalar_t Bt[5], An[5], clampf[5];
         const scalar_t bi=adp[a], oc=occ[a];
         for (int k=0;k<5;++k) {
             const scalar_t raw=(Bc[5*a+k]+bi)*(scalar_t)0.25;
             const scalar_t bt = raw > (scalar_t)0.1 ? raw : (scalar_t)0.1;
             Bt[k]=bt;
-            An[k]=Ac[5*a+k]*oc*K<scalar_t>::PI_1P5/(bt*std::sqrt(bt));
+            An[k]=Ac[5*a+k]*K<scalar_t>::PI_1P5/(bt*std::sqrt(bt));
             // in the clamp region d(Bt)/d(adp) = 0
             clampf[k] = raw > (scalar_t)0.1 ? (scalar_t)1 : (scalar_t)0;
         }
@@ -275,9 +277,9 @@ static void iso_bwd_impl(scalar_t* g_xyz, scalar_t* g_adp, scalar_t* g_occ,
             }
           }
         }
-        g_xyz[3*a+0]=gx; g_xyz[3*a+1]=gy; g_xyz[3*a+2]=gz;
-        g_adp[a]=gb;
-        g_occ[a]= oc != (scalar_t)0 ? gocc/oc : (scalar_t)0;
+        g_xyz[3*a+0]=oc*gx; g_xyz[3*a+1]=oc*gy; g_xyz[3*a+2]=oc*gz;
+        g_adp[a]=oc*gb;
+        g_occ[a]=gocc;
       }
     });
 }
@@ -368,7 +370,8 @@ static void aniso_bwd_impl(scalar_t* g_xyz, scalar_t* g_u, scalar_t* g_occ,
         const Anchor<scalar_t> g = make_anchor(c, xyz, fm, im, a, r2cut[a]);
         const scalar_t oc = occ[a];
         scalar_t p00[5],p11[5],p22[5],p01[5],p02[5],p12[5],An[5];
-        aniso_minv(Bc, u, a, Ac, oc, p00,p11,p22,p01,p02,p12,An);
+        // Occupancy-free amplitudes, as in iso_bwd_impl.
+        aniso_minv(Bc, u, a, Ac, (scalar_t)1, p00,p11,p22,p01,p02,p12,An);
         scalar_t gx=0,gy=0,gz=0,gu0=0,gu1=0,gu2=0,gu3=0,gu4=0,gu5=0,gocc=0;
         for (int ox=-g.bhx; ox<=g.bhx; ++ox) {
           const int vix = wrap_idx(g.cix+ox, nx);
@@ -410,10 +413,10 @@ static void aniso_bwd_impl(scalar_t* g_xyz, scalar_t* g_u, scalar_t* g_occ,
             }
           }
         }
-        g_xyz[3*a+0]=gx; g_xyz[3*a+1]=gy; g_xyz[3*a+2]=gz;
-        g_u[6*a+0]=gu0; g_u[6*a+1]=gu1; g_u[6*a+2]=gu2;
-        g_u[6*a+3]=gu3; g_u[6*a+4]=gu4; g_u[6*a+5]=gu5;
-        g_occ[a]= oc != (scalar_t)0 ? gocc/oc : (scalar_t)0;
+        g_xyz[3*a+0]=oc*gx; g_xyz[3*a+1]=oc*gy; g_xyz[3*a+2]=oc*gz;
+        g_u[6*a+0]=oc*gu0; g_u[6*a+1]=oc*gu1; g_u[6*a+2]=oc*gu2;
+        g_u[6*a+3]=oc*gu3; g_u[6*a+4]=oc*gu4; g_u[6*a+5]=oc*gu5;
+        g_occ[a]=gocc;
       }
     });
 }

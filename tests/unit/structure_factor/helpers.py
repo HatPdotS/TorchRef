@@ -271,9 +271,8 @@ def synthetic_scene(
     Two degeneracies are deliberately avoided, both of which once survived in two test
     files at the same time:
 
-    * ``occ`` is never exactly 1.0. The kernels recover ``d/d_occ`` by dividing the
-      accumulated gradient by ``occ``, and at ``occ == 1`` that division is a no-op that
-      hides a wrong scaling.
+    * ``occ`` is never exactly 1.0. The kernels scale the xyz and ADP gradients by
+      ``occ``, and at ``occ == 1`` that factor is a no-op that hides a wrong scaling.
     * the ADP off-diagonals are non-zero **and signed**. Zero off-diagonals mean every
       ellipsoid is axis-aligned, which leaves the cross-term arithmetic completely
       uncovered -- the ``p01``/``p02``/``p12`` entries of the inverted 3x3, and the

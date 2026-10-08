@@ -86,8 +86,8 @@ def _iso_atoms(f64, n=36, dtype=torch.float32, seed=0):
     A, B = get_scattering_params_by_z(z, dtype=dtype)
     xyz = (torch.rand(n, 3, generator=g, dtype=torch.float64) @ f64.T).to(dtype)
     adp = (torch.rand(n, generator=g) * 35 + 8).to(dtype)
-    # never exactly 1.0: the kernels recover d/d_occ by dividing the accumulated
-    # gradient by occ, and at occ == 1 a wrong scaling is invisible
+    # never exactly 1.0: the kernels scale the xyz and ADP gradients by occ, and at
+    # occ == 1 a missing or doubled factor is invisible
     occ = (torch.rand(n, generator=g) * 0.4 + 0.6).to(dtype)
     return xyz, adp, occ, A, B
 
