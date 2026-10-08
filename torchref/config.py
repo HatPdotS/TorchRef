@@ -165,17 +165,10 @@ def get_complex_dtype() -> torch.dtype:
 # ---------------------------------------------------------------------------
 # Number of sigmas at which each atom's Gaussian density is truncated. The
 # per-atom real-space splat radius is r_i = clamp(ceil_0.25(N_sigma * sigma_eff_i),
-# [2, 7] A), with sigma_eff_i = sqrt((b_form_i + B_i) / 8pi^2). Because the
-# truncation is expressed in sigmas, every atom carries the same fractional tail
-# mass regardless of its B-factor (3 sigma -> ~0.4%, 3.5 sigma -> ~0.09%,
-# 4 sigma -> ~0.013% per-axis tail), so this single knob governs the structure-wide
-# F-truncation residual. It replaces the old per-structure scalar ``radius_angstrom``.
-#
-# Default 3.0: an N_sigma sweep vs the direct-summation oracle (1DAW/3GR5/4BX9/7L84/
-# 5BOV, 1.6-2.6 A) showed the F-residual at 3.0 is identical to 3.5 for 4/5 cases and
-# only 1.0e-4 vs 3.3e-5 on the most demanding (4BX9) -- negligible against the ~1e-3
-# floor from grid sampling -- while using ~33% fewer splat voxels. 2.5 is too tight
-# (4BX9 degrades to 6.8e-4, 20x worse), so 3.0 is the floor.
+# [2, 7] A), with sigma_eff_i = sqrt((b_form_i + B_i) / 8pi^2), so every atom keeps the
+# same fractional tail mass whatever its B-factor and this one knob sets the
+# F-truncation residual. 3.0 is the floor: 2.5 degrades the F-residual 20x on the worst
+# test case.
 _DEFAULT_SIGMA_CUTOFF_ED = 3.0
 
 
