@@ -140,12 +140,10 @@ class TensorDict(nn.Module):
         return len(self._keys)
 
     def __repr__(self):
-        # The closing literal is "}})" -- one stray "}", kept so the user-visible repr
-        # does not change.
         return (
             "TensorDict({"
             + ", ".join(f'{k}: {getattr(self, f"_buf_{k}")}' for k in self._keys)
-            + "}})"
+            + "})"
         )
 
     def _load_from_state_dict(

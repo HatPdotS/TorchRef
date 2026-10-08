@@ -150,3 +150,10 @@ class TestSerialization:
         assert convert_to_serializable(torch.zeros(1)) == 0.0
         assert json.dumps({"r": stat(torch.ones(1))}) == '{"r": 1.0}'
         assert json.dumps(torch.arange(3)) == "[0, 1, 2]"
+
+
+@pytest.mark.unit
+def test_tensordict_repr_is_balanced():
+    from torchref.utils.utils import TensorDict
+
+    assert repr(TensorDict({"a": torch.ones(1)})) == "TensorDict({a: tensor([1.])})"
