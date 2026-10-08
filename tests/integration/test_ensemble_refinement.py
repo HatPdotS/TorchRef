@@ -7,18 +7,14 @@ configuration.
 """
 
 import os
+import sys
+import types
 
 import pytest
 import torch
 
 from torchref.experimental.ensemble import EnsembleModel
 from torchref.experimental.ensemble import EnsembleRefinement
-
-# The module-scoped ``refinement`` fixture builds the QuasiCrystal Amber target
-# eagerly (amber_weight=1.0), parameterising 1DAW's ANP ligand via GAFF2, so
-# every test here needs OpenMM + AmberTools. Gated centrally in conftest.
-pytestmark = pytest.mark.amber
-
 
 TEST_MTZ = os.path.join(
     os.path.dirname(__file__), "..", "files", "mtz", "1DAW.mtz"
@@ -38,14 +34,6 @@ def refinement() -> EnsembleRefinement:
         perturb_sigma=0.01,    # symmetry-breaking only; clashes from larger values
         b_const=5.0,
         wilson_weight=0.5,
-        # Amber is ON (default amber_weight=1.0) so this end-to-end test
-        # exercises the real QuasiCrystal Amber path, including parameterising
-        # 1DAW's ANP ligand (which is protonated from the monomer library).
-        # The init OpenMM energy-minimisation is disabled: 1DAW's supercell has
-        # special-position/metal clashes that make the (non-clamped) minimizer
-        # diverge to NaN — a separate pre-existing amber-stability issue. The
-        # differentiable forward clamps per-atom forces, so refinement is fine.
-        amber_relax_on_init=False,
         amber_lam=0.0,
         amber_kT=0.0,
         val_fraction_of_free=0.5,
@@ -59,6 +47,36 @@ def refinement() -> EnsembleRefinement:
 def test_model_is_ensemble(refinement):
     assert isinstance(refinement.model, EnsembleModel)
     assert refinement.model.n_members == 4
+
+
+def test_default_construction_has_no_amber_target(refinement):
+    assert refinement.amber_weight == 0.0
+    assert refinement.amber_target is None
+
+
+def _build_with_amber():
+    return EnsembleRefinement(
+        data_file=TEST_MTZ,
+        pdb=TEST_PDB,
+        n_members=4,
+        amber_weight=1.0,
+        seed=42,
+        verbose=0,
+        max_res=3.0,
+    )
+
+
+def test_amber_without_openmm_raises(monkeypatch):
+    monkeypatch.setitem(sys.modules, "openmm", None)
+    with pytest.raises(ImportError, match="OpenMM"):
+        _build_with_amber()
+
+
+def test_amber_on_hydrogen_stripped_ensemble_raises(monkeypatch):
+    """The driver's ensembles carry no hydrogens, which the Amber target needs."""
+    monkeypatch.setitem(sys.modules, "openmm", types.ModuleType("openmm"))
+    with pytest.raises(ValueError, match="amber_weight=0"):
+        _build_with_amber()
 
 
 def test_validation_set_was_generated(refinement):

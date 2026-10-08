@@ -42,6 +42,10 @@ EnsembleAmberTarget, EnsembleAmberKLTarget, QuasiCrystalAmberTarget
     the optional ``openmm`` dependency.
 """
 
+from torchref.experimental.ensemble.ensemble_amber_kl import (
+    EnsembleAmberKLTarget,
+    EnsembleAmberTarget,
+)
 from torchref.experimental.ensemble.ensemble_model import EnsembleModel
 from torchref.experimental.ensemble.low_rank_ensemble import LowRankXYZ
 from torchref.experimental.ensemble.pca_model import PCAEnsembleParam
@@ -49,16 +53,6 @@ from torchref.experimental.ensemble.ensemble_refinement import EnsembleRefinemen
 from torchref.experimental.ensemble.quasi_crystal_amber import QuasiCrystalAmberTarget
 from torchref.experimental.ensemble.rank_penalty import RankPenaltyTarget
 from torchref.experimental.ensemble.wilson_prior import WilsonPriorTarget
-
-# Optional: constructing these requires openmm (imported lazily by AmberTarget).
-try:
-    from torchref.experimental.ensemble.ensemble_amber_kl import (
-        EnsembleAmberKLTarget,
-        EnsembleAmberTarget,
-    )
-except ImportError:
-    EnsembleAmberKLTarget = None
-    EnsembleAmberTarget = None
 
 __all__ = [
     "EnsembleModel",

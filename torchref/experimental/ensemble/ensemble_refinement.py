@@ -16,8 +16,8 @@ Composes:
 - :class:`~torchref.experimental.ensemble.wilson_prior.WilsonPriorTarget`
   to keep ``<|F_calc|^2>`` on the Wilson curve.
 - The :class:`~torchref.experimental.ensemble.quasi_crystal_amber.QuasiCrystalAmberTarget`
-  supercell Amber restraint (the production Amber path; enabled when
-  ``amber_weight > 0`` and OpenMM is available). It carries no KL/entropy term.
+  supercell Amber restraint (the production Amber path; built when
+  ``amber_weight > 0``). It carries no KL/entropy term.
 - An optional :class:`~torchref.experimental.ensemble.rank_penalty.RankPenaltyTarget`
   soft de-overfitting regularizer on the member-spread spectrum.
 - A third ``xray/validation`` set distinct from R-free for tuning
@@ -41,22 +41,11 @@ from torchref.io.datasets import ReflectionData
 from .ensemble_model import EnsembleModel
 from torchref.refinement.lbfgs_refinement import LBFGSRefinement
 from torchref.refinement.loss_state import LossState
+from .quasi_crystal_amber import QuasiCrystalAmberTarget
 from .rank_penalty import RankPenaltyTarget
 from .wilson_prior import WilsonPriorTarget
 from torchref.refinement.targets.xray import create_xray_target
 from torchref.scaling import Scaler
-
-try:
-    from .ensemble_amber_kl import EnsembleAmberKLTarget
-except ImportError:
-    EnsembleAmberKLTarget = None
-
-try:
-    from .quasi_crystal_amber import (
-        QuasiCrystalAmberTarget,
-    )
-except ImportError:
-    QuasiCrystalAmberTarget = None
 
 
 def _extract_first_model_pdb(pdb_path: str):
@@ -140,7 +129,9 @@ class EnsembleRefinement(LBFGSRefinement):
     xray_weight, amber_weight : float
         Dimensionless multipliers on the X-ray work term and the
         quasi-crystal Amber restraint (both O(1) on the per-ASU scale).
-        ``amber_weight == 0`` (or missing OpenMM) disables the Amber target.
+        ``amber_weight`` defaults to 0 (no Amber target). The ensembles built
+        here are hydrogen-stripped, so ``amber_weight > 0`` raises
+        ``ValueError`` (``ImportError`` without OpenMM).
     amber_lam, amber_kT : float
         Legacy coefficients for the abandoned per-member entropy/KL Amber
         path (:class:`EnsembleAmberKLTarget`). They are stored on the object
@@ -203,7 +194,7 @@ class EnsembleRefinement(LBFGSRefinement):
         wilson_weight: float = 1.0,
         wilson_mode: str = "rice",
         xray_weight: float = 1.0,
-        amber_weight: float = 1.0,
+        amber_weight: float = 0.0,
         amber_lam: float = 1.0,
         amber_kT: float = 0.0,
         amber_charge_method: str = "gas",
@@ -326,6 +317,16 @@ class EnsembleRefinement(LBFGSRefinement):
             self.rank_adaptive_base = rank_adaptive_base
             self.rank_adaptive_doubling_factor = rank_adaptive_doubling_factor
             return
+
+        if amber_weight > 0.0:
+            try:
+                import openmm  # noqa: F401, PLC0415
+            except ImportError:
+                raise ImportError(
+                    "EnsembleRefinement with amber_weight > 0 requires OpenMM "
+                    "(pip install torchref[amber]); set amber_weight=0 to "
+                    "refine without Amber."
+                ) from None
 
         # Build the standard scaffolding (data, single-copy model, scaler,
         # standard targets). We then *replace* self.model with the ensemble
@@ -473,6 +474,14 @@ class EnsembleRefinement(LBFGSRefinement):
             device=self.device,
             max_res=self.max_res,
         )
+        if self.amber_weight > 0.0 and not bool(
+            self.model.ctx.topology.atoms.is_hydrogen.any()
+        ):
+            raise ValueError(
+                "amber_weight > 0 needs an ensemble with hydrogens, but "
+                "EnsembleRefinement builds hydrogen-stripped ensembles; set "
+                "amber_weight=0."
+            )
         if self.refine_population:
             self.model.enable_population_refinement(
                 True, refine_b=self.refine_member_b
@@ -535,9 +544,8 @@ class EnsembleRefinement(LBFGSRefinement):
         )
         # Quasi-crystal Amber: one unified OpenMM System (k·N_sym replicas
         # with PBC + PME), no per-member loop, no KL/entropy term — physical
-        # crystal contacts in the supercell are the regularizer. Falls back
-        # to "disabled" if either OpenMM is missing or amber_weight == 0.
-        if QuasiCrystalAmberTarget is not None and self.amber_weight > 0.0:
+        # crystal contacts in the supercell are the regularizer.
+        if self.amber_weight > 0.0:
             self.amber_target = QuasiCrystalAmberTarget(
                 model=self.model,
                 cell=self.reflection_data.cell,
