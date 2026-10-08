@@ -8,8 +8,8 @@ form used here accumulates the pair coefficients
 evaluations with a single transform.
 
 Both sides of that sum are **normalised**. The observed side is the rotation
-search's own LERF1 intensity, ``cw (E_obs^2 - 1) w sigma_A^2``, built from the
-run's one Wilson fit; the calculated side is the oriented model's transform
+search's LERF1 intensity, ``cw (E_obs^2 - 1) w sigma_A^2``, built from a Wilson
+fit over the translation set; the calculated side is the oriented model's transform
 divided by its own Wilson curve, so ``<|E_calc(h, t)|^2> = 1`` per shell for
 every candidate. The score is then a covariance of two normalised intensities
 and every resolution shell carries the weight the model error gives it. The

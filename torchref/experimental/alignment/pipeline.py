@@ -189,7 +189,7 @@ class MRSolution:
 
 
 class MolecularReplacementPipeline(DeviceMixin):
-    """Canonical MR pipeline: FRF → FTF (per candidate) → post-refine.
+    """Canonical MR pipeline: FRF → FTF per candidate → rank.
 
     Parameters mirror :func:`align_model_to_data` (which delegates here), so a
     caller can either use ``align_model_to_data`` for the common case or drive this
@@ -202,7 +202,7 @@ class MolecularReplacementPipeline(DeviceMixin):
     model : ModelFT
         Initialised search model.
     device : torch.device, optional
-        Compute device (defaults to the model's device).
+        Compute device (defaults to torchref's configured default device).
     verbose : int
         How much the run says about itself. Each level is a superset of the one
         below, and the boundaries are chosen so that a level is useful on its
@@ -230,7 +230,7 @@ class MolecularReplacementPipeline(DeviceMixin):
 
         pipe = MolecularReplacementPipeline(data, model)
         solutions = pipe.run()
-        print(f"best R-work: {solutions[0].r_factor:.3f}")
+        print(f"best analytic R: {solutions[0].r_factor:.3f}")
     """
 
     def __init__(
@@ -240,7 +240,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         *,
         device: Optional[torch.device] = None,
         verbose: int = 0,
-        # --- data prep / FRF ---
+        # --- anisotropy fit and translation window; FRF peak count ---
         d_min: float = 4.0,
         d_max: float = 15.0,
         n_shells: int = 20,
@@ -266,9 +266,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         # ordering wrong, so the comparison has to be made end to end on poses.
         # See the sort in `run` for what that measured.
         rank_by: str = "llg",
-        # Resolution window for the translation set. None means the rotation
-        # search's own [d_max, d_min], so one window and one normalisation
-        # serve both stages. Pass 0.0 / inf to remove a cut -- and see
+        # Resolution window for the translation set. None means [d_max, d_min],
+        # the anisotropy fit's window; the rotation search sets its own from the
+        # bandwidth coupling. Pass 0.0 / inf to remove a cut -- and see
         # `_prepare_translation_arrays` for what the uncut set does.
         tf_d_min: Optional[float] = None,
         tf_d_max: Optional[float] = None,
@@ -364,15 +364,15 @@ class MolecularReplacementPipeline(DeviceMixin):
         Parameters
         ----------
         do_translation : bool
-            If ``False``, stop after rotation rescoring and return a single
+            If ``False``, stop after the rotation search and return a single
             rotation-only solution (the model rotated onto the best
             orientation, no translation or refinement).
 
         Returns
         -------
         list of MRSolution
-            Sorted by ``r_factor`` (ascending). The first element is the best
-            placement; its ``r_factor`` is the solvent-aware Scaler R-work.
+            Sorted by ``rank_by`` (``llg``/``corr`` descending, ``r`` ascending).
+            ``r_factor`` is the analytic single-scale R, not a Scaler R-work.
         """
         if not self.model.ctx.initialized:
             raise RuntimeError(
@@ -445,7 +445,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             )
 
         if not solutions:
-            raise RuntimeError("Translation + joint refine produced no candidates.")
+            raise RuntimeError("Translation search produced no candidates.")
 
         # Highest translation likelihood. The three scores are measured end to
         # end on POSES -- rotation and translation, against Cartesian symmetry
@@ -576,7 +576,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         return rot, R_rec
 
     # ------------------------------------------------------------------
-    # Stage 2: per-candidate translation search + local refine
+    # Stage 2: per-candidate translation search
     # ------------------------------------------------------------------
     def _prepare_translation_arrays(self) -> None:
         """Mask the observations for the translation search and normalise them once.

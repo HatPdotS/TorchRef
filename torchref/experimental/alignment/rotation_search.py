@@ -10,8 +10,8 @@ One call, three inputs::
 Everything else is derived from the model, the data and that error, following
 Phaser's own chain (``runMR_FRF.cc:419-448``): the spherical-harmonic bandwidth
 from the model's mean radius and the data's resolution, the sigma_A fall-off
-from the coordinate error, the Wilson normalisation and French-Wilson posterior
-from the observations and their sigmas.
+from the coordinate error, the Wilson normalisation from the observations and
+the inverse-variance measurement weight from their sigmas.
 
 The constants below are engine settings, not tuning knobs. They are scored on
 whether the true orientation lands inside the candidate window the downstream
@@ -249,9 +249,9 @@ def search_peaks(
 
     Returns ``(peaks, lmax, d_min)``, where ``peaks`` is a list of
     :class:`~torchref.experimental.alignment.frf.types.RotationPeak` in Edmonds
-    ZYZ. For the placement pipeline, which consumes peaks directly and has
-    already fitted ``U_aniso`` for its rescore stage; :func:`rotation_search` is
-    the entry point for everything else.
+    ZYZ. For the placement pipeline, which consumes peaks directly and fits
+    ``U_aniso`` itself; :func:`rotation_search` is the entry point for
+    everything else.
     """
     from ...utils import resolve_device
     from .frf.api import FastRotationFunction, phaser_lmax_resolution
@@ -372,17 +372,8 @@ def search_peaks(
         s_calc = s_calc.to(device)
         F_calc = F_calc.to(device)
 
-        # No relative Wilson-B match here any more. It multiplied `F_calc` by
-        # exp(-B s^2/4) -- a smooth function of |s| -- and the engine's very next
-        # step divides out exactly such a function when it normalises. Measured:
-        # a relative B of +-30 A^2 moves E by at most 1.3e-7, the fit's own
-        # convergence tolerance. It was computing a number and having it undone.
-        #
-        # Not the same as the earlier finding that knocking it out was
-        # rank-neutral; that was a measurement about whether it mattered, this is
-        # that it is arithmetically cancelled. `fit_relative_wilson_b` survives in
-        # `frf/preprocessing` with no production caller at all -- it was kept for
-        # the ML rescore, and that was deleted.
+        # No relative Wilson-B match on F_calc: exp(-B s^2/4) is a smooth
+        # function of |s|, and the engine's normalisation divides it straight out.
 
         # Point-group rotations in the Cartesian frame, so the peak finder can
         # treat an orientation and its symmetry mates as one peak. As a set
@@ -461,8 +452,8 @@ def rotation_search(
         rotations are relative to; its position is irrelevant, since the
         rotation function works on the Patterson.
     data : ReflectionData
-        Observed amplitudes. ``F_sigma`` is used for the French-Wilson posterior
-        when present.
+        Observed amplitudes. ``F_sigma``, when present, sets the per-reflection
+        inverse-variance measurement weight.
     model_error_A : float
         Expected r.m.s. coordinate error of the model against the target, in
         Angstrom. This sets the sigma_A fall-off, and so how much weight the
