@@ -40,7 +40,8 @@ with ``n_iso_coeff`` coefficients (default 6) held in ``scaler.c_iso``. Every
 reflection contributes to every coefficient with a continuous weight, so there are
 no bin boundaries and nothing changes discontinuously when a reflection moves
 between shells. ``n_iso_coeff=1`` is a single global scale
-(:math:`T_0 \equiv 1`); ``2`` spans scale-plus-overall-B.
+(:math:`T_0 \equiv 1`); ``2`` adds a term linear in :math:`s`; an overall-B
+(:math:`s^2`) term needs at least ``3``.
 
 .. code-block:: python
 
@@ -64,9 +65,9 @@ then damped and scaled.
 
 .. math::
 
-   F_{calc}^{total} = k_{iso}(s)\, k_{aniso}(\mathbf{h}) \cdot F_{calc}^{model}
+   F_{calc}^{total} = k_{iso}(s) \left[ k_{aniso}(\mathbf{h}) \cdot F_{calc}^{model}
        + k_s \exp\!\left( -\ln 2 \left(\frac{s^2}{s^2_{1/2}}\right)^{\!n} \right)
-         \cdot F_{calc}^{solvent}
+         \cdot F_{calc}^{solvent} \right]
 
 where :math:`k_s` is the solvent scale, :math:`s^2_{1/2}` the point at which the
 solvent term is halved, :math:`n` how sharply it switches off, and
@@ -105,7 +106,7 @@ stored on the scaler. The
 the fitted ``U`` disagree with an ADP-convention ``U`` by that factor.
 
 Relative scaling of observed datasets
-------------------------------------
+-------------------------------------
 
 ``DatasetCollection.scale()`` jointly fits the observed datasets with
 ``DatasetScaler``. Each member receives an overall log scale and six quadratic
