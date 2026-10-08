@@ -799,7 +799,7 @@ def synthetic_obs(
     """
     g = torch.Generator().manual_seed(seed)
     amp = F_ref.abs()
-    noise = torch.randn(amp.shape, generator=g, dtype=amp.dtype)
+    noise = torch.randn(amp.shape, generator=g, dtype=amp.dtype).to(amp.device)
     return (amp * (1.0 + rel_sigma * noise)).clamp_min(0.0)
 
 

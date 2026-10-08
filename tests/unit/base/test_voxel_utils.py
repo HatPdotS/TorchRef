@@ -21,7 +21,7 @@ def test_atom_mask_matches_brute_force_on_a_monoclinic_cell(pdb_dir):
     of a sphere are float32 ties and are not judged.
     """
     _, cell, _ = PDBReader().read(str(pdb_dir / "1DAW.pdb"))()
-    cell = Cell(cell)
+    cell = Cell(cell, device="cpu")
     frac, inv_frac = cell.fractional_matrix, cell.inv_fractional_matrix
     dims, r = (216, 90, 69), 2.5
     g = torch.Generator().manual_seed(0)

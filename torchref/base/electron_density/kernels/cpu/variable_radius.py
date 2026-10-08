@@ -66,14 +66,14 @@ def _bucket_by_radius(radius: torch.Tensor, center_1d: torch.Tensor):
 def _axis_half_widths(r: float, inv_frac: torch.Tensor, grid_dims):
     """``ceil(r * n_axis * ||inv_frac row_axis||)`` -- the kernels' enumeration box.
 
-    The norm is taken in float64 **on the CPU**, never on the input's device: this path also
-    serves ``force_portable`` on MPS, which has no float64 and raises on ``.double()``.
-    float64 matters because the result feeds a ``ceil`` -- a value landing a hair under an
-    integer in float32 shrinks the box by one voxel and silently clips the sphere.
+    The norm is taken on the CPU, since the result is three Python ints anyway.
     """
-    row_norms = torch.linalg.norm(inv_frac.detach().cpu().double(), dim=1)
+    row_norms = torch.linalg.norm(inv_frac.detach().cpu(), dim=1)
+    # The value feeds a ``ceil``: one that rounds a hair under an integer would shrink
+    # the box by a voxel and clip the sphere. The 1e-6 slack is ~10 float32 ulps, so the
+    # box is never undersized; an oversized one costs only voxels the radius test drops.
     return tuple(
-        int(math.ceil(r * float(n) * float(row_norms[i])))
+        int(math.ceil(r * float(n) * float(row_norms[i]) * (1.0 + 1e-6)))
         for i, n in enumerate(grid_dims)
     )
 

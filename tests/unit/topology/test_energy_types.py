@@ -166,9 +166,14 @@ def test_contact_radii_follow_energy_types(heavy_1daw, hydrogenated_1daw):
     residue_of = full.residue_of.cpu().numpy()
     lysine = residue_of[np.nonzero(full.resname.astype(str) == "LYS")[0][0]]
     keep = ~(is_h & (residue_of == lysine))
-    remap = torch.full((full.n_atoms,), -1, dtype=torch.long)
-    remap[torch.as_tensor(keep)] = torch.arange(int(keep.sum()))
-    stripped = full.subset(remap, torch.arange(int(residue_of.max()) + 1))
+    device = full.is_hydrogen.device
+    remap = torch.full((full.n_atoms,), -1, dtype=torch.long, device=device)
+    remap[torch.as_tensor(keep, device=device)] = torch.arange(
+        int(keep.sum()), device=device
+    )
+    stripped = full.subset(
+        remap, torch.arange(int(residue_of.max()) + 1, device=device)
+    )
     kinds = stripped.energy_type.astype(str)
     folded = stripped.implicit_h_count().cpu().numpy() > 0
     in_lysine = stripped.residue_of.cpu().numpy() == lysine

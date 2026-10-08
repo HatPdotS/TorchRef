@@ -15,6 +15,13 @@ from torchref.base.electron_density.kernels.cpu.variable_radius import (
 )
 from torchref.config import get_int_dtype
 
+#: Relative slack on ``radius**2`` in the membership test. Grid offsets land exactly on
+#: the radius often (axis-aligned steps in an orthogonal cell), and float rounding of
+#: ``dist_sq`` would put such a tie on either side at random. The slack resolves every
+#: tie the same way in float32 and float64: inside without ``strict``, outside with it.
+#: It is ~100 float32 ulps, while distinct grid distances are far further apart.
+_BOUNDARY_RTOL = 1e-5
+
 
 def voxel_offsets_within(
     radius: float,
@@ -38,20 +45,27 @@ def voxel_offsets_within(
     grid_dims : sequence of int
         Grid dimensions ``(nx, ny, nz)``.
     strict : bool, default False
-        Keep displacements shorter than ``radius`` rather than up to it.
+        Keep displacements shorter than ``radius`` rather than up to it. Offsets within
+        a relative ``1e-5`` of ``radius**2`` count as exactly on it either way.
 
     Returns
     -------
     torch.Tensor
-        Offsets, shape ``(R, 3)``, in the configured integer dtype, on the CPU.
+        Offsets, shape ``(R, 3)``, in the configured integer dtype, on the CPU
+        whatever the device of ``frac_matrix``.
     """
-    # float64 on the CPU, like ``_axis_half_widths``: membership is decided at the
-    # radius, where float32 rounding can drop a boundary voxel, and MPS has no float64.
-    frac = frac_matrix.detach().cpu().double()
-    half_widths = _axis_half_widths(radius, torch.linalg.inv(frac), grid_dims)
+    # The set depends only on the cell, grid and radius, so it is built once on the
+    # CPU (callers cache it) and is the same set on every device. ``radius`` may arrive
+    # as a 0-dim tensor on an accelerator; it must not meet the CPU tensors below.
+    r_sq = float(radius) ** 2
+    frac = frac_matrix.detach().cpu()
+    half_widths = _axis_half_widths(float(radius), torch.linalg.inv(frac), grid_dims)
     offsets, off_cart = _box_offsets(half_widths, frac, grid_dims, "cpu", frac.dtype)
     dist_sq = (off_cart * off_cart).sum(-1)
-    keep = dist_sq < radius * radius if strict else dist_sq <= radius * radius
+    if strict:
+        keep = dist_sq < r_sq * (1.0 - _BOUNDARY_RTOL)
+    else:
+        keep = dist_sq <= r_sq * (1.0 + _BOUNDARY_RTOL)
     return offsets[keep].to(get_int_dtype())
 
 
@@ -73,8 +87,11 @@ def half_voxel_diagonal(frac_matrix: torch.Tensor, grid_dims: Sequence[int]) -> 
     float
         The half diagonal in Å.
     """
-    steps = frac_matrix.detach().cpu().double() / torch.tensor(grid_dims).double()
-    corners = torch.tensor([[1, 1, 1], [1, 1, -1], [1, -1, 1], [-1, 1, 1]]).double()
+    frac = frac_matrix.detach().cpu()
+    steps = frac / torch.tensor(grid_dims, dtype=frac.dtype)
+    corners = torch.tensor(
+        [[1, 1, 1], [1, 1, -1], [1, -1, 1], [-1, 1, 1]], dtype=frac.dtype
+    )
     return 0.5 * float((corners @ steps.T).norm(dim=1).max())
 
 

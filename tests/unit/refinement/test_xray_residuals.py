@@ -278,7 +278,11 @@ def test_ls_rows_score_the_fcalc_they_are_given(refinement, mode):
         expected = with_model.residuals()
         got = model_less.residuals(fcalc=F)
         other = model_less.residuals(fcalc=F * ramp)
-    torch.testing.assert_close(got, expected)
+    # Absolute tolerance in units of |F|: a residual is a near-cancelling difference, so
+    # the float32 rounding of the fitted scale (summation order is not fixed on MPS)
+    # moves it by ~1e-6 |F|, which is large relative to the residual itself.
+    scale = float(F.abs().max())
+    torch.testing.assert_close(got, expected, rtol=1e-4, atol=1e-4 * scale)
     assert not torch.allclose(other, got, rtol=1e-3, atol=1e-3)
 
 
