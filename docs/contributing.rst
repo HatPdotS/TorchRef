@@ -75,7 +75,9 @@ Running Tests
    pytest tests/ --cov=torchref     # with coverage
    pytest tests/unit/               # fast unit tests only
 
-GPU, slow, and Amber tests are skipped unless enabled. See :doc:`user_guide/testing`.
+Slow tests need ``--run-slow``; accelerator and Amber tests run wherever their
+hardware or dependencies are present and are skipped otherwise. See
+:doc:`user_guide/testing`.
 
 Submitting Changes
 ------------------
