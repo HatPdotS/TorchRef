@@ -39,7 +39,6 @@ tests/
 | Refinement's default group weights | `unit/refinement/test_loss_weighting.py` |
 | Gaussian amplitude-metric values and reductions | `unit/base/test_loss.py` |
 | Restraint kernel values on deposited coordinates | `unit/base/test_target_values.py` |
-| Gradient RMS norm | `unit/utils/test_gradnorm.py` |
 | CIF atomic fields and crystal metadata | `integration/test_io_cif.py` |
 | MTZ fields, resolution bins and model/data crystal agreement | `integration/test_io_reflections.py` |
 | ModelFT forward cache and grid integration | `functional/test_model_ft_functional.py` |
