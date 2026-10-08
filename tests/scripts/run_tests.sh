@@ -3,7 +3,7 @@
 # Run this with: srun -c 8 -p <partition> tests/scripts/run_tests.sh [options]
 #
 # Usage:
-#   ./tests/scripts/run_tests.sh              # Run every test this host supports
+#   ./tests/scripts/run_tests.sh              # Run every non-slow test this host supports
 #   ./tests/scripts/run_tests.sh unit         # Run unit tests only
 #   ./tests/scripts/run_tests.sh integration  # Run integration tests only
 #   ./tests/scripts/run_tests.sh -k "test_name" # Run specific test

@@ -319,7 +319,7 @@ pytest tests/ --cov=torchref
   accelerator into a failure instead of a skip — for CI runners that lost their GPU.
 - Do **not** add a default `-m` expression to `pyproject.toml`: it deselects at collection
   time and no flag can undo it. Keep root `pyproject.toml` and `tests/pytest.ini` in step so
-  behaviour doesn't depend on the working directory.
+  behaviour doesn't depend on the invocation.
 - Markers: `unit`, `integration`, `gpu` (any accelerator), `cuda`, `mps`, `slow`, `openmm`,
   `amber`.
 - Layout: `tests/unit/` mirrors the package; `tests/integration/` covers pipelines and the
