@@ -463,7 +463,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         placed.last_alignment_rfactor = solution.r_factor
         return placed
 
-    def _into_crystal(self, m: "ModelFT", spacegroup=None) -> "ModelFT":
+    def _into_crystal(self, m: "ModelFT", spacegroup=None) -> None:
         """Give ``m`` the data's cell and ``spacegroup`` (default: the data's), in place.
 
         The search model's CRYST1 belongs to another crystal, or is a placeholder,
@@ -472,7 +472,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         """
         m.cell = self.data.cell.clone().to(device=m.device, dtype=m.dtype_float)
         m.spacegroup = self.data.spacegroup if spacegroup is None else spacegroup
-        return m
 
     def _orient_template(self, R_rec: torch.Tensor) -> None:
         """Write the candidate orientation into the shared P1 copy.

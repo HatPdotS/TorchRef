@@ -147,8 +147,8 @@ class RotationSolutions:
         return int(self.rotations.shape[0])
 
 
-def _valid_mask(data: "ReflectionData", device) -> torch.Tensor:
-    """The data's combined validity mask, ``(n_reflections,)`` bool on ``device``."""
+def _valid_mask(data: "ReflectionData", device: torch.device) -> torch.Tensor:
+    """Return the data's validity mask, ``(n_reflections,)`` bool on ``device``."""
     masks = getattr(data, "masks", None)
     valid = None if masks is None else masks()
     if valid is None:
