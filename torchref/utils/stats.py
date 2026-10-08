@@ -48,14 +48,6 @@ class StatEntry:
         # repr shows only the value (not the dataclass form) for log readability.
         return f"{self.value}"
 
-    def __json__(self):
-        """The value, for libraries that look for a ``__json__`` hook.
-
-        Dead weight for the stdlib, which never calls it -- :class:`StatEntryEncoder` does
-        the real work in its ``default``.
-        """
-        return self.value
-
 
 class StatEntryEncoder(json.JSONEncoder):
     """JSON encoder for ``StatEntry``, torch tensors and numpy scalars/arrays.
