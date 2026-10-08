@@ -9,9 +9,9 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
+from .._common import EPS
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
-_EPS = 1e-8
 
 
 @triton.jit
@@ -23,6 +23,7 @@ def _angle_nll_fwd_kernel(
     out_ptr,
     N: tl.constexpr,
     LOG_2PI: tl.constexpr,
+    EPS: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     pid = tl.program_id(0)
@@ -46,8 +47,9 @@ def _angle_nll_fwd_kernel(
     v1x = ax - bx; v1y = ay - by; v1z = az - bz
     v2x = cx - bx; v2y = cy - by; v2z = cz - bz
 
-    n1 = tl.sqrt(v1x * v1x + v1y * v1y + v1z * v1z)
-    n2 = tl.sqrt(v2x * v2x + v2y * v2y + v2z * v2z)
+    # Floored as in the eager twin: a coincident pair gives cos = 0, not 0/0 = NaN.
+    n1 = tl.maximum(tl.sqrt(v1x * v1x + v1y * v1y + v1z * v1z), EPS)
+    n2 = tl.maximum(tl.sqrt(v2x * v2x + v2y * v2y + v2z * v2z), EPS)
     dot = v1x * v2x + v1y * v2y + v1z * v2z
     cos_t = dot / (n1 * n2)
     cos_t = tl.where(cos_t > 1.0, 1.0, cos_t)
@@ -76,7 +78,7 @@ def _angle_nll_bwd_kernel(
 ):
     """Analytic gradient of the angle NLL.
 
-    With v1 = a - b, v2 = c - b, n1 = |v1|, n2 = |v2|,
+    With v1 = a - b, v2 = c - b, n1 = max(|v1|, EPS), n2 = max(|v2|, EPS),
     cos θ = (v1·v2)/(n1 n2), θ = acos(cos θ):
 
         ∂NLL/∂θ = (θ − ref) / σ²
@@ -109,10 +111,10 @@ def _angle_nll_bwd_kernel(
 
     v1x = ax - bx; v1y = ay - by; v1z = az - bz
     v2x = cx - bx; v2y = cy - by; v2z = cz - bz
-    n1_sq = v1x * v1x + v1y * v1y + v1z * v1z
-    n2_sq = v2x * v2x + v2y * v2y + v2z * v2z
-    n1 = tl.sqrt(n1_sq)
-    n2 = tl.sqrt(n2_sq)
+    n1 = tl.maximum(tl.sqrt(v1x * v1x + v1y * v1y + v1z * v1z), EPS)
+    n2 = tl.maximum(tl.sqrt(v2x * v2x + v2y * v2y + v2z * v2z), EPS)
+    n1_sq = n1 * n1
+    n2_sq = n2 * n2
     dot = v1x * v2x + v1y * v2y + v1z * v2z
     cos_t = dot / (n1 * n2)
     cos_t = tl.where(cos_t > 1.0, 1.0, cos_t)
@@ -160,8 +162,15 @@ class _AngleMathTriton(torch.autograd.Function):
         BLOCK = 256
         grid = (triton.cdiv(N, BLOCK),)
         _angle_nll_fwd_kernel[grid](
-            xyz, idx, references_rad, sigmas_rad, nll,
-            N=N, LOG_2PI=_LOG_2PI, BLOCK=BLOCK,
+            xyz,
+            idx,
+            references_rad,
+            sigmas_rad,
+            nll,
+            N=N,
+            LOG_2PI=_LOG_2PI,
+            EPS=EPS,
+            BLOCK=BLOCK,
         )
         ctx.save_for_backward(xyz, idx, references_rad, sigmas_rad)
         return nll.sum()
@@ -174,8 +183,15 @@ class _AngleMathTriton(torch.autograd.Function):
         BLOCK = 256
         grid = (triton.cdiv(N, BLOCK),)
         _angle_nll_bwd_kernel[grid](
-            xyz, idx, refs, sigs, grad_out, dxyz,
-            N=N, EPS=_EPS, BLOCK=BLOCK,
+            xyz,
+            idx,
+            refs,
+            sigs,
+            grad_out,
+            dxyz,
+            N=N,
+            EPS=EPS,
+            BLOCK=BLOCK,
         )
         return dxyz, None, None, None
 
