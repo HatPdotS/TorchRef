@@ -2,8 +2,8 @@ Quick Start
 ===========
 
 This guide walks you through a basic crystallographic refinement with TorchRef.
-Every example below is executed by ``sphinx.ext.doctest`` when the docs are
-built, so it reflects the current API.
+Every example below is a ``sphinx.ext.doctest`` test; run them with
+``make -C docs doctest``.
 
 For longer interactive versions, run the notebooks in ``example_notebooks/`` or
 open them in Colab:
@@ -51,7 +51,7 @@ TorchRef supports multiple file formats:
    data = read_mtz(f"{ROOT_TORCHREF}/example_notebooks/1DAW.mtz")
 
    # Access reflection data
-   hkl, F, sigF, rfree_flags = data()
+   hkl, F, sigF, rfree_flags = data.hkl, data.F, data.F_sigma, data.rfree_flags
    print(f"Number of reflections: {len(F)}")
 
 .. testoutput::
@@ -126,7 +126,7 @@ Use the model to compute structure factors for given Miller indices:
    model = read_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
 
    # Get reflection indices
-   hkl, F, sigF, rfree = data()
+   hkl, F, rfree = data.hkl, data.F, data.rfree_flags
 
    # Calculate structure factors
    fcalc = model(hkl)

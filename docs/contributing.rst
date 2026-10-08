@@ -63,8 +63,8 @@ numbers and superseded approaches to the commit history.
 
 Don't restate the signature in prose — types live in the annotations. Don't add
 an ``Examples`` block that is entirely ``# doctest: +SKIP``: it costs lines and
-tests nothing. The examples in :doc:`quickstart` run under
-``sphinx.ext.doctest``, so put runnable examples there and they will be checked.
+tests nothing. The examples in :doc:`quickstart` are ``sphinx.ext.doctest`` tests,
+so put runnable examples there and check them with ``make -C docs doctest``.
 
 Running Tests
 -------------

@@ -38,7 +38,7 @@ extensions = [
 doctest_global_setup = '''
 import torch
 import torchref
-from torchref import ROOT_TORCHREF
+from torchref import ROOT_TORCHREF, Cell, SpaceGroup
 '''
 doctest_test_doctest_blocks = 'default'
 
