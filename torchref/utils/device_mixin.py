@@ -278,13 +278,6 @@ def _owned_tensors(obj):
                 yield val
 
 
-def _representative_tensor(obj):
-    """Return one tensor reflecting *obj*'s own device, or ``None``."""
-    for tensor in _owned_tensors(obj):
-        return tensor
-    return None
-
-
 def _observed_state(obj):
     """Return ``(device, floating_dtype)`` observed from *obj*'s own tensors.
 
