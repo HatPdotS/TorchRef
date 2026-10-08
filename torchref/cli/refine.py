@@ -3,7 +3,7 @@
 """
 Command-line script for LBFGS crystallographic refinement using torchref.
 
-Uses the maximum-likelihood σ_A (Read MLF) target by default. Four other x-ray
+Uses the maximum-likelihood σ_A (Read MLF) target by default. Other x-ray
 targets are selectable via ``--xray-mode``; see
 :mod:`torchref.refinement.targets.xray._specs` for the taxonomy.
 
@@ -91,7 +91,7 @@ Examples:
   # 10 refinement cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
 
-  # Joined XYZ then ADP cycles
+  # Joint XYZ+ADP cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode everything
 
   # Plain sigma-weighted Gaussian NLL (no model-error term)
