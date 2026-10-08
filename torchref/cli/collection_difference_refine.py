@@ -1672,7 +1672,10 @@ Examples:
         )
         merged_meta._set_reflection_statistics(data_light)
         merged_meta.b_mean_overall = float(merged_df["tempfactor"].mean())
-        merged_meta.n_atoms_total = len(merged_df)
+        merged_meta.n_atoms_total = sum(
+            int((~m.ctx.topology.atoms.is_hydrogen).sum())
+            for m in (model_dark, model_light)
+        )
 
         if hasattr(scaler, "solvent") and scaler.solvent is not None:
             sm = scaler.solvent

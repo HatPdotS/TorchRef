@@ -139,7 +139,11 @@ def test_cli_refuses_riding_on_stripped_hydrogens(
 def test_difference_refine_keeps_input_hydrogens(
     test_files_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """difference-refine writes the hydrogens its models were refined with."""
+    """difference-refine writes the hydrogens its models were refined with.
+
+    The merged CIF counts non-hydrogen atoms over both states, as each per-state
+    CIF does for its own.
+    """
     import gemmi
 
     from torchref.cli import collection_difference_refine
@@ -153,8 +157,7 @@ def test_difference_refine_keeps_input_hydrogens(
         "-dsf", str(mtz), "-lsf", str(mtz),
         "--fraction", "0.3",
         "--n-cycles", "0",
-        "--output-format", "pdb",
-        "--no-header",
+        "--output-format", "both",
         "--device", "cpu",
         "-o", str(outdir),
         "-v", "0",
@@ -167,3 +170,10 @@ def test_difference_refine_keeps_input_hydrogens(
         return sum(cra.atom.is_hydrogen() for cra in structure[0].all())
 
     assert n_hydrogens(outdir / "fractions_70_30_light.pdb") == n_hydrogens(pdb) > 0
+
+    def n_atoms_total(path: Path) -> int:
+        block = gemmi.cif.read(str(path)).sole_block()
+        return int(block.find_value("_refine_hist.number_atoms_total"))
+
+    n_light = n_atoms_total(outdir / "fractions_70_30_light.cif")
+    assert n_atoms_total(outdir / "fractions_70_30_merged.cif") == 2 * n_light
