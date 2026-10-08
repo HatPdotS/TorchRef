@@ -2,9 +2,9 @@
 
 Bootstrap module to configure threading before importing heavy libraries.
 
-Is imported automatically when torchref is imported.
-If you are not on a slurm node and want to customize threading,
-call `configure_threading()` before importing torchref.
+torchref/__init__.py calls ``configure_threading`` itself before importing torch, and
+it overwrites OMP_NUM_THREADS, MKL_NUM_THREADS and OPENBLAS_NUM_THREADS. To choose the
+thread count, set TORCHREF_NUM_THREADS before importing torchref.
 
 """
 
