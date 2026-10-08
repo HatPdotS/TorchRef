@@ -353,12 +353,10 @@ class AmberTarget(ModelTarget):
     def _detect_nonstandard_residues(self) -> List[Tuple[str, int]]:
         """
         Return ``(resname, net_charge)`` for HETATM residues not in
-        :data:`AMBER14_STANDARD`.  ATOM records with unknown resnames raise
-        ValueError, since only HETATM residues are parameterised with GAFF2.
+        :data:`AMBER14_STANDARD`.  ATOM records with unknown resnames warn.
         """
         pdb = self._chem_model.to_dataframe()
         nonstandard: List[Tuple[str, int]] = []
-        unknown_atom: List[str] = []
         seen: set = set()
 
         records = pdb["ATOM"].astype(str).str.strip()
@@ -384,16 +382,16 @@ class AmberTarget(ModelTarget):
                     )
                     charge = 0
                 nonstandard.append((resname, charge))
-            else:
-                unknown_atom.append(resname)
+            else:  # ATOM record with unrecognised name
+                warnings.warn(
+                    f"[AmberTarget] ATOM record with unrecognised residue name "
+                    f"'{resname}'. It will be dropped from the OpenMM system "
+                    f"(zero AMBER gradient on its atoms) unless a residue_charges "
+                    f"or gaff2_files entry is supplied for it.",
+                    UserWarning,
+                    stacklevel=4,
+                )
 
-        if unknown_atom:
-            raise ValueError(
-                f"[AmberTarget] ATOM records with residue names {unknown_atom} "
-                f"that are not AMBER14 standard residues. Rename them to their "
-                f"AMBER14 names, or make a free ligand a HETATM record so it is "
-                f"parameterised with GAFF2 (residue_charges / gaff2_files)."
-            )
         return nonstandard
 
     # ------------------------------------------------------------------
