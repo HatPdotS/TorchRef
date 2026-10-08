@@ -123,13 +123,21 @@ class CollectionScaler(ScalerBase):
         )
 
         self._dataset_collection = dataset_collection
-        self._model_collection = model_collection
+        # Not a submodule: the models' parameters belong to the refinement, and
+        # registering them would put them in the scale fit's optimiser and in this
+        # scaler's state_dict.
+        self._model_collection_ref = ModuleReference(model_collection)
 
         # Per-component solvent models (one per base model)
         self._component_solvent_models: nn.ModuleList = nn.ModuleList()
 
         # Cached raw solvent SFs per component index
         self._f_sol_raw_components: Dict[int, torch.Tensor] = {}
+
+    @property
+    def _model_collection(self) -> "ModelCollection":
+        """The bound collection, held unregistered."""
+        return self._model_collection_ref.module
 
     # ------------------------------------------------------------------
     # Initialization

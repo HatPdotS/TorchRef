@@ -115,3 +115,15 @@ def test_a_non_finite_dataset_term_rejects_the_step(collection, monkeypatch):
     assert len(poisoned) == 1
     for name, p in scaler.named_parameters():
         assert torch.equal(p.detach(), before[name]), f"{name} moved"
+
+
+def test_the_scaler_does_not_own_the_models(collection):
+    """The model collection's parameters stay out of the scaler's tree."""
+    scaler = _fresh_scaler(collection)
+    _, mc = collection
+
+    model_params = {id(p) for p in mc.parameters()}
+    assert model_params, "fixture must carry model parameters"
+    assert not model_params & {id(p) for p in scaler.parameters()}
+    assert not any("model_collection" in k for k in scaler.state_dict())
+    assert scaler._model_collection is mc
