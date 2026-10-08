@@ -1,11 +1,11 @@
-"""``vectorized_add_to_map`` with automatic CPU/GPU path selection.
+"""``vectorized_add_to_map``: the voxel-list density splat, chosen by device.
 
-Adds atoms to a density map under the ITC92 5-Gaussian parameterization, choosing the
-implementation from the tensor device: CPU uses a JIT-scripted einsum kernel with a metric
-tensor; on GPU, when the shared targets gate permits Triton (CUDA + float32, dispatch
-AUTO/TRITON), the fused Triton branch is selected, otherwise the pure-torch,
-double-differentiable ``_add_to_map_gpu_simple``. The CPU JIT and simple GPU paths are
-fully differentiable; the CPU kernel is scripted on first use, or by :func:`warmup`.
+Adds atoms to a density map under the ITC92 5-Gaussian parameterization. On CUDA the
+``triton`` row of :data:`torchref.base.targets._dispatch.TARGET_BACKENDS` decides (CUDA
+float32, off under ``force_portable``): the fused Triton kernel where it matches, the
+eager, double-differentiable ``_add_to_map_gpu_simple`` otherwise. Every other device
+runs a TorchScript einsum kernel with a metric tensor, scripted on first use or by
+:func:`warmup` and cached under :func:`get_cache_dir`.
 """
 
 import glob
@@ -205,7 +205,7 @@ def _add_to_map_gpu_simple(
     B: torch.Tensor,
     occ: torch.Tensor,
 ) -> torch.Tensor:
-    """Simple GPU implementation without JIT (for debugging)."""
+    """Splat eagerly with Cartesian wrapping; the CUDA path when Triton is not used."""
     import numpy as np
 
     diff = surrounding_coords - xyz[:, None, :]
@@ -254,10 +254,9 @@ def vectorized_add_to_map(
 ) -> torch.Tensor:
     """Add atoms to a density map using the ITC92 5-Gaussian parameterization.
 
-    The backend follows the shared targets gate: the Triton fused kernel where Triton is
-    permitted (CUDA + float32, engine AUTO/TRITON), the pure-torch
-    ``_add_to_map_gpu_simple`` otherwise (force_portable, float64, no Triton), and the JIT
-    kernel on CPU.
+    On CUDA the ``triton`` row of ``TARGET_BACKENDS`` picks the fused Triton kernel
+    (float32, Triton importable, ``force_portable`` off), else the eager
+    ``_add_to_map_gpu_simple``; other devices run the TorchScript kernel.
 
     Parameters
     ----------
@@ -280,10 +279,8 @@ def vectorized_add_to_map(
         leaves the input unchanged, so callers must always use the returned value.
     """
     if density_map.device.type == "cuda":
-        # The shared targets gate is the only switch: use the Triton kernel when it
-        # permits (CUDA + float32); otherwise — force_portable,
-        # float64, or Triton unavailable — the pure-torch, double-differentiable
-        # ``_add_to_map_gpu_simple``.
+        # TARGET_BACKENDS probes the target Triton kernels, not the fused splat, so a
+        # splat that fails to import still lands on the eager path.
         if use_triton(xyz):
             triton_fn = _get_triton_kernel()
             if triton_fn is not None:
