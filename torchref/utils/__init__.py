@@ -3,7 +3,7 @@ Utility functions and classes for TorchRef.
 
 Tensor containers (``TensorMasks``, ``TensorDict``), device/dtype movement
 (``DeviceMixin``, ``resolve_device``), debugging mixins, statistics formatting,
-PDB/selection parsing, loss-finiteness validation, autograd introspection, JSON
+PDB atom-table sanitizing, loss-finiteness validation, autograd introspection, JSON
 serialization and backend dispatch.
 
 ``__all__`` is the package's public surface. Submodule-only helpers -- e.g.
