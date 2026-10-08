@@ -41,6 +41,7 @@ from torchref.cli._common import (
     add_outdir_arg,
     add_output_format_args,
     add_weights_arg,
+    apply_metadata_args,
     build_dual_column_names,
     configure_unbuffered_output,
     difference_config_from_args,
@@ -1588,6 +1589,7 @@ Examples:
                 program_version=__version__,
                 refinement_method="difference-refine",
                 r_work=float(r_work), r_free=float(r_free),
+                authors=["AUTHOR NAME"],
             )
             meta._set_reflection_statistics(data)
 
@@ -1613,11 +1615,7 @@ Examples:
             if model.spacegroup is not None:
                 meta.spacegroup = model.spacegroup.hm
 
-            # CLI overrides / defaults
-            if getattr(args, "title", None):
-                meta.title = args.title
-            meta.authors = getattr(args, "authors", None) or ["AUTHOR NAME"]
-
+            apply_metadata_args(meta, args)
             return meta
 
         dark_meta = _build_metadata(model_dark, data_dark, r_work_d, r_free_d)
@@ -1669,7 +1667,7 @@ Examples:
             refinement_method="difference-refine",
             r_work=float(r_work_l),
             r_free=float(r_free_l),
-            authors=getattr(args, "authors", None) or ["AUTHOR NAME"],
+            authors=["AUTHOR NAME"],
         )
         merged_meta._set_reflection_statistics(data_light)
         merged_meta.b_mean_overall = float(merged_df["tempfactor"].mean())
@@ -1688,9 +1686,12 @@ Examples:
             f"dark vs dark data Rwork={r_work_d:.4f} Rfree={r_free_d:.4f}."
         )
         merged_meta.title = ensemble_note
+        apply_metadata_args(merged_meta, args)
 
         from torchref.io import cif as cif_io
-        cif_io.write_model(merged_df, merged_cif_out, metadata=merged_meta)
+        cif_io.write_model(
+            merged_df, merged_cif_out, metadata=None if no_header else merged_meta
+        )
 
         if args.verbose > 0:
             print(f"  Merged deposition CIF written to {merged_cif_out}")

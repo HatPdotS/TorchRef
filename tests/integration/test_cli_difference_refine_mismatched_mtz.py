@@ -77,6 +77,8 @@ def test_difference_refine_mismatched_mtz_cpu(
             "-lsf", str(mismatched_mtz_pair["light"]),
             "--fraction", "0.3",
             "--refine-fractions",
+            "--title", "Dark and light states",
+            "--output-remarks", "Refined against mismatched halves",
             "--n-cycles", "1",
             "--n-steps", "1",
             "--max-iter", "5",
@@ -157,3 +159,11 @@ def test_difference_refine_mismatched_mtz_cpu(
     }
     assert 0.001 < devs["f_bond_d"] < 0.1
     assert 0.3 < devs["f_angle_d"] < 5.0
+
+    # --title and --output-remarks reach the per-state files and the merged CIF, whose
+    # ensemble note is only the default title.
+    for b in (light, merged_block):
+        title = gemmi.cif.as_string(b.find_value("_struct.title"))
+        details = gemmi.cif.as_string(b.find_value("_refine.details"))
+        assert title == "Dark and light states"
+        assert details == "Refined against mismatched halves"

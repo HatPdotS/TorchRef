@@ -491,6 +491,24 @@ def add_metadata_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def apply_metadata_args(metadata, args: argparse.Namespace) -> None:
+    """Apply the ``--title``, ``--authors`` and ``--output-remarks`` overrides.
+
+    Parameters
+    ----------
+    metadata : RefinementMetadata
+        Header to update in place; a field whose flag was not given keeps its value.
+    args : argparse.Namespace
+        Parsed arguments of a parser built with :func:`add_metadata_args`.
+    """
+    if getattr(args, "title", None):
+        metadata.title = args.title
+    if getattr(args, "authors", None):
+        metadata.authors = args.authors
+    if getattr(args, "output_remarks", None):
+        metadata.output_remarks = args.output_remarks
+
+
 def add_general_args(parser: argparse.ArgumentParser) -> None:
     """Add a *General* argument group with ``--device`` and ``-v``/``--verbose``."""
     gen = parser.add_argument_group("General")
@@ -897,17 +915,10 @@ def write_refinement_outputs(
     metadata = None
     if not no_header:
         metadata = refinement.collect_deposition_metadata()
-        # Apply CLI overrides
-        if getattr(args, "title", None):
-            metadata.title = args.title
-        if getattr(args, "authors", None):
-            metadata.authors = args.authors
-        if getattr(args, "output_remarks", None):
-            metadata.output_remarks = args.output_remarks
+        apply_metadata_args(metadata, args)
 
         # What was minimised and how. These live on the CLI namespace rather
-        # than on the refinement, which is why from_refinement cannot fill them
-        # and why the header carried no method line at all until now.
+        # than on the refinement, which is why from_refinement cannot fill them.
         xray_mode = getattr(args, "xray_mode", None)
         if xray_mode:
             # Name the family as well as the registry key. "ML" alone is
@@ -946,7 +957,9 @@ def write_refinement_outputs(
 
     if output_format in ("pdb", "both"):
         output_pdb = outdir / "refined.pdb"
-        refinement.write_out_pdb(str(output_pdb), metadata=metadata)
+        # The model's writer, not refinement.write_out_pdb: that one collects a
+        # header when given None, and None here is --no-header.
+        refinement.model.write_pdb(str(output_pdb), metadata=metadata)
         outputs["pdb"] = output_pdb
         if verbose > 0:
             print(f"  Refined structure (PDB): {output_pdb}")
@@ -954,7 +967,7 @@ def write_refinement_outputs(
 
     if output_format in ("cif", "both"):
         output_cif = outdir / "refined.cif"
-        refinement.write_out_cif(str(output_cif), metadata=metadata)
+        refinement.model.write_cif(str(output_cif), metadata=metadata)
         outputs["cif"] = output_cif
         if verbose > 0:
             print(f"  Refined structure (mmCIF): {output_cif}")
