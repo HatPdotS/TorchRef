@@ -333,16 +333,3 @@ def fit_relative_wilson_b(
     # Phaser: WilsonB_intensity = -4·slope, then halved → WilsonB = -2·slope.
     wilson_b = -2.0 * slope
     return float(max(-clamp_b, min(wilson_b, clamp_b)))
-
-
-# Note: a naive OLS-on-log-F² fit of anisotropic Wilson U was attempted on
-# 2026-05-28 and didn't work. The Wilson left tail (small F values produce huge
-# negative log F²) dominates the regression, returning U components of order
-# 10²–10³ Å² on real data — three orders of magnitude beyond physical, on both
-# easy (1DAW) and hard (2DQ6) cases. Robustifying via |F|-weighting + ridge
-# only made the fit saturate any sensible clamp. Phaser's ``scaleANIS``
-# (``DataB.cc``, ~500 LoC) is an iterative ML fit on ``logSigmaEsq``; that's
-# the right approach if obs-side aniso ever becomes the next lever. The 2DQ6
-# benchmark failure we were chasing turned out to be tNCS
-# (``<(E²−1)²>_acentric = 5.5`` vs Wilson = 1.0), not anisotropy, so this
-# branch is not in the immediate critical path.
