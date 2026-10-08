@@ -77,7 +77,8 @@ class OccupancyFloorDiagnostic:
         """
         Compute electron density at specific positions using Fourier summation.
 
-        This is a simplified calculation that sums F_calc * exp(2πi * h·r).
+        Sum ``Re[F_calc(h) exp(-2πi h·r)]`` over the given reflections, the
+        synthesis that inverts TorchRef's ``F = Σ f exp(+2πi h·x)``.
 
         Parameters
         ----------
@@ -103,13 +104,14 @@ class OccupancyFloorDiagnostic:
             # does not raise under a float64 config.
             h_dot_r = torch.matmul(positions, hkl.T.to(dtype=positions.dtype))
 
-            # Fourier sum: ρ(r) = Σ_h F(h) * exp(2πi * h·r)
-            # For real density, this is: Σ_h |F(h)| * cos(2π*h·r + φ(h))
+            # ρ(r) = Σ_h |F(h)| cos(2π h·r - φ(h)); a + sign gives ρ(-r).
             phase = torch.angle(fcalc)  # (M,)
             amplitude = torch.abs(fcalc)  # (M,)
 
-            # ρ(r) = Σ_h |F(h)| * cos(2π*h·r + φ(h))
-            density = (amplitude.unsqueeze(0) * torch.cos(2 * torch.pi * h_dot_r + phase.unsqueeze(0))).sum(dim=1)
+            density = (
+                amplitude.unsqueeze(0)
+                * torch.cos(2 * torch.pi * h_dot_r - phase.unsqueeze(0))
+            ).sum(dim=1)
 
             # Normalize by number of reflections (approximate)
             density = density / len(hkl)
