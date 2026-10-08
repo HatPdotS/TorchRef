@@ -38,13 +38,15 @@ Refinement Parameters
 
 - **Coordinates** — ``model.xyz()``, Ångströms
 - **Isotropic ADPs** — ``model.adp()``, B-factors in Ų
-- **Anisotropic U** — ``model.u()``, 6 components per atom. Used automatically
-  when the input model carries ``ANISOU`` records
+- **Anisotropic U** — ``model.u()``, 6 components per atom, for the atoms chosen
+  by ``aniso_selection`` when ``adp_mode="anisotropic"`` (CLI ``--adp-mode
+  anisotropic --anisotropic-selection ...``). The default ``"isotropic"``
+  converts ``ANISOU`` atoms to B; ``"preserve"`` keeps the file's ADPs
 - **Occupancies** — ``model.occupancy()``, 0–1
 
 Anisotropic ADPs are six parameters per atom, so refining them against
 low-resolution data overfits badly. Check that the resolution supports it before
-handing in a model with ``ANISOU``.
+choosing ``adp_mode="anisotropic"``.
 
 Parameter Selection
 -------------------
