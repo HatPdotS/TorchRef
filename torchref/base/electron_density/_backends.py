@@ -65,9 +65,9 @@ DENSITY_BACKENDS = BackendTable(
                     "add_anisotropic_cpu_sphere_var"),
             device="cpu",
             dtypes=(torch.float32, torch.float64),  # dtype-ok: backend capability declaration, not an allocation
-            # Uniformity, not membership: the kernel picks one ``scalar_t`` from the output
-            # map and ``data_ptr<scalar_t>()`` raises on any other dtype, so this sends a
-            # mixed-dtype call to the portable splat instead of to that RuntimeError.
+            # Uniformity, not membership: the entry point's ``_prep`` raises ValueError
+            # on any dtype but the map's (``data_ptr<scalar_t>()`` a RuntimeError behind
+            # it), so a mixed-dtype call goes to the portable splat instead of an error.
             require_uniform_dtype=True,
             probes=_ATOM_ARGS,
             probe=(_SPHERE, "why_unavailable"),
