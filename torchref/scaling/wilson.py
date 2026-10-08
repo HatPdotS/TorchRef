@@ -220,26 +220,12 @@ class WilsonNormaliser:
     def _solve_intercept(
         beta: torch.Tensor, X: torch.Tensor, y: torch.Tensor, w: torch.Tensor,
     ) -> torch.Tensor:
-        """Put the intercept exactly on its score equation, closed form.
+        """Put the intercept exactly on its score equation, in closed form.
 
-        The intercept's stationarity condition is ``sum_h k_h (I_h/mu_h - 1) =
-        0``, which is ``<E^2> = 1`` -- the identity this class exists to
-        provide. Shifting ``beta[0]`` by ``d`` scales every ``mu`` by ``e^d``,
-        so the ``d`` that satisfies it is available in one line:
-
-            e^d = sum_h k_h (I_h/mu_h) / sum_h k_h
-
-        Doing this explicitly decouples the identity from how tightly the SHAPE
-        converged. Without it ``<E^2> = 1`` is only as good as the overall fit
-        tolerance -- at ``rtol = 1e-4`` it came out at 1 - 1e-5 -- and the
-        identity is not the kind of claim that should degrade with a stopping
-        rule. The remaining coefficients are untouched, so this changes the
-        curve's level and not its shape.
-
-        In the working dtype like everything else here. The point is to make the
-        identity independent of the *stopping rule*, not to chase digits: it
-        lands within about 1e-6 of one, which is two orders inside anything that
-        reads it.
+        Shifting ``beta[0]`` by ``d`` scales every ``mu`` by ``e^d``, so
+        ``e^d = sum_h k_h (I_h/mu_h) / sum_h k_h`` satisfies
+        ``sum_h k_h (I_h/mu_h - 1) = 0``, i.e. ``<E^2> = 1``, independently of how
+        tightly the shape converged. Only the level changes, not the shape.
         """
         eta = X @ beta
         mu = torch.exp(eta.clamp(min=-LOG_CLAMP + float(beta[0]),
@@ -259,34 +245,14 @@ class WilsonNormaliser:
     ) -> Tuple[torch.Tensor, int]:
         """Gamma GLM with a log link, by iteratively reweighted least squares.
 
-        IRLS rather than a generic optimiser: for this link and family the
-        working weight does not depend on ``mu``, so each step is one weighted
-        least-squares solve and there is no step size, no line search and no
-        absolute tolerance to fail against an unnormalised objective.
-
-        Convergence and step control both use the objective itself,
-        ``L = sum_h k_h (y_h/mu_h + log mu_h)`` -- the negative log-likelihood
-        with the terms not involving ``beta`` dropped.
-
-        That choice is forced by what the alternatives do on real data. The
-        *coefficients* are underdetermined whenever the data occupy part of the
-        basis range, which is the normal case once an explicit ``s_lo``/``s_hi``
-        is passed, so they wander in the flat directions long after the fit has
-        settled. The *deviance* carries a ``-log(y/mu)`` term that diverges as
-        ``y -> 0``, and calculated amplitudes have near-zeros at the nodes of
-        the molecular transform, so a few tiny intensities dominate it. And the
-        *fitted mean* cannot be compared as a ratio because it is floored, so a
-        collapsed fit reads as a converged one -- which is exactly how an early
-        version of this reported success while returning zeros.
-
-        ``L`` has none of those problems: the ``log y`` term that breaks the
-        deviance is constant in ``beta`` and simply absent here.
-
-        Step halving is the other half. IRLS on a log link can overshoot into
-        ``mu`` underflow, after which the working response ``y/mu`` explodes and
-        the next step is worse. Rejecting any step that does not improve ``L``
-        and halving it is the standard remedy and makes the fit robust to the
-        ill-conditioning a partial basis range creates.
+        For this family and link the working weight is the shape ``k`` and does not
+        depend on ``mu``, so each step is one weighted least-squares solve against a
+        fixed matrix. Convergence and step halving both use the objective
+        ``L = sum_h k_h (y_h/mu_h + log mu_h)``, the negative log-likelihood without
+        its ``beta``-free terms: the coefficients wander in flat directions when the
+        data cover part of the basis range, and the deviance's ``-log(y/mu)`` term
+        diverges at near-zero intensities. A step that does not lower ``L`` is halved,
+        which guards against overshooting into ``mu`` underflow.
         """
         # Seed at the constant curve, which is the exact MLE when Sigma has no
         # resolution dependence. Every later iteration only adds shape.
@@ -316,22 +282,14 @@ class WilsonNormaliser:
         A = A + torch.eye(self.n_coeff, dtype=A.dtype, device=A.device) * (
             1e-10 * float(torch.diagonal(A).abs().max().clamp(min=1e-30))
         )
-        # Factorised once, and by Cholesky rather than LU. `A` is `X^T W X`
-        # plus a ridge with positive IRLS weights, so it is symmetric positive
-        # definite by construction -- and MPS implements neither `lu_solve` nor
-        # `cholesky_solve` (torch 2.9.1), which left the per-iteration solve to
-        # a CPU round trip: 1015 us against 114 us for two triangular solves, on
-        # a 200k x 6 problem whose unavoidable `XtW @ z` is 966 us. Same
-        # arithmetic -- over the 16 datasets in ``tests/files/mtz`` the two
-        # agree to 1e-5 relative in float32 and 1e-14 in float64, with identical
-        # iteration counts on every one.
+        # Cholesky, not LU: A is SPD by construction, and MPS has neither lu_solve
+        # nor cholesky_solve, so two triangular solves keep the loop on the device.
         #
         # `cholesky_ex` reports rather than raises, because a fully collinear
         # basis is a thing this fit sees: the high-order Chebyshev columns go
         # near-singular when the data cover only part of the basis range, and
-        # the ridge does not always rescue that. LU carried no definiteness
-        # requirement, so that case falls back to a general solve instead of
-        # failing.
+        # the ridge does not always rescue that; that case falls back to a
+        # general solve, which needs no definiteness, instead of failing.
         chol = torch.linalg.cholesky_ex(A)
         L_A = chol.L if int(chol.info) == 0 else None
 
