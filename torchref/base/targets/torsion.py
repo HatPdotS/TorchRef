@@ -1,4 +1,5 @@
-"""Torsion restraint NLL: unimodal von Mises + omega cis/trans mixture."""
+"""Omega cis/trans mixture torsion NLL (the unimodal von Mises term lives in
+``refinement.targets.geometry.torsions`` and ``triton.torsion``)."""
 
 import torch
 
