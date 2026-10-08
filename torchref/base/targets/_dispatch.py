@@ -57,17 +57,13 @@ TARGET_BACKENDS = BackendTable(
             dtypes=(torch.float32,),  # dtype-ok: backend capability declaration, not an allocation
             probe=(_THIS, "why_unavailable"),
             expect_available="cuda",
-            # The probe handles availability, so this governs only a kernel that
-            # imported and then threw -- a bug in pure math on validated tensors.
-            # Degrading there would silently swap in different numbers.
+            # Not consulted by this gate-only table: a Triton kernel that throws raises.
             on_failure="raise",
             second_order=False,
         ),
         Backend(
             name="eager",
             kernel=None,
-            # METAL is here because there are no Metal target kernels: at this site it has
-            # to mean "run eager". TRITON is absent, which is what makes it strict.
             expect_available="always",
             on_failure="raise",
             second_order=True,
