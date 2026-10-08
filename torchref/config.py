@@ -234,24 +234,11 @@ class CompileTargetsConfig:
 
     ``compile_targets.value`` reads or sets it; initialised from
     ``TORCHREF_COMPILE_TARGETS`` ("1"/"true"/"yes"/"on"). Applies to the full-form MLF
-    target (``--xray-mode ml_full``), whose per-reflection fixed-node quadrature is bound by
-    dispatch and memory traffic in eager mode, so fusing it is worth roughly an order of
-    magnitude.
-
-    **Off by default because of compile latency, which autograd dominates**: compiling the
-    backward costs ~2 minutes on the first call, so a short refinement of a small structure
-    gets slower, not faster. It pays off for big datasets (the target scales with reflection
-    count) and for long or repeated runs in one process (ensembles, collection/PanDDA
-    refinements, interactive sessions) where the compile amortises.
-
-    Only the reflection-count dimension varies, so the kernels compile with ``dynamic=True``
-    and **one** compilation serves every dataset size, work/free subset and gathered tensor
-    -- no chunking or padding layer is needed. To cut latency point
-    ``TORCHINDUCTOR_CACHE_DIR`` at node-local disk (never gpfs) so codegen is reused across
-    processes; artifacts are ~22 MB.
-
-    **Keep it off for float64 and gradient-verification work regardless**: that path is the
-    eager reference and is deliberately unfused.
+    target (``--xray-mode ml_full``). Off by default because the first backward compile
+    takes minutes, so it pays only on large datasets or long and repeated runs in one
+    process. The kernels compile with ``dynamic=True``, so one compilation serves every
+    reflection count. Keep it off for float64 and gradient verification: that path is
+    the eager reference.
     """
 
     def __init__(self):
