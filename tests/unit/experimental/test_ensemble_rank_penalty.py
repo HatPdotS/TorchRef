@@ -1,7 +1,8 @@
 """
 Unit tests for :class:`~torchref.experimental.ensemble.rank_penalty.RankPenaltyTarget`.
 
-Pins that the penalty sees only the alive members of a population pool.
+Pins that the penalty sees only the alive members of a population pool and that
+its diagnostics run in the working dtype.
 """
 
 import os
@@ -36,3 +37,18 @@ def test_dead_slots_do_not_enter_the_penalty(pool_and_plain, mode):
     grad = pool.xyz.refinable_params.grad.view(pool.n_members, -1)
     assert torch.all(grad[4:] == 0)
 
+
+def test_spectrum_diagnostics_stay_in_the_working_dtype(monkeypatch, pool_and_plain):
+    """No float64 cast, so the per-cycle diagnostics also run on MPS."""
+    _, plain = pool_and_plain
+    seen = []
+    svdvals = torch.linalg.svdvals
+
+    def recording_svdvals(A, *args, **kwargs):
+        seen.append(A.dtype)
+        return svdvals(A, *args, **kwargs)
+
+    monkeypatch.setattr(torch.linalg, "svdvals", recording_svdvals)
+    diag = RankPenaltyTarget(model=plain).spectrum_diagnostics()
+    assert seen == [plain.dtype_float]
+    assert 1.0 <= diag["participation_ratio"] <= plain.n_members
