@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 
 from torchref.base.metrics.rfactor import rfactor_work_free
-from torchref.config import get_float_dtype, get_int_dtype
+from torchref.config import get_int_dtype
 from torchref.scaling.scaler_base import (
     DEFAULT_SCALE_TARGET,
     SCALE_TARGETS,
@@ -168,10 +168,9 @@ class CollectionScaler(ScalerBase):
         dc = self._dataset_collection
         mc = self._model_collection
 
-        # Use the configured float dtype so the scatter_add_ against
-        # fobs-derived log_ratios does not raise under a float64 config.
-        scales = torch.zeros(self.nbins, device=self.device, dtype=get_float_dtype())
-        counts = torch.zeros(self.nbins, device=self.device, dtype=get_float_dtype())
+        # Allocated from the first log_ratios: scatter_add_ does not promote, so the
+        # sums must share the data's dtype. The dark key always matches a dataset.
+        scales = counts = None
 
         all_keys = [mc.dark_key] + mc.timepoint_names
         n_pairs = 0
@@ -206,6 +205,9 @@ class CollectionScaler(ScalerBase):
             ).to(self.device)
             bins = bins.to(self.device)
 
+            if scales is None:
+                scales = log_ratios.new_zeros(self.nbins)
+                counts = torch.zeros_like(scales)
             scales.scatter_add_(0, bins, log_ratios)
             ones = torch.ones_like(log_ratios)
             counts.scatter_add_(0, bins, ones)

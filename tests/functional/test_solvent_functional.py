@@ -37,9 +37,10 @@ class TestSolventModelInitialization:
         assert solvent.erosion_radius == 0.8
         # every falloff parameter is stored as its log
         assert torch.isfinite(solvent.log_k_solvent)
-        assert torch.isclose(solvent.n_exp(), torch.tensor(5.0))
+        ft = solvent.float_type
+        assert torch.isclose(solvent.n_exp(), torch.tensor(5.0, dtype=ft))
         assert torch.isclose(
-            solvent.ss_half(), torch.tensor(1.0 / (4 * 3.6 ** 2)), rtol=1e-5
+            solvent.ss_half(), torch.tensor(1.0 / (4 * 3.6**2), dtype=ft), rtol=1e-5
         )
 
 
@@ -56,7 +57,8 @@ class TestSolventParameters:
         
         # log_k_solvent should give back k_solvent via exp
         k_recovered = torch.exp(solvent.log_k_solvent)
-        assert torch.isclose(k_recovered, torch.tensor(k_solvent_initial), rtol=1e-5)
+        expected = torch.tensor(k_solvent_initial, dtype=solvent.float_type)
+        assert torch.isclose(k_recovered, expected, rtol=1e-5)
 
     def test_falloff_parameters(self):
         """The falloff half-point and exponent round-trip through their logs."""
@@ -64,10 +66,11 @@ class TestSolventParameters:
 
         solvent = SolventModel(d_half=4.0, n_exp=3.0)
 
+        ft = solvent.float_type
         assert torch.isclose(
-            solvent.ss_half(), torch.tensor(1.0 / 64.0), rtol=1e-5
+            solvent.ss_half(), torch.tensor(1.0 / 64.0, dtype=ft), rtol=1e-5
         )
-        assert torch.isclose(solvent.n_exp(), torch.tensor(3.0), rtol=1e-5)
+        assert torch.isclose(solvent.n_exp(), torch.tensor(3.0, dtype=ft), rtol=1e-5)
 
     def test_phase_offset_is_a_zero_buffer_and_not_refined(self):
         """``phase_offset`` is a zero buffer, never a parameter, whatever is passed."""
@@ -288,7 +291,9 @@ class TestSolventTypicalValues:
 
         solvent = SolventModel(k_solvent=k)
         k_recovered = torch.exp(solvent.log_k_solvent)
-        assert torch.isclose(k_recovered, torch.tensor(k), rtol=1e-5)
+        assert torch.isclose(
+            k_recovered, torch.tensor(k, dtype=solvent.float_type), rtol=1e-5
+        )
 
     @pytest.mark.parametrize("d_half", [2.5, 3.6, 4.5, 6.0, 10.0])
     def test_typical_d_half_range(self, d_half):
@@ -296,9 +301,8 @@ class TestSolventTypicalValues:
         from torchref.scaling.solvent import SolventModel
 
         solvent = SolventModel(d_half=d_half)
-        assert torch.isclose(
-            solvent.ss_half(), torch.tensor(1.0 / (4 * d_half ** 2)), rtol=1e-4
-        )
+        expected = torch.tensor(1.0 / (4 * d_half**2), dtype=solvent.float_type)
+        assert torch.isclose(solvent.ss_half(), expected, rtol=1e-4)
 
     def test_default_parameters(self):
         """Test default parameter values are reasonable."""
