@@ -89,13 +89,14 @@ class PCAEnsembleParam(nn.Module):
         K: Optional[int] = None,
     ) -> "PCAEnsembleParam":
         """Seed from a flat ``(N*n_atoms, 3)`` ensemble via SVD of the centered
-        member matrix. ``K`` defaults to ``N-1`` (complete reparameterization)."""
+        member matrix, in ``xyz_flat``'s dtype and on its device. ``K`` defaults
+        to ``N-1`` (complete reparameterization)."""
         N = int(n_members)
         with torch.no_grad():
-            # dtype-ok: SVD seeding in float64 for numerical stability; recast to
-            # xyz_flat.dtype below (line 107). Caveat: no .cpu(), so errors on MPS.
-            X = xyz_flat.detach().reshape(N, n_atoms * 3).to(torch.float64)
+            X = xyz_flat.detach().reshape(N, n_atoms * 3)
             mu = X.mean(dim=0)
+            # Centring removes the ~10² Å absolute coordinates, leaving the Å-scale
+            # spread the SVD resolves, so the working dtype suffices.
             Xc = X - mu.unsqueeze(0)
             U, S, Vt = torch.linalg.svd(Xc, full_matrices=False)
             max_rank = max(1, N - 1)
@@ -104,11 +105,9 @@ class PCAEnsembleParam(nn.Module):
             A0 = Xc @ Vk.T                                   # (N, K) = U S
             total = (S ** 2).sum().clamp_min(1e-30)
             explained = float((S[:K] ** 2).sum() / total)
-        dtype = xyz_flat.dtype
         return cls(
-            mu.to(dtype), Vk.to(dtype), A0.to(dtype),
-            n_members=N, n_atoms=n_atoms, explained_variance=explained,
-        ).to(xyz_flat.device)
+            mu, Vk, A0, n_members=N, n_atoms=n_atoms, explained_variance=explained
+        )
 
     def forward(self) -> torch.Tensor:
         """Reconstruct the flat ``(N*n_atoms, 3)`` coordinate tensor."""

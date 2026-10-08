@@ -189,7 +189,6 @@ def test_copy_carries_the_ensemble(tmp_path, small_ensemble):
 
 
 def test_copy_keeps_a_low_rank_xyz():
-    # enable_low_rank seeds its basis with a float64 SVD, which MPS cannot run
     ens = EnsembleModel.from_single(
         TEST_PDB,
         n_members=5,
@@ -197,7 +196,6 @@ def test_copy_keeps_a_low_rank_xyz():
         b_const=5.0,
         seed=42,
         verbose=0,
-        device="cpu",
     )
     ens.enable_low_rank(2)
     dup = ens.copy()
@@ -278,3 +276,20 @@ def test_bifurcate_refuses_a_low_rank_xyz():
     ens.enable_low_rank(2)
     with pytest.raises(RuntimeError, match="enable_low_rank"):
         ens.bifurcate_member(0)
+
+
+@pytest.mark.parametrize("swap", ["enable_low_rank", "enable_pca"])
+def test_pca_seeding_runs_in_the_working_dtype(monkeypatch, small_ensemble, swap):
+    """The seeding SVD stays in the model dtype, so it also runs on MPS."""
+    seen = []
+    svd = torch.linalg.svd
+
+    def recording_svd(A, *args, **kwargs):
+        seen.append(A.dtype)
+        return svd(A, *args, **kwargs)
+
+    monkeypatch.setattr(torch.linalg, "svd", recording_svd)
+    before = small_ensemble.xyz().detach().clone()
+    getattr(small_ensemble, swap)(4)
+    assert seen and all(dt == small_ensemble.dtype_float for dt in seen)
+    assert torch.allclose(small_ensemble.xyz(), before, atol=1e-3)

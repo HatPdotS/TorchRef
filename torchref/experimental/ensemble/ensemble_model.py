@@ -806,6 +806,7 @@ class EnsembleModel(ModelFT):
             the retained ``K`` modes.
         """
         from .low_rank_ensemble import LowRankXYZ
+        from .pca_model import PCAEnsembleParam
 
         N = int(self.n_members)
         n_atoms = int(self.n_atoms_per_member)
@@ -819,25 +820,14 @@ class EnsembleModel(ModelFT):
                 )
             K = max_rank
 
-        with torch.no_grad():
-            flat = self.xyz().detach()                       # (N*n_atoms, 3)
-            # dtype-ok: SVD seeding in float64 for numerical stability. Caveat: no
-            # .cpu() first, so this errors on MPS.
-            X = flat.reshape(N, n_atoms * 3).to(torch.float64)
-            mu = X.mean(dim=0)                               # (D,)
-            Xc = X - mu.unsqueeze(0)
-            # full_matrices=False → Vt is (min(N, D), D); S length min(N, D).
-            U, S, Vt = torch.linalg.svd(Xc, full_matrices=False)
-            Vk = Vt[:K]                                      # (K, D)
-            A0 = Xc @ Vk.T                                   # (N, K)
-            total_var = (S ** 2).sum().clamp_min(1e-30)
-            explained = float((S[:K] ** 2).sum() / total_var)
-
-        dtype = self.dtype_float
+        seed = PCAEnsembleParam.from_ensemble(
+            self.xyz().detach(), n_members=N, n_atoms=n_atoms, K=K
+        )
+        explained = seed.explained_variance
         lowrank = LowRankXYZ(
-            mu=mu.to(dtype),
-            V=Vk.to(dtype),
-            amplitudes=A0.to(dtype),
+            mu=seed.mu,
+            V=seed.V,
+            amplitudes=seed.A,
             n_members=N,
             n_atoms=n_atoms,
             explained_variance=explained,
