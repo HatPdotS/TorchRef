@@ -17,9 +17,9 @@ modes) are **frozen** buffers computed once by
 :meth:`EnsembleModel.enable_low_rank`, and only the per-member amplitudes
 ``A`` (shape ``(N, K)``) refine. Degrees of freedom collapse from
 ``N·n_atoms·3`` to ``N·K``. The basis is computed from the *current* ensemble,
-so the de-overfit workflow seeds it from a saved checkpoint
-(``--branch-from ckpt``, *not* ``--init-pdb``) — a fresh replicate-and-perturb
-ensemble has only near-degenerate spread to decompose.
+so seed it from a refined one (loaded with ``EnsembleModel.from_multimodel_pdb``
+or from a checkpoint) — a fresh replicate-and-perturb ensemble has only
+near-degenerate spread to decompose.
 
 Drop-in for the ``MixedTensor`` that normally lives at ``model.xyz``: it is
 called as ``self.xyz()`` everywhere in the model, returns the flat

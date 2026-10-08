@@ -788,10 +788,10 @@ class EnsembleModel(ModelFT):
         refinable leaf is the per-member amplitudes ``A`` (shape ``(N, K)``).
         Degrees of freedom collapse from ``N·n_atoms·3`` to ``N·K``.
 
-        The current coordinates ARE the basis source, so this must be called
-        after the ensemble is seeded with real disorder (e.g. after a
-        ``--branch-from`` overlay) — a fresh replicate-and-perturb ensemble
-        has only ~``perturb_sigma`` of near-degenerate spread.
+        The current coordinates ARE the basis source, so call this on an
+        ensemble with real disorder (loaded with :meth:`from_multimodel_pdb`
+        or a checkpoint); a fresh replicate-and-perturb ensemble has only
+        ~``perturb_sigma`` of near-degenerate spread.
 
         Parameters
         ----------
@@ -850,8 +850,8 @@ class EnsembleModel(ModelFT):
         Like :meth:`enable_low_rank` but the mean ``mu``, basis ``V`` AND
         amplitudes ``A`` all refine (see
         :class:`~torchref.experimental.ensemble.pca_model.PCAEnsembleParam`). ``K=None`` → the
-        full rank ``N-1`` (complete reparameterization). Must be called after
-        the ensemble carries real disorder (e.g. after a ``--branch-from``).
+        full rank ``N-1`` (complete reparameterization). Call it on an ensemble
+        with real disorder (loaded with :meth:`from_multimodel_pdb` or a checkpoint).
         Returns the cumulative explained-variance fraction at seed time.
         """
         from .pca_model import PCAEnsembleParam

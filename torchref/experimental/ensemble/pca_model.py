@@ -13,10 +13,10 @@ low-rank decomposition::
     xyz_i = μ + Σ_k a_{ik} v_k          (Xc = A Vᵀ, rank K)
 
 with ``μ`` (mean structure), ``V`` (K basis modes) and ``A`` (per-member
-amplitudes) all ``nn.Parameter``. Seeded by an SVD of an existing (overfit)
-ensemble — in the de-overfit workflow that ensemble must come from a saved
-checkpoint (seed via ``--branch-from ckpt``, *not* ``--init-pdb``), since the
-basis is only meaningful once real disorder has developed. Hypothesis:
+amplitudes) all ``nn.Parameter``. Seeded by an SVD of an existing refined
+ensemble — loaded with ``EnsembleModel.from_multimodel_pdb`` or from a
+checkpoint — since the basis is only meaningful once real disorder has
+developed. Hypothesis:
 refining in collective-coordinate space is an easier
 landscape than raw Cartesian, and the explicit spectrum is the natural place for
 the maxent (shrink + diversity) regularizer to act.
