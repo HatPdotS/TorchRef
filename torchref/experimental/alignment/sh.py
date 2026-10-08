@@ -15,11 +15,8 @@ Three unrelated things share this module because they share one consumer.
   load-bearing: an unconstrained six-component fit can return a tensor the
   lattice forbids.
 
-This module used to also carry a full spherical-harmonic expansion
-(``evaluate_ylm``, ``sh_expand_ball``). Nothing called it -- the FRF's own
-expansion superseded it -- so it went. ``_bar_legendre_recurrence`` survived it:
-production does not call that either, but the FRF expansion's only *independent*
-test reference is built on it.
+``_bar_legendre_recurrence`` has no production caller; it is kept because the
+FRF expansion's only *independent* test reference is built on it.
 """
 
 from __future__ import annotations
