@@ -514,15 +514,16 @@ def test_fused_gate_requires_one_shared_dtype():
 
     The C++ selects one ``scalar_t`` from the output map via
     ``AT_DISPATCH_FLOATING_TYPES(out.scalar_type(), ...)`` and then reads every other
-    tensor through a raw pointer of that type. So a float64 map beside float32 atoms would
-    reinterpret the coordinate buffer as doubles -- garbage values and a 2x out-of-bounds
-    read -- and the gate has to refuse it.
+    tensor through ``data_ptr<scalar_t>()``, which raises on any other dtype. So a float64
+    map beside float32 atoms is a RuntimeError, and the gate refuses it so that dispatch
+    sends the call to the portable splat instead.
 
     Written down because the rule is easy to get wrong when it is restated as a set of
     permitted dtypes: "each tensor's dtype is in {f32, f64}" *admits* the mixed case, while
     the actual requirement is "all tensors share one dtype drawn from {f32, f64}". The two
-    read almost identically and only one is memory-safe. In the table that difference is the
-    ``require_uniform_dtype`` flag, and this asserts it against the row that ships.
+    read almost identically and only one keeps the kernel from raising. In the table that
+    difference is the ``require_uniform_dtype`` flag, and this asserts it against the row
+    that ships.
     """
     from torchref.base.electron_density._backends import DENSITY_BACKENDS
 
