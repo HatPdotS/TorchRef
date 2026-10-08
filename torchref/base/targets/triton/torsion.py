@@ -450,10 +450,13 @@ def torsion_unimodal_full_math_triton(xyz, idx, references_deg, sigmas_deg, peri
     Parameters
     ----------
     xyz : (N_atoms, 3) float32 CUDA
-    idx : (N, 4) int64 atom indices
+    idx : (N, 4) integer atom indices (get_int_dtype)
     references_deg : (N,) float32 — target angles in degrees
     sigmas_deg : (N,) float32 — sigmas in degrees
-    periods : (N,) int — n-fold periodicity (≥ 1)
+    periods : (N,) int
+        n-fold periodicity (≥ 1). Periods above 6 are not supported: only the
+        first 6 equivalent references are tried, so the deviation can be
+        overstated without warning.
     """
     return _TorsionUnimodalMathTriton.apply(
         xyz, idx, references_deg, sigmas_deg, periods,
