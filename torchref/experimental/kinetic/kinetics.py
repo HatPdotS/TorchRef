@@ -556,7 +556,7 @@ class KineticModel(DeviceMixin, nnModule):
 
         Performs convolution in real time space using a kernel matrix that
         accounts for the actual time differences between measurement points.
-        This is essential for non-uniformly spaced time grids (e.g. logarithmic).
+        Quadrature uses only the measured timepoints: accurate only if spacing << σ.
 
         For Gaussian IRF:
             S(t_i) = Σ_j P(t_j) * G(t_i - t_j) * w_j  /  Σ_j G(t_i - t_j) * w_j
