@@ -34,6 +34,7 @@ from torchref.base.direct_summation.dispatch import _chunk_ranges
 from torchref.base.electron_density._backends import DENSITY_BACKENDS
 from torchref.base.reciprocal import get_scattering_vectors, reciprocal_basis_matrix
 from torchref.base.scattering.scattering_table import get_scattering_params_by_z
+from torchref.base.targets.adp import U_to_matrix
 from torchref.symmetry.cell import Cell
 
 __all__ = [
@@ -423,14 +424,7 @@ def _eager_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, max_memory_gb):
     ``U`` ``(N, 6)`` ``[U11, U22, U33, U12, U13, U23]`` in A^2, contracted as the full
     matrix ``s^T U s`` -- a different formulation from the production expansion.
     """
-    U_matrix = torch.stack(
-        [
-            torch.stack([U[:, 0], U[:, 3], U[:, 4]], dim=0),
-            torch.stack([U[:, 3], U[:, 1], U[:, 5]], dim=0),
-            torch.stack([U[:, 4], U[:, 5], U[:, 2]], dim=0),
-        ],
-        dim=0,
-    )  # (3, 3, N)
+    U_matrix = U_to_matrix(U).permute(1, 2, 0)  # (3, 3, N)
 
     def chunk(start, end):
         sv = s_vec[start:end]
