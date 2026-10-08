@@ -441,7 +441,7 @@ def _one_atom_triton_vs_portable(abc, dims, frac_xyz, radius, b_iso, device):
     f32 = torch.float32  # dtype-ok: the Triton kernels are float32-only
     frac = torch.diag(torch.tensor(abc, dtype=f32, device=device))
     inv_frac = torch.linalg.inv(frac)
-    xyz = (torch.tensor([frac_xyz], dtype=f32, device=device) @ frac.T)
+    xyz = torch.tensor([frac_xyz], dtype=f32, device=device) @ frac.T
     A, B = get_scattering_params_by_z(torch.tensor([6], device=device), dtype=f32)
     occ = torch.ones(1, dtype=f32, device=device)
     adp = torch.full((1,), b_iso, dtype=f32, device=device)
@@ -472,10 +472,15 @@ def test_triton_splat_decodes_every_box_voxel():
     well above float noise.
     """
     iso, aniso, top = _one_atom_triton_vs_portable(
-        (20.0, 20.0, 20.0), (40, 56, 80), (0.5, 0.5, 0.5 - 0.1 / 20.0), 4.99, 300.0,
+        (20.0, 20.0, 20.0),
+        (40, 56, 80),
+        (0.5, 0.5, 0.5 - 0.1 / 20.0),
+        4.99,
+        300.0,
         torch.device("cuda"),
     )
     assert iso <= 1e-5 * top and aniso <= 1e-5 * top, (iso, aniso, top)
+
 
 @pytest.mark.cuda
 def test_triton_splat_wraps_a_box_wider_than_the_cell():
