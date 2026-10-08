@@ -486,9 +486,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 """
 
 # ---------------------------------------------------------------------------
-# Lazy compilation, attempted at most once per process. Mirrors
-# ``scatter.py::_get_module``: any failure returns None so the caller degrades to
-# the portable plain splat rather than dying.
+# Lazy compilation, attempted at most once per process. A failure makes
+# why_unavailable return a reason, so dispatch uses the portable plain splat.
 # ---------------------------------------------------------------------------
 _module = None
 _module_failed = False
