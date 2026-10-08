@@ -38,7 +38,9 @@ numbers and superseded approaches to the commit history.
 
 .. code-block:: python
 
-   def compute_structure_factors(hkl, xyz, b_factors):
+   def compute_structure_factors(
+       hkl: torch.Tensor, xyz: torch.Tensor, b_factors: torch.Tensor
+   ) -> torch.Tensor:
        """Compute structure factors for the given reflections.
 
        Parameters
