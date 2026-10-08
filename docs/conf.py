@@ -56,6 +56,17 @@ napoleon_use_rtype = True
 napoleon_use_keyword = True
 napoleon_attr_annotations = True
 
+# Napoleon passes NumPy pseudo-types ("optional", "default 1", "{'a', 'b'}") through
+# as cross-references, which only nitpicky builds report. napoleon_preprocess_types
+# would silence them too, but it also unlinks parameter types that resolve today.
+nitpick_ignore_regex = [
+    (
+        r'py:.*',
+        r'optional|default\b.*|array-like|callable|iterable|sequence|file-like'
+        r'|\{.*|.*\}|".*"',
+    ),
+]
+
 # Autodoc settings
 autodoc_default_options = {
     'members': True,
