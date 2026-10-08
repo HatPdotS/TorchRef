@@ -11,7 +11,6 @@ from ._dispatch import use_triton
 
 EIGHT_PI2 = 8.0 * math.pi**2
 # 6-vector order: [U11, U22, U33, U12, U13, U23]
-_U6_DIAG = (1.0, 1.0, 1.0, 0.0, 0.0, 0.0)
 # off-diagonal U components appear twice in the symmetric 3x3 (Frobenius norm)
 _U6_WCOMP = (1.0, 1.0, 1.0, 2.0, 2.0, 2.0)
 

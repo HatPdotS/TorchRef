@@ -10,7 +10,6 @@ import torch
 
 LOG_2PI: float = float(np.log(2.0 * np.pi))
 DEG2RAD: float = float(np.pi) / 180.0
-RAD2DEG: float = 180.0 / float(np.pi)
 
 # Safe-divide floor for the geometry math, eager and Triton (triton/angle.py and
 # triton/_dihedral.py take it), so both paths produce FINITE gradients at degenerate
