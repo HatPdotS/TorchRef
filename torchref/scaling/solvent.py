@@ -2,19 +2,17 @@
 A class for modelling solvent contribution to structure factors.
 """
 
+import warnings
+
 import torch
 import torch.nn as nn
 
-from torchref.base import (
-    extract_structure_factor_from_grid,
-    get_scattering_vectors,
-    ifft,
-)
+from torchref.base import extract_structure_factor_from_grid, ifft
 from torchref.config import get_float_dtype, get_int_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
-from torchref.utils.utils import ModuleReference, TensorDict
+from torchref.utils.utils import ModuleReference
 
 #: ``ln 2``, so ``s_half_sq = ss_half`` halves the solvent term by construction.
 _LN2 = 0.6931471805599453
@@ -105,7 +103,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
     ``ss = (sin(theta)/lambda)**2``. ``ss_half`` is where the term is halved and ``n``
     how sharply it switches off; ``n = 1`` is exactly ``exp(-B ss)`` with
     ``B = ln2 / ss_half``, so a Debye-Waller solvent is a special case rather than a
-    different model. Both are clamped to :data:`SS_HALF_BOUNDS` / :data:`N_EXP_BOUNDS`.
+    different model. Both are clamped to
+    :data:`~torchref.scaling.solvent.SS_HALF_BOUNDS` and ``N_EXP_BOUNDS``.
 
     Attributes
     ----------
@@ -121,13 +120,14 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
     solvent_radius, erosion_radius : float
         Probe radius for dilation and radius for the erosion step (Å).
     optimize_phase : bool
-        Whether the phase offset is refined.
+        Always False: the solvent phase offset is neither refined nor applied.
     log_k_solvent, log_ss_half, log_n_exp : torch.nn.Parameter
         Log solvent scattering scale, and the logs of the falloff half-point and
         exponent. Refined in log space so each stays positive.
-    phase_offset : torch.nn.Parameter or buffer
-        Phase offset in radians: a trainable parameter when
-        ``optimize_phase=True``, otherwise a buffer fixed at 0.0.
+    phase_offset : torch.Tensor
+        Zero buffer, kept so state dicts that carry the key still load. Never refined
+        and never applied: ``F_mask`` is the transform of a real, symmetric mask, so it
+        already obeys the centric phase restriction and any rotation would break it.
     """
 
     def __init__(
@@ -138,7 +138,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         d_half=3.59,
         n_exp=5.0,
         erosion_radius=0.9,
-        optimize_phase=True,
+        optimize_phase=False,
         initial_phase_offset=0.0,
         verbose=1,
         float_type=None,
@@ -166,10 +166,18 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             Falloff exponent. ``1.0`` reduces the form to ``exp(-B ss)``.
         erosion_radius : float, default 0.9
             Radius in Angstroms for erosion step.
-        optimize_phase : bool, default True
-            Whether to optimize phase offset parameter.
+        optimize_phase : bool, default False
+            Accepted and ignored; ``True`` emits a ``DeprecationWarning``.
+
+            .. deprecated:: 0.7.0
+                The bulk-solvent phase offset is not refined or applied. This keyword
+                will be removed.
         initial_phase_offset : float, default 0.0
-            Initial phase offset in radians.
+            Accepted and ignored; a non-zero value emits a ``DeprecationWarning``.
+
+            .. deprecated:: 0.7.0
+                The bulk-solvent phase offset is not refined or applied. This keyword
+                will be removed.
         verbose : int, default 1
             Verbosity level.
         ignore_hydrogens : bool, default True
@@ -192,11 +200,22 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         self.float_type = float_type
         self.solvent_radius = radius
         self.erosion_radius = erosion_radius
-        self.optimize_phase = optimize_phase
+        if optimize_phase or initial_phase_offset != 0.0:
+            warnings.warn(
+                "SolventModel: the bulk-solvent phase offset is not refined or "
+                "applied; 'optimize_phase' and 'initial_phase_offset' are ignored "
+                "and will be removed.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self.optimize_phase = False
+        self.register_buffer(
+            "phase_offset",
+            torch.tensor(0.0, dtype=self.float_type, device=self.device),
+        )
         # Heavy-atom radii already stand in for the hydrogens they carry, so a mask
         # built over hydrogen rows too would exclude solvent twice.
         self.ignore_hydrogens = bool(ignore_hydrogens)
-        self._cache = TensorDict()
 
         # Empty initialization
         if model is None:
@@ -209,17 +228,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 )
             )
             self._init_falloff(d_half, n_exp)
-            if self.optimize_phase:
-                self.phase_offset = nn.Parameter(
-                    torch.tensor(
-                        initial_phase_offset, dtype=self.float_type, device=self.device
-                    )
-                )
-            else:
-                self.register_buffer(
-                    "phase_offset",
-                    torch.tensor(0.0, dtype=self.float_type, device=self.device),
-                )
             return
 
         # Full initialization with model
@@ -243,22 +251,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             k_solvent = k_solvent.to(dtype=self.float_type, device=self.device)
         self.log_k_solvent = nn.Parameter(torch.log(k_solvent))
         self._init_falloff(d_half, n_exp)
-
-        # Phase offset parameter to align solvent phases with protein phases
-        # This is critical because FFT of a mask gives arbitrary phases
-        self.optimize_phase = optimize_phase
-        if self.optimize_phase:
-            self.phase_offset = nn.Parameter(
-                torch.tensor(
-                    initial_phase_offset, dtype=self.float_type, device=self.device
-                )
-            )
-        else:
-            self.register_buffer(
-                "phase_offset",
-                torch.tensor(0.0, dtype=self.float_type, device=self.device),
-            )
-        self._cache = TensorDict()
 
     def _init_falloff(self, d_half, n_exp):
         """Register ``log_ss_half`` / ``log_n_exp`` from a resolution and an exponent."""
@@ -565,15 +557,13 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         return self.solvent_mask
 
     def update_solvent(self):
-        """Rebuild the solvent mask from current coordinates and drop the mask-derived cache.
+        """Rebuild the solvent mask from the current coordinates.
 
         Prefer :meth:`~torchref.scaling.scaler_base.ScalerBase.update_solvent`, which also
         clears the scaler's own ``_f_sol_raw``; that one is what ``F_calc`` reads. Calling
         this directly refreshes the mask but leaves the scaler on the old ``F_sol``.
         """
         self.get_solvent_mask()
-        # The per-hkl cache is the FFT of the mask, so a new mask invalidates all of it.
-        self._cache = TensorDict()
 
     def get_rec_solvent(self, hkl):
         """
@@ -605,87 +595,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         ).all(), "Non-finite values in solvent structure factors"
         return fsol
 
-    def forward(self, hkl, update_fsol=False, F_protein=None):
-        """
-        Compute solvent contribution to structure factors at given HKL.
-
-        Differentiable w.r.t. ``log_k_solvent``, ``log_ss_half``, ``log_n_exp`` and
-        ``phase_offset``. Takes ``f_sol`` (the FFT of the binary mask) from a per-hkl
-        cache, applies :meth:`damping` at ``ss = (sin(θ)/λ)**2``,
-        blends mask phases toward the protein phases when ``optimize_phase`` and
-        ``F_protein`` are both given (``phase_offset`` 0 = mask phases,
-        ±π = protein phases), and scales by ``k_solvent``.
-
-        Parameters
-        ----------
-        hkl : torch.Tensor
-            Miller indices, shape (N, 3).
-        update_fsol : bool, default False
-            Force recomputation of the cached solvent structure factors for this
-            hkl and refresh the cache entry, instead of reusing a cached entry
-            keyed on the hkl fingerprint.
-        F_protein : torch.Tensor, optional
-            Protein structure factors, used for phase blending.
-
-        Returns
-        -------
-        torch.Tensor
-            Complex solvent structure factors, shape (N,).
-        """
-
-        # Lightweight fingerprint: (data_ptr, version, numel) — avoids SHA-1
-        hkl_key = (hkl.data_ptr(), hkl._version, hkl.numel())
-
-        if not update_fsol and hkl_key in self._cache:
-            f_sol = self._cache[hkl_key]
-        else:
-            f_sol = self.get_rec_solvent(hkl)
-            self._cache[hkl_key] = f_sol
-
-        # Calculate scattering vector magnitude: s = sin(θ)/λ
-        # Note: get_scattering_vectors returns h* = (h·a*, k·b*, l·c*)
-        # For the Debye-Waller factor, we need s = |h*|/2 = sin(θ)/λ
-        scattering_vectors = get_scattering_vectors(
-            hkl, self.model.cell, recB=self.model.recB
-        )
-        s = torch.norm(scattering_vectors, dim=1) / 2.0  # This is sin(θ)/λ
-        s_squared = s**2  # Now s² is correct for B-factor formula
-
-        falloff = self.damping(s_squared)
-        k_solvent = self.k_solvent()
-
-        # Phase handling
-        if self.optimize_phase and F_protein is not None:
-            f_mask_amp = torch.abs(f_sol)
-            mask_phases = torch.angle(f_sol)
-            protein_phases = torch.angle(F_protein)
-
-            # Interpolate phases using phase_offset as a blending parameter
-            # cos(phase_offset) = 1: use mask phases
-            # cos(phase_offset) = -1: use inverted protein phases
-            blend_factor = torch.cos(self.phase_offset)
-            blended_phase = (
-                mask_phases * (1 + blend_factor) / 2
-                + (protein_phases + torch.pi) * (1 - blend_factor) / 2
-            )
-
-            phase_adjusted_f_sol = f_mask_amp * torch.exp(1j * blended_phase)
-        elif self.optimize_phase:
-            # Apply global phase offset
-            phase_adjusted_f_sol = f_sol * torch.exp(1j * self.phase_offset)
-        else:
-            # No phase adjustment - use mask phases as-is
-            phase_adjusted_f_sol = f_sol
-
-        f_solvent = k_solvent * phase_adjusted_f_sol * falloff
-
-        assert torch.isfinite(
-            f_solvent
-        ).all(), "Non-finite values in solvent structure factors"
-        return f_solvent
-
     def parameters(self):
-        """Refinable solvent parameters as a list (phase offset only if refined)."""
-        return [self.log_k_solvent, self.log_ss_half, self.log_n_exp] + (
-            [self.phase_offset] if self.optimize_phase else []
-        )
+        """Refinable solvent parameters: ``[log_k_solvent, log_ss_half, log_n_exp]``."""
+        return [self.log_k_solvent, self.log_ss_half, self.log_n_exp]

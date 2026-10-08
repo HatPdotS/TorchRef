@@ -77,3 +77,53 @@ def test_the_dataset_view_shares_the_parents_parameters(collection):
         got = view(fcalc)
         want = scaler.forward_mixed(fcalc, fracs)
     assert torch.equal(got, want)
+
+
+def test_a_non_finite_dataset_term_rejects_the_step(collection, monkeypatch):
+    """One dataset's non-finite term makes the joint objective non-finite.
+
+    The closure then returns +inf, so the line search backtracks and no scale parameter
+    moves, rather than the fit carrying on with that dataset left out.
+    """
+    import torchref.refinement.targets.xray as xray
+
+    dc, _ = collection
+    make_row = xray.create_xray_target
+    poisoned = []
+
+    class _InfRow(torch.nn.Module):
+        def __init__(self, row):
+            super().__init__()
+            self.row = row
+
+        def forward(self, fcalc):
+            return self.row(fcalc=fcalc) + float("inf")
+
+    def create_xray_target(**kwargs):
+        row = make_row(**kwargs)
+        if kwargs["data"] is dc["t1"]:
+            poisoned.append(row)
+            return _InfRow(row)
+        return row
+
+    monkeypatch.setattr(xray, "create_xray_target", create_xray_target)
+    scaler = _fresh_scaler(collection)
+    before = {name: p.detach().clone() for name, p in scaler.named_parameters()}
+
+    scaler.refine_lbfgs_joint(nsteps=1, max_iter=20, verbose=False)
+
+    assert len(poisoned) == 1
+    for name, p in scaler.named_parameters():
+        assert torch.equal(p.detach(), before[name]), f"{name} moved"
+
+
+def test_the_scaler_does_not_own_the_models(collection):
+    """The model collection's parameters stay out of the scaler's tree."""
+    scaler = _fresh_scaler(collection)
+    _, mc = collection
+
+    model_params = {id(p) for p in mc.parameters()}
+    assert model_params, "fixture must carry model parameters"
+    assert not model_params & {id(p) for p in scaler.parameters()}
+    assert not any("model_collection" in k for k in scaler.state_dict())
+    assert scaler._model_collection is mc

@@ -149,7 +149,7 @@ def test_n_iso_coeff_survives_a_state_dict_round_trip(scaler):
     assert state["n_iso_coeff"] == scaler.n_iso_coeff
 
     fresh = Scaler(verbose=0)
-    fresh.set_data(scaler._data.module)
+    fresh.set_data(scaler._data)
     fresh.c_iso = torch.nn.Parameter(torch.zeros_like(scaler.c_iso))
     fresh.load_state_dict(state, strict=False)
     assert fresh.n_iso_coeff == scaler.n_iso_coeff

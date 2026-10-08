@@ -1,30 +1,11 @@
-"""Chebyshev basis in resolution, shared by everything that fits a smooth curve in |s|.
+"""Chebyshev basis in resolution, shared by every fit of a smooth curve in ``|s|``.
 
-Two things in here carry argument rather than convention, and both were settled
-by the scaler rework:
-
-* **The abscissa is ``sin(theta)/lambda``, not ``s**2``.** The modulation a
-  resolution-dependent scale has to represent is gentle through the bulk of the
-  range and has real structure in the first few percent of ``s**2``; a basis
-  uniform in ``s**2`` spends nearly all its resolution where nothing happens.
-* **The basis is prefix-nested.** ``chebyshev_design(x, k)`` equals
-  ``chebyshev_design(x, n)[:, :k]`` for ``k <= n``, so raising the order adds
-  detail without redefining the terms already fitted, and a caller can slice
-  instead of rebuilding.
-
-``lo``/``hi`` exist for **extrapolation**, and the reason is the clamp rather
-than the mapping. An affine remap does not change the space a polynomial basis
-spans, so two fits over different ranges recover the same *function* where their
-data overlap -- only the coefficients and the conditioning differ. What does
-differ is outside the fitted range: ``u`` saturates at the ends, so every column
-goes constant and the curve is frozen at its endpoint value.
-
-So a fit over one resolution range, evaluated somewhere else, silently returns a
-flat extrapolation. That is the case a shared ``lo``/``hi`` is for -- fitting on
-one reflection set and using the curve on another, which is what comparing two
-fits, or fitting on a crystal lattice and evaluating on a dense sampling,
-actually requires. ``ScalerBase`` does not need it: it builds one design over
-all reflections and slices rows.
+The abscissa is ``sin(theta)/lambda`` rather than ``s**2``, because a resolution scale
+has its structure at low resolution, where a basis uniform in ``s**2`` has almost no
+support. The columns are prefix-nested: ``chebyshev_design(x, k)`` equals
+``chebyshev_design(x, n)[:, :k]`` for ``k <= n``. Outside ``[lo, hi]`` every column
+saturates, so a curve fitted on one reflection set and evaluated on another returns a
+flat extrapolation unless both designs share an explicit ``lo``/``hi``.
 """
 
 from __future__ import annotations

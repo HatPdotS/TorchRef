@@ -98,23 +98,6 @@ class TestUpdateSolventInvalidates:
         assert stub.n_rebuilds == 3
 
 
-class TestSolventModelClearsItsOwnCache:
-    @pytest.mark.unit
-    def test_update_solvent_clears_the_hkl_cache(self, monkeypatch):
-        """``SolventModel._cache`` holds the FFT of the mask, so a new mask voids all of it."""
-        from torchref.scaling.solvent import SolventModel
-
-        solvent = SolventModel()
-        solvent._cache[("fake_key",)] = torch.ones(3, dtype=torch.complex64)
-        assert len(solvent._cache) == 1  # anti-vacuity: there is something to clear
-
-        # The mask rebuild itself needs a model; only the cache reset is under test.
-        monkeypatch.setattr(solvent, "get_solvent_mask", lambda: None)
-        solvent.update_solvent()
-
-        assert len(solvent._cache) == 0, "mask-derived cache survived a mask rebuild"
-
-
 class TestRefinementDriversUseTheScalerLevelCall:
     """The defect was a *caller* reaching past the scaler to ``solvent.update_solvent()``.
 

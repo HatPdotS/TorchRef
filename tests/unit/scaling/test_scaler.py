@@ -34,6 +34,23 @@ class TestScalerInitialization:
         assert isinstance(scaler, nn.Module)
 
     @pytest.mark.unit
+    def test_assigned_model_is_held_unregistered(self):
+        """``scaler.model = m`` binds m without adding it as a submodule."""
+        from torchref.scaling.scaler import Scaler
+
+        scaler = Scaler(verbose=0)
+        model = nn.Linear(2, 2)
+        scaler.model = model
+
+        assert scaler.model is model
+        assert list(scaler.parameters()) == []
+        assert list(scaler.children()) == []
+        assert not any(k.startswith("model") for k in scaler.state_dict())
+
+        scaler.model = None
+        assert scaler.model is None
+
+    @pytest.mark.unit
     def test_scaler_default_nbins(self):
         """Test default number of resolution bins."""
         from torchref.scaling.scaler import Scaler
@@ -194,37 +211,24 @@ class TestAnisotropicScaling:
             assert torch.allclose(mat, mat.T, atol=1e-6)
 
 
-class TestBinwiseMeans:
-    """The scaler's per-bin means use the scaler's own bins."""
+class TestAnisotropyStart:
+    """``U`` starts at zero, the identity correction, so every scale fit starts alike."""
 
-    @pytest.fixture
-    def scaler_and_data(self, mtz_dir):
+    @pytest.mark.unit
+    def test_setup_gives_the_same_zero_tensor_every_time(self, mtz_dir):
         from torchref.io import ReflectionData
         from torchref.scaling.scaler_base import ScalerBase
 
         data = ReflectionData(verbose=0, device="cpu").load_mtz(
             str(mtz_dir / "1DAW.mtz")
         )
-        return ScalerBase(data=data, nbins=10, verbose=0), data
+        scaler = ScalerBase(data=data, nbins=10, verbose=0)
 
-    @pytest.mark.unit
-    def test_mean_resolution_is_per_scaler_bin(self, scaler_and_data):
-        scaler, data = scaler_and_data
-        fcalc = data.F.to(torch.complex64)
-        _, _, mean_res = scaler.get_binwise_mean_intensity(fcalc)
+        scaler.setup_anisotropy_correction()
+        first = scaler.U.detach().clone()
+        scaler.setup_anisotropy_correction()
 
-        valid = data.masks()
-        per_bin = [(scaler.bins == b) & valid for b in range(scaler.nbins)]
-        expected = torch.stack([data.resolution[sel].mean() for sel in per_bin])
-        torch.testing.assert_close(mean_res, expected)
-
-    @pytest.mark.unit
-    def test_later_binning_of_the_dataset_does_not_move_the_shells(
-        self, scaler_and_data
-    ):
-        scaler, data = scaler_and_data
-        fcalc = data.F.to(torch.complex64)
-        before = scaler.get_binwise_mean_intensity(fcalc)[2]
-        data.get_bins(n_bins=3, min_per_bin=10)
-        after = scaler.get_binwise_mean_intensity(fcalc)[2]
-        torch.testing.assert_close(after, before)
+        assert torch.equal(first, torch.zeros_like(first))
+        assert torch.equal(scaler.U.detach(), first)
+        correction = scaler.anisotropy_correction()
+        assert torch.equal(correction, torch.ones_like(correction))

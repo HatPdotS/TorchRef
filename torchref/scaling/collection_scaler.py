@@ -19,6 +19,7 @@ from torchref.scaling.scaler_base import (
     DEFAULT_SCALE_TARGET,
     SCALE_TARGETS,
     ScalerBase,
+    _u_penalty_target,
 )
 from torchref.scaling.solvent import SS_HALF_BOUNDS, SolventModel
 from torchref.utils.utils import ModuleReference
@@ -73,8 +74,7 @@ class CollectionScaler(ScalerBase):
     Shares scale parameters (c_iso, U and the solvent falloff) across **all**
     data-model pairs, and manages per-component solvent models so a mixed
     model's bulk solvent is the fraction-weighted sum of the component solvent
-    SFs. The bin-wise B-factor correction is *not* set up by ``initialize()``
-    and so is not a shared refined parameter by default.
+    SFs.
 
     Parameters
     ----------
@@ -123,13 +123,21 @@ class CollectionScaler(ScalerBase):
         )
 
         self._dataset_collection = dataset_collection
-        self._model_collection = model_collection
+        # Not a submodule: the models' parameters belong to the refinement, and
+        # registering them would put them in the scale fit's optimiser and in this
+        # scaler's state_dict.
+        self._model_collection_ref = ModuleReference(model_collection)
 
         # Per-component solvent models (one per base model)
         self._component_solvent_models: nn.ModuleList = nn.ModuleList()
 
         # Cached raw solvent SFs per component index
         self._f_sol_raw_components: Dict[int, torch.Tensor] = {}
+
+    @property
+    def _model_collection(self) -> "ModelCollection":
+        """The bound collection, held unregistered."""
+        return self._model_collection_ref.module
 
     # ------------------------------------------------------------------
     # Initialization
@@ -152,10 +160,10 @@ class CollectionScaler(ScalerBase):
 
     def _calc_initial_scale_joint(self):
         """
-        Compute initial bin-wise log-scale using ALL data–model pairs.
+        Seed ``c_iso`` from ALL data–model pairs.
 
-        Averages log(F_obs / |F_calc|) per resolution bin across every
-        matched timepoint in the collections.
+        Averages log(F_obs / |F_calc|) per resolution bin across every matched
+        timepoint and projects the bin means onto the Chebyshev basis.
         """
         dc = self._dataset_collection
         mc = self._model_collection
@@ -183,8 +191,7 @@ class CollectionScaler(ScalerBase):
             fobs_clamped = fobs.clamp(min=1e-3)
 
             # Mask: work subset (validity + work, validation carved out), and
-            # positive intensities. ``data.work.mask`` is the standard subset
-            # boolean mask, replacing the ad-hoc ``masks() & rfree``.
+            # positive intensities.
             work_mask = data.work.mask
             if hasattr(data, "I") and data.I is not None:
                 pos_mask = data.I > 0
@@ -304,9 +311,9 @@ class CollectionScaler(ScalerBase):
         Scale *fcalc* using the shared parameters **and** a fraction-
         weighted solvent contribution.
 
-        This sets ``_f_sol_raw`` to the mixed solvent and then delegates
-        to ``ScalerBase.forward()``, which applies k_sol / B_sol /
-        phase damping and the overall + anisotropic scale.
+        The fraction-weighted raw solvent goes to ``ScalerBase.forward()`` as
+        ``f_sol_override`` (the cached ``_f_sol_raw`` is untouched), which applies
+        k_sol, the ss_half/n_exp falloff and the isotropic and anisotropic scales.
 
         Parameters
         ----------
@@ -396,23 +403,12 @@ class CollectionScaler(ScalerBase):
         Refine the shared scale parameters against **all** datasets jointly.
 
         One set of scale parameters serves every matched dataset-model pair, so the
-        closure sums a per-dataset objective. Each dataset's term is built from a row of
-        :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS`, exactly as
-        :meth:`ScalerBase.refine_lbfgs` builds its single-dataset one -- so both scale
-        fits evaluate the same likelihood code, and neither carries a private copy of it.
-
-        The row sees this dataset's own **mixed** bulk solvent, via a
-        :class:`_DatasetScalerView` that shares the parent's parameters and applies
-        :meth:`forward_mixed`. That is why the scaler cannot simply be handed to the
-        target: the solvent depends on which dataset's fractions are in play, and the
-        plain :meth:`ScalerBase.forward` has no way to know.
-
-        Amplitudes throughout, whatever observable the *refinement* target fits.
-        Unit-weight least squares on intensities would put leverage where the data is
-        strongest: the residual goes as ``2 F dF``, so the squared residual carries an
-        extra factor of ``F**2`` and a global scale plus B plus anisotropy would be
-        determined almost entirely by the strongest low-resolution reflections, leaving
-        high resolution unconstrained.
+        closure sums one term per pair, each built from an
+        :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS` row exactly as
+        :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs` builds its own.
+        Each term sees its dataset's own mixed bulk solvent through a
+        ``_DatasetScalerView``. The fit is on amplitudes whatever observable the
+        refinement target fits.
 
         Parameters
         ----------
@@ -421,7 +417,7 @@ class CollectionScaler(ScalerBase):
         lr : float
             Learning rate (typically 1.0 for LBFGS).
         max_iter : int
-            Maximum line-search iterations per step.
+            Maximum L-BFGS iterations per step (``torch.optim.LBFGS`` ``max_iter``).
         history_size : int
             LBFGS history size.
         verbose : bool
@@ -497,7 +493,6 @@ class CollectionScaler(ScalerBase):
                 for n in fcalc_cache
             )
         _norm = 1.0 / max(ssq, 1e-30)
-        scaler_self = self
 
         class _CollectionScalerJointTarget(nn.Module):
             """The table rows, closed over their detached ``fcalc``."""
@@ -505,14 +500,7 @@ class CollectionScaler(ScalerBase):
             name = "scaler/joint"
 
             def forward(self):
-                total = torch.zeros((), device=scaler_self.device)
-                for target, fc in terms:
-                    loss = target(fcalc=fc)
-                    # Skip a dataset whose term went non-finite rather than poisoning
-                    # the whole joint gradient with it.
-                    if torch.isfinite(loss):
-                        total = total + loss
-                return total * _norm
+                return sum(target(fcalc=fc) for target, fc in terms) * _norm
 
             def maintenance(self):
                 """Forward the hook so sigma_A rows drop their ``beta`` cache after a
@@ -522,23 +510,9 @@ class CollectionScaler(ScalerBase):
                     if maint is not None:
                         maint()
 
-        class _CollectionScalerUPenalty(nn.Module):
-            """``sum(U**2)`` on the anisotropic scale tensor.
-
-            Its normaliser is pinned to **amplitudes** rather than following the
-            objective. Sharing ``_norm`` would make the penalty's weight relative to the
-            likelihood depend on which objective was selected, which is a silent change
-            of regularisation strength dressed up as a change of objective.
-            """
-
-            name = "scaler/u_penalty"
-
-            def forward(self):
-                return torch.sum(scaler_self.U**2) * _norm
-
         state = LossState(device=self.device)
         state.register_target("scaler/joint", _CollectionScalerJointTarget())
-        state.register_target("scaler/u_penalty", _CollectionScalerUPenalty())
+        state.register_target("scaler/u_penalty", _u_penalty_target(self, _norm))
 
         optimizer = torch.optim.LBFGS(
             self.parameters(),
@@ -601,7 +575,7 @@ class CollectionScaler(ScalerBase):
 
     def screen_solvent_params_joint(self, steps: int = 15):
         """
-        Grid-search k_sol / B_sol using NLL summed across all datasets.
+        Grid-search k_sol and ss_half using the Gaussian NLL summed over all datasets.
 
         Parameters
         ----------
@@ -700,19 +674,9 @@ class CollectionScaler(ScalerBase):
         if self.verbose > 0:
             print("  Updated all component solvent masks.")
 
-    def invalidate_solvent_cache(self):
-        """Clear cached raw solvent SFs (forces recomputation on next call)."""
-        self._f_sol_raw_components = {}
-        self._f_sol_raw = None
-
     # ------------------------------------------------------------------
     # Convenience
     # ------------------------------------------------------------------
-
-    @property
-    def component_solvent_models(self) -> nn.ModuleList:
-        """Per-component SolventModel instances (read-only)."""
-        return self._component_solvent_models
 
     def __repr__(self):
         n_comp = len(self._component_solvent_models)

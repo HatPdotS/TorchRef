@@ -1,32 +1,11 @@
 """Absolute Wilson normalisation: fit ``Sigma(s)`` and divide it out.
 
-Distinct from :class:`~torchref.scaling.scaler_base.ScalerBase`, which is a
-*relative* scaler -- it puts ``F_calc`` onto ``F_obs`` and every target it can
-minimise compares the two. This one takes a single dataset and answers "what is
-the expected intensity at this resolution", so that dividing by it leaves
-``<E^2> = 1``. One dataset in, one curve out, no second dataset anywhere in the
-objective.
-
-**Why this exists as one shared class.** The repo grew at least five private
-answers to the same question -- ``base/wilson_outliers.robust_mean_intensity``,
-``base/french_wilson.fit_mean_intensity``,
-:func:`fit_wilson_b` below, the ``Sigma_N`` estimator in
-``refinement/model_error_estimation/sigma_a``, and a per-shell one inside the
-alignment package -- differing in whether they use means or medians, whether
-they divide out ``epsilon``, whether they separate centrics, and where they put
-their shell edges. Consumers that disagree about what E means cannot be compared
-with each other, which is exactly what went wrong between the rotation function
-and its own rescore.
-
-**Scaling, not weighting.** This class answers *what* we compare. It says
-nothing about how much any reflection should count -- no ``sigI``, no model
-error, no solvent. Those belong to a weight, and mixing them in here is what
-made the previous convention object impossible to reason about: it returned a
-normalisation and a weight together, so sweeping it moved a gauge quantity and a
-real one at the same time.
-
-:func:`fit_wilson_b` is the one-number summary: an overall Wilson B for priors
-and reports, not a curve to normalise by.
+:class:`WilsonNormaliser` takes one dataset and fits its expected intensity as a smooth
+function of resolution, so that dividing by it leaves ``<E^2> = 1``. Unlike
+:class:`~torchref.scaling.scaler_base.ScalerBase`, which scales ``F_calc`` onto
+``F_obs``, no second dataset enters the objective, and no weight either: how much a
+reflection counts is :mod:`torchref.scaling.weighting`'s business. :func:`fit_wilson_b`
+is the one-number summary, an overall Wilson B for priors and reports.
 """
 
 from __future__ import annotations
@@ -77,7 +56,7 @@ DEFAULT_MAX_ITER = 100
 #: division by zero it exists to prevent.
 _MU_FLOOR = 1e-30
 
-#: Relative convergence tolerance -- see :meth:`WilsonNormaliser._irls` for why
+#: Relative convergence tolerance -- see ``WilsonNormaliser._irls`` for why
 #: it is relative to the improvement so far rather than to the objective.
 #:
 #: This is a normalisation curve, not a refined parameter. The quantity it
@@ -96,69 +75,59 @@ class WilsonNormaliser:
         acentric  I ~ Exp(Sigma)          (Gamma, shape 1)
         centric   I ~ Sigma * chi^2_1     (Gamma, shape 1/2)
 
-    i.e. a Gamma GLM with a log link and the shape as the prior weight.
-
-    **Unit mean is an identity of the fit, not a normalisation step.** The
-    constant basis column's score equation is ``sum_h k_h (I_h/mu_h - 1) = 0``,
-    which is exactly ``<E^2> = 1`` in the shape-weighted sense. Nothing is
-    rescaled afterwards and nothing can drift -- which is what makes a
-    downstream ``E^2 - 1`` a true centring rather than an approximate one.
-
-    Least squares on ``log I`` would be the obvious alternative and is wrong:
-    ``E[log Gamma]`` carries a digamma offset, and with a constant term present
-    it is absorbed into the curve's shape rather than into the level. That is
-    the defect the overall-anisotropy fit was carrying.
+    i.e. a Gamma GLM with a log link and the shape as the prior weight. Unit mean is
+    an identity of the fit, not a rescaling: the constant column's score equation,
+    ``sum_h k_h (I_h/mu_h - 1) = 0``, is ``<E^2> = 1`` in the shape-weighted sense.
 
     Parameters
     ----------
     I : torch.Tensor
-        ``(N,)`` intensities. **Intensities, not amplitudes** -- Wilson
-        statistics are exact on I and awkward on F, and measurement error is
-        near-Gaussian on I but badly behaved on F for weak reflections, which is
-        the whole reason the French-Wilson posterior exists. Negative values are
-        allowed and kept: they are meaningful, unbiased measurements. They are
-        excluded from the *fit* (the Gamma likelihood has no support there) but
-        still receive a ``Sigma`` and a signed ``E_squared``.
+        ``(N,)`` intensities, **not amplitudes**. Negative values are kept: they are
+        excluded from the fit (the Gamma likelihood has no support there) but still
+        receive a ``Sigma`` and a signed ``E_squared``.
     s_mag : torch.Tensor
-        ``(N,)`` scattering-vector magnitude ``|s| = 1/d``, in inverse Angstrom.
+        ``(N,)`` scattering-vector magnitude ``|s| = 1/d``, in Å⁻¹.
     eps : torch.Tensor, optional
-        ``(N,)`` reflection multiplicity. Divides the intensity before the fit,
-        because axial reflections are systematically stronger. ``None`` means 1
-        everywhere, which is correct for a molecular transform sampled in a P1
-        box -- multiplicity is a property of crystal symmetry and there is none
-        there.
+        ``(N,)`` reflection multiplicity, divided out before the fit. ``None`` means 1,
+        which is right for a molecular transform sampled in a P1 box.
     centric : torch.Tensor, optional
         ``(N,)`` bool, setting the Gamma shape. ``None`` means all acentric.
     n_coeff : int, optional
         Chebyshev terms. ``1`` gives a single global scale.
     s_lo, s_hi : float, optional
-        ``|s|`` range mapped onto the basis. Defaults to this dataset's own
-        extremes. **Pass both explicitly whenever the curve will be evaluated
-        outside the fitted data's range** -- comparing two fits over different
-        ranges, or fitting on a crystal lattice and evaluating on a dense
-        sampling. The basis saturates at the ends, so beyond the fitted range
-        the curve is frozen flat rather than extrapolated.
+        ``|s|`` range mapped onto the basis, in Å⁻¹; defaults to this dataset's own
+        extremes. The basis saturates at the ends, so pass both whenever the curve
+        will be evaluated outside the fitted range: beyond it the curve is flat.
     fit_mask : torch.Tensor, optional
-        ``(N,)`` bool selecting which reflections *inform* the fit. Everything
-        still receives a ``Sigma``, because the curve is smooth and evaluable
-        anywhere. Use it to hold out systematic absences -- see
-        :meth:`from_hkl`, which does exactly that.
+        ``(N,)`` bool selecting which reflections inform the fit; every reflection
+        still receives a ``Sigma``. :meth:`from_hkl` uses it to hold out absences.
+    max_iter : int, optional
+        IRLS iterations before the fit raises; a runaway guard, not a budget.
+    rtol : float, optional
+        Convergence when the last step's gain in the objective is below ``rtol``
+        times the total gain from the constant-curve start.
 
     Attributes
     ----------
     coefficients : torch.Tensor
         ``(n_coeff,)`` fitted Chebyshev coefficients of ``log Sigma``.
     sigma_wilson : torch.Tensor
-        ``(N,)`` fitted ``Sigma(s)``. Deliberately not called ``sigma``: this
-        package also carries ``sig_F``, a measurement error, and ``sigma_a``, a
-        correlation coefficient, and the three are not interchangeable.
+        ``(N,)`` fitted ``Sigma(s)``.
     mean_intensity : torch.Tensor
         ``(N,)`` ``eps * Sigma(s)``, the expected intensity of each reflection.
     E_squared : torch.Tensor
-        ``(N,)`` ``I / mean_intensity``. **Signed** -- negative observations stay
+        ``(N,)`` ``I / mean_intensity``. **Signed**: negative observations stay
         negative.
     E : torch.Tensor
         ``(N,)`` ``sqrt(max(E_squared, 0))``.
+
+    Raises
+    ------
+    ValueError
+        If ``I`` is not 1-D, ``s_mag`` does not match it, or fewer than
+        ``n_coeff + 1`` reflections are usable.
+    RuntimeError
+        If the IRLS fit diverges or does not converge in ``max_iter`` iterations.
     """
 
     MAX_HALVINGS = MAX_HALVINGS
@@ -251,26 +220,12 @@ class WilsonNormaliser:
     def _solve_intercept(
         beta: torch.Tensor, X: torch.Tensor, y: torch.Tensor, w: torch.Tensor,
     ) -> torch.Tensor:
-        """Put the intercept exactly on its score equation, closed form.
+        """Put the intercept exactly on its score equation, in closed form.
 
-        The intercept's stationarity condition is ``sum_h k_h (I_h/mu_h - 1) =
-        0``, which is ``<E^2> = 1`` -- the identity this class exists to
-        provide. Shifting ``beta[0]`` by ``d`` scales every ``mu`` by ``e^d``,
-        so the ``d`` that satisfies it is available in one line:
-
-            e^d = sum_h k_h (I_h/mu_h) / sum_h k_h
-
-        Doing this explicitly decouples the identity from how tightly the SHAPE
-        converged. Without it ``<E^2> = 1`` is only as good as the overall fit
-        tolerance -- at ``rtol = 1e-4`` it came out at 1 - 1e-5 -- and the
-        identity is not the kind of claim that should degrade with a stopping
-        rule. The remaining coefficients are untouched, so this changes the
-        curve's level and not its shape.
-
-        In the working dtype like everything else here. The point is to make the
-        identity independent of the *stopping rule*, not to chase digits: it
-        lands within about 1e-6 of one, which is two orders inside anything that
-        reads it.
+        Shifting ``beta[0]`` by ``d`` scales every ``mu`` by ``e^d``, so
+        ``e^d = sum_h k_h (I_h/mu_h) / sum_h k_h`` satisfies
+        ``sum_h k_h (I_h/mu_h - 1) = 0``, i.e. ``<E^2> = 1``, independently of how
+        tightly the shape converged. Only the level changes, not the shape.
         """
         eta = X @ beta
         mu = torch.exp(eta.clamp(min=-LOG_CLAMP + float(beta[0]),
@@ -290,34 +245,14 @@ class WilsonNormaliser:
     ) -> Tuple[torch.Tensor, int]:
         """Gamma GLM with a log link, by iteratively reweighted least squares.
 
-        IRLS rather than a generic optimiser: for this link and family the
-        working weight does not depend on ``mu``, so each step is one weighted
-        least-squares solve and there is no step size, no line search and no
-        absolute tolerance to fail against an unnormalised objective.
-
-        Convergence and step control both use the objective itself,
-        ``L = sum_h k_h (y_h/mu_h + log mu_h)`` -- the negative log-likelihood
-        with the terms not involving ``beta`` dropped.
-
-        That choice is forced by what the alternatives do on real data. The
-        *coefficients* are underdetermined whenever the data occupy part of the
-        basis range, which is the normal case once an explicit ``s_lo``/``s_hi``
-        is passed, so they wander in the flat directions long after the fit has
-        settled. The *deviance* carries a ``-log(y/mu)`` term that diverges as
-        ``y -> 0``, and calculated amplitudes have near-zeros at the nodes of
-        the molecular transform, so a few tiny intensities dominate it. And the
-        *fitted mean* cannot be compared as a ratio because it is floored, so a
-        collapsed fit reads as a converged one -- which is exactly how an early
-        version of this reported success while returning zeros.
-
-        ``L`` has none of those problems: the ``log y`` term that breaks the
-        deviance is constant in ``beta`` and simply absent here.
-
-        Step halving is the other half. IRLS on a log link can overshoot into
-        ``mu`` underflow, after which the working response ``y/mu`` explodes and
-        the next step is worse. Rejecting any step that does not improve ``L``
-        and halving it is the standard remedy and makes the fit robust to the
-        ill-conditioning a partial basis range creates.
+        For this family and link the working weight is the shape ``k`` and does not
+        depend on ``mu``, so each step is one weighted least-squares solve against a
+        fixed matrix. Convergence and step halving both use the objective
+        ``L = sum_h k_h (y_h/mu_h + log mu_h)``, the negative log-likelihood without
+        its ``beta``-free terms: the coefficients wander in flat directions when the
+        data cover part of the basis range, and the deviance's ``-log(y/mu)`` term
+        diverges at near-zero intensities. A step that does not lower ``L`` is halved,
+        which guards against overshooting into ``mu`` underflow.
         """
         # Seed at the constant curve, which is the exact MLE when Sigma has no
         # resolution dependence. Every later iteration only adds shape.
@@ -347,22 +282,14 @@ class WilsonNormaliser:
         A = A + torch.eye(self.n_coeff, dtype=A.dtype, device=A.device) * (
             1e-10 * float(torch.diagonal(A).abs().max().clamp(min=1e-30))
         )
-        # Factorised once, and by Cholesky rather than LU. `A` is `X^T W X`
-        # plus a ridge with positive IRLS weights, so it is symmetric positive
-        # definite by construction -- and MPS implements neither `lu_solve` nor
-        # `cholesky_solve` (torch 2.9.1), which left the per-iteration solve to
-        # a CPU round trip: 1015 us against 114 us for two triangular solves, on
-        # a 200k x 6 problem whose unavoidable `XtW @ z` is 966 us. Same
-        # arithmetic -- over the 16 datasets in ``tests/files/mtz`` the two
-        # agree to 1e-5 relative in float32 and 1e-14 in float64, with identical
-        # iteration counts on every one.
+        # Cholesky, not LU: A is SPD by construction, and MPS has neither lu_solve
+        # nor cholesky_solve, so two triangular solves keep the loop on the device.
         #
         # `cholesky_ex` reports rather than raises, because a fully collinear
         # basis is a thing this fit sees: the high-order Chebyshev columns go
         # near-singular when the data cover only part of the basis range, and
-        # the ridge does not always rescue that. LU carried no definiteness
-        # requirement, so that case falls back to a general solve instead of
-        # failing.
+        # the ridge does not always rescue that; that case falls back to a
+        # general solve, which needs no definiteness, instead of failing.
         chol = torch.linalg.cholesky_ex(A)
         L_A = chol.L if int(chol.info) == 0 else None
 
