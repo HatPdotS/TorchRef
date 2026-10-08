@@ -22,6 +22,7 @@ import torch
 
 from torchref.base.fourier.coefficients import map_coefficients
 from torchref.config import get_int_dtype
+from torchref.utils.utils import first_index_per_group
 
 if TYPE_CHECKING:
     from torchref.io.datasets.reflection_data import ReflectionData
@@ -813,7 +814,7 @@ def _anomalous_table(data, fcalc):
     flag = data.friedel_flags.detach().cpu()
     inverse, m = data.asu_group_indices()
     inverse = inverse.cpu()
-    uniq = hkl[data._group_representative_rows(inverse)]
+    uniq = hkl[first_index_per_group(inverse)]
 
     # A mate counts as present only if it is a real, positive observation:
     # stacked input carries a NaN row for every absent mate, which French-Wilson

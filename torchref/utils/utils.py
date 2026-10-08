@@ -8,6 +8,8 @@ Core utility containers and atom-table sanitizing, re-exported from ``torchref.u
   combined (logical-AND) mask.
 - :func:`sanitize_pdb_dataframe` -- renumber HETATM residues whose atom identifiers
   repeat, and truncate over-long residue names, before an atom table is written.
+- :func:`first_index_per_group` -- the lowest index of each distinct label; not
+  re-exported, import it from this module.
 """
 
 from typing import Dict, Optional
@@ -449,3 +451,32 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
         print(f"  Final atoms: {len(pdb)}")
 
     return pdb
+
+
+def first_index_per_group(labels: torch.Tensor) -> torch.Tensor:
+    """Return the lowest index of each distinct label, ordered by label.
+
+    Parameters
+    ----------
+    labels : torch.Tensor
+        Group label per element, shape ``(N,)``, any integer dtype -- typically the
+        ``return_inverse`` of :func:`torch.unique`, whose groups the result then
+        indexes.
+
+    Returns
+    -------
+    torch.Tensor
+        int64 indices into ``labels`` of shape ``(n_distinct,)``, one per distinct
+        label in ascending label order (not ascending index order).
+
+    Notes
+    -----
+    A stable sort puts each group's first element at the head of its run, so no
+    scatter is needed: ``scatter_reduce_`` takes only int64 indices before torch 2.8
+    and has no int64 ``amin`` on MPS.
+    """
+    order = torch.argsort(labels, stable=True)
+    sorted_labels = labels[order]
+    head = torch.ones_like(sorted_labels, dtype=torch.bool)
+    head[1:] = sorted_labels[1:] != sorted_labels[:-1]
+    return order[head]

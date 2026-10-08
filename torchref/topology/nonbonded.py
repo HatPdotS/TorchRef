@@ -27,6 +27,7 @@ from torchref.base.coordinates.symmetry_images import (
     symmetry_image_positions,
 )
 from torchref.config import dtypes, get_float_dtype, get_int_dtype
+from torchref.utils.utils import first_index_per_group
 
 if TYPE_CHECKING:
     from torchref.symmetry.cell import Cell
@@ -1003,25 +1004,12 @@ def build_vdw_restraints_gpu(
 
     # Deduplicate: keep first occurrence of each (atom_i, atom_j, combo_j)
     dedup_hash = pair_atom_i * (n_asu * M) + pair_atom_j * M + pair_combo_j
-    _, inverse, counts = torch.unique(
-        dedup_hash, return_inverse=True, return_counts=True
-    )
-    # First occurrence: for each unique hash, the minimum index.
-    # Use the configured int dtype (int32 by default) — MPS does not support
-    # int64 scatter_reduce and N_pairs fits comfortably in int32.
-    _int_dtype = dtypes.int
-    inverse_i = inverse.to(_int_dtype)
-    perm = torch.arange(len(inverse), device=device, dtype=_int_dtype)
-    first_occ = torch.full(
-        (counts.shape[0],), len(inverse), device=device, dtype=_int_dtype
-    )
-    first_occ.scatter_reduce_(0, inverse_i, perm, reduce="amin")
-    first_mask = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-    first_mask[first_occ] = True
+    _, inverse = torch.unique(dedup_hash, return_inverse=True)
+    first = first_index_per_group(inverse).sort().values
 
-    pair_atom_i = pair_atom_i[first_mask]
-    pair_atom_j = pair_atom_j[first_mask]
-    pair_combo_j = pair_combo_j[first_mask]
+    pair_atom_i = pair_atom_i[first]
+    pair_atom_j = pair_atom_j[first]
+    pair_combo_j = pair_combo_j[first]
 
     # Map combo_j back to symop index and cell offset
     symop_indices = op_indices[pair_combo_j]

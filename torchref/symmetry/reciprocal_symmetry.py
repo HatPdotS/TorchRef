@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from torchref.config import get_float_dtype, get_int_dtype
+from torchref.utils.utils import first_index_per_group
 
 
 def _equivalent_hkl(
@@ -86,10 +87,8 @@ def _expand_hkl(
     # backends, and this runs once per expansion on integer data.
     copies_cpu = copies.cpu()
     source_cpu, friedel_cpu = source.cpu(), is_friedel.cpu()
-    uniq, inverse = torch.unique(copies_cpu, dim=0, return_inverse=True)
-    position = torch.arange(len(copies_cpu))
-    first = torch.full((len(uniq),), len(copies_cpu), dtype=position.dtype)
-    first.scatter_reduce_(0, inverse, position, reduce="amin")
+    _, inverse = torch.unique(copies_cpu, dim=0, return_inverse=True)
+    first = first_index_per_group(inverse)
 
     competing = friedel_cpu == friedel_cpu[first][inverse]
     clash = competing & (source_cpu != source_cpu[first][inverse])

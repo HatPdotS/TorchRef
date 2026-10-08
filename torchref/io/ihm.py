@@ -580,6 +580,10 @@ class IHMWriter:
 
         lpep, dna, rna = ihm.LPeptideAlphabet(), ihm.DNAAlphabet(), ihm.RNAAlphabet()
         asym_units = []
+        # Chains of one sequence are copies of one molecule: mmCIF makes them one
+        # entity with an asym unit each, and python-ihm refuses equal entities.
+        # Keyed by the Entity itself, so "equal" is python-ihm's sequence equality.
+        entities = {}
 
         if mc.n_base_models > 0:
             groups = read_component_groups()
@@ -600,11 +604,17 @@ class IHMWriter:
                     else:
                         seq.append(ihm.RNAChemComp(name, name, "N"))
                 if seq:
-                    entity = ihm.Entity(seq, description=f"Chain {chain_id}")
-                    system.entities.append(entity)
-                    asym = ihm.AsymUnit(entity, details=f"Chain {chain_id}")
+                    entity = ihm.Entity(seq)
+                    entity, chains = entities.setdefault(entity, (entity, []))
+                    chains.append(chain_id)
+                    asym = ihm.AsymUnit(
+                        entity, details=f"Chain {chain_id}", id=chain_id
+                    )
                     system.asym_units.append(asym)
                     asym_units.append(asym)
+            for entity, chains in entities.values():
+                entity.description = "Chain " + ", ".join(chains)
+                system.entities.append(entity)
 
         if not asym_units:
             entity = ihm.Entity(

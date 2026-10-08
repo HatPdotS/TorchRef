@@ -127,3 +127,20 @@ def test_the_scaler_does_not_own_the_models(collection):
     assert not model_params & {id(p) for p in scaler.parameters()}
     assert not any("model_collection" in k for k in scaler.state_dict())
     assert scaler._model_collection is mc
+
+
+def test_initial_scale_follows_the_data_dtype(collection):
+    """The joint seed accumulates in the data's dtype, not in the configured one, so
+    data loaded before a dtype switch still seeds the scale."""
+    from tests.fixtures.precision import cpu_double_precision
+    from torchref.scaling.collection_scaler import CollectionScaler
+
+    dc, mc = collection
+    scaler = CollectionScaler(dc, mc, verbose=0)
+    data_dtype = dc[mc.dark_key].get_corrected_data()[0].dtype
+
+    with cpu_double_precision():
+        scaler._calc_initial_scale_joint()
+
+    assert scaler.c_iso.dtype == data_dtype
+    assert torch.isfinite(scaler.c_iso).all()

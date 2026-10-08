@@ -32,6 +32,7 @@ from torchref.topology.nonbonded import IMAGE_PAIR_WEIGHT
 from torchref.topology.residue_graph import build_residue_nodes
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
+from torchref.utils.utils import first_index_per_group
 
 # ---------------------------------------------------------------------------
 # Placement-type constants
@@ -869,22 +870,12 @@ def build_h_candidate_pairs(
         rows = torch.cat(
             [torch.stack([cand_i, cand_j, cand_sym], dim=1), cand_off], dim=1
         )
-        _, first_idx = torch.unique(rows, dim=0, return_inverse=True)
-        # MPS does not support int64 scatter_reduce; use configured int dtype.
-        _int_dtype = dtypes.int
-        first_idx_i = first_idx.to(_int_dtype)
-        perm = torch.arange(len(cand_i), device=device, dtype=_int_dtype)
-        n_unique = first_idx.max().item() + 1
-        first_occ = torch.full(
-            (n_unique,), len(cand_i), dtype=_int_dtype, device=device
-        )
-        first_occ.scatter_reduce_(0, first_idx_i, perm, reduce="amin")
-        mask = torch.zeros(len(cand_i), dtype=torch.bool, device=device)
-        mask[first_occ] = True
-        cand_i = cand_i[mask]
-        cand_j = cand_j[mask]
-        cand_sym = cand_sym[mask]
-        cand_off = cand_off[mask]
+        _, inverse = torch.unique(rows, dim=0, return_inverse=True)
+        first = first_index_per_group(inverse).sort().values
+        cand_i = cand_i[first]
+        cand_j = cand_j[first]
+        cand_sym = cand_sym[first]
+        cand_off = cand_off[first]
 
     h_topo.cand_idx_i = cand_i
     h_topo.cand_idx_j = cand_j

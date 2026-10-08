@@ -211,3 +211,14 @@ class TestTensorMasksMutators:
         masks.popitem()
 
         assert torch.equal(masks(), torch.tensor([True, True, False]))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+def test_first_index_per_group_keeps_each_labels_lowest_index(dtype):
+    """The lowest index of every label, in label order, for either index dtype."""
+    from torchref.utils.utils import first_index_per_group
+
+    labels = torch.tensor([3, 1, 3, 0, 1, 1, 2, 0], dtype=dtype)
+
+    assert first_index_per_group(labels).tolist() == [3, 1, 6, 0]

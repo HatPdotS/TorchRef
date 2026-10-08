@@ -195,7 +195,7 @@ class TestScalerStateDictFunctional:
         scaler1.setup_anisotropy_correction()
 
         # Modify parameters
-        scaler1.U.data = torch.randn(6, device=scaler1.device)
+        scaler1.U.data = torch.randn(6, dtype=scaler1.U.dtype, device=scaler1.device)
 
         # Save state
         state_path = tmp_path / "scaler_state.pt"
