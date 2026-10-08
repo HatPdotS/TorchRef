@@ -47,7 +47,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     Owns the refinable atomic data -- coordinates, atomic displacement parameters and
     occupancies -- each held in a parameter wrapper that decides which atoms are
     refinable. Everything the structure was *loaded from* rather than refined lives on
-    :attr:`ctx`, a :class:`~torchref.model.context.ModelContext`. Build the model empty
+    ``ctx``, a :class:`~torchref.model.context.ModelContext`. Build the model empty
     (``Model()`` then ``load_pdb`` / ``load_cif`` / ``load_state_dict``); ``if model:``
     tests *initialization*, not existence.
 
@@ -90,9 +90,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     n_atoms : int
         Number of atoms.
     cell : Cell
-        Unit cell, forwarded to :attr:`ctx`.
+        Unit cell, forwarded to ``ctx``.
     spacegroup : SpaceGroup
-        Space group, forwarded to :attr:`ctx`.
+        Space group, forwarded to ``ctx``.
     device : torch.device
         Where the tensors live. Kept on the model rather than the context because the
         device-movement machinery rewrites it in place.
@@ -449,7 +449,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     @property
     def restraints(self):
-        """Geometry restraints over the atom table, on :attr:`ctx`.
+        """Geometry restraints over the atom table, on ``ctx``.
 
         Built on first access over the current coordinates and cached on the context
         until the atom table or ``ctx.cif_path`` changes. Evaluations take the
