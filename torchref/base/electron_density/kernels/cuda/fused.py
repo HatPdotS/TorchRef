@@ -8,9 +8,9 @@ into a single GPU kernel, eliminating ~14 separate kernel launches and
 Provides full autograd support for refinement of xyz, b, and occ.
 
 .. note::
-    Legacy / benchmark-only fixed-radius kernel — not on the production
-    dispatch path. ``main.build_electron_density`` now routes the CUDA float32
-    path through the per-atom variable-radius ``WorkQueueGridDensity`` in
+    The CUDA float32 branch of the voxel-list ``jit_reference.vectorized_add_to_map``,
+    not of ``main.build_electron_density``, which uses the variable-radius
+    ``WorkQueueGridDensity`` in
     :mod:`torchref.base.electron_density.kernels.cuda.variable_radius`.
 """
 
@@ -459,9 +459,8 @@ def fused_add_to_map_gpu(
     autograd for ``xyz``, ``b`` and ``occ`` (no anisotropic ``u`` gradient).
 
     .. note::
-        Legacy / benchmark-only **fixed-radius** kernel, not on the production dispatch
-        path: ``main.build_electron_density`` routes CUDA float32 through the per-atom
-        variable-radius ``WorkQueueGridDensity``.
+        The CUDA float32 branch of the voxel-list ``jit_reference.vectorized_add_to_map``;
+        ``main.build_electron_density`` uses the variable-radius ``WorkQueueGridDensity``.
 
     Parameters
     ----------
