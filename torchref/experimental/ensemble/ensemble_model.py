@@ -261,6 +261,36 @@ class _SyntheticPDBReader:
         return self.dataframe, self.cell, self.spacegroup
 
 
+#: Where an ensemble's hydrogens come from: stripped, the file's own, or the file's
+#: topped up from the monomer templates before replication.
+HYDROGEN_SOURCES = ("strip", "keep", "add")
+
+
+def _add_hydrogens_df(
+    df: pd.DataFrame, cell, spacegroup, seed: Optional[int]
+) -> pd.DataFrame:
+    """One copy's atom table with the hydrogens its monomer templates name.
+
+    Generated in memory through a :class:`~torchref.model.model.Model` loaded with
+    ``hydrogens="add"``; free water orientations are drawn under ``seed``.
+    """
+    from torchref.model.model import Model
+
+    with torch.random.fork_rng():
+        if seed is not None:
+            torch.manual_seed(seed)
+        single = Model(verbose=0, hydrogens="add", device="cpu")
+        single.load(_SyntheticPDBReader(df.reset_index(drop=True), cell, spacegroup))
+    return single.to_dataframe().reset_index(drop=True)
+
+
+def _check_hydrogen_source(hydrogens: str) -> None:
+    if hydrogens not in HYDROGEN_SOURCES:
+        raise ValueError(
+            f"hydrogens must be one of {HYDROGEN_SOURCES}, got {hydrogens!r}"
+        )
+
+
 def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
     """Build a single-conformation :class:`~torchref.model.model.Model` from an
     ensemble's single-copy chemistry (``EnsembleModel._pdb_single``).
@@ -378,6 +408,8 @@ class EnsembleModel(ModelFT):
         # Single-copy PDB DataFrame, preserved for restraint / topology
         # builders that must not see the flat replicated atom list.
         self._pdb_single: Optional[pd.DataFrame] = None
+        # Set by the factories; "add" means TorchRef generated the hydrogens.
+        self.hydrogen_source: str = hydrogens
         # Ensemble dropout (regularization). When active, each structure-
         # factor forward uses a random subset of members (see
         # :meth:`configure_dropout`). The per-atom occupancy multiplier is a
@@ -434,8 +466,11 @@ class EnsembleModel(ModelFT):
             Verbosity.
         device : torch.device, optional
             Computation device.
-        hydrogens : {"strip", "keep"}
-            Strip hydrogens before replication (default) or keep the file's.
+        hydrogens : {"strip", "keep", "add"}
+            Strip hydrogens before replication (default), keep the file's, or keep
+            them and add the ones the monomer templates name before replication,
+            the free water orientations drawn under ``seed``. Recorded as
+            :attr:`hydrogen_source`.
         max_res : float
             FFT grid target resolution (Å), forwarded to ``ModelFT``.
         n_max : int, optional
@@ -446,6 +481,7 @@ class EnsembleModel(ModelFT):
         **modelft_kwargs
             Extra keyword arguments forwarded to the ``ModelFT`` constructor.
         """
+        _check_hydrogen_source(hydrogens)
         reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
         df, cell, spacegroup = reader()
         if hydrogens == "strip":
@@ -455,6 +491,8 @@ class EnsembleModel(ModelFT):
         # FFT, restraints, etc. Mirrors Model.strip_altlocs.
         df = _strip_altlocs_df(df)
         df.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"], inplace=True)
+        if hydrogens == "add":
+            df = _add_hydrogens_df(df, cell, spacegroup, seed)
 
         pool = max(int(n_members), int(n_max) if n_max else int(n_members))
         rng = np.random.default_rng(seed)
@@ -471,6 +509,7 @@ class EnsembleModel(ModelFT):
             **modelft_kwargs,
         )
         model._pdb_single = df.reset_index(drop=True).copy()
+        model.hydrogen_source = hydrogens
         synthetic = _SyntheticPDBReader(replicated, cell, spacegroup)
         model.load(synthetic)
         model._finalize_ensemble(n_members=pool, n_atoms_per_member=len(df))
@@ -506,7 +545,11 @@ class EnsembleModel(ModelFT):
         start alive, slots ``[n_members:n_max]`` start dead (perturbed seeds
         ready for bifurcation to reactivate). Default ``n_max = n_members``
         (no spare slots; bifurcation can only reuse slots freed by deaths).
+
+        ``hydrogens`` is as in :meth:`from_single`. With ``"add"`` every MODEL is
+        hydrogenated on its own and all must gain the same atoms.
         """
+        _check_hydrogen_source(hydrogens)
         models = _parse_multi_model_pdb(pdb_path, strip_H=hydrogens == "strip")
         if len(models) == 0:
             raise ValueError(f"No usable atomic models parsed from {pdb_path}")
@@ -528,6 +571,16 @@ class EnsembleModel(ModelFT):
         # Read cell / spacegroup via a separate reader on the unmodified file.
         cell_reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
         cell, spacegroup = cell_reader.cell, cell_reader.spacegroup
+        if hydrogens == "add":
+            models = [_add_hydrogens_df(m, cell, spacegroup, seed) for m in models]
+            identity = ["chainid", "resseq", "icode", "resname", "name"]
+            for k, m in enumerate(models[1:], start=2):
+                if not m[identity].equals(models[0][identity]):
+                    raise ValueError(
+                        f"MODEL {k} gains different hydrogens from MODEL 1; ensemble "
+                        "members need identical chemistry. Hydrogenate the file first."
+                    )
+            n_atoms = len(models[0])
 
         pool = max(int(n_members), int(n_max) if n_max else int(n_members))
         rng = np.random.default_rng(seed)
@@ -559,6 +612,7 @@ class EnsembleModel(ModelFT):
             **modelft_kwargs,
         )
         model._pdb_single = models[0].reset_index(drop=True).copy()
+        model.hydrogen_source = hydrogens
         synthetic = _SyntheticPDBReader(replicated, cell, spacegroup)
         model.load(synthetic)
         model._finalize_ensemble(n_members=pool, n_atoms_per_member=n_atoms)
@@ -653,6 +707,7 @@ class EnsembleModel(ModelFT):
         for name in (
             "n_members",
             "n_atoms_per_member",
+            "hydrogen_source",
             "dropout_active",
             "dropout_min",
             "dropout_max",

@@ -1,11 +1,10 @@
 """
 Construction tests for :class:`~torchref.experimental.ensemble.quasi_crystal_amber.QuasiCrystalAmberTarget`.
 
-This file covers only the *construction* path — verifying that the
-single-copy template build → sym + tile replication → supercell Context
-build runs end-to-end without errors, atom counts come out as expected, and
-the N % N_sym validation fires when it should. Forward-path tests come in a
-follow-up increment once forward is implemented.
+Pins that the supercell holds every member under its symmetry operation, with a
+PME box equal to the unit cell for one cell along a, that the N = n_disorder * N_sym
+rule is enforced, that the energy is finite with bounded gradients once the
+special-position water is held once per site, and the per-ASU normalisation.
 """
 
 import os
@@ -19,8 +18,8 @@ from torchref.experimental.ensemble.quasi_crystal_amber import (
     QuasiCrystalAmberTarget,
 )
 
-# The template build runs GAFF2 for non-standard residues (3GR5's SO4), so this
-# module needs OpenMM + AmberTools. Gated centrally in conftest.
+# The build runs GAFF2 for 3GR5's SO4, so this module needs OpenMM + AmberTools.
+# Gated centrally in conftest.
 pytestmark = pytest.mark.amber
 
 
@@ -41,11 +40,10 @@ TEST_PDB_ALTLOC = os.path.join(
 
 @pytest.fixture(scope="module")
 def small_setup():
-    """N=12 ensemble of 3GR5 (P 6_5 2 2 → N_sym=12 → n_disorder=1).
+    """N=12 ensemble of 3GR5 (P 6_5 2 2 → N_sym=12 → n_disorder=1), hydrogenated.
 
-    3GR5 carries an SO4 ligand (charge -2) that antechamber parametrises
-    via Gasteiger charges. Module-scoped because the antechamber + tleap
-    pipeline is the slow part.
+    3GR5 carries SO4 (net charge -2 from its dictionary) that antechamber
+    parameterises with Gasteiger charges.
     """
     data = ReflectionData(verbose=0)
     data.load_mtz(TEST_MTZ_AMBER)
@@ -56,6 +54,7 @@ def small_setup():
         b_const=5.0,
         seed=0,
         verbose=0,
+        hydrogens="add",
     )
     ens.cell = data.cell
     ens.spacegroup = data.spacegroup
@@ -70,15 +69,18 @@ def test_construction_succeeds_n_disorder_1(small_setup):
         cell=data.cell,
         spacegroup=data.spacegroup,
         n_disorder=1,
-        residue_charges={"SO4": -2},
         charge_method="gas",
         verbose=0,
     )
     assert target._n_members == 12
     assert target._n_sym == 12
     assert target._n_disorder == 1
-    assert target._system.getNumParticles() == target._n_omm_total
-    assert target._n_omm_total == 12 * target._n_omm_per_member
+    adapter = target.adapter
+    assert adapter.system.getNumParticles() == adapter.n_particles
+    assert adapter.layout.n_copies == 12
+    # HOH 224 sits on a two-fold: six of its twelve copies coincide with others.
+    assert (~adapter.present).sum() == 6
+    assert adapter.n_particles == 12 * ens.n_atoms_per_member - 6 * 3
 
 
 def test_n_members_must_match_layout(small_setup):
@@ -90,8 +92,7 @@ def test_n_members_must_match_layout(small_setup):
             cell=data.cell,
             spacegroup=data.spacegroup,
             n_disorder=2,  # would need n_members=24; ens has 12
-            residue_charges={"SO4": -2},
-            charge_method="gas",
+                charge_method="gas",
             verbose=0,
         )
 
@@ -104,13 +105,12 @@ def test_construction_pme_box_matches_supercell(small_setup):
         cell=data.cell,
         spacegroup=data.spacegroup,
         n_disorder=1,
-        residue_charges={"SO4": -2},
         charge_method="gas",
         verbose=0,
     )
     import openmm.unit as u_omm
 
-    box = target._system.getDefaultPeriodicBoxVectors()
+    box = target.adapter.system.getDefaultPeriodicBoxVectors()
     cell_matrix_ang = data.cell.fractional_matrix.cpu().numpy()
     # Each box vector matches the corresponding column of B (Å → nm).
     for i in range(3):
@@ -123,14 +123,11 @@ def test_construction_pme_box_matches_supercell(small_setup):
 
 
 def test_forward_returns_finite_energy_with_gradient(small_setup):
-    """forward() returns a finite energy and a *bounded* gradient.
+    """forward() returns a protein-scale energy and a bounded gradient.
 
-    The energy value itself can be huge for any crystal with special-position
-    atoms (e.g. 3GR5's HOH 224 sits on a 2-fold axis → 12 sym-mates overlap
-    in the supercell → astronomical LJ). What matters for refinement is that
-    the gradient stays bounded — which it does, because the autograd
-    Function clamps per-atom forces (10000 kJ/mol/nm). Adam's per-parameter
-    normalization then handles the initial step out of the clash gracefully.
+    3GR5's HOH 224 sits on a two-fold axis; held once per site, it no longer stacks
+    on its own copy. Generated hydrogens of neighbouring copies can still clash, and
+    the per-atom clip (10000 kJ/mol/nm) bounds the gradient there.
     """
     ens, data = small_setup
     target = QuasiCrystalAmberTarget(
@@ -138,7 +135,6 @@ def test_forward_returns_finite_energy_with_gradient(small_setup):
         cell=data.cell,
         spacegroup=data.spacegroup,
         n_disorder=1,
-        residue_charges={"SO4": -2},
         charge_method="gas",
         verbose=0,
     )
@@ -146,16 +142,11 @@ def test_forward_returns_finite_energy_with_gradient(small_setup):
     energy = target.forward()
     assert energy.ndim == 0, f"energy must be scalar; got shape {energy.shape}"
     assert torch.isfinite(energy), f"energy = {float(energy.detach())} not finite"
+    assert abs(energy.item()) < 1e6, f"energy per ASU = {energy.item()} kJ/mol"
     energy.backward()
     g = ens.xyz.refinable_params.grad
     assert g is not None, "no gradient on ensemble xyz"
     assert torch.isfinite(g).all(), "non-finite gradient entries"
-    # The per-atom force clamp (10000 kJ/mol/nm) keeps the gradient bounded
-    # regardless of the raw energy. 3GR5's special-position HOH (12 sym-mates
-    # overlap in the supercell) drives several atoms to the clamp, so the
-    # post-chain-rule per-coord gradient is O(100) — well under what a broken
-    # clamp would give (the unclamped special-position LJ force is orders of
-    # magnitude larger, → gradients ~1e4+).
     assert float(g.abs().max()) < 1000.0, (
         f"max |gradient| = {float(g.abs().max())} unexpectedly large; "
         "force-clamp may not be in effect"
@@ -175,12 +166,12 @@ def test_forward_per_asu_normalization(small_setup):
 
     target_per_asu = QuasiCrystalAmberTarget(
         model=ens, cell=data.cell, spacegroup=data.spacegroup,
-        n_disorder=1, residue_charges={"SO4": -2}, charge_method="gas",
+        n_disorder=1, charge_method="gas",
         normalize_per_asu=True, verbose=0,
     )
     target_total = QuasiCrystalAmberTarget(
         model=ens, cell=data.cell, spacegroup=data.spacegroup,
-        n_disorder=1, residue_charges={"SO4": -2}, charge_method="gas",
+        n_disorder=1, charge_method="gas",
         normalize_per_asu=False, verbose=0,
     )
     with torch.no_grad():

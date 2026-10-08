@@ -21,6 +21,7 @@ import torch
 from torchref.config import get_int_dtype
 from torchref.experimental.mm.layout import CrystalLayout
 from torchref.experimental.mm.topology import (
+    MIN_HYDROGEN_FRACTION,
     AtomSelection,
     build_asu_topology,
     check_hydrogens,
@@ -218,6 +219,7 @@ class OpenMMAdapter:
 
         ff = app.ForceField(*forcefield)
         templates, unmatched = _match_templates(ff, asu)
+        _refuse_incomplete(ff, asu, unmatched)
         if unmatched:
             from torchref.experimental.mm.ligands import gaff2_forcefield
 
@@ -489,6 +491,74 @@ class OpenMMAdapter:
             except Exception as exc:  # noqa: BLE001 -- any failure means try the next
                 errors.append(f"{name}: {exc}")
         raise RuntimeError("No usable OpenMM platform: " + "; ".join(errors))
+
+
+def template_coverage(
+    model: "Model", forcefield: Sequence[str] = DEFAULT_FORCEFIELD
+) -> np.ndarray:
+    """Which model atoms belong to residues a force-field XML template matches.
+
+    Parameters
+    ----------
+    model : Model
+        Single-conformation model.
+    forcefield : sequence of str
+        OpenMM force-field XML files.
+
+    Returns
+    -------
+    numpy.ndarray
+        Boolean mask over model rows, shape ``(N,)``: False for the residues that would
+        need GAFF2 templates. Usable as ``atoms=`` of :meth:`OpenMMAdapter.from_model`
+        unless such a residue is covalently bonded to a matched one.
+    """
+    import openmm.app as app
+
+    asu = build_asu_topology(model)
+    _, unmatched = _match_templates(app.ForceField(*forcefield), asu)
+    mask = np.zeros(asu.n_model_atoms, dtype=bool)
+    mask[asu.rows] = True
+    for r in unmatched:
+        mask[asu.rows[asu.residue_start[r] : asu.residue_start[r + 1]]] = False
+    return mask
+
+
+def _refuse_incomplete(ff, asu, unmatched) -> None:
+    """Raise for unmatched residues that are incomplete rather than unknown.
+
+    A residue named like a force-field template (a water, an amino acid) or bonded to
+    another residue failed to match because atoms are missing: a model to prepare, not
+    a ligand for GAFF2. So is a ligand holding fewer than
+    :data:`~torchref.experimental.mm.topology.MIN_HYDROGEN_FRACTION` of its
+    dictionary's hydrogens; one short of a few is a protonation state GAFF2 takes.
+    """
+    known = getattr(ff, "_templates", {})
+    graph = asu.restraints.topology.atoms
+    lacking = missing_hydrogens(asu, unmatched)
+    template = (
+        graph.template_h_count.cpu().numpy()[asu.rows]
+        if graph.template_h_count is not None
+        else np.zeros(asu.n_atoms, dtype=np.int64)
+    )
+    refused = []
+    for r in unmatched:
+        start, end = asu.residue_start[r], asu.residue_start[r + 1]
+        inside = (asu.bonds >= start) & (asu.bonds < end)
+        expected = int(template[start:end][template[start:end] > 0].sum())
+        missing = lacking.get(asu.residue_label(r), 0)
+        if (
+            asu.residue_name[r] in known
+            or (inside[:, 0] != inside[:, 1]).any()
+            or (expected and expected - missing < MIN_HYDROGEN_FRACTION * expected)
+        ):
+            refused.append(asu.residue_label(r))
+    if refused:
+        examples = {label: lacking[label] for label in refused[:10] if label in lacking}
+        raise ValueError(
+            "The model is not AMBER-compatible; prepare missing atoms, terminal groups "
+            f"and protonation in TorchRef. Residues matching no template: "
+            f"{refused[:10]}; lacking hydrogens their dictionary names: {examples}."
+        )
 
 
 def _nonbonded_method(nonbonded: str, periodic: bool) -> str:

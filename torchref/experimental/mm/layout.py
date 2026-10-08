@@ -349,9 +349,9 @@ def reduce_box(box: np.ndarray) -> np.ndarray:
             vector[index] = 0.0
     if a[1] or a[2] or b[2] or min(a[0], b[1], c[2]) <= 0:
         raise ValueError("Box vectors must have a along x and b in the xy-plane")
-    c = c - b * np.round(c[1] / b[1])
-    c = c - a * np.round(c[0] / a[0])
-    b = b - a * np.round(b[0] / a[0])
+    c = c - b * _lattice_shift(c[1], b[1])
+    c = c - a * _lattice_shift(c[0], a[0])
+    b = b - a * _lattice_shift(b[0], a[0])
 
     # A hexagonal cell puts b_x exactly on the -a_x/2 boundary, which OpenMM's strict
     # inequality rejects; a 1e-9 relative shift moves it inside.
@@ -364,6 +364,16 @@ def reduce_box(box: np.ndarray) -> np.ndarray:
     c[0] = inside(c[0], a[0] / 2)
     c[1] = inside(c[1], b[1] / 2)
     return np.stack([a, b, c], axis=1)
+
+
+def _lattice_shift(component: float, length: float) -> float:
+    """Whole lattice vectors to subtract to bring ``component`` within ``length / 2``.
+
+    A component on the boundary, within float noise, is left for the clamp in
+    :func:`reduce_box`: rounding it would swap a hexagonal cell's ``b`` for ``b + a``.
+    """
+    ratio = component / length
+    return 0.0 if abs(ratio) <= 0.5 + 1e-6 else float(np.round(ratio))
 
 
 def _orthogonalisation(cell: "Cell") -> np.ndarray:
