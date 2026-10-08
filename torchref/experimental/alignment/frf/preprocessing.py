@@ -65,11 +65,10 @@ def build_lerf1_intensity(
     factor only (the ε(h) multiplicity is implicit in the symmetry
     reduction of the input reflection set).
 
-    ``weight`` is the per-reflection information weight that travels with
-    ``eEobs`` -- ``DFAC**2`` for the French-Wilson convention, ones for a
-    convention that does not model measurement error. It arrives already
-    squared because it is the E convention that decides what the weight *is*;
-    this function's job is to apply one, not to know it came from a D factor.
+    ``weight`` is the per-reflection measurement weight that travels with
+    ``eEobs`` -- the normalised information or inverse-variance weight built
+    from the sigmas, or ones when there are none. The caller decides what the
+    weight is; this function only applies it.
 
     Note the ``- 1``: the LERF1 intensity is CENTRED, which is what makes
     ``<eEobs**2> = 1`` load-bearing rather than cosmetic. A convention whose

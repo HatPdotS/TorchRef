@@ -2,7 +2,7 @@
 
 Pipeline (mirrors Phaser ``run_FRF()``):
   1. Resolution mask (both sides).
-  2. Wilson normalisation, optionally + French-Wilson + DFAC on obs.
+  2. Wilson normalisation; obs sigmas set only a per-reflection weight.
   3. Build LERF1 obs intensity.
   4. Optional per-shell variance reweight on obs intensity.
   5. σA Eterm on calc intensity.
@@ -203,8 +203,8 @@ class FastRotationFunction:
         # expansion is a per-reflection function of (F, sigma_F, |s|, centric),
         # all four of which are symmetry-invariant, so the chain runs on the
         # unique set and is broadcast at the end. That is exact -- not an
-        # approximation -- and it is the difference between doing the
-        # French-Wilson posterior once and doing it n_ops times.
+        # approximation -- and it runs the Wilson fit and the weights once
+        # rather than n_ops times.
         #
         # Without `asu_idx` every array is per-row of `s_obs` and the window is
         # applied here, which is the path direct callers and the synthetic tests
@@ -246,15 +246,8 @@ class FastRotationFunction:
         lmax_even = lmax if lmax % 2 == 0 else lmax - 1
         self.bessel_h_scale = float(lmax_even) * float(d_min)
 
-        # 3. ONE shell assignment, shared by everything below.
-        #
-        # The French-Wilson posterior, the LERF1 build and the variance reweight
-        # all normalise per resolution shell, and each used to derive its own
-        # equal-count edges from the same |s| -- one in numpy, one in torch, with
-        # different quantile-rank rounding. That put a handful of boundary
-        # reflections in different shells depending on which consumer asked,
-        # which is a difference of ~2e-4 relative on their normalisation for no
-        # reason. Assign once, pass it down.
+        # 3. Equal-count resolution shells over |s|, used only by the optional
+        #    per-shell variance reweight in step 4.
         from ..sh import assign_shells, equal_count_shell_edges
 
         shell_edges, _ = equal_count_shell_edges(smag_src, n_wilson_shells)
