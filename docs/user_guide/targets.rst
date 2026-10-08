@@ -161,13 +161,16 @@ Using Targets
 
 .. code-block:: python
 
+   from torchref import Scaler
    from torchref.refinement.targets import (
        create_xray_target,
        TotalGeometryTarget,
        TotalADPTarget,
    )
 
-   xray_target = create_xray_target(data, model, mode='ml')   # 'ml' is the default
+   scaler = Scaler(model, data)
+   scaler.initialize()       # without a scaler the target scores unscaled F_calc
+   xray_target = create_xray_target(data, model, scaler=scaler, mode='ml')
    geom_target = TotalGeometryTarget(model)
    adp_target = TotalADPTarget(model)
 
