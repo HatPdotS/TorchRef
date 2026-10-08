@@ -94,6 +94,39 @@ def test_tensordict_assignment_invalidates_a_cached_forward():
     assert module.n_forward == 2
 
 
+def test_result_computed_without_grad_is_not_served_with_grad(module):
+    cfg.caching.value = True
+
+    with torch.no_grad():
+        module()
+    result = module()
+
+    assert result.grad_fn is not None
+    assert module.n_forward == 2
+
+
+def test_unfreezing_a_parameter_recomputes(module):
+    cfg.caching.value = True
+
+    module.p.requires_grad_(False)
+    module()
+    module.p.requires_grad_(True)
+
+    assert module().requires_grad
+    assert module.n_forward == 2
+
+
+def test_graph_carrying_result_is_still_served_without_grad(module):
+    cfg.caching.value = True
+
+    first = module()
+    with torch.no_grad():
+        second = module()
+
+    assert second is first
+    assert module.n_forward == 1
+
+
 # ---------------------------------------------------------------------------
 # Caching disabled
 # ---------------------------------------------------------------------------
