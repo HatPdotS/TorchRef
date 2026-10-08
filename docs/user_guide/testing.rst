@@ -76,7 +76,7 @@ Markers
 - ``@pytest.mark.slow`` — long-running
 - ``@pytest.mark.openmm`` — needs OpenMM (the ``[amber]`` extra)
 - ``@pytest.mark.amber`` — needs OpenMM **and** AmberTools (``antechamber`` /
-  ``tleap`` on ``PATH``)
+  ``parmchk2`` on ``PATH``)
 
 Skipped by Default
 ~~~~~~~~~~~~~~~~~~
@@ -101,7 +101,7 @@ The Amber stack, if you want it:
 .. code-block:: bash
 
     pip install -e ".[amber]"                  # OpenMM + Amber helpers
-    conda install -c conda-forge ambertools     # antechamber / tleap
+    conda install -c conda-forge ambertools     # antechamber / parmchk2
 
 Fixtures
 --------
