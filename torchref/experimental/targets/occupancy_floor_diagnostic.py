@@ -87,7 +87,10 @@ class OccupancyFloorDiagnostic:
         positions : torch.Tensor
             Positions in fractional coordinates, shape (N, 3).
         hkl : torch.Tensor
-            Miller indices, shape (M, 3).
+            P1 Miller indices, shape (M, 3), one per Friedel pair (e.g.
+            ``spacegroup.expand_hkl(hkl, include_friedel=False)[0]``); the sum
+            is not symmetry-expanded, so ASU indices give a filtered density
+            that is negative at some atom sites even for identical models.
 
         Returns
         -------
@@ -97,9 +100,6 @@ class OccupancyFloorDiagnostic:
         with torch.no_grad():
             fcalc = model(hkl, recalc=True)
 
-            # Compute h·r for all position-reflection pairs
-            # positions: (N, 3), hkl: (M, 3)
-            # h_dot_r: (N, M)
             # Match hkl to the positions' (configured) dtype so the matmul
             # does not raise under a float64 config.
             h_dot_r = torch.matmul(positions, hkl.T.to(dtype=positions.dtype))
@@ -129,7 +129,7 @@ class OccupancyFloorDiagnostic:
         Parameters
         ----------
         hkl : torch.Tensor
-            Miller indices for Fourier calculation.
+            P1 Miller indices, shape (M, 3); see ``compute_density_at_positions``.
         atom_mask : torch.Tensor, optional
             Boolean mask selecting which atoms to analyze (e.g., waters only).
 

@@ -29,3 +29,22 @@ def test_density_peaks_at_atom_sites(sample_structure_pair):
 
     assert rho_sites.mean() > rho_random.mean() + 5 * rho_random.std() / 300**0.5
     assert (rho_sites < 0).float().mean() < 0.1
+
+
+@pytest.mark.integration
+def test_identical_models_have_no_negative_sites(sample_structure_pair):
+    """With P1 indices, identical dark and light models report no negative site."""
+    from torchref.experimental.targets import OccupancyFloorDiagnostic
+    from torchref.io import ReflectionData
+    from torchref.model.model_ft import ModelFT
+
+    model = ModelFT(max_res=2.5, verbose=0)
+    model.load_cif(str(sample_structure_pair["model"]))
+    data = ReflectionData()
+    data.load_mtz(str(sample_structure_pair["reflections"]))
+    hkl_p1 = model.spacegroup.expand_hkl(data.hkl, include_friedel=False)[0]
+
+    result = OccupancyFloorDiagnostic(model, model).analyze_at_dark_positions(hkl_p1)
+
+    assert result["n_negative"] == 0
+    assert result["correction_factor"] == 0.0
