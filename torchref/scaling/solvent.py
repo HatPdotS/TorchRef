@@ -8,6 +8,10 @@ import torch
 import torch.nn as nn
 
 from torchref.base import extract_structure_factor_from_grid, ifft
+from torchref.base.electron_density.voxel_utils import (
+    half_voxel_diagonal,
+    voxel_offsets_within,
+)
 from torchref.config import get_float_dtype, get_int_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
@@ -33,12 +37,8 @@ _OFFSET_CACHE = {}
 
 
 def _voxel_offsets_within(radius, grid_dims, frac, device, strict=False):
-    """Integer voxel offsets whose Cartesian displacement is within ``radius``.
-
-    Offset ``o`` displaces a point by the Cartesian vector ``frac @ (o / grid_dims)``, so
-    its length follows from the cell's metric tensor and the enumerated set is a true
-    Cartesian ball in **any** unit cell, not only orthogonal ones. The per-axis search box
-    comes from the reciprocal basis: ``|o_i| <= grid_dims_i * |a*_i| * radius``.
+    """:func:`~torchref.base.electron_density.voxel_utils.voxel_offsets_within` on
+    ``device``, cached in :data:`_OFFSET_CACHE`.
 
     Parameters
     ----------
@@ -49,7 +49,7 @@ def _voxel_offsets_within(radius, grid_dims, frac, device, strict=False):
     frac : torch.Tensor
         Fractional-to-Cartesian matrix, shape ``(3, 3)``.
     device : torch.device
-        Device the offsets are built on.
+        Device the offsets are returned on.
     strict : bool, default False
         Use ``<`` rather than ``<=`` against ``radius``.
 
@@ -58,9 +58,10 @@ def _voxel_offsets_within(radius, grid_dims, frac, device, strict=False):
     torch.Tensor
         Offsets, shape ``(R, 3)``, integer.
     """
+    dims = tuple(int(v) for v in grid_dims.tolist())
     key = (
         float(radius),
-        tuple(int(v) for v in grid_dims.tolist()),
+        dims,
         tuple(round(float(v), 10) for v in frac.flatten().tolist()),
         str(device),
         bool(strict),
@@ -68,27 +69,9 @@ def _voxel_offsets_within(radius, grid_dims, frac, device, strict=False):
     cached = _OFFSET_CACHE.get(key)
     if cached is not None:
         return cached
-
-    dtype = get_float_dtype()
-    frac = frac.to(device=device, dtype=dtype)
-    N = grid_dims.to(device=device, dtype=dtype)
-    # Rows of the Cartesian-to-fractional matrix are the reciprocal basis vectors.
-    recip_norms = torch.linalg.inv(frac).norm(dim=1)
-    bounds = torch.ceil(N * recip_norms * radius).long()
-
-    ranges = [
-        torch.arange(-int(b), int(b) + 1, device=device) for b in bounds.tolist()
-    ]
-    offsets = torch.stack(torch.meshgrid(*ranges, indexing="ij"), dim=-1).reshape(-1, 3)
-
-    disp = (offsets.to(dtype) / N) @ frac.T
-    dist_sq = (disp**2).sum(-1)
-    r_sq = radius**2
-    keep = dist_sq < r_sq if strict else dist_sq <= r_sq
-    local_offsets = offsets[keep]
-
-    _OFFSET_CACHE[key] = local_offsets
-    return local_offsets
+    offsets = voxel_offsets_within(radius, frac, dims, strict=strict).to(device)
+    _OFFSET_CACHE[key] = offsets
+    return offsets
 
 
 class SolventModel(DeviceMixin, DebugMixin, nn.Module):
@@ -388,16 +371,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             # below can accept; without it, voxels genuinely inside
             # `vdw + solvent_radius` of the atom fall outside the ball around the node,
             # are never tested, and default to bulk solvent.
-            signs = torch.tensor(
-                [[1.0, 1.0, 1.0], [1.0, 1.0, -1.0], [1.0, -1.0, 1.0], [-1.0, 1.0, 1.0]],
-                dtype=frac.dtype,
-                device=device,
-            )
-            half_voxel_diagonal = 0.5 * float(
-                ((signs * inv_grid.to(frac.dtype)) @ frac.T).norm(dim=1).max()
-            )
             local_offsets = _voxel_offsets_within(
-                self.max_radius_angstrom + half_voxel_diagonal,
+                self.max_radius_angstrom + half_voxel_diagonal(frac, grid_shape),
                 grid_dims,
                 frac,
                 device,

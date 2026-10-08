@@ -115,9 +115,9 @@ def first_order_only(backward: Callable) -> Callable:
         if torch.is_grad_enabled():
             raise RuntimeError(
                 f"{backward.__qualname__}: the second derivative is not implemented, "
-                "so create_graph=True cannot differentiate through this kernel. Run "
-                "under torchref.utils.use_portable() to take it through the eager "
-                "kernels."
+                "so create_graph=True cannot differentiate through this kernel. Where "
+                "its backend table has a second-order portable row, run under "
+                "torchref.utils.use_portable() to take that instead."
             )
         return backward(ctx, *grad_outputs)
 

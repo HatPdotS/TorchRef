@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import torch
 
+from torchref.base.targets._dispatch import first_order_only
+
 try:
     import triton
     import triton.language as tl
@@ -724,6 +726,7 @@ class WorkQueueGridDensity(torch.autograd.Function):
         return out.view(nx, ny, nz)
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_density_map):
         (xyz, b, occ, A, B,
          r2cut, inv_frac, frac) = ctx.saved_tensors
@@ -776,6 +779,7 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
         return out.view(nx, ny, nz)
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_density_map):
         (xyz, u, occ, A, B,
          r2cut, inv_frac, frac) = ctx.saved_tensors

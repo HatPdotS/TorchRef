@@ -21,6 +21,7 @@ from typing import Optional
 import torch
 
 from torchref.base.direct_summation import compute_scattering_factors_batch
+from torchref.base.targets._dispatch import first_order_only
 from torchref.config import get_complex_dtype
 from torchref.utils.backends import run_or_degrade, select
 
@@ -116,6 +117,7 @@ class _CheckpointedSF(torch.autograd.Function):
         return torch.complex(Fr, Fi)
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_F):
         hkl, s_or_svec, xyz_frac, occ, adp_or_U, A, B = ctx.saved_tensors
         gFr = grad_F.real.contiguous()

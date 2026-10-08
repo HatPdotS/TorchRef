@@ -15,6 +15,7 @@ from __future__ import annotations
 import torch
 
 from torchref.base.electron_density.kernels.mps.compile import _get_lib
+from torchref.base.targets._dispatch import first_order_only
 
 
 def _r2cut(radius_per_atom):
@@ -58,6 +59,7 @@ class MetalGridDensity(torch.autograd.Function):
         return out
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         xyz, adp, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape
@@ -137,6 +139,7 @@ class MetalGridDensityAniso(torch.autograd.Function):
         return out
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         xyz, u, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape

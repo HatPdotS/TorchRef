@@ -182,6 +182,33 @@ def test_fused_cuda_splat_passes_the_gradient_to_its_input_map(pdb_dir):
     assert rel < 1e-3, f"CUDA vs CPU first-group xyz gradient rel L2 {rel:.2e}"
 
 
+@pytest.mark.cuda
+def test_fused_cuda_splat_rejects_create_graph(pdb_dir):
+    """The fused Triton splat's backward carries no graph, so a ``create_graph=True``
+    backward through it raises, even when the loss has a term of its own in ``xyz``."""
+    from torchref.base.electron_density.kernels.cpu.jit_reference import (
+        vectorized_add_to_map,
+    )
+    from torchref.base.targets._dispatch import use_triton
+
+    cuda = torch.device("cuda")
+    groups, inv_frac, frac, dims = _split_1daw(pdb_dir / "1DAW.pdb", cuda)
+    if not use_triton(groups[0][2]):
+        pytest.skip("the fused Triton splat is not selected on this host")
+    coords, idx, xyz, b, A, B, occ = groups[0]
+    xyz = xyz.clone().requires_grad_(True)
+    density = torch.zeros(dims, dtype=frac.dtype, device=cuda)
+    density = vectorized_add_to_map(
+        coords, idx, density, xyz, b, inv_frac, frac, A, B, occ
+    )
+    loss = density.square().sum() + (xyz**2).sum()
+
+    with pytest.raises(
+        RuntimeError, match=r"_FusedDensityFunction\.backward: the second derivative"
+    ):
+        torch.autograd.grad(loss, xyz, create_graph=True)
+
+
 def test_clear_cache_deletes_only_the_kernel_files(tmp_path, monkeypatch):
     """``clear_cache`` removes the cached kernel files and keeps everything else."""
     from torchref.base.electron_density.kernels.cpu import jit_reference
