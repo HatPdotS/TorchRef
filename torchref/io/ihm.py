@@ -457,17 +457,10 @@ class _DataFrameReader:
 
 
 def _residue_key(chain, resseq, icode) -> Tuple[str, int, str]:
-    """``(chain, resseq, icode)`` with every blank spelling of a chain or code as ``""``.
+    """``(chain, resseq, icode)`` with a NaN or ``"nan"`` chain or code as ``""``."""
+    from torchref.io.pdb import _text
 
-    A blank reaches the writer as ``""``, NaN (the PDB reader's blank chain), its
-    ``"nan"`` string form in a topology, or ``"."`` as the atom loop writes it.
-    """
-
-    def text(value):
-        value = "" if pd.isna(value) else str(value).strip()
-        return "" if value in ("nan", ".", "?") else value
-
-    return text(chain), int(resseq), text(icode)
+    return _text(chain), int(resseq), _text(icode)
 
 
 def _asym_ids(taken: set):
@@ -513,12 +506,11 @@ def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tup
     from torchref.topology.residue_graph import WATER_RESNAMES, polymer_type
 
     residues = model.ctx.topology.residues
-    found: Dict[Tuple[str, int, str], list] = {}
-    for r, kind in enumerate(polymer_type(residues.resname)):
-        info = found.setdefault(
-            _residue_key(*residues.key(r)), [str(residues.resname[r]).strip(), False]
+    found: Dict[Tuple[str, int, str], str] = {}
+    for r in range(residues.n_residues):
+        found.setdefault(
+            _residue_key(*residues.key(r)), str(residues.resname[r]).strip()
         )
-        info[1] = info[1] or kind != ""
 
     chains = list(dict.fromkeys(key[0] for key in found))
     new_id = _asym_ids(set(chains))
@@ -531,13 +523,10 @@ def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tup
     # entity with an asym unit each, and python-ihm refuses equal entities.
     # Keyed by the Entity itself, so "equal" is python-ihm's sequence equality.
     entities = {}
-    # Sequence position of each chain's first residue numbered resseq; insertion
-    # codes follow it in file order, as _polymer_residues orders them.
-    start = {}
-    seq_maps: Dict[str, dict] = {}
+    labels = {}
     for chain_id, chain_residues in model.ctx._polymer_residues():
         chain = auth[_residue_key(chain_id, 0, "")[0]]
-        names = [resname for _, resname in chain_residues]
+        names = [resname for _, _, resname in chain_residues]
         seq = []
         for name, kind in zip(names, polymer_type(names)):
             if kind == "protein":
@@ -555,32 +544,29 @@ def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tup
         entity = ihm.Entity(seq)
         entity, entity_chains = entities.setdefault(entity, (entity, []))
         entity_chains.append(chain)
-        seq_maps[chain] = {}
+        seq_map = {}
+        for position, (resseq, icode, _) in enumerate(chain_residues, start=1):
+            key = _residue_key(chain_id, resseq, icode)
+            seq_map[position] = (key[1], key[2] or None)
+            labels[key] = (chain, chain, str(position))
         asym_units.append(
             ihm.AsymUnit(
                 entity,
                 details=f"Chain {chain}",
                 id=chain,
-                auth_seq_id_map=seq_maps[chain],
+                auth_seq_id_map=seq_map,
             )
         )
-        for position, (resseq, _) in enumerate(chain_residues, start=1):
-            start.setdefault((chain, resseq), position)
     for entity, entity_chains in entities.values():
         entity.description = "Chain " + ", ".join(entity_chains)
 
-    labels = {}
-    seen: Dict[Tuple[str, int], int] = {}
     ligands: Dict[str, ihm.Entity] = {}
     waters: Dict[str, list] = {}
-    for key, (resname, is_polymer) in found.items():
+    for key, resname in found.items():
         chain, resseq, icode = auth[key[0]], key[1], key[2]
-        if is_polymer:
-            position = start[(chain, resseq)] + seen.get(key[:2], 0)
-            seen[key[:2]] = seen.get(key[:2], 0) + 1
-            seq_maps[chain][position] = (resseq, icode or None)
-            labels[key] = (chain, chain, str(position))
-        elif resname in WATER_RESNAMES:
+        if key in labels:
+            continue
+        if resname in WATER_RESNAMES:
             waters.setdefault(chain, []).append(key)
         else:
             entity = ligands.setdefault(
@@ -933,7 +919,9 @@ class IHMWriter:
                 resseq = str(row.get("resseq", 1))
                 icode = str(row.get("icode", ".")) or "."
                 asym_id, chainid, seq_id = labels[
-                    _residue_key(row.get("chainid"), row.get("resseq"), icode)
+                    _residue_key(
+                        row.get("chainid"), row.get("resseq"), row.get("icode")
+                    )
                 ]
 
                 all_rows.append(

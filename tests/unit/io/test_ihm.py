@@ -722,6 +722,37 @@ class TestIHMWriter:
         assert [row[1] for row in rows] == ["1", "2", ".", "1"]
         assert len({rows[0][0], rows[2][0], rows[3][0]}) == 3
 
+    def test_insertion_codes_take_consecutive_positions(self, tmp_path):
+        """Residues 51, 52, 52A, 52B, 53 take label_seq_id 1 to 5, and _atom_site
+        and _pdbx_poly_seq_scheme pair each position with its author number."""
+        table = pd.DataFrame(
+            [
+                ("A", 51, "", "GLY"),
+                ("A", 52, "", "ALA"),
+                ("A", 52, "A", "SER"),
+                ("A", 52, "B", "THR"),
+                ("A", 53, "", "LYS"),
+            ],
+            columns=["chainid", "resseq", "icode", "resname"],
+        ).assign(name="CA", x=0.0, y=0.0, z=0.0)
+        block = self._write_one_state(table, tmp_path / "icode.cif")
+
+        expected = [
+            ["1", "51", "."],
+            ["2", "52", "."],
+            ["3", "52", "A"],
+            ["4", "52", "B"],
+            ["5", "53", "."],
+        ]
+        atoms = block.find(
+            "_atom_site.", ["label_seq_id", "auth_seq_id", "pdbx_PDB_ins_code"]
+        )
+        scheme = block.find(
+            "_pdbx_poly_seq_scheme.", ["seq_id", "auth_seq_num", "pdb_ins_code"]
+        )
+        assert [list(row) for row in atoms] == expected
+        assert [list(row) for row in scheme] == expected
+
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
         import torch
