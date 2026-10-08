@@ -2,8 +2,8 @@ Quick Start
 ===========
 
 This guide walks you through a basic crystallographic refinement with TorchRef.
-Every example below is executed by ``sphinx.ext.doctest`` when the docs are
-built, so it reflects the current API.
+Every example below is a ``sphinx.ext.doctest`` test; run them with
+``make -C docs doctest``.
 
 For longer interactive versions, run the notebooks in ``example_notebooks/`` or
 open them in Colab:
@@ -51,7 +51,7 @@ TorchRef supports multiple file formats:
    data = read_mtz(f"{ROOT_TORCHREF}/example_notebooks/1DAW.mtz")
 
    # Access reflection data
-   hkl, F, sigF, rfree_flags = data()
+   hkl, F, sigF, rfree_flags = data.hkl, data.F, data.F_sigma, data.rfree_flags
    print(f"Number of reflections: {len(F)}")
 
 .. testoutput::
@@ -88,27 +88,29 @@ Model parameters can be selectively frozen during refinement:
    model = read_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
 
    # Freeze/unfreeze by parameter type.
-   # Valid names are exactly 'xyz', 'adp', 'u', 'occupancy'. Anything else
-   # (e.g. 'b', 'occ') is silently ignored, not an error.
+   # Valid names are exactly 'xyz', 'adp', 'u', 'occupancy'; anything else
+   # (e.g. 'b', 'occ') raises ValueError.
    model.freeze('adp')      # Freeze all B-factors
    model.unfreeze('adp')    # Unfreeze B-factors
    model.freeze('xyz')      # Freeze coordinates
    model.unfreeze('xyz')    # Unfreeze coordinates
 
-   # Freeze/unfreeze by selection (phenix-style syntax)
-   model.freeze_selection("chain A and resseq 10:20")
+   # Freeze/unfreeze by selection (phenix-style syntax). Unfreezing adds the
+   # selected atoms to each target's refinable set, so undo a freeze with the
+   # same selection: unfreeze_selection("all") would also make every atom's
+   # occupancy refinable.
+   model.freeze_selection("chain A and resseq 10:20", targets="xyz")
    print(f"Refinable xyz atoms after freezing selection: {model.xyz.refinable_params.shape[0]}")
 
-   # Unfreeze everything
-   model.unfreeze_selection("all")
-   print(f"Refinable xyz atoms after unfreezing all: {model.xyz.refinable_params.shape[0]}")
+   model.unfreeze_selection("chain A and resseq 10:20", targets="xyz")
+   print(f"Refinable xyz atoms after unfreezing it: {model.xyz.refinable_params.shape[0]}")
 
 .. testoutput::
    :options: +ELLIPSIS
 
    ...
    Refinable xyz atoms after freezing selection: ...
-   Refinable xyz atoms after unfreezing all: ...
+   Refinable xyz atoms after unfreezing it: ...
 
 Computing Structure Factors
 ---------------------------
@@ -126,7 +128,7 @@ Use the model to compute structure factors for given Miller indices:
    model = read_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
 
    # Get reflection indices
-   hkl, F, sigF, rfree = data()
+   hkl, F, rfree = data.hkl, data.F, data.rfree_flags
 
    # Calculate structure factors
    fcalc = model(hkl)
@@ -267,8 +269,7 @@ Define custom refinement targets with automatic gradient computation:
        name = 'custom_lsq'
 
        def __init__(self, refinement):
-           # The base Target signature is __init__(self, verbose=0, **kwargs);
-           # keep a handle on the refinement object yourself.
+           # The base Target holds no refinement; keep a handle on it yourself.
            super().__init__()
            self.refinement = refinement
 
@@ -305,7 +306,8 @@ LossState Workflow
 
 The LossState object manages targets, weights, and metadata for refinement.
 Use ``complete_loss_state()``, which returns the refinement's persistent state
-with its cached losses refreshed, rather than assembling one yourself:
+(it evaluates nothing; ``aggregate()`` computes the losses), rather than
+assembling one yourself:
 
 .. testcode::
 
@@ -336,7 +338,9 @@ with its cached losses refreshed, rather than assembling one yourself:
 Saving and Loading State
 ------------------------
 
-Save complete refinement state for later continuation:
+Save the refinement state for later continuation. The checkpoint holds no
+reflection data, so ``load_state`` restores it into a refinement built from the
+same input files:
 
 .. testcode::
 
@@ -397,5 +401,5 @@ Next Steps
 ----------
 
 - :doc:`user_guide/refinement` — parameter selection and monitoring
-- :doc:`user_guide/targets` — the seven X-ray modes, geometry and ADP restraints
+- :doc:`user_guide/targets` — the X-ray target taxonomy, geometry and ADP restraints
 - :doc:`user_guide/scaling` — bulk solvent and anisotropic scaling

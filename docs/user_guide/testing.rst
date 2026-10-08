@@ -10,8 +10,9 @@ Test Categories
 
 - ``tests/unit/`` — fast, isolated, mock data, no file I/O. Mirrors the package
   layout (``model/``, ``io/``, ``refinement/``, ``scaling/``, ``symmetry/``,
-  ``restraints/``, ``structure_factor/``, ``scattering/``, ``maps/``, ``base/``,
-  ``utils/``, ``experimental/``).
+  ``topology/``, ``monomer/``, ``structure_factor/``, ``scattering/``, ``maps/``,
+  ``base/``, ``utils/``, ``cli/``, ``alignment/``, ``frf_separate/``,
+  ``experimental/``).
 - ``tests/integration/`` — real file I/O and complete pipelines.
 - ``tests/functional/`` — multi-component workflows on pre-loaded objects.
 - ``tests/files/`` — test data: ``cif/``, ``pdb/``, ``mtz/``, ``cif_sf/``.
@@ -52,7 +53,7 @@ Running Tests
 
 .. code-block:: bash
 
-    pytest -m "not gpu and not slow" -v     # recommended during development
+    pytest tests/ -v                        # everything this host supports; slow tests need --run-slow
     pytest tests/unit -v                    # by category
     pytest tests/unit/model/ -v             # by module
     pytest tests/unit/model/test_model.py::TestModelInitialization -v
@@ -167,7 +168,7 @@ free of file I/O:
         def test_load_cif(self, sample_cif_file):
             model = Model()
             model.load_cif(str(sample_cif_file))
-            assert model.initialized
+            assert model.ctx.initialized
             assert model.n_atoms > 0
 
 Cover the edge cases that actually bite here: empty selections, degenerate
@@ -190,10 +191,10 @@ the file itself for the authoritative list.
 Troubleshooting
 ---------------
 
-**Tests not found** — run from the repository root, where
-``[tool.pytest.ini_options]`` in ``pyproject.toml`` sets ``testpaths``, or from
-inside ``tests/``, where ``tests/pytest.ini`` takes over. The two are kept in
-step deliberately.
+**Tests not found** — run from the repository root. A bare ``pytest`` there
+reads ``[tool.pytest.ini_options]`` in ``pyproject.toml``, which sets
+``testpaths``; any path under ``tests/`` (``pytest tests/unit``) selects
+``tests/pytest.ini``. The two are kept in step deliberately.
 
 **GPU tests skipped** — the host has no CUDA/MPS device. The marks are gated on
 real availability, not on a flag, and a ``cuda``-marked test also skips on an

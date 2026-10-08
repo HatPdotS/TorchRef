@@ -3,14 +3,13 @@ Target Functions
 
 Target functions (loss functions) drive the refinement optimization. TorchRef
 ships the standard ones and makes new ones cheap to add: subclass
-:class:`~torchref.refinement.targets.Target`, write ``forward()``, and autograd
+:class:`~torchref.refinement.targets.base.Target`, write ``forward()``, and autograd
 supplies the derivatives.
 
 The base ``Target`` holds no model or refinement handle of its own. Each target
 stores what it needs — a model, a
 :class:`~torchref.io.datasets.reflection_data.ReflectionData`, or the refinement
-— on ``self`` in its ``__init__``. The base signature is
-``__init__(self, verbose=0, **kwargs)``, so a subclass must keep its own handle.
+— on ``self`` in its ``__init__``.
 
 Targets are registered in a
 :class:`~torchref.refinement.loss_state.LossState`, which owns the target
@@ -22,7 +21,7 @@ X-ray Targets
 
 Selected by name. ``XRAY_TARGETS`` (in
 ``torchref.refinement.targets.xray._specs``) is the single table behind both
-:func:`~torchref.refinement.targets.create_xray_target` and
+:func:`~torchref.refinement.targets.xray.factory.create_xray_target` and
 ``torchref.refine --help``. The authoritative list is ``torchref.refine --help``,
 which is generated from that table; the notes below describe the rows but are
 maintained by hand, so run ``--help`` if the two disagree.
@@ -38,6 +37,10 @@ declares which measured column it compares against (``spec.observable``).
 - ``ml_noalpha`` — as ``ml`` with the Luzzati mean coupling fixed at 1.
 - ``ml_full`` — full-form MLF: marginalises the unknown error-free amplitude
   instead of inflating the variance. Roughly 4× the cost.
+  ``TORCHREF_COMPILE_TARGETS=1`` compiles its kernels with ``torch.compile``;
+  the first backward compile takes minutes, so this pays only on large datasets
+  or long and repeated runs in one process. Pointing ``TORCHINDUCTOR_CACHE_DIR``
+  at local disk lets later processes reuse the compiled code.
 - ``nll_beta`` — Gaussian amplitude NLL on ``ml``'s model-error variance, i.e.
   the large-signal limit of ``ml``. Diagnostic: isolates the variance model from
   the likelihood shape.
@@ -108,7 +111,7 @@ Geometry Targets
 ----------------
 
 Bond, angle, torsion, planarity, chirality, non-bonded (VDW), and Ramachandran,
-combined by :class:`~torchref.refinement.targets.TotalGeometryTarget`.
+combined by :class:`~torchref.refinement.targets.combined.TotalGeometryTarget`.
 Ramachandran is off by default — give it a non-zero weight to enable it. Set any
 component's weight to 0 to disable it. See :doc:`restraints` for the functional
 forms.
@@ -116,18 +119,22 @@ forms.
 ADP Targets
 -----------
 
-:class:`~torchref.refinement.targets.TotalADPTarget` combines three components.
-``locality`` and ``KL`` work in ``log B`` (B is positive and right-skewed, so
-log B is the natural scale); ``simu`` restrains the raw ΔB of bonded atoms:
+:class:`~torchref.refinement.targets.combined.TotalADPTarget` combines three components.
+``locality`` works in ``log B`` (B is positive and right-skewed, so log B is the
+natural scale); ``simu`` restrains the raw ΔB of bonded atoms; ``sigd`` is a
+prior on the B distribution:
 
-- ``simu`` (:class:`~torchref.refinement.targets.ADPSimilarityTarget`) — bonded atoms should have similar B.
-- ``locality`` (:class:`~torchref.refinement.targets.ADPLocalityTarget`) — K-NN spatial smoothness with
+- ``simu`` (:class:`~torchref.refinement.targets.adp.similarity.ADPSimilarityTarget`) — bonded atoms should have similar B.
+- ``locality`` (:class:`~torchref.refinement.targets.adp.locality.ADPLocalityTarget`) — K-NN spatial smoothness with
   distance-scaled sigma.
-- ``KL`` (:class:`~torchref.refinement.targets.ADPEntropyTarget`) — KL divergence against a fixed-spread
-  Gaussian, which controls the *spread* of the B distribution. Despite the class
-  name it is not an entropy term.
+- ``sigd`` (:class:`~torchref.refinement.targets.adp.sigd.ADPSigdTarget`) — shifted
+  inverse-gamma prior on the B distribution (Masmaliyeva & Murshudov 2019); it
+  restrains the shape of the distribution, never the overall B level.
 
-:class:`~torchref.refinement.targets.RigidBondTarget` (``adp/delu``, the DELU rigid-bond restraint) exists but
+The node-field ADP modes (``adp_mode="field"`` / ``"field_aniso"``) register
+``sigd``, ``node_load`` and ``node_smoothness`` instead.
+
+:class:`~torchref.refinement.targets.adp.rigid_bond.RigidBondTarget` (``adp/delu``, the DELU rigid-bond restraint) exists but
 is not part of ``TotalADPTarget``; register it yourself if you want it.
 
 Statistics
@@ -154,13 +161,16 @@ Using Targets
 
 .. code-block:: python
 
+   from torchref import Scaler
    from torchref.refinement.targets import (
        create_xray_target,
        TotalGeometryTarget,
        TotalADPTarget,
    )
 
-   xray_target = create_xray_target(data, model, mode='ml')   # 'ml' is the default
+   scaler = Scaler(model, data)
+   scaler.initialize()       # without a scaler the target scores unscaled F_calc
+   xray_target = create_xray_target(data, model, scaler=scaler, mode='ml')
    geom_target = TotalGeometryTarget(model)
    adp_target = TotalADPTarget(model)
 
@@ -181,7 +191,7 @@ Custom Targets
        name = 'entropy_reg'
 
        def __init__(self, model):
-           super().__init__()          # base takes (verbose=0, **kwargs) only
+           super().__init__()
            self.model = model          # keep your own handle
 
        def forward(self):
@@ -206,7 +216,7 @@ evaluations, and tracks what needs recomputing between line-search steps.
 
     state = refinement.complete_loss_state()
     optimizer = LBFGS(refinement.model.parameters(), lr=1.0, max_iter=100)
-    state.run(optimizer, n_steps=1)      # equivalent to state.step(optimizer)
+    state.run(optimizer, nsteps=1)       # equivalent to state.step(optimizer)
 
 Observed-dataset scaling target
 -------------------------------

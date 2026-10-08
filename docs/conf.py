@@ -16,7 +16,6 @@ project = 'TorchRef'
 copyright = '2026, Hans Peter Seidel'
 author = 'Hans Peter Seidel'
 
-# Single source of truth for the version: torchref/__init__.py __version__.
 import torchref  # noqa: E402
 
 release = torchref.__version__
@@ -38,7 +37,7 @@ extensions = [
 doctest_global_setup = '''
 import torch
 import torchref
-from torchref import ROOT_TORCHREF
+from torchref import ROOT_TORCHREF, Cell, SpaceGroup
 '''
 doctest_test_doctest_blocks = 'default'
 
@@ -51,11 +50,22 @@ napoleon_include_special_with_doc = True
 napoleon_use_admonition_for_examples = True
 napoleon_use_admonition_for_notes = True
 napoleon_use_admonition_for_references = False
-napoleon_use_ivar = False
+napoleon_use_ivar = True
 napoleon_use_param = True
 napoleon_use_rtype = True
 napoleon_use_keyword = True
 napoleon_attr_annotations = True
+
+# Napoleon passes NumPy pseudo-types ("optional", "default 1", "{'a', 'b'}") through
+# as cross-references, which only nitpicky builds report. napoleon_preprocess_types
+# would silence them too, but it also unlinks parameter types that resolve today.
+nitpick_ignore_regex = [
+    (
+        r'py:.*',
+        r'optional|default\b.*|array-like|callable|iterable|sequence|file-like'
+        r'|\{.*|.*\}|".*"',
+    ),
+]
 
 # Autodoc settings
 autodoc_default_options = {
@@ -63,7 +73,10 @@ autodoc_default_options = {
     'member-order': 'bysource',
     'special-members': '__init__',
     'undoc-members': True,
-    'exclude-members': '__weakref__'
+    'exclude-members': '__weakref__',
+    # Document each object on its defining module's page only; a package page
+    # would otherwise repeat every name in its __all__ and make references ambiguous.
+    'ignore-module-all': True,
 }
 autodoc_typehints = 'description'
 autodoc_typehints_description_target = 'documented'
