@@ -13,8 +13,7 @@ import types
 import pytest
 import torch
 
-from torchref.experimental.ensemble import EnsembleModel
-from torchref.experimental.ensemble import EnsembleRefinement, LowRankXYZ
+from torchref.experimental.ensemble import EnsembleModel, EnsembleRefinement, LowRankXYZ
 
 TEST_MTZ = os.path.join(
     os.path.dirname(__file__), "..", "files", "mtz", "1DAW.mtz"
