@@ -491,7 +491,11 @@ def test_triton_splat_wraps_a_box_wider_than_the_cell():
     the density at the far x faces of the box well above float noise.
     """
     iso, aniso, top = _one_atom_triton_vs_portable(
-        (4.8, 20.0, 20.0), (16, 56, 56), (0.3, 0.5, 0.5), 7.0, 300.0,
+        (4.8, 20.0, 20.0),
+        (16, 56, 56),
+        (0.3, 0.5, 0.5),
+        7.0,
+        300.0,
         torch.device("cuda"),
     )
     assert iso <= 1e-5 * top and aniso <= 1e-5 * top, (iso, aniso, top)
