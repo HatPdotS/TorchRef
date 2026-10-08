@@ -1,11 +1,12 @@
 """
 Centralized loss finiteness validator for refinement closures.
 
-:func:`validate_loss` checks a loss tensor (and optionally grads and parameters) and, on
-failure, dumps a per-target breakdown via ``LossState.format_breakdown``. With
-``raise_on_fail=True`` it raises :class:`NonFiniteLossError`; with ``False`` it warns and
-returns ``False``, and **the caller must then reject the step itself** -- inside an LBFGS
-closure that means zeroing grads and returning ``+inf`` so strong-Wolfe backtracks.
+:func:`validate_loss` checks a loss tensor (and optionally the parameter gradients; the
+parameter values are only reported) and, on failure, dumps a per-target breakdown via
+``LossState.format_breakdown``. With ``raise_on_fail=True`` it raises
+:class:`NonFiniteLossError`; with ``False`` it warns and returns ``False``, and **the
+caller must then reject the step itself** -- inside an LBFGS closure that means zeroing
+grads and returning ``+inf`` so strong-Wolfe backtracks.
 
 The happy path costs one GPU->CPU sync, plus one more when ``check_grads=True``; the
 diagnostic path runs only on failure.
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 
 
 class NonFiniteLossError(RuntimeError):
-    """Raised when a refinement step produces non-finite loss, grads, or params."""
+    """Raised when a refinement step produces a non-finite loss or gradient."""
 
 
 # Per-context diagnostic budget so a pathological run doesn't flood logs.
@@ -90,7 +91,7 @@ def validate_loss(
     raise_on_fail: bool = True,
     max_full_diagnostics: int = 3,
 ) -> bool:
-    """Check that ``loss`` (and optionally grads / parameters) are finite.
+    """Check that ``loss`` (and optionally the parameters' gradients) are finite.
 
     Parameters
     ----------
@@ -123,7 +124,8 @@ def validate_loss(
     Raises
     ------
     NonFiniteLossError
-        If ``raise_on_fail=True`` and any of loss / grads / params is non-finite.
+        If ``raise_on_fail=True`` and the loss or a checked gradient is non-finite;
+        parameter values are only reported, never checked.
     """
     if not torch.is_tensor(loss):
         raise TypeError(f"validate_loss: expected tensor, got {type(loss)!r}")
