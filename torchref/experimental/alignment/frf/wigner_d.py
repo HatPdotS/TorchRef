@@ -157,7 +157,7 @@ def wigner_contraction_per_beta(
     real_dtype = torch.float64 if xi.dtype == torch.complex128 else torch.float32  # dtype-ok: follows the accumulator's width
 
     # Per-l loop over the small-d blocks, which come from the J_y
-    # eigendecomposition (small_d_stable's method, stable to any l). Contract
+    # eigendecomposition, which is stable to any l. Contract
     # each into S in turn: the full (n_beta, L, 2L-1, 2L-1) table is never
     # materialised as one array, nor is a 4-D einsum intermediate.
     S = torch.zeros((n_beta, dim, dim), dtype=xi.dtype, device=device)

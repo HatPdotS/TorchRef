@@ -1,13 +1,12 @@
 """Fast Rotation Function — single, validated implementation.
 
-Phaser-faithful engine: chunked Bessel-SH expansion, stable Wigner-d
-(``wigner_d.small_d_stable``), resolution↔bandwidth coupling
-(``phaser_lmax_resolution``, default cap=48), dense P1-box calc, all under
-``no_grad``. Solved the high-symmetry cases that broke the earlier ball
-and Phaser-mimic engines (4BX9 342→4–7, 6G9X 77→1–4).
+Phaser-faithful engine: chunked Bessel-SH expansion, Wigner-d from the J_y
+eigendecomposition (``wigner_d.wigner_contraction_per_beta``),
+resolution↔bandwidth coupling (``phaser_lmax_resolution``, default cap 64,
+``rotation_search.LMAX_CAP``), dense P1-box calc, all under ``no_grad``.
 
-Shared leaf math (``..sh``, ``..wigner``) lives in the parent ``alignment``
-package; this sub-package imports it "up".
+Shared leaf math (``..sh``) lives in the parent ``alignment`` package; this
+sub-package imports it "up".
 """
 from .api import FastRotationFunction, phaser_lmax_resolution
 from .dense_calc import dense_calc_via_box, model_sf_abs
