@@ -1,50 +1,17 @@
 """Molecular replacement: the FRF hands a shortlist to the FTF.
 
-Two stages, and the division of labour between them is the design:
+1. **Fast Rotation Function** (:mod:`~torchref.experimental.alignment.rotation_search`
+   over :mod:`~torchref.experimental.alignment.frf`) -- a Phaser-style
+   Bessel-radial x spherical-harmonic expansion against a dense P1-box calc. A
+   shortlist generator: one peak per orientation, symmetry mates suppressed.
+2. **Fast Translation Function** (:mod:`~torchref.experimental.alignment.translation`)
+   -- per orientation, one Crowther-Blow FFT over the cell, then the Rice/Woolfson
+   likelihood at the best few peaks.
 
-1. **Fast Rotation Function** — Phaser-faithful Bessel-radial × SH expansion
-   against a dense P1-box calc. It is a *shortlist generator*. It does not have
-   to rank well, and it does not: over the panel its own ordering puts truth
-   first in a minority of cells. What it does reliably is put the true
-   orientation somewhere in the top twenty-five -- in every cell of every
-   panel run on record -- and its peaks are one per orientation, symmetry
-   mates suppressed.
-2. **Fast Translation Function** — for *each* of the top-N orientations, one
-   Crowther-Blow FFT over the fractional cell on a resolution-sized grid, with
-   the rotation function's own normalised score equation as its coefficients,
-   then the Rice/Woolfson likelihood at the best few peaks. Rotation ghosts
-   are morphologically identical to truth in a rotation function by
-   construction; they are not identical once the crystal is involved.
-
-There is deliberately nothing between them. An ML re-ranking of the FRF peaks
-used to sit there and was removed: it reorders a shortlist that already contains
-truth, and rotation recovery was 18/30 with it against 24/30 without (McNemar
-p = 0.031, 6-0 discordant). Those figures, like every figure on this pipeline
-before September 2026, gated on the rotation alone; see ``rank_by`` for what
-the pose-gated panel measures.
-
-Every candidate is placed and then the best is taken, with no early stopping.
-Ten candidates by default: the rotation function's first distinct peak was
-the true orientation in every pose-gated cell measured, so ten is a margin.
-Stopping early made the pipeline's answer depend on the order the rotation
-function happened to produce -- it walked the list until one placement beat an
-R-factor threshold and returned that, so it could accept the third candidate
-without ever scoring the tenth. On a structure where several orientations place
-plausibly that is not a choice between them, and it made the selection rule
-impossible to reason about or to measure against a ranking harness.
-
-The candidates are ranked by the translation search's likelihood -- see
-``rank_by``, and the sort in :meth:`MolecularReplacementPipeline.run` for what
-the three available scores measured against each other. The user-facing
-solvent-aware R-work is computed once, on the winner. The pipeline returns a
-*placement* -- refining it is the caller's job, and downstream refinement does
-it better than a bolted-on polish did.
-
-``align_model_to_data`` delegates here; this class is the implementation of
-record. The crystallographic stages live in
-:mod:`torchref.experimental.alignment.align` and
-:mod:`~torchref.experimental.alignment.translation`; this module owns the
-control flow that wires them together.
+Every candidate is placed, with no early stopping, and the placements are ranked
+by ``rank_by`` (the translation likelihood by default). The result is a
+*placement*, not a refined model. :func:`align_model_to_data` delegates to
+:class:`MolecularReplacementPipeline`; this module owns the control flow.
 """
 
 from __future__ import annotations
@@ -312,38 +279,19 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._p1_xyz0 = None
         self._p1_center = None
 
-    #: Levels are documented on the class. They are a contract, not a dial:
-    #: level 2 is specifically "one machine-readable line per candidate", and
-    #: anything added at that level should preserve that.
     def _log(self, level: int, msg: str) -> None:
-        """Emit ``msg`` if the run is at least this verbose.
-
-        One emitter rather than ``if self.verbose > 0: print(...)`` at every
-        site. The scattered form is how levels drift -- the same stage ends up
-        reporting at 1 in one place and 2 in another, and nothing enforces that
-        a level means the same thing twice.
-        """
+        """Print ``msg`` if ``verbose >= level`` (levels as on the class)."""
         if self.verbose >= level:
             print(msg, flush=True)
 
     def _log_candidate(self, k: int, peak, r_analytic, t_frac,
                        tf_score=None, llg_score=None) -> None:
-        """One line per rotation candidate, with every score behind the choice.
+        """Log one machine-readable ``CAND`` line per rotation candidate (level 2).
 
-        Machine-readable on purpose. Diagnosing a wrong placement means asking
-        which candidate won and on what, and the only alternative to emitting it
-        here is a harness that re-implements the placement loop -- which drifts
-        from the pipeline and then disagrees with it about which candidate the
-        pipeline picked. A caller that knows the true orientation (a benchmark)
-        can join these lines against it; the pipeline cannot, and does not try.
-
-        Fields are ``key=value`` so a reader does not depend on column order:
-        ``k`` candidate index in rotation-function order, ``rf``/``rfz`` its
-        score and z, ``tf`` the fast translation function's score, ``llg`` the
-        translation likelihood, ``r`` the analytical-scale R, ``t`` the
-        fractional translation. All three placement scores are reported whichever one
-        ranks, because which of them a wrong placement disagreed on is the
-        question, and they do disagree.
+        ``key=value`` fields: ``k`` index in rotation-function order, ``rf``/``rfz``
+        its score and z, ``tf`` the fast translation score, ``llg`` the translation
+        likelihood, ``r`` the analytic R, ``t`` the fractional translation. All
+        three placement scores are logged whichever one ranks.
         """
         tf = "nan" if tf_score is None else f"{float(tf_score):.5f}"
         llg = "nan" if llg_score is None else f"{float(llg_score):.1f}"
@@ -447,27 +395,10 @@ class MolecularReplacementPipeline(DeviceMixin):
         if not solutions:
             raise RuntimeError("Translation search produced no candidates.")
 
-        # Highest translation likelihood. The three scores are measured end to
-        # end on POSES -- rotation and translation, against Cartesian symmetry
-        # mates -- over six structures x ten seeds (the four the translation
-        # search used to mis-place, plus two controls; job 544953):
-        #
-        #     llg    60/60
-        #     r      60/60
-        #     corr   60/60
-        #
-        # and they do not merely tie: in every one of the 60 cells the three
-        # pick the SAME candidate, so the residual distributions are identical
-        # arm for arm. Once the translation objective was normalised there was
-        # nothing left for the selection rule to decide on this panel.
-        #
-        # The likelihood stays the default because it is the right object for
-        # the question -- an R-factor on a partial model at this resolution has
-        # little to distinguish with, and the fast score is an expansion of the
-        # likelihood rather than the likelihood -- and because the arm is
-        # selectable if a structure ever separates them. Every earlier figure
-        # for these arms (37/40, 36/40, 32/40) gated on the rotation alone, with
-        # a metric that miscounted trigonal mates; none of them stands.
+        # The three scores pick the same candidate on every pose-gated panel
+        # cell measured. The likelihood is the default because it is the right
+        # object: an R-factor on a partial model at this resolution has little
+        # to distinguish with, and the fast score only expands the likelihood.
         if self.rank_by == "r":
             solutions.sort(key=lambda s: s.r_factor)
         elif self.rank_by == "corr":
@@ -476,14 +407,8 @@ class MolecularReplacementPipeline(DeviceMixin):
             solutions.sort(key=lambda s: -s.llg_score)
         winner = solutions[0]
 
-        # No solvent-aware Scaler refit. It used to run here on the winner to
-        # report an R-work, and cost about a third of the whole alignment -- 8.6
-        # of 28 seconds on 2DQ6 -- to fit sixteen scaling parameters that change
-        # nothing about which placement is returned. The pipeline's contract is
-        # a placement; downstream refinement fits its own scaler properly, and
-        # doing a worse version of that here to print a number is not worth a
-        # third of the runtime. A caller that wants an R-work can build a
-        # `Scaler` on the returned model.
+        # No Scaler refit for an R-work: it changes nothing about which placement
+        # is returned. A caller that wants one builds a `Scaler` on the model.
         winner.model = self.place(winner)
         self._log(1, f"mr: winner ({self.rank_by}) "
                      f"LLG={winner.llg_score:.1f} "
@@ -581,21 +506,10 @@ class MolecularReplacementPipeline(DeviceMixin):
     def _prepare_translation_arrays(self) -> None:
         """Mask the observations for the translation search and normalise them once.
 
-        The window is ``[tf_d_max, tf_d_min]`` on top of the dataset's own
-        validity mask, and by default it is the rotation search's ``[d_max,
-        d_min]``: one resolution window, one Wilson normalisation, both stages.
-
-        The uncut set is not a safe default. With all data -- 228k reflections
-        to 1.5 A on 2DQ6 -- the translation search places the four largest panel
-        structures (2DQ6, 3VRJ, 4BX9, 6G9X) at the right orientation and 20-56 A
-        from the true position, on every trial, while its own score is HIGHER
-        at the wrong place than at the deposited pose (0.665 against 0.350 on
-        2DQ6, where the likelihood is 1616 against 157865). At 15-4 A the same
-        search recovers all thirty poses to within 0.32 A. The objective's
-        calc side is raw ``|F_calc|^2``, so at high resolution it is dominated
-        by whatever reflections happen to carry the largest calculated
-        intensity rather than by the fit; the window is the first line of
-        defence and the normalisation of that objective is the second.
+        The set is ``[tf_d_max, tf_d_min]`` and the data's validity mask, with
+        its own Wilson fit. Do not remove the cut: on the uncut set the
+        high-``|F_calc|^2`` reflections dominate the fast score, which then peaks
+        away from the true position on the large structures.
         """
         data = self.data
         device = self.device
@@ -628,18 +542,14 @@ class MolecularReplacementPipeline(DeviceMixin):
                             else " (no sigmas: unit weight)"))
 
         # One P1 copy of the search model for the whole run, re-oriented in
-        # place per candidate. Two copies per candidate -- one to rotate, one to
-        # set P1 on -- were a quarter of the run on the large structures.
+        # place per candidate rather than copied per candidate.
         #
-        # Its FFT grid is sized to the translation set, not to the model's
-        # default 1.0 A: |s| is invariant under the symmetry rotations, so every
-        # rotated index the evaluator is asked for lies inside 1/tf_d_min. Two
-        # thirds of the window's resolution, not the resolution itself: at
-        # max_res = tf_d_min the transform's coherence with the 1.0 A grid over
-        # the 15-4 A set is 0.987 on 2DQ6 (0.9987-0.9999 on 1DAW, 3K7M, 4BX9);
-        # at tf_d_min/1.5 it is 0.9995-1.0000 everywhere, at 10-38 ms against
-        # 200-860 ms. max_res first -- the space-group setter rebuilds the FFT
-        # and reads it.
+        # Its FFT grid is sized to the translation set (|s| is invariant under
+        # the symmetry rotations, so every rotated index lies inside 1/tf_d_min).
+        # tf_d_min/1.5 rather than tf_d_min: at tf_d_min the transform loses
+        # visible coherence with a fine grid, at /1.5 it matches it at a
+        # fraction of the cost. max_res first -- the space-group setter rebuilds
+        # the FFT and reads it.
         p1 = self.model.copy()
         if self.tf_d_min > 0.0:
             p1.max_res = self.tf_d_min / 1.5

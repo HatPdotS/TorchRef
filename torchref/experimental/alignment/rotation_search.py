@@ -55,13 +55,9 @@ __all__ = ["RotationSolutions", "rotation_search"]
 #: for more, the resolution is coarsened to match instead -- see
 #: ``phaser_lmax_resolution``.
 #:
-#: Chosen by measurement, and the optimum is interior: over ten structures at
-#: ten seeded orientations, truth lands in the top twenty on 95/100 cells at 48,
-#: 98/100 at 64 and 98/100 at 100, but the binding case is 1AK5 (P 4 3 2), which
-#: manages 6/10, 9/10 and 8/10. Only 64 clears nine of ten on every structure.
-#: Phaser's own ceiling is 100 (``DEF_CLMN_LMAX``); here that is both worse on
-#: 1AK5 and six to ten times slower, and it needs more than 32 GB on three of
-#: the ten.
+#: 64 is the smallest cap that puts truth in the top twenty on >= 9/10 seeds
+#: for every panel structure; Phaser's 100 (``DEF_CLMN_LMAX``) is several times
+#: slower and no better.
 LMAX_CAP = 64
 
 #: SO(3) sample spacing in degrees for the rotation-function grid. Also sets the
@@ -94,16 +90,11 @@ LOW_RESOLUTION_CUTOFF_A = 100.0
 
 # Two things deliberately absent, both measured and rejected on the same panel:
 #
-# * **Orbit-deduplicated obs unroll.** Keeping only the distinct positions in
-#   each reflection's orbit, as Phaser does, rather than all n_ops copies. It
-#   moves 28 of 100 cells and in both directions -- 26 better, 13 worse against
-#   the shipped configuration -- with the binding structure unchanged at 9/10. A
-#   quarter of the results churned for no net gain.
-# * **Two-radius Patterson union.** Running the search at two integration radii
-#   and merging the peak lists by z-score. Exactly double the cost (8.7 s
-#   against 4.4 s median) and it changes 1 cell in 100, which is the engine's own
-#   run-to-run spread. An earlier measurement had favoured it; that result does
-#   not survive the anisotropy fix.
+# * **Orbit-deduplicated obs unroll** (only the distinct positions in each
+#   reflection's orbit, as Phaser does): it churns results in both directions
+#   with no net gain.
+# * **Two-radius Patterson union** (two integration radii, peak lists merged by
+#   z-score): double the cost for a change within run-to-run spread.
 
 #: Resolution window ``(d_max, d_min)`` the overall anisotropy is fitted in.
 #: The tensor is then applied across the full range. Inherited from the range
@@ -178,15 +169,8 @@ def fit_anisotropy(
     Returns ``U`` in Angstrom squared as a ``(3, 3)`` at the configured float
     dtype, in the convention ``F_corrected = F * exp(+pi^2 s.U.s)``. It stays on
     the data's own device unless ``device`` says otherwise, so nothing crosses a
-    device boundary to be fitted and come back.
-
-    It used to be pinned to the host in double. Neither is needed. Measured over
-    the 16 datasets in ``tests/files/mtz``, the same fit in float32 reproduces
-    the double one to 3.3e-5 relative in ``U`` and 4.5e-6 in the correction
-    factor it exists to produce; end to end, four of five panel cases return a
-    bit-identical peak list and the fifth (2DQ6, P3121, the most nearly
-    isotropic ``U`` of the panel) keeps its top orientation and reshuffles two
-    near-tied deep ranks.
+    device boundary to be fitted and come back. Reflections outside
+    ``[d_min, d_max]`` or flagged invalid by ``data.masks()`` are left out.
 
     The projection matters: an unconstrained six-component fit can return a
     tensor the lattice forbids, and applying it then modulates the observations
