@@ -388,10 +388,10 @@ def hkl_symops_to_cartesian(
     space vectors (`s = h @ rec_basis`, column-vector form: `s = M @ h` with
     `M = rec_basis^T`).
 
-    For column vectors: `s' = M · S · M⁻¹ · s` so `P_cart = M · S · M⁻¹`.
+    With `h' = h · S`, column vectors transform as `P_cart = M · Sᵀ · M⁻¹`.
 
-    For orthogonal cells (orthorhombic+) M is diagonal and `P_cart == S`
-    exactly. For non-orthogonal cells (monoclinic, hex/trig with γ=120°,
+    For orthogonal cells (orthorhombic+) M is diagonal and the set {P_cart}
+    equals the set {S}. For non-orthogonal cells (monoclinic, hex/trig with γ=120°,
     triclinic), the Cartesian form differs and matters for any operation
     that mixes the axes (e.g. averaging tensors over the point group).
 
