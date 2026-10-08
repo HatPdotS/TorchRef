@@ -58,3 +58,13 @@ class TestInitialState:
         )
         km.plot_occupancies(str(tmp_path / "occ.png"))
         assert labels == ["State G", "State E"]
+
+
+class TestPlotTimes:
+    def test_plot_with_times_leaves_model_timepoints(self, tmp_path):
+        times = [0.0, 1.0, 5.0, 20.0, 100.0]
+        km = _model("A->B,B->C", times, rate_constants=[1.0, 0.1])
+        before = km().detach().clone()
+        km.plot_occupancies(str(tmp_path / "occ.png"), times=[0.0, 10.0, 25.0, 50.0])
+        assert torch.equal(km.timepoints, torch.tensor(times, dtype=get_float_dtype()))
+        torch.testing.assert_close(km().detach(), before)

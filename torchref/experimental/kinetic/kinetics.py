@@ -900,6 +900,9 @@ class KineticModel(DeviceMixin, nnModule):
         ----------
         outpath : str
             Path to save the plot (e.g., 'kinetics.png')
+        times : torch.Tensor or array-like, optional
+            Time points to plot instead of the model's own; the model's
+            ``timepoints`` are restored afterwards. Default: the model's
         log : bool, optional
             If True, use log scale for x-axis. Default: False
         figsize : Tuple[int, int], optional
@@ -909,16 +912,18 @@ class KineticModel(DeviceMixin, nnModule):
         title : str, optional
             Custom title for the plot. If None, uses flow chart string
         """
-        # Compute populations
+
+        timepoints = self.timepoints
         if times is not None:
-            # Temporarily override timepoints
-            original_timepoints = self.timepoints
-            self.timepoints = times
-
-        with torch.no_grad():
-            populations = self().detach().cpu().numpy()
-
-        t = self.timepoints.cpu().numpy()
+            self.timepoints = torch.as_tensor(
+                times, dtype=timepoints.dtype, device=timepoints.device
+            )
+        try:
+            with torch.no_grad():
+                populations = self().detach().cpu().numpy()
+            t = self.timepoints.cpu().numpy()
+        finally:
+            self.timepoints = timepoints
 
         # Create figure
         plt.figure(figsize=figsize)
