@@ -181,16 +181,11 @@ def _unit_power_ladder(z: torch.Tensor, L: int) -> torch.Tensor:
 
     Built by doubling -- the block of powers already computed, times the next
     power -- rather than by ``torch.cumprod``, for portability: MPS has no
-    complex cumulative kernels at all (torch 2.9.1 raises "cumulative ops are
-    not yet supported for complex"), and this was the last thing in the rotation
-    search that could not run on Apple silicon.
+    complex cumulative kernels (torch 2.9.1 raises "cumulative ops are not yet
+    supported for complex").
 
-    Not an accuracy change. Measured against the exact powers in double over
-    5000 angles at L=101, the ladder gives 5.7e-6 where ``cumprod`` gives 4.1e-6
-    in complex64, and 3.4e-14 against 3.3e-14 in complex128 -- the same, because
-    the error is dominated by ``z``'s own rounding amplified by ``p``, which no
-    grouping of the multiplies avoids. ``log2(L)`` wide multiplies in place of
-    one fused pass, so it is not a cost change either.
+    Accuracy matches ``cumprod``: the error is dominated by ``z``'s own rounding
+    amplified by ``p``, which no grouping of the multiplies avoids.
     """
     out = torch.ones((z.shape[0], L), dtype=z.dtype, device=z.device)
     width = 1                                    # out[:, :width] is filled
@@ -346,8 +341,7 @@ def bessel_sh_expand(
     # Resolution shells: the distinct |s| values, and which shell each cluster
     # belongs to. The radial factor depends on |s| alone, so it is applied once
     # per shell rather than once per cluster -- and there are far fewer shells
-    # than clusters, because many directions share a |s| on a lattice. Measured
-    # over the benchmark: 2.7 to 39 clusters per shell.
+    # than clusters, because many directions share a |s| on a lattice.
     uniq_ks, inv_s = torch.unique(k_s, return_inverse=True)
     # `k_s` is one of the host-side keys, so its inverse comes back on the host
     # while everything it indexes -- `shell_of_cluster`, `s_mag_all` -- is on the
@@ -419,17 +413,14 @@ def bessel_sh_expand(
     # distinct direction at the same resolution. Grouping the clusters by shell i:
     #     T[i,l,p] = Σ_{c in shell i} P[c,l,p] · D[c,p]      (no radial axis)
     #     c[n,l,p] = Σ_i          B[i,l,n] · T[i,l,p]        (shells, not clusters)
-    # which trades n_clusters·N_radial for n_clusters + n_shells·N_radial. On the
-    # benchmark that is 2.5x to 18x fewer multiply-adds, and it shrinks the Bessel
-    # table by the same clusters-per-shell factor. Exact, not an approximation.
+    # which trades n_clusters·N_radial for n_clusters + n_shells·N_radial and
+    # shrinks the Bessel table by the clusters-per-shell factor. Exact.
     #
     # The Legendre recurrence is run here rather than called, so each row can be
     # accumulated into T the moment it exists and the (chunk, n_even, L) table is
-    # never built. That table was what bounded the chunk width, and the loop over
-    # l had to be repeated for every chunk -- 100 iterations of a handful of
-    # small kernels, 71 times over, which cost more in launch overhead than the
-    # arithmetic did. Without it the chunks are wide enough that the loop runs
-    # once or twice in total.
+    # never built. Without that table bounding the chunk width, the chunks are
+    # wide enough that the loop over l runs once or twice in total instead of
+    # paying its launch overhead once per narrow chunk.
     #
     # `a_coef` and `b_coef` are zero for m >= l, so the vertical recurrence runs
     # at full width; slicing to [:l] instead makes every iteration a differently
@@ -438,19 +429,14 @@ def bessel_sh_expand(
     le_idx = (l_idx - 2) // 2                    # l value -> even-l row index
     a_coef, b_coef, sect = legendre_recurrence_coefficients(L, comp_real, device)
 
-    # The whole per-shell sum T and the whole radial table B used to be built at
-    # full size, and both are large: at L=101 with 35k shells they are 2.8 GB and
-    # 0.7 GB. They are also touched once each, so that is pure memory traffic --
-    # and the scatter into a 2.8 GB target misses cache on essentially every
-    # write.
-    #
+    # At full size the per-shell sum T and the radial table B are GB-scale at
+    # L=101 and touched once each, so a whole-array build is pure memory traffic.
     # The clusters are sorted by shell, so a chunk of clusters spans a
     # *contiguous* range of shells. That lets both be per-chunk, and lets the
     # radial contraction be folded into the same loop: once a chunk's shells are
-    # complete, contract them and drop them. The arithmetic is identical -- the
-    # contraction still costs n_shells x n_even x N_radial x L in total -- but the
-    # scatter target is now tens of MB rather than gigabytes, and the running
-    # answer c_pos is a few MB, so both stay in cache.
+    # complete, contract them and drop them. The arithmetic is identical, but the
+    # scatter target is tens of MB and the running answer c_pos a few MB, so both
+    # stay in cache.
     c_pos = torch.zeros((N_radial, n_even, L), dtype=einsum_dtype, device=device)
 
     rbytes = 4 if comp_real == torch.float32 else 8  # dtype-ok: byte-size lookup for a memory estimate
@@ -548,13 +534,10 @@ def cross_correlate_xi(
         xi[l, m, n] = Σ_r c_obs[r, l, n] · conj(c_calc[r, l, m])
     so that the peak Euler triple satisfies ``s_calc = R · s_obs``.
 
-    Accumulated at the configured complex dtype. The radial sum runs over
-    oscillating ``j_u``, so the terms alternate in sign and cancel, and this was
-    once accumulated one step wider for that reason. Measured, the width is not
-    what the result needs: from one set of complex64 coefficients, a complex64
-    contraction lands within 1.5e-5 of the complex128 one whose peak magnitude
-    is 109. What it does need is for the conjugate below to be *materialised* --
-    see the ``resolve_conj`` note.
+    Accumulated at the configured complex dtype: although the oscillating
+    ``j_u`` terms cancel, single precision recovers every pose on the panel.
+    What the result does need is for the conjugate below to be *materialised*
+    -- see the ``resolve_conj`` note.
 
     Returns
     -------
@@ -562,11 +545,6 @@ def cross_correlate_xi(
     """
     if c_obs.L != c_calc.L:
         raise ValueError(f"L mismatch: obs={c_obs.L} calc={c_calc.L}")
-    # The configured complex dtype. The oscillatory radial sum used to be
-    # accumulated one step wider than the coefficients; measured, that moved
-    # scores by 1e-4 relative and reordered the deep peak list without moving
-    # the top peak, and the placement search now consumes only the top few
-    # distinct orientations. Single precision recovers every pose on the panel.
     acc = get_complex_dtype()
     # `resolve_conj()` is load-bearing, not tidiness. `torch.conj` returns a
     # lazy view carrying a conjugate BIT, and MPS's batched complex matmul --
