@@ -29,8 +29,8 @@ def binwise_scale(
     Parameters
     ----------
     F_calc, F_obs : torch.Tensor
-        Calculated and observed structure factors, shape ``(N,)``. Complex
-        inputs are reduced to amplitudes via ``abs``.
+        Calculated and observed structure factors, shape ``(N,)``, real or
+        complex. Both are reduced to amplitudes with ``abs``.
     bins : torch.Tensor
         Per-reflection bin index, shape ``(N,)`` (cast to ``int64`` internally).
     valid : torch.Tensor, optional
@@ -54,10 +54,8 @@ def binwise_scale(
     torch.Tensor
         Per-bin scale factors, shape ``(nbins,)``.
     """
-    Fc = F_calc.abs() if F_calc.is_complex() else F_calc.abs()
-    Fo = F_obs.abs() if F_obs.is_complex() else F_obs.abs()
-    Fc = Fc.reshape(-1)
-    Fo = Fo.reshape(-1)
+    Fc = F_calc.abs().reshape(-1)
+    Fo = F_obs.abs().reshape(-1)
     device, dtype = Fc.device, Fc.dtype
 
     # dtype-ok: scatter_add index; int64 required on torch < 2.8
