@@ -41,6 +41,22 @@ _SIGMA_F_TAGS = ("_refln.F_meas_sigma_au", "_refln.F_meas_sigma", "_refln.SIGF-o
 #: planes, link planes and ``chem_mod`` additions all take it, so they cannot drift.
 DEFAULT_PLANE_SIGMA = 0.02
 
+#: Bond-order spellings of monomer dictionaries (``_chem_comp_bond.type``) and of the
+#: wwPDB component dictionary (``_chem_comp_bond.value_order``), mapped to one
+#: vocabulary. Anything else reads as ``""``.
+_BOND_ORDERS = {
+    "single": "single",
+    "sing": "single",
+    "double": "double",
+    "doub": "double",
+    "triple": "triple",
+    "trip": "triple",
+    "aromatic": "aromatic",
+    "arom": "aromatic",
+    "deloc": "deloc",
+    "metal": "metal",
+}
+
 
 class CIFReader:
     """
@@ -1685,7 +1701,7 @@ class RestraintCIFReader:
             Dictionary of restraint DataFrames with standardized columns::
 
                 {
-                    'bonds': DataFrame(atom1, atom2, value, sigma)
+                    'bonds': DataFrame(atom1, atom2, value, sigma, order, aromatic)
                     'angles': DataFrame(atom1, atom2, atom3, value, sigma)
                     'torsions': DataFrame(id, atom1, atom2, atom3, atom4, value, sigma, periodicity)
                     'planes': DataFrame(atom, plane_id, sigma)
@@ -1738,9 +1754,17 @@ class RestraintCIFReader:
         return restraints
 
     def _standardize_bonds(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize bond restraint columns to: atom1, atom2, value, sigma."""
+        """Standardize bond columns to: atom1, atom2, value, sigma, order, aromatic.
+
+        ``order`` is one of ``single``, ``double``, ``triple``, ``aromatic``,
+        ``deloc`` or ``metal``, and ``""`` where the dictionary does not say;
+        ``aromatic`` is True where the dictionary flags the bond aromatic or gives
+        ``aromatic`` as its order.
+        """
         if df.empty:
-            return pd.DataFrame(columns=["atom1", "atom2", "value", "sigma"])
+            return pd.DataFrame(
+                columns=["atom1", "atom2", "value", "sigma", "order", "aromatic"]
+            )
 
         result = pd.DataFrame()
         result["atom1"] = self._extract_col(df, ["_chem_comp_bond.atom_id_1"])
@@ -1753,6 +1777,17 @@ class RestraintCIFReader:
             self._extract_col(df, ["_chem_comp_bond.value_dist_esd"]),
             errors="coerce",
         )
+        order = self._extract_col(
+            df, ["_chem_comp_bond.type", "_chem_comp_bond.value_order"]
+        )
+        result["order"] = [
+            _BOND_ORDERS.get(str(value).strip().lower(), "") for value in order
+        ]
+        flag = self._extract_col(
+            df, ["_chem_comp_bond.aromatic", "_chem_comp_bond.pdbx_aromatic_flag"]
+        )
+        flagged = np.array([str(value).strip().lower() == "y" for value in flag])
+        result["aromatic"] = flagged | (result["order"] == "aromatic").to_numpy()
         return result
 
     def _standardize_angles(self, df: pd.DataFrame) -> pd.DataFrame:
