@@ -28,9 +28,8 @@ def aniso_model(pdb_dir):
     params = model.u.refinable_params
     generator = torch.Generator().manual_seed(0)
     with torch.no_grad():
-        params.add_(
-            0.3 * torch.randn(params.shape, generator=generator, dtype=params.dtype)
-        )
+        step = torch.randn(params.shape, generator=generator, dtype=params.dtype)
+        params.add_(0.3 * step.to(params.device))
     model.u.reset_forward_cache()
     return model
 
