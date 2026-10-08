@@ -92,3 +92,32 @@ class TestWrapper:
 
     def test_default_activation_level_keeps_half_baseline(self):
         assert self._wrapper().kinetics.get_baselines()["A"] == pytest.approx(0.5)
+
+
+class TestLightActivatedMapping:
+    times = [0.0, 1.0, 10.0, 100.0, 1000.0]
+
+    def _wrapper(self, **kwargs):
+        return occupancies_kinetics(
+            flow_chart="A->B,B->A,B->C",
+            time=self.times,
+            rate_constants={"A->B": 1.0, "B->A": 0.1, "B->C": 0.01},
+            light_activated=True,
+            verbose=0,
+            **kwargs,
+        )
+
+    def test_default_mapping_puts_inactive_state_on_its_parent(self):
+        occ = self._wrapper()
+        assert occ.nstates == 3
+        assert occ.state_mapping["A*"] == occ.state_mapping["A"]
+        torch.testing.assert_close(occ().detach().sum(0), torch.ones(len(self.times)))
+
+    def test_user_mapping_without_inactive_state_keeps_population(self):
+        occ = self._wrapper(state_mapping={"A": 0, "B": 1, "C": 2})
+        assert occ.state_mapping["A*"] == 0
+        torch.testing.assert_close(occ().detach().sum(0), torch.ones(len(self.times)))
+
+    def test_unmapped_state_is_rejected(self):
+        with pytest.raises(ValueError, match="C"):
+            self._wrapper(state_mapping={"A": 0, "B": 1})

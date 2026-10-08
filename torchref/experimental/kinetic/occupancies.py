@@ -110,7 +110,9 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         Mapping from kinetic states to structural model indices.
         E.g., {"A": 0, "B": 1, "C": 2, "D": 3} or {"A": 0, "B": 1, "C": 1, "D": 2}
         The latter allows multiple kinetic states to map to the same structure.
-        If None, assumes sequential mapping (A=0, B=1, ...).
+        If None, states are numbered in flow-chart order. Every kinetic state
+        must be mapped (ValueError otherwise), except that the light-activated
+        inactive state (initial state + ``'*'``) defaults to its parent's index.
     regularization : dict or None, optional
         Regularization settings:
         - 'rate_prior_weight': weight for log-normal prior on rates
@@ -209,11 +211,27 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         2. Reordering of states if kinetic and structural order differ
         """
         kinetic_states = self.kinetics.states
-        
+        inactive = None
+        if self.kinetics.light_activated:
+            inactive = self.kinetics.initial_state + "*"
+
         if state_mapping is None:
-            # Default: sequential mapping (A=0, B=1, C=2, ...)
-            state_mapping = {state: i for i, state in enumerate(kinetic_states)}
-        
+            active = [state for state in kinetic_states if state != inactive]
+            state_mapping = {state: i for i, state in enumerate(active)}
+        else:
+            state_mapping = dict(state_mapping)
+        # An unmapped column of the mapping matrix would silently drop that
+        # state's population from the structural occupancies.
+        missing = [
+            s for s in kinetic_states if s not in state_mapping and s != inactive
+        ]
+        if missing:
+            raise ValueError(f"state_mapping does not map kinetic states {missing}")
+        # The inactive copy is the same structure as its parent; only its
+        # photoactivity differs.
+        if inactive is not None and inactive not in state_mapping:
+            state_mapping[inactive] = state_mapping[self.kinetics.initial_state]
+
         self.state_mapping = state_mapping
         
         # Number of unique structural states
