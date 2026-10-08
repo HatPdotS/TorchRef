@@ -540,23 +540,12 @@ def _require_module():
 
 
 def _double_backward_vjp(plain_fn, ctx, grad_out, leaves, statics, r2cut):
-    """Recompute this VJP through the portable differentiable splat.
+    """Recompute this VJP through the portable splat for a ``create_graph=True`` backward.
 
-    The C++ backward is a closed-form first-order formula with no autograd graph, so it
-    cannot supply a second derivative -- the same limitation the CUDA and Metal kernels
-    have.
-    Rather than lose double backward on the CPU default path (a *silently wrong* Hessian was
-    a real bug here), the double-backward context is detected and the identical VJP
-    re-derived from the portable splat, which is built from differentiable ops.
-
-    ``torch.is_grad_enabled()`` is the detector: autograd runs ``backward`` under
-    ``no_grad``
-    unless the caller passed ``create_graph=True``. ``grad_out.requires_grad`` is **not**
-    usable -- at the top of a ``create_graph=True`` backward it is a plain ``ones`` tensor.
-    Gradients are taken w.r.t. the **saved** leaves, not detached copies, so the VJP stays
-    connected to the caller's graph; detaching would silently drop the second-order term.
-    Both paths share the truncation contract, so first-order values agree to float noise and
-    the only cost is that a Hessian workflow runs at the portable splat's speed.
+    The C++ backward has no autograd graph, so the backward methods call this instead when
+    a second derivative may be taken. Gradients are taken with respect to the saved (not
+    detached) leaves, so the result stays on the caller's graph; the gradient with respect
+    to ``density_map`` is the identity.
     """
     A, B, inv_frac, frac = statics
     # Only the leaves that actually require grad may be differentiated; asking for
@@ -620,7 +609,9 @@ class _FusedIsoSplat(torch.autograd.Function):
     def backward(ctx, grad_out):
         xyz, adp, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape
-        if torch.is_grad_enabled():  # create_graph=True -> need a differentiable VJP
+        # Autograd runs backward under no_grad unless create_graph=True; grad_out's
+        # requires_grad cannot tell, since a top-level create_graph seed is a plain tensor.
+        if torch.is_grad_enabled():
             from torchref.base.electron_density.kernels.cpu.variable_radius import (
                 add_isotropic_plain_var,
             )
