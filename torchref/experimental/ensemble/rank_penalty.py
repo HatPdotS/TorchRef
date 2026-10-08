@@ -6,8 +6,8 @@ Soft rank penalty on the ensemble's coordinate disorder.
    Experimental — part of ``torchref.experimental.ensemble``. The API and
    behaviour may change or be removed without notice.
 
-Frozen-basis PCA truncation failed because the 3GR5 ensemble disorder is
-high-rank (a near-flat SVD spectrum) — there is no low-dimensional subspace to
+Frozen-basis PCA truncation does not work when the ensemble disorder is
+high-rank (a near-flat SVD spectrum): there is no low-dimensional subspace to
 project onto, and the ensemble *mean* is unphysical. This target takes the
 opposite tack: keep refining the full-complexity ensemble, but add a *soft*
 penalty that progressively "purifies" it toward fewer effective modes, with the
@@ -47,10 +47,9 @@ class RankPenaltyTarget(ModelTarget):
 
     Supports five ``mode`` options (see :meth:`__init__`):
     ``{"nuclear", "subspace", "entropy", "maxent", "diverse"}``. ``"nuclear"``
-    is the original soft-rank (nuclear-norm) design and the default;
-    ``"diverse"`` (orthogonal participation ⟂ similarity pair) is the
-    recommended de-overfit mode, superseding ``"maxent"``/``"entropy"``, which
-    are retained for comparison.
+    (the soft-rank nuclear norm) is the default; ``"diverse"`` (orthogonal
+    participation ⟂ similarity pair) is the recommended de-overfit mode;
+    ``"maxent"`` and ``"entropy"`` are comparison baselines.
 
     Parameters
     ----------

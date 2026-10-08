@@ -6,8 +6,8 @@ Refinement of an ``n_members`` (default 100) ensemble against an X-ray dataset.
    Experimental — part of ``torchref.experimental.ensemble``. The API and
    behaviour may change or be removed without notice.
 
-Despite the historical class name, the production optimizer is Adam (not
-LBFGS — see :meth:`EnsembleRefinement.refine` for why).
+The class derives from ``LBFGSRefinement`` but optimizes with Adam: the
+redundant, non-convex ensemble landscape defeats L-BFGS's curvature model.
 
 Composes:
 
@@ -526,8 +526,8 @@ class EnsembleRefinement(LBFGSRefinement):
         # Soft rank penalty (nuclear norm of the centered member matrix):
         # "purifies" the ensemble toward fewer effective disorder modes. Built
         # whenever a non-zero weight (or a ramp start) is requested. See
-        # RankPenaltyTarget — frozen-basis PCA failed because the disorder is
-        # high-rank, so we penalize rank softly instead of truncating it.
+        # RankPenaltyTarget — frozen-basis PCA cannot truncate high-rank
+        # disorder, so rank is penalized softly instead.
         # "maxent" and "diverse" carry their coefficients (shrink/div, i.e.
         # participation/similarity) INTERNALLY, so they register at loss-state
         # weight 1.0 and are "on" whenever either internal coef is non-zero.
@@ -1063,7 +1063,7 @@ class EnsembleRefinement(LBFGSRefinement):
 
         # In-loss counts (work/free flag AND valid), matching the X-ray mask.
         # Used only for per-reflection NLL reporting in the gap meter below;
-        # the loss-state weights themselves are now per-ASU (no /n_work).
+        # the loss-state weights themselves are per-ASU (no /n_work).
         n_work = max(self._inloss_count(self.reflection_data.work.indices), 1)
         n_free = self._inloss_count(self.reflection_data.free.indices)
         # Arm/disarm ensemble dropout on the model for this refinement.
