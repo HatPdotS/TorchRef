@@ -22,6 +22,8 @@ import torch
 import triton
 import triton.language as tl
 
+from torchref.base.targets._dispatch import first_order_only
+
 # Triton @jit functions can only read globals declared as ``tl.constexpr``.
 TWO_PI = tl.constexpr(2.0 * math.pi)
 NEG_TWO_PI_SQ = tl.constexpr(-2.0 * (math.pi**2))
@@ -319,6 +321,7 @@ class _DSIsoTriton(torch.autograd.Function):
         return torch.complex(Fr, Fi)
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_F):
         hx, hy, hz, s_, rx, ry, rz, occ_, adp_, A_, B_ = ctx.saved_tensors
         N, R = ctx.N, ctx.R
@@ -369,6 +372,7 @@ class _DSAnisoTriton(torch.autograd.Function):
         return torch.complex(Fr, Fi)
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_F):
         (hx, hy, hz, sx, sy, sz, rx, ry, rz, occ_, U_, A_, B_) = ctx.saved_tensors
         N, R = ctx.N, ctx.R

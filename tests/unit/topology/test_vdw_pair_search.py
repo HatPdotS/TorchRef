@@ -36,7 +36,7 @@ def _image_table(path):
     op_indices, offsets = nb.prefilter_symop_offsets(cell, sg, xyz, CUTOFF)
     identity = ((op_indices == 0) & (offsets == 0).all(dim=1)).nonzero()[0].item()
     lengths = torch.stack([cell.a, cell.b, cell.c]).to(dtypes.float)
-    grid_dims = torch.clamp((lengths / CUTOFF).long(), min=1)
+    grid_dims = torch.clamp((lengths / CUTOFF).to(dtypes.int), min=1)
     flat_cell, atom_idx, combo_idx, cart_pos = nb.assign_to_grid(
         xyz, cell, sg, op_indices, offsets, grid_dims
     )
@@ -112,6 +112,10 @@ def test_kdtree_output_convention(table):
     assert i.dtype == j.dtype == c.dtype == torch.int64
 
 
+def test_grid_cells_take_the_configured_int_dtype(table):
+    assert table["flat_cell"].dtype == dtypes.int
+
+
 def test_grid_is_the_kdtree_minus_its_cell_width_shortfall(table):
     t = table
     order, cells, starts, lookup = nb.build_cell_list(t["flat_cell"], int(t["grid_dims"].prod()))
@@ -174,3 +178,21 @@ def test_bonded_pairs_are_not_in_the_vdw_list(pdb_dir):
         b = parent[b - n_heavy] if b >= n_heavy else b
         bonded += b in _bond_ball(neighbours, a, reach)
     assert bonded == 0
+
+
+def test_pair_deduplication_needs_no_int64_scatter_index(pdb_dir, monkeypatch):
+    """The VDW and riding-hydrogen first-occurrence dedups run where
+    ``scatter_reduce_`` takes only int64 indices (torch < 2.8), mimicked here."""
+    scatter_reduce_ = torch.Tensor.scatter_reduce_
+
+    def int64_index_only(self, dim, index, *args, **kwargs):
+        if index.dtype != torch.int64:
+            raise RuntimeError("scatter_reduce_(): Expected dtype int64 for index")
+        return scatter_reduce_(self, dim, index, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "scatter_reduce_", int64_index_only)
+    model = Model(verbose=0, device=torch.device("cpu"))
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+
+    assert model.restraints.restraints["vdw"]["indices"].shape[0] > 0
+    assert model.restraints.h_topo.has_candidates

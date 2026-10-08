@@ -3,7 +3,7 @@
 """
 Command-line script for LBFGS crystallographic refinement using torchref.
 
-Uses the maximum-likelihood σ_A (Read MLF) target by default. Four other x-ray
+Uses the maximum-likelihood σ_A (Read MLF) target by default. Other x-ray
 targets are selectable via ``--xray-mode``; see
 :mod:`torchref.refinement.targets.xray._specs` for the taxonomy.
 
@@ -64,13 +64,15 @@ def _sigma_a_kwargs(args) -> dict:
     # a flag whose value changes nothing. Accepted as an on/off alias, with a warning.
     passes = getattr(args, "shrink_passes", None)
     if passes is not None:
+        # FutureWarning, not DeprecationWarning: Python's default filters hide the
+        # latter outside __main__, and this notice is for the person running the CLI.
         warnings.warn(
-            "--shrink-passes is deprecated: the stability shrinkage is one-shot now "
+            "--shrink-passes is deprecated: the stability shrinkage is one-shot "
             "(it shrinks toward a fitted sigma_A(d*^2) curve, not toward neighbouring "
-            f"shells, so passes no longer apply). Treating {passes} as "
+            f"shells, so a pass count does not apply). Treating {passes} as "
             f"{'--no-shrink' if int(passes) <= 0 else 'shrinkage enabled'}; use "
             "--no-shrink instead.",
-            DeprecationWarning,
+            FutureWarning,
             stacklevel=2,
         )
         out["shrink"] = int(passes) > 0
@@ -89,7 +91,7 @@ Examples:
   # 10 refinement cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
 
-  # Joined XYZ then ADP cycles
+  # Joint XYZ+ADP cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode everything
 
   # Plain sigma-weighted Gaussian NLL (no model-error term)
@@ -305,12 +307,15 @@ Loss weights:
         sys.stdout.flush()
 
     device = parse_device_str(args.device)
+    sigma_a_kwargs = _sigma_a_kwargs(args)
 
     if args.verbose > 0:
         print("Initializing refinement...")
         sys.stdout.flush()
 
-    column_names = build_column_names(args.column_structure_factor, args.column_sigma)
+    column_names = build_column_names(
+        str(sf_path), args.column_structure_factor, args.column_sigma
+    )
 
     refinement = LBFGSRefinement(
         data_file=str(sf_path),
@@ -322,7 +327,7 @@ Loss weights:
         column_names=column_names,
         target_mode=args.xray_mode,
         scale_target=args.scale_target,
-        **_sigma_a_kwargs(args),
+        **sigma_a_kwargs,
         adp_mode=args.adp_mode,
         adp_mode_set=args.adp_mode_set,
         n_nodes=args.adp_nodes,
@@ -433,7 +438,7 @@ Loss weights:
             # archived run cannot be attributed to a scale target, and a change to the
             # default silently invalidates every cached score derived from these numbers.
             "scale_target": args.scale_target,
-            **_sigma_a_kwargs(args),
+            **sigma_a_kwargs,
             "weights": manual_weights if manual_weights else None,
             "dmin": args.dmin,
             "device": str(device),

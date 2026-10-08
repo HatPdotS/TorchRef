@@ -408,10 +408,10 @@ def test_planarity_triton_per_atom_sigma(n_atoms):
 def test_geometry_degenerate_finite_grads():
     """At degenerate geometry, BOTH eager and Triton give finite gradients.
 
-    Regression for the NaN-safety fixes: collinear angles/torsions and
-    coincident bonds used to yield NaN gradients (acos / norm / dihedral
-    singularities). Both backends are now floored with EPS so the gradient is
-    finite (CPU == GPU behavior), avoiding NaN-poisoned refinement steps.
+    Collinear angles/torsions, a coincident bond and an angle over a coincident
+    pair hit the acos / norm / dihedral singularities. Both backends floor them
+    with the shared EPS, so loss and gradient stay finite, and for the angle over
+    the coincident pair the Triton values match the portable ones.
     """
     from torchref.base.targets.angle import angle_math
     from torchref.base.targets.bond import bond_math
@@ -436,6 +436,15 @@ def test_geometry_degenerate_finite_grads():
             ),
         ),
         (
+            "angle over a coincident pair",
+            angle_math,
+            (
+                torch.tensor([[1, 4, 2]], device=dev),
+                torch.tensor([1.9], device=dev),
+                torch.tensor([0.05], device=dev),
+            ),
+        ),
+        (
             "bond",
             bond_math,
             (
@@ -455,13 +464,20 @@ def test_geometry_degenerate_finite_grads():
         ),
     ]
     for name, fn, args in cases:
+        results = {}
         for pin in (True, False):
             x = xyz0.clone().requires_grad_(True)
             with (use_portable() if pin else contextlib.nullcontext()):
                 loss = fn(x, *args)
             (grad,) = torch.autograd.grad(loss, x)
             path = "portable" if pin else "default"
+            assert torch.isfinite(loss), f"{name}/{path}: non-finite loss"
             assert torch.isfinite(grad).all(), f"{name}/{path}: non-finite grad"
+            results[path] = (loss, grad)
+        if name == "angle over a coincident pair":
+            (le, ge), (lt, gt) = results["portable"], results["default"]
+            assert torch.allclose(le, lt, rtol=1e-5), f"{name}: loss mismatch"
+            assert torch.allclose(ge, gt, rtol=1e-4), f"{name}: grad mismatch"
 
 
 def _hvp_vs_fd(model, hkl, eps=1e-5):

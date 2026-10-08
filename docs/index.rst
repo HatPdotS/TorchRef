@@ -19,7 +19,8 @@ Key Features
 - **Automatic Differentiation**: define a forward pass, get gradients
 - **Modular Architecture**: composable targets, restraints, optimizers
 - **GPU Acceleration**: CUDA and Apple Silicon (MPS)
-- **State Management**: full ``state_dict`` support for checkpointing
+- **Checkpointing**: ``save_state`` / ``load_state`` resume a refinement rebuilt
+  from the same input files
 
 .. toctree::
    :maxdepth: 2

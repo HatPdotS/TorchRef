@@ -321,7 +321,7 @@ class CollectionXrayTarget(Target):
         """Per-dataset R-work / R-free plus percentile summaries.
 
         Each dataset's R-factor is computed with
-        :func:`~torchref.base.metrics.rfactor_work_free` on the exact
+        :func:`~torchref.base.metrics.rfactor.rfactor_work_free` on the exact
         scaled ``|F_calc|`` the loss sees, so the collection cannot disagree with
         the single-dataset targets on convention. R-factors are unweighted (no
         ``base_weight``) and scale-invariant within a dataset.

@@ -6,16 +6,14 @@ Input preparation, run once: its outputs (``manifest.json`` /
 ``manifest_summary.csv``) are checked-in inputs that the refinement arms consume,
 so a figure re-run does not re-run this.
 
-The code list defaults to the benchmark structures present under ``data/``. It
-used to come from ``figure2_validation/structures.json``; that tree held the
-retired shake-recovery Figure 2 and is gone, so ``data/`` is now the source of
-truth. Pass ``--codes`` to override.
+The code list defaults to the benchmark structures present under ``data/``.
+Pass ``--codes`` to override.
 
 For every PDB code this script:
 
 1. Extracts per-chain protein sequences *locally* from the deposited model
    (``data/{code}/{code}.pdb``, falling back to ``.cif``) via
-   :pyattr:`torchref.model.model.Model.chain_sequences`.
+   :pyattr:`torchref.model.context.ModelContext.chain_sequences`.
 2. Queries the RCSB Data API to map each polymer entity to a UniProt accession
    (the key that locates the AlphaFold DB model) and to its polymer type.
 3. Joins the local chains to the RCSB entities via ``auth_asym_ids``.
@@ -51,11 +49,7 @@ DATA = PAPER_ROOT / "data"                                   # symlink → scien
 
 
 def benchmark_codes():
-    """Benchmark PDB codes: every ``data/{code}/`` holding a deposited model.
-
-    The source of truth since ``figure2_validation/structures.json`` was retired
-    with the shake-recovery figure.
-    """
+    """Benchmark PDB codes: every ``data/{code}/`` holding a deposited model."""
     if not DATA.is_dir():
         raise SystemExit(f"no benchmark data at {DATA}; pass --codes explicitly")
     return sorted(
@@ -103,7 +97,7 @@ def _local_sequences(code: str):
         return {}
 
     out = {}
-    for chain_id, seq in model.chain_sequences:
+    for chain_id, seq in model.ctx.chain_sequences:
         resolved = len(seq.replace("?", "").replace("X", ""))
         if resolved >= MIN_PROTEIN_LEN:
             out[str(chain_id)] = seq

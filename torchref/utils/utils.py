@@ -1,5 +1,5 @@
 """
-Core utility containers and atom-selection parsing, re-exported from ``torchref.utils``.
+Core utility containers and atom-table sanitizing, re-exported from ``torchref.utils``.
 
 - :class:`ModuleReference` -- reference an ``nn.Module`` without registering it as a
   submodule, keeping its parameters out of the parent tree.
@@ -8,12 +8,11 @@ Core utility containers and atom-selection parsing, re-exported from ``torchref.
   combined (logical-AND) mask.
 - :func:`sanitize_pdb_dataframe` -- renumber HETATM residues whose atom identifiers
   repeat, and truncate over-long residue names, before an atom table is written.
-- :func:`parse_phenix_selection` / :func:`create_selection_mask` -- Phenix-style
-  atom-selection strings to boolean masks.
+- :func:`first_index_per_group` -- the lowest index of each distinct label; not
+  re-exported, import it from this module.
 """
 
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -27,10 +26,11 @@ class ModuleReference:
     Hold a reference to an ``nn.Module`` without registering it as a submodule.
 
     Assigning an ``nn.Module`` to an attribute of another registers it, adding its
-    parameters to the parent's tree; wrapping it here does not. Attribute access and
-    ``__call__`` are forwarded, so a wrapped module is mostly a drop-in -- but it is
+    parameters to the parent's tree; wrapping it here does not. Public attribute access
+    and ``__call__`` are forwarded, so a wrapped module is mostly a drop-in -- but it is
     absent from ``state_dict`` and from ``.to()``, so the referent must be moved by
-    whoever owns it.
+    whoever owns it. ``copy.copy`` shares the referent; ``copy.deepcopy`` and pickle
+    copy it, through the memo, so a deep copy of a whole object graph stays consistent.
 
     Attributes
     ----------
@@ -49,8 +49,15 @@ class ModuleReference:
         return object.__getattribute__(self, "_wrapped_module")
 
     def __getattr__(self, name):
-        """Forward attribute access to the wrapped module."""
-        return getattr(self.module, name)
+        """Forward public attribute access to the wrapped module."""
+        # Underscore names stop here: DeviceMixin probes ``_apply``/``_data`` to decide
+        # what to move, and copy/pickle probe ``__setstate__`` on an instance whose
+        # ``_wrapped_module`` is not set yet, where ``self.module`` would recurse.
+        if name.startswith("_"):
+            raise AttributeError(
+                f"ModuleReference does not forward {name!r}; read it from .module"
+            )
+        return getattr(self.__dict__.get("_wrapped_module"), name)
 
     def __call__(self, *args, **kwargs):
         """Forward calls to the wrapped module."""
@@ -86,9 +93,12 @@ class TensorDict(nn.Module):
     def __setitem__(self, key: str, tensor: torch.Tensor):
         """Store ``tensor`` under ``key`` as a registered buffer.
 
-        On an existing key of the *same* shape the value is copied **in place**, so a
-        previously-read reference to ``self[key]`` sees the new data; a shape change
-        re-registers the buffer instead, and old references then go stale.
+        On an existing key of the *same* shape, dtype and device the value is copied
+        **in place**, so a previously-read reference to ``self[key]`` sees the new data;
+        any other change re-registers the buffer instead (old references then go stale),
+        so a write never casts the new value to the old buffer's dtype. The in-place
+        copy bumps the buffer's version: cached forwards that read it recompute, and a
+        graph that saved the old value can no longer be backpropagated.
         """
         name = f"_buf_{key}"
         if not hasattr(self, name):
@@ -96,8 +106,15 @@ class TensorDict(nn.Module):
             self._keys.append(key)
         else:
             existing = getattr(self, name)
-            if existing.shape == tensor.shape:
-                existing.data.copy_(tensor)
+            if (
+                existing.shape == tensor.shape
+                and existing.dtype == tensor.dtype
+                and existing.device == tensor.device
+            ):
+                # Not ``.data.copy_``: only a tracked write bumps ``_version``, which is
+                # how a cached forward that read this buffer learns it changed.
+                with torch.no_grad():
+                    existing.copy_(tensor)
             else:
                 delattr(self, name)
                 self.register_buffer(name, tensor)
@@ -129,12 +146,10 @@ class TensorDict(nn.Module):
         return len(self._keys)
 
     def __repr__(self):
-        # The closing literal is "}})" -- one stray "}", kept so the user-visible repr
-        # does not change.
         return (
             "TensorDict({"
             + ", ".join(f'{k}: {getattr(self, f"_buf_{k}")}' for k in self._keys)
-            + "}})"
+            + "})"
         )
 
     def _load_from_state_dict(
@@ -229,10 +244,28 @@ class TensorMasks(DeviceMovementMixin, dict):
         super().__setitem__(key, tensor)
         self._updated = True
 
-    # Removal must invalidate the combined mask exactly as assignment does.
-    # ``dict`` does not route its removal methods through ``__setitem__``, so each
-    # needs its own override; without them a removed mask keeps constraining
-    # ``__call__``'s cached result until something else happens to assign.
+    # ``dict`` routes none of its other mutators through ``__setitem__``, so each needs
+    # its own override: insertions must be validated, moved and invalidate the combined
+    # mask exactly as assignment does, and without the removal overrides a removed mask
+    # keeps constraining ``__call__``'s cached result until something else assigns.
+    def update(self, *args, **kwargs):
+        for key, tensor in dict(*args, **kwargs).items():
+            self[key] = tensor
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self[key] = default
+        return self[key]
+
+    def __ior__(self, other):
+        self.update(other)
+        return self
+
+    def popitem(self):
+        out = super().popitem()
+        self._updated = True
+        return out
+
     def __delitem__(self, key: str):
         super().__delitem__(key)
         self._updated = True
@@ -420,87 +453,30 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
     return pdb
 
 
-def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
-    """Evaluate a Phenix-style selection against an atom table.
-
-    The grammar is documented in :mod:`torchref.utils.selection`; a model's own atoms
-    are selected with ``model.ctx.topology.select``.
+def first_index_per_group(labels: torch.Tensor) -> torch.Tensor:
+    """Return the lowest index of each distinct label, ordered by label.
 
     Parameters
     ----------
-    selection_string : str
-        Phenix-style selection string.
-    pdb_df : pandas.DataFrame
-        Atom table with ``chainid``, ``resseq``, ``resname``, ``name``, ``element`` and
-        ``altloc`` columns.
+    labels : torch.Tensor
+        Group label per element, shape ``(N,)``, any integer dtype -- typically the
+        ``return_inverse`` of :func:`torch.unique`, whose groups the result then
+        indexes.
 
     Returns
     -------
     torch.Tensor
-        Boolean tensor of shape (n_atoms,), on the CPU.
+        int64 indices into ``labels`` of shape ``(n_distinct,)``, one per distinct
+        label in ascending label order (not ascending index order).
 
-    Raises
-    ------
-    ValueError
-        On an unknown keyword, an empty selection, or a bare term with no value.
+    Notes
+    -----
+    A stable sort puts each group's first element at the head of its run, so no
+    scatter is needed: ``scatter_reduce_`` takes only int64 indices before torch 2.8
+    and has no int64 ``amin`` on MPS.
     """
-    from torchref.utils.selection import select_atoms
-
-    columns = {
-        "chain": pdb_df["chainid"].values.astype(str),
-        "resseq": pdb_df["resseq"].values,
-        "resname": pdb_df["resname"].values.astype(str),
-        "name": pdb_df["name"].values.astype(str),
-        "element": pdb_df["element"].values.astype(str),
-        "altloc": pdb_df["altloc"].values.astype(str),
-    }
-    return select_atoms(columns, selection_string)
-
-
-def create_selection_mask(
-    selection_string: str,
-    pdb_df: pd.DataFrame,
-    current_mask: Optional[torch.Tensor] = None,
-    mode: str = "set",
-) -> torch.Tensor:
-    """
-    Create or modify a refinable mask from a Phenix-style selection.
-
-    Parameters
-    ----------
-    selection_string : str
-        Phenix-style selection string (see :func:`parse_phenix_selection`).
-    pdb_df : pandas.DataFrame
-        DataFrame containing atomic data.
-    current_mask : torch.Tensor, optional
-        Current refinable mask. If None, starts with all False. Never mutated -- a new
-        tensor is returned.
-    mode : str, default 'set'
-        How to combine with ``current_mask``: ``'set'`` replaces it with the selection
-        (and so ignores it entirely), ``'add'`` ORs, ``'remove'`` AND-NOTs.
-
-    Returns
-    -------
-    torch.Tensor
-        Updated boolean mask of shape (n_atoms,).
-
-    Raises
-    ------
-    ValueError
-        If ``mode`` is not one of 'set', 'add', 'remove'.
-    """
-    selection_mask = parse_phenix_selection(selection_string, pdb_df)
-
-    if current_mask is None:
-        current_mask = torch.zeros(len(pdb_df), dtype=torch.bool)
-
-    if mode == "set":
-        return selection_mask
-    elif mode == "add":
-        return current_mask | selection_mask
-    elif mode == "remove":
-        return current_mask & ~selection_mask
-    else:
-        raise ValueError(f"Invalid mode: '{mode}'. Must be 'set', 'add', or 'remove'")
-
-
+    order = torch.argsort(labels, stable=True)
+    sorted_labels = labels[order]
+    head = torch.ones_like(sorted_labels, dtype=torch.bool)
+    head[1:] = sorted_labels[1:] != sorted_labels[:-1]
+    return order[head]

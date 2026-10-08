@@ -2,9 +2,9 @@
 """
 Generate pre-computed ITC92 scattering factor table.
 
-This script creates a .pt file containing scattering factor parameters
-for all elements (Z=1 to 103) and available ions. The generated file
-removes the need for runtime gemmi dependency for scattering parameter lookup.
+This script creates a .pt file containing neutral-atom scattering factor parameters
+indexed by Z: gemmi tabulates Z=1 to 98, and rows 99 to 103 stay zero. The generated
+file removes the need for runtime gemmi dependency for scattering parameter lookup.
 
 Usage:
     python -m torchref.scripts.generate_scattering_table
@@ -46,16 +46,14 @@ def get_element_to_z_from_csv(csv_path: str) -> dict:
     return element_to_z
 
 
-def get_itc92_params(element: str, charge: int = 0):
+def get_itc92_params(element: str):
     """
-    Get ITC92 scattering parameters for an element with optional charge.
+    Get ITC92 scattering parameters for a neutral atom.
 
     Parameters
     ----------
     element : str
         Element symbol (e.g., 'C', 'Fe').
-    charge : int, optional
-        Ionic charge. Default is 0.
 
     Returns
     -------
@@ -63,7 +61,7 @@ def get_itc92_params(element: str, charge: int = 0):
         (A, B) tensors of shape (5,) each, or None if not available.
     """
     try:
-        sf = gemmi.IT92_get_exact(gemmi.Element(element), charge)
+        sf = gemmi.IT92_get_exact(gemmi.Element(element), 0)
         # IT92_get_exact returns None if entry not found
         if sf is None:
             return None
@@ -112,7 +110,7 @@ def generate_scattering_table(output_path: str, csv_path: str, verbose: bool = T
 
     # Get neutral atom parameters for all elements
     for elem, z in element_to_z.items():
-        params = get_itc92_params(elem, charge=0)
+        params = get_itc92_params(elem)
         if params is not None:
             A_neutral[z] = params[0]
             B_neutral[z] = params[1]
@@ -125,51 +123,17 @@ def generate_scattering_table(output_path: str, csv_path: str, verbose: bool = T
         if elements_missing:
             print(f"    Missing: {elements_missing}")
 
-    # Build ions dictionary
-    # Common charge states to check for each element
-    # The actual availability depends on the ITC92 tables
-    ions = {}
-    ion_count = 0
-
-    # Check a wide range of charge states for each element
-    charge_range = range(-4, 9)  # -4 to +8 covers most cases
-
-    for elem, z in element_to_z.items():
-        for charge in charge_range:
-            if charge == 0:
-                continue  # Skip neutral, already handled
-
-            params = get_itc92_params(elem, charge)
-            if params is not None:
-                # Key format: "Element+/-charge" e.g., "Fe2+", "O2-"
-                if charge > 0:
-                    key = f"{elem}{charge}+"
-                else:
-                    key = f"{elem}{abs(charge)}-"
-
-                ions[key] = (params[0], params[1])
-                ion_count += 1
-
-    if verbose:
-        print(f"  Ions: {ion_count} charge states found")
-        if ion_count > 0:
-            # Show some examples
-            examples = list(ions.keys())[:10]
-            print(f"    Examples: {examples}")
-
     # Build the complete table dictionary
     table = {
         "A": A_neutral,
         "B": B_neutral,
         "element_to_z": element_to_z,
         "z_to_element": z_to_element,
-        "ions": ions,
         "metadata": {
             "source": "ITC92 via gemmi",
             "version": "1.0",
             "max_z": max_z,
             "n_neutral": len(elements_found),
-            "n_ions": ion_count,
         },
     }
 

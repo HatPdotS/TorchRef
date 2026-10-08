@@ -8,15 +8,17 @@ into a single GPU kernel, eliminating ~14 separate kernel launches and
 Provides full autograd support for refinement of xyz, b, and occ.
 
 .. note::
-    Legacy / benchmark-only fixed-radius kernel — not on the production
-    dispatch path. ``main.build_electron_density`` now routes the CUDA float32
-    path through the per-atom variable-radius ``WorkQueueGridDensity`` in
+    The CUDA float32 branch of the voxel-list ``jit_reference.vectorized_add_to_map``,
+    not of ``main.build_electron_density``, which uses the variable-radius
+    ``WorkQueueGridDensity`` in
     :mod:`torchref.base.electron_density.kernels.cuda.variable_radius`.
 """
 
 import torch
 import triton
 import triton.language as tl
+
+from torchref.base.targets._dispatch import first_order_only
 
 # =============================================================================
 # Constants
@@ -229,11 +231,13 @@ def _density_bwd_kernel(
     clamp4 = ((B4 + b_iso) * 0.25 > 0.1).to(tl.float32)
 
     pi_1p5: tl.constexpr = 5.568327996831708
-    An0 = A0 * occ * pi_1p5 / (Bt0 * tl.sqrt(Bt0))
-    An1 = A1 * occ * pi_1p5 / (Bt1 * tl.sqrt(Bt1))
-    An2 = A2 * occ * pi_1p5 / (Bt2 * tl.sqrt(Bt2))
-    An3 = A3 * occ * pi_1p5 / (Bt3 * tl.sqrt(Bt3))
-    An4 = A4 * occ * pi_1p5 / (Bt4 * tl.sqrt(Bt4))
+    # Occupancy-free amplitudes: the density is linear in occ, so its gradient is the
+    # occ = 1 density, and occ scales only the other gradients.
+    An0 = A0 * pi_1p5 / (Bt0 * tl.sqrt(Bt0))
+    An1 = A1 * pi_1p5 / (Bt1 * tl.sqrt(Bt1))
+    An2 = A2 * pi_1p5 / (Bt2 * tl.sqrt(Bt2))
+    An3 = A3 * pi_1p5 / (Bt3 * tl.sqrt(Bt3))
+    An4 = A4 * pi_1p5 / (Bt4 * tl.sqrt(Bt4))
 
     # Matrices
     if0 = tl.load(inv_frac_ptr + 0); if1 = tl.load(inv_frac_ptr + 1); if2 = tl.load(inv_frac_ptr + 2)
@@ -322,17 +326,14 @@ def _density_bwd_kernel(
         db4 = An4 * e4 * (-1.5 / Bt4 + pi_sq * r2 / (Bt4 * Bt4)) * clamp4
         g_b += tl.sum(tl.where(mask, grad_out * 0.25 * (db0 + db1 + db2 + db3 + db4), 0.0), axis=0)
 
-        # --- Gradient w.r.t. occ ---
-        # d(density)/d(occ) = density / occ  (since An_g is linear in occ)
         density = An0 * e0 + An1 * e1 + An2 * e2 + An3 * e3 + An4 * e4
-        # Avoid division by zero; if occ==0 the gradient is the density formula without occ
-        g_occ += tl.sum(tl.where(mask, grad_out * tl.where(occ != 0.0, density / occ, 0.0), 0.0), axis=0)
+        g_occ += tl.sum(tl.where(mask, grad_out * density, 0.0), axis=0)
 
     # Write accumulated gradients
-    tl.store(grad_xyz_ptr + atom * 3 + 0, g_ax)
-    tl.store(grad_xyz_ptr + atom * 3 + 1, g_ay)
-    tl.store(grad_xyz_ptr + atom * 3 + 2, g_az)
-    tl.store(grad_b_ptr + atom, g_b)
+    tl.store(grad_xyz_ptr + atom * 3 + 0, occ * g_ax)
+    tl.store(grad_xyz_ptr + atom * 3 + 1, occ * g_ay)
+    tl.store(grad_xyz_ptr + atom * 3 + 2, occ * g_az)
+    tl.store(grad_b_ptr + atom, occ * g_b)
     tl.store(grad_occ_ptr + atom, g_occ)
 
 
@@ -390,11 +391,11 @@ class _FusedDensityFunction(torch.autograd.Function):
         )
         ctx.ny = ny
         ctx.nz = nz
-        ctx.density_map_shape = density_map.shape
 
         return output
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_density_map):
         (surrounding_coords, voxel_indices, xyz, b,
          inv_frac_matrix, frac_matrix, A, B, occ) = ctx.saved_tensors
@@ -422,8 +423,20 @@ class _FusedDensityFunction(torch.autograd.Function):
 
         # Return gradients in same order as forward args:
         # surrounding_coords, voxel_indices, density_map, xyz, b,
-        # inv_frac_matrix, frac_matrix, A, B, occ
-        return None, None, None, grad_xyz, grad_b, None, None, None, None, grad_occ
+        # inv_frac_matrix, frac_matrix, A, B, occ. The output is density_map + splat,
+        # so the gradient with respect to density_map is the identity.
+        return (
+            None,
+            None,
+            grad_density_map,
+            grad_xyz,
+            grad_b,
+            None,
+            None,
+            None,
+            None,
+            grad_occ,
+        )
 
 
 # =============================================================================
@@ -448,9 +461,8 @@ def fused_add_to_map_gpu(
     autograd for ``xyz``, ``b`` and ``occ`` (no anisotropic ``u`` gradient).
 
     .. note::
-        Legacy / benchmark-only **fixed-radius** kernel, not on the production dispatch
-        path: ``main.build_electron_density`` routes CUDA float32 through the per-atom
-        variable-radius ``WorkQueueGridDensity``.
+        The CUDA float32 branch of the voxel-list ``jit_reference.vectorized_add_to_map``;
+        ``main.build_electron_density`` uses the variable-radius ``WorkQueueGridDensity``.
 
     Parameters
     ----------
@@ -461,7 +473,7 @@ def fused_add_to_map_gpu(
     xyz, b, occ : torch.Tensor
         Positions ``(N_atoms, 3)``, isotropic B-factors and occupancies ``(N_atoms,)``.
     inv_frac_matrix, frac_matrix : torch.Tensor
-        Fractionalization matrix and its inverse, ``(3, 3)``.
+        Cartesian-to-fractional and fractional-to-Cartesian, ``(3, 3)``.
     A, B : torch.Tensor
         ITC92 amplitudes and widths, ``(N_atoms, 5)`` each.
     """

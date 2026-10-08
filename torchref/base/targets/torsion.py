@@ -1,4 +1,5 @@
-"""Torsion restraint NLL: unimodal von Mises + omega cis/trans mixture."""
+"""Omega cis/trans mixture torsion NLL (the unimodal von Mises term lives in
+``refinement.targets.geometry.torsions`` and ``triton.torsion``)."""
 
 import torch
 
@@ -51,7 +52,7 @@ def torsion_omega_math(
     ``w_trans VM(ω; π, κ) + w_cis VM(ω; 0, κ)``.
 
     Dispatches to
-    :func:`torchref.base.targets.triton.torsion_omega_math_triton` on
+    :func:`torchref.base.targets.triton.torsion.torsion_omega_math_triton` on
     CUDA float32. Falls back to eager
     otherwise.
     """

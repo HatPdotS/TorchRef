@@ -25,6 +25,8 @@ from typing import Optional, Tuple
 
 import torch
 
+from torchref.base.direct_summation import compute_scattering_factors_batch
+
 
 def _fingerprint(*tensors: Optional[torch.Tensor]) -> tuple:
     """Identity of the tensors the cached tables were built from.
@@ -165,11 +167,7 @@ class SigmaMEstimator:
         element_A, element_B = unique_rows[:, :5], unique_rows[:, 5:]
         self.atom_to_element = atom_to_element.to(device=device)
 
-        # f_k(s_h) = sum_m A_km exp(-B_km s_half_sq)
-        expon_f = (-element_B.unsqueeze(-1) * s_half_sq.view(1, 1, -1)).clamp(
-            min=-80.0, max=80.0
-        )
-        f_kh = (element_A.unsqueeze(-1) * torch.exp(expon_f)).sum(dim=1)
+        f_kh = compute_scattering_factors_batch(s_sq.sqrt(), element_A, element_B).T
         self.f_sq_kh = f_kh * f_kh
 
         # --- exp(-2 B s_half^2) over the B grid, chunked to bound peak memory ---
@@ -204,6 +202,7 @@ class SigmaMEstimator:
         log_b = torch.log(b.clamp(min=1e-6))
         log_b_clamped = torch.clamp(log_b, self._log_b_min, self._log_b_max)
         idx_f = (log_b_clamped - self._log_b_min) / self._log_b_step
+        # dtype-ok: idx_lo builds a scatter_add index; int64 required on torch < 2.8
         idx_lo = idx_f.floor().long().clamp(0, self.b_grid_n - 2)
         frac = (idx_f - idx_lo.to(idx_f.dtype)).clamp(0.0, 1.0)
         return idx_lo, frac

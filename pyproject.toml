@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchref"
-version = "0.7.0"
+dynamic = ["version"]
 description = "Pytorch based crystallographic refinement"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -51,7 +51,6 @@ dependencies = [
 "torchref.mtz2map" = "torchref.cli.mtz2map:main"
 "torchref.validate-ded" = "torchref.cli.validate_ded:main"
 "torchref.difference-map" = "torchref.cli.difference_map:main"
-"torchref.phased-difference-map" = "torchref.cli.difference_map:main"
 "torchref.add-metadata" = "torchref.cli.add_metadata:main"
 "torchref.strip-altlocs" = "torchref.cli.strip_altlocs:main"
 "torchref.uniform-rfree" = "torchref.cli.uniform_rfree:main"
@@ -63,15 +62,7 @@ dev = [
     "pytest-cov>=2.12.0",
     "black>=21.5b2",
     "isort>=5.9.0",
-    "flake8>=3.9.0",
-]
-
-alignment = [
-    "jax>=0.4.0",
-    "s2fft>=1.0.0",
-    "s2ball>=0.0.2",
-    "spherical>=1.0.0",
-    "quaternionic>=1.0.0",
+    "ruff>=0.1.0",
 ]
 
 forcefield = [
@@ -87,15 +78,13 @@ ihm = [
     "ihm>=1.0",
 ]
 
-# Optional CCTBX/iotbx functionality (requires conda, not pip)
-# Install with: conda install -c conda-forge cctbx-base
-# The iotbx module is used in torchref/math_functions/CCTBX_related.py
-
 docs = [
     "sphinx>=4.0.0",
     "sphinx-rtd-theme>=1.0.0",
-    "numpydoc>=1.1.0",
 ]
+
+[tool.setuptools.dynamic]
+version = {attr = "torchref.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -113,9 +102,9 @@ profile = "black"
 line_length = 88
 
 [tool.pytest.ini_options]
-# Used when pytest is invoked from the repo root. ``tests/pytest.ini`` takes
-# over when invoked from inside ``tests/``; keep the two in step so behaviour
-# does not depend on the working directory. Accelerator tests are gated by
+# Applies to a bare ``pytest`` at the repo root; any path under ``tests/`` (e.g.
+# ``pytest tests/unit``) selects ``tests/pytest.ini`` instead. Keep the two in step
+# so behaviour does not depend on the invocation. Accelerator tests are gated by
 # ``tests/conftest.py``, which runs whatever the host supports -- do not add a
 # default ``-m`` expression here, as it deselects at collection time and no
 # flag can undo it.
@@ -124,6 +113,7 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 pythonpath = ["."]
+addopts = ["-v", "--tb=short", "--strict-markers", "-ra"]
 markers = [
     "unit: Unit tests (fast, no I/O, isolated)",
     "integration: Integration tests (slower, real I/O, pipelines)",
@@ -144,4 +134,4 @@ filterwarnings = [
 ]
 
 [tool.ruff.lint]
-ignore = ["F841","E741","F841","E402","E722"]
+ignore = ["F841", "E741", "E402", "E722"]

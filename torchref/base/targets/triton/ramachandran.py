@@ -21,6 +21,7 @@ import torch
 import triton
 import triton.language as tl
 
+from .._dispatch import first_order_only
 from ._dihedral import dihedral_and_grad
 
 
@@ -251,6 +252,7 @@ class _RamachandranMathTriton(torch.autograd.Function):
         return nll.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         xyz, phi_idx, psi_idx, surfaces, s32 = ctx.saved_tensors
         N = phi_idx.shape[0]

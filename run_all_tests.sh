@@ -7,4 +7,4 @@
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
 
-pytest tests/ --run-slow --run-gpu
+pytest tests/ --run-slow --run-cuda

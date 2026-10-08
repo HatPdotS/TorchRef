@@ -10,6 +10,17 @@ import torch
 import numpy as np
 
 
+@pytest.mark.unit
+def test_importing_math_torch_warns():
+    """The flat namespace is deprecated, and importing it says so."""
+    import importlib
+
+    import torchref.base.math_torch as math_torch
+
+    with pytest.warns(DeprecationWarning, match="math_torch is deprecated"):
+        importlib.reload(math_torch)
+
+
 class TestCoordinateTransformations:
     """Tests for coordinate transformation functions."""
 
@@ -171,68 +182,6 @@ class TestFourierTransforms:
         assert torch.allclose(fft(F, 1000.0)[0], fft(F[0], 1000.0))
 
 
-class TestTransformationMatrices:
-    """Tests for transformation matrix operations."""
-
-    @pytest.mark.unit
-    def test_apply_transformation_identity(self, random_coordinates):
-        """Identity transformation should not change coordinates."""
-        from torchref.base.math_torch import apply_transformation
-        
-        coords = random_coordinates(n_atoms=10)
-        identity = torch.eye(3, 4, dtype=coords.dtype)  # 3x4 matrix with identity rotation, zero translation
-        
-        transformed = apply_transformation(coords, identity)
-        
-        assert torch.allclose(coords, transformed, rtol=1e-5)
-
-    @pytest.mark.unit
-    def test_apply_transformation_translation(self, random_coordinates):
-        """Test pure translation."""
-        from torchref.base.math_torch import apply_transformation
-        
-        coords = random_coordinates(n_atoms=10)
-        translation = torch.tensor([1.0, 2.0, 3.0], dtype=coords.dtype)
-        transform = torch.eye(3, 4, dtype=coords.dtype)
-        transform[:, 3] = translation
-        
-        transformed = apply_transformation(coords, transform)
-        
-        expected = coords + translation
-        assert torch.allclose(transformed, expected, rtol=1e-5)
-
-
-class TestAlignment:
-    """Tests for structure alignment functions."""
-
-    @pytest.mark.unit
-    def test_align_identical(self, random_coordinates):
-        """Aligning identical structures should give RMSD ~0."""
-        from torchref.base.math_torch import align_torch
-        
-        coords1 = random_coordinates(n_atoms=20).to(torch.float64)
-        coords2 = coords1.clone()
-        
-        aligned = align_torch(coords1, coords2)
-        
-        rmsd = torch.sqrt(torch.mean(torch.sum((coords1 - aligned) ** 2, dim=1)))
-        assert rmsd < 1e-6
-
-    @pytest.mark.unit
-    def test_align_translated(self, random_coordinates):
-        """Alignment should handle pure translation."""
-        from torchref.base.math_torch import align_torch
-        
-        coords1 = random_coordinates(n_atoms=20).to(torch.float64)
-        translation = torch.tensor([5.0, -3.0, 2.0], dtype=torch.float64)
-        coords2 = coords1 + translation
-        
-        aligned = align_torch(coords1, coords2)
-        
-        rmsd = torch.sqrt(torch.mean(torch.sum((coords1 - aligned) ** 2, dim=1)))
-        assert rmsd < 1e-5
-
-
 class TestSmallestDiff:
     """Tests for periodic boundary difference calculations."""
 
@@ -277,43 +226,3 @@ class TestSmallestDiff:
         # Should return squared distances
         expected = torch.sum(diff ** 2, dim=-1)
         assert torch.allclose(result, expected, rtol=1e-5)
-
-
-class TestRotation:
-    """Tests for rotation functions."""
-
-    @pytest.mark.unit
-    def test_rotate_coords_identity(self, random_coordinates):
-        """Zero rotation should not change coordinates."""
-        from torchref.base.math_torch import rotate_coords_torch
-        
-        coords = random_coordinates(n_atoms=10)
-        
-        # Pass tensors for phi and rho
-        phi = torch.tensor(0.0, dtype=coords.dtype)
-        rho = torch.tensor(0.0, dtype=coords.dtype)
-        rotated = rotate_coords_torch(coords, phi=phi, rho=rho)
-        
-        assert torch.allclose(coords, rotated, rtol=1e-5)
-
-    @pytest.mark.unit
-    def test_rotate_coords_preserves_distances(self, random_coordinates):
-        """Rotation should preserve pairwise distances."""
-        from torchref.base.math_torch import rotate_coords_torch
-        
-        coords = random_coordinates(n_atoms=10)
-        
-        # Calculate original pairwise distances
-        diff = coords.unsqueeze(0) - coords.unsqueeze(1)
-        orig_dist = torch.sqrt(torch.sum(diff ** 2, dim=-1))
-        
-        # Rotate with tensor angles
-        phi = torch.tensor(45.0, dtype=coords.dtype)
-        rho = torch.tensor(30.0, dtype=coords.dtype)
-        rotated = rotate_coords_torch(coords, phi=phi, rho=rho)
-        
-        # Calculate rotated pairwise distances
-        diff_rot = rotated.unsqueeze(0) - rotated.unsqueeze(1)
-        rot_dist = torch.sqrt(torch.sum(diff_rot ** 2, dim=-1))
-        
-        assert torch.allclose(orig_dist, rot_dist, rtol=1e-5)

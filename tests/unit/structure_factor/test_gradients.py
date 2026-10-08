@@ -27,8 +27,6 @@ from tests.helpers.grad_asserts import (
 from torchref.base.direct_summation.dispatch import (
     _checkpointed_aniso,
     _checkpointed_iso,
-    _eager_aniso,
-    _eager_iso,
 )
 
 from . import (
@@ -47,6 +45,7 @@ from . import (
 )
 from . import helpers as H
 from .conftest import DEVICE_DTYPE_KERNELS, DS_DEVICE_DTYPE_KERNELS
+from .helpers import _eager_aniso, _eager_iso
 
 pytestmark = pytest.mark.unit
 
@@ -366,6 +365,40 @@ def test_kernel_gradients_agree_with_portable(scene_fine, oracle_fine, device, d
     for name, g, r in zip(_LEAF_NAMES, got, ref):
         rel = rel_error(g, r)
         print(f"  {device.type}/{dtype}/{kernel}/{kind} {name:10s} vs portable rel {rel:.3e}")
+        assert rel < tol, f"{device.type}/{dtype}/{kernel}/{kind} {name}: rel {rel:.3e}"
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernel_occupancy_gradient_at_zero_occupancy(
+    scene_fine, oracle_fine, device, dtype, kernel, kind
+):
+    """An atom at ``occ == 0`` gets the portable splat's occupancy gradient.
+
+    The density is linear in occupancy, so ``d/d_occ`` at zero is the gradient of the
+    atom's ``occ = 1`` density, not zero; the remaining leaves of that atom have zero
+    gradient.
+    """
+    if kernel == "portable":
+        pytest.skip("portable is the reference for this comparison")
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    obs = oracle_fine[f"{kind}_obs"].to(device=device, dtype=dtype)
+
+    def grads(name):
+        xyz, occ, third = scene.leaves(aniso=aniso, requires_grad=False)
+        occ[0] = 0.0
+        leaves = tuple(t.requires_grad_() for t in (xyz, occ, third))
+        F = H.density_to_F(scene, H.splat_direct(scene, name, *leaves, aniso=aniso))
+        return torch.autograd.grad(H.ls_target(F, obs), leaves)
+
+    got, ref = grads(kernel), grads("portable")
+    tol = RTOL_BACKEND_GRAD_F32 if dtype is torch.float32 else RTOL_BACKEND_GRAD_F64
+    assert ref[1][0].abs() > 0
+    rel0 = float((got[1][0] - ref[1][0]).abs() / ref[1][0].abs())
+    assert rel0 < tol, f"{kernel}/{kind}: d/d_occ at occ=0 rel {rel0:.3e}"
+    for name, g, r in zip(_LEAF_NAMES, got, ref):
+        rel = rel_error(g, r)
         assert rel < tol, f"{device.type}/{dtype}/{kernel}/{kind} {name}: rel {rel:.3e}"
 
 

@@ -108,7 +108,7 @@ class TestEpsilonFromHkl:
     def test_none_spacegroup_returns_ones(self):
         hkl = torch.randint(-5, 6, (50, 3))
         eps = epsilon_from_hkl(hkl, None)
-        assert torch.allclose(eps, torch.ones(50))
+        assert torch.allclose(eps, torch.ones(50, dtype=eps.dtype))
 
 
 @pytest.mark.unit

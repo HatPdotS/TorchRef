@@ -1,5 +1,5 @@
 """
-Unit tests for torchref.io.Data
+Unit tests for torchref.io.ReflectionData
 
 Tests ReflectionData class for handling crystallographic reflection data.
 Note: Unit tests use mock data, not real file I/O.

@@ -299,8 +299,8 @@ def compute_ded_weights(
     hkl : torch.Tensor
         Miller indices, shape ``(N, 3)``.
     cell : Cell or torch.Tensor
-        Unit cell, as a :class:`~torchref.symmetry.Cell` or its six parameters in A and
-        degrees.
+        Unit cell, as a :class:`~torchref.symmetry.cell.Cell` or its six parameters in A
+        and degrees.
     spacegroup : SpaceGroup or None
         For the reflection multiplicity and centric flags; ``None`` means P1.
     f_dark : torch.Tensor, optional

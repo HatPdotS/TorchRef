@@ -111,13 +111,13 @@ def _copy_links(links):
 def own_spacegroup(value, dtype: torch.dtype, device) -> Optional["SpaceGroup"]:
     """A space group owned by the caller, on ``device`` and in ``dtype``.
 
-    An incoming :class:`~torchref.symmetry.SpaceGroup` is copied rather than shared,
+    An incoming :class:`~torchref.symmetry.spacegroup.SpaceGroup` is copied, not shared,
     because ``.to()`` moves in place and would otherwise relocate the caller's object.
 
     Parameters
     ----------
     value : SpaceGroup, gemmi.SpaceGroup, str, int or None
-        Anything :class:`~torchref.symmetry.SpaceGroup` accepts.
+        Anything :class:`~torchref.symmetry.spacegroup.SpaceGroup` accepts.
     dtype : torch.dtype
     device : torch.device
 
@@ -678,7 +678,7 @@ class ModelContext(DeviceMixin):
         result = []
         for chain, residues in self._polymer_residues():
             seq_chars = []
-            for i, (resseq, resname) in enumerate(residues):
+            for i, (resseq, _, resname) in enumerate(residues):
                 if i > 0:
                     gap = resseq - residues[i - 1][0] - 1
                     if gap > 0:
@@ -687,22 +687,22 @@ class ModelContext(DeviceMixin):
             result.append((chain, "".join(seq_chars)))
         return result
 
-    def _polymer_residues(self) -> List[Tuple[str, List[Tuple[int, str]]]]:
-        """``(chain, [(resseq, resname), ...])`` over polymer residues, in file order.
+    def _polymer_residues(self) -> List[Tuple[str, List[Tuple[int, str, str]]]]:
+        """``(chain, [(resseq, icode, resname), ...])`` over polymer residues.
 
-        One entry per ``(resseq, icode)``, sorted by ``resseq`` (stably, so insertion
-        codes keep their file order).
+        Chains in file order, one entry per ``(resseq, icode)``, sorted by ``resseq``
+        (stably, so insertion codes keep their file order).
         """
         from torchref.topology.residue_graph import polymer_type
 
         if self.topology is None:
             return []
         residues = self.topology.residues
-        chains: Dict[str, Dict[tuple, Tuple[int, str]]] = {}
+        chains: Dict[str, Dict[tuple, Tuple[int, str, str]]] = {}
         for r in np.nonzero(polymer_type(residues.resname) != "")[0]:
             chain, resseq, icode = residues.key(int(r))
             seen = chains.setdefault(chain, {})
-            seen.setdefault((resseq, icode), (resseq, str(residues.resname[r])))
+            seen.setdefault((resseq, icode), (resseq, icode, str(residues.resname[r])))
         return [
             (chain, sorted(seen.values(), key=lambda item: item[0]))
             for chain, seen in chains.items()

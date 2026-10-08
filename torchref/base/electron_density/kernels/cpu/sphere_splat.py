@@ -22,9 +22,7 @@ uses ``std::exp``, a float64 caller being precision-motivated by definition.
 Gradients flow to ``xyz``, ``adp``/``u`` and ``occ`` with identity to the incoming
 ``density_map``; ``A``/``B`` and the cell matrices get none, as in the CUDA and Metal
 kernels. **Backward is first-order only**; a ``create_graph=True`` backward is re-derived
-through the portable splat (:func:`_double_backward_vjp`). Unlike the CUDA and Metal
-entry points this kernel takes no per-Gaussian ``coeff_mask`` -- that argument is
-all-ones at every call site, so it is omitted rather than allocated.
+through the portable splat (:func:`_double_backward_vjp`).
 """
 
 from __future__ import annotations
@@ -46,17 +44,19 @@ _CPP_SRC = r"""
 // exp: fast branchless variant for float, libm for double.
 //
 // exp(x) = 2^(x*log2(e)): the integer part goes straight into the IEEE exponent
-// field, the fractional part through a degree-5 minimax polynomial on [0,1).
-// No branches, so the innermost voxel loop stays vectorizable. This mirrors
-// metal::fast::exp, which the Metal kernels already use.
+// field, the fractional part through a degree-5 minimax polynomial for 2^f on
+// [0,1) with p(0) = 1. Its relative error, 8.5e-8 (1.7e-7 in float32 Horner),
+// alternates in sign; the Taylor coefficients ln2^k/k! are always low, by up to
+// 8.5e-5, which biases every map. No branches, so the innermost voxel loop stays
+// vectorizable. This mirrors metal::fast::exp, which the Metal kernels already use.
 // ---------------------------------------------------------------------------
 static inline float fast_exp(float x) {
     x = x < -87.0f ? -87.0f : x;                 // below this, exp underflows
     const float t = x * 1.44269504088896341f;    // log2(e)
     const float n = std::floor(t);
     const float f = t - n;
-    const float p = 1.0f + f * (0.6931471805f + f * (0.2402265069f
-                  + f * (0.0555041087f + f * (0.0096181291f + f * 0.0013333558f))));
+    const float p = 1.0f + f * (0.69315131f + f * (0.24016445f
+                  + f * (0.05579991f + f * (0.00901703f + f * 0.00186713f))));
     const int32_t bits = (int32_t)((n + 127.0f) * 8388608.0f) & 0x7f800000;
     float scale;
     std::memcpy(&scale, &bits, sizeof(scale));
@@ -231,13 +231,15 @@ static void iso_bwd_impl(scalar_t* g_xyz, scalar_t* g_adp, scalar_t* g_occ,
     at::parallel_for(0, n_at, 1, [&](int64_t a0, int64_t a1) {
       for (int64_t a = a0; a < a1; ++a) {
         const Anchor<scalar_t> g = make_anchor(c, xyz, fm, im, a, r2cut[a]);
+        // Occupancy-free amplitudes: the density is linear in occ, so its gradient is
+        // the occ = 1 density, and occ scales only the other gradients.
         scalar_t Bt[5], An[5], clampf[5];
         const scalar_t bi=adp[a], oc=occ[a];
         for (int k=0;k<5;++k) {
             const scalar_t raw=(Bc[5*a+k]+bi)*(scalar_t)0.25;
             const scalar_t bt = raw > (scalar_t)0.1 ? raw : (scalar_t)0.1;
             Bt[k]=bt;
-            An[k]=Ac[5*a+k]*oc*K<scalar_t>::PI_1P5/(bt*std::sqrt(bt));
+            An[k]=Ac[5*a+k]*K<scalar_t>::PI_1P5/(bt*std::sqrt(bt));
             // in the clamp region d(Bt)/d(adp) = 0
             clampf[k] = raw > (scalar_t)0.1 ? (scalar_t)1 : (scalar_t)0;
         }
@@ -273,9 +275,9 @@ static void iso_bwd_impl(scalar_t* g_xyz, scalar_t* g_adp, scalar_t* g_occ,
             }
           }
         }
-        g_xyz[3*a+0]=gx; g_xyz[3*a+1]=gy; g_xyz[3*a+2]=gz;
-        g_adp[a]=gb;
-        g_occ[a]= oc != (scalar_t)0 ? gocc/oc : (scalar_t)0;
+        g_xyz[3*a+0]=oc*gx; g_xyz[3*a+1]=oc*gy; g_xyz[3*a+2]=oc*gz;
+        g_adp[a]=oc*gb;
+        g_occ[a]=gocc;
       }
     });
 }
@@ -366,7 +368,8 @@ static void aniso_bwd_impl(scalar_t* g_xyz, scalar_t* g_u, scalar_t* g_occ,
         const Anchor<scalar_t> g = make_anchor(c, xyz, fm, im, a, r2cut[a]);
         const scalar_t oc = occ[a];
         scalar_t p00[5],p11[5],p22[5],p01[5],p02[5],p12[5],An[5];
-        aniso_minv(Bc, u, a, Ac, oc, p00,p11,p22,p01,p02,p12,An);
+        // Occupancy-free amplitudes, as in iso_bwd_impl.
+        aniso_minv(Bc, u, a, Ac, (scalar_t)1, p00,p11,p22,p01,p02,p12,An);
         scalar_t gx=0,gy=0,gz=0,gu0=0,gu1=0,gu2=0,gu3=0,gu4=0,gu5=0,gocc=0;
         for (int ox=-g.bhx; ox<=g.bhx; ++ox) {
           const int vix = wrap_idx(g.cix+ox, nx);
@@ -408,10 +411,10 @@ static void aniso_bwd_impl(scalar_t* g_xyz, scalar_t* g_u, scalar_t* g_occ,
             }
           }
         }
-        g_xyz[3*a+0]=gx; g_xyz[3*a+1]=gy; g_xyz[3*a+2]=gz;
-        g_u[6*a+0]=gu0; g_u[6*a+1]=gu1; g_u[6*a+2]=gu2;
-        g_u[6*a+3]=gu3; g_u[6*a+4]=gu4; g_u[6*a+5]=gu5;
-        g_occ[a]= oc != (scalar_t)0 ? gocc/oc : (scalar_t)0;
+        g_xyz[3*a+0]=oc*gx; g_xyz[3*a+1]=oc*gy; g_xyz[3*a+2]=oc*gz;
+        g_u[6*a+0]=oc*gu0; g_u[6*a+1]=oc*gu1; g_u[6*a+2]=oc*gu2;
+        g_u[6*a+3]=oc*gu3; g_u[6*a+4]=oc*gu4; g_u[6*a+5]=oc*gu5;
+        g_occ[a]=gocc;
       }
     });
 }
@@ -484,9 +487,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 """
 
 # ---------------------------------------------------------------------------
-# Lazy compilation, attempted at most once per process. Mirrors
-# ``scatter.py::_get_module``: any failure returns None so the caller degrades to
-# the portable plain splat rather than dying.
+# Lazy compilation, attempted at most once per process. A failure makes
+# why_unavailable return a reason, so dispatch uses the portable plain splat.
 # ---------------------------------------------------------------------------
 _module = None
 _module_failed = False
@@ -522,30 +524,6 @@ def why_unavailable() -> Optional[str]:
     )
 
 
-def sphere_splat_available() -> bool:
-    """Whether the fused CPU splat compiled and is ready to dispatch.
-
-    Derived from :func:`why_unavailable` rather than re-testing, so there is one
-    availability check here, not two that can drift.
-    """
-    return why_unavailable() is None
-
-
-
-
-def warmup() -> bool:
-    """Eagerly compile, to move the one-time cost off the first refinement step."""
-    return _get_module() is not None
-
-
-def clear_cache() -> None:
-    """Forget the compiled module and failure state (rebuilt on next use)."""
-    global _module, _module_failed, _module_error
-    _module = None
-    _module_failed = False
-    _module_error = None
-
-
 def last_error() -> Optional[Tuple[str, str]]:
     """The ``(message, traceback)`` of the last build failure, if any."""
     return _module_error
@@ -563,23 +541,12 @@ def _require_module():
 
 
 def _double_backward_vjp(plain_fn, ctx, grad_out, leaves, statics, r2cut):
-    """Recompute this VJP through the portable differentiable splat.
+    """Recompute this VJP through the portable splat for a ``create_graph=True`` backward.
 
-    The C++ backward is a closed-form first-order formula with no autograd graph, so it
-    cannot supply a second derivative -- the same limitation the CUDA and Metal kernels
-    have.
-    Rather than lose double backward on the CPU default path (a *silently wrong* Hessian was
-    a real bug here), the double-backward context is detected and the identical VJP
-    re-derived from the portable splat, which is built from differentiable ops.
-
-    ``torch.is_grad_enabled()`` is the detector: autograd runs ``backward`` under
-    ``no_grad``
-    unless the caller passed ``create_graph=True``. ``grad_out.requires_grad`` is **not**
-    usable -- at the top of a ``create_graph=True`` backward it is a plain ``ones`` tensor.
-    Gradients are taken w.r.t. the **saved** leaves, not detached copies, so the VJP stays
-    connected to the caller's graph; detaching would silently drop the second-order term.
-    Both paths share the truncation contract, so first-order values agree to float noise and
-    the only cost is that a Hessian workflow runs at the portable splat's speed.
+    The C++ backward has no autograd graph, so the backward methods call this instead when
+    a second derivative may be taken. Gradients are taken with respect to the saved (not
+    detached) leaves, so the result stays on the caller's graph; the gradient with respect
+    to ``density_map`` is the identity.
     """
     A, B, inv_frac, frac = statics
     # Only the leaves that actually require grad may be differentiated; asking for
@@ -643,7 +610,9 @@ class _FusedIsoSplat(torch.autograd.Function):
     def backward(ctx, grad_out):
         xyz, adp, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape
-        if torch.is_grad_enabled():  # create_graph=True -> need a differentiable VJP
+        # Autograd runs backward under no_grad unless create_graph=True; grad_out's
+        # requires_grad cannot tell, since a top-level create_graph seed is a plain tensor.
+        if torch.is_grad_enabled():
             from torchref.base.electron_density.kernels.cpu.variable_radius import (
                 add_isotropic_plain_var,
             )
@@ -746,7 +715,7 @@ def add_isotropic_cpu_sphere_var(
 def add_anisotropic_cpu_sphere_var(
     density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
 ):
-    """Fused anisotropic spherical-cutoff splat; adds into ``density_map``.
+    """Fused anisotropic spherical-cutoff splat; returns ``density_map + splat``.
 
     Identical contract to :func:`add_isotropic_cpu_sphere_var`, but ``u`` carries the 6
     components ``[U11, U22, U33, U12, U13, U23]`` and the density is the full 3D Gaussian

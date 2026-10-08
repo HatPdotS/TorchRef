@@ -25,11 +25,13 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
-# Safe-divide floor (matches torchref.base.targets._common.EPS). Keeps the
-# 1/|b2|, b2_len/|n1|², b2_len/|n2|² and 1/c22 terms finite at degenerate
-# (collinear / zero-length-bond) dihedrals so the gradient is finite rather
-# than NaN — mirroring the eager guards in ``torsions_from_xyz``.
-_EPS = tl.constexpr(1e-6)
+from .._common import EPS
+
+# Safe-divide floor, the eager one. Keeps the 1/|b2|, b2_len/|n1|², b2_len/|n2|²
+# and 1/c22 terms finite at degenerate (collinear / zero-length-bond) dihedrals so
+# the gradient is finite rather than NaN — mirroring the eager guards in
+# ``torsions_from_xyz``.
+_EPS = tl.constexpr(EPS)
 
 
 @triton.jit

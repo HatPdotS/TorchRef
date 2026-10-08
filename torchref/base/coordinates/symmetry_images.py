@@ -44,9 +44,9 @@ def symmetry_image_positions(
         Fractional translation part of every operation, ``(n_ops, 3)``.
     fractional_matrix : torch.Tensor
         Orthogonalization matrix ``B`` (fractional to Cartesian), ``(3, 3)``, as
-        :attr:`torchref.symmetry.Cell.fractional_matrix`.
+        :attr:`torchref.symmetry.cell.Cell.fractional_matrix`.
     inv_fractional_matrix : torch.Tensor
-        Its inverse, ``(3, 3)``, as :attr:`torchref.symmetry.Cell.inv_fractional_matrix`.
+        Its inverse, ``(3, 3)``, as :attr:`~.Cell.inv_fractional_matrix`.
 
     Returns
     -------

@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Test the documented `scale_target='nll'` collapse hazard on real benchmark structures.
+"""Test the documented least-squares scale-collapse hazard on real benchmark structures.
 
-``ScalerBase.refine_lbfgs``'s own docstring flags this: ``'ml_noalpha'`` originally replaced
-``'nll'`` because a least-squares scale fit collapses in shells where ``F_obs`` is
-noise-dominated and uncorrelated with ``F_calc`` -- the per-bin optimum
-``k = sum(F_obs*Fc/sigma^2) / sum(Fc^2/sigma^2)`` tends to 0 there, which blows up R -- and it
-instructs the reader to **check the per-bin log_scale spread and the post-scaling R-factors
-rather than assuming it behaved**. ``'nll'`` is now the default, so that instruction applies
-to the default path.
+``ScalerBase.refine_lbfgs``'s own docstring flags it: a least-squares scale fit (``'ls'``,
+``'nll'``) can drive the scale toward 0 in shells where ``F_obs`` is noise-dominated and
+uncorrelated with ``F_calc`` -- the optimum ``k = sum(w*F_obs*Fc) / sum(w*Fc^2)`` tends to 0
+there, which blows up R -- and ``'ml_noalpha'`` absorbs such a mismatch into ``beta``
+instead. The verdict is on ``DEFAULT_SCALE_TARGET``, the scale fit refinement runs by default.
 
-The failure signature is specific: *some* bins diving toward k -> 0 while the middle bins look
-fine. A uniform offset between the two targets is not the hazard -- the two objectives simply
-have different optima. So the statistic is ``min(k)/median(k)``, which is independent of how
-the binner orders bins; an "outer N bins" slice silently assumes an ordering, and getting that
-wrong turns a real collapse into a reassuring number.
+The failure signature is specific: *some* shells diving toward k -> 0 while the middle shells
+look fine. A uniform offset between the targets is not the hazard -- the objectives simply
+have different optima. So the statistic is ``min(k)/median(k)`` over the per-reflection
+isotropic scale ``exp(iso_log_scale())``, which is independent of how reflections are
+ordered; an "outer N shells" slice silently assumes an ordering, and getting that wrong turns
+a real collapse into a reassuring number.
 
 Runs on the AlphaFold-start placed models (the benchmark's own inputs), not on a separate
 data set, so a positive result would be about the structures actually being refined.
@@ -58,7 +57,7 @@ def one(code, target):
     # an already-scaled state drives every scaler parameter to NaN.
     r = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb), verbose=0, scale_target=target)
     with torch.no_grad():
-        ls = r.scaler.log_scale.detach().reshape(-1).cpu()
+        ls = r.scaler.iso_log_scale().detach().reshape(-1).cpu()
         rw, rf = r.xray_target_work.get_rfactor()
     del r
     return ls, float(rw), float(rf)

@@ -23,7 +23,7 @@ Basic Usage
        device=torch.device("cuda"),
    )
 
-   # Alternate parameter groups per macro cycle: xyz -> ADP -> scaler
+   # Alternate parameter groups per macro cycle: scaler -> xyz -> ADP
    refinement.refine(macro_cycles=5)
 
    # Or optimize xyz, ADP, U and occupancy jointly in one step per cycle
@@ -38,13 +38,15 @@ Refinement Parameters
 
 - **Coordinates** — ``model.xyz()``, Ångströms
 - **Isotropic ADPs** — ``model.adp()``, B-factors in Ų
-- **Anisotropic U** — ``model.u()``, 6 components per atom. Used automatically
-  when the input model carries ``ANISOU`` records
+- **Anisotropic U** — ``model.u()``, 6 components per atom, for the atoms chosen
+  by ``aniso_selection`` when ``adp_mode="anisotropic"`` (CLI ``--adp-mode
+  anisotropic --anisotropic-selection ...``). The default ``"isotropic"``
+  converts ``ANISOU`` atoms to B; ``"preserve"`` keeps the file's ADPs
 - **Occupancies** — ``model.occupancy()``, 0–1
 
 Anisotropic ADPs are six parameters per atom, so refining them against
 low-resolution data overfits badly. Check that the resolution supports it before
-handing in a model with ``ANISOU``.
+choosing ``adp_mode="anisotropic"``.
 
 Parameter Selection
 -------------------
@@ -52,13 +54,15 @@ Parameter Selection
 .. code-block:: python
 
    # By parameter type. Valid names are exactly 'xyz', 'adp', 'u', 'occupancy';
-   # anything else ('b', 'occ', ...) is silently ignored rather than rejected.
+   # anything else ('b', 'occ', ...) raises ValueError.
    refinement.model.freeze('xyz')
    refinement.model.unfreeze('adp')
 
-   # By selection (Phenix-style syntax)
-   refinement.model.freeze_selection("chain A and resseq 10:20")
-   refinement.model.unfreeze_selection("all")
+   # By selection (Phenix-style syntax). Unfreezing adds the selected atoms to
+   # each target's refinable set, so undo a freeze with the same selection:
+   # unfreeze_selection("all") would also make every atom's occupancy refinable.
+   refinement.model.freeze_selection("chain A and resseq 10:20", targets="xyz")
+   refinement.model.unfreeze_selection("chain A and resseq 10:20", targets="xyz")
 
 Residues for which no restraints could be built are frozen in ``xyz``
 automatically, so an unrecognised ligand ends up immobile rather than distorted.

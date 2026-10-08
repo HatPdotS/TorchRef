@@ -76,6 +76,28 @@ def test_anomalous_opt_out_forces_merged(anomalous_two_column_mtz, mtz_dir):
     assert len(forced.hkl) > n_merged
 
 
+def test_a_pinned_merged_column_loads_merged_data(mtz_dir, tmp_path):
+    """Pinning the merged FP beside I(+)/I(-) loads FP's merged rows; without the
+    pin the intensity pairs are still stacked."""
+    ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+    path = str(tmp_path / "fp_beside_anomalous_i.mtz")
+    ds.unstack_anomalous(columns=["I", "SIGI"]).write_mtz(path)
+    pins = {"F": "FP", "SIGF": "SIGFP"}
+    plain = ReflectionData(verbose=0)
+    plain.load_mtz(str(mtz_dir / "1DAW.mtz"), column_names=pins)
+
+    pinned = ReflectionData(verbose=0)
+    pinned.load_mtz(path, column_names=pins)
+    unpinned = ReflectionData(verbose=0)
+    unpinned.load_mtz(path)
+
+    assert pinned.friedel_merged is True
+    assert len(pinned.hkl) == len(ds) == 23356
+    torch.testing.assert_close(pinned.F, plain.F, rtol=0, atol=0)
+    assert unpinned.friedel_merged is False
+    assert len(unpinned.hkl) > len(ds)
+
+
 def test_centrics_not_duplicated(anomalous_two_column_mtz):
     path, _ = anomalous_two_column_mtz
     d = ReflectionData(verbose=0)

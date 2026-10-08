@@ -14,7 +14,7 @@ class TestScalerInitialization:
 
     @pytest.mark.integration
     def test_empty_scaler_creation(self):
-        """Test creating an empty scaler for state_dict loading."""
+        """An empty scaler holds configuration only, for a later set_model_and_data."""
         from torchref.scaling.scaler import Scaler
         
         scaler = Scaler()
@@ -185,3 +185,52 @@ class TestScalerDeviceHandling:
         assert scaler.device.type == expected
         assert scaler.s.device.type == expected
         assert scaler.bins.device.type == expected
+
+
+class TestBulkSolventPhase:
+    """Scaled F_calc keeps the centric phase restriction whatever ``phase_offset`` holds."""
+
+    @pytest.mark.integration
+    def test_scaled_fcalc_keeps_centric_phases(self, sample_structure_pair):
+        """At a centric reflection the phase is ``pi h.t`` or ``pi h.t + pi``, for the
+        operation ``(R, t)`` with ``h R = -h``. ``F_calc`` and ``F_mask`` each obey it,
+        so their scaled sum must too, even with a non-zero ``phase_offset`` buffer."""
+        from torchref.io import ReflectionData
+        from torchref.model import ModelFT
+        from torchref.scaling.scaler import Scaler
+
+        data = ReflectionData(verbose=0).load_mtz(
+            str(sample_structure_pair["reflections"])
+        )
+        model = ModelFT(verbose=0).load_cif(str(sample_structure_pair["model"]))
+        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        fcalc = scaler.compute_fcalc().detach()
+        scaler.calc_initial_scale(fcalc)
+        scaler.setup_solvent()
+
+        with torch.no_grad():
+            reference = scaler(fcalc)
+            scaler.solvent.phase_offset.fill_(0.5)
+            scaled = scaler(fcalc)
+
+        centric = data.centric.to(scaled.device)
+        hkl = scaler.hkl[centric]
+        assert hkl.shape[0] > 100
+
+        # equivalent_hkl gives phi(copy) = phi(h) + shift; for the copy -h, Friedel's
+        # law turns that into 2 phi(h) = -shift (mod 2 pi).
+        copies, source, shifts, _ = model.spacegroup.equivalent_hkl(
+            hkl, include_friedel=False
+        )
+        is_minus_h = (copies == -hkl[source]).all(dim=-1)
+        allowed = torch.zeros(hkl.shape[0], dtype=shifts.dtype, device=shifts.device)
+        allowed[source[is_minus_h]] = -0.5 * shifts[is_minus_h]
+        assert torch.unique(source[is_minus_h]).numel() == hkl.shape[0]
+
+        f = scaled[centric]
+        off_axis = (f * torch.exp(-1j * allowed.to(f.real.dtype))).imag.abs()
+        assert (
+            off_axis.sum() / f.abs().sum() < 1e-4
+        ), "scaled F_calc left the centric phase restriction"
+        assert torch.equal(scaled, reference)
+        assert "phase_offset" not in dict(scaler.solvent.named_parameters())

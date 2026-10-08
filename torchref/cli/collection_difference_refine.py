@@ -4,13 +4,11 @@
 Collection-based difference refinement: joint scaling with bulk solvent.
 
 Uses ModelCollection / DatasetCollection / CollectionScaler so ONE set of scale
-parameters (overall scale, anisotropy, bulk solvent k_sol/B_sol) is shared across the
-dark and light datasets.
+parameters (overall scale, anisotropy, bulk-solvent k_sol and falloff) is shared
+across the dark and light datasets.
 
 Writes refined dark and light models (PDB/CIF), a JSON summary, and a difference MTZ.
-See :func:`write_results_mtz` for the columns and why each is where it is -- the table
-used to live here, four hundred lines from the function that writes it, which is part of
-how the output drifted from its own documentation.
+See :func:`write_results_mtz` for the columns and why each is where it is.
 
 Examples
 --------
@@ -41,6 +39,7 @@ from torchref.cli._common import (
     add_outdir_arg,
     add_output_format_args,
     add_weights_arg,
+    apply_metadata_args,
     build_dual_column_names,
     configure_unbuffered_output,
     difference_config_from_args,
@@ -69,10 +68,9 @@ configure_unbuffered_output()
 # Default target weights
 # ---------------------------------------------------------------------------
 
+# The difference rows are absent: --weight-schedule drives the one --difference-target
+# selects, and main sets the other to zero.
 DEFAULT_TARGET_WEIGHTS = {
-    "xray/difference": 1.0,
-    # Selected by --difference-target; the schedule drives whichever row is chosen.
-    "xray/difference_sd": 0.0,
     # The absolute channel. Zero by default: the difference refinement fixes the
     # dark model, so the overall level is already anchored and this term only adds
     # the systematic errors the difference cancels.
@@ -98,17 +96,8 @@ DEFAULT_TARGET_WEIGHTS = {
 # ---------------------------------------------------------------------------
 
 
-def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min,
-                           device, verbose, hydrogenate=False):
-    """Load models and create a ModelCollection.
-
-    Parameters
-    ----------
-    hydrogenate : bool
-        If True, add explicit hydrogens to both models.  H atoms
-        participate in geometry/VDW restraints (preventing clashes)
-        but are excluded from structure factor calculations.
-    """
+def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min, device, verbose):
+    """Load models and create a ModelCollection."""
     from torchref.model.model_collection import ModelCollection
 
     model_dark = load_model(
@@ -117,15 +106,6 @@ def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min,
     model_light = load_model(
         pdb_light, max_res=d_min, device=device, verbose=verbose, cif=cif,
     )
-
-    if hydrogenate:
-        if verbose > 0:
-            print("Adding hydrogens for VDW clash prevention...")
-            sys.stdout.flush()
-        model_dark = model_dark.hydrogenate(verbose=max(0, verbose - 1))
-        model_light = model_light.hydrogenate(verbose=max(0, verbose - 1))
-        model_dark.hydrogens_in_xray = False
-        model_light.hydrogens_in_xray = False
 
     mc = ModelCollection([model_dark, model_light], dark_key="dark")
     mc.add_dark()
@@ -171,7 +151,7 @@ def setup_scaler(dataset_collection, model_collection, device, verbose=1):
     return scaler
 
 
-def setup_dark_only(pdb_dark, dc, cif, d_min, device, verbose, hydrogenate=False):
+def setup_dark_only(pdb_dark, dc, cif, d_min, device, verbose):
     """Load the dark model alone and scale it against the dark data.
 
     This is everything a weighted difference map needs. The amplitude is
@@ -196,13 +176,6 @@ def setup_dark_only(pdb_dark, dc, cif, d_min, device, verbose, hydrogenate=False
     model_dark = load_model(
         pdb_dark, max_res=d_min, device=device, verbose=verbose, cif=cif,
     )
-    if hydrogenate:
-        if verbose > 0:
-            print("Adding hydrogens...")
-            sys.stdout.flush()
-        model_dark = model_dark.hydrogenate(verbose=max(0, verbose - 1))
-        model_dark.hydrogens_in_xray = False
-
     scaler = Scaler(
         model_dark, dc["dark"], device=device, verbose=max(-1, verbose - 1),
     )
@@ -344,11 +317,8 @@ def compute_bayes_extrapolated_amplitudes(
         w      = snr / (1 + snr)
         F_extb = Fo_dark + w r
 
-    ``r`` is the observed difference scaled by ``1/f``, signal and noise alike, so its
-    signal-to-noise ratio is the difference's and the occupancy does not enter ``w``.
-    ``w`` is positive wherever the fitted power is, so no reflection is removed; a noisy
-    one keeps a small share of its deviation. The result is for viewing: it is biased
-    toward the dark state by construction and is not a refinement target.
+    The result is for viewing: it is biased toward the dark state by construction and
+    is not a refinement target.
 
     Parameters
     ----------
@@ -364,23 +334,15 @@ def compute_bayes_extrapolated_amplitudes(
         Per-reflection signal-to-noise ratio of the difference, from
         :func:`torchref.maps.ded_weights.difference_snr`.
     sig_light : Tensor (N,)
-        Sigma of the independent light amplitude measurement, in amplitude units.
-        Intensity-derived difference noise controls the SNR and shrinkage weight,
-        not these marginal amplitude uncertainties.
+        Sigma of ``Fobs_light``; it enters the variance, not the weight.
 
     Returns
     -------
     tuple
         ``(F_ext_bayes, var_ext_bayes, w_shrinkage)`` -- the shrunk extrapolated
         amplitude, its first-order propagated measurement variance and the weight
-        per reflection. The variance holds model phases and the fitted weight fixed;
-        it is not the Gaussian posterior variance of a latent difference and does
-        not include uncertainty in the fit, phases or occupancy. For equal phases
-        and positive extrapolated amplitude it is
-        ``(1 - w/f)**2 * sig_dark**2 + (w/f)**2 * sig_light**2``.
-        The covariance with the dark component is thereby included. At exactly
-        zero extrapolated complex amplitude, where the norm has no derivative,
-        the directional upper bound is used.
+        per reflection. The variance holds the model phases and the fitted weight
+        fixed, so it excludes uncertainty in the fit, phases and occupancy.
     """
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
@@ -400,6 +362,7 @@ def compute_bayes_extrapolated_amplitudes(
     zero_bound = ((1.0 - w) + w * abs(a)).square() * sig_dark.square() + (
         w * abs(b)
     ).square() * sig_light.square()
+    # |z| has no derivative at z = 0; take the directional upper bound there.
     var_ext_bayes = torch.where(F_ext > 0, var_ext_bayes, zero_bound)
     # Shrink the amplitude toward Fo_dark -- scalar, so no phase interference.
     F_ext_bayes = Fobs_dark + w * (F_ext - Fobs_dark)
@@ -505,7 +468,7 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     w_two_moment = sig_I_light**2 / np.maximum(sig_I_light**2 + variance, 1e-12)
 
     columns = {
-        # The corrected difference map, on the same dark phases as DELFWT.
+        # dF_corr times the selected weight, on the dark phases PHDELWT.
         "DELFWT_corr": dF_corr * weights,
         "Fo_light_corr": F_corr,
         "SIGFo_light_corr": sig_F_corr,
@@ -637,11 +600,11 @@ def _phasing_columns(mc, scaler, hkl_all, mask, *, fcalc_dark, Fobs_dark_vals,
 
     Under ``all_columns`` the phased difference residual coefficients come too --
     ``(|Fo_light e^{i phi_mixed} - Fo_dark e^{i phi_dark}| - |dFc|) * w`` on
-    ``PHIC_diff``. These are a *different object* from the plain difference Fourier in
-    ``DELFWT``, not a refinement of it: the light state's model phases enter the observed
-    amplitude, so they are model-biased where ``DELFWT`` is not. They are kept because
-    they are informative once that is understood, and gated because the name alone does
-    not say it.
+    ``PHIC_diff``. These are a *different object* from the plain difference Fourier
+    ``dF`` on ``PHDELWT``, not a refinement of it: the light state's model phases
+    enter the observed amplitude, so they are model-biased where ``dF`` is not. They
+    are kept because they are informative once that is understood, and gated because
+    the name alone does not say it.
 
     Returns ``(columns, types, ctx)``. ``ctx`` carries the intermediates the
     extrapolation and two-moment layers need, so nothing is computed twice.
@@ -930,25 +893,14 @@ def write_results_mtz(
 ):
     """Write the difference map, and map coefficients when a light model is given.
 
-    The default output is the **difference map**: ``dF``/``SIGdF`` on the dark model's
-    phases ``PHDELWT``, with one mean-one weight column per registered scheme
-    (``W_Q``, ``W_InVa``) and the observed-to-model scale ``KSCALE``; see
-    :func:`_difference_columns`. ``ded_weight`` selects the scheme the model-phased
-    difference columns and the two-moment columns are weighted with. That needs no
-    light-state model, which is why ``mc`` is optional -- with a dark model alone this
-    writes a difference map and nothing else, and no scale fit is run beyond the one that
-    produced ``scaler``.
-
-    Given ``mc``, the layers that need the light state follow: its amplitude and phase,
-    the extrapolated amplitudes, and the two-moment correction. ``all_columns`` adds the
-    alternatives within each layer -- see :func:`_phasing_columns` and
-    :func:`_extrapolation_columns` for what each contains and why it is gated.
-
-    Column labels are the standard CCP4 ones, so Coot auto-opens ``FWT``/``PHWT`` --
-    here the *extrapolated light-state* map, not a ``2mFo-DFc``. What each label means
-    is recorded in the file: the columns are grouped into MTZ datasets (``observed``,
-    ``difference``, ``light_model``, ``extrapolated_light``, ``two_moment``) with one
-    history line describing each.
+    The default output is the difference map on the dark model's phases
+    (:func:`_difference_columns`). It needs no light-state model, which is why ``mc``
+    is optional: with a dark model alone this writes a difference map and nothing else,
+    and runs no scale fit beyond the one that produced ``scaler``. Given ``mc``, the
+    light-state, extrapolated and two-moment layers follow (:func:`_phasing_columns`,
+    :func:`_extrapolation_columns`), grouped into MTZ datasets by
+    :func:`_annotate_mtz`. Coot auto-opens ``FWT``/``PHWT``, which here is the
+    *extrapolated light-state* map, not a ``2mFo-DFc``.
 
     Parameters
     ----------
@@ -959,10 +911,14 @@ def write_results_mtz(
     scaler : Scaler or CollectionScaler
         Scales ``dark_model`` against the dark data. A ``CollectionScaler`` when ``mc``
         is given, a single-dataset ``Scaler`` otherwise.
-    mc : ModelCollection, optional
-        The dark+light collection. Absent means difference map only.
     filename : str
         Output MTZ path.
+    mc : ModelCollection, optional
+        The dark+light collection. Absent means difference map only.
+    all_columns : bool
+        Also write the alternatives within each layer.
+    verbose : int
+        Verbosity level.
     ded_weight : str, optional
         Weight scheme for the model-phased and two-moment difference columns; one of
         :data:`torchref.maps.ded_weights.SCHEMES`.
@@ -1258,11 +1214,12 @@ Examples:
     )
     refine.add_argument(
         "--n-steps", type=int, default=2,
-        help="LBFGS optimisation rounds per weight step (default: 2)",
+        help="L-BFGS optimiser steps per --weight-schedule entry (default: 2)",
     )
     refine.add_argument(
         "--max-iter", type=int, default=100,
-        help="Max line-search iterations per LBFGS step (default: 100)",
+        help="Max L-BFGS iterations in each of the --n-steps optimiser steps "
+             "(default: 100)",
     )
     refine.add_argument(
         "--n-clean", type=int, default=2,
@@ -1315,9 +1272,11 @@ Examples:
     register_timing()
 
     # --- Parse fractions ---
-    if not (0.0 < args.fraction < 1.0):
-        print(f"Error: --fraction must be between 0 and 1 (got {args.fraction})",
-              file=sys.stderr)
+    if args.fraction == 1.0:
+        print(
+            "Error: --fraction must be below 1 for difference refinement",
+            file=sys.stderr,
+        )
         return 1
     fractions = [1.0 - args.fraction, args.fraction]
 
@@ -1356,10 +1315,18 @@ Examples:
     target_weights["xray/difference_sd"] = 0.0
     target_weights[difference_key] = weight_schedule[0]
     target_weights["similarity"] = args.similarity_weight
-    target_weights, err = parse_weights(args.weights, defaults=target_weights)
+    user_weights, err = parse_weights(args.weights)
     if err:
         print(f"Error: {err}", file=sys.stderr)
         return 1
+    if difference_key in user_weights:
+        print(
+            f"Error: --weights cannot set '{difference_key}': --weight-schedule "
+            "drives it every round.",
+            file=sys.stderr,
+        )
+        return 1
+    target_weights.update(user_weights)
 
     # --- Validate input files ---
     rc = validate_files([
@@ -1593,17 +1560,12 @@ Examples:
         sys.stdout.flush()
 
     # --- Save outputs ---
-    prefix = f"fractions_{int(fractions[0]*100)}_{int(fractions[1]*100)}"
+    prefix = f"fractions_{round(fractions[0] * 100)}_{round(fractions[1] * 100)}"
 
     dark_pdb_out = str(outdir / f"{prefix}_dark.pdb")
     light_pdb_out = str(outdir / f"{prefix}_light.pdb")
     diff_mtz_out = str(outdir / f"{prefix}_difference_data.mtz")
     summary_path = str(outdir / f"{prefix}_summary.json")
-
-    # Strip hydrogens for output (H were only needed for VDW restraints).
-    # strip_hydrogens() returns new models with consistent pdb + tensors.
-    model_dark = model_dark.strip_hydrogens()
-    model_light = model_light.strip_hydrogens()
 
     no_header = getattr(args, "no_header", False)
     output_format = getattr(args, "output_format", "both")
@@ -1619,26 +1581,9 @@ Examples:
                 program_version=__version__,
                 refinement_method="difference-refine",
                 r_work=float(r_work), r_free=float(r_free),
+                authors=["AUTHOR NAME"],
             )
-            # Resolution (from masks, respects cutoff)
-            if data.resolution is not None:
-                valid = data.masks().to(torch.bool)
-                res_valid = data.resolution[valid]
-                if len(res_valid) > 0:
-                    meta.resolution_high = float(res_valid.min())
-                    meta.resolution_low = float(res_valid.max())
-
-            # Reflection counts (standard work/free subset accessors: validity
-            # masked, validation carved out of both).
-            with torch.no_grad():
-                if data.rfree_flags is not None:
-                    n_work = data.work.n
-                    n_test = data.free.n
-                    n_all = n_work + n_test
-                    meta.n_reflections_work = n_work
-                    meta.n_reflections_test = n_test
-                    meta.n_reflections_all = n_all
-                    meta.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
+            meta._set_reflection_statistics(data)
 
             # B-factor statistics, from the written B column
             bvals = model.to_dataframe()["tempfactor"]
@@ -1646,22 +1591,9 @@ Examples:
             meta.b_min = float(bvals.min())
             meta.b_max = float(bvals.max())
 
-            # Atom counts
-            is_hetatm = model.ctx.topology.atoms.is_hetatm
-            meta.n_atoms_total = len(is_hetatm)
-            meta.n_atoms_protein = int((~is_hetatm).sum())
-            meta.n_atoms_solvent = int(is_hetatm.sum())
+            meta._set_atom_counts(model)
 
-            # Geometry deviations
-            if model.ctx.initialized and model.ctx.restraints is not None:
-                restraints = model.restraints
-                with torch.no_grad():
-                    if hasattr(restraints, "bond_deviations"):
-                        bond_devs, _ = restraints.bond_deviations(model.xyz())
-                        meta.rmsd_bond_lengths = float(torch.sqrt((bond_devs**2).mean()))
-                    if hasattr(restraints, "angle_deviations"):
-                        angle_devs, _ = restraints.angle_deviations(model.xyz())
-                        meta.rmsd_bond_angles = float(torch.sqrt((angle_devs**2).mean()))
+            meta._set_geometry_deviations(model)
 
             # Solvent model from CollectionScaler
             if hasattr(scaler, "solvent") and scaler.solvent is not None:
@@ -1675,11 +1607,7 @@ Examples:
             if model.spacegroup is not None:
                 meta.spacegroup = model.spacegroup.hm
 
-            # CLI overrides / defaults
-            if getattr(args, "title", None):
-                meta.title = args.title
-            meta.authors = getattr(args, "authors", None) or ["AUTHOR NAME"]
-
+            apply_metadata_args(meta, args)
             return meta
 
         dark_meta = _build_metadata(model_dark, data_dark, r_work_d, r_free_d)
@@ -1705,13 +1633,16 @@ Examples:
         from torchref import __version__
         from torchref.io.metadata import RefinementMetadata
 
+        # Scaled, not replaced: an atom's own partial occupancy (a water on a
+        # special position) holds within its state.
+        w_dark, w_light = mixed.fractions.detach().cpu().tolist()
         dark_df = model_dark.to_dataframe()
         dark_df["altloc"] = "A"
-        dark_df["occupancy"] = fractions[0]
+        dark_df["occupancy"] *= w_dark
 
         light_df = model_light.to_dataframe()
         light_df["altloc"] = "B"
-        light_df["occupancy"] = fractions[1]
+        light_df["occupancy"] *= w_light
 
         merged_df = pd.concat([dark_df, light_df], ignore_index=True)
         merged_df = merged_df.sort_values(
@@ -1728,16 +1659,14 @@ Examples:
             refinement_method="difference-refine",
             r_work=float(r_work_l),
             r_free=float(r_free_l),
-            authors=getattr(args, "authors", None) or ["AUTHOR NAME"],
+            authors=["AUTHOR NAME"],
         )
-        if data_light.resolution is not None:
-            valid = data_light.masks().to(torch.bool)
-            res_valid = data_light.resolution[valid]
-            if len(res_valid) > 0:
-                merged_meta.resolution_high = float(res_valid.min())
-                merged_meta.resolution_low = float(res_valid.max())
+        merged_meta._set_reflection_statistics(data_light)
         merged_meta.b_mean_overall = float(merged_df["tempfactor"].mean())
-        merged_meta.n_atoms_total = len(merged_df)
+        merged_meta.n_atoms_total = sum(
+            int((~m.ctx.topology.atoms.is_hydrogen).sum())
+            for m in (model_dark, model_light)
+        )
 
         if hasattr(scaler, "solvent") and scaler.solvent is not None:
             sm = scaler.solvent
@@ -1746,15 +1675,18 @@ Examples:
 
         ensemble_note = (
             f"Mixed-state ensemble from TorchRef difference refinement. "
-            f"Conformer A (occupancy {fractions[0]:.2f}): dark/ground state. "
-            f"Conformer B (occupancy {fractions[1]:.2f}): light/excited state. "
+            f"Conformer A (occupancy {w_dark:.2f}): dark/ground state. "
+            f"Conformer B (occupancy {w_light:.2f}): light/excited state. "
             f"R-factors: mixed vs light data Rwork={r_work_l:.4f} Rfree={r_free_l:.4f}; "
             f"dark vs dark data Rwork={r_work_d:.4f} Rfree={r_free_d:.4f}."
         )
         merged_meta.title = ensemble_note
+        apply_metadata_args(merged_meta, args)
 
         from torchref.io import cif as cif_io
-        cif_io.write_model(merged_df, merged_cif_out, metadata=merged_meta)
+        cif_io.write_model(
+            merged_df, merged_cif_out, metadata=None if no_header else merged_meta
+        )
 
         if args.verbose > 0:
             print(f"  Merged deposition CIF written to {merged_cif_out}")

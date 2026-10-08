@@ -48,13 +48,12 @@ kernel void iso_splat_fwd(
     device const float*  A          [[buffer(4)]],   // (n,5) ITC92 amplitudes
     device const float*  B          [[buffer(5)]],   // (n,5) ITC92 widths
     device const float*  r2cut      [[buffer(6)]],   // (n,)  squared radius
-    device const float*  mask       [[buffer(7)]],   // (n,5) per-Gaussian mask
-    device const float*  inv_frac   [[buffer(8)]],   // 9 (row-major 3x3)
-    device const float*  frac       [[buffer(9)]],   // 9 (row-major 3x3)
-    constant int&        n_atoms    [[buffer(10)]],
-    constant int&        nx         [[buffer(11)]],
-    constant int&        ny         [[buffer(12)]],
-    constant int&        nz         [[buffer(13)]],
+    device const float*  inv_frac   [[buffer(7)]],   // 9 (row-major 3x3)
+    device const float*  frac       [[buffer(8)]],   // 9 (row-major 3x3)
+    constant int&        n_atoms    [[buffer(9)]],
+    constant int&        nx         [[buffer(10)]],
+    constant int&        ny         [[buffer(11)]],
+    constant int&        nz         [[buffer(12)]],
     uint a [[thread_position_in_grid]])
 {
     if (a >= (uint)n_atoms) return;
@@ -98,7 +97,7 @@ kernel void iso_splat_fwd(
     for (int g=0; g<5; ++g) {
         float Bt_g = max((B[5*a+g]+b_iso)*0.25f, 0.1f);
         Bt[g] = Bt_g;
-        An[g] = mask[5*a+g]*A[5*a+g]*occa*PI_1P5/(Bt_g*sqrt(Bt_g));
+        An[g] = A[5*a+g]*occa*PI_1P5/(Bt_g*sqrt(Bt_g));
     }
 
     for (int ox=-bhx; ox<=bhx; ++ox) {
@@ -140,13 +139,12 @@ kernel void iso_splat_bwd(
     device const float*  A          [[buffer(7)]],
     device const float*  B          [[buffer(8)]],
     device const float*  r2cut      [[buffer(9)]],
-    device const float*  mask       [[buffer(10)]],
-    device const float*  inv_frac   [[buffer(11)]],
-    device const float*  frac       [[buffer(12)]],
-    constant int&        n_atoms    [[buffer(13)]],
-    constant int&        nx         [[buffer(14)]],
-    constant int&        ny         [[buffer(15)]],
-    constant int&        nz         [[buffer(16)]],
+    device const float*  inv_frac   [[buffer(10)]],
+    device const float*  frac       [[buffer(11)]],
+    constant int&        n_atoms    [[buffer(12)]],
+    constant int&        nx         [[buffer(13)]],
+    constant int&        ny         [[buffer(14)]],
+    constant int&        nz         [[buffer(15)]],
     uint a [[thread_position_in_grid]])
 {
     if (a >= (uint)n_atoms) return;
@@ -185,7 +183,7 @@ kernel void iso_splat_bwd(
         float raw = (B[5*a+g]+b_iso)*0.25f;
         float Bt_g = max(raw, 0.1f);
         Bt[g] = Bt_g;
-        An[g] = mask[5*a+g]*A[5*a+g]*occa*PI_1P5/(Bt_g*sqrt(Bt_g));
+        An[g] = A[5*a+g]*PI_1P5/(Bt_g*sqrt(Bt_g));   // occupancy-free
         clampf[g] = (raw > 0.1f) ? 1.0f : 0.0f;   // d(clamped Bt)/d(adp)=0 in clamp region
     }
 
@@ -220,16 +218,18 @@ kernel void iso_splat_bwd(
         }
       }
     }
-    grad_xyz[3*a+0]=gx; grad_xyz[3*a+1]=gy; grad_xyz[3*a+2]=gz;
-    grad_adp[a]=gb;
-    grad_occ[a]=(occa!=0.0f) ? go/occa : 0.0f;
+    // The density is linear in occ: its gradient is the occ = 1 density, and occ
+    // scales only the other gradients.
+    grad_xyz[3*a+0]=occa*gx; grad_xyz[3*a+1]=occa*gy; grad_xyz[3*a+2]=occa*gz;
+    grad_adp[a]=occa*gb;
+    grad_occ[a]=go;
 }
 
 constant float TWO_PI_SQ = 19.739208802178716f;   // 2*pi^2  (= 8*pi^2 / 4)
 
 // ---------------------------------------------------------------------------
 // Anisotropic forward. Per Gaussian g: M_g = (B_g*I + 8*pi^2*U)/4 (symmetric
-// 3x3), inverted analytically; A_norm_g = mask*A*occ*pi^1.5/sqrt(det M_g);
+// 3x3), inverted analytically; A_norm_g = A*occ*pi^1.5/sqrt(det M_g);
 // q_g = w^T Minv_g w; density = sum_g A_norm_g fast::exp(-pi^2 q_g). Truncation
 // is a per-axis bounding box (from r2cut + inv-cell row norms) with a sphere
 // cull (r2 <= r2cut) -- far tighter than a full cube on anisotropic high-res
@@ -243,13 +243,12 @@ kernel void aniso_splat_fwd(
     device const float*  A          [[buffer(4)]],   // (n,5)
     device const float*  B          [[buffer(5)]],   // (n,5)
     device const float*  r2cut      [[buffer(6)]],   // (n,) squared truncation radius
-    device const float*  mask       [[buffer(7)]],   // (n,5)
-    device const float*  inv_frac   [[buffer(8)]],
-    device const float*  frac       [[buffer(9)]],
-    constant int&        n_atoms    [[buffer(10)]],
-    constant int&        nx         [[buffer(11)]],
-    constant int&        ny         [[buffer(12)]],
-    constant int&        nz         [[buffer(13)]],
+    device const float*  inv_frac   [[buffer(7)]],
+    device const float*  frac       [[buffer(8)]],
+    constant int&        n_atoms    [[buffer(9)]],
+    constant int&        nx         [[buffer(10)]],
+    constant int&        ny         [[buffer(11)]],
+    constant int&        nz         [[buffer(12)]],
     uint a [[thread_position_in_grid]])
 {
     if (a >= (uint)n_atoms) return;
@@ -283,7 +282,7 @@ kernel void aniso_splat_fwd(
         float inv=1.0f/det;
         p00[g]=(mb*mc-mf*mf)*inv; p11[g]=(ma*mc-me*me)*inv; p22[g]=(ma*mb-md*md)*inv;
         p01[g]=(me*mf-md*mc)*inv; p02[g]=(md*mf-me*mb)*inv; p12[g]=(md*me-ma*mf)*inv;
-        An[g]=mask[5*a+g]*A[5*a+g]*occa*PI_1P5/sqrt(max(det,1e-10f));
+        An[g]=A[5*a+g]*occa*PI_1P5/sqrt(max(det,1e-10f));
     }
 
     float rc2=r2cut[a], r=sqrt(rc2);
@@ -319,7 +318,8 @@ kernel void aniso_splat_fwd(
 // Anisotropic backward: grads to xyz, U (6), occ. v_g = Minv_g w; dg_g =
 // A_norm_g exp(-pi^2 w.v_g). grad_xyz = go*2pi^2*sum dg v; grad_U diag =
 // go*2pi^2*sum dg(-0.5 p_ii + pi^2 v_i^2); grad_U offdiag = go*4pi^2*sum
-// dg(-0.5 p_ij + pi^2 v_i v_j); grad_occ = go*sum dg / occ. One thread/atom.
+// dg(-0.5 p_ij + pi^2 v_i v_j), each times occ, with dg taken at occ = 1;
+// grad_occ = go*sum dg. One thread/atom.
 // ---------------------------------------------------------------------------
 kernel void aniso_splat_bwd(
     device float*        grad_xyz   [[buffer(0)]],   // (n,3)
@@ -332,13 +332,12 @@ kernel void aniso_splat_bwd(
     device const float*  A          [[buffer(7)]],
     device const float*  B          [[buffer(8)]],
     device const float*  r2cut      [[buffer(9)]],
-    device const float*  mask       [[buffer(10)]],
-    device const float*  inv_frac   [[buffer(11)]],
-    device const float*  frac       [[buffer(12)]],
-    constant int&        n_atoms    [[buffer(13)]],
-    constant int&        nx         [[buffer(14)]],
-    constant int&        ny         [[buffer(15)]],
-    constant int&        nz         [[buffer(16)]],
+    device const float*  inv_frac   [[buffer(10)]],
+    device const float*  frac       [[buffer(11)]],
+    constant int&        n_atoms    [[buffer(12)]],
+    constant int&        nx         [[buffer(13)]],
+    constant int&        ny         [[buffer(14)]],
+    constant int&        nz         [[buffer(15)]],
     uint a [[thread_position_in_grid]])
 {
     if (a >= (uint)n_atoms) return;
@@ -372,7 +371,7 @@ kernel void aniso_splat_bwd(
         float inv=1.0f/det;
         p00[g]=(mb*mc-mf*mf)*inv; p11[g]=(ma*mc-me*me)*inv; p22[g]=(ma*mb-md*md)*inv;
         p01[g]=(me*mf-md*mc)*inv; p02[g]=(md*mf-me*mb)*inv; p12[g]=(md*me-ma*mf)*inv;
-        An[g]=mask[5*a+g]*A[5*a+g]*occa*PI_1P5/sqrt(max(det,1e-10f));
+        An[g]=A[5*a+g]*PI_1P5/sqrt(max(det,1e-10f));   // occupancy-free
     }
 
     float gx=0,gy=0,gz=0,gu0=0,gu1=0,gu2=0,gu3=0,gu4=0,gu5=0,go=0;
@@ -418,9 +417,9 @@ kernel void aniso_splat_bwd(
         }
       }
     }
-    grad_xyz[3*a+0]=gx; grad_xyz[3*a+1]=gy; grad_xyz[3*a+2]=gz;
-    grad_u[6*a+0]=gu0; grad_u[6*a+1]=gu1; grad_u[6*a+2]=gu2;
-    grad_u[6*a+3]=gu3; grad_u[6*a+4]=gu4; grad_u[6*a+5]=gu5;
-    grad_occ[a]=(occa!=0.0f) ? go/occa : 0.0f;
+    grad_xyz[3*a+0]=occa*gx; grad_xyz[3*a+1]=occa*gy; grad_xyz[3*a+2]=occa*gz;
+    grad_u[6*a+0]=occa*gu0; grad_u[6*a+1]=occa*gu1; grad_u[6*a+2]=occa*gu2;
+    grad_u[6*a+3]=occa*gu3; grad_u[6*a+4]=occa*gu4; grad_u[6*a+5]=occa*gu5;
+    grad_occ[a]=go;
 }
 """

@@ -1,8 +1,8 @@
 """Atomic scattering factors from the ITC92 parameterization.
 
-Table-based lookup (:func:`get_scattering_params_by_z` after
-:func:`elements_to_z`) is the recommended path -- vectorized and gemmi-free at
-runtime. Anomalous f'/f'' corrections come from ``anomalous_table``.
+Table-based lookup (:func:`~.scattering_table.get_scattering_params_by_z` after
+:func:`~.scattering_table.elements_to_z`) is the recommended path -- vectorized and
+gemmi-free at runtime. Anomalous f'/f'' corrections come from ``anomalous_table``.
 """
 
 from .scattering_table import (

@@ -27,7 +27,7 @@ Installing from Source
    cd TorchRef
    pip install -e .
 
-For development, add the extras (pytest, black, isort, flake8):
+For development, add the extras (pytest, black, isort, ruff):
 
 .. code-block:: bash
 

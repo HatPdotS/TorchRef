@@ -2,13 +2,13 @@
 
 Five selectable X-ray targets, but only **three** likelihoods:
 
-===================  =======================  ================================
-primitive            distribution             consumed by
-===================  =======================  ================================
-:func:`nll_math`     Gaussian on ``|F|``      ``nll``, ``nll_beta``
-:func:`rice_math`    Rice / folded normal     ``ml``, ``ml_noalpha``
-:func:`rice_marginal_math`  Rice (x) Gaussian, marginalised   ``ml_full``
-===================  =======================  ================================
+==========================  ===============================  ======================
+primitive                   distribution                     consumed by
+==========================  ===============================  ======================
+:func:`nll_math`            Gaussian on ``|F|``              ``nll``, ``nll_beta``
+:func:`rice_math`           Rice / folded normal             ``ml``, ``ml_noalpha``
+:func:`rice_marginal_math`  Rice (x) Gaussian, marginalised  ``ml_full``
+==========================  ===============================  ======================
 
 What distinguishes ``nll`` from ``nll_beta``, and ``ml`` from ``ml_noalpha``, is not the
 likelihood -- it is where the variance comes from and where the mean is centred. The
@@ -83,10 +83,9 @@ def floor_sigma_obs(
     **Pass ``floor`` explicitly to make the result independent of which reflections are in
     ``sigma``.** A median computed from the argument makes every per-reflection value
     depend on the whole array, so the same reflection scores differently in a subset sum
-    than in a full-size residual -- measured at 0.09% on a work set and 1.8% on a free set
-    for intensities, whose sigmas span orders of magnitude. Callers that need the two to
-    agree (any target with both a ``forward`` and a ``residuals``) compute the floor once
-    from their own fitted subset and pass it here.
+    than in a full-size residual -- most for intensities, whose sigmas span orders of
+    magnitude. Callers that need the two to agree (any target with both a ``forward`` and
+    a ``residuals``) compute the floor once from their own fitted subset and pass it here.
     """
     if floor is None:
         selected = sigma if mask is None else sigma[mask]
@@ -241,7 +240,7 @@ def nll_per_refl(
 ) -> torch.Tensor:
     """Per-reflection Gaussian NLL on the amplitude (NOT masked or summed).
 
-        0.5 * (F_obs - |F_calc|)**2 / var + 0.5 * log(var) + 0.5 * log(2*pi)
+        ``0.5 * (F_obs - |F_calc|)**2 / var + 0.5 * log(var) + 0.5 * log(2*pi)``
 
     ``var`` is the **amplitude** variance. Build it with
     :func:`amplitude_var_from_sigma_obs` (``nll``) or :func:`amplitude_var_from_complex`
@@ -331,7 +330,7 @@ def rice_marginal_per_refl(
     li0=None,
 ) -> torch.Tensor:
     """Per-reflection full-form MLF (NOT masked or summed). See :func:`rice_marginal_math`."""
-    from .xray_ml_full import log_i0, ml_full_nll_per_refl
+    from .xray_ml_full import ml_full_nll_per_refl
 
     # `beta=Sigma, epsilon=None` because Sigma is ALREADY epsilon*beta_model: the callee
     # would otherwise multiply epsilon in a second time. `alpha=None` for the same reason
@@ -346,7 +345,7 @@ def rice_marginal_per_refl(
         alpha=None,
         n_quad=n_quad,
         n_sigma=n_sigma,
-        li0=log_i0 if li0 is None else li0,
+        li0=li0,
         idx=idx,
     )
 
@@ -376,10 +375,11 @@ def rice_marginal_math(
     measurement variance counts it twice.
 
     Pass ``idx`` from :func:`~torchref.base.targets.xray_ml_full.parity_indices` to avoid a
-    device sync per call. ``li0`` overrides the log-Bessel implementation (default: the fast
-    piecewise one) -- tests pass ``log_i0_exact`` to separate the quadrature's own error from
-    the Bessel approximation's. The quadrature internals live in
-    :mod:`torchref.base.targets.xray_ml_full`; this is their single public entry point.
+    device sync per call. ``li0`` overrides the log-Bessel implementation (default: the
+    exact one for float64 inputs, the fast piecewise one otherwise). The quadrature
+    internals live in :mod:`torchref.base.targets.xray_ml_full`; their entry points are
+    :func:`rice_marginal_per_refl`, which the ``ml_full`` target calls, and this masked
+    sum.
     """
     return _masked_sum(
         rice_marginal_per_refl(

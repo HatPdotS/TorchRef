@@ -3,7 +3,7 @@
 One launch each way, where the eager helper (``_place_h_jit`` in
 :mod:`torchref.topology.riding`) fuses only the forward and leaves its
 backward to run op-by-op through autograd -- ~100 launches at 3k hydrogens, which
-dominates the non-bonded backward. The math mirrors ``_place_h_jit`` exactly:
+dominates the non-bonded backward. The math mirrors ``_place_h_jit`` exactly::
 
     pp        = xyz[parent_idx]
     nb_pos[i] = xyz[nb_idx[i]]
@@ -29,6 +29,7 @@ import torch
 import triton
 import triton.language as tl
 
+from .._dispatch import first_order_only
 
 _EPS = 1e-8
 
@@ -355,6 +356,7 @@ class _PlaceHydrogensTriton(torch.autograd.Function):
         return out
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_h):
         xyz_heavy, parent_idx, nb_idx_clamped, nb_valid, coeffs, bond_length = ctx.saved_tensors
         N_h = parent_idx.shape[0]

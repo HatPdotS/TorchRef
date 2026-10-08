@@ -14,6 +14,26 @@ class TestReadMtz:
         assert isinstance(data, ReflectionData)
         assert data.hkl.shape[0] > 0
 
+    def test_read_mtz_estimates_sigmas_beside_missing_amplitudes(
+        self, mtz_dir, tmp_path
+    ):
+        """An F-only MTZ with missing amplitudes loads, each measured F with a sigma."""
+        import gemmi
+        import numpy as np
+        import torch
+
+        from torchref import read_mtz
+
+        mtz = gemmi.read_mtz_file(str(mtz_dir / "3E98.mtz"))
+        assert np.isnan(mtz.column_with_label("FP").array).any()
+        mtz.remove_column(mtz.column_labels().index("SIGFP"))
+        path = tmp_path / "3E98_no_sigma.mtz"
+        mtz.write_to_file(str(path))
+
+        data = read_mtz(str(path), verbose=0)
+        measured = torch.isfinite(data.F)
+        assert torch.isfinite(data.F_sigma[measured]).all()
+
 
 @pytest.mark.unit
 class TestReadPdb:

@@ -1,15 +1,15 @@
-"""
-Crystallographic dataset containers.
+"""Crystallographic dataset containers.
 
-- :class:`CrystalDataset` -- base dataclass: fields, device moves, save/load
-- :class:`ReflectionData` -- one crystal's raw observed reflections
-- :class:`ScaledDataset` -- live observations corrected by a shared DatasetScaler
-- :class:`FcalcDataset` -- calculated structure factors on a generated HKL set
-- :class:`DatasetCollection` -- several ReflectionData on one common HKL grid
-- :func:`merge_to_spacegroup` -- merge a dataset into another space group, with
-  Rmerge / Rmeas / CC_sym as :class:`MergeStats`
-- :func:`french_wilson_auto` -- French-Wilson amplitudes from a dataset's
-  intensities, Miller indices and space group
+- :class:`~.base.CrystalDataset` -- base dataclass: fields, device moves, save/load
+- :class:`~.reflection_data.ReflectionData` -- one crystal's raw observed reflections
+- :class:`~.scaled_dataset.ScaledDataset` -- live observations corrected by a
+  shared DatasetScaler
+- :class:`~.fcalc_data.FcalcDataset` -- ``F_calc`` on a generated HKL set
+- :class:`~.collection.DatasetCollection` -- several ReflectionData on a common HKL grid
+- :func:`~.merging.merge_to_spacegroup` -- merge a dataset into another space
+  group, with Rmerge / Rmeas / CC_sym as :class:`~.merging.MergeStats`
+- :func:`~.french_wilson.french_wilson_auto` -- French-Wilson amplitudes from a
+  dataset's intensities, Miller indices and space group
 """
 
 from .base import CrystalDataset

@@ -15,8 +15,8 @@ Three kinds of thing live here, and only the first is really connectivity:
   it is held apart from the rest;
 * the Ramachandran map, a residue-level product of the same build.
 
-Deliberately decoupled from :class:`~torchref.model.Model`: it takes a topology and
-holds no reference back to whatever owns the coordinates. Every evaluation takes the
+Deliberately decoupled from :class:`~torchref.model.model.Model`: it takes a topology
+and holds no reference back to whatever owns the coordinates. Every evaluation takes the
 coordinates (or ADPs) it scores as an argument, and the pair list is rebuilt from the
 coordinates it is handed, so the same object serves any model that shares the atom set.
 """
@@ -45,8 +45,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
     ----------
     topology : Topology, optional
         The atoms to restrain -- a node-only topology is enough
-        (:meth:`~torchref.topology.Topology.from_table`); it is connected here. If
-        None, creates an empty shell.
+        (:meth:`~torchref.topology.topology.Topology.from_table`); it is connected
+        here. If None, creates an empty shell.
     cif_path : str or list of str, optional
         Path to the CIF restraints dictionary file(s).
     xyz : torch.Tensor, optional

@@ -115,18 +115,9 @@ def test_integer_hkl_is_accepted_and_lossless():
     assert torch.equal(F_int, F_float), "casting integer Miller indices must be exact"
 
 
-def test_eager_none_scattering_factors_and_no_batching():
-    """``max_memory_gb=None`` with ``scattering_factors=None`` must compute from A/B.
-
-    Two independently optional arguments meeting: with no batching *and* no precomputed
-    scattering factors, the eager path takes a branch that derives ``f(s)`` from the ITC92
-    A/B coefficients inline. Chunking must not change the answer.
-
-    Moved from ``tests/unit/test_kernel_fixes.py``, where it sat among dtype-switch and
-    NaN-safety tests. It is the only structure-factor test in that file, and this package is
-    where structure-factor coverage lives.
-    """
-    from torchref.base.direct_summation.dispatch import _eager_aniso, _eager_iso
+def test_eager_oracle_is_independent_of_the_memory_budget():
+    """A ``max_memory_gb`` budget leaves the eager oracle's F unchanged."""
+    from .helpers import _eager_aniso, _eager_iso
 
     g = torch.Generator().manual_seed(0)
     N, R = 8, 12
@@ -149,6 +140,9 @@ def test_eager_none_scattering_factors_and_no_batching():
         f_batch = fn(hkl, geom, xyz, occ, third, A, B, 2.0)
         assert torch.isfinite(f_none).all(), f"{tag}: non-finite F with no batching"
         torch.testing.assert_close(
-            f_none, f_batch, rtol=1e-12, atol=1e-12,
+            f_none,
+            f_batch,
+            rtol=1e-12,
+            atol=1e-12,
             msg=f"{tag}: chunking changed the answer",
         )

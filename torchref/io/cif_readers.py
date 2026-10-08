@@ -7,6 +7,7 @@ Space groups always come back as plain ``str`` Hermann-Mauguin names
 (``"P 1"``), validated against gemmi -- never as objects.
 """
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -25,6 +26,11 @@ from torchref.io.pdb import _require_elements
 #: only thing that can do it. Stripped again by
 #: :meth:`RestraintCIFReader._filter_by_comp`, so it never reaches a caller.
 _SOURCE_BLOCK_COLUMN = "_source_block"
+
+#: One value of a data line. As in CIF, a quote opens a string only at the start of
+#: a value and closes it only before whitespace, so ``'it's'`` reads ``it's`` and a
+#: bare ``O5'`` keeps its prime.
+_CIF_VALUE = re.compile(r"""'(.*?)'(?=\s|$)|"(.*?)"(?=\s|$)|(\S+)""")
 
 #: Tags read as sigma(F), in order of preference, for merged and Bijvoet-pair
 #: amplitudes alike. ``F_squared_sigma`` is sigma(F^2) and is read with the
@@ -331,47 +337,11 @@ class CIFReader:
         return start_idx + 1
 
     def _tokenize_line(self, line: str) -> List[str]:
-        """Split a data line into tokens, keeping quoted strings intact."""
-        tokens = []
-        current_token = []
-        in_quotes = False
-        quote_char = None
+        """Split a data line into values, unquoting quoted strings.
 
-        i = 0
-        while i < len(line):
-            char = line[i]
-
-            # Handle quotes
-            if char in ('"', "'") and not in_quotes:
-                in_quotes = True
-                quote_char = char
-                i += 1
-                continue
-
-            if char == quote_char and in_quotes:
-                in_quotes = False
-                quote_char = None
-                if current_token:
-                    tokens.append("".join(current_token))
-                    current_token = []
-                i += 1
-                continue
-
-            # Handle whitespace outside quotes
-            if char.isspace() and not in_quotes:
-                if current_token:
-                    tokens.append("".join(current_token))
-                    current_token = []
-                i += 1
-                continue
-
-            current_token.append(char)
-            i += 1
-
-        if current_token:
-            tokens.append("".join(current_token))
-
-        return tokens
+        A closed quote is a value even when empty: ``''`` keeps its column.
+        """
+        return [match.group(match.lastindex) for match in _CIF_VALUE.finditer(line)]
 
     def _extract_category(self, key: str) -> str:
         """Category of a CIF key: ``'_atom_site.id'`` -> ``'atom_site'``."""

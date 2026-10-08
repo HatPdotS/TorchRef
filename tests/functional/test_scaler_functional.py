@@ -166,66 +166,12 @@ class TestAnisotropyCorrectionFunctional:
         scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
         scaler.setup_anisotropy_correction()
 
-        # With small random U values, correction should be close to 1
+        # U starts at zero, so the correction starts at 1
         correction = scaler.anisotropy_correction()
 
         # Most values should be between 0.5 and 2.0 for small U
         mean_correction = correction.mean().item()
         assert 0.5 < mean_correction < 2.0
-
-
-class TestBinwiseBfactorFunctional:
-    """Functional tests for bin-wise B-factor correction."""
-
-    @pytest.mark.integration
-    def test_setup_binwise_bfactor(self, sample_structure_pair):
-        """Test setting up bin-wise B-factor parameters."""
-        from torchref.io import ReflectionData
-        from torchref.model.model import Model
-        from torchref.scaling.scaler import Scaler
-
-        model = Model()
-        model.load_cif(str(sample_structure_pair["model"]))
-
-        data = ReflectionData()
-        data.load_mtz(str(sample_structure_pair["reflections"]))
-
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
-        scaler.setup_bin_wise_bfactor()
-
-        assert hasattr(scaler, "bin_wise_bfactor")
-        assert scaler.bin_wise_bfactor.shape == (10,)
-        # Initially should be zeros
-        assert torch.allclose(
-            scaler.bin_wise_bfactor, torch.zeros(10, device=scaler.device)
-        )
-
-    @pytest.mark.integration
-    def test_binwise_bfactor_correction(self, sample_structure_pair):
-        """Test computing bin-wise B-factor correction."""
-        from torchref.io import ReflectionData
-        from torchref.model.model import Model
-        from torchref.scaling.scaler import Scaler
-
-        model = Model()
-        model.load_cif(str(sample_structure_pair["model"]))
-
-        data = ReflectionData()
-        data.load_mtz(str(sample_structure_pair["reflections"]))
-
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
-        scaler.setup_bin_wise_bfactor()
-
-        # Set some non-zero B-factors
-        scaler.bin_wise_bfactor.data = torch.linspace(0, 20, 10, device=scaler.device)
-
-        correction = scaler.bin_wise_bfactor_correction()
-
-        # Correction should have same length as reflections
-        assert correction.shape[0] == data.hkl.shape[0]
-        # Should be positive (exponential)
-        assert torch.all(correction > 0)
-        assert torch.all(torch.isfinite(correction))
 
 
 class TestScalerStateDictFunctional:
@@ -247,11 +193,9 @@ class TestScalerStateDictFunctional:
         # Create scaler with some setup
         scaler1 = Scaler(model=model, data=data, nbins=10, verbose=0)
         scaler1.setup_anisotropy_correction()
-        scaler1.setup_bin_wise_bfactor()
 
         # Modify parameters
-        scaler1.U.data = torch.randn(6, device=scaler1.device)
-        scaler1.bin_wise_bfactor.data = torch.randn(10, device=scaler1.device)
+        scaler1.U.data = torch.randn(6, dtype=scaler1.U.dtype, device=scaler1.device)
 
         # Save state
         state_path = tmp_path / "scaler_state.pt"
@@ -260,12 +204,10 @@ class TestScalerStateDictFunctional:
         # Create new scaler and load state
         scaler2 = Scaler(model=model, data=data, nbins=10, verbose=0)
         scaler2.setup_anisotropy_correction()
-        scaler2.setup_bin_wise_bfactor()
         scaler2.load_state_dict(torch.load(state_path, weights_only=False))
 
         # Parameters should match
         assert torch.allclose(scaler1.U, scaler2.U)
-        assert torch.allclose(scaler1.bin_wise_bfactor, scaler2.bin_wise_bfactor)
 
 
 class TestScalerHKLPropertyFunctional:
@@ -396,28 +338,3 @@ class TestScalerGradientsFunctional:
         # U should have gradients
         assert scaler.U.grad is not None
         assert torch.all(torch.isfinite(scaler.U.grad))
-
-    @pytest.mark.integration
-    def test_binwise_bfactor_gradients(self, sample_structure_pair):
-        """Test gradients flow through bin-wise B-factor correction."""
-        from torchref.io import ReflectionData
-        from torchref.model.model import Model
-        from torchref.scaling.scaler import Scaler
-
-        model = Model()
-        model.load_cif(str(sample_structure_pair["model"]))
-
-        data = ReflectionData()
-        data.load_mtz(str(sample_structure_pair["reflections"]))
-
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
-        scaler.setup_bin_wise_bfactor()
-
-        # Compute correction and loss
-        correction = scaler.bin_wise_bfactor_correction()
-        loss = correction.sum()
-        loss.backward()
-
-        # bin_wise_bfactor should have gradients
-        assert scaler.bin_wise_bfactor.grad is not None
-        assert torch.all(torch.isfinite(scaler.bin_wise_bfactor.grad))

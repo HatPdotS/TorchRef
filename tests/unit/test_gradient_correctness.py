@@ -191,6 +191,30 @@ def test_triton_bond_matches_eager_cosine():
     assert_grads_agree([g_t], [g_e], min_cos=0.999, ratio_tol=1e-2, ctx="bond ")
 
 
+@pytest.mark.cuda
+def test_triton_bond_refuses_a_second_derivative():
+    """``create_graph=True`` through a Triton target raises instead of silently
+    dropping its curvature; under ``use_portable()`` the eager kernel takes it."""
+    from torchref.utils import use_portable
+
+    dev = "cuda"
+    idx = torch.tensor([[0, 1]], device=dev)
+    references = torch.tensor([1.5], device=dev)
+    sigmas = torch.tensor([0.02], device=dev)
+    x = torch.tensor([[0.0, 0.0, 0.0], [1.4, 0.1, 0.0]], device=dev)
+    x.requires_grad_()
+
+    assert use_triton(x)
+    loss = bond_math(x, idx, references, sigmas)
+    with pytest.raises(RuntimeError, match=r"_BondMathTriton\.backward: the second"):
+        torch.autograd.grad(loss, x, create_graph=True)
+
+    with use_portable():
+        loss = bond_math(x, idx, references, sigmas)
+    (g,) = torch.autograd.grad(loss, x, create_graph=True)
+    assert g.requires_grad
+
+
 # ---------------------------------------------------------------------------
 # Anisotropic ADP restraints (SIMU / locality on the unified U6 tensor)
 # ---------------------------------------------------------------------------

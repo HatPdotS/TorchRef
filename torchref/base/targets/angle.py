@@ -41,7 +41,7 @@ def angle_math(
 ) -> torch.Tensor:
     """Angle NLL: gather, compute angle, Gaussian NLL, sum.
 
-    Dispatches to :func:`torchref.base.targets.triton.angle_math_triton`
+    Dispatches to :func:`torchref.base.targets.triton.angle.angle_math_triton`
     on CUDA float32. Falls back to eager otherwise.
 
     Parameters

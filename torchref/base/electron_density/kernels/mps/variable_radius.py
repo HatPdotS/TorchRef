@@ -15,6 +15,7 @@ from __future__ import annotations
 import torch
 
 from torchref.base.electron_density.kernels.mps.compile import _get_lib
+from torchref.base.targets._dispatch import first_order_only
 
 
 def _r2cut(radius_per_atom):
@@ -32,7 +33,7 @@ class MetalGridDensity(torch.autograd.Function):
     """Isotropic per-atom Metal splat: returns ``density_map + splat``."""
 
     @staticmethod
-    def forward(ctx, density_map, xyz, adp, occ, A, B, r2cut, mask, inv_frac, frac):
+    def forward(ctx, density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac):
         lib = _get_lib()
         if lib is None:
             raise RuntimeError("Metal splat kernels unavailable")
@@ -48,19 +49,19 @@ class MetalGridDensity(torch.autograd.Function):
                 A.contiguous(),
                 B.contiguous(),
                 r2cut.contiguous(),
-                mask.contiguous(),
                 inv_frac.contiguous().view(-1),
                 frac.contiguous().view(-1),
                 n, nx, ny, nz,
                 threads=[n],
             )
-        ctx.save_for_backward(xyz, adp, occ, A, B, r2cut, mask, inv_frac, frac)
+        ctx.save_for_backward(xyz, adp, occ, A, B, r2cut, inv_frac, frac)
         ctx.grid_shape = (nx, ny, nz)
         return out
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
-        xyz, adp, occ, A, B, r2cut, mask, inv_frac, frac = ctx.saved_tensors
+        xyz, adp, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape
         n = xyz.shape[0]
         grad_xyz = torch.zeros_like(xyz)
@@ -79,22 +80,23 @@ class MetalGridDensity(torch.autograd.Function):
                 A.contiguous(),
                 B.contiguous(),
                 r2cut.contiguous(),
-                mask.contiguous(),
                 inv_frac.contiguous().view(-1),
                 frac.contiguous().view(-1),
                 n, nx, ny, nz,
                 threads=[n],
             )
         # forward returned density_map + splat -> grad wrt density_map is identity.
-        # order: density_map, xyz, adp, occ, A, B, r2cut, mask, inv_frac, frac
+        # order: density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac
         return (grad_out, grad_xyz, grad_adp, grad_occ,
-                None, None, None, None, None, None)
+                None, None, None, None, None)
 
 
 def add_isotropic_mps_var(
     density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
 ):
-    """Isotropic variable-radius Metal splat; adds into ``density_map``.
+    """Isotropic variable-radius Metal splat; returns ``density_map + splat``.
+
+    ``density_map`` is not modified.
 
     The canonical splat signature, identical to ``add_isotropic_plain_var`` and
     ``add_isotropic_cpu_sphere_var``: the grid shape comes from ``density_map`` and the
@@ -102,9 +104,8 @@ def add_isotropic_mps_var(
     ``voxel_size`` is taken. The radius is the policy radius used raw; see :func:`_r2cut`.
     """
     r2cut = _r2cut(radius_per_atom)
-    mask = torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
     return MetalGridDensity.apply(
-        density_map, xyz, adp, occ, A, B, r2cut, mask, inv_frac_matrix, frac_matrix
+        density_map, xyz, adp, occ, A, B, r2cut, inv_frac_matrix, frac_matrix
     )
 
 
@@ -112,7 +113,7 @@ class MetalGridDensityAniso(torch.autograd.Function):
     """Anisotropic per-atom Metal splat: returns ``density_map + splat``."""
 
     @staticmethod
-    def forward(ctx, density_map, xyz, u, occ, A, B, r2cut, mask, inv_frac, frac):
+    def forward(ctx, density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac):
         lib = _get_lib()
         if lib is None:
             raise RuntimeError("Metal splat kernels unavailable")
@@ -128,19 +129,19 @@ class MetalGridDensityAniso(torch.autograd.Function):
                 A.contiguous(),
                 B.contiguous(),
                 r2cut.contiguous(),
-                mask.contiguous(),
                 inv_frac.contiguous().view(-1),
                 frac.contiguous().view(-1),
                 n, nx, ny, nz,
                 threads=[n],
             )
-        ctx.save_for_backward(xyz, u, occ, A, B, r2cut, mask, inv_frac, frac)
+        ctx.save_for_backward(xyz, u, occ, A, B, r2cut, inv_frac, frac)
         ctx.grid_shape = (nx, ny, nz)
         return out
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
-        xyz, u, occ, A, B, r2cut, mask, inv_frac, frac = ctx.saved_tensors
+        xyz, u, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape
         n = xyz.shape[0]
         grad_xyz = torch.zeros_like(xyz)
@@ -159,21 +160,22 @@ class MetalGridDensityAniso(torch.autograd.Function):
                 A.contiguous(),
                 B.contiguous(),
                 r2cut.contiguous(),
-                mask.contiguous(),
                 inv_frac.contiguous().view(-1),
                 frac.contiguous().view(-1),
                 n, nx, ny, nz,
                 threads=[n],
             )
-        # order: density_map, xyz, u, occ, A, B, r2cut, mask, inv_frac, frac
+        # order: density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac
         return (grad_out, grad_xyz, grad_u, grad_occ,
-                None, None, None, None, None, None)
+                None, None, None, None, None)
 
 
 def add_anisotropic_mps_var(
     density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
 ):
-    """Anisotropic variable-radius Metal splat; adds into ``density_map``.
+    """Anisotropic variable-radius Metal splat; returns ``density_map + splat``.
+
+    ``density_map`` is not modified.
 
     The canonical splat signature, identical to ``add_anisotropic_plain_var`` and
     ``add_anisotropic_cpu_sphere_var``. Each atom is truncated at its per-axis bounding box
@@ -181,7 +183,6 @@ def add_anisotropic_mps_var(
     fused-CPU kernels apply.
     """
     r2cut = _r2cut(radius_per_atom)
-    mask = torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
     return MetalGridDensityAniso.apply(
-        density_map, xyz, u, occ, A, B, r2cut, mask, inv_frac_matrix, frac_matrix
+        density_map, xyz, u, occ, A, B, r2cut, inv_frac_matrix, frac_matrix
     )

@@ -9,9 +9,7 @@ from torchref.config import get_complex_dtype, get_float_dtype, get_int_dtype
 
 
 class _StubSolvent:
-    """Minimal stand-in for :class:`SolventModel` on the k_sol/B_sol path."""
-
-    optimize_phase = False
+    """Minimal stand-in for :class:`SolventModel` on the k_sol/falloff path."""
 
     def __init__(self, device, value: float = 1.0):
         self.device = device
@@ -116,7 +114,7 @@ class TestOverridePreservesRank:
         out = scaler.forward(fcalc, f_sol_override=override)
 
         assert out.shape == (n,)
-        # fcalc + k_sol * f_sol, with damping == 1 and no aniso/Chebyshev/per-bin B.
+        # fcalc + k_sol * f_sol, with damping == 1 and no aniso/Chebyshev scale.
         expected = 1.0 + 0.35 * 2.0
         assert torch.allclose(
             out.real, torch.full((n,), expected, device=dev, dtype=get_float_dtype())

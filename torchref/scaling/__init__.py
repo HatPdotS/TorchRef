@@ -1,11 +1,12 @@
 """Scale observed datasets and calculated structure factors.
 
-Per-bin overall scale, anisotropic correction and bulk-solvent contribution.
-:class:`ScalerBase` is model-independent -- every method that needs ``F_calc``
-takes it as an argument; :class:`Scaler` holds a :class:`~torchref.model.Model`
-and computes ``F_calc`` itself; :class:`CollectionScaler` fits one shared set of
-scales jointly across a dataset/model collection. :class:`SolventModel` supplies
-the flat bulk-solvent term (k_sol, B_sol). ``DatasetScaler`` independently fits
+Chebyshev isotropic scale, anisotropic correction and bulk-solvent contribution.
+:class:`~.scaler_base.ScalerBase` is model-independent -- every method that needs
+``F_calc`` takes it as an argument; :class:`~.scaler.Scaler` holds a
+:class:`~torchref.model.model.Model` and computes ``F_calc`` itself;
+:class:`~.collection_scaler.CollectionScaler` fits one shared set of scales jointly
+across a dataset/model collection. :class:`~.solvent.SolventModel` supplies the flat
+bulk-solvent term (k_sol, ss_half/n_exp falloff). ``DatasetScaler`` independently fits
 relative observed-data corrections; ``WilsonNormaliser`` supplies E values.
 """
 

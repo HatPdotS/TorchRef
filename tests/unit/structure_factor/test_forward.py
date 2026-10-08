@@ -125,6 +125,21 @@ def test_stored_table_matches_gemmi():
     assert checked >= 90, f"only {checked} elements checked -- table lookup is not working"
 
 
+def test_ion_lookup_returns_neutral_coefficients():
+    """Ionic form factors are not modelled: any charge gives the neutral atom's row."""
+    from torchref.base.scattering.scattering_table import (
+        elements_to_z,
+        get_scattering_params_by_z,
+        get_scattering_params_for_ion,
+    )
+
+    for element, charge in (("Fe", 2), ("Fe", 3), ("O", -2), ("Zn", 2), ("Na", 1)):
+        A_ion, B_ion = get_scattering_params_for_ion(element, charge)
+        A, B = get_scattering_params_by_z(elements_to_z([element]))
+        assert torch.equal(A_ion, A[0]) and torch.equal(B_ion, B[0]), (element, charge)
+    assert get_scattering_params_for_ion("Xx", 2) is None
+
+
 def test_ls_target_is_phase_blind(scene_small):
     """An amplitude target and its gradients are invariant under conjugating ``F``.
 

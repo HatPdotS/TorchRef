@@ -22,6 +22,7 @@ import torch
 
 from torchref.base.fourier.coefficients import map_coefficients
 from torchref.config import get_int_dtype
+from torchref.utils.utils import first_index_per_group
 
 if TYPE_CHECKING:
     from torchref.io.datasets.reflection_data import ReflectionData
@@ -134,9 +135,9 @@ class MTZReader:
             other, so ``{"F": "FP"}`` loads amplitudes even when the file also
             has intensities, and French-Wilson does not run.
         anomalous : bool, optional
-            None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into explicit
-            Friedel pairs when such columns exist; True forces that (a notice at
-            verbose > 0 if none exist); False forces a merged load, averaging pairs.
+            None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into Friedel pairs
+            when such columns exist and no merged F or I is pinned; True forces
+            stacking (notice at verbose > 0 if none exist); False averages pairs.
         """
         self.verbose = verbose
         # A copy: pins are re-keyed by MTZ type when a file is read.
@@ -232,6 +233,14 @@ class MTZReader:
             # columns (no coexisting merged column), average the pairs into merged
             # base columns so extraction can read them.
             self._merge_anomalous_columns()
+            return
+        # A pinned merged column means merged data: stacking would replace it with
+        # the Bijvoet pairs of whatever (+)/(-) columns sit beside it.
+        if self.anomalous is None and any(
+            self.column_names.get(key) in self.mtz_data.columns
+            and not self.column_names[key].endswith(("(+)", "(-)"))
+            for key in ("F", "I")
+        ):
             return
 
         cols = list(self.mtz_data.columns)
@@ -805,7 +814,7 @@ def _anomalous_table(data, fcalc):
     flag = data.friedel_flags.detach().cpu()
     inverse, m = data.asu_group_indices()
     inverse = inverse.cpu()
-    uniq = hkl[data._group_representative_rows(inverse)]
+    uniq = hkl[first_index_per_group(inverse)]
 
     # A mate counts as present only if it is a real, positive observation:
     # stacked input carries a NaN row for every absent mate, which French-Wilson
@@ -955,8 +964,8 @@ def write_reflections(
     both: R-free-flags (1 = work, 0 = free, -1 = excluded by the input's flags) and
     Validation_flag. With ``fcalc`` both add FWT/PHWT (2Fo-Fc),
     DELFWT/PHDELWT (Fo-Fc) and F-model/PH-model, the unweighted m = 1, D = 1
-    coefficients of :func:`~torchref.base.fourier.map_coefficients`, not 2mFo-DFc;
-    anomalous also F-model(+)/(-), PHIF-model(+)/(-) and ANOM/PANOM.
+    coefficients of :func:`~torchref.base.fourier.coefficients.map_coefficients`, not
+    2mFo-DFc; anomalous also F-model(+)/(-), PHIF-model(+)/(-) and ANOM/PANOM.
     R-free-flags is Phenix's label with the CCP4 free value 0, so tell Phenix
     the test-flag value rather than letting it assume 1.
 

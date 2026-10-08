@@ -2,7 +2,7 @@ Geometry Restraints
 ===================
 
 Geometry restraints keep the model chemically reasonable during refinement.
-:class:`~torchref.topology.Restraints` builds and holds bond, angle, torsion,
+:class:`~torchref.topology.restraints.Restraints` builds and holds bond, angle, torsion,
 planarity, chirality, and non-bonded (VDW) restraints.
 
 Restraint Setup
@@ -68,9 +68,10 @@ Restraints are reached through a nested-dict interface, ``[type][origin][field]`
 
    n_bonds = restraints.restraints["bond"]["all"]["indices"].shape[0]
 
-- **Types** with an origin level: ``"bond"``, ``"angle"``, ``"torsion"``,
-  ``"plane"``. Note ``"plane"`` in *storage* — the matching *target* and its
-  ``stats()`` entry are called ``"planarity"``, so the two keys differ.
+- **Types** with an origin level: ``"bond"``, ``"angle"``, ``"torsion"``.
+  ``"plane"`` is keyed by plane size instead (``"4_atoms"``, ...; fields
+  ``indices`` and ``sigmas``, no ``"all"``). Note ``"plane"`` in *storage* — the
+  matching *target* and its ``stats()`` entry are called ``"planarity"``.
 - **Origins** are where the restraint came from: ``"intra"``, ``"link"``,
   ``"peptide"``, ``"disulfide"``, and for torsions ``"phi"`` / ``"psi"`` /
   ``"omega"``.
@@ -83,13 +84,14 @@ Restraints are reached through a nested-dict interface, ``[type][origin][field]`
 - **Flat types** with no origin level: ``"vdw"`` and ``"chiral"`` are indexed
   straight by field, ``restraints.restraints["vdw"]["indices"]``.
 - **Fields** beyond the three above, where the restraint type has them:
-  ``periods``, ``min_distances``.
+  ``periods``, ``min_distances``; chirals carry ``ideal_volumes`` instead of
+  ``references``.
 
-The nesting is an accessor over a flat ``TensorDict`` keyed ``bond_all_indices``,
-not a real dict — it supports ``[]``, ``keys()``, ``get()`` and ``in``, but
-assigning a whole type (``restraints["bond"] = ...``) raises ``TypeError`` for
-the nested types. A type absent from the model is absent from ``keys()``, so
-probe with ``in`` before indexing.
+The nesting is a plain nested dict of tensors, assembled once at build time.
+Its entries are views into the topology's edge blocks, re-sliced into a new dict
+after every device or dtype move, so read ``restraints.restraints`` again after a
+``.to()`` instead of keeping an old reference. A type absent from the model is
+absent from the dict, so probe with ``in`` before indexing.
 
 Restraint Types
 ---------------

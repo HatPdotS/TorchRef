@@ -108,6 +108,15 @@ def build_extension(
     -------
     (module, error)
         ``(module, None)`` on success, ``(None, (message, traceback))`` on any failure.
+
+    Warnings
+    --------
+    Changes ``os.environ`` for the rest of the process: ``PATH`` gains the interpreter's
+    ``bin`` directory, and except on macOS ``CXX`` (and ``CC``, when a matching ``gcc``
+    exists) names the probed C++20 compiler. Later ``torch.utils.cpp_extension`` or
+    inductor builds in the process use them, and :func:`find_cxx` then takes ``CXX`` as
+    a user preset. They are not restored because those builds need the same compiler on
+    hosts whose default ``c++`` is too old.
     """
     try:
         import fcntl

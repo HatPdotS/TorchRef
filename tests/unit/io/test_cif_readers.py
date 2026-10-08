@@ -225,6 +225,50 @@ def test_a_one_sided_free_set_is_passed_on(cif_sf_dir, tmp_path, status, flag):
 
 
 @pytest.mark.unit
+def test_an_empty_quoted_value_keeps_its_column():
+    """``''`` in a loop row is a value: the columns after it stay in place."""
+    from torchref.topology.monomer.cif import read_component_groups, read_library_blocks
+
+    comps = CIFReader.from_string(read_library_blocks()["comp_list"])["chem_comp"]
+
+    assert comps.set_index("_chem_comp.id").loc["01G", "_chem_comp.name"] == ""
+    assert dict(zip(comps["_chem_comp.id"], comps["_chem_comp.group"])) == (
+        read_component_groups()
+    )
+
+
+@pytest.mark.unit
+def test_a_quote_inside_a_value_does_not_open_a_string():
+    """A quote opens a string only at the start of a value and closes it only before
+    whitespace, so O5' and 'it's' are one value each, as gemmi reads them."""
+    import gemmi
+
+    content = "\n".join(
+        [
+            "data_t",
+            "loop_",
+            "_atom_site.id",
+            "_atom_site.label_atom_id",
+            "_atom_site.label_comp_id",
+            "1 O5' ANP",
+            '2 "O5\'" ANP',
+            "3 'it's' ANP",
+            "4 '' ANP",
+            "5 C5' 'A B'",
+        ]
+    )
+    columns = ["id", "label_atom_id", "label_comp_id"]
+    block = gemmi.cif.read_string(content).sole_block()
+    expected = [
+        [gemmi.cif.as_string(value) for value in row]
+        for row in block.find("_atom_site.", columns)
+    ]
+
+    assert CIFReader.from_string(content)["atom_site"].values.tolist() == expected
+    assert expected[0] == ["1", "O5'", "ANP"] and expected[2][1] == "it's"
+
+
+@pytest.mark.unit
 def test_torsions_keep_their_id():
     path = get_library_manager(verbose=0).get_cif_file("DA")
     torsions = RestraintCIFReader(str(path)).get_all_restraints()["DA"]["torsions"]

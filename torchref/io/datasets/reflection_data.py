@@ -14,14 +14,15 @@ from typing import TYPE_CHECKING, Callable, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from torchref.base import math_torch
+from torchref.base.metrics import estimate_sigma_F
+from torchref.base.reciprocal import get_scattering_vectors
 from torchref.config import dtypes, get_int_dtype, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
 from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.utils import TensorMasks
+from torchref.utils.utils import TensorMasks, first_index_per_group
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
@@ -594,11 +595,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
     def conjugate_friedel(self, fcalc: torch.Tensor) -> torch.Tensor:
         """Move complex structure factors between the signed and canonical index.
 
-        Rows flagged in :attr:`friedel_flags` are evaluated at ``-h`` by
-        ``_hkl_for_sf`` while :attr:`hkl` holds ``+h``; ``F(-h)`` is the
-        conjugate of ``F(h)`` up to the anomalous ``f''`` term. Conjugating
-        exactly those rows re-expresses the array on the other index. The
-        operation is its own inverse, so it converts in both directions.
+        Rows flagged in :attr:`~.CrystalDataset.friedel_flags` are evaluated at ``-h``
+        by ``_hkl_for_sf`` while :attr:`~.CrystalDataset.hkl` holds ``+h``; ``F(-h)``
+        is the conjugate of ``F(h)`` up to the anomalous ``f''`` term. Conjugating
+        exactly those rows re-expresses the array on the other index. The operation
+        is its own inverse, so it converts in both directions.
 
         Amplitudes are unaffected -- only phases move.
 
@@ -623,9 +624,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """Complex ``F_calc`` from ``model``, on the canonical ASU index.
 
         Evaluates the model at the signed indices so Bijvoet mates get distinct
-        ``|F_calc|``, then returns the result on :attr:`hkl` -- the index this
-        dataset writes as ``H,K,L``. Structure factors are in this convention
-        everywhere in TorchRef; the signed index does not escape this method.
+        ``|F_calc|``, then returns the result on :attr:`~.CrystalDataset.hkl` -- the
+        index this dataset writes as ``H,K,L``. Structure factors are in this
+        convention everywhere in TorchRef; the signed index never escapes this method.
 
         Parameters
         ----------
@@ -641,7 +642,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         -------
         torch.Tensor
             Complex structure factors of shape (N,), row-aligned with
-            :attr:`hkl`.
+            :attr:`~.CrystalDataset.hkl`.
         """
         hkl = self._hkl_for_sf()
         fcalc = model(hkl, recalc=recalc) if cached else model.forward(hkl)
@@ -650,11 +651,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
     def asu_group_indices(self) -> Tuple[torch.Tensor, int]:
         """Group rows that describe the same unique reflection.
 
-        After canonicalization :attr:`hkl` holds CCP4-ASU indices and may
-        contain duplicate rows: the two members of a Bijvoet pair share one
-        canonical index and are distinguished only by :attr:`friedel_flags`
-        (and the signed :attr:`hkl_anomalous`). Symmetry-equivalent rows that
-        survive merging collapse the same way.
+        After canonicalization :attr:`~.CrystalDataset.hkl` holds CCP4-ASU indices and
+        may contain duplicate rows: a Bijvoet pair's two members share one canonical
+        index and are distinguished only by :attr:`~.CrystalDataset.friedel_flags` (and
+        the signed :attr:`~.CrystalDataset.hkl_anomalous`). Symmetry-equivalent rows
+        that survive merging collapse the same way.
 
         Anything that must treat such rows as a *single* observation has to
         group by canonical index rather than by row -- the work/free partition
@@ -672,9 +673,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Raises
         ------
         RuntimeError
-            If :attr:`hkl` is missing, or the data have not been canonicalized.
-            Grouping raw indices would silently fail to unite ``+h`` with
-            ``-h``, which is precisely the case this exists to handle.
+            If :attr:`~.CrystalDataset.hkl` is missing, or the data have not been
+            canonicalized. Grouping raw indices would silently fail to unite ``+h``
+            with ``-h``, which is precisely the case this exists to handle.
         """
         if self.hkl is None:
             raise RuntimeError("No hkl present; cannot group reflections.")
@@ -751,7 +752,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 return torch.arange(len(self.hkl), device=self.device)
             return torch.nonzero(valid).squeeze(-1)
         group_id, n_groups = self.asu_group_indices()
-        rows = self._group_representative_rows(group_id)
+        rows = first_index_per_group(group_id)
         if valid is not None:
             rows = rows[self._group_any(valid, group_id, n_groups)]
         return torch.sort(rows).values
@@ -770,23 +771,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         counts = torch.zeros(n_groups, dtype=torch.float32, device=mask.device)
         counts.index_add_(0, group_id, mask.to(torch.float32))  # dtype-ok: float32 counter for the MPS workaround above; reduced to bool
         return counts > 0
-
-    @staticmethod
-    def _group_representative_rows(group_id: torch.Tensor) -> torch.Tensor:
-        """One row index per ASU group, ordered by group id.
-
-        The lowest-numbered row of each group, via a stable sort. Used for
-        per-group quantities that are constant within a group -- resolution and
-        therefore the resolution bin, since every row in a group shares a
-        canonical Miller index. Taking a single representative also pins a group
-        that straddles a bin edge (``get_bins`` cuts on sorted position, so rows
-        at identical resolution can fall either side) into exactly one bin.
-        """
-        order = torch.argsort(group_id, stable=True)
-        sorted_gid = group_id[order]
-        first = torch.ones_like(sorted_gid, dtype=torch.bool)
-        first[1:] = sorted_gid[1:] != sorted_gid[:-1]
-        return order[first]
 
     def load(self, reader, french_wilson: bool = True):
         """
@@ -902,10 +886,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
                         requires_grad=False,
                     )
                 else:
-                    sigF = math_torch.estimate_sigma_F(self.F)
+                    sigF = estimate_sigma_F(self.F)
                     self.F_sigma = sigF
             else:
-                sigF = math_torch.estimate_sigma_F(self.F)
+                sigF = estimate_sigma_F(self.F)
                 self.F_sigma = sigF
             self.amplitude_source = data_dict.get("F_col", "Unknown")
 
@@ -1174,9 +1158,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             intensities. See :meth:`load`.
         anomalous : bool, optional
             Anomalous (Bijvoet) handling. If None (default), ``F(+)/F(-)`` (or
-            ``I(+)/I(-)``) columns are auto-detected and loaded as explicit
-            Friedel pairs when present (anomalous preferred). True forces this;
-            False forces a merged load even when anomalous columns are present.
+            ``I(+)/I(-)``) columns are loaded as explicit Friedel pairs when
+            present, unless ``column_names`` pins a merged F or I. True forces
+            this; False forces a merged load even when anomalous columns are present.
 
         Returns
         -------
@@ -1343,7 +1327,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
             group_valid = torch.ones_like(group_valid)
 
-        group_bin = bin_indices[self._group_representative_rows(group_id)]
+        # One representative row per group: get_bins cuts on sorted position, so a
+        # group straddling a bin edge would otherwise land in two bins.
+        group_bin = bin_indices[first_index_per_group(group_id)]
         group_free = self._stratified_group_draw(
             group_valid,
             group_bin,
@@ -1520,7 +1506,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             raise ValueError(
                 "Unit cell parameters are required to calculate resolution"
             )
-        s = math_torch.get_scattering_vectors(self.hkl, self.cell.data)
+        s = get_scattering_vectors(self.hkl, self.cell.data)
         resolution = 1.0 / torch.linalg.norm(s, axis=1)
         self.resolution = resolution
 
@@ -1985,7 +1971,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Output MTZ filename.
         fcalc : torch.Tensor, optional
             Complex structure factors of shape (N,), row-aligned with
-            :attr:`hkl` in the canonical-ASU convention (as returned by
+            :attr:`~.CrystalDataset.hkl` in the canonical-ASU convention (as returned by
             :meth:`structure_factors`) and on the scale of ``F``. Adds model
             and 2Fo-Fc / Fo-Fc columns.
         model_ft : ModelFT, optional
@@ -1997,7 +1983,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Raises
         ------
         ValueError
-            If ``fcalc`` is not row-aligned with :attr:`hkl`.
+            If ``fcalc`` is not row-aligned with :attr:`~.CrystalDataset.hkl`.
         """
         # One fallback for both layouts, so ``fcalc`` means the same thing
         # whether the caller supplied it or it was derived here. cached=False
@@ -2207,7 +2193,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if self.cell is None:
             raise ValueError("No unit cell defined")
 
-        return math_torch.get_scattering_vectors(self.hkl, self.cell.data)
+        return get_scattering_vectors(self.hkl, self.cell.data)
 
     def get_corrected_data(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return amplitudes and sigmas, shape (N,), in this dataset's units.
@@ -2241,9 +2227,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         but downstream code (e.g. ensemble refinement) needs a third held-out
         set for hyperparameter tuning. Free reflections are split
         resolution-stratified; ``val_fraction_of_free`` of them are marked in
-        the separate boolean :attr:`validation_flags`, leaving
-        :attr:`rfree_flags` untouched. The work/free/validation subsets are
-        disjoint (validation is carved out of free) -- see
+        the separate boolean :attr:`~.CrystalDataset.validation_flags`, leaving
+        :attr:`~.CrystalDataset.rfree_flags` untouched. The work/free/validation
+        subsets are disjoint (validation is carved out of free) -- see
         ``_subset_indices`` and the ``work``/``free``/``validation``
         accessors. Like :meth:`generate_rfree_flags`, the split is over whole
         ASU groups so Bijvoet mates stay together (see
@@ -2279,7 +2265,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         group_free = self._group_any(free_mask, group_id, n_groups)
 
         bin_indices, n_bins = self.get_bins(n_bins=20, min_per_bin=20)
-        group_bin = bin_indices[self._group_representative_rows(group_id)]
+        group_bin = bin_indices[first_index_per_group(group_id)]
         group_val = self._stratified_group_draw(
             group_free,
             group_bin,

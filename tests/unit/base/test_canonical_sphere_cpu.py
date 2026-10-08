@@ -48,14 +48,19 @@ from torchref.base.electron_density.radius_policy import (
     per_atom_radius_aniso,
     per_atom_radius_iso,
 )
-from torchref.base.scattering.scattering_table import get_scattering_params_by_z
+from torchref.base.scattering.scattering_table import (
+    elements_to_z,
+    get_scattering_params_by_z,
+)
+from torchref.io.pdb import PDBReader
 from torchref.model.parameter_wrappers import u6_to_matrix
+from torchref.symmetry.cell import Cell
 from torchref.utils import use_portable
 
 pytestmark = pytest.mark.unit
 
 # float32 agreement floor. The fused kernel uses a fast 2^x exp (the CPU analogue of
-# the metal::fast::exp the Metal kernels already use), measured at 2e-5 rel L2
+# the metal::fast::exp the Metal kernels already use), measured at 2e-6 rel L2
 # against std::exp; the portable splat uses torch.exp. Both are far below the 7.9e-4
 # amplitude-truncation error at the default 3 sigma, so this tolerance bounds
 # arithmetic noise while still failing on any geometry disagreement (the smallest of
@@ -81,8 +86,8 @@ def _iso_atoms(f64, n=36, dtype=torch.float32, seed=0):
     A, B = get_scattering_params_by_z(z, dtype=dtype)
     xyz = (torch.rand(n, 3, generator=g, dtype=torch.float64) @ f64.T).to(dtype)
     adp = (torch.rand(n, generator=g) * 35 + 8).to(dtype)
-    # never exactly 1.0: the kernels recover d/d_occ by dividing the accumulated
-    # gradient by occ, and at occ == 1 a wrong scaling is invisible
+    # never exactly 1.0: the kernels scale the xyz and ADP gradients by occ, and at
+    # occ == 1 a missing or doubled factor is invisible
     occ = (torch.rand(n, generator=g) * 0.4 + 0.6).to(dtype)
     return xyz, adp, occ, A, B
 
@@ -171,7 +176,7 @@ def _empty_iso(dtype):
 
 @pytest.mark.parametrize("beta", _BETAS)
 def test_fused_iso_matches_contract(beta):
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
     frac, inv_frac, dims, f64 = _cell(beta)
     xyz, adp, occ, A, B = _iso_atoms(f64)
@@ -183,7 +188,7 @@ def test_fused_iso_matches_contract(beta):
 
 @pytest.mark.parametrize("beta", _BETAS)
 def test_fused_aniso_matches_contract(beta):
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
     frac, inv_frac, dims, f64 = _cell(beta)
     xyz, u, occ, A, B = _aniso_atoms(f64)
@@ -218,7 +223,7 @@ def test_portable_aniso_matches_contract(beta):
 
 def test_fused_float64_is_exact():
     """float64 uses std::exp, so only fp rounding separates it from the reference."""
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip("fused CPU splat unavailable")
     frac, inv_frac, dims, f64 = _cell(100.0, dtype=torch.float64, dims=(32, 28, 24))
     xyz, adp, occ, A, B = _iso_atoms(f64, dtype=torch.float64)
@@ -227,6 +232,33 @@ def test_fused_float64_is_exact():
         torch.zeros(dims, dtype=torch.float64), xyz, adp, occ, A, B, inv_frac, frac, r)
     want = _brute_iso(dims, xyz, adp, occ, A, B, inv_frac, frac, r)
     assert _rel_l2(got, want) < 1e-13
+
+
+def test_fused_float32_total_density_is_unbiased(pdb_dir):
+    """The float32 fast exp adds no one-sided bias to the integrated density.
+
+    1DAW atoms on a 216x90x69 grid, float32 against float64 (``std::exp``) on the same
+    inputs: the total density must agree to 2e-6 relative. A 2^f polynomial whose error
+    has one sign, such as the Taylor series, leaves the whole map 1.3e-5 low.
+    """
+    if sphere_splat.why_unavailable() is not None:
+        pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
+    df, cell, _ = PDBReader().read(str(pdb_dir / "1DAW.pdb"))()
+    cell = Cell(cell)
+    f32 = torch.float32
+    xyz = torch.tensor(df[["x", "y", "z"]].to_numpy(), dtype=f32)
+    adp = torch.tensor(df["tempfactor"].to_numpy(), dtype=f32)
+    occ = torch.tensor(df["occupancy"].to_numpy(), dtype=f32)
+    A, B = get_scattering_params_by_z(elements_to_z(df["element"].tolist()), dtype=f32)
+    r = per_atom_radius_iso(adp, B, n_sigma=3.0)
+    args = (xyz, adp, occ, A, B, cell.inv_fractional_matrix, cell.fractional_matrix, r)
+    dims = (216, 90, 69)
+    got = sphere_splat.add_isotropic_cpu_sphere_var(torch.zeros(dims, dtype=f32), *args)
+    want = sphere_splat.add_isotropic_cpu_sphere_var(
+        torch.zeros(dims, dtype=torch.float64), *(t.double() for t in args)
+    )
+    bias = float(got.double().sum() / want.sum() - 1.0)
+    assert abs(bias) < 2e-6, f"float32 total density off by {bias:.2e} relative"
 
 
 # ===========================================================================
@@ -327,7 +359,7 @@ def test_auto_actually_dispatches_the_fused_kernel(dtype, monkeypatch):
     used to patch ``main`` instead, because the ladder there resolved the name from its own
     globals.
     """
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip("fused CPU splat unavailable")
     frac, inv_frac, dims, f64 = _cell(100.0, dtype=dtype)
     calls = []
@@ -445,7 +477,7 @@ def test_fused_kernel_is_thread_invariant(n_threads):
     ``test_cpu_scatter.py``, which exercised the C++ structured scatter -- no longer
     reachable from the dispatch.
     """
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU sphere splat unavailable: {sphere_splat.last_error()}")
 
     frac, inv_frac, dims, f64 = _cell(115.0, dtype=torch.float32)
@@ -482,15 +514,16 @@ def test_fused_gate_requires_one_shared_dtype():
 
     The C++ selects one ``scalar_t`` from the output map via
     ``AT_DISPATCH_FLOATING_TYPES(out.scalar_type(), ...)`` and then reads every other
-    tensor through a raw pointer of that type. So a float64 map beside float32 atoms would
-    reinterpret the coordinate buffer as doubles -- garbage values and a 2x out-of-bounds
-    read -- and the gate has to refuse it.
+    tensor through ``data_ptr<scalar_t>()``, which raises on any other dtype. So a float64
+    map beside float32 atoms is refused with an error (first a ValueError from the entry
+    point's dtype check), and the gate sends such a call to the portable splat instead.
 
     Written down because the rule is easy to get wrong when it is restated as a set of
     permitted dtypes: "each tensor's dtype is in {f32, f64}" *admits* the mixed case, while
     the actual requirement is "all tensors share one dtype drawn from {f32, f64}". The two
-    read almost identically and only one is memory-safe. In the table that difference is the
-    ``require_uniform_dtype`` flag, and this asserts it against the row that ships.
+    read almost identically and only one keeps the kernel from raising. In the table that
+    difference is the ``require_uniform_dtype`` flag, and this asserts it against the row
+    that ships.
     """
     from torchref.base.electron_density._backends import DENSITY_BACKENDS
 
@@ -513,7 +546,7 @@ def test_fused_extension_compiles():
     """The fused sphere splat must actually build. Fails rather than skipping.
 
     Every other test in this file -- and in ``tests/unit/structure_factor`` -- calls
-    ``pytest.skip`` when ``sphere_splat_available()`` is False, which is right for them:
+    ``pytest.skip`` when ``why_unavailable()`` returns a reason, which is right for them:
     they are testing numerics, and without the extension there is nothing to test. But if
     *every* test skips, a build that has stopped working produces an all-green run while
     the CPU production path has silently degraded to the portable splat. Dispatch is designed
@@ -531,7 +564,7 @@ def test_fused_extension_compiles():
     That guard previously protected the C++ structured scatter, a helper; it now protects
     the production CPU splat, so it matters more than it did.
     """
-    if sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is None:
         return
 
     import os

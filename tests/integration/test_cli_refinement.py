@@ -71,6 +71,30 @@ class TestCLIRefine:
         assert "not found" in combined or "error" in combined
 
     @pytest.mark.integration
+    def test_no_header_writes_no_header(self, cli_script, test_files_dir, tmp_path):
+        """``--no-header`` writes coordinates without TITLE, REMARK 3 or ``_refine``."""
+        outdir = tmp_path / "refine_no_header"
+        argv = [
+            sys.executable, str(cli_script),
+            "-m", str(test_files_dir / "pdb" / "1DAW.pdb"),
+            "-sf", str(test_files_dir / "mtz" / "1DAW.mtz"),
+            "-o", str(outdir),
+            "-n", "0",
+            "-v", "0",
+            "--no-header",
+            "--device", "cpu",
+        ]  # fmt: skip
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=900)
+        assert result.returncode == 0, result.stderr[-800:]
+
+        pdb_text = (outdir / "refined.pdb").read_text()
+        assert "ATOM" in pdb_text
+        assert not any(
+            line.startswith(("TITLE", "REMARK   3")) for line in pdb_text.splitlines()
+        )
+        assert "_refine." not in (outdir / "refined.cif").read_text()
+
+    @pytest.mark.integration
     @pytest.mark.slow
     @pytest.mark.cuda
     def test_cli_refine_cuda_end_to_end(self, cli_script, h_structure_pair, tmp_path):
