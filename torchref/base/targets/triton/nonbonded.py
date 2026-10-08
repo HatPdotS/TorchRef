@@ -351,7 +351,7 @@ def nonbonded_heavy_math_triton(
 ):
     """Triton-backed heavy-heavy VDW prolsq NLL with analytic backward.
 
-    CUDA float32 only; arguments as :func:`~torchref.base.targets.nonbonded_heavy_math`.
+    CUDA float32 only; arguments as :func:`~.nonbonded.nonbonded_heavy_math`.
     """
     return _NonbondedHeavyMathTriton.apply(
         xyz, indices, min_distances,

@@ -55,7 +55,7 @@ def ramachandran_math(
     Mirrors ``RamachandranTarget.forward``.
 
     Dispatches to
-    :func:`torchref.base.targets.triton.ramachandran_math_triton` on
+    :func:`torchref.base.targets.triton.ramachandran.ramachandran_math_triton` on
     CUDA float32. Falls back to eager
     otherwise.
 

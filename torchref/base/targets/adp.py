@@ -37,7 +37,7 @@ def adp_simu_math(
     """ADP similarity (SIMU) NLL on bonded-atom B-factor differences.
 
     Dispatches to
-    :func:`torchref.base.targets.triton.adp_simu_math_triton` on CUDA
+    :func:`torchref.base.targets.triton.adp_simu.adp_simu_math_triton` on CUDA
     float32. Falls back to eager
     otherwise.
 
