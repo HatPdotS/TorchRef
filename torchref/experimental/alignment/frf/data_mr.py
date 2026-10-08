@@ -212,50 +212,34 @@ def bessel_sh_expand(
 ) -> BesselSHCoefficients:
     """Phaser-style ``c_nlm = Σ_h Y*_lm(ŝ) · I · sqrt(2u+1) · j_u(h)/h``.
 
-    Memory-bounded and chunked, verified element-wise by
-    ``tests/unit/frf_separate``. A direct implementation materialises the full
-    ``(M, L, N_radial)`` Bessel table and
-    ``(M, u_max+1)`` j-table for *all* reflections at once — at L≈100 with
-    a symmetry-unrolled obs set (≳10⁶ reflections) that is tens of GB and
-    OOMs. Here the j-table, Bessel weights and Y_lm are all computed
-    *inside* the reflection-chunk loop, so peak memory is set by one chunk.
+    Phaser source: DataMR.cc:993, 1107 (radial × SH expansion and weight) and
+    DataMR.cc:863-870, 1117 (even-l only, m-filter). Only even ``l`` are computed
+    and the negative-``m`` half is mirrored, not summed; Phaser also sums the
+    Friedel mate (cctbx's ``conjugate_flag``), so these coefficients are half of
+    its. Reflections are processed in chunks, so peak memory is set by one chunk
+    rather than by the full ``(M, L, N_radial)`` Bessel table.
 
-    Citations:
-      * radial × SH expansion, sqrt(2u+1)·j_u(h)/h weight: DataMR.cc:993, 1107
-      * even-l only (Patterson centrosymmetry) + m-filter: DataMR.cc:863-870, 1117
+    The clustering keys are built on the host in double whatever dtype
+    ``s_vectors`` has, because float32 cannot resolve ``|s|`` to the key's 1e-7;
+    everything else runs at :func:`torchref.config.get_float_dtype`.
 
-    **No antipodal copy.** The Patterson's centrosymmetry is already encoded
-    twice here -- only even ``l`` are computed, and the negative-``m`` half is
-    mirrored rather than summed -- and both of those *save* work. Concatenating
-    ``-s`` onto the reflection set was a third encoding that *cost* work and
-    bought nothing: for even ``l``, ``Y_lm(-s_hat) = Y_lm(s_hat)``, and the
-    intensity, Bessel weight and Legendre factor are all unchanged under
-    negation, so it doubled ``c_nlm`` exactly. Both sides doubled scaled the
-    rotation function by 4, which the z-score normalisation removes.
+    Parameters
+    ----------
+    s_vectors : torch.Tensor
+        Cartesian reciprocal-space vectors of shape ``(M, 3)``, in Å⁻¹.
+    intensity : torch.Tensor
+        Per-reflection intensity ``I`` of shape ``(M,)``.
+    L : int
+        Angular bandwidth; ``l ∈ [0, L)``.
+    bessel_h_scale : float
+        Bessel argument scale, ``h = bessel_h_scale · |s|``, in Å.
+    zsymm : int
+        Zero every ``m`` that is not a multiple of ``zsymm``; 1 keeps all.
 
-    Measured before removal, over 10 benchmark structures x 10 seeded trials:
-    truth ranks 98/100 identical (1 better, 1 worse), the top score exactly
-    0.2499974 to 0.2500036 of the doubled value, and the search 22.5% faster on
-    3K7M / 16.4% on 1DAW. Note that Phaser does include the mate (cctbx's
-    ``conjugate_flag``), so our coefficients are now half of its -- which
-    matters only to the coefficient-level comparison in
-    ``alignment_lab/diagnostics/frf_encode_compare.py``.
-
-    Two precisions are in play and they are deliberately different.
-
-    The **clustering keys** are computed on the host in double, whatever dtype
-    ``s_vectors`` arrive in: ``_GROUP_SCALE_S`` keys ``|s|`` at 1e-7 and that is
-    exactly where float32's resolution runs out -- at ``|s| = 0.5`` a float32
-    rounding is ~0.3 of a key step, so reflections that are mathematically
-    degenerate would sometimes land in adjacent keys and the degeneracy
-    collapse the cost model depends on would fray. The host always has double,
-    the key computation is O(N), and nothing double ever touches the device.
-
-    Everything else -- the Legendre/Y_lm precompute, the radial weights, the
-    Bessel ladder (kept in range by rescaling), the contraction and the returned
-    coefficients -- runs at :func:`torchref.config.get_float_dtype`, this
-    codebase's working precision and the dtype the fused CPU kernel is built
-    for.
+    Returns
+    -------
+    BesselSHCoefficients
+        ``coeffs`` of shape ``(N_radial, L, 2L-1)`` at the configured complex dtype.
     """
     assert s_vectors.dim() == 2 and s_vectors.shape[-1] == 3
     assert intensity.dim() == 1 and intensity.shape[0] == s_vectors.shape[0]
