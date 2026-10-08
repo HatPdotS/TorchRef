@@ -203,7 +203,7 @@ def oeffner_vrms(n_residues: int, identity: float = 1.0) -> float:
     with ``A = 0.0569``, ``B = 173``, ``C = 1.52``. The clamp avoids extrapolating
     beyond the well-populated range of Oeffner et al.'s training set
     (Acta Cryst. (2013) D69:2209-2215). For a perfect model (``identity=1``) and
-    a typical protein (~300 residues), this gives vrms ≈ 0.47 Å; large
+    a typical protein (~300 residues), this gives vrms ≈ 0.44 Å; large
     assemblies (clamped at 1500) give vrms ≈ 0.67 Å. Phaser uses this as the
     Luzzati ``vrms`` for the σ_A computation.
 
@@ -218,7 +218,7 @@ def oeffner_vrms(n_residues: int, identity: float = 1.0) -> float:
     -------
     float
         Coordinate RMS estimate in Å, suitable as ``delta_vrms_A`` for
-        :func:`compute_sigma_a_luzzati` / :func:`eterm_sigma_a`.
+        :func:`eterm_sigma_a`.
     """
     A, B, C = 0.0569, 173.0, 1.52
     n_clamped = max(125, min(int(n_residues), 1500))
