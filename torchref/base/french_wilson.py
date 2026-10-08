@@ -54,6 +54,7 @@ from collections.abc import Callable
 import torch
 
 from torchref.config import get_float_dtype, get_int_dtype
+from torchref.utils.matmul import matmul
 
 #: B-spline coefficients in ``log Sigma``. Enough to follow the low-resolution
 #: solvent deficit and the shoulder near 4-5 Å to within the scatter of shell
@@ -828,7 +829,7 @@ def _fisher_scoring(
         weight = mu * mu / total
         score = mu * (I - mu) / total
         step = _solve_normal(
-            design.T @ (design * weight.unsqueeze(1)), design.T @ score
+            matmul(design.T, design * weight.unsqueeze(1)), matmul(design.T, score)
         )
         for _ in range(_MAX_HALVINGS):
             trial_loss, trial_eta, trial_rounding = objective(coeff + step)
@@ -945,7 +946,7 @@ def fit_mean_intensity(
     log_sigma = torch.log(sigma_I[usable])
     fitted_radial = radial[usable]
     log_sbar = fitted_radial @ _solve_normal(
-        fitted_radial.T @ fitted_radial, fitted_radial.T @ log_sigma
+        matmul(fitted_radial.T, fitted_radial), matmul(fitted_radial.T, log_sigma)
     )
     log_noise = torch.maximum(log_sbar, log_sigma - math.log(_NOISY_SIGMA_RATIO))
 

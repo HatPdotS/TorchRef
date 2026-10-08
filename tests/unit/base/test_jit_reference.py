@@ -40,7 +40,9 @@ class _StaleKernel(torch.nn.Module):
 
 def _run_torchref(code: str, cache_dir: Path) -> subprocess.CompletedProcess:
     """Run ``code`` in a fresh interpreter with ``TORCHREF_COMPILE_CACHE=cache_dir``."""
-    env = dict(os.environ, TORCHREF_COMPILE_CACHE=str(cache_dir))
+    # The scripted kernel under test is the CPU one; without the pin, ``Cell`` lands on
+    # the auto-selected accelerator while the scene tensors stay on the CPU.
+    env = dict(os.environ, TORCHREF_COMPILE_CACHE=str(cache_dir), TORCHREF_DEVICE="cpu")
     env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(_REPO), os.environ.get("PYTHONPATH")) if p
     )

@@ -241,7 +241,8 @@ def bond_free(tmp_path):
 
     path = tmp_path / "waters.pdb"
     path.write_text(_BOND_FREE)
-    model = Model(verbose=0, hydrogens="strip")
+    # On the CPU: the callers pass float64 coordinates, which MPS cannot hold.
+    model = Model(verbose=0, hydrogens="strip", device="cpu")
     model.load_pdb(str(path))
     return model.restraints, model.xyz().detach().double()
 

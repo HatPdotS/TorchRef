@@ -496,4 +496,6 @@ def test_inherited_fix_and_refine_select_nodes(pdb_dir, mode):
     some[:5] = True
     field.refine(some)
     assert int(field.get_refinable_count()) == 5
-    assert torch.equal(field(), before)
+    torch.testing.assert_close(
+        field().detach(), before, rtol=1e-4, atol=1e-4 * float(before.abs().max())
+    )

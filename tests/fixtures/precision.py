@@ -32,6 +32,21 @@ def cpu_double_precision() -> Iterator[None]:
         torchref.sigma_cutoff_ed.value = cutoff
 
 
+@pytest.fixture(autouse=True)
+def _restore_global_config() -> Iterator[None]:
+    """Restore TorchRef's process-wide device and dtypes after every test.
+
+    A CLI ``main()`` run in-process with ``--device cpu`` sets ``device.current`` for
+    the whole process; unrestored, every later test runs on the CPU and an
+    accelerator host silently stops testing its accelerator.
+    """
+    original = dtypes.float, dtypes.int, dtypes.complex, device.current
+    try:
+        yield
+    finally:
+        dtypes.float, dtypes.int, dtypes.complex, device.current = original
+
+
 @pytest.fixture
 def double_cpu() -> Iterator[None]:
     """Use CPU double precision for one test and restore configuration afterward."""

@@ -30,6 +30,7 @@ from typing import Optional, Tuple
 import torch
 
 from ...config import get_float_dtype, get_int_dtype
+from ...utils.matmul import matmul
 
 
 def legendre_recurrence_coefficients(L: int, dtype, device):
@@ -365,8 +366,8 @@ def fit_overall_anisotropy(
         model = torch.exp((A @ theta).clamp(min=-20.0, max=20.0))
         J = model.unsqueeze(1) * A
         Jw = J * w.unsqueeze(1)
-        H = J.transpose(0, 1) @ Jw
-        grad = Jw.transpose(0, 1) @ (ratio - model)
+        H = matmul(J.transpose(0, 1), Jw)
+        grad = matmul(Jw.transpose(0, 1), ratio - model)
         H = H + torch.eye(7, dtype=H.dtype, device=H.device) * 1e-12 * float(
             torch.diagonal(H).abs().max().clamp(min=1e-30))
         theta = theta + torch.linalg.solve(H, grad)

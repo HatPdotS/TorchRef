@@ -26,6 +26,7 @@ from typing import Optional, Tuple
 import torch
 
 from torchref.base.direct_summation import compute_scattering_factors_batch
+from torchref.utils.matmul import matmul
 
 
 def _fingerprint(*tensors: Optional[torch.Tensor]) -> tuple:
@@ -190,8 +191,8 @@ class SigmaMEstimator:
         w_w = s_sq.unsqueeze(0) * self.f_sq_kh * inv_sig_sq_valid.unsqueeze(0)
         w_4 = self.s_4.unsqueeze(0) * self.f_sq_kh * inv_sig_sq_valid.unsqueeze(0)
         exp_table_T = exp_table.transpose(0, 1)
-        self.g_w_table = torch.matmul(w_w, exp_table_T)
-        self.g_4_table = torch.matmul(w_4, exp_table_T)
+        self.g_w_table = matmul(w_w, exp_table_T)
+        self.g_4_table = matmul(w_4, exp_table_T)
 
         self._fp = fp
 
