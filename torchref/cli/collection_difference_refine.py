@@ -69,10 +69,9 @@ configure_unbuffered_output()
 # Default target weights
 # ---------------------------------------------------------------------------
 
+# The difference rows are absent: --weight-schedule drives the one --difference-target
+# selects, and main sets the other to zero.
 DEFAULT_TARGET_WEIGHTS = {
-    "xray/difference": 1.0,
-    # Selected by --difference-target; the schedule drives whichever row is chosen.
-    "xray/difference_sd": 0.0,
     # The absolute channel. Zero by default: the difference refinement fixes the
     # dark model, so the overall level is already anchored and this term only adds
     # the systematic errors the difference cancels.
@@ -1323,10 +1322,18 @@ Examples:
     target_weights["xray/difference_sd"] = 0.0
     target_weights[difference_key] = weight_schedule[0]
     target_weights["similarity"] = args.similarity_weight
-    target_weights, err = parse_weights(args.weights, defaults=target_weights)
+    user_weights, err = parse_weights(args.weights)
     if err:
         print(f"Error: {err}", file=sys.stderr)
         return 1
+    if difference_key in user_weights:
+        print(
+            f"Error: --weights cannot set '{difference_key}': --weight-schedule "
+            "drives it every round.",
+            file=sys.stderr,
+        )
+        return 1
+    target_weights.update(user_weights)
 
     # --- Validate input files ---
     rc = validate_files([
