@@ -9,8 +9,7 @@ supplies the derivatives.
 The base ``Target`` holds no model or refinement handle of its own. Each target
 stores what it needs — a model, a
 :class:`~torchref.io.datasets.reflection_data.ReflectionData`, or the refinement
-— on ``self`` in its ``__init__``. The base signature is
-``__init__(self, verbose=0, **kwargs)``, so a subclass must keep its own handle.
+— on ``self`` in its ``__init__``.
 
 Targets are registered in a
 :class:`~torchref.refinement.loss_state.LossState`, which owns the target
@@ -189,7 +188,7 @@ Custom Targets
        name = 'entropy_reg'
 
        def __init__(self, model):
-           super().__init__()          # base takes (verbose=0, **kwargs) only
+           super().__init__()
            self.model = model          # keep your own handle
 
        def forward(self):

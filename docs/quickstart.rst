@@ -269,8 +269,7 @@ Define custom refinement targets with automatic gradient computation:
        name = 'custom_lsq'
 
        def __init__(self, refinement):
-           # The base Target signature is __init__(self, verbose=0, **kwargs);
-           # keep a handle on the refinement object yourself.
+           # The base Target holds no refinement; keep a handle on it yourself.
            super().__init__()
            self.refinement = refinement
 
