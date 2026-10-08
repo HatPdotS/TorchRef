@@ -71,15 +71,9 @@ class MonolithicRefinement(LBFGSRefinement):
     def _build_xray_targets(self, mode: str):
         """Build the work/test RiceSigmaMXrayTargets sharing one calibration.
 
-        Hooks ``_build_xray_targets``, which is the ONE place targets are constructed
-        (both ``_init_targets`` and ``set_xray_target_mode`` route through it). This
-        override previously hooked ``set_xray_target_mode``, which stopped being on the
-        construction path when the double-build was fixed -- so `rice_sigma_m` fell
-        through to the factory, which does not know it, and every monolithic test failed
-        with "Unknown X-ray target mode". Keep this hooked to whatever the single
-        construction point is.
-
-        Falls back to the base implementation for any non-monolithic mode.
+        Overrides ``_build_xray_targets``, the single point where X-ray targets are
+        constructed (``_init_targets`` and ``set_xray_target_mode`` both route
+        through it). Any other mode falls through to the base implementation.
         """
         if mode != "rice_sigma_m":
             return super()._build_xray_targets(mode)
@@ -115,10 +109,9 @@ class MonolithicRefinement(LBFGSRefinement):
         co-refined ``forward().backward()`` raises "backward through the graph a
         second time". Clearing the cache forces a fresh, in-graph recompute.
 
-        This is the model-side half of the "don't reuse a freed graph" fix; the
-        scaler-side half lives in
+        The scaler-side counterpart is
         :meth:`~torchref.experimental.monolithic_refinement.density_scaler.DensitySolventScaler.forward`,
-        which busts its ``_f_sol_raw`` cache each forward.
+        which drops its ``_f_sol_raw`` cache each forward.
         """
         super().get_scales()
         if hasattr(self.model, "reset_cache"):
