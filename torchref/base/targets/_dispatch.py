@@ -14,7 +14,8 @@ comparison or around a flaky Triton install::
         ...
 """
 
-from typing import Optional
+import functools
+from typing import Callable, Optional
 
 import torch
 
@@ -78,3 +79,46 @@ def use_triton(*tensors: torch.Tensor) -> bool:
     inputs can be passed straight through.
     """
     return will_use(TARGET_BACKENDS, "triton", tensors)
+
+
+def first_order_only(backward: Callable) -> Callable:
+    """Make a first-order-only autograd ``backward`` refuse ``create_graph=True``.
+
+    Decorate the ``backward`` staticmethod of a :class:`torch.autograd.Function` whose
+    gradient comes from a kernel and so carries no graph. Autograd runs ``backward``
+    with grad mode on exactly when the caller asked for ``create_graph=True``; the
+    wrapper then raises a ``RuntimeError`` naming the Function, because a second
+    derivative taken through it would silently miss this term. First-order backward is
+    untouched, and the check reads grad mode only, so it never syncs the device.
+    ``torch.autograd.function.once_differentiable`` is not enough: it raises only when
+    the second pass reaches this node, which a loss linear in the output, or a second
+    ``torch.autograd.grad(inputs=x)``, never does.
+
+    Parameters
+    ----------
+    backward : Callable
+        The ``backward(ctx, *grad_outputs)`` to guard.
+
+    Returns
+    -------
+    Callable
+        ``backward`` wrapped with the check.
+
+    Raises
+    ------
+    RuntimeError
+        From the wrapped ``backward``, when it runs with grad mode enabled.
+    """
+
+    @functools.wraps(backward)
+    def guarded(ctx, *grad_outputs):
+        if torch.is_grad_enabled():
+            raise RuntimeError(
+                f"{backward.__qualname__}: the second derivative is not implemented, "
+                "so create_graph=True cannot differentiate through this kernel. Run "
+                "under torchref.utils.use_portable() to take it through the eager "
+                "kernels."
+            )
+        return backward(ctx, *grad_outputs)
+
+    return guarded

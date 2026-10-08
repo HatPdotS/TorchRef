@@ -13,6 +13,7 @@ import torch
 import triton
 import triton.language as tl
 
+from .._dispatch import first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -102,6 +103,7 @@ class _GaussXrayMathTriton(torch.autograd.Function):
         return out.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         F_obs, F_calc, sigma, mask_u8, sigma_floor_t = ctx.saved_tensors
         N = F_calc.shape[0]

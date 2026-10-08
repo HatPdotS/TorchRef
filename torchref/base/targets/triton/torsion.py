@@ -9,6 +9,7 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
+from .._dispatch import first_order_only
 from ._dihedral import dihedral_and_grad
 
 
@@ -195,6 +196,7 @@ class _TorsionOmegaMathTriton(torch.autograd.Function):
         return nll.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         xyz, idx, sigs, is_pro_u8 = ctx.saved_tensors
         N = idx.shape[0]
@@ -427,6 +429,7 @@ class _TorsionUnimodalMathTriton(torch.autograd.Function):
         return nll.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         xyz, idx, refs, sigs, periods_i32 = ctx.saved_tensors
         N = idx.shape[0]

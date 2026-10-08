@@ -21,6 +21,8 @@ import torch
 import triton
 import triton.language as tl
 
+from .._dispatch import first_order_only
+
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
 
@@ -227,6 +229,7 @@ class _PlanarityMathTriton(torch.autograd.Function):
         return torch.cat(bucket_outs).sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         xyz = ctx.saved_tensors[0]
         dxyz = torch.zeros_like(xyz)
