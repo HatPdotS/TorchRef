@@ -7,8 +7,9 @@ every atom by construction, so the structure-wide F-truncation residual is gover
 the single knob ``N_sigma`` (``torchref.sigma_cutoff_ed``) rather than by the worst
 aggregate atom -- the failure mode of a per-structure scalar radius.
 
-The radius is quantized up to ``round_to`` (0.25 A) and clamped to ``[r_lo, r_hi]`` to
-keep the downstream offset caches small. Those three are fixed policy constants; the only
+The radius is quantized up to ``round_to`` (0.25 A) and clamped to ``[r_lo, r_hi]``,
+which bounds the distinct radii, and with them the portable splat's radius buckets, to
+21. Those three are fixed policy constants; the only
 user-facing knob is ``n_sigma``.
 """
 
