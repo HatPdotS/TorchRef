@@ -107,40 +107,6 @@ class TestRfactorCalculationsFunctional:
             if torch.isfinite(torch.tensor(r_free)):
                 assert 0 <= r_free <= 1
 
-    @pytest.mark.integration
-    def test_bin_wise_rfactors(self, sample_structure_pair):
-        """Test bin-wise R-factor calculation."""
-        from torchref.base.math_torch import bin_wise_rfactors
-        from torchref.io import ReflectionData
-        from torchref.model.model import Model
-        
-        model = Model()
-        model.load_cif(str(sample_structure_pair["model"]))
-        
-        data = ReflectionData()
-        data.load_mtz(str(sample_structure_pair["reflections"]))
-        
-        fobs = data.F
-        fcalc = fobs * 1.05
-        
-        # Create bins based on resolution
-        n_refl = fobs.shape[0]
-        n_bins = 10
-        bins = torch.randint(0, n_bins, (n_refl,), device=fobs.device)
-
-        rfree_mask = torch.rand(n_refl, device=fobs.device) > 0.05  # 95% work set
-        
-        # Mask out NaN values
-        valid = ~torch.isnan(fobs)
-        
-        if valid.sum() > 0:
-            r_work_bins, r_free_bins = bin_wise_rfactors(
-                fobs[valid], fcalc[valid], rfree_mask[valid], bins[valid]
-            )
-            
-            assert r_work_bins is not None
-            assert r_free_bins is not None
-
 
 class TestGeometryTargetsFunctional:
     """Functional tests for geometry restraint targets."""

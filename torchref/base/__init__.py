@@ -1,54 +1,44 @@
-"""
-Mathematical functions for crystallographic computations.
+"""Low-level crystallographic math on PyTorch tensors, the layer the model, data,
+refinement and scaling packages build on.
 
-This module provides PyTorch implementations of:
-- Coordinate transformations (Cartesian <-> fractional)
-- Structure factor calculations
-- R-factor computations
-- French-Wilson intensity conversion
-- Atomic scattering factors
-- Grid and reciprocal space utilities
-
-Submodules (New Organization)
------------------------------
+Subpackages
+-----------
 coordinates
-    Coordinate transformation functions (Cartesian <-> fractional).
+    Cartesian <-> fractional transformations.
 reciprocal
-    Reciprocal space calculations (basis, HKL, d-spacing, grid operations).
+    Reciprocal basis, HKL generation and d-spacings, symmetry, grid placement.
 direct_summation
-    Structure factor calculations (isotropic, anisotropic, corrections).
+    Structure factors by direct summation (isotropic, anisotropic, corrections).
 electron_density
-    Electron density map building functions.
+    Real-space density building, voxel selection and solvent masks.
 fourier
-    FFT operations and grid utilities.
+    FFTs and real-space grids.
 scattering
-    Atomic scattering factors (ITC92 parameterization).
+    Atomic scattering factors (ITC92) and anomalous corrections.
 alignment
-    Coordinate alignment and superposition functions.
+    Euler-angle rotation matrices.
 metrics
-    R-factor and loss function calculations.
+    R-factors, amplitude-space likelihoods and per-bin scaling.
+targets
+    Tensor-only kernels behind the refinement targets, eager and Triton.
 kernels
-    Optimized GPU/CPU kernels for performance-critical operations.
+    Compatibility shim re-exporting :mod:`torchref.base.electron_density.kernels`.
 
-Legacy Submodule (For Backward Compatibility)
----------------------------------------------
-math_torch
-    PyTorch implementations (deprecated, use domain-specific submodules).
-french_wilson
-    French-Wilson treatment for negative intensities.
-
-Example
+Modules
 -------
-New-style imports (recommended)::
+french_wilson
+    French-Wilson conversion of merged intensities to amplitudes.
+wilson_outliers
+    Model-free outlier detection from Wilson statistics.
+math_torch
+    Deprecated flat namespace over a subset of the subpackages; importing it warns
+    ``DeprecationWarning``.
 
-    from torchref.base.coordinates import cartesian_to_fractional_torch
-    from torchref.base.metrics import get_rfactors
-    from torchref.base.reciprocal import reciprocal_basis_matrix
-
-Legacy imports (still supported)::
-
-    from torchref.base import cartesian_to_fractional_torch
-    from torchref.base import math_torch
+Re-exported here (``__all__``): every subpackage above except ``targets``, and the
+commonly used functions of ``coordinates``, ``reciprocal``, ``direct_summation``,
+``electron_density``, ``fourier``, ``metrics`` and ``kernels``. Not re-exported: the
+names of ``scattering``, ``alignment`` and ``targets`` and the three modules, which
+are imported from their own paths; ``math_torch`` is not imported at all.
 """
 
 # =============================================================================
@@ -64,13 +54,6 @@ from . import (
     alignment,
     metrics,
     kernels,
-)
-
-# =============================================================================
-# Legacy submodule (for backward compatibility)
-# =============================================================================
-from . import (
-    math_torch,
 )
 
 # =============================================================================
@@ -141,35 +124,10 @@ from .fourier import (
 )
 
 # =============================================================================
-# Scattering factors (from scattering submodule)
-# =============================================================================
-# =============================================================================
 # alignment (from alignment submodule)
 # =============================================================================
 from .alignment import (
-    rotate_coords_torch,
-    rotate_coords_numpy,
-    axis_angle_to_rotation_matrix,
-    rotation_matrix_to_axis_angle,
-    quaternion_to_rotation_matrix,
-    random_rotation_uniform,
-    superpose_vectors_robust_torch,
-    superpose_vectors_robust,
-    align_torch,
-    align_pdbs,
-    get_alignment_matrix,
-    apply_transformation,
-    apply_transformation_numpy,
-    invert_transformation_matrix,
-    binned_correlation,
     rotation_matrix_euler_zyz,
-    compute_radial_shells,
-    assign_to_shells,
-    compute_anisotropy_correction,
-    compute_shell_cv,
-    fit_anisotropy_correction,
-    apply_anisotropy_correction,
-    F_squared_to_E_values,
 )
 
 # =============================================================================
@@ -177,17 +135,11 @@ from .alignment import (
 # =============================================================================
 from .metrics import (
     get_rfactors,
-    bin_wise_rfactors,
     binwise_scale,
     nll_xray,
-    nll_xray_sum,
     nll_xray_mean,
     nll_xray_lognormal,
-    log_loss,
-    estimate_sigma_I,
     estimate_sigma_F,
-    gaussian_to_lognormal_sigma,
-    gaussian_to_lognormal_mu,
 )
 
 # =============================================================================
@@ -206,7 +158,7 @@ from .kernels import (
 # =============================================================================
 __all__ = [
     # -------------------------------------------------------------------------
-    # New submodules
+    # Submodules
     # -------------------------------------------------------------------------
     "coordinates",
     "reciprocal",
@@ -217,10 +169,6 @@ __all__ = [
     "alignment",
     "metrics",
     "kernels",
-    # -------------------------------------------------------------------------
-    # Legacy submodule (backward compatibility)
-    # -------------------------------------------------------------------------
-    "math_torch",
     # -------------------------------------------------------------------------
     # Classes
     # -------------------------------------------------------------------------
@@ -272,44 +220,14 @@ __all__ = [
     "ifft",
     "get_real_grid",
     # -------------------------------------------------------------------------
-    # alignment
-    # -------------------------------------------------------------------------
-    "compute_radial_shells",
-    "assign_to_shells",
-    "compute_anisotropy_correction",
-    "compute_shell_cv",
-    "fit_anisotropy_correction",
-    "apply_anisotropy_correction",
-    "F_squared_to_E_values",
-    "rotate_coords_torch",
-    "rotate_coords_numpy",
-    "axis_angle_to_rotation_matrix",
-    "rotation_matrix_to_axis_angle",
-    "quaternion_to_rotation_matrix",
-    "random_rotation_uniform",
-    "superpose_vectors_robust_torch",
-    "superpose_vectors_robust",
-    "align_torch",
-    "align_pdbs",
-    "get_alignment_matrix",
-    "apply_transformation",
-    "apply_transformation_numpy",
-    "invert_transformation_matrix",
-    # -------------------------------------------------------------------------
     # Metrics
     # -------------------------------------------------------------------------
     "get_rfactors",
-    "bin_wise_rfactors",
     "binwise_scale",
     "nll_xray",
-    "nll_xray_sum",
     "nll_xray_mean",
     "nll_xray_lognormal",
-    "log_loss",
-    "estimate_sigma_I",
     "estimate_sigma_F",
-    "gaussian_to_lognormal_sigma",
-    "gaussian_to_lognormal_mu",
     # -------------------------------------------------------------------------
     # Kernels
     # -------------------------------------------------------------------------

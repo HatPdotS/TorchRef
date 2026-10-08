@@ -188,7 +188,7 @@ class TestAnisotropicScaling:
     @pytest.mark.unit
     def test_u_to_matrix_shape(self, mock_aniso_u):
         """Test U tensor to matrix conversion."""
-        from torchref.base.math_torch import U_to_matrix
+        from torchref.base.targets.adp import U_to_matrix
         
         U = mock_aniso_u(n_atoms=10)
         
@@ -201,7 +201,7 @@ class TestAnisotropicScaling:
     @pytest.mark.unit
     def test_u_matrix_symmetric(self, mock_aniso_u):
         """U matrices should be symmetric."""
-        from torchref.base.math_torch import U_to_matrix
+        from torchref.base.targets.adp import U_to_matrix
         
         U = mock_aniso_u(n_atoms=5)
         U_matrices = U_to_matrix(U)

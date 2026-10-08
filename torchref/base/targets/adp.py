@@ -11,7 +11,6 @@ from ._dispatch import use_triton
 
 EIGHT_PI2 = 8.0 * math.pi**2
 # 6-vector order: [U11, U22, U33, U12, U13, U23]
-_U6_DIAG = (1.0, 1.0, 1.0, 0.0, 0.0, 0.0)
 # off-diagonal U components appear twice in the symmetric 3x3 (Frobenius norm)
 _U6_WCOMP = (1.0, 1.0, 1.0, 2.0, 2.0, 2.0)
 
@@ -79,6 +78,35 @@ def u6_deviatoric(u6: torch.Tensor) -> torch.Tensor:
     d[..., 1] = u6[..., 1] - tr3
     d[..., 2] = u6[..., 2] - tr3
     return d
+
+
+def U_to_matrix(U: torch.Tensor) -> torch.Tensor:
+    """Symmetric 3x3 matrix from a U6 vector; the package's one U6-to-3x3 conversion.
+
+    Parameters
+    ----------
+    U : torch.Tensor
+        Displacement parameters of shape (..., 6) in Å², ordered
+        ``[U11, U22, U33, U12, U13, U23]``. NaN rows pass through.
+
+    Returns
+    -------
+    torch.Tensor
+        Symmetric matrices of shape (..., 3, 3) in Å², differentiable in ``U``.
+    """
+    u11 = U[..., 0]
+    u22 = U[..., 1]
+    u33 = U[..., 2]
+    u12 = U[..., 3]
+    u13 = U[..., 4]
+    u23 = U[..., 5]
+
+    # Build rows and stack to preserve gradient flow
+    row0 = torch.stack([u11, u12, u13], dim=-1)
+    row1 = torch.stack([u12, u22, u23], dim=-1)
+    row2 = torch.stack([u13, u23, u33], dim=-1)
+
+    return torch.stack([row0, row1, row2], dim=-2)
 
 
 def adp_simu_aniso_math(
@@ -167,40 +195,15 @@ def adp_sigd_math(
 ) -> torch.Tensor:
     """Shifted inverse-gamma (SIGD) prior NLL on the B-factor distribution.
 
-    Masmaliyeva & Murshudov (2019), *Acta Cryst.* D **75**, 505-518, showed that
-    macromolecular B values follow a shifted inverse-gamma distribution rather
-    than the log-normal that a Gaussian-in-log(B) restraint assumes. For
-    ``x = B - B0`` distributed as ``InvGamma(alpha, beta)``::
-
-        -log p(x) = -alpha log(beta) + lgamma(alpha)
-                    + (alpha + 1) log(x) + beta / x
-
-    The scale is set from the **detached** mean so that the prior's mean matches
-    the data's, ``beta = mean(x).detach() * (alpha - 1)``. That is the direct
-    analogue of the detached ``mu_data`` in the log-normal KL term this replaces:
-    the restraint cannot drive the overall B level up or down, it only penalises
-    departures from the SIGD *shape*.
-
-    The returned per-atom NLL is offset by its value at the distribution mode
-    ``x_mode = beta / (alpha + 1)``, so each atom's contribution is ``>= 0``,
-    vanishing only for an atom sitting exactly at the mode. The *sum* does not
-    reach zero for real data: ``beta`` tracks the data mean, so ``x_mode`` is
-    ``(alpha-1)/(alpha+1)`` of it and a uniform B distribution still costs
-    ``(alpha+1) log((alpha+1)/(alpha-1)) - 2`` per atom (0.645 at alpha=3.5).
-    The offset is a fixed reference, not an attainable floor. Because ``beta``
-    is detached, the two
-    B-independent terms (``-alpha log beta`` and ``lgamma(alpha)``) cancel
-    exactly against that offset, leaving::
+    Masmaliyeva & Murshudov (2019), *Acta Cryst.* D **75**, 505-518. With
+    ``x = clamp(B - B0, min=1e-3)`` and the mode ``x_mode = beta / (alpha + 1)``,
+    each atom contributes the inverse-gamma NLL offset by its value at the mode::
 
         loss_i = (alpha + 1) log(x_i / x_mode) + beta (1/x_i - 1/x_mode)
 
-    which is what is evaluated -- algebraically identical to the offset NLL, with
-    no ``lgamma`` call and no large cancelling terms.
-
-    Two properties this form has and the log-normal KL it replaces did not:
-    it is finite for a perfectly uniform B distribution (the KL diverged there),
-    and it is monotonically increasing in ``std(log B)``, so it can never reward
-    spreading the distribution out.
+    ``beta = mean(x).detach() * (alpha - 1)`` is detached, so the prior cannot move
+    the overall B level, only penalise departures from the SIGD shape; the rationale
+    is on :class:`~torchref.refinement.targets.adp.sigd.ADPSigdTarget`.
 
     Parameters
     ----------
@@ -245,13 +248,7 @@ def adp_rigid_bond_aniso_math(
     handled natively. Gradient flows to both the U tensors and the coordinates
     (the Hirshfeld test couples ADP and geometry).
     """
-    M = u6.new_zeros(u6.shape[0], 3, 3)
-    M[:, 0, 0] = u6[:, 0]
-    M[:, 1, 1] = u6[:, 1]
-    M[:, 2, 2] = u6[:, 2]
-    M[:, 0, 1] = M[:, 1, 0] = u6[:, 3]
-    M[:, 0, 2] = M[:, 2, 0] = u6[:, 4]
-    M[:, 1, 2] = M[:, 2, 1] = u6[:, 5]
+    M = U_to_matrix(u6)
     r = xyz[pair_indices[:, 1]] - xyz[pair_indices[:, 0]]
     l = r / torch.sqrt((r * r).sum(-1, keepdim=True) + 1e-8)
     z1 = torch.einsum("bi,bij,bj->b", l, M[pair_indices[:, 0]], l)

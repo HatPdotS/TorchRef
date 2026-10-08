@@ -27,6 +27,7 @@ import torch
 import triton
 import triton.language as tl
 
+from .._dispatch import first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -309,6 +310,7 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
         return nll.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         (
             xyz,

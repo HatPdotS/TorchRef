@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Callable, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from torchref.base import math_torch
+from torchref.base.metrics import estimate_sigma_F
+from torchref.base.reciprocal import get_scattering_vectors
 from torchref.config import dtypes, get_int_dtype, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
@@ -902,10 +903,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
                         requires_grad=False,
                     )
                 else:
-                    sigF = math_torch.estimate_sigma_F(self.F)
+                    sigF = estimate_sigma_F(self.F)
                     self.F_sigma = sigF
             else:
-                sigF = math_torch.estimate_sigma_F(self.F)
+                sigF = estimate_sigma_F(self.F)
                 self.F_sigma = sigF
             self.amplitude_source = data_dict.get("F_col", "Unknown")
 
@@ -1520,7 +1521,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             raise ValueError(
                 "Unit cell parameters are required to calculate resolution"
             )
-        s = math_torch.get_scattering_vectors(self.hkl, self.cell.data)
+        s = get_scattering_vectors(self.hkl, self.cell.data)
         resolution = 1.0 / torch.linalg.norm(s, axis=1)
         self.resolution = resolution
 
@@ -2207,7 +2208,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if self.cell is None:
             raise ValueError("No unit cell defined")
 
-        return math_torch.get_scattering_vectors(self.hkl, self.cell.data)
+        return get_scattering_vectors(self.hkl, self.cell.data)
 
     def get_corrected_data(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return amplitudes and sigmas, shape (N,), in this dataset's units.

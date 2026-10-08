@@ -18,6 +18,8 @@ import math
 
 import torch
 
+from torchref.base.targets.adp import U_to_matrix
+
 EIGHT_PI2 = 8.0 * math.pi**2
 
 # Fixed policy constants (not user-exposed; the sigma cutoff is the only knob).
@@ -32,16 +34,11 @@ def _ceil_round(x: torch.Tensor, round_to: float = ROUND_TO) -> torch.Tensor:
 
 
 def _u6_to_u3(u: torch.Tensor) -> torch.Tensor:
-    """(n,6) U components [U11,U22,U33,U12,U13,U23] -> (n,3,3) symmetric tensor."""
-    n = u.shape[0]
-    U3 = u.new_zeros(n, 3, 3)
-    U3[:, 0, 0] = u[:, 0]
-    U3[:, 1, 1] = u[:, 1]
-    U3[:, 2, 2] = u[:, 2]
-    U3[:, 0, 1] = U3[:, 1, 0] = u[:, 3]
-    U3[:, 0, 2] = U3[:, 2, 0] = u[:, 4]
-    U3[:, 1, 2] = U3[:, 2, 1] = u[:, 5]
-    return U3
+    """(n,6) U components [U11,U22,U33,U12,U13,U23] -> (n,3,3) symmetric tensor.
+
+    Delegates to :func:`torchref.base.targets.adp.U_to_matrix`, the one conversion.
+    """
+    return U_to_matrix(u)
 
 
 def _max_eig_sym3(A: torch.Tensor) -> torch.Tensor:

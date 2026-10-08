@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
-from ..torsion import torsion_omega_math as _omega_eager
+from .._dispatch import first_order_only
 from ._dihedral import dihedral_and_grad
 
 
@@ -196,6 +196,7 @@ class _TorsionOmegaMathTriton(torch.autograd.Function):
         return nll.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         xyz, idx, sigs, is_pro_u8 = ctx.saved_tensors
         N = idx.shape[0]
@@ -428,6 +429,7 @@ class _TorsionUnimodalMathTriton(torch.autograd.Function):
         return nll.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         xyz, idx, refs, sigs, periods_i32 = ctx.saved_tensors
         N = idx.shape[0]
@@ -450,10 +452,13 @@ def torsion_unimodal_full_math_triton(xyz, idx, references_deg, sigmas_deg, peri
     Parameters
     ----------
     xyz : (N_atoms, 3) float32 CUDA
-    idx : (N, 4) int64 atom indices
+    idx : (N, 4) integer atom indices (get_int_dtype)
     references_deg : (N,) float32 — target angles in degrees
     sigmas_deg : (N,) float32 — sigmas in degrees
-    periods : (N,) int — n-fold periodicity (≥ 1)
+    periods : (N,) int
+        n-fold periodicity (≥ 1). Periods above 6 are not supported: only the
+        first 6 equivalent references are tried, so the deviation can be
+        overstated without warning.
     """
     return _TorsionUnimodalMathTriton.apply(
         xyz, idx, references_deg, sigmas_deg, periods,
