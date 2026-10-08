@@ -73,9 +73,9 @@ def _shell_means(I, d, n_shells):
     """Unweighted mean intensity of equal-count resolution shells, per row."""
     order = torch.argsort(d, descending=True)
     shell = torch.empty_like(order)
-    shell[order] = torch.arange(len(d)) * n_shells // len(d)
-    sums = torch.zeros(n_shells, dtype=I.dtype).index_add_(0, shell, I)
-    counts = torch.zeros(n_shells, dtype=I.dtype).index_add_(
+    shell[order] = torch.arange(len(d), device=d.device) * n_shells // len(d)
+    sums = torch.zeros(n_shells, dtype=I.dtype, device=I.device).index_add_(0, shell, I)
+    counts = torch.zeros(n_shells, dtype=I.dtype, device=I.device).index_add_(
         0, shell, torch.ones_like(I)
     )
     return (sums / counts)[shell]
@@ -410,7 +410,7 @@ def test_anisotropy_has_the_parameters_the_laue_class_allows(space_group, expect
 
 def _anisotropic_data(seed):
     """Wilson intensities in P 1 21 1 whose fall-off is 3x faster along c*."""
-    cell = Cell([60.0, 70.0, 80.0, 90.0, 100.0, 90.0])
+    cell = Cell([60.0, 70.0, 80.0, 90.0, 100.0, 90.0], device="cpu")
     hkl = torch.stack(
         torch.meshgrid(
             torch.arange(-25, 26),
