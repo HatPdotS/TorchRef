@@ -42,7 +42,6 @@ import torch
 
 from ....config import canonical_device, get_int_dtype
 from ....symmetry.symmetry import find_fft_friendly_size
-from ....utils.utils import first_index_per_group
 from .types import AdaptiveRotationFunction
 from .wigner_d import wigner_contraction_per_beta
 
@@ -206,6 +205,9 @@ def build_adaptive_sample_list(
             # Dedup: when p ≥ pmax/2, the (p, q) → (α, γ) map can collide
             # with (p − pmax/2, q') for some q' (FastRot.cc:222-241). Keep the
             # first occurrence (in original order) of each rounded (α, γ) key.
+            # Vectorised first-occurrence: stable-sort the unique-group labels,
+            # mark group boundaries, scatter back — same kept set & order as the
+            # original dict scan, but no host sync / Python loop.
             # Hash the two rounded fracs (each in [0, 1e6]) into one int64 so we
             # can use the fast 1-D unique instead of a 2-D row lexsort.
             # dtype-ok: a_round*1_000_001+g_round overflows int32
@@ -214,9 +216,15 @@ def build_adaptive_sample_list(
             g_round = (gamma_frac * 1_000_000).round().to(torch.int64)
             key_hash = a_round * 1_000_001 + g_round
             _, uniq_idx = torch.unique(key_hash, return_inverse=True)
-            keep = first_index_per_group(uniq_idx).sort().values
-            alpha_frac = alpha_frac[keep]
-            gamma_frac = gamma_frac[keep]
+            n = uniq_idx.shape[0]
+            order = torch.argsort(uniq_idx, stable=True)
+            sorted_u = uniq_idx[order]
+            first_in_sorted = torch.ones(n, dtype=torch.bool, device=cpu)
+            first_in_sorted[1:] = sorted_u[1:] != sorted_u[:-1]
+            keep_mask = torch.zeros(n, dtype=torch.bool, device=cpu)
+            keep_mask[order[first_in_sorted]] = True
+            alpha_frac = alpha_frac[keep_mask]
+            gamma_frac = gamma_frac[keep_mask]
 
         n_this = alpha_frac.shape[0]
         alphas_list.append((alpha_frac * (2.0 * math.pi)).to(dtype))
