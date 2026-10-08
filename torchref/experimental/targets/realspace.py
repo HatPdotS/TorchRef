@@ -14,7 +14,7 @@ comparison to the protein region, and follow the phase detachment pattern
 from PhaseInformedDifferenceTarget to ensure correct gradient flow.
 """
 
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Tuple
 
 import torch
 
@@ -22,7 +22,6 @@ from torchref.base.fourier.fft import fft
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.symmetry import SpaceGroup
 from torchref.utils.stats import (
-    VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
     StatEntry,
@@ -110,19 +109,12 @@ class RealSpaceTarget(DataTarget):
         self._erosion_radius = erosion_radius
 
         # Caches (not registered as buffers since they're lazily computed)
-        self._data_p1 = None
         self._molecular_mask = None
 
         # P1 expansion cache (ASU → P1 mapping)
         self._hkl_p1 = None
         self._p1_indices = None
         self._p1_phase_shifts = None
-
-    def _get_data_p1(self) -> "ReflectionData":
-        """Return P1-expanded ReflectionData, cached after first call."""
-        if self._data_p1 is None:
-            self._data_p1 = self._data.expand_to_p1()
-        return self._data_p1
 
     def _ensure_p1_expansion(self):
         """Compute and cache the ASU → P1 expansion mapping."""
