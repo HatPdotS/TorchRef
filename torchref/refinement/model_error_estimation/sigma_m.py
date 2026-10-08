@@ -25,6 +25,8 @@ from typing import Optional, Tuple
 
 import torch
 
+from torchref.base.direct_summation import compute_scattering_factors_batch
+
 
 def _fingerprint(*tensors: Optional[torch.Tensor]) -> tuple:
     """Identity of the tensors the cached tables were built from.
@@ -165,11 +167,7 @@ class SigmaMEstimator:
         element_A, element_B = unique_rows[:, :5], unique_rows[:, 5:]
         self.atom_to_element = atom_to_element.to(device=device)
 
-        # f_k(s_h) = sum_m A_km exp(-B_km s_half_sq)
-        expon_f = (-element_B.unsqueeze(-1) * s_half_sq.view(1, 1, -1)).clamp(
-            min=-80.0, max=80.0
-        )
-        f_kh = (element_A.unsqueeze(-1) * torch.exp(expon_f)).sum(dim=1)
+        f_kh = compute_scattering_factors_batch(s_sq.sqrt(), element_A, element_B).T
         self.f_sq_kh = f_kh * f_kh
 
         # --- exp(-2 B s_half^2) over the B grid, chunked to bound peak memory ---
