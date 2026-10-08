@@ -57,7 +57,6 @@ if _HAVE_TRITON:
 
     @triton.jit
     def _wq_grid_fwd_kernel(
-        n_items,
         density_map_ptr,
         xyz_ptr, b_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr,
@@ -173,7 +172,6 @@ if _HAVE_TRITON:
 
     @triton.jit
     def _wq_grid_bwd_kernel(
-        n_items,
         grad_density_map_ptr,
         xyz_ptr, b_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr,
@@ -321,7 +319,6 @@ if _HAVE_TRITON:
     # ====================================================================
     @triton.jit
     def _wq_grid_aniso_fwd_kernel(
-        n_items,
         density_map_ptr,
         xyz_ptr, u_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr,
@@ -455,7 +452,6 @@ if _HAVE_TRITON:
 
     @triton.jit
     def _wq_grid_aniso_bwd_kernel(
-        n_items,
         grad_density_map_ptr,
         xyz_ptr, u_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr,
@@ -665,7 +661,6 @@ def _launch_grid_fwd(out_flat, r2cut, scene_buffers, dims):
     nx, ny, nz = dims
     n_atoms = r2cut.shape[0]
     _wq_grid_fwd_kernel[(n_atoms,)](
-        n_atoms,
         out_flat,
         xyz, b, A, B, occ,
         r2cut,
@@ -681,7 +676,6 @@ def _launch_grid_aniso_fwd(out_flat, r2cut, scene_buffers, dims):
     nx, ny, nz = dims
     n_atoms = r2cut.shape[0]
     _wq_grid_aniso_fwd_kernel[(n_atoms,)](
-        n_atoms,
         out_flat,
         xyz, u, A, B, occ,
         r2cut,
@@ -734,7 +728,6 @@ class WorkQueueGridDensity(torch.autograd.Function):
         grad_b = torch.zeros_like(b)
         grad_occ = torch.zeros_like(occ)
         _wq_grid_bwd_kernel[(r2cut.shape[0],)](
-            r2cut.shape[0],
             grad_dm,
             xyz.contiguous(), b.contiguous(), A.contiguous(), B.contiguous(), occ.contiguous(),
             r2cut,
@@ -787,7 +780,6 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
         grad_u = torch.zeros_like(u)
         grad_occ = torch.zeros_like(occ)
         _wq_grid_aniso_bwd_kernel[(r2cut.shape[0],)](
-            r2cut.shape[0],
             grad_dm,
             xyz.contiguous(), u.contiguous(), A.contiguous(), B.contiguous(), occ.contiguous(),
             r2cut,
