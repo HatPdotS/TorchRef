@@ -464,7 +464,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         return placed
 
     def _into_crystal(self, m: "ModelFT", spacegroup=None) -> None:
-        """Give ``m`` the data's cell and ``spacegroup`` (default: the data's), in place.
+        """Set ``m``'s cell and space group to the data's (or ``spacegroup``), in place.
 
         The search model's CRYST1 belongs to another crystal, or is a placeholder,
         and both fractional placement and the template's structure factors must
