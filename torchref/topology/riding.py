@@ -880,7 +880,7 @@ def build_h_candidate_pairs(
         )
         first_occ.scatter_reduce_(0, first_idx_i, perm, reduce="amin")
         mask = torch.zeros(len(cand_i), dtype=torch.bool, device=device)
-        mask[first_occ.long()] = True
+        mask[first_occ] = True
         cand_i = cand_i[mask]
         cand_j = cand_j[mask]
         cand_sym = cand_sym[mask]
