@@ -22,15 +22,12 @@ def test_parse_weights_long_inline_json(tmp_path):
 
     path = tmp_path / "weights.json"
     path.write_text(json.dumps({"xray": 2.0}))
-    assert parse_weights(str(path), defaults={"geometry": 1.0}) == (
-        {"geometry": 1.0, "xray": 2.0},
-        None,
-    )
+    assert parse_weights(str(path)) == ({"xray": 2.0}, None)
 
 
 def test_parse_weights_reports_unreadable_input(tmp_path):
-    weights, err = parse_weights(str(tmp_path / "absent.json"), defaults={"xray": 1.0})
-    assert weights == {"xray": 1.0}
+    weights, err = parse_weights(str(tmp_path / "absent.json"))
+    assert weights == {}
     assert "--weights" in err
 
 

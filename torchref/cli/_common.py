@@ -749,18 +749,13 @@ def build_dual_column_names(
 # Weights parsing
 # ---------------------------------------------------------------------------
 
-def parse_weights(
-    weights_arg: Optional[str],
-    defaults: Optional[dict] = None,
-) -> Tuple[dict, Optional[str]]:
+def parse_weights(weights_arg: Optional[str]) -> Tuple[dict, Optional[str]]:
     """Parse the ``--weights`` argument (JSON string or file path).
 
     Parameters
     ----------
     weights_arg : str or None
         The raw ``args.weights`` value.
-    defaults : dict, optional
-        Base weights to merge user overrides into.  A *copy* is made.
 
     Returns
     -------
@@ -769,7 +764,7 @@ def parse_weights(
     error : str or None
         An error message if parsing failed, otherwise ``None``.
     """
-    weights = dict(defaults) if defaults is not None else {}
+    weights = {}
     if weights_arg is None:
         return weights, None
 
