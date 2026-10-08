@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     import torch
 
     from torchref.io.datasets.reflection_data import ReflectionData
+    from torchref.io.metadata import RefinementMetadata
     from torchref.model.model_ft import ModelFT
 
 
@@ -510,7 +511,9 @@ def add_metadata_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def apply_metadata_args(metadata, args: argparse.Namespace) -> None:
+def apply_metadata_args(
+    metadata: "RefinementMetadata", args: argparse.Namespace
+) -> None:
     """Apply the ``--title``, ``--authors`` and ``--output-remarks`` overrides.
 
     Parameters
@@ -924,8 +927,6 @@ def write_refinement_outputs(
         Dictionary with keys ``"pdb"``, ``"cif"`` mapping to output paths
         (or None if not written).
     """
-    from torchref.io.metadata import RefinementMetadata
-
     output_format = getattr(args, "output_format", "both")
     no_header = getattr(args, "no_header", False)
 
