@@ -1,6 +1,6 @@
 """SfDS -- structure factors by direct summation.
 
-An nn.Module alternative to :class:`~torchref.model.SfFFT` that needs no grid:
+An nn.Module alternative to :class:`~torchref.model.sf_fft.SfFFT` that needs no grid:
 it sums atomic contributions (isotropic and anisotropic) directly and applies
 crystallographic symmetry in reciprocal space.
 """

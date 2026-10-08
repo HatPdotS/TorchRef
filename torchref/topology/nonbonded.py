@@ -196,8 +196,8 @@ def prefilter_symop_offsets(
     distance. Every combination meeting that bound is returned, however far the
     coordinates sit from the origin cell: the offsets are relative to ``xyz`` as
     given, which is how :func:`assign_to_grid` and the VDW kernels form images from
-    them (:func:`~torchref.base.coordinates.symmetry_image_positions`, on unwrapped
-    coordinates). Always includes the identity (op=0, offset=0).
+    them (:func:`~torchref.base.coordinates.symmetry_images.symmetry_image_positions`,
+    on unwrapped coordinates). Always includes the identity (op=0, offset=0).
 
     Parameters
     ----------
@@ -275,9 +275,9 @@ def assign_to_grid(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute Cartesian image positions and assign to grid cells.
 
-    Images come from :func:`~torchref.base.coordinates.symmetry_image_positions`,
-    the function the VDW kernels place stored pairs with, so a pair is scored at the
-    distance it is found at here.
+    Images come from the function the VDW kernels place stored pairs with,
+    :func:`~torchref.base.coordinates.symmetry_images.symmetry_image_positions`, so a
+    pair is scored at the distance it is found at here.
 
     Parameters
     ----------

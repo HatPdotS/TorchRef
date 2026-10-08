@@ -100,9 +100,9 @@ class HydrogenTopology(DeviceMixin):
         leaves the rotation about the parent-neighbour bond arbitrary. ``(N_h,)`` int.
     h_frame_direction : torch.Tensor
         Unit parent-to-hydrogen direction in that frame's
-        :func:`~torchref.base.coordinates.local_frame_axes`, read off the template,
-        so the hydrogen keeps the template's bond angle and torsion (turned into the
-        plane where a plane restraint holds it). ``(N_h, 3)``.
+        :func:`~torchref.base.coordinates.local_frame.local_frame_axes`, read off the
+        template, so the hydrogen keeps the template's bond angle and torsion (turned
+        into the plane where a plane restraint holds it). ``(N_h, 3)``.
     type_bounds : dict
         ``{placement_type: (start, end)}`` bounds into the type-sorted arrays.
     cand_idx_i, cand_idx_j, cand_symop_idx, cand_cell_offset : torch.Tensor

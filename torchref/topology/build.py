@@ -1,4 +1,4 @@
-"""Connect a node-only :class:`~torchref.topology.Topology` to the dictionaries.
+"""Connect node-only :class:`~torchref.topology.topology.Topology` to the dictionaries.
 
 The input carries identity only (:meth:`Topology.from_table`); this module adds the
 edges. Intra-residue edges are matched template by template through the matchers in

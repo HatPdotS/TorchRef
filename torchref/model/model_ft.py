@@ -1,6 +1,6 @@
-"""ModelFT -- a :class:`~torchref.model.Model` that can compute structure factors.
+"""ModelFT -- a :class:`~torchref.model.model.Model` that can compute structure factors.
 
-Adds the electron-density / FFT path (an :class:`~torchref.model.SfFFT` submodule
+Adds the electron-density / FFT path (an :class:`~torchref.model.sf_fft.SfFFT` submodule
 that reads the crystal off the model's context and sizes its grid lazily), the
 ITC92 scattering parametrization, and the anomalous f' / f'' terms. Those enter the
 same density as f0 rather than a separate sum, so every term of F_calc gets the same

@@ -389,8 +389,8 @@ class LossState(DeviceMovementMixin):
         """Run ``nsteps`` optimizer steps, each an ``optimizer.step(closure)``.
 
         The closure validates each loss for finiteness via
-        :func:`torchref.utils.validate_loss` and on failure zeros the gradients and returns
-        ``+inf``, so a strong-Wolfe line search backtracks. A
+        :func:`~torchref.utils.loss_validation.validate_loss` and on failure zeros the
+        gradients and returns ``+inf``, so a strong-Wolfe line search backtracks. A
         ``torch.linalg.LinAlgError``, or any ``RuntimeError`` raised while a parameter
         is non-finite, is rejected the same way; every other exception propagates.
         Works with any closure-taking optimizer, though it is exercised mainly with
@@ -576,8 +576,8 @@ class LossState(DeviceMovementMixin):
         """Per-target loss / weight / weighted / finite as a printable string.
 
         One row per target in ``self._losses`` (from the last eager :meth:`aggregate`).
-        Shared
-        by :meth:`summary` and :func:`torchref.utils.validate_loss` so the format cannot
+        Shared by :meth:`summary` and
+        :func:`~torchref.utils.loss_validation.validate_loss` so the format cannot
         drift.
         """
         lines = []

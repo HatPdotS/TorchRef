@@ -477,10 +477,10 @@ class PreprocessedLinkData:
 
 
 class InterResidueBondBuilder:
-    """
-    Fast builder for inter-residue bond restraints.
+    """Fast builder for inter-residue bond restraints.
 
-    Usage:
+    Usage::
+
         builder = InterResidueBondBuilder()
         result = builder.build(residues, link_dict, device)
 
@@ -656,10 +656,10 @@ class InterResidueBondBuilder:
 
 
 class InterResidueAngleBuilder:
-    """
-    Fast builder for inter-residue angle restraints.
+    """Fast builder for inter-residue angle restraints.
 
-    Usage:
+    Usage::
+
         builder = InterResidueAngleBuilder()
         result = builder.build(residues, link_dict, device)
 
@@ -831,10 +831,10 @@ class InterResidueAngleBuilder:
 
 
 class InterResidueTorsionBuilder:
-    """
-    Fast builder for inter-residue torsion restraints (phi, psi, omega).
+    """Fast builder for inter-residue torsion restraints (phi, psi, omega).
 
-    Usage:
+    Usage::
+
         builder = InterResidueTorsionBuilder()
         result = builder.build(residues, link_dict, device)
         # result = {'phi': {...}, 'psi': {...}, 'omega': {...},
@@ -1157,10 +1157,10 @@ class InterResidueTorsionBuilder:
 
 
 class InterResiduePlaneBuilder:
-    """
-    Fast builder for inter-residue plane restraints (peptide planes).
+    """Fast builder for inter-residue plane restraints (peptide planes).
 
-    Usage:
+    Usage::
+
         builder = InterResiduePlaneBuilder()
         result = builder.build(residues, link_dict, device)
     """

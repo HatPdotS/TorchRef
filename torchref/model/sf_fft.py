@@ -62,7 +62,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         access; ``None`` while the context has no cell or space group. No coordinate
         grid is stored: the splats derive a voxel's Cartesian position from its
         index, so materialising one would cost ``12 * nx * ny * nz`` bytes that
-        nothing reads. Call :func:`torchref.base.fourier.get_real_grid` if you
+        nothing reads. Call :func:`~torchref.base.fourier.grid.get_real_grid` if you
         genuinely need one.
     """
 
