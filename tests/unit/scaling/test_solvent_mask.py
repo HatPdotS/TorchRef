@@ -51,3 +51,22 @@ def test_solvent_mask_stays_in_float64(double_cpu, sample_structure_pair):
 
     assert recorder.calls == []
     assert 0 < int(mask.sum()) < mask.numel()
+
+
+@pytest.mark.integration
+def test_solvent_mask_follows_the_model_dtype(sample_structure_pair):
+    """A model built in one float dtype gives the same mask after the configured
+    dtype changes."""
+    from tests.fixtures.precision import cpu_double_precision
+    from torchref.model.model_ft import ModelFT
+    from torchref.scaling.solvent import SolventModel
+
+    model = ModelFT(verbose=0, device=torch.device("cpu"))
+    model.load_cif(str(sample_structure_pair["model"]))
+    solvent = SolventModel(model, verbose=0)
+    expected = solvent.get_solvent_mask().clone()
+
+    with cpu_double_precision():
+        mask = solvent.get_solvent_mask()
+
+    assert torch.equal(mask, expected)

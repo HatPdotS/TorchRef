@@ -359,7 +359,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             # grids, where the SF code's 1024 would OOM (denser intermediates).
             ATOM_CHUNK = 256
 
-            float_dtype = get_float_dtype()
+            float_dtype = xyz.dtype
             grid_dims = torch.tensor(grid_shape, dtype=get_int_dtype(), device=device)
             grid_shape_float = grid_dims.to(float_dtype)
             inv_grid = 1.0 / grid_shape_float
