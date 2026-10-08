@@ -402,5 +402,5 @@ Next Steps
 ----------
 
 - :doc:`user_guide/refinement` — parameter selection and monitoring
-- :doc:`user_guide/targets` — the seven X-ray modes, geometry and ADP restraints
+- :doc:`user_guide/targets` — the X-ray target taxonomy, geometry and ADP restraints
 - :doc:`user_guide/scaling` — bulk solvent and anisotropic scaling
