@@ -532,12 +532,11 @@ if _HAVE_TRITON:
             tl.load(B_ptr + atom * 5 + 4) * 0.25 + dv,
             tl.load(B_ptr + atom * 5 + 4) * 0.25 + dw, dd, ee, ff)
         # Occupancy-free amplitudes, as in _wq_grid_bwd_kernel.
-        oc = PI_1P5
-        An0 = tl.load(A_ptr + atom * 5 + 0) * oc / tl.sqrt(tl.maximum(dt0, 1e-10))
-        An1 = tl.load(A_ptr + atom * 5 + 1) * oc / tl.sqrt(tl.maximum(dt1, 1e-10))
-        An2 = tl.load(A_ptr + atom * 5 + 2) * oc / tl.sqrt(tl.maximum(dt2, 1e-10))
-        An3 = tl.load(A_ptr + atom * 5 + 3) * oc / tl.sqrt(tl.maximum(dt3, 1e-10))
-        An4 = tl.load(A_ptr + atom * 5 + 4) * oc / tl.sqrt(tl.maximum(dt4, 1e-10))
+        An0 = tl.load(A_ptr + atom * 5 + 0) * PI_1P5 / tl.sqrt(tl.maximum(dt0, 1e-10))
+        An1 = tl.load(A_ptr + atom * 5 + 1) * PI_1P5 / tl.sqrt(tl.maximum(dt1, 1e-10))
+        An2 = tl.load(A_ptr + atom * 5 + 2) * PI_1P5 / tl.sqrt(tl.maximum(dt2, 1e-10))
+        An3 = tl.load(A_ptr + atom * 5 + 3) * PI_1P5 / tl.sqrt(tl.maximum(dt3, 1e-10))
+        An4 = tl.load(A_ptr + atom * 5 + 4) * PI_1P5 / tl.sqrt(tl.maximum(dt4, 1e-10))
 
         frac_x = ax * if0 + ay * if1 + az * if2
         frac_y = ax * if3 + ay * if4 + az * if5
