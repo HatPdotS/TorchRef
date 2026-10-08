@@ -6,8 +6,8 @@ arithmetically** from the lane index, and truncates to the per-atom sphere
 (``r2 <= r2cut``). So every atom is splatted at its own ``N_sigma * sigma_eff`` radius
 with no host-built work plan or offset buffer. This is the production CUDA float32 path.
 
-Per-voxel Gaussian math, PBC wrapping and gradient formulae match the reference fused
-kernel bit-for-bit modulo atomic ordering. Isotropic kernels carry the scalar ADP ``b``;
+Every kernel follows the truncation contract stated in ``cpu/sphere_splat.py``, so results
+agree with the portable splat to float noise. Isotropic kernels carry the scalar ADP ``b``;
 anisotropic ones carry the 6-component ``U`` and evaluate ``q = w^T Minv w`` with
 ``M = (B_g*I + 8*pi^2*U)/4`` inverted in-kernel. Backward accumulates per-atom grads with
 ``atomic_add``, masking out-of-sphere voxels exactly as the forward does so they
@@ -709,8 +709,8 @@ class WorkQueueGridDensity(torch.autograd.Function):
                 r2cut, mask, inv_frac, frac):
         # Accumulate the splat into a copy of the running density_map (out =
         # density_map + splat) so the dispatch needs no separate zeros buffer + add.
-        # A clone (not in-place) keeps this autograd-trivial AND safe for the AUTO
-        # fallthrough: density_map is untouched if the kernel raises.
+        # A clone (not in-place) keeps this autograd-trivial and safe for the row's
+        # on_failure="degrade": density_map is untouched if the kernel raises.
         nx, ny, nz = density_map.shape[:3]
         xyz = xyz.contiguous(); b = b.contiguous(); occ = occ.contiguous()
         A = A.contiguous(); B = B.contiguous()
@@ -814,8 +814,8 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
 #     (density_map, xyz, adp_or_u, occ, A, B, inv_frac_matrix, frac_matrix,
 #      radius_per_atom)
 #
-# so the dispatch in ``electron_density/main.py`` is four structurally identical
-# calls per ladder and a test can drive any backend through one code path. These
+# so ``electron_density/main.py`` dispatches with one ``select`` plus ``run_or_degrade``
+# over ``DENSITY_BACKENDS`` and a test can drive any backend through one code path. These
 # wrappers do for CUDA what ``add_*_mps_var`` already did for Metal: square the
 # radius and build the coefficient mask, rather than leaving that to the caller.
 #
@@ -857,7 +857,8 @@ def add_isotropic_cuda_var(
 
     Canonical splat signature, identical to ``add_isotropic_plain_var``,
     ``add_isotropic_cpu_sphere_var`` and ``add_isotropic_mps_var``. CUDA float32
-    only -- the gate is ``should_use_triton``; this wrapper does not re-check.
+    only -- the gate is the ``cuda_triton`` row of ``DENSITY_BACKENDS``; this wrapper
+    does not re-check.
     """
     return WorkQueueGridDensity.apply(
         density_map,
