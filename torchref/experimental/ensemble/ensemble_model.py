@@ -311,8 +311,8 @@ class EnsembleModel(ModelFT):
        Experimental — API and behaviour may change without notice.
 
     ``n_members`` is the size of the member-slot pool and :attr:`n_alive` the
-    number of live slots; they differ only when a factory's ``n_max`` adds dead
-    spare slots for birth/death population dynamics.
+    number of live slots; they differ when a factory's ``n_max`` adds dead
+    spare slots or :meth:`kill_member` retires a member.
 
     Parameters
     ----------
