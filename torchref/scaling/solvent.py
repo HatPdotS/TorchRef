@@ -359,8 +359,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             # grids, where the SF code's 1024 would OOM (denser intermediates).
             ATOM_CHUNK = 256
 
+            float_dtype = get_float_dtype()
             grid_dims = torch.tensor(grid_shape, dtype=get_int_dtype(), device=device)
-            grid_shape_float = grid_dims.float()
+            grid_shape_float = grid_dims.to(float_dtype)
             inv_grid = 1.0 / grid_shape_float
             G = frac.T @ frac  # metric tensor: r²_cart = diff_frac · G · diff_frac
 
@@ -396,7 +397,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 ) % grid_dims
 
                 # Direct fractional voxel positions (skip real_space_grid gather)
-                voxel_frac = vi.float() * inv_grid  # (C, R, 3)
+                voxel_frac = vi.to(float_dtype) * inv_grid  # (C, R, 3)
 
                 # PBC fractional diff
                 diff_frac = voxel_frac - xyz_frac[s:e].unsqueeze(1)
@@ -441,7 +442,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             protein_mask = torch.zeros(grid_shape, dtype=torch.bool, device=device)
             boundary_mask = torch.zeros(grid_shape, dtype=torch.bool, device=device)
 
-            float_dtype = get_float_dtype()
             for op_idx in range(n_ops):
                 if op_idx == 0:
                     p_idx = protein_voxels
@@ -530,9 +530,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                     f"({100.0 * n_solv / total_voxels:.2f}%)"
                 )
 
-        assert torch.isfinite(
-            self.solvent_mask.float()
-        ).all(), "Non-finite values in solvent mask"
         return self.solvent_mask
 
     def update_solvent(self):
