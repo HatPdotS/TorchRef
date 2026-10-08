@@ -111,13 +111,13 @@ def _copy_links(links):
 def own_spacegroup(value, dtype: torch.dtype, device) -> Optional["SpaceGroup"]:
     """A space group owned by the caller, on ``device`` and in ``dtype``.
 
-    An incoming :class:`~torchref.symmetry.SpaceGroup` is copied rather than shared,
+    An incoming :class:`~torchref.symmetry.spacegroup.SpaceGroup` is copied, not shared,
     because ``.to()`` moves in place and would otherwise relocate the caller's object.
 
     Parameters
     ----------
     value : SpaceGroup, gemmi.SpaceGroup, str, int or None
-        Anything :class:`~torchref.symmetry.SpaceGroup` accepts.
+        Anything :class:`~torchref.symmetry.spacegroup.SpaceGroup` accepts.
     dtype : torch.dtype
     device : torch.device
 
