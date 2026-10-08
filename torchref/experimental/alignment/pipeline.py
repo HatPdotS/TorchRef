@@ -188,6 +188,39 @@ class MolecularReplacementPipeline(DeviceMixin):
             scoring -- see :meth:`_log_candidate`.
         3
             Per-translation-peak detail inside each candidate.
+    d_min, d_max : float
+        High- and low-resolution limits in Å of the overall-anisotropy fit, and
+        the default translation window. The rotation search sets its own window
+        from the bandwidth coupling. Defaults 4.0 and 15.0.
+    n_shells : int
+        Resolution shells of the anisotropy fit. Default 20.
+    n_rotation_peaks : int
+        Peaks the rotation function returns. Default 500.
+    model_error_A : float, optional
+        Expected r.m.s. coordinate error of the search model in Å; sets the
+        sigma_A fall-off. Default ``None`` estimates it from the atom count
+        (about 8 atoms per residue) with Oeffner et al. (2013), assuming the
+        sequence is the target's.
+    n_rotation_candidates : int
+        Distinct orientations carried into the translation search, best first.
+        Each costs a structure-factor evaluation and one FFT. A margin: with
+        deposited models as search models the first peak was the true
+        orientation on every panel cell. Raise it for poorer models. Default 10.
+    n_translation_candidates : int
+        Peaks of the fast translation map re-scored by the likelihood per
+        orientation. Default 3.
+    rank_by : {"llg", "r", "corr"}
+        Score that ranks the placed candidates: the translation likelihood
+        (default), the analytic R, or the fast translation score.
+    tf_d_min, tf_d_max : float, optional
+        Resolution window of the translation set in Å. ``None`` takes ``d_min``
+        / ``d_max``; ``0.0`` / ``inf`` removes a cut, which is not safe: on the
+        uncut set the fast score peaks away from the true position.
+
+    Raises
+    ------
+    ValueError
+        If ``rank_by`` is not one of the three scores.
 
     Examples
     --------
@@ -207,32 +240,14 @@ class MolecularReplacementPipeline(DeviceMixin):
         *,
         device: Optional[torch.device] = None,
         verbose: int = 0,
-        # --- anisotropy fit and translation window; FRF peak count ---
         d_min: float = 4.0,
         d_max: float = 15.0,
         n_shells: int = 20,
         n_rotation_peaks: int = 500,
         model_error_A: Optional[float] = None,
-        # --- candidate tree ---
-        # Distinct orientations carried into the translation search. A margin:
-        # with deposited models as search models the first peak was the true
-        # orientation on every panel cell. Raise it for poorer models.
         n_rotation_candidates: int = 10,
-        # Peaks of the fast translation function re-scored by the likelihood
-        # for each orientation. The fast map only has to get the true peak
-        # into this many; the likelihood picks.
         n_translation_candidates: int = 3,
-        # Which score picks the winner among placed candidates. "llg" is the
-        # translation likelihood; "r" the analytical-scale R-factor; "corr" the
-        # fast translation function's own score. Not a tuning knob -- it exists
-        # because the three can disagree and a rank-level proxy once got the
-        # ordering wrong, so the comparison has to be made end to end on poses.
-        # See the sort in `run` for what that measured.
         rank_by: str = "llg",
-        # Resolution window for the translation set. None means [d_max, d_min],
-        # the anisotropy fit's window; the rotation search sets its own from the
-        # bandwidth coupling. Pass 0.0 / inf to remove a cut -- and see
-        # `_prepare_translation_arrays` for what the uncut set does.
         tf_d_min: Optional[float] = None,
         tf_d_max: Optional[float] = None,
     ):
@@ -245,11 +260,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.d_max = d_max
         self.n_shells = n_shells
         self.n_rotation_peaks = n_rotation_peaks
-        # Expected r.m.s. coordinate error of the search model, in Angstrom:
-        # it sets the sigma_A fall-off in the rotation function. When the caller
-        # does not know it, estimate it from the model's length the way Phaser
-        # does (Oeffner et al. 2013), assuming the sequence is the target's --
-        # roughly 8 heavy atoms per residue.
+        # Phaser's estimate from the model's length; ~8 heavy atoms per residue.
         if model_error_A is None:
             from .frf.preprocessing import oeffner_vrms
             n_residues = max(1, int(model.xyz().shape[0] / 8))
