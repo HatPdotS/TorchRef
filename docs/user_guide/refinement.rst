@@ -23,7 +23,7 @@ Basic Usage
        device=torch.device("cuda"),
    )
 
-   # Alternate parameter groups per macro cycle: xyz -> ADP -> scaler
+   # Alternate parameter groups per macro cycle: scaler -> xyz -> ADP
    refinement.refine(macro_cycles=5)
 
    # Or optimize xyz, ADP, U and occupancy jointly in one step per cycle
