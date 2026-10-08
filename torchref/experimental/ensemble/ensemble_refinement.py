@@ -783,7 +783,8 @@ class EnsembleRefinement(LBFGSRefinement):
         -------
         dict
             Per-cycle histories (``rwork``, ``rfree``, ``rval``, ``loss``,
-            ``lr``, ...) plus ``burnin_cycles`` and ``sampling_summary``.
+            ``lr``, ``adam_precond`` (``None`` entries for a low-rank or PCA
+            xyz), ...) plus ``burnin_cycles`` and ``sampling_summary``.
 
         Notes
         -----
@@ -998,10 +999,11 @@ class EnsembleRefinement(LBFGSRefinement):
             thing to watch before deciding on preconditioned noise. Purely
             observational; nothing here changes the injected noise.
             """
-            # Coordinate-space diagnostic; skip under the PCA reparameterization
-            # (the leaves are amplitudes/basis, not Å coords).
+            # Coordinate-space diagnostic; skip under a low-rank or PCA
+            # reparameterization (the leaves are amplitudes/basis, not Å coords).
+            from .low_rank_ensemble import LowRankXYZ
             from .pca_model import PCAEnsembleParam
-            if isinstance(self.model.xyz, PCAEnsembleParam):
+            if isinstance(self.model.xyz, (LowRankXYZ, PCAEnsembleParam)):
                 return None
             p = self.model.xyz.refinable_params
             st = optimizer.state.get(p)
