@@ -74,10 +74,6 @@ class RealSpaceTarget(DataTarget):
         Radius for mask erosion in Angstroms. Default 0.9.
     verbose : int
         Verbosity level. Default 0.
-    target_value : float
-        Target value for loss. Default 0.0.
-    sigma : float
-        Sigma for weighting. Default 0.5.
     """
 
     VALID_MAP_TYPES = ("2mFo-DFc", "Fo-Fc")
@@ -92,13 +88,8 @@ class RealSpaceTarget(DataTarget):
         solvent_radius: float = 1.1,
         erosion_radius: float = 0.9,
         verbose: int = 0,
-        target_value: float = 0.0,
-        sigma: float = 0.5,
     ):
-        super().__init__(
-            data=data, model=model, scaler=scaler,
-            verbose=verbose, target_value=target_value, sigma=sigma,
-        )
+        super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
         if map_type not in self.VALID_MAP_TYPES:
             raise ValueError(
                 f"map_type must be one of {self.VALID_MAP_TYPES}, got '{map_type}'"
@@ -304,8 +295,6 @@ class RealSpaceCorrelationTarget(RealSpaceTarget):
             solvent_radius=solvent_radius,
             erosion_radius=erosion_radius,
             verbose=verbose,
-            target_value=0.0,
-            sigma=0.5,
         )
 
     def forward(self) -> torch.Tensor:
@@ -417,8 +406,6 @@ class RealSpaceDifferenceTarget(RealSpaceTarget):
             solvent_radius=solvent_radius,
             erosion_radius=erosion_radius,
             verbose=verbose,
-            target_value=0.0,
-            sigma=0.5,
         )
 
     def forward(self) -> torch.Tensor:
