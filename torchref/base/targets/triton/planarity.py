@@ -138,10 +138,10 @@ def _plane_normals_via_eigh(
     """Smallest-eigenvalue eigenvector of a batch of 3x3 SPD covariances.
 
     Equivalent to the smallest right singular vector of ``centered``, since the
-    covariance is ``centeredᵀ centered``, but ~5x cheaper: ``eigh`` beats ``svd`` on
-    symmetric inputs and batches across plane-size buckets. Done in fp64 -- the eager
-    helper's regime -- because near collinear atoms the eigenvector lives in an
-    ambiguous 2-D subspace and the choice is implementation-defined.
+    covariance is ``centeredᵀ centered``; ``eigh`` is cheaper than ``svd`` on
+    symmetric inputs and batches across plane-size buckets. The small, detached 3x3
+    solve runs in fp64 because near-collinear atoms leave the smallest eigenvector in
+    a nearly degenerate subspace, which the squared covariance resolves worse in fp32.
 
     A NaN/Inf covariance (LBFGS does probe wild trial steps) makes ``eigh`` raise where
     SVD would return an arbitrary finite vector, so that is caught and zero normals are
@@ -167,9 +167,7 @@ def _plane_normals_via_eigh(
     # was finite but contained subnormals or extreme range. Same fix:
     # zero-out non-finite rows. We do the ``torch.where`` unconditionally
     # — skipping the Python ``bool(...item())`` guard so this function
-    # is CUDA-Graph-capture-safe. The where is a single elementwise
-    # kernel that's a no-op on the (overwhelmingly common) all-finite
-    # path; cheaper than the previous host sync anyway.
+    # is CUDA-Graph-capture-safe and never syncs the host.
     finite = torch.isfinite(normals).all(dim=-1, keepdim=True)
     normals = torch.where(finite, normals, torch.zeros_like(normals))
     return normals
