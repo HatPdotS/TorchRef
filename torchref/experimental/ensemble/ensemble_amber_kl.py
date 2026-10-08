@@ -18,7 +18,7 @@ Two targets, both subclasses of the single-molecule
 - :class:`EnsembleAmberTarget` — the AMBER energy of every ensemble member
   (``N`` non-interacting copies of one chemistry), averaged. It **inherits**
   the full AmberTarget machinery (OpenMM system build via antechamber /
-  ForceField, atom map, differentiable hydrogen placement, autograd bridge):
+  ForceField, atom map, autograd bridge):
   the single-copy chemistry/topology is built once from the ensemble's
   ``_pdb_single`` and each member's coordinates are fed through the inherited
   per-conformation energy (:meth:`AmberTarget._energy`).
@@ -40,10 +40,9 @@ Two targets, both subclasses of the single-molecule
   crystal contacts replace the entropy term. Retained here for
   standalone / comparison use, not as the production restraint.
 
-Hydrogen handling is **identical** to the single-molecule target: every member
-is placed through the inherited :meth:`AmberTarget._place_hydrogens`
-(local-frame placement, one shared implementation). There is no per-member
-hydrogen logic here.
+Hydrogens must already be present in the ensemble: as in the single-molecule
+target, every member's hydrogen coordinates are read from the model, never
+generated or placed here.
 """
 
 from __future__ import annotations
