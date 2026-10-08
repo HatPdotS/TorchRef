@@ -46,17 +46,7 @@ from .wilson_prior import WilsonPriorTarget
 from torchref.refinement.targets.xray import create_xray_target
 from torchref.scaling import Scaler
 
-try:
-    from .ensemble_amber_kl import EnsembleAmberKLTarget
-except ImportError:
-    EnsembleAmberKLTarget = None
-
-try:
-    from .quasi_crystal_amber import (
-        QuasiCrystalAmberTarget,
-    )
-except ImportError:
-    QuasiCrystalAmberTarget = None
+from .quasi_crystal_amber import QuasiCrystalAmberTarget
 
 
 def _extract_first_model_pdb(pdb_path: str):
@@ -146,6 +136,12 @@ class EnsembleRefinement(LBFGSRefinement):
         path (:class:`EnsembleAmberKLTarget`). They are stored on the object
         but are **not** used by the wired :class:`QuasiCrystalAmberTarget`,
         which has no entropy term.
+    hydrogens : {"add", "keep", "strip"}, optional
+        Where the ensemble's hydrogens come from (see
+        :meth:`EnsembleModel.from_multimodel_pdb`). Default ``"add"`` when the Amber
+        restraint is on, since AMBER needs every hydrogen, else ``"strip"``. The
+        X-ray model carries them too. ``"keep"`` uses the file's own and warns;
+        ``"strip"`` with the Amber restraint on raises ``ValueError``.
     val_fraction_of_free : float
         If the loaded MTZ has only an R-free flag and no Validation_flag,
         split this fraction of the free set into a held-out validation set.
@@ -209,6 +205,7 @@ class EnsembleRefinement(LBFGSRefinement):
         amber_charge_method: str = "gas",
         amber_relax_on_init: bool = True,
         amber_force_clamp: float = 10000.0,
+        hydrogens: Optional[str] = None,
         low_rank_modes: int = 0,
         rank_weight: float = 0.0,
         rank_weight_start: Optional[float] = None,
@@ -365,6 +362,14 @@ class EnsembleRefinement(LBFGSRefinement):
         self.amber_charge_method = amber_charge_method
         self.amber_relax_on_init = bool(amber_relax_on_init)
         self.amber_force_clamp = float(amber_force_clamp)
+        if hydrogens is None:
+            hydrogens = "add" if self.amber_weight > 0.0 else "strip"
+        if hydrogens == "strip" and self.amber_weight > 0.0:
+            raise ValueError(
+                "The Amber restraint needs hydrogens; use hydrogens='add' (or 'keep' "
+                "for a hydrogenated file), or amber_weight=0."
+            )
+        self.hydrogens = hydrogens
         self.low_rank_modes = int(low_rank_modes)
         self.rank_weight = float(rank_weight)
         self.rank_weight_start = (
@@ -471,6 +476,7 @@ class EnsembleRefinement(LBFGSRefinement):
             seed=seed,
             verbose=verbose,
             device=self.device,
+            hydrogens=self.hydrogens,
             max_res=self.max_res,
         )
         if self.refine_population:
@@ -535,9 +541,8 @@ class EnsembleRefinement(LBFGSRefinement):
         )
         # Quasi-crystal Amber: one unified OpenMM System (k·N_sym replicas
         # with PBC + PME), no per-member loop, no KL/entropy term — physical
-        # crystal contacts in the supercell are the regularizer. Falls back
-        # to "disabled" if either OpenMM is missing or amber_weight == 0.
-        if QuasiCrystalAmberTarget is not None and self.amber_weight > 0.0:
+        # crystal contacts in the supercell are the regularizer.
+        if self.amber_weight > 0.0:
             self.amber_target = QuasiCrystalAmberTarget(
                 model=self.model,
                 cell=self.reflection_data.cell,
@@ -1347,10 +1352,6 @@ class EnsembleRefinement(LBFGSRefinement):
             os.replace(tmp, checkpoint_path)
 
         for cycle in range(start_cycle, macro_cycles):
-            # H positions are derived from heavy atoms via local-frame
-            # placement inside ``AmberTarget._place_hydrogens`` on every
-            # forward — no per-cycle refresh needed.
-
             # Guided MD excludes the scaler from the integrator; refit it to the
             # current ensemble at the start of each macro-cycle (deterministic,
             # treats |F_calc| as fixed, so atoms are not moved by the scale fit).

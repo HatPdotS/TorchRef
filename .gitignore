@@ -72,6 +72,7 @@ paper/extended_figures/*/runs/
 paper/scaling_benchmark/runs_deposited_stale/
 
 torchref/data/amber_cache
+torchref/data/gaff2_cache
 
 # Local dev environment, editable install, agent/tooling state (not for VCS)
 .dev/

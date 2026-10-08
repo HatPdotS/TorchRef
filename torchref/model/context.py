@@ -241,6 +241,11 @@ class ModelContext(DeviceMixin):
     hydrogens_in_xray : bool, default True
         Whether hydrogens enter the structure-factor calculation. Restraints and the
         non-bonded term see them either way; the bulk-solvent mask never does.
+    hydrogens_generated : bool, default False
+        Whether TorchRef completed this atom set's hydrogens: set by ``hydrogens="add"``,
+        kept by contexts derived from this one (which never generate again) and by
+        checkpoints, cleared when hydrogens are stripped. A new atom table read by
+        :meth:`from_atoms` starts without it.
     initialized : bool, default False
         Whether a structure has been loaded. ``if model:`` tests this.
     restraints : Restraints or None
@@ -272,6 +277,7 @@ class ModelContext(DeviceMixin):
     hydrogens: str = "keep"
     hydrogen_mode: str = "atoms"
     hydrogens_in_xray: bool = True
+    hydrogens_generated: bool = False
     initialized: bool = False
     restraints: Optional["Restraints"] = None
 
@@ -397,7 +403,11 @@ class ModelContext(DeviceMixin):
             links=_copy_links(self.links),
             topology=topology,
             z_value=self.z_value,
-            **{**self.settings(), **overrides},
+            **{
+                **self.settings(),
+                "hydrogens_generated": self.hydrogens_generated,
+                **overrides,
+            },
         )
         return ctx, ctx._settle(values, self.cell.dtype)
 
@@ -411,6 +421,8 @@ class ModelContext(DeviceMixin):
                 values = values.gather(rows)
         if self.hydrogens == "add":
             values = self._add_missing_hydrogens(values, dtype)
+        if self.hydrogens != "keep":
+            self.hydrogens_generated = self.hydrogens == "add"
         self.register_altlocs()
         self.initialized = True
         return values
@@ -733,6 +745,7 @@ class ModelContext(DeviceMixin):
             ],
             initialized=self.initialized,
             z_value=self.z_value,
+            hydrogens_generated=self.hydrogens_generated,
             **self.settings(),
         )
         if self.restraints is not None:
@@ -747,7 +760,8 @@ class ModelContext(DeviceMixin):
         dict
             The cell as a CPU tensor, the space group as its extended Hermann-Mauguin
             symbol (``gemmi.SpaceGroup`` is not picklable), the altloc groups, a copy
-            of the link records and the settings other than ``verbose``. The atom
+            of the link records, :attr:`hydrogens_generated` and the settings other
+            than ``verbose``. The atom
             table itself is written by the model, which alone has the current values;
             restraints are not saved, they rebuild.
         """
@@ -757,6 +771,7 @@ class ModelContext(DeviceMixin):
             "cell": self.cell.data.cpu() if self.cell is not None else None,
             "spacegroup": self.spacegroup.xhm if self.spacegroup else None,
             "initialized": self.initialized,
+            "hydrogens_generated": self.hydrogens_generated,
             "altloc_pairs": self.altloc_pairs,
             "links": _copy_links(self.links),
             **settings,
@@ -819,6 +834,7 @@ class ModelContext(DeviceMixin):
             hydrogens=hydrogens,
             hydrogen_mode=mode,
             hydrogens_in_xray=state.pop("hydrogens_in_xray", True),
+            hydrogens_generated=state.pop("hydrogens_generated", False),
             verbose=verbose,
             z_value=z_value,
         )

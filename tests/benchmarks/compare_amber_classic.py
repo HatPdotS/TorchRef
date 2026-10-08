@@ -14,7 +14,6 @@ import json
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from torchref import Model
@@ -75,7 +74,7 @@ def _prepare(code: str, output: Path, seed: int) -> dict:
     model = model.hydrogenate()
     model.set_hydrogen_mode("riding")
     compatibility = AmberTarget(model=model)
-    assert compatibility._n_omm_atoms == len(model.pdb)
+    assert compatibility.adapter.n_particles == model.n_atoms
     path = output / f"{code}_prepared.pdb"
     model.write_pdb(str(path))
     return {
@@ -150,21 +149,13 @@ def _gradient_snapshot(ref: LBFGSRefinement, amber: AmberTarget) -> tuple[dict, 
             ],
         }
         if name == "amber_raw":
-            import openmm.unit as unit
-
-            forces = np.asarray(
-                amber._context.getState(getForces=True)
-                .getForces(asNumpy=True)
-                .value_in_unit(unit.kilojoules_per_mole / unit.nanometer)
-            )
+            _, forces = amber.adapter.energy_and_forces(xyz)
+            forces = forces[0]
+            # The clip is per atom at max_force kJ/mol/nm; forces here are per Å.
             result[name]["clipped_atom_fraction"] = float(
-                (np.linalg.norm(forces, axis=1) > 10000).mean()
+                (forces.norm(dim=1) * 10 > amber.adapter.max_force).float().mean()
             )
-            unclipped = torch.as_tensor(
-                -forces[amber._model_to_omm] * 0.1 / len(xyz),
-                dtype=xyz.dtype,
-                device=xyz.device,
-            )
+            unclipped = -forces / len(xyz)
             result["amber_unclipped"] = {
                 "heavy": _magnitude(unclipped[heavy]),
                 "hydrogen": _magnitude(unclipped[~heavy]),

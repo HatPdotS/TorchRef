@@ -30,16 +30,16 @@ RankPenaltyTarget
 WilsonPriorTarget
     Per-bin penalty keeping ``<|F_calc|^2>`` on the Wilson curve.
 EnsembleAmberTarget, EnsembleAmberKLTarget, QuasiCrystalAmberTarget
-    Amber force-field restraints for the ensemble, all subclasses of the
-    single-molecule ``AmberTarget``. :class:`QuasiCrystalAmberTarget` (the
-    symmetry-expanded PME supercell whose crystal contacts provide the
-    anti-collapse regularization) is the **production** Amber path — it is the
-    only one wired by :class:`EnsembleRefinement`. The per-member targets are
+    Amber force-field restraints for the ensemble, built on
+    :class:`~torchref.experimental.mm.OpenMMAdapter`. :class:`QuasiCrystalAmberTarget`
+    (the symmetry-expanded PME supercell whose crystal contacts provide the
+    anti-collapse regularization) is the **production** Amber path -- it is the only
+    one wired by :class:`EnsembleRefinement`. The per-member targets are
     **legacy / standalone**, not the default: :class:`EnsembleAmberTarget`
-    (per-member mean energy) and :class:`EnsembleAmberKLTarget` (the same plus
-    an entropy regularizer, whose KL/entropy anti-collapse approach was
-    abandoned for the quasi-crystal layout). Constructing any of them requires
-    the optional ``openmm`` dependency.
+    (per-member mean energy) and :class:`EnsembleAmberKLTarget` (the same plus an
+    entropy regularizer, whose KL/entropy anti-collapse approach was abandoned for the
+    quasi-crystal layout). Constructing any of them requires the optional ``openmm``
+    dependency, and an ensemble carrying hydrogens.
 """
 
 from torchref.experimental.ensemble.ensemble_model import EnsembleModel
@@ -49,16 +49,10 @@ from torchref.experimental.ensemble.ensemble_refinement import EnsembleRefinemen
 from torchref.experimental.ensemble.quasi_crystal_amber import QuasiCrystalAmberTarget
 from torchref.experimental.ensemble.rank_penalty import RankPenaltyTarget
 from torchref.experimental.ensemble.wilson_prior import WilsonPriorTarget
-
-# Optional: constructing these requires openmm (imported lazily by AmberTarget).
-try:
-    from torchref.experimental.ensemble.ensemble_amber_kl import (
-        EnsembleAmberKLTarget,
-        EnsembleAmberTarget,
-    )
-except ImportError:
-    EnsembleAmberKLTarget = None
-    EnsembleAmberTarget = None
+from torchref.experimental.ensemble.ensemble_amber_kl import (
+    EnsembleAmberKLTarget,
+    EnsembleAmberTarget,
+)
 
 __all__ = [
     "EnsembleModel",
