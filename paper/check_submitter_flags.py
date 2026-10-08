@@ -16,10 +16,10 @@ requires editing the thing it checks is a worse check.
 Design
 ------
 Driven by the explicit :data:`SUBMITTERS` table rather than by grepping for anything that
-looks like a command, because the submitters do not all target the same parser:
-``run_warm.py`` has its own, and ``log_shapes.py`` is a ``runpy`` shim that forwards to
-``refine.py`` after eating two flags of its own. A table makes that visible; a regex would
-quietly validate one script against the wrong parser.
+looks like a command, because a submitter need not target ``refine.py``'s parser: a runner
+with its own parser is checked against that parser's option strings, and a shim that eats
+flags of its own before forwarding lists them in ``extra``. A table makes that visible; a
+regex would quietly validate one script against the wrong parser.
 
 Two levels of checking, by what the runner can hand over:
 
@@ -74,15 +74,6 @@ SUBMITTERS = [
     ("paper/figure2_alphafold_start/analysis/submit_weight_grid.py", r"\{P\.REFINE_SCRIPT\}", ("refine", None), ()),
     ("paper/figure2_alphafold_start/analysis/submit_seeded_benchmark.py", r"\{P\.REFINE_SCRIPT\}", ("refine", None), ()),
     ("paper/extended_figures/exF4/submit_singlecore.py", r"\{P\.REFINE_SCRIPT\}", ("refine", None), ()),
-    ("sigma_a_rework/submit_arms.py", r"\{refine\}", ("refine", None), ()),
-    ("sigma_a_rework/submit_arm_grid.py", r"\{refine\}", ("refine", None), ()),
-    ("sigma_a_rework/submit_weight_screen.py", r"\{refine\}", ("refine", None), ()),
-    # runpy shim over refine.py; it strips its own two flags and delegates the rest.
-    ("sigma_a_rework/estimator_lab/shapes_array.sh", r"log_shapes\.py", ("refine", None),
-     ("--shape-log", "--shape-code")),
-    # Own parser, in the same directory as its submitter.
-    ("paper/seeded_warm_corefine/submit_warm.py", r"\{RUNNER\}",
-     ("ast", "paper/seeded_warm_corefine/run_warm.py"), ()),
 ]
 
 #: A command line **begins** with the interpreter. Anchoring there is what separates the sbatch

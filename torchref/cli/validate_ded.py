@@ -209,10 +209,7 @@ def setup_ded_context(
     ded_weight=DEFAULT_SCHEME,
     difference_config=None,
 ):
-    """Load reflection data and prepare shared state for DED validation.
-
-    This sets up the observation side (weighted dFo, P1 expansion, resolution
-    bins, free/work masks) that is independent of any particular model.
+    """Load reflection data and prepare the model-independent side of DED validation.
 
     Parameters
     ----------
@@ -221,21 +218,25 @@ def setup_ded_context(
     dmin : float, optional
         High-resolution cutoff in Angstroms.
     device : torch.device, optional
-        Compute device. Defaults to CPU.
+        Compute device; defaults to :func:`torchref.config.get_default_device`.
     col_dark, col_light : dict, optional
         Column name overrides for data loading.
     n_bins : int
         Number of resolution bins for reciprocal-space CC (default 20).
     verbose : int
         Verbosity level.
+    ded_weight : str
+        Scheme in :data:`torchref.maps.ded_weights.SCHEMES` behind ``weights``.
+    difference_config : DifferencePowerConfig, optional
+        Fixes the difference-power exponent ``gamma``; None fits it.
 
     Returns
     -------
     dict
-        Context dictionary with keys: device, collection, data_dark,
-        data_light, hkl_all, hkl, refl_mask, w_dfo, weights, d_spacing,
-        cell_t, cell_np, sg_name, d_min, gridsize, hkl_p1, orig_idx,
-        phase_shifts, w_dfo_p1, weights_p1, work_mask, free_mask.
+        device, collection, data_dark, data_light, hkl_all, hkl, refl_mask, w_dfo, dfo,
+        weights, dfo_p1, weights_by_scheme, ded_weight, ded_weight_applied, d_spacing,
+        ded_weight_diagnostics, cell_t, cell_np, sg_name, d_min, gridsize, hkl_p1,
+        orig_idx, phase_shifts, w_dfo_p1, weights_p1, work_mask, free_mask, n_bins.
     """
     import gemmi
 
@@ -411,7 +412,7 @@ def compute_ded_maps(
     Returns
     -------
     dict
-        Keys: map_dfo, map_dfc, mask_dict, realspace_correlation,
+        Keys: map_dfo, map_dfc, mask_dict, by_weight, realspace_correlation,
         resolution_bins, reciprocal_cc_overall, reciprocal_cc_work,
         reciprocal_cc_free, w_delta_fcalc_asu.
     """

@@ -10,7 +10,15 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
+
+if TYPE_CHECKING:
+    # Annotation-only: importing torch and the models here would slow every --help.
+    import torch
+
+    from torchref.io.datasets.reflection_data import ReflectionData
+    from torchref.io.metadata import RefinementMetadata
+    from torchref.model.model_ft import ModelFT
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +239,8 @@ def add_column_args(parser: argparse.ArgumentParser) -> None:
 def add_dual_column_args(parser: argparse.ArgumentParser) -> None:
     """Add dark/light-specific column-selection arguments.
 
-    Adds ``-csf-dark``, ``-csf-light``, ``-csig-dark``, ``-csig-light``,
-    ``-cphi-dark``, ``-cphi-light`` for per-dataset column overrides.
+    Adds ``-csf-dark``, ``-csf-light``, ``-csig-dark`` and ``-csig-light``
+    for per-dataset column overrides.
     """
     for side in ("dark", "light"):
         parser.add_argument(
@@ -252,15 +260,6 @@ def add_dual_column_args(parser: argparse.ArgumentParser) -> None:
             metavar="COL",
             help=f"Column name for sigmas in the {side} structure factor "
                  f"file (default: auto-detect)",
-        )
-        parser.add_argument(
-            f"-cphi-{side}",
-            f"--column-phase-{side}",
-            type=str,
-            default=None,
-            metavar="COL",
-            help=f"Column name for phases in degrees in the {side} "
-                 f"structure factor file (default: auto-detect)",
         )
 
 
@@ -307,6 +306,18 @@ def add_single_model_args(parser: argparse.ArgumentParser) -> None:
 
     col = parser.add_argument_group("Column selection")
     add_column_args(col)
+
+
+def _light_fraction(value: str) -> float:
+    """Parse ``--fraction``, refusing values outside ``0 < f <= 1``.
+
+    1.0 is the pure light state; 0 would leave no light model to extrapolate to,
+    and the population parametrisation clamps anything outside the range silently.
+    """
+    fraction = float(value)
+    if not 0.0 < fraction <= 1.0:
+        raise argparse.ArgumentTypeError(f"must satisfy 0 < fraction <= 1, got {value}")
+    return fraction
 
 
 def add_dual_model_args(
@@ -358,8 +369,8 @@ def add_dual_model_args(
         help="Light / triggered state structure factor file (MTZ or CIF)",
     )
     frac_kwargs = {
-        "type": float,
-        "help": "Occupancy fraction of the light/excited state "
+        "type": _light_fraction,
+        "help": "Occupancy fraction of the light/excited state, 0 < fraction <= 1 "
                 "(e.g. 0.37). Dark fraction is computed as 1 - fraction.",
     }
     if fraction_required:
@@ -500,25 +511,31 @@ def add_metadata_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def apply_metadata_args(
+    metadata: "RefinementMetadata", args: argparse.Namespace
+) -> None:
+    """Apply the ``--title``, ``--authors`` and ``--output-remarks`` overrides.
+
+    Parameters
+    ----------
+    metadata : RefinementMetadata
+        Header to update in place; a field whose flag was not given keeps its value.
+    args : argparse.Namespace
+        Parsed arguments of a parser built with :func:`add_metadata_args`.
+    """
+    if getattr(args, "title", None):
+        metadata.title = args.title
+    if getattr(args, "authors", None):
+        metadata.authors = args.authors
+    if getattr(args, "output_remarks", None):
+        metadata.output_remarks = args.output_remarks
+
+
 def add_general_args(parser: argparse.ArgumentParser) -> None:
     """Add a *General* argument group with ``--device`` and ``-v``/``--verbose``."""
     gen = parser.add_argument_group("General")
     add_device_arg(gen)
     add_verbose_arg(gen)
-
-
-def add_scaler_mode_arg(parser: argparse.ArgumentParser) -> None:
-    """Add ``--scaler-mode`` argument."""
-    parser.add_argument(
-        "--scaler-mode",
-        type=str,
-        default="shared",
-        choices=["shared", "split"],
-        help="Scaler mode: 'shared' uses a single scaler (dark) for all "
-             "targets ensuring bulk-solvent cancellation. 'split' uses "
-             "separate scalers for dark and light/mixed sides "
-             "(default: shared)",
-    )
 
 
 def add_n_cycles_arg(
@@ -642,25 +659,48 @@ def validate_cif_files(cif_paths: Optional[List[str]]) -> int:
 # ---------------------------------------------------------------------------
 
 def build_column_names(
+    structure_factor: str,
     column_structure_factor: Optional[str] = None,
     column_sigma: Optional[str] = None,
-    column_phase: Optional[str] = None,
+    flag_suffix: str = "",
 ) -> Optional[Dict[str, str]]:
-    """Build a ``column_names`` dict from ``-csf``, ``-csig``, ``-cphi`` args.
+    """Build a ``column_names`` dict from ``-csf`` and ``-csig`` args.
 
-    Returns ``None`` when none are specified (auto-detect).
-    The dict keys (``"F"``, ``"SIGF"``, ``"PHIF"``) match the keys
-    expected by :meth:`ReflectionData.load_mtz`.
+    Parameters
+    ----------
+    structure_factor : str
+        Path of the structure-factor file the columns are read from.
+    column_structure_factor, column_sigma : str, optional
+        The ``-csf`` and ``-csig`` values.
+    flag_suffix : str, optional
+        Completes the flag names in the error message, e.g. ``"-dark"``.
+
+    Returns
+    -------
+    dict or None
+        ``None`` when neither column is given (auto-detect). The keys
+        (``"F"``, ``"SIGF"``) are those :class:`~torchref.io.mtz.MTZReader`
+        takes; it reads an intensity column (MTZ type J or K) named here as
+        ``"I"``/``"SIGI"``.
+
+    Raises
+    ------
+    SystemExit
+        If a column is given for an SF-mmCIF (``.cif``) file, whose reader takes
+        no column choice and would ignore it.
     """
-    if column_structure_factor is None and column_sigma is None and column_phase is None:
+    if column_structure_factor is None and column_sigma is None:
         return None
+    if Path(structure_factor).suffix.lower() == ".cif":
+        sys.exit(
+            f"Error: -csf{flag_suffix}/-csig{flag_suffix} name MTZ columns, but "
+            f"{structure_factor} is SF-mmCIF, whose reader takes no column choice."
+        )
     column_names: Dict[str, str] = {}
     if column_structure_factor is not None:
         column_names["F"] = column_structure_factor
     if column_sigma is not None:
         column_names["SIGF"] = column_sigma
-    if column_phase is not None:
-        column_names["PHIF"] = column_phase
     return column_names
 
 
@@ -670,7 +710,8 @@ def build_dual_column_names(
     """Build column_names dicts for dark and light datasets.
 
     Reads the per-side flags (``-csf-dark``, ``-csf-light``, etc.)
-    from the parsed *args* namespace.
+    and structure-factor files from the parsed *args* namespace; see
+    :func:`build_column_names`, which exits on columns named for SF-mmCIF.
 
     Returns
     -------
@@ -679,14 +720,16 @@ def build_dual_column_names(
         auto-detection.
     """
     col_dark = build_column_names(
+        args.dark_structure_factor,
         args.column_structure_factor_dark,
         args.column_sigma_dark,
-        args.column_phase_dark,
+        "-dark",
     )
     col_light = build_column_names(
+        args.light_structure_factor,
         args.column_structure_factor_light,
         args.column_sigma_light,
-        args.column_phase_light,
+        "-light",
     )
     return col_dark, col_light
 
@@ -695,18 +738,13 @@ def build_dual_column_names(
 # Weights parsing
 # ---------------------------------------------------------------------------
 
-def parse_weights(
-    weights_arg: Optional[str],
-    defaults: Optional[dict] = None,
-) -> Tuple[dict, Optional[str]]:
+def parse_weights(weights_arg: Optional[str]) -> Tuple[dict, Optional[str]]:
     """Parse the ``--weights`` argument (JSON string or file path).
 
     Parameters
     ----------
     weights_arg : str or None
         The raw ``args.weights`` value.
-    defaults : dict, optional
-        Base weights to merge user overrides into.  A *copy* is made.
 
     Returns
     -------
@@ -715,22 +753,26 @@ def parse_weights(
     error : str or None
         An error message if parsing failed, otherwise ``None``.
     """
-    weights = dict(defaults) if defaults is not None else {}
+    weights = {}
     if weights_arg is None:
         return weights, None
 
+    # JSON first: a long inline dict is not a valid path, and probing it as one
+    # raises OSError (file name too long).
     try:
-        if Path(weights_arg).is_file():
+        user_weights = json.loads(weights_arg)
+    except json.JSONDecodeError:
+        try:
             with open(weights_arg) as f:
                 user_weights = json.load(f)
-        else:
-            user_weights = json.loads(weights_arg)
-        if not isinstance(user_weights, dict):
-            return weights, "--weights must be a JSON dictionary"
-        weights.update(user_weights)
-        return weights, None
-    except (json.JSONDecodeError, ValueError) as e:
-        return weights, f"Invalid JSON for --weights: {e}"
+        except OSError as e:
+            return weights, f"--weights is neither JSON nor a readable file: {e}"
+        except ValueError as e:
+            return weights, f"Invalid JSON for --weights: {e}"
+    if not isinstance(user_weights, dict):
+        return weights, "--weights must be a JSON dictionary"
+    weights.update(user_weights)
+    return weights, None
 
 
 # ---------------------------------------------------------------------------
@@ -809,7 +851,7 @@ def load_reflection_data(
     device : str or torch.device
         Target device.
     column_names : dict, optional
-        Column name overrides (``"F"``, ``"SIGF"``, ``"PHIF"``).  Only used for MTZ.
+        Column name overrides (``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``); MTZ only.
     verbose : int
         Verbosity passed to ReflectionData.
 
@@ -871,8 +913,6 @@ def write_refinement_outputs(
         Dictionary with keys ``"pdb"``, ``"cif"`` mapping to output paths
         (or None if not written).
     """
-    from torchref.io.metadata import RefinementMetadata
-
     output_format = getattr(args, "output_format", "both")
     no_header = getattr(args, "no_header", False)
 
@@ -880,17 +920,10 @@ def write_refinement_outputs(
     metadata = None
     if not no_header:
         metadata = refinement.collect_deposition_metadata()
-        # Apply CLI overrides
-        if getattr(args, "title", None):
-            metadata.title = args.title
-        if getattr(args, "authors", None):
-            metadata.authors = args.authors
-        if getattr(args, "output_remarks", None):
-            metadata.output_remarks = args.output_remarks
+        apply_metadata_args(metadata, args)
 
         # What was minimised and how. These live on the CLI namespace rather
-        # than on the refinement, which is why from_refinement cannot fill them
-        # and why the header carried no method line at all until now.
+        # than on the refinement, which is why from_refinement cannot fill them.
         xray_mode = getattr(args, "xray_mode", None)
         if xray_mode:
             # Name the family as well as the registry key. "ML" alone is
@@ -929,7 +962,9 @@ def write_refinement_outputs(
 
     if output_format in ("pdb", "both"):
         output_pdb = outdir / "refined.pdb"
-        refinement.write_out_pdb(str(output_pdb), metadata=metadata)
+        # The model's writer, not refinement.write_out_pdb: that one collects a
+        # header when given None, and None here is --no-header.
+        refinement.model.write_pdb(str(output_pdb), metadata=metadata)
         outputs["pdb"] = output_pdb
         if verbose > 0:
             print(f"  Refined structure (PDB): {output_pdb}")
@@ -937,7 +972,7 @@ def write_refinement_outputs(
 
     if output_format in ("cif", "both"):
         output_cif = outdir / "refined.cif"
-        refinement.write_out_cif(str(output_cif), metadata=metadata)
+        refinement.model.write_cif(str(output_cif), metadata=metadata)
         outputs["cif"] = output_cif
         if verbose > 0:
             print(f"  Refined structure (mmCIF): {output_cif}")
