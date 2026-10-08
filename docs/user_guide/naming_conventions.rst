@@ -54,9 +54,8 @@ Coordinates and Occupancy
 - occupancies: ``model.occupancy()``
 
 Note that ``freeze()`` / ``unfreeze()`` take the *parameter-type* names —
-``'xyz'``, ``'adp'``, ``'u'``, ``'occupancy'`` — and silently ignore anything
-else, so an abbreviation like ``'b'`` or ``'occ'`` is a no-op rather than an
-error.
+``'xyz'``, ``'adp'``, ``'u'``, ``'occupancy'`` — and raise ``ValueError`` on
+anything else, such as the abbreviation ``'b'`` or ``'occ'``.
 
 Unit Cell
 ---------

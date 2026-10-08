@@ -88,8 +88,8 @@ Model parameters can be selectively frozen during refinement:
    model = read_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
 
    # Freeze/unfreeze by parameter type.
-   # Valid names are exactly 'xyz', 'adp', 'u', 'occupancy'. Anything else
-   # (e.g. 'b', 'occ') is silently ignored, not an error.
+   # Valid names are exactly 'xyz', 'adp', 'u', 'occupancy'; anything else
+   # (e.g. 'b', 'occ') raises ValueError.
    model.freeze('adp')      # Freeze all B-factors
    model.unfreeze('adp')    # Unfreeze B-factors
    model.freeze('xyz')      # Freeze coordinates

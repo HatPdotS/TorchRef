@@ -54,7 +54,7 @@ Parameter Selection
 .. code-block:: python
 
    # By parameter type. Valid names are exactly 'xyz', 'adp', 'u', 'occupancy';
-   # anything else ('b', 'occ', ...) is silently ignored rather than rejected.
+   # anything else ('b', 'occ', ...) raises ValueError.
    refinement.model.freeze('xyz')
    refinement.model.unfreeze('adp')
 
