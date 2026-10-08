@@ -9,7 +9,7 @@ from torchref.config import get_complex_dtype, get_float_dtype, get_int_dtype
 
 
 class _StubSolvent:
-    """Minimal stand-in for :class:`SolventModel` on the k_sol/B_sol path."""
+    """Minimal stand-in for :class:`SolventModel` on the k_sol/falloff path."""
 
     optimize_phase = False
 

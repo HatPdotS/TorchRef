@@ -152,10 +152,10 @@ class CollectionScaler(ScalerBase):
 
     def _calc_initial_scale_joint(self):
         """
-        Compute initial bin-wise log-scale using ALL data–model pairs.
+        Seed ``c_iso`` from ALL data–model pairs.
 
-        Averages log(F_obs / |F_calc|) per resolution bin across every
-        matched timepoint in the collections.
+        Averages log(F_obs / |F_calc|) per resolution bin across every matched
+        timepoint and projects the bin means onto the Chebyshev basis.
         """
         dc = self._dataset_collection
         mc = self._model_collection
@@ -303,9 +303,10 @@ class CollectionScaler(ScalerBase):
         Scale *fcalc* using the shared parameters **and** a fraction-
         weighted solvent contribution.
 
-        This sets ``_f_sol_raw`` to the mixed solvent and then delegates
-        to ``ScalerBase.forward()``, which applies k_sol / B_sol /
-        phase damping and the overall + anisotropic scale.
+        The fraction-weighted raw solvent goes to ``ScalerBase.forward()`` as
+        ``f_sol_override`` (the cached ``_f_sol_raw`` is untouched), which applies
+        k_sol, the ss_half/n_exp falloff, the phase offset and the isotropic and
+        anisotropic scales.
 
         Parameters
         ----------
@@ -567,7 +568,7 @@ class CollectionScaler(ScalerBase):
 
     def screen_solvent_params_joint(self, steps: int = 15):
         """
-        Grid-search k_sol / B_sol using NLL summed across all datasets.
+        Grid-search k_sol and ss_half using the Gaussian NLL summed over all datasets.
 
         Parameters
         ----------

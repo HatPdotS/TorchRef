@@ -228,8 +228,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Seed ``c_iso`` from the closed-form observed/calculated amplitude ratio.
 
         The ratio is evaluated per bin, then projected onto the Chebyshev basis by least
-        squares, so the fit starts from the same scale curve the binned model would have
-        started from. Fitted on the **work set only**, excluding negative-intensity
+        squares. Fitted on the **work set only**, excluding negative-intensity
         reflections whose French-Wilson F values are biased.
 
         Parameters
@@ -408,10 +407,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             (``ml``, ``ml_full``) drives the scale to absorb ``1/alpha`` and inflates every
             R-factor computed from ``k*|F_calc|``.
 
-            A least-squares fit can drive the per-bin scale toward 0 in shells where
-            ``F_obs`` is noise-dominated and uncorrelated with ``F_calc``, which blows up
-            R. The diagnostic is ``min(k)/median(k)`` over the per-bin scales;
-            ``'ml_noalpha'`` absorbs such a mismatch into ``beta`` instead.
+            A least-squares fit can pull the isotropic scale curve toward 0 over
+            resolution ranges where ``F_obs`` is noise-dominated and uncorrelated with
+            ``F_calc``, which blows up R; ``'ml_noalpha'`` absorbs that into ``beta``.
 
         Returns
         -------
@@ -568,7 +566,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         f_sol_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Apply per-bin scale, anisotropy and bulk solvent to ``fcalc``.
+        Apply the Chebyshev isotropic scale, anisotropy and bulk solvent to ``fcalc``.
 
         Every component is optional: each is applied only if the corresponding attribute
         exists, so an un-initialized scaler returns its input unchanged.
@@ -581,9 +579,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             already-masked subset and the scaler masks its own per-reflection terms to match.
         f_sol_override : torch.Tensor, optional
             Raw solvent structure factors used instead of the cached ``_f_sol_raw`` for this
-            call only (k_sol / B_sol / phase damping still applied); the cache is left
-            untouched. Shape ``(N,)`` or ``(B, N)`` -- a batched override keeps the batch
-            axis of the result. Used by ``CollectionScaler``.
+            call only (k_sol, ss_half/n_exp falloff and phase offset still applied); the
+            cache is left untouched. Shape ``(N,)`` or ``(B, N)``; a batched override
+            keeps the batch axis. Used by ``CollectionScaler``.
 
         Returns
         -------
@@ -643,7 +641,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             )
             b_factor = sol.damping(s_half_sq)
             if sol.optimize_phase:
-                # A bare ``1j`` would promote the product to complex128.
                 j = torch.tensor(1j, dtype=get_complex_dtype(), device=self.device)
                 f_sol_raw = f_sol_raw * torch.exp(j * sol.phase_offset)
             f_sol = k_sol * f_sol_raw * b_factor
