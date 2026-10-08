@@ -528,8 +528,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             R_rec.T.contiguous().to(device=self.model.device,
                                     dtype=self.model.dtype_float),
         )
-        if str(placed.spacegroup) != str(self.data.spacegroup):
-            placed.spacegroup = self.data.spacegroup.hm
+        self._into_crystal(placed)
         if solution.translation is not None:
             t = torch.as_tensor(solution.translation, dtype=self.model.dtype_float)
             placed.translate(t, fractional=True)
@@ -537,6 +536,17 @@ class MolecularReplacementPipeline(DeviceMixin):
         placed.last_alignment_rotation = R_rec
         placed.last_alignment_rfactor = solution.r_factor
         return placed
+
+    def _into_crystal(self, m: "ModelFT", spacegroup=None) -> "ModelFT":
+        """Give ``m`` the data's cell and ``spacegroup`` (the data's by default), in place.
+
+        The search model's CRYST1 belongs to another crystal, or is a placeholder,
+        and both fractional placement and the template's structure factors must
+        be in the data's cell.
+        """
+        m.cell = self.data.cell.clone().to(device=m.device, dtype=m.dtype_float)
+        m.spacegroup = self.data.spacegroup if spacegroup is None else spacegroup
+        return m
 
     def _orient_template(self, R_rec: torch.Tensor) -> None:
         """Write the candidate orientation into the shared P1 copy.
@@ -564,6 +574,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         rot = self.model.copy().rotate(
             R_app.to(device=self.model.device, dtype=self.model.dtype_float),
         )
+        self._into_crystal(rot)
         rot.last_alignment_rotation = R_rec
         return rot, R_rec
 
@@ -640,7 +651,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         p1 = self.model.copy()
         if self.tf_d_min > 0.0:
             p1.max_res = self.tf_d_min / 1.5
-        p1.spacegroup = "P 1"
+        self._into_crystal(p1, "P 1")
         self._p1 = p1
         self._p1_xyz0 = p1.xyz().detach().clone()
         self._p1_center = self._p1_xyz0.mean(dim=0)

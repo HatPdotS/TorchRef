@@ -240,7 +240,15 @@ def prepare_candidate(
     have zero mean over ``h``. The crystal's ``<|F_calc|^2>`` is then
     ``eps n_ops Sigma_P``, and dividing by it is what puts every candidate's
     ``E_calc`` on one footing with ``E_obs`` and with each other.
+
+    Raises ``ValueError`` if ``model_p1.cell`` is not ``real_cell``: the
+    template's transform would then be sampled in another crystal's cell.
     """
+    if not np.allclose(model_p1.cell.key, real_cell.key, rtol=1e-5, atol=0.0):
+        raise ValueError(
+            f"model_p1 carries cell {model_p1.cell.key}, the crystal is "
+            f"{real_cell.key}; assign the crystal's cell to the template first."
+        )
     device = get_default_device()
     real = get_float_dtype()
     cplx = get_complex_dtype()
