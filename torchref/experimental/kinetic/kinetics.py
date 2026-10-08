@@ -513,8 +513,8 @@ class KineticModel(DeviceMixin, nnModule):
         ``rate_matrix``, by scaling and squaring on ``E = exp(K t) - I`` with
         every column of ``E`` summing to exactly zero. This keeps stiff schemes
         (rates spanning many decades over long times) accurate and
-        population-conserving in float32. Choosing the number of squarings costs
-        one GPU->CPU sync.
+        population-conserving in float32, unless the caller enables TF32 matmuls
+        on CUDA. Choosing the number of squarings costs one GPU->CPU sync.
 
         Parameters
         ----------
