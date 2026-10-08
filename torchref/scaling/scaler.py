@@ -217,33 +217,16 @@ class Scaler(ScalerBase):
         scale_target: str = DEFAULT_SCALE_TARGET,
     ):
         """
-        Refine scale parameters using LBFGS optimizer.
+        Refine scale parameters with L-BFGS, computing ``fcalc`` from the model.
 
-        If fcalc is not provided, computes it from the internal model.
+        See :meth:`torchref.scaling.scaler_base.ScalerBase.refine_lbfgs` for the other
+        parameters, the return value and the errors raised.
 
         Parameters
         ----------
         fcalc : torch.Tensor, optional
-            Calculated structure factors. If None, computed from model.
-        nsteps : int, default 3
-            Number of LBFGS steps.
-        lr : float, default 1.0
-            Learning rate (typically 1.0 for LBFGS).
-        max_iter : int, default 200
-            Maximum iterations per line search.
-        history_size : int, default 10
-            Number of previous gradients to store for Hessian approximation.
-        verbose : bool, default True
-            Print progress information.
-        scale_target : {'nll', 'ml_noalpha'}, default 'nll'
-            Scale-fit objective, an :data:`XRAY_TARGETS` row; see
-            :meth:`torchref.scaling.scaler_base.ScalerBase.refine_lbfgs` for why no
-            ``alpha``-centred row is selectable.
-
-        Returns
-        -------
-        dict
-            Dictionary with refinement metrics.
+            Complex calculated structure factors, shape (n_reflections,). If ``None``,
+            computed from the model.
         """
         if fcalc is None:
             fcalc = self.compute_fcalc()

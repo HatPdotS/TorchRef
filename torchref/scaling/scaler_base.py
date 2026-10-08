@@ -392,7 +392,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         lr : float, default 1.0
             Learning rate (typically 1.0 for LBFGS).
         max_iter : int, default 200
-            Maximum iterations per line search.
+            Maximum L-BFGS iterations per step (``torch.optim.LBFGS`` ``max_iter``).
         history_size : int, default 10
             Number of previous gradients kept for the Hessian approximation.
         verbose : bool, default True
