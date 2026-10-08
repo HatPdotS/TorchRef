@@ -493,6 +493,57 @@ class TestIHMWriter:
         assert status.count("x") == 100
         assert status.count("f") == np.count_nonzero(flags == 0)
 
+    def test_nucleic_acid_chains_keep_their_polymer_type(self, tmp_path):
+        """A DNA and an RNA chain are written as polydeoxyribonucleotide and
+        polyribonucleotide entities of their own residues, a peptide chain beside
+        them as polypeptide(L)."""
+        from types import SimpleNamespace
+
+        import gemmi
+
+        from torchref.io.ihm import IHMWriter
+        from torchref.model.context import ModelContext
+        from torchref.topology import Topology
+
+        residues = [
+            ("B", 1, "DA"),
+            ("B", 2, "DC"),
+            ("B", 3, "5CM"),
+            ("R", 1, "A"),
+            ("R", 2, "U"),
+            ("R", 3, "PSU"),
+            ("P", 1, "GLY"),
+            ("P", 2, "MSE"),
+        ]
+        table = pd.DataFrame(
+            [(c, r, n, "P", 0.0, 0.0, 0.0) for c, r, n in residues],
+            columns=["chainid", "resseq", "resname", "name", "x", "y", "z"],
+        )
+        model = SimpleNamespace(
+            ctx=ModelContext(topology=Topology.from_table(table)),
+            to_dataframe=lambda: table,
+        )
+        collection = SimpleNamespace(n_base_models=1, base_models=[model])
+        mapping = IHMEnsembleMapping(
+            states=[IHMStateInfo(state_id=1, name="only", details="", model_num=1)],
+            model_groups=[
+                IHMModelGroupInfo(group_id=1, name="t0", state_fractions={1: 1.0})
+            ],
+        )
+        out = tmp_path / "nucleic.cif"
+        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+
+        block = gemmi.cif.read(str(out)).sole_block()
+        entity_type = dict(block.find("_entity_poly.", ["entity_id", "type"]))
+        sequence = {}
+        for entity, comp in block.find("_entity_poly_seq.", ["entity_id", "mon_id"]):
+            sequence.setdefault(entity_type[entity], []).append(comp)
+        assert sequence == {
+            "polydeoxyribonucleotide": ["DA", "DC", "5CM"],
+            "polyribonucleotide": ["A", "U", "PSU"],
+            "polypeptide(L)": ["GLY", "MET"],
+        }
+
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
         import torch

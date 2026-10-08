@@ -51,6 +51,55 @@ def _is_ihm_block(block: gemmi.cif.Block) -> bool:
     )
 
 
+def _chain_chem_comps(ctx) -> List[Tuple[str, list]]:
+    """Per-chain python-ihm chemical components of a model's polymer residues.
+
+    Residues are those of :attr:`~torchref.model.context.ModelContext.chain_sequences`
+    and typed by :func:`~torchref.topology.residue_graph.polymer_type`, so a DNA or RNA
+    chain is written as a nucleic-acid entity rather than as ``UNK`` peptides. Protein
+    residues map through their one-letter code (``UNK`` when it has none); nucleotides
+    outside python-ihm's standard alphabets keep their own name, as DNA or RNA by
+    their library group.
+
+    Parameters
+    ----------
+    ctx : ModelContext
+        Context of the model whose chains become entities.
+
+    Returns
+    -------
+    list of (str, list of ihm.ChemComp)
+        ``(chain_id, components)`` in chain order, numbering gaps skipped.
+    """
+    import ihm
+
+    from torchref.model.context import THREE_TO_ONE
+    from torchref.topology.monomer.cif import read_component_groups
+    from torchref.topology.residue_graph import polymer_type
+
+    lpep, dna, rna = ihm.LPeptideAlphabet(), ihm.DNAAlphabet(), ihm.RNAAlphabet()
+    groups = read_component_groups()
+
+    def chem_comp(resname, kind):
+        if kind == "protein":
+            return lpep[THREE_TO_ONE.get(resname, "UNK")]
+        if resname in dna:
+            return dna[resname]
+        if resname in rna:
+            return rna[resname]
+        if "DNA" in groups.get(resname, "").upper():
+            return ihm.DNAChemComp(resname, resname, "N")
+        return ihm.RNAChemComp(resname, resname, "N")
+
+    chains = []
+    for chain_id, residues in ctx._polymer_residues():
+        names = [resname for _, resname in residues]
+        chains.append(
+            (chain_id, [chem_comp(n, k) for n, k in zip(names, polymer_type(names))])
+        )
+    return chains
+
+
 def _add_group_with_independent_populations(collection, name, fractions):
     """Add an IHM model group, keeping its populations exactly as deposited.
 
@@ -578,16 +627,7 @@ class IHMWriter:
         asym_units = []
 
         if mc.n_base_models > 0:
-            model0 = mc.base_models[0]
-            for chain_id, seq_str in model0.ctx.chain_sequences:
-                seq = []
-                for char in seq_str:
-                    if char == "?":
-                        continue  # skip gaps
-                    try:
-                        seq.append(lpep[char])
-                    except KeyError:
-                        seq.append(lpep["UNK"])
+            for chain_id, seq in _chain_chem_comps(mc.base_models[0].ctx):
                 if seq:
                     entity = ihm.Entity(seq, description=f"Chain {chain_id}")
                     system.entities.append(entity)
