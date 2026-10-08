@@ -24,6 +24,7 @@ from torchref.base.reciprocal.hkl import get_d_spacing
 from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
+from torchref.utils.utils import first_index_per_group
 
 __all__ = ["merge_to_spacegroup", "MergeStats", "MergeShell"]
 
@@ -225,10 +226,7 @@ def merge_to_spacegroup(
 
     # One contribution per (merged reflection, source observation).
     pair = merge_id * n_src + cand_src
-    order = torch.argsort(pair, stable=True)
-    first = torch.ones(len(order), dtype=torch.bool)
-    first[1:] = pair[order][1:] != pair[order][:-1]
-    sel = order[first]
+    sel = first_index_per_group(pair)
     gid, src = merge_id[sel], cand_src[sel]
 
     g_hkl = torch.empty((n_merge, 3), dtype=canon.dtype)

@@ -28,10 +28,11 @@ import torch
 from torchref.base.coordinates.local_frame import frame_is_degenerate
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import dtypes, get_int_dtype, normalize_device
-from torchref.topology.nonbonded import IMAGE_PAIR_WEIGHT, first_occurrence_mask
+from torchref.topology.nonbonded import IMAGE_PAIR_WEIGHT
 from torchref.topology.residue_graph import build_residue_nodes
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
+from torchref.utils.utils import first_index_per_group
 
 # ---------------------------------------------------------------------------
 # Placement-type constants
@@ -870,11 +871,11 @@ def build_h_candidate_pairs(
             [torch.stack([cand_i, cand_j, cand_sym], dim=1), cand_off], dim=1
         )
         _, inverse = torch.unique(rows, dim=0, return_inverse=True)
-        mask = first_occurrence_mask(inverse)
-        cand_i = cand_i[mask]
-        cand_j = cand_j[mask]
-        cand_sym = cand_sym[mask]
-        cand_off = cand_off[mask]
+        first = first_index_per_group(inverse).sort().values
+        cand_i = cand_i[first]
+        cand_j = cand_j[first]
+        cand_sym = cand_sym[first]
+        cand_off = cand_off[first]
 
     h_topo.cand_idx_i = cand_i
     h_topo.cand_idx_j = cand_j

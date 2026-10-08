@@ -33,6 +33,7 @@ from torchref.base.coordinates.local_frame import (
 from torchref.config import get_int_dtype
 from torchref.model.parameter_wrappers import MixedTensor
 from torchref.topology.hydrogens import HydrogenFrames
+from torchref.utils.utils import first_index_per_group
 
 
 class _DerivedRowsMixin:
@@ -352,15 +353,7 @@ class RidingXYZTensor(_DerivedRowsMixin, MixedTensor):
             rows = (labels >= 0).nonzero(as_tuple=True)[0]
             groups = labels[rows]
             if rows.numel():
-                order = torch.argsort(groups, stable=True)
-                sorted_groups = groups[order]
-                first = torch.cat(
-                    [
-                        torch.ones(1, dtype=torch.bool, device=groups.device),
-                        sorted_groups[1:] != sorted_groups[:-1],
-                    ]
-                )
-                first_rows = rows[order[first]]
+                first_rows = rows[first_index_per_group(groups)]
                 parents = self.parent_row[first_rows]
             else:
                 first_rows = rows

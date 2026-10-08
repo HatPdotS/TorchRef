@@ -180,15 +180,6 @@ def test_bonded_pairs_are_not_in_the_vdw_list(pdb_dir):
     assert bonded == 0
 
 
-@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
-def test_first_occurrence_mask_keeps_each_labels_lowest_index(dtype):
-    labels = torch.tensor([3, 1, 3, 0, 1, 1, 2, 0], dtype=dtype)
-
-    mask = nb.first_occurrence_mask(labels)
-
-    assert mask.tolist() == [True, True, False, True, False, False, True, False]
-
-
 def test_pair_deduplication_needs_no_int64_scatter_index(pdb_dir, monkeypatch):
     """The VDW and riding-hydrogen first-occurrence dedups run where
     ``scatter_reduce_`` takes only int64 indices (torch < 2.8), mimicked here."""

@@ -27,6 +27,7 @@ from torchref.base.coordinates.symmetry_images import (
     symmetry_image_positions,
 )
 from torchref.config import dtypes, get_float_dtype, get_int_dtype
+from torchref.utils.utils import first_index_per_group
 
 if TYPE_CHECKING:
     from torchref.symmetry.cell import Cell
@@ -733,35 +734,6 @@ def find_pairs_kdtree(
 # Step 5 – filtering
 # ------------------------------------------------------------------ #
 
-def first_occurrence_mask(inverse: torch.Tensor) -> torch.Tensor:
-    """Mark the first element of each group, in input order.
-
-    Parameters
-    ----------
-    inverse : torch.Tensor
-        Group label per element, shape ``(N,)``, any integer dtype -- typically the
-        ``return_inverse`` of :func:`torch.unique`.
-
-    Returns
-    -------
-    torch.Tensor
-        Boolean mask of shape ``(N,)``, True at the lowest index of every label.
-
-    Notes
-    -----
-    A stable sort puts each group's first element at the head of its run, so no
-    scatter is needed: ``scatter_reduce_`` takes only int64 indices before torch 2.8
-    and has no int64 ``amin`` on MPS.
-    """
-    order = torch.argsort(inverse, stable=True)
-    sorted_labels = inverse[order]
-    head = torch.ones_like(sorted_labels, dtype=torch.bool)
-    head[1:] = sorted_labels[1:] != sorted_labels[:-1]
-    mask = torch.zeros_like(inverse, dtype=torch.bool)
-    mask[order[head]] = True
-    return mask
-
-
 def exclusion_set_to_hash(
     exclusion_set: Set[Tuple[int, int]],
     max_idx: int,
@@ -1033,11 +1005,11 @@ def build_vdw_restraints_gpu(
     # Deduplicate: keep first occurrence of each (atom_i, atom_j, combo_j)
     dedup_hash = pair_atom_i * (n_asu * M) + pair_atom_j * M + pair_combo_j
     _, inverse = torch.unique(dedup_hash, return_inverse=True)
-    first_mask = first_occurrence_mask(inverse)
+    first = first_index_per_group(inverse).sort().values
 
-    pair_atom_i = pair_atom_i[first_mask]
-    pair_atom_j = pair_atom_j[first_mask]
-    pair_combo_j = pair_combo_j[first_mask]
+    pair_atom_i = pair_atom_i[first]
+    pair_atom_j = pair_atom_j[first]
+    pair_combo_j = pair_combo_j[first]
 
     # Map combo_j back to symop index and cell offset
     symop_indices = op_indices[pair_combo_j]

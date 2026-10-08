@@ -22,7 +22,7 @@ from torchref.io.datasets.base import CrystalDataset
 from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.utils import TensorMasks
+from torchref.utils.utils import TensorMasks, first_index_per_group
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
@@ -752,7 +752,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 return torch.arange(len(self.hkl), device=self.device)
             return torch.nonzero(valid).squeeze(-1)
         group_id, n_groups = self.asu_group_indices()
-        rows = self._group_representative_rows(group_id)
+        rows = first_index_per_group(group_id)
         if valid is not None:
             rows = rows[self._group_any(valid, group_id, n_groups)]
         return torch.sort(rows).values
@@ -771,23 +771,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         counts = torch.zeros(n_groups, dtype=torch.float32, device=mask.device)
         counts.index_add_(0, group_id, mask.to(torch.float32))  # dtype-ok: float32 counter for the MPS workaround above; reduced to bool
         return counts > 0
-
-    @staticmethod
-    def _group_representative_rows(group_id: torch.Tensor) -> torch.Tensor:
-        """One row index per ASU group, ordered by group id.
-
-        The lowest-numbered row of each group, via a stable sort. Used for
-        per-group quantities that are constant within a group -- resolution and
-        therefore the resolution bin, since every row in a group shares a
-        canonical Miller index. Taking a single representative also pins a group
-        that straddles a bin edge (``get_bins`` cuts on sorted position, so rows
-        at identical resolution can fall either side) into exactly one bin.
-        """
-        order = torch.argsort(group_id, stable=True)
-        sorted_gid = group_id[order]
-        first = torch.ones_like(sorted_gid, dtype=torch.bool)
-        first[1:] = sorted_gid[1:] != sorted_gid[:-1]
-        return order[first]
 
     def load(self, reader, french_wilson: bool = True):
         """
@@ -1344,7 +1327,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
             group_valid = torch.ones_like(group_valid)
 
-        group_bin = bin_indices[self._group_representative_rows(group_id)]
+        # One representative row per group: get_bins cuts on sorted position, so a
+        # group straddling a bin edge would otherwise land in two bins.
+        group_bin = bin_indices[first_index_per_group(group_id)]
         group_free = self._stratified_group_draw(
             group_valid,
             group_bin,
@@ -2280,7 +2265,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         group_free = self._group_any(free_mask, group_id, n_groups)
 
         bin_indices, n_bins = self.get_bins(n_bins=20, min_per_bin=20)
-        group_bin = bin_indices[self._group_representative_rows(group_id)]
+        group_bin = bin_indices[first_index_per_group(group_id)]
         group_val = self._stratified_group_draw(
             group_free,
             group_bin,
