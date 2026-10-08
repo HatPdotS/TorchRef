@@ -64,8 +64,8 @@ Why the oracle is ``_eager_*`` and never ``ds_iso``/``SfDS``
 ``ds_iso``, ``ds_aniso`` and ``SfDS`` all route through ``_CheckpointedSF``, whose
 ``backward`` calls ``torch.autograd.grad`` **without** ``create_graph=True`` on detached
 copies (``torchref/base/direct_summation/dispatch.py:197``). They are exact at first
-order -- measured agreement with the eager path is 2.3e-16 -- but a second derivative
-through them raises ``element 0 of tensors does not require grad``. ``force_portable``
+order -- measured agreement with the eager path is 2.3e-16 -- but its ``backward`` is
+``first_order_only``, so ``create_graph=True`` through them raises. ``force_portable``
 does not help; it only steers away from Triton and still lands on ``_CheckpointedSF``.
 
 So the oracle is ``_eager_iso`` / ``_eager_aniso``, which are pure torch and therefore

@@ -18,6 +18,8 @@ import torch
 import triton
 import triton.language as tl
 
+from torchref.base.targets._dispatch import first_order_only
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -393,6 +395,7 @@ class _FusedDensityFunction(torch.autograd.Function):
         return output
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_density_map):
         (surrounding_coords, voxel_indices, xyz, b,
          inv_frac_matrix, frac_matrix, A, B, occ) = ctx.saved_tensors
