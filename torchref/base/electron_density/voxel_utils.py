@@ -43,7 +43,7 @@ def voxel_offsets_within(
     Returns
     -------
     torch.Tensor
-        Offsets, shape ``(R, 3)``, integer, on the CPU.
+        Offsets, shape ``(R, 3)``, in the configured integer dtype, on the CPU.
     """
     # float64 on the CPU, like ``_axis_half_widths``: membership is decided at the
     # radius, where float32 rounding can drop a boundary voxel, and MPS has no float64.
@@ -52,7 +52,7 @@ def voxel_offsets_within(
     offsets, off_cart = _box_offsets(half_widths, frac, grid_dims, "cpu", frac.dtype)
     dist_sq = (off_cart * off_cart).sum(-1)
     keep = dist_sq < radius * radius if strict else dist_sq <= radius * radius
-    return offsets[keep]
+    return offsets[keep].to(get_int_dtype())
 
 
 def half_voxel_diagonal(frac_matrix: torch.Tensor, grid_dims: Sequence[int]) -> float:
