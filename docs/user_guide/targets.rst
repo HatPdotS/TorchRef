@@ -3,7 +3,7 @@ Target Functions
 
 Target functions (loss functions) drive the refinement optimization. TorchRef
 ships the standard ones and makes new ones cheap to add: subclass
-:class:`~torchref.refinement.targets.Target`, write ``forward()``, and autograd
+:class:`~torchref.refinement.targets.base.Target`, write ``forward()``, and autograd
 supplies the derivatives.
 
 The base ``Target`` holds no model or refinement handle of its own. Each target
@@ -22,7 +22,7 @@ X-ray Targets
 
 Selected by name. ``XRAY_TARGETS`` (in
 ``torchref.refinement.targets.xray._specs``) is the single table behind both
-:func:`~torchref.refinement.targets.create_xray_target` and
+:func:`~torchref.refinement.targets.xray.factory.create_xray_target` and
 ``torchref.refine --help``. The authoritative list is ``torchref.refine --help``,
 which is generated from that table; the notes below describe the rows but are
 maintained by hand, so run ``--help`` if the two disagree.
@@ -112,7 +112,7 @@ Geometry Targets
 ----------------
 
 Bond, angle, torsion, planarity, chirality, non-bonded (VDW), and Ramachandran,
-combined by :class:`~torchref.refinement.targets.TotalGeometryTarget`.
+combined by :class:`~torchref.refinement.targets.combined.TotalGeometryTarget`.
 Ramachandran is off by default — give it a non-zero weight to enable it. Set any
 component's weight to 0 to disable it. See :doc:`restraints` for the functional
 forms.
@@ -120,22 +120,22 @@ forms.
 ADP Targets
 -----------
 
-:class:`~torchref.refinement.targets.TotalADPTarget` combines three components.
+:class:`~torchref.refinement.targets.combined.TotalADPTarget` combines three components.
 ``locality`` works in ``log B`` (B is positive and right-skewed, so log B is the
 natural scale); ``simu`` restrains the raw ΔB of bonded atoms; ``sigd`` is a
 prior on the B distribution:
 
-- ``simu`` (:class:`~torchref.refinement.targets.ADPSimilarityTarget`) — bonded atoms should have similar B.
-- ``locality`` (:class:`~torchref.refinement.targets.ADPLocalityTarget`) — K-NN spatial smoothness with
+- ``simu`` (:class:`~torchref.refinement.targets.adp.similarity.ADPSimilarityTarget`) — bonded atoms should have similar B.
+- ``locality`` (:class:`~torchref.refinement.targets.adp.locality.ADPLocalityTarget`) — K-NN spatial smoothness with
   distance-scaled sigma.
-- ``sigd`` (:class:`~torchref.refinement.targets.ADPSigdTarget`) — shifted
+- ``sigd`` (:class:`~torchref.refinement.targets.adp.sigd.ADPSigdTarget`) — shifted
   inverse-gamma prior on the B distribution (Masmaliyeva & Murshudov 2019); it
   restrains the shape of the distribution, never the overall B level.
 
 The node-field ADP modes (``adp_mode="field"`` / ``"field_aniso"``) register
 ``sigd``, ``node_load`` and ``node_smoothness`` instead.
 
-:class:`~torchref.refinement.targets.RigidBondTarget` (``adp/delu``, the DELU rigid-bond restraint) exists but
+:class:`~torchref.refinement.targets.adp.rigid_bond.RigidBondTarget` (``adp/delu``, the DELU rigid-bond restraint) exists but
 is not part of ``TotalADPTarget``; register it yourself if you want it.
 
 Statistics

@@ -2,7 +2,7 @@ Geometry Restraints
 ===================
 
 Geometry restraints keep the model chemically reasonable during refinement.
-:class:`~torchref.topology.Restraints` builds and holds bond, angle, torsion,
+:class:`~torchref.topology.restraints.Restraints` builds and holds bond, angle, torsion,
 planarity, chirality, and non-bonded (VDW) restraints.
 
 Restraint Setup

@@ -50,7 +50,7 @@ napoleon_include_special_with_doc = True
 napoleon_use_admonition_for_examples = True
 napoleon_use_admonition_for_notes = True
 napoleon_use_admonition_for_references = False
-napoleon_use_ivar = False
+napoleon_use_ivar = True
 napoleon_use_param = True
 napoleon_use_rtype = True
 napoleon_use_keyword = True
@@ -62,7 +62,10 @@ autodoc_default_options = {
     'member-order': 'bysource',
     'special-members': '__init__',
     'undoc-members': True,
-    'exclude-members': '__weakref__'
+    'exclude-members': '__weakref__',
+    # Document each object on its defining module's page only; a package page
+    # would otherwise repeat every name in its __all__ and make references ambiguous.
+    'ignore-module-all': True,
 }
 autodoc_typehints = 'description'
 autodoc_typehints_description_target = 'documented'
