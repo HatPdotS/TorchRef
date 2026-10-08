@@ -25,9 +25,7 @@ Drop-in for the ``MixedTensor`` that normally lives at ``model.xyz``: it is
 called as ``self.xyz()`` everywhere in the model, returns the flat
 ``(N·n_atoms, 3)`` coordinate tensor, and exposes ``.refinable_params`` so
 ``Model.parameters_of_types(("xyz",))`` collects the amplitudes for the
-optimizer with no other changes. Mirrors the existing
-``self.xyz = SegmentedInternalCoordinateTensor(...)`` swap pattern in
-``model.py``.
+optimizer with no other changes.
 """
 
 from __future__ import annotations
