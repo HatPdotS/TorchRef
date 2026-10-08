@@ -227,7 +227,6 @@ class RealSpaceTarget(DataTarget):
                 model=self._model,
                 radius=self._solvent_radius,
                 erosion_radius=self._erosion_radius,
-                optimize_phase=False,
                 verbose=0,
             )
             solvent_mask = solvent.get_solvent_mask()  # True = solvent
