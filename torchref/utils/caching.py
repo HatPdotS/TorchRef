@@ -179,11 +179,6 @@ def no_caching():
 
     Flips **process-global** state and is therefore not thread-safe: other threads see the
     change too, and nesting only restores correctly if the blocks are properly nested.
-
-    Examples
-    --------
-    >>> with no_caching():
-    ...     reference = model(hkl)  # doctest: +SKIP
     """
     previous = _caching_config.value
     _caching_config.value = False
