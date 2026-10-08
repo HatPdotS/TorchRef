@@ -108,13 +108,13 @@ class KineticModel(DeviceMixin, nnModule):
         self.state_to_idx = {state: idx for idx, state in enumerate(self.states)}
         self.n_transitions = len(self.transitions)
         
+        if initial_state is None:
+            initial_state = self.states[0]
+        self.initial_state = initial_state
+
         # Handle light-activated reactions
         self.light_activated = light_activated
         if light_activated:
-            # Identify initial state
-            if initial_state is None:
-                initial_state = self.states[0]
-            
             # Create an inactive version of the initial state (e.g., A -> A*)
             inactive_state = initial_state + '*'
             
@@ -164,9 +164,6 @@ class KineticModel(DeviceMixin, nnModule):
         )
         
         # Initial population
-        if initial_state is None:
-            initial_state = self.states[0]
-        self.initial_state = initial_state
         initial_populations = torch.zeros(self.n_states)
         initial_populations[self.state_to_idx[initial_state]] = 1.0
         self.register_buffer('initial_populations', initial_populations)
@@ -300,9 +297,7 @@ class KineticModel(DeviceMixin, nnModule):
             state_out_indices[from_state].append(idx)
             state_in_indices[to_state].append(idx)
         
-        # Identify the first transition (from initial state, i.e. the sorted-first state)
-        initial_state = self.states[0]
-        first_transition_indices = state_out_indices[initial_state]
+        first_transition_indices = state_out_indices[self.initial_state]
         
         # Initialize first transition(s): quasi-instant, limited by instrument function
         # τ = σ/3, so k = 3/σ
@@ -403,14 +398,14 @@ class KineticModel(DeviceMixin, nnModule):
         Returns
         -------
         states : List[str]
-            Ordered list of unique states
+            Unique states in order of first appearance in the flow chart
         transitions : List[Tuple[str, str]]
             List of (from_state, to_state) tuples
         """
         # Split by comma to get individual transitions or standalone states
         transition_strings = [t.strip() for t in flow_chart.split(',')]
         
-        states_set = set()
+        states = {}
         transitions = []
         
         for trans_str in transition_strings:
@@ -426,20 +421,17 @@ class KineticModel(DeviceMixin, nnModule):
                 if not from_state or not to_state:
                     raise ValueError(f"Empty state name in transition: '{trans_str}'")
                 
-                states_set.add(from_state)
-                states_set.add(to_state)
+                states.setdefault(from_state)
+                states.setdefault(to_state)
                 transitions.append((from_state, to_state))
             else:
                 # It's a standalone (non-reactive) state
                 state_name = trans_str.strip()
                 if not state_name:
                     raise ValueError("Empty state name in flow chart")
-                states_set.add(state_name)
-        
-        # Sort states to ensure consistent ordering
-        states = sorted(states_set)
-        
-        return states, transitions
+                states.setdefault(state_name)
+
+        return list(states), transitions
     
     def _build_rate_matrix(self, rate_constants: torch.Tensor, efficiencies: torch.Tensor) -> torch.Tensor:
         """
@@ -936,8 +928,7 @@ class KineticModel(DeviceMixin, nnModule):
         plotted_populations = []
         
         if self.light_activated:
-            # Find initial state and its inactive version
-            initial_state = self.states[0]
+            initial_state = self.initial_state
             inactive_state = initial_state + '*'
             
             # Combine A and A* populations
