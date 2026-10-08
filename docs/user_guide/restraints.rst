@@ -68,9 +68,10 @@ Restraints are reached through a nested-dict interface, ``[type][origin][field]`
 
    n_bonds = restraints.restraints["bond"]["all"]["indices"].shape[0]
 
-- **Types** with an origin level: ``"bond"``, ``"angle"``, ``"torsion"``,
-  ``"plane"``. Note ``"plane"`` in *storage* — the matching *target* and its
-  ``stats()`` entry are called ``"planarity"``, so the two keys differ.
+- **Types** with an origin level: ``"bond"``, ``"angle"``, ``"torsion"``.
+  ``"plane"`` is keyed by plane size instead (``"4_atoms"``, ...; fields
+  ``indices`` and ``sigmas``, no ``"all"``). Note ``"plane"`` in *storage* — the
+  matching *target* and its ``stats()`` entry are called ``"planarity"``.
 - **Origins** are where the restraint came from: ``"intra"``, ``"link"``,
   ``"peptide"``, ``"disulfide"``, and for torsions ``"phi"`` / ``"psi"`` /
   ``"omega"``.
@@ -83,7 +84,8 @@ Restraints are reached through a nested-dict interface, ``[type][origin][field]`
 - **Flat types** with no origin level: ``"vdw"`` and ``"chiral"`` are indexed
   straight by field, ``restraints.restraints["vdw"]["indices"]``.
 - **Fields** beyond the three above, where the restraint type has them:
-  ``periods``, ``min_distances``.
+  ``periods``, ``min_distances``; chirals carry ``ideal_volumes`` instead of
+  ``references``.
 
 The nesting is a plain nested dict of tensors, assembled once at build time.
 Its entries are views into the topology's edge blocks, re-sliced into a new dict
