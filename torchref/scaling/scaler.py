@@ -9,10 +9,8 @@ the anisotropy correction and the solvent model.
 from typing import Optional, TYPE_CHECKING
 
 import torch
-import torch.nn as nn
 
 from torchref.io import ReflectionData
-from torchref.base.reciprocal import get_scattering_vectors
 from torchref.scaling.scaler_base import DEFAULT_SCALE_TARGET, ScalerBase
 from torchref.scaling.solvent import SolventModel
 from torchref.utils.device_resolution import resolve_device
@@ -257,17 +255,6 @@ class Scaler(ScalerBase):
             history_size=history_size,
             verbose=verbose,
             scale_target=scale_target,
-        )
-
-    def state_dict(self, destination=None, prefix="", keep_vars=False):
-        """
-        Complete state of the Scaler; a pure pass-through to
-        :meth:`ScalerBase.state_dict`, which does the serialization
-        (buffers/parameters, nbins/verbose metadata, solvent state).
-        Model and data references are NOT saved -- they are managed separately.
-        """
-        return super().state_dict(
-            destination=destination, prefix=prefix, keep_vars=keep_vars
         )
 
     def load_state_dict(self, state_dict, strict=True):

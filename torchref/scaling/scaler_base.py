@@ -15,8 +15,6 @@ from torchref.base.math_torch import U_to_matrix
 from torchref.scaling.basis import chebyshev_design
 from torchref.base.metrics import (
     binwise_scale,
-    nll_xray,
-    nll_xray_lognormal,
     nll_xray_mean,
     rfactor_work_free,
 )
