@@ -44,8 +44,10 @@ class Scaler(ScalerBase):
         Number of Chebyshev terms in the isotropic scale.
     verbose : int, default 1
         Verbosity level.
-    device : torch.device, default: configured device.current
-        Computation device.
+    device : torch.device, optional
+        Computation device. If ``None``, derived from ``model`` then ``data`` (model
+        wins on mismatch); an explicit device moves both. See
+        :func:`torchref.utils.resolve_device`.
 
     Attributes
     ----------
@@ -74,31 +76,7 @@ class Scaler(ScalerBase):
         verbose: int = 1,
         device: Optional[torch.device] = None,
     ):
-        """
-        Initialize Scaler.
-
-        With model and data, binds them and builds the reflection buffers; the scale
-        parameters appear only with ``initialize()``. Without them, creates a shell for
-        a later :meth:`set_model_and_data`.
-
-        Parameters
-        ----------
-        model : Model, optional
-            Model object for structure factor calculation.
-        data : ReflectionData, optional
-            ReflectionData object with observed data.
-        nbins : int, default 20
-            Number of resolution bins used to seed the scale.
-        n_iso_coeff : int, default 6
-            Number of Chebyshev terms in the isotropic scale.
-        verbose : int, default 1
-            Verbosity level.
-        device : torch.device, optional
-            Computation device.  If ``None``, derived from ``model``
-            then ``data`` (model wins on mismatch); otherwise forces
-            both onto the explicit device.  See
-            :func:`torchref.utils.resolve_device`.
-        """
+        """See the class docstring."""
         # Pin model+data onto a single device before super().__init__
         # registers buffers from ``data.hkl`` / ``data.cell``.
         resolved_device = resolve_device(model, data, device=device)
