@@ -633,6 +633,95 @@ class TestIHMWriter:
         for asym_id, comps in written.items():
             assert comps == entity_seq[asym_entity[asym_id]]
 
+    @staticmethod
+    def _write_one_state(table, out):
+        """Write ``table`` as a one-state IHM file and return its gemmi block."""
+        from types import SimpleNamespace
+
+        import gemmi
+
+        from torchref.io.ihm import IHMWriter
+        from torchref.model.context import ModelContext
+        from torchref.topology import Topology
+
+        model = SimpleNamespace(
+            ctx=ModelContext(topology=Topology.from_table(table)),
+            to_dataframe=lambda: table,
+        )
+        mapping = IHMEnsembleMapping(
+            states=[IHMStateInfo(state_id=1, name="only", details="", model_num=1)],
+            model_groups=[
+                IHMModelGroupInfo(group_id=1, name="t0", state_fractions={1: 1.0})
+            ],
+        )
+        collection = SimpleNamespace(n_base_models=1, base_models=[model])
+        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+        return gemmi.cif.read(str(out)).sole_block()
+
+    def test_ligands_and_waters_get_entities_and_label_seq_id_counts_from_one(
+        self, pdb_dir, tmp_path
+    ):
+        """1DAW (chain A from residue 7, ANP, two MG, waters): a polymer atom's
+        label_seq_id is its 1-based place in the entity sequence, and every ligand
+        and water atom has a non-polymer or water asym unit and label_seq_id '.'."""
+        from torchref.io import pdb
+
+        table = pdb.read(str(pdb_dir / "1DAW.pdb"))()[0]
+        block = self._write_one_state(table, tmp_path / "1daw.cif")
+
+        entity_type = dict(block.find("_entity.", ["id", "type"]))
+        asym_entity = dict(block.find("_struct_asym.", ["id", "entity_id"]))
+        sequence = {}
+        for entity_id, mon_id in block.find(
+            "_entity_poly_seq.", ["entity_id", "mon_id"]
+        ):
+            sequence.setdefault(entity_id, []).append(mon_id)
+        asym_comps = {}
+        for asym_id, seq_id, comp, auth_seq in block.find(
+            "_atom_site.",
+            ["label_asym_id", "label_seq_id", "label_comp_id", "auth_seq_id"],
+        ):
+            entity = asym_entity[asym_id]
+            asym_comps.setdefault(asym_id, set()).add(comp)
+            if entity_type[entity] == "polymer":
+                assert sequence[entity][int(seq_id) - 1] == comp
+                if auth_seq == "7":
+                    assert seq_id == "1"
+            else:
+                assert seq_id == "."
+                assert entity_type[entity] == (
+                    "water" if comp == "HOH" else "non-polymer"
+                )
+        ligand_asyms = sorted(
+            "".join(comps) for comps in asym_comps.values() if comps != {"HOH"}
+        )
+        assert ligand_asyms.count("MG") == 2 and "ANP" in ligand_asyms
+        assert sum(comps == {"HOH"} for comps in asym_comps.values()) == 1
+
+    @pytest.mark.parametrize("blank", ["", float("nan")])
+    def test_blank_chain_gets_an_asym_id(self, tmp_path, blank):
+        """A blank chain id is written as an asym id no other chain uses, so
+        _atom_site reads back with one asym unit per chain and ligand."""
+        table = pd.DataFrame(
+            [
+                (blank, 5, "GLY", "CA"),
+                (blank, 6, "ALA", "CA"),
+                (blank, 7, "SO4", "S"),
+                ("A", 1, "SER", "CA"),
+            ],
+            columns=["chainid", "resseq", "resname", "name"],
+        ).assign(x=0.0, y=0.0, z=0.0)
+        block = self._write_one_state(table, tmp_path / "blank.cif")
+
+        struct_asym = list(block.find_values("_struct_asym.id"))
+        rows = list(
+            block.find("_atom_site.", ["label_asym_id", "label_seq_id", "auth_asym_id"])
+        )
+        assert len(rows) == 4 and len(set(struct_asym)) == 3
+        assert all(row[0] in struct_asym and row[2] not in ("", ".") for row in rows)
+        assert [row[1] for row in rows] == ["1", "2", ".", "1"]
+        assert len({rows[0][0], rows[2][0], rows[3][0]}) == 3
+
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
         import torch

@@ -13,6 +13,8 @@ Detection of IHM files (via ``is_ihm_file``) uses only gemmi and does
 not require ``python-ihm``.
 """
 
+import itertools
+import string
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -454,6 +456,167 @@ class _DataFrameReader:
         return self.df, self.cell, self.spacegroup
 
 
+def _residue_key(chain, resseq, icode) -> Tuple[str, int, str]:
+    """``(chain, resseq, icode)`` with every blank spelling of a chain or code as ``""``.
+
+    A blank reaches the writer as ``""``, NaN (the PDB reader's blank chain), its
+    ``"nan"`` string form in a topology, or ``"."`` as the atom loop writes it.
+    """
+
+    def text(value):
+        value = "" if pd.isna(value) else str(value).strip()
+        return "" if value in ("nan", ".", "?") else value
+
+    return text(chain), int(resseq), text(icode)
+
+
+def _asym_ids(taken: set):
+    """Yield ``A`` ... ``Z``, ``AA``, ``AB`` ... skipping, and adding to, ``taken``."""
+    for width in itertools.count(1):
+        for letters in itertools.product(string.ascii_uppercase, repeat=width):
+            asym_id = "".join(letters)
+            if asym_id not in taken:
+                taken.add(asym_id)
+                yield asym_id
+
+
+def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tuple]]:
+    """Add an entity and asym unit for every residue of ``model`` to ``system``.
+
+    Polymer chains become one polymer entity per distinct sequence and an asym unit
+    per chain, its id the chain id. Following the wwPDB convention, each ligand
+    residue is an asym unit of a non-polymer entity per residue name, and each
+    chain's waters one asym unit of the water entity. Ligand and water asym ids, and
+    the name of a blank chain, are ids no chain uses: a blank ``label_asym_id``
+    would leave its ``_atom_site`` row a column short.
+
+    Parameters
+    ----------
+    system : ihm.System
+        System the entities and asym units are appended to.
+    model : Model
+        Model whose ``ctx.topology`` residues are described.
+
+    Returns
+    -------
+    asym_units : list of ihm.AsymUnit
+        The asym units added, polymers first.
+    labels : dict
+        :func:`_residue_key` -> ``(label_asym_id, auth_asym_id, label_seq_id)``.
+        ``label_seq_id`` is the 1-based position in the entity sequence for a
+        polymer residue, whatever its author numbering, and ``"."`` otherwise.
+    """
+    import ihm
+
+    from torchref.model.context import THREE_TO_ONE
+    from torchref.topology.monomer.cif import read_component_groups
+    from torchref.topology.residue_graph import WATER_RESNAMES, polymer_type
+
+    residues = model.ctx.topology.residues
+    found: Dict[Tuple[str, int, str], list] = {}
+    for r, kind in enumerate(polymer_type(residues.resname)):
+        info = found.setdefault(
+            _residue_key(*residues.key(r)), [str(residues.resname[r]).strip(), False]
+        )
+        info[1] = info[1] or kind != ""
+
+    chains = list(dict.fromkeys(key[0] for key in found))
+    new_id = _asym_ids(set(chains))
+    auth = {chain: chain or next(new_id) for chain in chains}
+
+    lpep, dna, rna = ihm.LPeptideAlphabet(), ihm.DNAAlphabet(), ihm.RNAAlphabet()
+    groups = read_component_groups()
+    asym_units = []
+    # Chains of one sequence are copies of one molecule: mmCIF makes them one
+    # entity with an asym unit each, and python-ihm refuses equal entities.
+    # Keyed by the Entity itself, so "equal" is python-ihm's sequence equality.
+    entities = {}
+    # Sequence position of each chain's first residue numbered resseq; insertion
+    # codes follow it in file order, as _polymer_residues orders them.
+    start = {}
+    seq_maps: Dict[str, dict] = {}
+    for chain_id, chain_residues in model.ctx._polymer_residues():
+        chain = auth[_residue_key(chain_id, 0, "")[0]]
+        names = [resname for _, resname in chain_residues]
+        seq = []
+        for name, kind in zip(names, polymer_type(names)):
+            if kind == "protein":
+                seq.append(lpep[THREE_TO_ONE.get(name, "UNK")])
+            elif name in dna:
+                seq.append(dna[name])
+            elif name in rna:
+                seq.append(rna[name])
+            # A modified nucleotide keeps its own name rather than
+            # collapsing onto a standard base; its library group types it.
+            elif "DNA" in groups.get(name, "").upper():
+                seq.append(ihm.DNAChemComp(name, name, "N"))
+            else:
+                seq.append(ihm.RNAChemComp(name, name, "N"))
+        entity = ihm.Entity(seq)
+        entity, entity_chains = entities.setdefault(entity, (entity, []))
+        entity_chains.append(chain)
+        seq_maps[chain] = {}
+        asym_units.append(
+            ihm.AsymUnit(
+                entity,
+                details=f"Chain {chain}",
+                id=chain,
+                auth_seq_id_map=seq_maps[chain],
+            )
+        )
+        for position, (resseq, _) in enumerate(chain_residues, start=1):
+            start.setdefault((chain, resseq), position)
+    for entity, entity_chains in entities.values():
+        entity.description = "Chain " + ", ".join(entity_chains)
+
+    labels = {}
+    seen: Dict[Tuple[str, int], int] = {}
+    ligands: Dict[str, ihm.Entity] = {}
+    waters: Dict[str, list] = {}
+    for key, (resname, is_polymer) in found.items():
+        chain, resseq, icode = auth[key[0]], key[1], key[2]
+        if is_polymer:
+            position = start[(chain, resseq)] + seen.get(key[:2], 0)
+            seen[key[:2]] = seen.get(key[:2], 0) + 1
+            seq_maps[chain][position] = (resseq, icode or None)
+            labels[key] = (chain, chain, str(position))
+        elif resname in WATER_RESNAMES:
+            waters.setdefault(chain, []).append(key)
+        else:
+            entity = ligands.setdefault(
+                resname,
+                ihm.Entity([ihm.NonPolymerChemComp(resname)], description=resname),
+            )
+            asym = ihm.AsymUnit(
+                entity,
+                details=f"{resname} {chain}{resseq}{icode}",
+                id=next(new_id),
+                auth_seq_id_map={1: (resseq, icode or None)},
+                strand_id=chain,
+            )
+            asym_units.append(asym)
+            labels[key] = (asym.id, chain, ".")
+    water = ihm.Entity([ihm.WaterChemComp()], description="water")
+    for chain, keys in waters.items():
+        asym = ihm.WaterAsymUnit(
+            water,
+            len(keys),
+            details=f"Water, chain {chain}",
+            id=next(new_id),
+            auth_seq_id_map={i: (k[1], k[2] or None) for i, k in enumerate(keys, 1)},
+            strand_id=chain,
+        )
+        asym_units.append(asym)
+        labels.update((key, (asym.id, chain, ".")) for key in keys)
+
+    system.entities.extend(entity for entity, _ in entities.values())
+    system.entities.extend(ligands.values())
+    if waters:
+        system.entities.append(water)
+    system.asym_units.extend(asym_units)
+    return asym_units, labels
+
+
 class IHMWriter:
     """
     Write a torchref ``ModelCollection`` to IHM mmCIF format.
@@ -571,54 +734,16 @@ class IHMWriter:
         mc = self.model_collection
         mapping = self.mapping
 
-        # --- Build entities and asym units from first base model ---
         import ihm.representation
 
-        from torchref.model.context import THREE_TO_ONE
-        from torchref.topology.monomer.cif import read_component_groups
-        from torchref.topology.residue_graph import polymer_type
-
-        lpep, dna, rna = ihm.LPeptideAlphabet(), ihm.DNAAlphabet(), ihm.RNAAlphabet()
-        asym_units = []
-        # Chains of one sequence are copies of one molecule: mmCIF makes them one
-        # entity with an asym unit each, and python-ihm refuses equal entities.
-        # Keyed by the Entity itself, so "equal" is python-ihm's sequence equality.
-        entities = {}
-
-        if mc.n_base_models > 0:
-            groups = read_component_groups()
-            for chain_id, residues in mc.base_models[0].ctx._polymer_residues():
-                names = [resname for _, resname in residues]
-                seq = []
-                for name, kind in zip(names, polymer_type(names)):
-                    if kind == "protein":
-                        seq.append(lpep[THREE_TO_ONE.get(name, "UNK")])
-                    elif name in dna:
-                        seq.append(dna[name])
-                    elif name in rna:
-                        seq.append(rna[name])
-                    # A modified nucleotide keeps its own name rather than
-                    # collapsing onto a standard base; its library group types it.
-                    elif "DNA" in groups.get(name, "").upper():
-                        seq.append(ihm.DNAChemComp(name, name, "N"))
-                    else:
-                        seq.append(ihm.RNAChemComp(name, name, "N"))
-                if seq:
-                    entity = ihm.Entity(seq)
-                    entity, chains = entities.setdefault(entity, (entity, []))
-                    chains.append(chain_id)
-                    asym = ihm.AsymUnit(
-                        entity, details=f"Chain {chain_id}", id=chain_id
-                    )
-                    system.asym_units.append(asym)
-                    asym_units.append(asym)
-            for entity, chains in entities.values():
-                entity.description = "Chain " + ", ".join(chains)
-                system.entities.append(entity)
-
+        asym_units, labels = (
+            _add_asym_units(system, mc.base_models[0])
+            if mc.n_base_models > 0
+            else ([], {})
+        )
         if not asym_units:
             entity = ihm.Entity(
-                [lpep["UNK"]],
+                [ihm.LPeptideAlphabet()["UNK"]],
                 description="Crystallographic model",
             )
             system.entities.append(entity)
@@ -676,6 +801,7 @@ class IHMWriter:
             [(mg._id, model_num) for mg, model_num in model_links],
             assembly._id,
             rep._id,
+            labels,
         )
 
         # Append per-timepoint reflection data blocks if provided
@@ -727,6 +853,7 @@ class IHMWriter:
         model_links: List[Tuple[int, int]],
         assembly_id: int,
         representation_id: int,
+        labels: Dict[Tuple[str, int, str], Tuple[str, str, str]],
     ) -> None:
         """
         Append the per-state models to the CIF file.
@@ -735,7 +862,9 @@ class IHMWriter:
         ``state_id`` order), the ``(group_id, model_id)`` rows of
         ``model_links`` as ``_ihm_model_group_link``, and the current
         coordinates of the base models as one ``_atom_site`` loop whose
-        ``pdbx_PDB_model_num`` is the model id.
+        ``pdbx_PDB_model_num`` is the model id. ``labels`` maps each residue's
+        :func:`_residue_key` to its ``label_asym_id``, ``auth_asym_id`` and
+        ``label_seq_id``, as :func:`_add_asym_units` returns them.
         """
         mc = self.model_collection
 
@@ -801,9 +930,11 @@ class IHMWriter:
                 atom_name = str(row.get("name", "CA"))
                 altloc = str(row.get("altloc", ".")) or "."
                 resname = str(row.get("resname", "UNK"))
-                chainid = str(row.get("chainid", "A"))
                 resseq = str(row.get("resseq", 1))
                 icode = str(row.get("icode", ".")) or "."
+                asym_id, chainid, seq_id = labels[
+                    _residue_key(row.get("chainid"), row.get("resseq"), icode)
+                ]
 
                 all_rows.append(
                     {
@@ -813,8 +944,8 @@ class IHMWriter:
                         "label_atom_id": atom_name,
                         "label_alt_id": altloc,
                         "label_comp_id": resname,
-                        "label_asym_id": chainid,
-                        "label_seq_id": resseq,
+                        "label_asym_id": asym_id,
+                        "label_seq_id": seq_id,
                         "pdbx_PDB_ins_code": icode,
                         "Cartn_x": f"{row.get('x', 0.0):.3f}",
                         "Cartn_y": f"{row.get('y', 0.0):.3f}",
