@@ -918,7 +918,6 @@ class EnsembleModel(ModelFT):
         = 1/k``) and the rest, dead slots included, to 0. Returns ``k`` (or
         ``n_members`` when dropout is inactive, which is a no-op).
         """
-
         if not self.dropout_active or self._dropout_occ_mult is None:
             return self.n_members
         alive = self._alive.nonzero(as_tuple=False).flatten()
@@ -1007,32 +1006,35 @@ class EnsembleModel(ModelFT):
         """
         Write the ensemble as a multi-MODEL PDB.
 
-        Each ensemble member becomes one MODEL record. The single-copy
-        chemistry from ``self._pdb_single`` is used as the row template;
-        per-member coordinates come from ``xyz_per_member``.
-
-        Note: the written B-factor is a single scalar (atom 0's ADP) applied to
-        every atom of every member, not a per-atom value — the ensemble carries
-        a constant frozen B and the spread itself is the disorder model.
-        Occupancies are written as the uniform ``1/n_members``.
+        Each alive member becomes one MODEL record; dead pool slots are not
+        written. The single-copy chemistry from ``self._pdb_single`` is the row
+        template; coordinates come from ``xyz_per_member``. Occupancy and B are
+        the values the structure factor uses: ``1/n_alive`` per member (the
+        softmax weight under population refinement) and the frozen per-atom B
+        (the member's ``B_m`` when it is refined). :meth:`from_multimodel_pdb`
+        reads back coordinates only.
         """
+
         if self._pdb_single is None:
             raise RuntimeError(
                 "EnsembleModel has no single-copy PDB; was it built from a "
                 "from_single / from_multimodel_pdb classmethod?"
             )
         coords = self.xyz_per_member.detach().cpu().numpy()
+        with torch.no_grad():
+            occ, b = self._inject_population(self.occupancy(), self.adp())
+        occ = occ.reshape(self.n_members, -1).cpu().numpy()
+        b = b.reshape(self.n_members, -1).cpu().numpy()
         dfs = []
-        for i in range(self.n_members):
+        for i in np.flatnonzero(self._alive.cpu().numpy()):
             df = self._pdb_single.copy(deep=True)
             df["x"] = coords[i, :, 0]
             df["y"] = coords[i, :, 1]
             df["z"] = coords[i, :, 2]
-            df["tempfactor"] = float(self.adp().detach().cpu().numpy()[0]) \
-                if self.adp is not None else 5.0
-            df["occupancy"] = 1.0 / self.n_members
+            df["tempfactor"] = b[i]
+            df["occupancy"] = occ[i]
             # Attach cell/spacegroup to first frame for the writer's CRYST1.
-            if i == 0:
+            if not dfs:
                 if self.cell is not None:
                     df.attrs["cell"] = self.cell.data.detach().cpu().numpy().tolist()
                 if self.spacegroup is not None:

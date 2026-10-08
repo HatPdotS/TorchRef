@@ -247,3 +247,26 @@ def test_dropout_draws_only_alive_members():
         assert torch.all(mult[4:] == 0)
         assert torch.allclose(mult[mult > 0], torch.full((2,), 2.0))
         assert torch.allclose(_member_occupancy(ens).sum(), torch.tensor(1.0))
+
+
+def test_write_pdb_writes_alive_members_with_their_weights(tmp_path):
+    ens = EnsembleModel.from_single(TEST_PDB, n_members=4, n_max=6, **_POOL_KW)
+    ens.enable_population_refinement(True)
+    with torch.no_grad():
+        ens.occ_logits[:4] = torch.tensor([2.0, 0.5, 0.0, -1.0])
+    ens.kill_member(3)
+    path = tmp_path / "pop.pdb"
+    ens.write_pdb(str(path))
+    lines = path.read_text().splitlines()
+    assert sum(ln.startswith("MODEL ") for ln in lines) == 3
+    first_atoms = []
+    in_model = False
+    for ln in lines:
+        if ln.startswith("MODEL "):
+            in_model = True
+        elif in_model and ln.startswith(("ATOM", "HETATM")):
+            first_atoms.append(float(ln[54:60]))
+            in_model = False
+    expected = ens.member_weights()[:3].detach().cpu()
+    assert torch.allclose(torch.tensor(first_atoms), expected, atol=6e-3)
+    assert EnsembleModel.from_multimodel_pdb(str(path), verbose=0).n_members == 3
