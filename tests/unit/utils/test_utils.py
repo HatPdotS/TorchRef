@@ -159,6 +159,19 @@ def test_tensordict_repr_is_balanced():
     assert repr(TensorDict({"a": torch.ones(1)})) == "TensorDict({a: tensor([1.])})"
 
 
+@pytest.mark.unit
+def test_tensordict_write_keeps_the_new_dtype():
+    """A same-shape write of another dtype replaces the buffer instead of casting."""
+    from torchref.utils.utils import TensorDict
+
+    td = TensorDict({"x": torch.zeros(3, dtype=torch.int32)})
+    value = torch.tensor([1.7, 2.2, -0.5], dtype=torch.float64)
+    td["x"] = value
+
+    assert td["x"].dtype == torch.float64
+    assert torch.equal(td["x"], value)
+
+
 class TestTensorMasksMutators:
     """Every dict mutator validates, moves and refreshes the combined mask."""
 
