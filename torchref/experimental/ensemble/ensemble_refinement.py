@@ -6,8 +6,8 @@ Refinement of an ``n_members`` (default 100) ensemble against an X-ray dataset.
    Experimental — part of ``torchref.experimental.ensemble``. The API and
    behaviour may change or be removed without notice.
 
-Despite the historical class name, the production optimizer is Adam (not
-LBFGS — see :meth:`EnsembleRefinement.refine` for why).
+The class derives from ``LBFGSRefinement`` but optimizes with Adam: the
+redundant, non-convex ensemble landscape defeats L-BFGS's curvature model.
 
 Composes:
 
@@ -16,8 +16,8 @@ Composes:
 - :class:`~torchref.experimental.ensemble.wilson_prior.WilsonPriorTarget`
   to keep ``<|F_calc|^2>`` on the Wilson curve.
 - The :class:`~torchref.experimental.ensemble.quasi_crystal_amber.QuasiCrystalAmberTarget`
-  supercell Amber restraint (the production Amber path; enabled when
-  ``amber_weight > 0`` and OpenMM is available). It carries no KL/entropy term.
+  supercell Amber restraint (the production Amber path; built when
+  ``amber_weight > 0``). It carries no KL/entropy term.
 - An optional :class:`~torchref.experimental.ensemble.rank_penalty.RankPenaltyTarget`
   soft de-overfitting regularizer on the member-spread spectrum.
 - A third ``xray/validation`` set distinct from R-free for tuning
@@ -25,7 +25,7 @@ Composes:
 
 Geometry and ADP targets are intentionally not registered — they would
 collapse the ensemble. Restraints come from the Wilson prior, the
-quasi-crystal Amber supercell, and (optionally) the rank penalty.
+optional rank penalty and, with ``amber_weight > 0``, the Amber supercell.
 """
 
 from __future__ import annotations
@@ -37,26 +37,14 @@ from typing import Dict, Optional
 
 import torch
 
-from torchref.io.datasets import ReflectionData
 from .ensemble_model import EnsembleModel
 from torchref.refinement.lbfgs_refinement import LBFGSRefinement
 from torchref.refinement.loss_state import LossState
+from .quasi_crystal_amber import QuasiCrystalAmberTarget
 from .rank_penalty import RankPenaltyTarget
 from .wilson_prior import WilsonPriorTarget
 from torchref.refinement.targets.xray import create_xray_target
 from torchref.scaling import Scaler
-
-try:
-    from .ensemble_amber_kl import EnsembleAmberKLTarget
-except ImportError:
-    EnsembleAmberKLTarget = None
-
-try:
-    from .quasi_crystal_amber import (
-        QuasiCrystalAmberTarget,
-    )
-except ImportError:
-    QuasiCrystalAmberTarget = None
 
 
 def _extract_first_model_pdb(pdb_path: str):
@@ -97,100 +85,71 @@ def _extract_first_model_pdb(pdb_path: str):
 
 class EnsembleRefinement(LBFGSRefinement):
     """
-    Ensemble refinement (Adam) with Wilson + quasi-crystal Amber regularization.
+    Ensemble refinement (Adam) with Wilson, rank and quasi-crystal Amber terms.
 
     .. warning::
 
        Experimental — API and behaviour may change without notice. The
-       constructor exposes a large research-knob surface (birth/death,
-       guided-MD, adaptive weighting, dropout, rank penalty); only the more
-       commonly-used parameters are documented below.
+       research knobs are indexed by family under Notes.
 
     Parameters
     ----------
     data_file : str
         Path to MTZ.
     pdb : str
-        Path to single- or multi-MODEL PDB. If multi-MODEL with at least
-        ``n_members`` models, those are used as-is; otherwise members are
-        replicated cyclically and perturbed.
+        Path to single- or multi-MODEL PDB. With at least ``n_members`` models
+        those are used as-is; otherwise models are cycled and perturbed.
     n_members : int
-        Number of ensemble members. Default 100. Rounded to a multiple of
-        ``N_sym``; with population dynamics it is the *alive* count within an
-        ``n_max`` slot pool.
-    perturb_sigma : float
-        Std-dev (Å) of Gaussian noise applied to replicated members.
-        Default 0.01 Å — only large enough to break gradient degeneracy
-        between identical copies. Larger values (≥ ~0.05 Å) introduce LJ
-        clashes when atoms walk inside each other's vdW radii, producing
-        ~10^15 kJ/mol Amber energies. The ensemble's actual disorder develops
-        from the X-ray + restraint gradients during refinement, not from the
-        initial noise.
-    b_const : float
-        Fixed isotropic B (Å²) for every atom in every member. Small but
-        non-zero to avoid FFT grid aliasing.
+        Number of ensemble members (default 100), rounded down to a multiple of
+        ``N_sym`` (at least ``N_sym``). With ``refine_population`` it is the
+        initial alive count in a pool of ``n_max`` slots.
+    perturb_sigma, b_const : float
+        Noise std-dev (Å) on replicated members and the fixed isotropic B (Å²)
+        of every atom; see :meth:`EnsembleModel.from_single`.
     wilson_weight : float
-        Weight on the Wilson prior in the LossState. O(1) because all loss
-        terms are normalized to a per-ASU scale (see ``_create_loss_state``).
-        With the default ``wilson_mode='rice'`` the Wilson term is a
-        per-reflection NLL (not a per-bin mean).
+        Weight on the Wilson prior, O(1) on the per-ASU loss scale.
     wilson_mode : {'rice', 'bin_mean', 'per_reflection'}
-        Wilson-prior loss form (default ``'rice'``); see
+        Wilson-prior loss form; see
         :class:`~torchref.experimental.ensemble.wilson_prior.WilsonPriorTarget`.
     xray_weight, amber_weight : float
         Dimensionless multipliers on the X-ray work term and the
         quasi-crystal Amber restraint (both O(1) on the per-ASU scale).
-        ``amber_weight == 0`` (or missing OpenMM) disables the Amber target.
-    amber_lam, amber_kT : float
-        Legacy coefficients for the abandoned per-member entropy/KL Amber
-        path (:class:`EnsembleAmberKLTarget`). They are stored on the object
-        but are **not** used by the wired :class:`QuasiCrystalAmberTarget`,
-        which has no entropy term.
+        ``amber_weight`` defaults to 0 (no Amber target). The ensembles built
+        here are hydrogen-stripped, so ``amber_weight > 0`` raises
+        ``ValueError`` (``ImportError`` without OpenMM).
+    amber_charge_method, amber_relax_on_init, amber_force_clamp, amber_every
+        Amber settings: antechamber charge method (``'gas'``); OpenMM
+        minimisation at construction, writing the relaxed coordinates back
+        into the ensemble (default ``True``); per-atom force clamp
+        (kJ/mol/nm); evaluate Amber on every ``amber_every``-th step only.
     val_fraction_of_free : float
-        If the loaded MTZ has only an R-free flag and no Validation_flag,
-        split this fraction of the free set into a held-out validation set.
+        Fraction of the free set split off as validation set if the MTZ has none.
     xray_mode : str
-        Mode for the X-ray targets. Default ``'ml'`` — the maximum-
-        likelihood target, which is the Rice distribution NLL for acentric
-        reflections (folded-normal for centrics), the statistically correct
-        amplitude likelihood. Other options: ``'ml_noalpha'``, ``'ml_full'``,
-        ``'nll_beta'``, ``'nll'``, ``'ls'``, ``'ls_wunit_k1'``; see
-        :mod:`torchref.refinement.targets.xray._specs`.
+        X-ray target mode (default ``'ml'``, the Rice / folded-normal
+        likelihood); see :mod:`torchref.refinement.targets.xray._specs`.
 
-    Other parameters
-    ----------------
-    The constructor also accepts a large set of research knobs not detailed
-    above. The main families:
-
-    - **Rank penalty** (soft de-overfit on the member spectrum):
-      ``rank_weight``, ``rank_weight_start`` (ramp), ``rank_penalty_mode``
-      (``{'nuclear','subspace','entropy','maxent','diverse'}``),
-      ``rank_target_rank``, ``rank_freeze_disp``, ``maxent_shrink_weight``,
-      ``maxent_div_weight``, ``rank_adaptive`` (+ ``rank_adaptive_base``,
-      ``rank_adaptive_doubling_factor``). See
-      :class:`~torchref.experimental.ensemble.rank_penalty.RankPenaltyTarget`.
-    - **Low-rank / PCA reparameterization**: ``low_rank_modes``.
-    - **Birth/death population dynamics**: ``refine_population``,
-      ``refine_member_b``, ``n_max`` (slot pool), ``death_rate``,
-      ``birth_rate``, ``bifurcation_sigma``, ``birth_death_every``. Note
-      per-member occupancy is a known dead de-overfit lever.
-    - **Guided-MD integrator**: ``integrator`` (``'adam'`` default or
-      ``'langevin_baoab'``), ``md_dt``, ``md_friction``, ``md_temperature``,
-      ``md_max_step``. See :meth:`refine`.
-    - **Adaptive loss weighting**: ``xray_adaptive`` (+ ``xray_adaptive_floor``,
-      ``xray_adaptive_ema_halflife_steps``, ``xray_adaptive_doubling_factor``)
-      and ``rank_adaptive``.
-    - **Stochastic regularization**: ``use_dropout`` (+ ``dropout_min``,
-      ``dropout_max``), the noise floor (``noise_floor_sigma``,
-      ``noise_floor_amp``, ``noise_floor_cycles``), ``langevin_T``, and the
-      two-phase sampler (``sampling_fraction``, ``sampling_lr_factor``).
-    - **Optimizer / schedule**: ``optimizer_name``, ``adam_lr``,
-      ``adam_beta1``, ``adam_beta2``, ``adam_steps_per_cycle``,
+    Notes
+    -----
+    - **Rank penalty** (:class:`RankPenaltyTarget`): ``rank_weight``,
+      ``rank_weight_start``, ``rank_penalty_mode``, ``rank_target_rank``,
+      ``rank_freeze_disp``, ``maxent_shrink_weight``, ``maxent_div_weight``.
+    - **Low rank**: ``low_rank_modes > 0`` runs :meth:`enable_low_rank` at construction.
+    - **Birth/death**: ``refine_population``, ``refine_member_b``, ``n_max``,
+      ``death_rate``, ``birth_rate``, ``bifurcation_sigma``,
+      ``birth_death_every``.
+    - **Guided MD** (:meth:`refine`): ``integrator='langevin_baoab'``,
+      ``md_dt``, ``md_friction``, ``md_temperature``, ``md_max_step``.
+    - **Adaptive weighting**: ``xray_adaptive``, ``xray_adaptive_floor``,
+      ``xray_adaptive_ema_halflife_steps``, ``xray_adaptive_doubling_factor``,
+      ``rank_adaptive``, ``rank_adaptive_base``,
+      ``rank_adaptive_doubling_factor``.
+    - **Noise and dropout**: ``use_dropout``, ``dropout_min``, ``dropout_max``,
+      ``noise_floor_sigma``, ``noise_floor_amp``, ``noise_floor_cycles``,
+      ``langevin_T``, ``sampling_fraction``, ``sampling_lr_factor``.
+    - **Optimizer and schedules** (:meth:`refine`): ``optimizer_name``,
+      ``adam_lr``, ``adam_beta1``, ``adam_beta2``, ``adam_steps_per_cycle``,
       ``warmup_steps``, ``warmup_start_factor``, ``lr_schedule``,
-      ``lr_cycles``, ``wilson_weight_start`` (opt-in Wilson ramp).
-
-    These are the most error-prone levers; consult the source and the
-    referenced target classes before using them.
+      ``lr_cycles``, ``wilson_weight_start``.
     """
 
     def __init__(
@@ -203,9 +162,7 @@ class EnsembleRefinement(LBFGSRefinement):
         wilson_weight: float = 1.0,
         wilson_mode: str = "rice",
         xray_weight: float = 1.0,
-        amber_weight: float = 1.0,
-        amber_lam: float = 1.0,
-        amber_kT: float = 0.0,
+        amber_weight: float = 0.0,
         amber_charge_method: str = "gas",
         amber_relax_on_init: bool = True,
         amber_force_clamp: float = 10000.0,
@@ -273,8 +230,6 @@ class EnsembleRefinement(LBFGSRefinement):
             self.wilson_mode = wilson_mode
             self.xray_weight = xray_weight
             self.amber_weight = amber_weight
-            self.amber_lam = amber_lam
-            self.amber_kT = amber_kT
             self.adam_lr = adam_lr
             self.optimizer_name = optimizer_name
             self.adam_beta1 = adam_beta1
@@ -327,6 +282,16 @@ class EnsembleRefinement(LBFGSRefinement):
             self.rank_adaptive_doubling_factor = rank_adaptive_doubling_factor
             return
 
+        if amber_weight > 0.0:
+            try:
+                import openmm  # noqa: F401, PLC0415
+            except ImportError:
+                raise ImportError(
+                    "EnsembleRefinement with amber_weight > 0 requires OpenMM "
+                    "(pip install torchref[amber]); set amber_weight=0 to "
+                    "refine without Amber."
+                ) from None
+
         # Build the standard scaffolding (data, single-copy model, scaler,
         # standard targets). We then *replace* self.model with the ensemble
         # and re-register only the targets we want.
@@ -360,8 +325,6 @@ class EnsembleRefinement(LBFGSRefinement):
         self.wilson_mode = str(wilson_mode)
         self.xray_weight = float(xray_weight)
         self.amber_weight = float(amber_weight)
-        self.amber_lam = float(amber_lam)
-        self.amber_kT = float(amber_kT)
         self.amber_charge_method = amber_charge_method
         self.amber_relax_on_init = bool(amber_relax_on_init)
         self.amber_force_clamp = float(amber_force_clamp)
@@ -473,6 +436,14 @@ class EnsembleRefinement(LBFGSRefinement):
             device=self.device,
             max_res=self.max_res,
         )
+        if self.amber_weight > 0.0 and not bool(
+            self.model.ctx.topology.atoms.is_hydrogen.any()
+        ):
+            raise ValueError(
+                "amber_weight > 0 needs an ensemble with hydrogens, but "
+                "EnsembleRefinement builds hydrogen-stripped ensembles; set "
+                "amber_weight=0."
+            )
         if self.refine_population:
             self.model.enable_population_refinement(
                 True, refine_b=self.refine_member_b
@@ -501,6 +472,8 @@ class EnsembleRefinement(LBFGSRefinement):
 
         # Re-create our targets pointing at the ensemble model + new scaler.
         self._init_targets(xray_mode=xray_mode)
+        if self.low_rank_modes > 0:
+            self.enable_low_rank(self.low_rank_modes)
         # Force loss-state rebuild on next access.
         self.reset_loss_state()
 
@@ -509,7 +482,7 @@ class EnsembleRefinement(LBFGSRefinement):
     # ------------------------------------------------------------------
 
     def _init_targets(self, xray_mode: str = "ml"):
-        """Register X-ray (work/free/val), Wilson, and optional Amber-KL targets."""
+        """Register X-ray (work/free/val), Wilson, optional Amber and rank targets."""
         # Don't error if the ensemble pieces aren't built yet (during the
         # base-class super().__init__ pre-pass). Detect by checking for
         # EnsembleModel.
@@ -535,9 +508,8 @@ class EnsembleRefinement(LBFGSRefinement):
         )
         # Quasi-crystal Amber: one unified OpenMM System (k·N_sym replicas
         # with PBC + PME), no per-member loop, no KL/entropy term — physical
-        # crystal contacts in the supercell are the regularizer. Falls back
-        # to "disabled" if either OpenMM is missing or amber_weight == 0.
-        if QuasiCrystalAmberTarget is not None and self.amber_weight > 0.0:
+        # crystal contacts in the supercell are the regularizer.
+        if self.amber_weight > 0.0:
             self.amber_target = QuasiCrystalAmberTarget(
                 model=self.model,
                 cell=self.reflection_data.cell,
@@ -554,8 +526,8 @@ class EnsembleRefinement(LBFGSRefinement):
         # Soft rank penalty (nuclear norm of the centered member matrix):
         # "purifies" the ensemble toward fewer effective disorder modes. Built
         # whenever a non-zero weight (or a ramp start) is requested. See
-        # RankPenaltyTarget — frozen-basis PCA failed because the disorder is
-        # high-rank, so we penalize rank softly instead of truncating it.
+        # RankPenaltyTarget — frozen-basis PCA cannot truncate high-rank
+        # disorder, so rank is penalized softly instead.
         # "maxent" and "diverse" carry their coefficients (shrink/div, i.e.
         # participation/similarity) INTERNALLY, so they register at loss-state
         # weight 1.0 and are "on" whenever either internal coef is non-zero.
@@ -574,13 +546,6 @@ class EnsembleRefinement(LBFGSRefinement):
             )
         else:
             self.rank_target = None
-
-        # Set up the component weighting if it exists in the base class.
-        if hasattr(self, "setup_component_weighting"):
-            try:
-                self.setup_component_weighting()
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------
     # Low-rank reparameterization
@@ -656,14 +621,12 @@ class EnsembleRefinement(LBFGSRefinement):
         - **restraints/amber_kl** — :class:`QuasiCrystalAmberTarget` with
           ``normalize_per_asu=True`` returns supercell energy divided by
           the number of ASU copies it contains. Units: kJ/mol / ASU. The
-          ``_kl`` in the key is historical (carried over from the abandoned
-          :class:`EnsembleAmberKLTarget`); the active target has **no**
-          KL / entropy term.
+          target has **no** KL / entropy term despite the key name.
 
         With every term on a per-ASU scale, the user-facing weights
         (``xray_weight``, ``wilson_weight``, ``amber_weight``) are
-        dimensionless multipliers applied literally. Default values of 1.0
-        give a meaningful physical balance; lowering ``xray_weight`` is the
+        dimensionless multipliers applied literally. The X-ray and Wilson
+        defaults of 1.0 give a physical balance; lowering ``xray_weight`` is the
         primary knob for resisting late-cycle work-set overfit drift.
         """
         state = LossState(device=self.device)
@@ -697,21 +660,6 @@ class EnsembleRefinement(LBFGSRefinement):
                     else self.rank_weight
                 )
             state.set_weight("regularization/rank", w0)
-        return state
-
-    def complete_loss_state(self) -> LossState:
-        """
-        Refresh meta + cached losses but keep our explicit static weights.
-
-        The base-class implementation calls ``update_weights`` →
-        ``component_weighting`` which (a) overwrites the per-target weights
-        and (b) clips them to [0.01, 100]. Both would destroy our
-        per-ASU normalization. EnsembleRefinement uses fixed, user-set
-        weights from ``_create_loss_state``, so we skip the component-
-        weighting step entirely.
-        """
-        state = self.loss_state
-        state.cache_losses()
         return state
 
     # ------------------------------------------------------------------
@@ -804,82 +752,64 @@ class EnsembleRefinement(LBFGSRefinement):
         checkpoint_path: Optional[str] = None,
         resume_state: Optional[dict] = None,
     ):
-        """
-        Macro-cycle loop with Adam over ``xyz + scaler`` parameters.
+        """Run ``macro_cycles`` macro cycles of Adam (or SGD, or guided MD).
+
+        A macro cycle is ``adam_steps_per_cycle`` steps through
+        :meth:`LossState.run`, then R-factors and NLLs on the full ensemble and,
+        with population refinement, a birth–death sweep. The optimizer moves the
+        xyz leaves (μ, A and V after :meth:`enable_pca`), the scaler (not under
+        guided MD) and, with ``refine_population``, ``occ_logits`` (plus
+        ``b_raw`` with ``refine_member_b``).
 
         Parameters
         ----------
         macro_cycles : int
-            Number of macro cycles (each is ``adam_steps_per_cycle`` Adam steps).
+            Number of macro cycles.
         snapshot_every : int, optional
-            If > 0 and ``on_snapshot`` is given, invoke ``on_snapshot`` every
-            this many macro cycles. Lets long runs persist intermediate state
-            (structure + metrics) so a kill mid-run doesn't lose everything and
-            the trajectory can be inspected. 0 disables (default).
+            If > 0, call ``on_snapshot`` and write ``checkpoint_path`` every this
+            many cycles; a failed write is logged, not raised. 0 disables.
         on_snapshot : callable, optional
-            ``on_snapshot(completed_cycles: int, hist: dict) -> None``. Receives
-            the same history dict shape as the final return, truncated to the
-            cycles completed so far (``sampling_summary`` is None mid-run). The
-            caller owns serialization (e.g. write a checkpoint PDB + JSON).
+            ``on_snapshot(completed_cycles: int, hist: dict) -> None``, with
+            ``hist`` shaped like the return value up to the cycles done so far.
         checkpoint_path : str, optional
-            If given (with ``snapshot_every > 0``), write a full *resume*
-            checkpoint here every ``snapshot_every`` cycles (atomically, single
-            rolling file). Captures model + scaler + Adam optimizer state +
-            ``global_step`` + lr/noise schedule position + adaptive-xray EMA +
-            RNG + histories — everything needed to continue with identical
-            dynamics. The PDB/JSON snapshot is for humans; this is for resume.
+            Rolling, atomically written resume checkpoint: model, scaler,
+            optimizer state, global step, adaptive-weight EMA, RNG, histories.
         resume_state : dict, optional
-            A checkpoint dict (``torch.load`` of a prior ``checkpoint_path``,
-            mapped to this model's device) to resume from. Restores all of the
-            above and continues the macro-cycle loop from where it stopped. The
-            schedule (``macro_cycles`` × ``adam_steps_per_cycle``) must match the
-            original run, else the lr/noise curves would misalign — validated.
+            A loaded ``checkpoint_path`` dict to continue from. ``macro_cycles``
+            and ``adam_steps_per_cycle`` must match the original run (the
+            schedules are functions of the global step), else ``ValueError``.
 
-        Why Adam, not LBFGS: the loss landscape under (a) the
-        ensemble-coordinate redundancy, (b) the Wilson regularizer, and
-        (c) the quasi-crystal Amber energy is highly non-convex with
-        ~30k+ xyz parameters per macro cycle. LBFGS's quasi-Newton
-        curvature approximation is wrong for this kind of landscape
-        and gets stuck. Adam's per-parameter step sizing + momentum is
-        the standard choice for ensemble / variational refinement.
+        Returns
+        -------
+        dict
+            Per-cycle histories (``rwork``, ``rfree``, ``rval``, ``loss``,
+            ``lr``, ``adam_precond`` (``None`` entries for a low-rank or PCA
+            xyz), ...) plus ``burnin_cycles`` and ``sampling_summary``.
 
-        Guided-MD path: if ``integrator == "langevin_baoab"`` the loop runs a
-        thermostatted BAOAB Langevin integrator on the xyz DOF instead of
-        Adam — physical atomic masses, a constant bath temperature
-        (``md_temperature``), the X-ray term as a weighted force, and the
-        Amber supercell as the physical force field. This path differs from
-        the gradient-descent path: the scaler is excluded from the integrator
-        and refit deterministically per macro cycle, Amber is forced every
-        step (``amber_every = 1``), and the post-hoc SGLD/noise-floor noise is
-        disabled (the thermostat owns the noise).
+        Notes
+        -----
+        ``lr_schedule`` runs over the global step: ``'cosine'`` makes
+        ``lr_cycles`` ``(1-cos)/2`` bumps from ``warmup_start_factor·adam_lr``
+        up to ``adam_lr`` and back; ``'sawtooth'`` makes one such bump, then
+        ``lr_cycles`` jumps to ``adam_lr`` each cosine-decayed to the floor;
+        ``'warmup'`` ramps linearly over ``warmup_steps``, then holds. Any other
+        value raises ``ValueError``. ``sampling_fraction > 0`` overrides the
+        schedule: warmup and cosine anneal to ``sampling_lr_factor·adam_lr``
+        over the burn-in, then that constant LR with the adaptive weights frozen.
+        ``wilson_weight_start`` ramps the Wilson weight linearly to
+        ``wilson_weight``.
 
-        Driven through :meth:`LossState.run`, which already handles:
-        non-finite-loss validation, ``requires_grad`` toggling on leaves
-        outside the optimizer's intent set, cache resets, and target
-        maintenance hooks. Adam accepts the same ``closure(...) -> loss``
-        contract LossState builds for LBFGS.
-
-        One macro cycle = ``self.adam_steps_per_cycle`` Adam steps.
-        B-factors and occupancies are frozen at construction time, so
-        the optimizer only touches xyz and scaler parameters.
-
-        Two schedules run over the *global* step index (0 .. T-1, with
-        T = macro_cycles * adam_steps_per_cycle):
-
-        - **LR** (``lr_schedule``):
-          - ``'cosine'`` — one (or ``lr_cycles``) ``(1-cos)/2`` bump(s).
-            LR starts at ``warmup_start_factor * adam_lr``, rises to
-            ``adam_lr`` at the cycle midpoint, anneals back to the floor
-            by the cycle end. Starting low doubles as warmup (Adam's
-            early bias-corrected second moment is unstable); annealing
-            low at the end gives gentle convergence.
-          - ``'warmup'`` — legacy linear warmup then constant.
-        - **Wilson weight** (opt-in; only when ``wilson_weight_start`` is set,
-          which defaults to ``None`` = no ramp): ramps linearly from
-          ``wilson_weight_start`` to ``wilson_weight`` over the run.
-          Curriculum: fit the data first, then progressively tighten the
-          Wilson prior as the ensemble starts to overfit.
+        ``integrator='langevin_baoab'`` runs BAOAB Langevin dynamics on xyz at
+        ``md_temperature`` with physical masses instead; the scaler is refit
+        each macro cycle outside the integrator, Amber runs every step and the
+        post-step noise is off.
         """
+
+        if self.lr_schedule not in ("cosine", "sawtooth", "warmup"):
+            raise ValueError(
+                "lr_schedule must be 'cosine', 'sawtooth' or 'warmup'; "
+                f"got {self.lr_schedule!r}"
+            )
         # PCAEnsembleParam refines THREE leaves (μ, A, V); parameters_of_types
         # returns only the single `.refinable_params`, so collect all of them.
         from .pca_model import PCAEnsembleParam
@@ -944,14 +874,9 @@ class EnsembleRefinement(LBFGSRefinement):
             # preconditioner (which distorts both the sampled distribution and
             # — via the noise inflating v — the effective lr). Trade-off: one
             # global lr is poorly conditioned on the stiff amber landscape, so
-            # it mixes slower and needs its own (smaller) lr.
-            # NOTE (3GR5 experiment): plain SGD diverges here at any usable lr
-            # (≥1e-5 explodes) — the unnormalized xray NLL gradient is ~1e5+
-            # while amber's is force-clamped at 1e4, so a single global lr can't
-            # serve both. The ill-conditioning that mandates Adam also dooms
-            # clean isotropic SGLD. Kept for completeness / better-conditioned
-            # problems; for entropy injection on stiff landscapes use a
-            # preconditioned sampler instead.
+            # it mixes slower and needs its own (smaller) lr. With Amber on, it
+            # diverges at any lr >= 1e-5: the X-ray NLL gradient (~1e5) and the
+            # force-clamped Amber gradient (1e4) admit no common lr.
             optimizer = torch.optim.SGD(params, lr=self.adam_lr, momentum=0.0)
         else:
             optimizer = torch.optim.Adam(
@@ -1019,7 +944,6 @@ class EnsembleRefinement(LBFGSRefinement):
                 t_in = ((global_step - seg) % seg) / seg    # 0->1 within a sawtooth
                 decay = (1.0 + math.cos(math.pi * t_in)) / 2.0  # 1->0: max at jump, floor at end
                 return lr_floor + (self.adam_lr - lr_floor) * decay
-            # legacy linear warmup
             if self.warmup_steps <= 0 or global_step >= self.warmup_steps:
                 return self.adam_lr
             frac = global_step / float(self.warmup_steps)
@@ -1075,10 +999,11 @@ class EnsembleRefinement(LBFGSRefinement):
             thing to watch before deciding on preconditioned noise. Purely
             observational; nothing here changes the injected noise.
             """
-            # Coordinate-space diagnostic; skip under the PCA reparameterization
-            # (the leaves are amplitudes/basis, not Å coords).
+            # Coordinate-space diagnostic; skip under a low-rank or PCA
+            # reparameterization (the leaves are amplitudes/basis, not Å coords).
+            from .low_rank_ensemble import LowRankXYZ
             from .pca_model import PCAEnsembleParam
-            if isinstance(self.model.xyz, PCAEnsembleParam):
+            if isinstance(self.model.xyz, (LowRankXYZ, PCAEnsembleParam)):
                 return None
             p = self.model.xyz.refinable_params
             st = optimizer.state.get(p)
@@ -1138,7 +1063,7 @@ class EnsembleRefinement(LBFGSRefinement):
 
         # In-loss counts (work/free flag AND valid), matching the X-ray mask.
         # Used only for per-reflection NLL reporting in the gap meter below;
-        # the loss-state weights themselves are now per-ASU (no /n_work).
+        # the loss-state weights themselves are per-ASU (no /n_work).
         n_work = max(self._inloss_count(self.reflection_data.work.indices), 1)
         n_free = self._inloss_count(self.reflection_data.free.indices)
         # Arm/disarm ensemble dropout on the model for this refinement.
@@ -1192,10 +1117,10 @@ class EnsembleRefinement(LBFGSRefinement):
         # where nll_gap = (nll_free_per_refl / nll_work_per_refl), updated
         # every Adam step from a fresh no-grad forward of the free target.
         # The slope log2(F) means: each doubling of gap cuts xray weight by F×
-        # (with F=5 (default): 2× → 0.2, 4× → 0.04, 8× → 0.008). F=10 was
-        # the original try and turned out to be too aggressive — the natural
-        # sampling gap of ~2-4 already drove weight to 0.01-0.1, starving
-        # the work fit. EMA half-life in Adam steps smooths per-step noise.
+        # (with F=5 (default): 2× → 0.2, 4× → 0.04, 8× → 0.008). F=5 is the
+        # default because F=10 starves the work fit: the natural sampling gap
+        # of ~2-4 already drives its weight to 0.01-0.1. EMA half-life in Adam
+        # steps smooths per-step noise.
         adaptive_slope = math.log2(max(self.xray_adaptive_doubling_factor, 1.0001))
         # Free-set-aware PENALTY: w_rank(step) = rank_adaptive_base · EMA(gap)^(+log2 F_rank)
         # — mirror of adaptive-F but on the regularizer: each doubling of the
@@ -1347,10 +1272,6 @@ class EnsembleRefinement(LBFGSRefinement):
             os.replace(tmp, checkpoint_path)
 
         for cycle in range(start_cycle, macro_cycles):
-            # H positions are derived from heavy atoms via local-frame
-            # placement inside ``AmberTarget._place_hydrogens`` on every
-            # forward — no per-cycle refresh needed.
-
             # Guided MD excludes the scaler from the integrator; refit it to the
             # current ensemble at the start of each macro-cycle (deterministic,
             # treats |F_calc| as fixed, so atoms are not moved by the scale fit).
@@ -1695,9 +1616,8 @@ class EnsembleRefinement(LBFGSRefinement):
 
         Masses come from the model's per-atom ``element`` column (member-
         contiguous, aligned row-for-row with ``xyz.refinable_params``) via
-        gemmi's atomic weights. Hydrogens are absent from the refinable set
-        (they are placed analytically and slaved to heavy atoms), so only
-        heavy-atom masses are needed.
+        gemmi's atomic weights; hydrogen rows, when present, get their own
+        mass like any other atom.
 
         Returns ``None`` when the layout is not the standard flat coordinate
         parameter (e.g. a PCA/low-rank reparameterization) or the element list
@@ -1729,7 +1649,7 @@ class EnsembleRefinement(LBFGSRefinement):
         """R-factor on the validation set (monitoring only)."""
         with torch.no_grad():
             # get_data() returns compact arrays already restricted to the set
-            # (the trailing element is the _ReflectionSubset view, not a mask).
+            # (the trailing element is the ReflectionSubset view, not a mask).
             F_obs, F_calc, _sigma, _centric, _sub = (
                 self.xray_target_validation.get_data()
             )

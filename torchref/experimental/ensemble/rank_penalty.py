@@ -6,8 +6,8 @@ Soft rank penalty on the ensemble's coordinate disorder.
    Experimental — part of ``torchref.experimental.ensemble``. The API and
    behaviour may change or be removed without notice.
 
-Frozen-basis PCA truncation failed because the 3GR5 ensemble disorder is
-high-rank (a near-flat SVD spectrum) — there is no low-dimensional subspace to
+Frozen-basis PCA truncation does not work when the ensemble disorder is
+high-rank (a near-flat SVD spectrum): there is no low-dimensional subspace to
 project onto, and the ensemble *mean* is unphysical. This target takes the
 opposite tack: keep refining the full-complexity ensemble, but add a *soft*
 penalty that progressively "purifies" it toward fewer effective modes, with the
@@ -47,19 +47,18 @@ class RankPenaltyTarget(ModelTarget):
 
     Supports five ``mode`` options (see :meth:`__init__`):
     ``{"nuclear", "subspace", "entropy", "maxent", "diverse"}``. ``"nuclear"``
-    is the original soft-rank (nuclear-norm) design and the default;
-    ``"diverse"`` (orthogonal participation ⟂ similarity pair) is the
-    recommended de-overfit mode, superseding ``"maxent"``/``"entropy"``, which
-    are retained for comparison.
+    (the soft-rank nuclear norm) is the default; ``"diverse"`` (orthogonal
+    participation ⟂ similarity pair) is the recommended de-overfit mode;
+    ``"maxent"`` and ``"entropy"`` are comparison baselines.
 
     Parameters
     ----------
     model : EnsembleModel
         The ensemble; ``model.xyz_per_member`` is read each forward.
     normalize : bool
-        If True (default), divide the nuclear norm by ``N`` so the loss is a
-        per-member ("per-ASU"-ish) scale, consistent with the X-ray / Wilson /
-        Amber per-ASU normalization in ``EnsembleRefinement._create_loss_state``.
+        If True (default), divide the ``"nuclear"`` and ``"subspace"``
+        penalties by the alive member count ``N`` (a per-member scale, as in
+        ``EnsembleRefinement._create_loss_state``); the other modes ignore it.
     verbose : int
         Verbosity.
     """
@@ -81,56 +80,26 @@ class RankPenaltyTarget(ModelTarget):
         Parameters
         ----------
         mode : {"nuclear", "subspace", "entropy", "maxent", "diverse"}
-            Recommendation: use ``"diverse"`` for de-overfitting; ``"maxent"``
-            and ``"entropy"`` are retained for comparison only (``"diverse"``
-            supersedes them — see below).
+            Penalty on the centered matrix ``Xc`` of the ``N`` alive members,
+            with singular values ``σ_k``:
 
-            ``"diverse"``: the orthogonal participation⟂similarity pair.
-            ``L = maxent_shrink·PR + maxent_div·sim``, where ``PR=(Σσ²)²/Σσ⁴`` is
-            the (scale-invariant) participation ratio — minimized to concentrate
-            variance into fewer effective modes (de-overfit) — and ``sim`` is the
-            mean pairwise member RBF similarity (median-heuristic bandwidth) —
-            minimized to spread the conformers apart (anti-collapse / anti-trap).
-            The two act on different objects (eigenvalues vs member positions),
-            so they don't fight; the similarity term stabilizes PR-minimization
-            (which alone collapses to rank-1). Supersedes ``"maxent"`` (whose
-            spectral-entropy "diversity" was on the same axis as participation).
-            ``"maxent"``: max-diversity / min-effective-rank, K-free. Decouples
-            spectrum *magnitude* from *shape*:
-            ``L = maxent_shrink·(Σσ_k²/N)  −  maxent_div·H(p)``, where
-            ``p_k = σ_k²/Σσ_j²`` and ``H = −Σ p_k ln p_k`` is the normalized
-            spectral (Shannon) entropy. The shrink (trace, L2) term limits total
-            disorder → de-overfit; the entropy term is scale-invariant and is
-            *maximized* (subtracted), spreading variance across modes (diversity,
-            anti-collapse) without fighting the shrink. More stable than
-            ``"entropy"`` (whose entropy term can run away into rank collapse),
-            but it was found to be on the same eigenvalue axis as participation
-            and is superseded by ``"diverse"``; kept for comparison. Clean
-            gradient (``p ln p → 0``; values-only SVD backward).
-            ``"nuclear"`` (default): penalize ``Σ_k σ_k`` (shrinks all modes —
-            reduces rank AND magnitude). ``"subspace"``: penalize the variance
-            *outside* the top-``target_rank`` subspace, ``Σ_{k>K} σ_k²`` (the
-            rank-K projection residual ``‖Xc − Xc_K‖²_F``) — restrains the
-            ensemble onto a K-dimensional manifold, leaving the top-K modes
-            free. ``"entropy"``: penalize the per-structure quasi-harmonic
-            (Schlitter) conformational entropy
-            ``S = ½ Σ_k ln(1 + α·μ_k)`` (nats/ASU), where ``μ_k = σ_k²/N`` is
-            the per-mode positional variance (Å²) and ``α = 1/freeze_disp²``.
-            The ``1/σ``-like gradient pulls hardest on the *smallest* modes, so
-            minimizing it preferentially collapses the low-variance tail
-            (dimensionality reduction) while sparing the dominant collective
-            modes — and S is on the same per-ASU nats scale as the X-ray NLL,
-            so the weight is a dimensionless fit-vs-disorder coupling.
+            - ``"nuclear"`` (default): ``Σ_k σ_k``.
+            - ``"subspace"``: ``Σ_{k>K} σ_k²``, the variance outside the top
+              ``target_rank`` modes.
+            - ``"entropy"``: ``½ Σ_k ln(1 + σ_k² / (N·freeze_disp²))``, the
+              quasi-harmonic conformational entropy (nats).
+            - ``"maxent"``: ``maxent_shrink·Σ_k σ_k²/N − maxent_div·H(p)``,
+              with ``p_k = σ_k²/Σ_j σ_j²`` and ``H`` its Shannon entropy.
+            - ``"diverse"``: ``maxent_shrink·PR + maxent_div·sim``, with the
+              participation ratio ``PR = (Σσ²)²/Σσ⁴`` and ``sim`` the mean
+              pairwise member RBF similarity (median-heuristic bandwidth).
         target_rank : int
-            Retained subspace dimension ``K`` (``"subspace"`` mode only).
+            Retained subspace dimension ``K`` (``"subspace"`` only).
         freeze_disp : float
-            Freeze-out RMS displacement (Å) for ``"entropy"`` mode: modes with
-            RMS below this contribute ~0 entropy (frozen), above it count as
-            full thermal entropy. Sets ``α = 1/freeze_disp²``. ~coordinate
-            error at the working resolution (default 0.2 Å).
-        normalize : bool
-            Divide the penalty by ``N`` for a per-member scale. Ignored for
-            ``"entropy"`` (already a per-structure quantity).
+            Freeze-out RMS displacement (Å) for ``"entropy"``: modes with a
+            smaller RMS contribute ~0 (default 0.2 Å).
+        maxent_shrink, maxent_div : float
+            Coefficients of the two terms of ``"maxent"`` and ``"diverse"``.
         """
         super().__init__(model=model, verbose=verbose)
         self._mode = str(mode)
@@ -141,29 +110,29 @@ class RankPenaltyTarget(ModelTarget):
         self._normalize = bool(normalize)
 
     def _centered(self) -> torch.Tensor:
-        """Return the centered ``(N, D)`` member-coordinate matrix."""
-        xyz = self._model.xyz_per_member                  # (N, n_atoms, 3)
+        """Return the centered ``(n_alive, D)`` matrix of the alive members."""
+        model = self._model
+        xyz = model.xyz_per_member[model._alive]  # (n_alive, n_atoms, 3)
         N = xyz.shape[0]
         X = xyz.reshape(N, -1)                            # (N, D)
         return X - X.mean(dim=0, keepdim=True)
 
     def forward(self) -> torch.Tensor:
-        """Soft rank / subspace penalty on the centered member matrix.
+        """Evaluate the ``mode`` penalty on the alive members' centered matrix.
 
-        Both branches are functions of the singular *values* only, so their
-        gradients (``U·diag(g)·Vᵀ``) are well-conditioned even when the
-        spectrum is near-degenerate — we never backprop through the singular
-        *vectors*.
+        ``"nuclear"``, ``"subspace"``, ``"entropy"`` and ``"maxent"`` depend on
+        the singular values only, so their gradients (``U·diag(g)·Vᵀ``) never
+        pass through the singular vectors; ``"diverse"`` also differentiates
+        the pairwise member distances (``cdist``). ``normalize`` divides
+        ``"nuclear"`` and ``"subspace"`` by ``N``; the other modes ignore it.
         """
         Xc = self._centered()
         N = float(Xc.shape[0])
         if self._mode == "diverse":
-            # ORTHOGONAL PAIR (participation ⟂ similarity), the corrected
-            # diversity formulation. The earlier "maxent" used spectral entropy
-            # H(p) as "diversity", but H is a function of the eigenVALUES only —
-            # the SAME axis as participation — so maximizing it fought the rank
-            # reduction (eff_rank climbed 58→80+). Here the two terms act on
-            # genuinely different objects:
+            # ORTHOGONAL PAIR (participation ⟂ similarity). Unlike "maxent",
+            # whose spectral entropy H(p) lies on the same eigenvalue axis as
+            # participation and so fights the rank reduction, the two terms
+            # act on genuinely different objects:
             #
             #  (1) PARTICIPATION  — minimize the participation ratio
             #      PR = (Σσ²)²/Σσ⁴ (the logged eff_rank). Scale-INVARIANT, a
@@ -232,9 +201,7 @@ class RankPenaltyTarget(ModelTarget):
         variance in the top mode. These show the "purification" as the penalty
         ramps up.
         """
-        # dtype-ok: float64 svdvals for read-only diagnostics; results extracted
-        # via float(). Caveat: no .cpu() first, so this errors on MPS.
-        Xc = self._centered().detach().to(torch.float64)
+        Xc = self._centered().detach()
         s = torch.linalg.svdvals(Xc)                      # (min(N, D),)
         s2 = s ** 2
         total = s2.sum().clamp_min(1e-30)

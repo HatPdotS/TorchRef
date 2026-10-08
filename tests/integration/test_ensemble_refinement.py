@@ -7,18 +7,13 @@ configuration.
 """
 
 import os
+import sys
+import types
 
 import pytest
 import torch
 
-from torchref.experimental.ensemble import EnsembleModel
-from torchref.experimental.ensemble import EnsembleRefinement
-
-# The module-scoped ``refinement`` fixture builds the QuasiCrystal Amber target
-# eagerly (amber_weight=1.0), parameterising 1DAW's ANP ligand via GAFF2, so
-# every test here needs OpenMM + AmberTools. Gated centrally in conftest.
-pytestmark = pytest.mark.amber
-
+from torchref.experimental.ensemble import EnsembleModel, EnsembleRefinement, LowRankXYZ
 
 TEST_MTZ = os.path.join(
     os.path.dirname(__file__), "..", "files", "mtz", "1DAW.mtz"
@@ -38,16 +33,6 @@ def refinement() -> EnsembleRefinement:
         perturb_sigma=0.01,    # symmetry-breaking only; clashes from larger values
         b_const=5.0,
         wilson_weight=0.5,
-        # Amber is ON (default amber_weight=1.0) so this end-to-end test
-        # exercises the real QuasiCrystal Amber path, including parameterising
-        # 1DAW's ANP ligand (which is protonated from the monomer library).
-        # The init OpenMM energy-minimisation is disabled: 1DAW's supercell has
-        # special-position/metal clashes that make the (non-clamped) minimizer
-        # diverge to NaN — a separate pre-existing amber-stability issue. The
-        # differentiable forward clamps per-atom forces, so refinement is fine.
-        amber_relax_on_init=False,
-        amber_lam=0.0,
-        amber_kT=0.0,
         val_fraction_of_free=0.5,
         xray_mode="ls",
         seed=42,
@@ -59,6 +44,61 @@ def refinement() -> EnsembleRefinement:
 def test_model_is_ensemble(refinement):
     assert isinstance(refinement.model, EnsembleModel)
     assert refinement.model.n_members == 4
+
+
+def test_default_construction_has_no_amber_target(refinement):
+    assert refinement.amber_weight == 0.0
+    assert refinement.amber_target is None
+
+
+def _build_with_amber(data_file=TEST_MTZ):
+    return EnsembleRefinement(
+        data_file=data_file,
+        pdb=TEST_PDB,
+        n_members=4,
+        amber_weight=1.0,
+        seed=42,
+        verbose=0,
+        max_res=3.0,
+    )
+
+
+def test_amber_without_openmm_raises_before_loading_data(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "openmm", None)
+    with pytest.raises(ImportError, match="OpenMM"):
+        _build_with_amber(data_file=str(tmp_path / "missing.mtz"))
+
+
+def test_amber_on_hydrogen_stripped_ensemble_raises(monkeypatch):
+    """The driver's ensembles carry no hydrogens, which the Amber target needs."""
+    monkeypatch.setitem(sys.modules, "openmm", types.ModuleType("openmm"))
+    with pytest.raises(ValueError, match="amber_weight=0"):
+        _build_with_amber()
+
+
+@pytest.fixture(scope="module")
+def low_rank_refinement() -> EnsembleRefinement:
+    return EnsembleRefinement(
+        data_file=TEST_MTZ,
+        pdb=TEST_PDB,
+        n_members=4,
+        low_rank_modes=2,
+        adam_steps_per_cycle=2,
+        seed=42,
+        verbose=0,
+        max_res=3.0,
+    )
+
+
+def test_low_rank_modes_swaps_in_a_low_rank_xyz(low_rank_refinement):
+    assert isinstance(low_rank_refinement.model.xyz, LowRankXYZ)
+    assert low_rank_refinement.model.xyz.K == 2
+
+
+def test_low_rank_refine_reports_no_coordinate_preconditioner(low_rank_refinement):
+    """The Å-space Adam diagnostic does not run on low-rank amplitudes."""
+    hist = low_rank_refinement.refine(macro_cycles=1)
+    assert hist["adam_precond"] == [None]
 
 
 def test_validation_set_was_generated(refinement):
@@ -94,3 +134,8 @@ def test_refine_decreases_rwork_and_keeps_ensemble_spread(refinement):
     xyz = refinement.model.xyz_per_member.detach()
     var_per_atom = xyz.var(dim=0, unbiased=False).sum(dim=-1)
     assert float(var_per_atom.mean()) > 1e-5
+
+
+def test_refine_rejects_an_unknown_lr_schedule():
+    with pytest.raises(ValueError, match="lr_schedule"):
+        EnsembleRefinement(verbose=0, lr_schedule="linear").refine(macro_cycles=1)

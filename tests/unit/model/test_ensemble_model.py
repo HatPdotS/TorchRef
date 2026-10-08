@@ -189,7 +189,6 @@ def test_copy_carries_the_ensemble(tmp_path, small_ensemble):
 
 
 def test_copy_keeps_a_low_rank_xyz():
-    # enable_low_rank seeds its basis with a float64 SVD, which MPS cannot run
     ens = EnsembleModel.from_single(
         TEST_PDB,
         n_members=5,
@@ -197,7 +196,6 @@ def test_copy_keeps_a_low_rank_xyz():
         b_const=5.0,
         seed=42,
         verbose=0,
-        device="cpu",
     )
     ens.enable_low_rank(2)
     dup = ens.copy()
@@ -205,3 +203,102 @@ def test_copy_keeps_a_low_rank_xyz():
     with torch.no_grad():
         dup.xyz.amplitudes.add_(1.0)
     assert not torch.allclose(dup.xyz(), ens.xyz())
+
+
+# --------------------------------------------------------------------------
+# Spare (dead) slots of a population pool
+# --------------------------------------------------------------------------
+
+_POOL_KW = dict(perturb_sigma=0.2, b_const=5.0, seed=42, verbose=0)
+
+
+def _member_occupancy(ens):
+    occ = ens.get_iso()[2].detach().cpu()
+    return occ.view(ens.n_members, ens.n_atoms_per_member)[:, 0]
+
+
+def test_dead_slots_do_not_contribute_to_fcalc():
+    """A pool with dead spare slots scatters like the alive members alone."""
+    pool = EnsembleModel.from_single(TEST_PDB, n_members=3, n_max=5, **_POOL_KW)
+    plain = EnsembleModel.from_single(TEST_PDB, n_members=3, **_POOL_KW)
+    assert torch.equal(pool.xyz_per_member[:3], plain.xyz_per_member)
+    occ = _member_occupancy(pool)
+    assert torch.allclose(occ, torch.tensor([1 / 3] * 3 + [0, 0], dtype=occ.dtype))
+    pool.setup_grid(max_res=2.5)
+    plain.setup_grid(max_res=2.5)
+    hkl = _dropout_hkl(pool)
+    assert torch.allclose(pool(hkl), plain(hkl), rtol=1e-4, atol=1e-3)
+
+
+def test_multimodel_pool_occupancy_sums_to_one(tmp_path, small_ensemble):
+    path = str(tmp_path / "ens.pdb")
+    small_ensemble.write_pdb(path)
+    ens = EnsembleModel.from_multimodel_pdb(path, n_members=2, n_max=4, verbose=0)
+    occ = _member_occupancy(ens)
+    assert torch.allclose(occ, torch.tensor([0.5, 0.5, 0.0, 0.0], dtype=occ.dtype))
+
+
+def test_dropout_draws_only_alive_members():
+    ens = EnsembleModel.from_single(TEST_PDB, n_members=4, n_max=6, **_POOL_KW)
+    ens.configure_dropout(True, 2, 2)
+    for _ in range(20):
+        assert ens.resample_dropout() == 2
+        mult = ens._dropout_occ_mult.view(ens.n_members, -1)[:, 0].cpu()
+        assert torch.all(mult[4:] == 0)
+        assert torch.allclose(mult[mult > 0], torch.full((2,), 2.0, dtype=mult.dtype))
+        total = _member_occupancy(ens).sum()
+        assert torch.allclose(total, torch.tensor(1.0, dtype=total.dtype))
+
+
+def test_inactive_dropout_reports_the_alive_count():
+    ens = EnsembleModel.from_single(TEST_PDB, n_members=4, n_max=6, **_POOL_KW)
+    assert ens.resample_dropout() == 4
+
+
+def test_write_pdb_writes_alive_members_with_their_weights(tmp_path):
+    ens = EnsembleModel.from_single(TEST_PDB, n_members=4, n_max=6, **_POOL_KW)
+    ens.enable_population_refinement(True)
+    with torch.no_grad():
+        ens.occ_logits[:4] = torch.tensor([2.0, 0.5, 0.0, -1.0])
+    ens.kill_member(3)
+    path = tmp_path / "pop.pdb"
+    ens.write_pdb(str(path))
+    lines = path.read_text().splitlines()
+    assert sum(ln.startswith("MODEL ") for ln in lines) == 3
+    first_atoms = []
+    in_model = False
+    for ln in lines:
+        if ln.startswith("MODEL "):
+            in_model = True
+        elif in_model and ln.startswith(("ATOM", "HETATM")):
+            first_atoms.append(float(ln[54:60]))
+            in_model = False
+    expected = ens.member_weights()[:3].detach().cpu()
+    written = torch.tensor(first_atoms, dtype=expected.dtype)
+    assert torch.allclose(written, expected, atol=6e-3)
+    assert EnsembleModel.from_multimodel_pdb(str(path), verbose=0).n_members == 3
+
+
+def test_bifurcate_refuses_a_low_rank_xyz():
+    ens = EnsembleModel.from_single(TEST_PDB, n_members=4, n_max=6, **_POOL_KW)
+    ens.enable_population_refinement(True)
+    ens.enable_low_rank(2)
+    with pytest.raises(RuntimeError, match="enable_low_rank"):
+        ens.bifurcate_member(0)
+
+
+@pytest.mark.parametrize("swap", ["enable_low_rank", "enable_pca"])
+def test_pca_seeding_runs_in_the_working_dtype(monkeypatch, small_ensemble, swap):
+    """The seeding SVD stays in the model dtype, so it also runs on MPS."""
+    seen = []
+    svd = torch.linalg.svd
+
+    def recording_svd(A, *args, **kwargs):
+        seen.append(A.dtype)
+        return svd(A, *args, **kwargs)
+
+    monkeypatch.setattr(torch.linalg, "svd", recording_svd)
+    before = small_ensemble.xyz().detach().clone()
+    getattr(small_ensemble, swap)(4)
+    assert seen and all(dt == small_ensemble.dtype_float for dt in seen)
+    assert torch.allclose(small_ensemble.xyz(), before, atol=1e-3)
