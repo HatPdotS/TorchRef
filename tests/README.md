@@ -10,26 +10,18 @@ tests/
 ├── fixtures/                # Shared setup, grouped by responsibility (see fixtures/README.md)
 ├── pytest.ini               # Pytest configuration
 ├── __init__.py
-├── files/                   # Test data files (CIF, PDB, MTZ)
+├── files/                   # Test data files
 │   ├── cif/                 # Model CIF files
-│   ├── pdb/                 # PDB files  
+│   ├── pdb/                 # PDB files
 │   ├── mtz/                 # Reflection MTZ files
-│   └── cif_sf/              # Structure factor CIF files
-├── unit/                    # Unit tests (fast, no I/O)
-│   ├── conftest.py          # Imports scoped numerical fixtures
-│   ├── math_functions/      # Math module tests
-│   ├── model/               # Model module tests
-│   ├── refinement/          # Refinement module tests
-│   ├── scaling/             # Scaling module tests
-│   ├── symmetrie/           # Symmetry module tests
-│   ├── io/                  # I/O module tests
-│   ├── restraints/          # Restraints module tests
-│   └── utils/               # Utils module tests
-├── integration/             # Integration tests (real I/O)
-│   ├── conftest.py          # Integration fixtures
-│   ├── test_io_cif.py       # CIF loading tests
-│   ├── test_io_reflections.py # Reflection data tests
-│   └── test_refinement_pipeline.py # Pipeline tests
+│   ├── cif_sf/              # Structure factor CIF files
+│   ├── hkl/                 # CrystFEL .hkl reflection files
+│   └── restraints/          # Monomer-library restraint CIFs
+├── unit/                    # Unit tests (fast, no I/O); subdirectories mirror torchref/
+├── integration/             # Integration tests (real I/O, complete pipelines, CLI)
+├── functional/              # Multi-component workflows on pre-loaded objects
+├── helpers/                 # Device, dtype, gradient and structure-case helpers
+├── benchmarks/              # Standalone comparison scripts, not collected by pytest
 └── scripts/                 # Test runner scripts
     ├── submit_tests.sbatch  # SLURM job for CPU tests
     ├── submit_gpu_tests.sbatch # SLURM job for GPU tests
@@ -74,7 +66,7 @@ tetragonal), with fresh objects per case and `--run-slow` required.
 python -m pytest tests/unit -v
 
 # Run specific test file
-python -m pytest tests/unit/math_functions/test_math_torch.py -v
+python -m pytest tests/unit/base/test_loss.py -v
 
 # Run tests matching a pattern
 python -m pytest tests/unit -k "test_coordinate" -v
