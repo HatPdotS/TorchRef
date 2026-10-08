@@ -446,6 +446,7 @@ def sum_f_squared(
     torch.Tensor
         Shape (N,), in electrons squared, dtype of ``d_star_sq``.
     """
+    from torchref.base.direct_summation import compute_scattering_factors_batch
     from torchref.base.scattering.scattering_table import (
         elements_to_z,
         get_scattering_params_by_z,
@@ -457,8 +458,7 @@ def sum_f_squared(
     A, B = get_scattering_params_by_z(
         elements_to_z(elements).to(d_star_sq.device), dtype=d_star_sq.dtype
     )
-    # f(s) = sum_k A_k exp(-B_k d*^2 / 4), ITC92 in sin^2(theta)/lambda^2.
-    f = (A[None] * torch.exp(-B[None] * (d_star_sq[:, None, None] / 4.0))).sum(-1)
+    f = compute_scattering_factors_batch(d_star_sq.sqrt(), A, B)
     return (f**2 * counts[None]).sum(-1)
 
 
