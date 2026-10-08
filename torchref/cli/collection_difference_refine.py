@@ -317,11 +317,8 @@ def compute_bayes_extrapolated_amplitudes(
         w      = snr / (1 + snr)
         F_extb = Fo_dark + w r
 
-    ``r`` is the observed difference scaled by ``1/f``, signal and noise alike, so its
-    signal-to-noise ratio is the difference's and the occupancy does not enter ``w``.
-    ``w`` is positive wherever the fitted power is, so no reflection is removed; a noisy
-    one keeps a small share of its deviation. The result is for viewing: it is biased
-    toward the dark state by construction and is not a refinement target.
+    The result is for viewing: it is biased toward the dark state by construction and
+    is not a refinement target.
 
     Parameters
     ----------
@@ -337,23 +334,15 @@ def compute_bayes_extrapolated_amplitudes(
         Per-reflection signal-to-noise ratio of the difference, from
         :func:`torchref.maps.ded_weights.difference_snr`.
     sig_light : Tensor (N,)
-        Sigma of the independent light amplitude measurement, in amplitude units.
-        Intensity-derived difference noise controls the SNR and shrinkage weight,
-        not these marginal amplitude uncertainties.
+        Sigma of ``Fobs_light``; it enters the variance, not the weight.
 
     Returns
     -------
     tuple
         ``(F_ext_bayes, var_ext_bayes, w_shrinkage)`` -- the shrunk extrapolated
         amplitude, its first-order propagated measurement variance and the weight
-        per reflection. The variance holds model phases and the fitted weight fixed;
-        it is not the Gaussian posterior variance of a latent difference and does
-        not include uncertainty in the fit, phases or occupancy. For equal phases
-        and positive extrapolated amplitude it is
-        ``(1 - w/f)**2 * sig_dark**2 + (w/f)**2 * sig_light**2``.
-        The covariance with the dark component is thereby included. At exactly
-        zero extrapolated complex amplitude, where the norm has no derivative,
-        the directional upper bound is used.
+        per reflection. The variance holds the model phases and the fitted weight
+        fixed, so it excludes uncertainty in the fit, phases and occupancy.
     """
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
@@ -373,6 +362,7 @@ def compute_bayes_extrapolated_amplitudes(
     zero_bound = ((1.0 - w) + w * abs(a)).square() * sig_dark.square() + (
         w * abs(b)
     ).square() * sig_light.square()
+    # |z| has no derivative at z = 0; take the directional upper bound there.
     var_ext_bayes = torch.where(F_ext > 0, var_ext_bayes, zero_bound)
     # Shrink the amplitude toward Fo_dark -- scalar, so no phase interference.
     F_ext_bayes = Fobs_dark + w * (F_ext - Fobs_dark)
