@@ -76,7 +76,7 @@ class KineticModel(DeviceMixin, nnModule):
         Initial rate constants. Can be:
         - Dict mapping "A->B" to float value
         - List of floats (same order as transitions in flow_chart)
-        - None (random initialization)
+        - None (deterministic, observability-based initialization)
     efficiencies : dict or list, optional
         Accepted for API compatibility but currently ignored: efficiencies
         are always frozen at 1.0 (100% efficient) and are not refinable.
@@ -282,7 +282,7 @@ class KineticModel(DeviceMixin, nnModule):
         Rules:
         1. First transition (photoabsorption): quasi-instant, limited by instrument function
            τ_1 = σ/3, so k_1 = 3/σ
-        2. For observable states: 2*k_in ≈ k_out (state reaches ~50% occupancy)
+        2. Each later transition: k_out = k_in/3 (an intermediate peaks near 58%)
         3. Scale rates based on timeframe to ensure observability
         
         Parameters
@@ -339,7 +339,7 @@ class KineticModel(DeviceMixin, nnModule):
                 print(f"  First transition {from_s}->{to_s}: k = {k_first:.3f} (τ = {1/k_first:.3f})")
         
         # For remaining transitions: apply observability constraint
-        # Work through the chain, ensuring 2*k_in ≈ k_out
+        # Work through the chain, setting k_out = k_in / 3
         processed = set(first_transition_indices)
         
         # Process states in order of connectivity
@@ -362,8 +362,7 @@ class KineticModel(DeviceMixin, nnModule):
                     # Calculate average incoming rate
                     avg_k_in = torch.mean(init_k[incoming_set]).item()
                     
-                    # Observability: 2*k_in ≈ k_out for state to reach ~50% occupancy
-                    # This ensures the state is observable
+                    # An intermediate fed at k_in and drained at k_in / 3 peaks near 58%
                     k_out = avg_k_in / 3.0
                     
                     # Also consider timeframe - states should be observable within the time range
