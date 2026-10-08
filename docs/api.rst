@@ -15,8 +15,8 @@ ensemble and monolithic refinement) whose API is expected to move.
    torchref.maps
    torchref.model
    torchref.refinement
-   torchref.restraints
    torchref.scaling
    torchref.symmetry
+   torchref.topology
    torchref.base
    torchref.utils
