@@ -14,6 +14,7 @@ import torch
 from torchref.config import get_float_dtype
 from torchref.experimental.kinetic import kinetics as kinetics_module
 from torchref.experimental.kinetic.kinetics import KineticModel
+from torchref.experimental.kinetic.occupancies import occupancies_kinetics
 
 pytestmark = pytest.mark.unit
 
@@ -68,3 +69,26 @@ class TestPlotTimes:
         km.plot_occupancies(str(tmp_path / "occ.png"), times=[0.0, 10.0, 25.0, 50.0])
         assert torch.equal(km.timepoints, torch.tensor(times, dtype=get_float_dtype()))
         torch.testing.assert_close(km().detach(), before)
+
+
+class TestWrapper:
+    def _wrapper(self, **kwargs):
+        return occupancies_kinetics(
+            flow_chart="A->B,B->C,C->D",
+            time=torch.linspace(0, 100, 50),
+            rate_constants={"A->B": 1.0, "B->C": 0.1, "C->D": 0.01},
+            verbose=0,
+            **kwargs,
+        )
+
+    def test_activation_level_is_forwarded(self):
+        occ = self._wrapper(activation_level=1.0)().detach()
+        assert occ[0, -1].item() == pytest.approx(0.0, abs=1e-6)
+        torch.testing.assert_close(occ.sum(0), torch.ones(50))
+
+    def test_activation_level_none_means_fully_reactive(self):
+        occ = self._wrapper(activation_level=None)().detach()
+        assert occ[0, -1].item() == pytest.approx(0.0, abs=1e-6)
+
+    def test_default_activation_level_keeps_half_baseline(self):
+        assert self._wrapper().kinetics.get_baselines()["A"] == pytest.approx(0.5)

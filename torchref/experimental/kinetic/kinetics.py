@@ -73,7 +73,8 @@ class KineticModel(DeviceMixin, nnModule):
     activation_level : float, optional
         Fraction of the initial state that is reactive. The non-reactive
         remainder (1 - activation_level) is set as a constant baseline
-        occupancy on the initial state. Default: 0.5.
+        occupancy on the initial state. Default: 0.5. None means 1.0 (no
+        baseline).
     verbose : int, optional
         Verbosity level. Default: 1
     """
@@ -93,7 +94,9 @@ class KineticModel(DeviceMixin, nnModule):
 
     ):
         super(KineticModel, self).__init__()
-        
+        if activation_level is None:
+            activation_level = 1.0
+
         self.flow_chart = flow_chart
         self.verbose = verbose
         

@@ -119,6 +119,11 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         - 'efficiency_prior_weight': weight for efficiency prior (favoring 1.0)
     verbose : int, optional
         Verbosity level. Default: 1
+    activation_level : float or None, optional
+        Fraction of the initial state that takes part in the kinetics. The
+        rest, ``1 - activation_level``, stays in the initial state as a
+        constant, non-refined baseline, so at the default of 0.5 half of it
+        never reacts. None means 1.0. Default: 0.5
     
     Examples
     --------
@@ -156,7 +161,8 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         light_activated: bool = False,
         state_mapping: Optional[Dict[str, int]] = None,
         regularization: Optional[Dict[str, float]] = None,
-        verbose: int = 1
+        verbose: int = 1,
+        activation_level: Optional[float] = 0.5,
     ):
         super(occupancies_kinetics, self).__init__()
 
@@ -176,7 +182,8 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
             instrument_function=instrument_function,
             instrument_width=instrument_width,
             light_activated=light_activated,
-            verbose=verbose
+            activation_level=activation_level,
+            verbose=verbose,
         )
         
         # Setup state mapping (kinetic states to structural model indices)
