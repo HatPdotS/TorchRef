@@ -85,11 +85,11 @@ Restraints are reached through a nested-dict interface, ``[type][origin][field]`
 - **Fields** beyond the three above, where the restraint type has them:
   ``periods``, ``min_distances``.
 
-The nesting is an accessor over a flat ``TensorDict`` keyed ``bond_all_indices``,
-not a real dict — it supports ``[]``, ``keys()``, ``get()`` and ``in``, but
-assigning a whole type (``restraints["bond"] = ...``) raises ``TypeError`` for
-the nested types. A type absent from the model is absent from ``keys()``, so
-probe with ``in`` before indexing.
+The nesting is a plain nested dict of tensors, assembled once at build time.
+Its entries are views into the topology's edge blocks, re-sliced into a new dict
+after every device or dtype move, so read ``restraints.restraints`` again after a
+``.to()`` instead of keeping an old reference. A type absent from the model is
+absent from the dict, so probe with ``in`` before indexing.
 
 Restraint Types
 ---------------
