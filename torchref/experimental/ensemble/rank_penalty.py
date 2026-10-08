@@ -141,8 +141,9 @@ class RankPenaltyTarget(ModelTarget):
         self._normalize = bool(normalize)
 
     def _centered(self) -> torch.Tensor:
-        """Return the centered ``(N, D)`` member-coordinate matrix."""
-        xyz = self._model.xyz_per_member                  # (N, n_atoms, 3)
+        """Return the centered ``(n_alive, D)`` matrix of the alive members."""
+        model = self._model
+        xyz = model.xyz_per_member[model._alive]  # (n_alive, n_atoms, 3)
         N = xyz.shape[0]
         X = xyz.reshape(N, -1)                            # (N, D)
         return X - X.mean(dim=0, keepdim=True)
