@@ -127,17 +127,17 @@ Tests are marked with the following pytest markers:
 - `@pytest.mark.mps` - Needs MPS specifically (Metal kernels)
 - `@pytest.mark.slow` - Slow tests (>30 seconds)
 
-### Running by marker
+### Selecting tests
 
 ```bash
 # Unit tests only (fast)
-pytest -m "unit"
+pytest tests/unit
 
 # Skip GPU tests
 pytest -m "not gpu"
 
 # Integration tests only
-pytest -m "integration"
+pytest tests/integration
 
 # Fast tests only (no slow, no gpu)
 pytest -m "not slow and not gpu"
