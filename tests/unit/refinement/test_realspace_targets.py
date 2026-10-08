@@ -301,6 +301,33 @@ class TestRealSpaceTargetsIntegration:
         assert cc > 0.95
 
     @pytest.mark.integration
+    def test_free_set_does_not_enter_loss(self, model_data_pair):
+        """Changing free-set amplitudes leaves both real-space losses unchanged."""
+        from torchref.experimental.targets import (
+            RealSpaceCorrelationTarget,
+            RealSpaceDifferenceTarget,
+        )
+
+        model, data = model_data_pair
+        free = data.free.indices
+        assert free.numel() > 0
+
+        def losses():
+            return [
+                cls(data=data, model=model, mask_solvent=False, verbose=0)
+                .forward()
+                .item()
+                for cls in (RealSpaceCorrelationTarget, RealSpaceDifferenceTarget)
+            ]
+
+        with torch.no_grad():
+            before = losses()
+            data.F[free] *= 1.5
+            after = losses()
+
+        assert after == pytest.approx(before, rel=1e-6)
+
+    @pytest.mark.integration
     def test_difference_target_forward(self, model_data_pair):
         """Difference target forward pass should produce finite positive value."""
         from torchref.experimental.targets import RealSpaceDifferenceTarget

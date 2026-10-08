@@ -43,7 +43,8 @@ class RealSpaceTarget(DataTarget):
 
     Inherits from DataTarget to get model, data, and scaler references.
     Provides common infrastructure for computing observed maps, model density,
-    and molecular masks used by the concrete subclasses.
+    and molecular masks used by the concrete subclasses. Both maps are
+    synthesised from the valid work reflections only; the free set is left out.
 
     Gradient Flow Design
     --------------------
@@ -128,8 +129,9 @@ class RealSpaceTarget(DataTarget):
         if self._hkl_p1 is not None:
             return
         sg = self._data.spacegroup or SpaceGroup("P1")
-        # One row per reflection; anomalous F_obs is Bijvoet-averaged below.
-        rows = self._data.bijvoet_representatives()
+        # One row per valid work reflection, so the free set stays unbiased;
+        # anomalous F_obs is Bijvoet-averaged below.
+        rows = self._data.bijvoet_representatives(self._data.work.mask)
         hkl_p1, indices, phase_shifts = sg.expand_hkl(
             self._data.hkl[rows],
             include_friedel=False,
@@ -178,7 +180,8 @@ class RealSpaceTarget(DataTarget):
 
         # Expand Fobs to P1 using the same index mapping as Fcalc
         # (amplitudes are invariant under symmetry, no phase shift needed)
-        fobs_p1 = self._data.bijvoet_mean(self._data.F)[self._p1_indices]
+        work = self._data.work.mask
+        fobs_p1 = self._data.bijvoet_mean(self._data.F, work)[self._p1_indices]
 
         # Compute and scale Fcalc at ASU level, then expand to P1
         fcalc_asu = self.get_fcalc_scaled()
