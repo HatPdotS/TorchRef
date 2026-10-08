@@ -10,8 +10,7 @@ Core utility containers and atom-table sanitizing, re-exported from ``torchref.u
   repeat, and truncate over-long residue names, before an atom table is written.
 """
 
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
