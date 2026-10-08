@@ -746,16 +746,23 @@ class EnsembleModel(ModelFT):
         Child xyz = parent xyz + N(0, sigma) (symmetry break); the parent's
         weight is split between the two (``logit -= ln2`` on both); child B
         copies the parent's. Returns the reborn slot index, or -1 if the pool
-        is full (no dead slot available).
+        is full (no dead slot available). Raises ``RuntimeError`` after
+        :meth:`enable_low_rank` / :meth:`enable_pca`, whose ``xyz`` has no
+        per-member coordinate rows to copy.
         """
+        n_at = int(self.n_atoms_per_member)
+        flat = self.xyz.refinable_params  # (N_max*n_atoms, 3)
+        if tuple(flat.shape) != (self.n_members * n_at, 3):
+            raise RuntimeError(
+                "bifurcate_member needs per-member Cartesian xyz; it cannot run "
+                "after enable_low_rank or enable_pca."
+            )
         a = self._alive
         free = (~a).nonzero(as_tuple=False).flatten()
         if free.numel() == 0:
             return -1
         d = int(free[0].item())
-        n_at = int(self.n_atoms_per_member)
         with torch.no_grad():
-            flat = self.xyz.refinable_params  # (N_max*n_atoms, 3)
             ps, pe = parent_idx * n_at, (parent_idx + 1) * n_at
             ds, de = d * n_at, (d + 1) * n_at
             flat[ds:de] = flat[ps:pe] + torch.randn_like(flat[ps:pe]) * float(sigma)
@@ -1014,7 +1021,6 @@ class EnsembleModel(ModelFT):
         (the member's ``B_m`` when it is refined). :meth:`from_multimodel_pdb`
         reads back coordinates only.
         """
-
         if self._pdb_single is None:
             raise RuntimeError(
                 "EnsembleModel has no single-copy PDB; was it built from a "

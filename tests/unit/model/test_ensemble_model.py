@@ -270,3 +270,11 @@ def test_write_pdb_writes_alive_members_with_their_weights(tmp_path):
     expected = ens.member_weights()[:3].detach().cpu()
     assert torch.allclose(torch.tensor(first_atoms), expected, atol=6e-3)
     assert EnsembleModel.from_multimodel_pdb(str(path), verbose=0).n_members == 3
+
+
+def test_bifurcate_refuses_a_low_rank_xyz():
+    ens = EnsembleModel.from_single(TEST_PDB, n_members=4, n_max=6, **_POOL_KW)
+    ens.enable_population_refinement(True)
+    ens.enable_low_rank(2)
+    with pytest.raises(RuntimeError, match="enable_low_rank"):
+        ens.bifurcate_member(0)
