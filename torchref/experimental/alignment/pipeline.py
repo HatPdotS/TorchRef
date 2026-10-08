@@ -166,8 +166,8 @@ class MolecularReplacementPipeline(DeviceMixin):
     data : ReflectionData
         Observed reflection data.
     model : ModelFT
-        Initialised search model. Its own cell is ignored: every model the
-        pipeline builds or returns is in the data's cell and space group.
+        Initialised search model. Its own cell and space group are ignored:
+        every model the pipeline returns is in the data's cell and space group.
     device : torch.device, optional
         Compute device (defaults to torchref's configured default device).
     verbose : int
