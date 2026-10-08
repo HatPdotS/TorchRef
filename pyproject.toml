@@ -62,15 +62,7 @@ dev = [
     "pytest-cov>=2.12.0",
     "black>=21.5b2",
     "isort>=5.9.0",
-    "flake8>=3.9.0",
-]
-
-alignment = [
-    "jax>=0.4.0",
-    "s2fft>=1.0.0",
-    "s2ball>=0.0.2",
-    "spherical>=1.0.0",
-    "quaternionic>=1.0.0",
+    "ruff>=0.1.0",
 ]
 
 forcefield = [
@@ -86,14 +78,9 @@ ihm = [
     "ihm>=1.0",
 ]
 
-# Optional CCTBX/iotbx functionality (requires conda, not pip)
-# Install with: conda install -c conda-forge cctbx-base
-# The iotbx module is used in torchref/math_functions/CCTBX_related.py
-
 docs = [
     "sphinx>=4.0.0",
     "sphinx-rtd-theme>=1.0.0",
-    "numpydoc>=1.1.0",
 ]
 
 [tool.setuptools.dynamic]
@@ -147,4 +134,4 @@ filterwarnings = [
 ]
 
 [tool.ruff.lint]
-ignore = ["F841","E741","F841","E402","E722"]
+ignore = ["F841", "E741", "E402", "E722"]
