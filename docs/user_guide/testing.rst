@@ -190,10 +190,10 @@ the file itself for the authoritative list.
 Troubleshooting
 ---------------
 
-**Tests not found** — run from the repository root, where
-``[tool.pytest.ini_options]`` in ``pyproject.toml`` sets ``testpaths``, or from
-inside ``tests/``, where ``tests/pytest.ini`` takes over. The two are kept in
-step deliberately.
+**Tests not found** — run from the repository root. A bare ``pytest`` there
+reads ``[tool.pytest.ini_options]`` in ``pyproject.toml``, which sets
+``testpaths``; any path under ``tests/`` (``pytest tests/unit``) selects
+``tests/pytest.ini``. The two are kept in step deliberately.
 
 **GPU tests skipped** — the host has no CUDA/MPS device. The marks are gated on
 real availability, not on a flag, and a ``cuda``-marked test also skips on an
