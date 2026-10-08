@@ -11,6 +11,8 @@ This module is part of the experimental ``torchref.experimental.kinetic``
 subpackage; its API is under active development and may change without notice.
 """
 
+import math
+
 import torch
 from torch.nn import Module as nnModule
 from torch.nn import Parameter
@@ -19,6 +21,27 @@ from torchref.config import get_float_dtype
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Optional, Union
 import numpy as np
+
+
+def _zero_column_sums(E: torch.Tensor) -> torch.Tensor:
+    """Reset the diagonal of ``E`` to minus its off-diagonal column sums.
+
+    ``exp(K t)`` of a rate matrix conserves population, so ``exp(K t) - I`` has
+    zero column sums. Without this projection, rounding in the column sums
+    doubles with every squaring and populations stop summing to 1.
+
+    Parameters
+    ----------
+    E : torch.Tensor
+        Matrices of shape (..., n_states, n_states).
+
+    Returns
+    -------
+    torch.Tensor
+        ``E`` with its diagonal replaced, same shape.
+    """
+    off = E - torch.diag_embed(torch.diagonal(E, dim1=-2, dim2=-1))
+    return off - torch.diag_embed(off.sum(dim=-2))
 
 
 class KineticModel(DeviceMixin, nnModule):
@@ -487,9 +510,12 @@ class KineticModel(DeviceMixin, nnModule):
         P(t) = exp(K * t) @ P(0)  for t >= 0
         P(t) = P(0)                for t < 0
 
-        torch.matrix_exp uses Padé approximation with scaling-and-squaring,
-        which handles large ||K*t|| safely. No element-wise clipping is needed
-        (clipping would destroy the row-sum-to-zero structure of the rate matrix).
+        All timepoints are evaluated in one batch, in the dtype of
+        ``rate_matrix``, by scaling and squaring on ``E = exp(K t) - I`` with
+        every column of ``E`` summing to exactly zero. This keeps stiff schemes
+        (rates spanning many decades over long times) accurate and
+        population-conserving in float32. Choosing the number of squarings costs
+        one GPU->CPU sync.
 
         Parameters
         ----------
@@ -502,28 +528,29 @@ class KineticModel(DeviceMixin, nnModule):
             Population of each state at each timepoint
             Shape: (n_timepoints, n_states)
         """
-        populations = []
-        orig_dtype = rate_matrix.dtype
+        t = self.timepoints.to(rate_matrix.dtype).clamp(min=0)
+        p0 = self.initial_populations.to(rate_matrix.dtype)
 
-        # Use float64 for matrix exponential to maintain precision
-        # when ||K*t|| is large (e.g. fast rates × long times).
-        K64 = rate_matrix.double()
-        P0_64 = self.initial_populations.double()
+        # Scale every K t to a 1-norm <= 1/4, where 12 Taylor terms of expm1
+        # are exact to float64 round-off.
+        with torch.no_grad():
+            scale = 4.0 * (rate_matrix.abs().sum(dim=0).max() * t.max()).item()
+        # A non-finite rate propagates as NaN to the loss rather than raising.
+        n_squarings = math.ceil(math.log2(scale)) if 1.0 < scale < math.inf else 0
+        A = rate_matrix * (t * 2.0**-n_squarings)[:, None, None]
 
-        for t in self.timepoints:
-            t_val = t.item() if torch.is_tensor(t) else t
+        identity = torch.eye(A.shape[-1], dtype=A.dtype, device=A.device)
+        E = A / 12
+        for m in range(11, 0, -1):
+            E = A @ (identity + E) / m
+        E = _zero_column_sums(E)
+        # (I + E)^2 = I + 2E + E^2. Squaring E itself keeps transition
+        # probabilities far below 1 from being rounded away against the
+        # diagonal 1 of I + E.
+        for _ in range(n_squarings):
+            E = _zero_column_sums(2 * E + E @ E)
+        return p0 + E @ p0
 
-            if t_val < 0:
-                P_t = P0_64.clone()
-            else:
-                Kt = K64 * t_val
-                exp_Kt = torch.matrix_exp(Kt)
-                P_t = exp_Kt @ P0_64
-            populations.append(P_t)
-
-        populations = torch.stack(populations, dim=0).to(orig_dtype)
-        return populations
-    
     def _apply_instrument_function(self, populations: torch.Tensor) -> torch.Tensor:
         """
         Apply instrument response function to account for time resolution.

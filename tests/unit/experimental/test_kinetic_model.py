@@ -10,6 +10,7 @@ while matching a float64 reference on a stiff scheme.
 
 import pytest
 import torch
+from torch.overrides import TorchFunctionMode
 
 from torchref.config import get_float_dtype
 from torchref.experimental.kinetic import kinetics as kinetics_module
@@ -138,3 +139,58 @@ class TestModuleParameters:
             "log_instrument_width",
             "baseline_C",
         }
+
+
+class _DtypeRecorder(TorchFunctionMode):
+    def __init__(self):
+        super().__init__()
+        self.dtypes = set()
+
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        out = func(*args, **(kwargs or {}))
+        for o in out if isinstance(out, (tuple, list)) else (out,):
+            if isinstance(o, torch.Tensor):
+                self.dtypes.add(o.dtype)
+        return out
+
+
+class TestMatrixExponential:
+    # Rates spanning nine decades over times out to 1e6: ||K t|| reaches 1e10.
+    flow_chart = "A->B,B->A,B->C,C->D"
+    rates = [1e4, 1e3, 1e-2, 1e-5]
+    times = [-1.0, 0.0, 1e-3, 1.0, 1e2, 1e4, 1e6]
+
+    def _reference(self, log_k, km):
+        k = log_k.exp()
+        K = torch.zeros(km.n_states, km.n_states, dtype=log_k.dtype)
+        for i, (src, dst) in enumerate(km.transitions):
+            K[km.state_to_idx[dst], km.state_to_idx[src]] += k[i]
+        K = K - torch.diag(K.sum(0))
+        t = km.timepoints.to(log_k.dtype).clamp(min=0)
+        P0 = km.initial_populations.to(log_k.dtype)
+        return torch.matrix_exp(K * t[:, None, None]) @ P0
+
+    def test_forward_stays_in_working_dtype(self):
+        if get_float_dtype() == torch.float64:
+            pytest.skip("checks that a float32 configuration never widens to float64")
+        km = _model(self.flow_chart, self.times, rate_constants=self.rates)
+        with _DtypeRecorder() as rec:
+            km()
+        assert torch.float64 not in rec.dtypes
+
+    def test_stiff_scheme_matches_float64_reference(self):
+        km = _model(self.flow_chart, self.times, rate_constants=self.rates)
+        weights = torch.linspace(-1.0, 1.0, len(self.times) * 4).reshape(-1, 4)
+        populations = km()
+        (populations * weights.to(populations.dtype)).sum().backward()
+
+        log_k = km.log_rate_constants.detach().double().requires_grad_()
+        reference = self._reference(log_k, km)
+        (reference * weights.double()).sum().backward()
+
+        torch.testing.assert_close(
+            populations.detach().double(), reference.detach(), atol=1e-6, rtol=0
+        )
+        torch.testing.assert_close(
+            km.log_rate_constants.grad.double(), log_k.grad, atol=1e-5, rtol=1e-4
+        )
