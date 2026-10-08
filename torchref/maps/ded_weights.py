@@ -348,16 +348,12 @@ def compute_ded_weights(
 
     from torchref.refinement.model_error_estimation.difference_power import (
         DEFAULT_SNR_FLOOR,
-        SIGMA_SCALE_BOUNDS,
+        _check_sigma_scale,
         bounded_wiener_weight,
     )
 
     # Checked before the fit, whose ValueError means "cannot fit" and falls back.
-    lo, hi = SIGMA_SCALE_BOUNDS
-    if sigma_scale is not None and not lo <= float(sigma_scale) <= hi:
-        raise ValueError(
-            f"sigma_scale must lie in {SIGMA_SCALE_BOUNDS}, got {sigma_scale}"
-        )
+    _check_sigma_scale(sigma_scale)
     floor = DEFAULT_SNR_FLOOR if snr_floor is None else float(snr_floor)
     try:
         if isinstance(snr_estimate, ValueError):

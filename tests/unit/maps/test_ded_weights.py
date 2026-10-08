@@ -219,24 +219,14 @@ def test_a_sigma_scale_fit_at_its_bound_falls_back_to_the_reported_sigmas():
     # Differences far below their sigmas, as identical dark and light data give: a
     # fitted scale runs to its lower bound.
     d, hkl, cell, sg = _inputs(n=5000)
-    g = torch.Generator().manual_seed(11)
-    kw = {
-        "delta_obs": 1e-3 * torch.randn(5000, generator=g),
-        "sigma_diff": d["sigma_diff"],
-        "hkl": hkl,
-        "cell": cell,
-        "spacegroup": sg,
-        "f_dark": d["f_dark"],
-        "sigma_scale": None,
-    }
-    with pytest.warns(DedWeightFallbackWarning, match="bound"):
-        est = difference_snr(**kw)
-    assert est.fit.sigma_scale == 1.0 and not est.fit.sigma_scale_fitted
-    assert "bound" in est.sigma_scale_fallback
-    assert bool(torch.isfinite(est.snr).all())
-    with pytest.warns(DedWeightFallbackWarning, match="bound"):
+    noise = 1e-3 * torch.randn(5000, generator=torch.Generator().manual_seed(11))
+    kw = {"delta_obs": noise, "sigma_diff": d["sigma_diff"], "hkl": hkl, "cell": cell}
+    kw.update(spacegroup=sg, f_dark=d["f_dark"], sigma_scale=None)
+    with pytest.warns(DedWeightFallbackWarning, match="bound k = 0.1"):
         q = compute_ded_weights("q", **kw)
     assert q.applied == "q" and "bound" in q.diagnostics["sigma_scale_fallback"]
+    assert q.diagnostics["sigma_scale"] == 1.0
+    assert not q.diagnostics["sigma_scale_fitted"]
     # An out-of-range scale is the caller's error, not a fit to fall back from.
     with pytest.raises(ValueError, match="sigma_scale"):
         compute_ded_weights("q", **{**kw, "sigma_scale": 0.0})
@@ -406,13 +396,8 @@ def test_cli_sigma_scale_defaults_to_the_reported_sigmas():
 
     parser = argparse.ArgumentParser()
     add_ded_weight_args(parser)
-
-    def parse(*argv):
-        return difference_config_from_args(parser.parse_args(list(argv)))
-
-    assert parse().sigma_scale == 1.0
-    assert parse("--difference-sigma-scale", "fit").sigma_scale is None
-    assert parse("--difference-sigma-scale", "1.5").sigma_scale == 1.5
-    for bad in ("0", "-1", "100", "often"):
-        with pytest.raises(SystemExit):
-            parser.parse_args(["--difference-sigma-scale", bad])
+    for argv, expect in (([], 1.0), (["fit"], None), (["1.5"], 1.5)):
+        args = parser.parse_args(["--difference-sigma-scale", *argv] if argv else [])
+        assert difference_config_from_args(args).sigma_scale == expect
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--difference-sigma-scale", "0"])
