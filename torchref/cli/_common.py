@@ -538,20 +538,6 @@ def add_general_args(parser: argparse.ArgumentParser) -> None:
     add_verbose_arg(gen)
 
 
-def add_scaler_mode_arg(parser: argparse.ArgumentParser) -> None:
-    """Add ``--scaler-mode`` argument."""
-    parser.add_argument(
-        "--scaler-mode",
-        type=str,
-        default="shared",
-        choices=["shared", "split"],
-        help="Scaler mode: 'shared' uses a single scaler (dark) for all "
-             "targets ensuring bulk-solvent cancellation. 'split' uses "
-             "separate scalers for dark and light/mixed sides "
-             "(default: shared)",
-    )
-
-
 def add_n_cycles_arg(
     parser: argparse.ArgumentParser, default: int = 5
 ) -> None:
