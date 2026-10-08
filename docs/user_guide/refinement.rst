@@ -58,9 +58,11 @@ Parameter Selection
    refinement.model.freeze('xyz')
    refinement.model.unfreeze('adp')
 
-   # By selection (Phenix-style syntax)
-   refinement.model.freeze_selection("chain A and resseq 10:20")
-   refinement.model.unfreeze_selection("all")
+   # By selection (Phenix-style syntax). Unfreezing adds the selected atoms to
+   # each target's refinable set, so undo a freeze with the same selection:
+   # unfreeze_selection("all") would also make every atom's occupancy refinable.
+   refinement.model.freeze_selection("chain A and resseq 10:20", targets="xyz")
+   refinement.model.unfreeze_selection("chain A and resseq 10:20", targets="xyz")
 
 Residues for which no restraints could be built are frozen in ``xyz``
 automatically, so an unrecognised ligand ends up immobile rather than distorted.

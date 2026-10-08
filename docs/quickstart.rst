@@ -95,20 +95,22 @@ Model parameters can be selectively frozen during refinement:
    model.freeze('xyz')      # Freeze coordinates
    model.unfreeze('xyz')    # Unfreeze coordinates
 
-   # Freeze/unfreeze by selection (phenix-style syntax)
-   model.freeze_selection("chain A and resseq 10:20")
+   # Freeze/unfreeze by selection (phenix-style syntax). Unfreezing adds the
+   # selected atoms to each target's refinable set, so undo a freeze with the
+   # same selection: unfreeze_selection("all") would also make every atom's
+   # occupancy refinable.
+   model.freeze_selection("chain A and resseq 10:20", targets="xyz")
    print(f"Refinable xyz atoms after freezing selection: {model.xyz.refinable_params.shape[0]}")
 
-   # Unfreeze everything
-   model.unfreeze_selection("all")
-   print(f"Refinable xyz atoms after unfreezing all: {model.xyz.refinable_params.shape[0]}")
+   model.unfreeze_selection("chain A and resseq 10:20", targets="xyz")
+   print(f"Refinable xyz atoms after unfreezing it: {model.xyz.refinable_params.shape[0]}")
 
 .. testoutput::
    :options: +ELLIPSIS
 
    ...
    Refinable xyz atoms after freezing selection: ...
-   Refinable xyz atoms after unfreezing all: ...
+   Refinable xyz atoms after unfreezing it: ...
 
 Computing Structure Factors
 ---------------------------
