@@ -9,7 +9,6 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
-from ..torsion import torsion_omega_math as _omega_eager
 from ._dihedral import dihedral_and_grad
 
 
