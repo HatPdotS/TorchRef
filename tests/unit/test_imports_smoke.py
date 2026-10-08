@@ -7,8 +7,8 @@ CI because only the top-level ``torchref`` package was imported during
 the unit-test run, leaving subpackages like ``torchref.experimental.kinetic`` and
 ``torchref.experimental.alignment`` untested at import time.
 
-Modules that legitimately depend on optional packages (JAX, CCTBX,
-OpenMM, torchmd-net, pdbfixer, ihm) are allowed to raise ``ImportError``
+Modules that legitimately depend on optional packages (OpenMM,
+torchmd-net, pdbfixer, ihm) are allowed to raise ``ImportError``
 *only when the missing dependency is one of those known optionals*.
 Any other failure mode — syntax errors, name errors, attribute errors,
 or an ImportError naming a non-optional package — is a hard failure.
@@ -27,14 +27,6 @@ import torchref
 # An ImportError whose message mentions one of these is treated as "skip",
 # not "fail".
 OPTIONAL_DEP_HINTS = (
-    "jax",
-    "jaxlib",
-    "s2fft",
-    "s2ball",
-    "spherical",
-    "quaternionic",
-    "iotbx",
-    "cctbx",
     "torchmdnet",
     "openmm",
     "pdbfixer",

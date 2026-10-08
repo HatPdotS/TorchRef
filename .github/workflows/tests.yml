@@ -44,7 +44,7 @@ jobs:
       - name: Run unit tests with coverage
         run: |
           pytest tests/unit \
-            -m "unit and not gpu and not slow" \
+            -m "not gpu and not slow" \
             --cov=torchref \
             --cov-report=xml \
             --cov-report=term-missing \
@@ -87,7 +87,7 @@ jobs:
       - name: Run integration tests
         run: |
           pytest tests/integration \
-            -m "integration and not gpu and not slow" \
+            -m "not gpu and not slow" \
             --cov=torchref \
             --cov-report=xml \
             --cov-report=term-missing \
