@@ -38,6 +38,10 @@ declares which measured column it compares against (``spec.observable``).
 - ``ml_noalpha`` — as ``ml`` with the Luzzati mean coupling fixed at 1.
 - ``ml_full`` — full-form MLF: marginalises the unknown error-free amplitude
   instead of inflating the variance. Roughly 4× the cost.
+  ``TORCHREF_COMPILE_TARGETS=1`` compiles its kernels with ``torch.compile``;
+  the first backward compile takes minutes, so this pays only on large datasets
+  or long and repeated runs in one process. Pointing ``TORCHINDUCTOR_CACHE_DIR``
+  at local disk lets later processes reuse the compiled code.
 - ``nll_beta`` — Gaussian amplitude NLL on ``ml``'s model-error variance, i.e.
   the large-signal limit of ``ml``. Diagnostic: isolates the variance model from
   the likelihood shape.
