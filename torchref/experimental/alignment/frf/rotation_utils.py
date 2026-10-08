@@ -16,8 +16,8 @@ def rotation_matrix_from_edmonds_euler(
 ) -> torch.Tensor:
     """Build ``R = R_z(α) R_y(β) R_z(γ)`` (Edmonds active ZYZ).
 
-    Equivalent to passing ``[γ, β, α]`` to
-    ``torchref.experimental.alignment.transform.rotation_matrix_from_euler``.
+    Equivalent to
+    ``torchref.base.alignment.rotation.rotation_matrix_euler_zyz([α, β, γ])``.
     """
     ca, sa = math.cos(alpha), math.sin(alpha)
     cb, sb = math.cos(beta), math.sin(beta)
