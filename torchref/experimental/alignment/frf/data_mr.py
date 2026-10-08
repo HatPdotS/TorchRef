@@ -380,10 +380,10 @@ def bessel_sh_expand(
     # distinguish +p from -p. Verified bit-exact against the full-range build.
     # That halves both this sum and the contraction below.
     #
-    # The Y_lm convention (sh.evaluate_ylm) carries C(m, φ) = (-1)^m e^{imφ} for
-    # m >= 0, so conj(C) contributes a (-1)^p factor. It is applied once per
-    # (cluster, p) after the sum rather than once per (reflection, p) -- the same
-    # number for a factor of M/n_clusters less work.
+    # Y_lm carries the Condon-Shortley phase in its azimuthal factor, barP being
+    # unsigned: C(m, φ) = (-1)^m e^{imφ} for m >= 0, so conj(C) contributes a
+    # (-1)^p factor. It is applied once per (cluster, p) after the sum rather than
+    # once per (reflection, p) -- the same number for M/n_clusters less work.
     p_idx = torch.arange(L, device=device)                          # (L,)
     # `inverse` maps a reflection to its cluster in the ORIGINAL cluster order;
     # the clusters were just permuted into shell order, so compose the two.
