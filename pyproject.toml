@@ -115,9 +115,9 @@ profile = "black"
 line_length = 88
 
 [tool.pytest.ini_options]
-# Used when pytest is invoked from the repo root. ``tests/pytest.ini`` takes
-# over when invoked from inside ``tests/``; keep the two in step so behaviour
-# does not depend on the working directory. Accelerator tests are gated by
+# Applies to a bare ``pytest`` at the repo root; any path under ``tests/`` (e.g.
+# ``pytest tests/unit``) selects ``tests/pytest.ini`` instead. Keep the two in step
+# so behaviour does not depend on the invocation. Accelerator tests are gated by
 # ``tests/conftest.py``, which runs whatever the host supports -- do not add a
 # default ``-m`` expression here, as it deselects at collection time and no
 # flag can undo it.
@@ -126,6 +126,7 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 pythonpath = ["."]
+addopts = ["-v", "--tb=short", "--strict-markers", "-ra"]
 markers = [
     "unit: Unit tests (fast, no I/O, isolated)",
     "integration: Integration tests (slower, real I/O, pipelines)",
