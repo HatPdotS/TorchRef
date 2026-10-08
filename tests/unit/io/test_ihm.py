@@ -543,6 +543,50 @@ class TestIHMWriter:
             "polypeptide(L)": ["GLY", "MET"],
         }
 
+    def test_identical_chains_share_one_entity(self, tmp_path):
+        """Two chains of one sequence (a homodimer) are one entity with two asym
+        units, the mmCIF model of identical molecules."""
+        from types import SimpleNamespace
+
+        import gemmi
+
+        from torchref.io.ihm import IHMWriter
+        from torchref.model.context import ModelContext
+        from torchref.topology import Topology
+
+        residues = [(c, r, n) for c in "AB" for r, n in ((1, "GLY"), (2, "ALA"))]
+        residues += [("C", 1, "DA"), ("C", 2, "DT"), ("D", 1, "DA"), ("D", 2, "DT")]
+        table = pd.DataFrame(
+            [(c, r, n, "P", 0.0, 0.0, 0.0) for c, r, n in residues],
+            columns=["chainid", "resseq", "resname", "name", "x", "y", "z"],
+        )
+        model = SimpleNamespace(
+            ctx=ModelContext(topology=Topology.from_table(table)),
+            to_dataframe=lambda: table,
+        )
+        collection = SimpleNamespace(n_base_models=1, base_models=[model])
+        mapping = IHMEnsembleMapping(
+            states=[IHMStateInfo(state_id=1, name="only", details="", model_num=1)],
+            model_groups=[
+                IHMModelGroupInfo(group_id=1, name="t0", state_fractions={1: 1.0})
+            ],
+        )
+        out = tmp_path / "dimer.cif"
+        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+
+        block = gemmi.cif.read(str(out)).sole_block()
+        entity_type = dict(block.find("_entity_poly.", ["entity_id", "type"]))
+        asym_entity = [
+            entity_type[e] for e in block.find_values("_struct_asym.entity_id")
+        ]
+        assert sorted(asym_entity) == [
+            "polydeoxyribonucleotide",
+            "polydeoxyribonucleotide",
+            "polypeptide(L)",
+            "polypeptide(L)",
+        ]
+        assert len(entity_type) == 2
+
     def test_write_default_mapping(self):
         """Test writing IHM file without pre-existing mapping."""
         import torch
