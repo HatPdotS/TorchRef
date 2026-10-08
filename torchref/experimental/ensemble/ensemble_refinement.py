@@ -698,21 +698,6 @@ class EnsembleRefinement(LBFGSRefinement):
             state.set_weight("regularization/rank", w0)
         return state
 
-    def complete_loss_state(self) -> LossState:
-        """
-        Refresh meta + cached losses but keep our explicit static weights.
-
-        The base-class implementation calls ``update_weights`` →
-        ``component_weighting`` which (a) overwrites the per-target weights
-        and (b) clips them to [0.01, 100]. Both would destroy our
-        per-ASU normalization. EnsembleRefinement uses fixed, user-set
-        weights from ``_create_loss_state``, so we skip the component-
-        weighting step entirely.
-        """
-        state = self.loss_state
-        state.cache_losses()
-        return state
-
     # ------------------------------------------------------------------
     # Birth–death population dynamics
     # ------------------------------------------------------------------
