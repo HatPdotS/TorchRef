@@ -270,10 +270,10 @@ class FastRotationFunction:
         # that reads Sigma_obs/Sigma_calc needs them on one abscissa.
         self._s_lo = 1.0 / float(d_max) if d_max else float(smag_src.min())
         self._s_hi = 1.0 / float(d_min)
-        # No epsilon here: the observations reach this point symmetry-unrolled,
-        # which puts each reflection into the sum once per operation that maps
-        # to it, so multiplicity is already carried by the geometry. Centricity
-        # is separate and does enter -- it is the Gamma shape.
+        # No epsilon here, so E^2 = I/Sigma and a reflection with eps > 1 keeps
+        # its eps-fold expected intensity. With `asu_idx` the fit sees each
+        # unique reflection once; the unroll that later repeats it is not
+        # visible here. Centricity does enter -- it is the Gamma shape.
         conv_obs = WilsonNormaliser(
             F_obs * F_obs, smag_src, centric=centric_obs,
             n_coeff=self.wilson_n_coeff, s_lo=self._s_lo, s_hi=self._s_hi,
