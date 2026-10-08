@@ -37,7 +37,6 @@ from typing import Dict, Optional
 
 import torch
 
-from torchref.io.datasets import ReflectionData
 from .ensemble_model import EnsembleModel
 from torchref.refinement.lbfgs_refinement import LBFGSRefinement
 from torchref.refinement.loss_state import LossState
@@ -132,11 +131,6 @@ class EnsembleRefinement(LBFGSRefinement):
         ``amber_weight`` defaults to 0 (no Amber target). The ensembles built
         here are hydrogen-stripped, so ``amber_weight > 0`` raises
         ``ValueError`` (``ImportError`` without OpenMM).
-    amber_lam, amber_kT : float
-        Legacy coefficients for the abandoned per-member entropy/KL Amber
-        path (:class:`EnsembleAmberKLTarget`). They are stored on the object
-        but are **not** used by the wired :class:`QuasiCrystalAmberTarget`,
-        which has no entropy term.
     val_fraction_of_free : float
         If the loaded MTZ has only an R-free flag and no Validation_flag,
         split this fraction of the free set into a held-out validation set.
@@ -195,8 +189,6 @@ class EnsembleRefinement(LBFGSRefinement):
         wilson_mode: str = "rice",
         xray_weight: float = 1.0,
         amber_weight: float = 0.0,
-        amber_lam: float = 1.0,
-        amber_kT: float = 0.0,
         amber_charge_method: str = "gas",
         amber_relax_on_init: bool = True,
         amber_force_clamp: float = 10000.0,
@@ -264,8 +256,6 @@ class EnsembleRefinement(LBFGSRefinement):
             self.wilson_mode = wilson_mode
             self.xray_weight = xray_weight
             self.amber_weight = amber_weight
-            self.amber_lam = amber_lam
-            self.amber_kT = amber_kT
             self.adam_lr = adam_lr
             self.optimizer_name = optimizer_name
             self.adam_beta1 = adam_beta1
@@ -361,8 +351,6 @@ class EnsembleRefinement(LBFGSRefinement):
         self.wilson_mode = str(wilson_mode)
         self.xray_weight = float(xray_weight)
         self.amber_weight = float(amber_weight)
-        self.amber_lam = float(amber_lam)
-        self.amber_kT = float(amber_kT)
         self.amber_charge_method = amber_charge_method
         self.amber_relax_on_init = bool(amber_relax_on_init)
         self.amber_force_clamp = float(amber_force_clamp)

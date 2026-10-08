@@ -34,8 +34,6 @@ def refinement() -> EnsembleRefinement:
         perturb_sigma=0.01,    # symmetry-breaking only; clashes from larger values
         b_const=5.0,
         wilson_weight=0.5,
-        amber_lam=0.0,
-        amber_kT=0.0,
         val_fraction_of_free=0.5,
         xray_mode="ls",
         seed=42,
