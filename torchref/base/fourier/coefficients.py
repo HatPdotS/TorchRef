@@ -1,7 +1,7 @@
 """Map coefficients from observed amplitudes and a model.
 
 The one place the 2Fo-Fc and Fo-Fc coefficients are formed, for real-space maps
-(:class:`torchref.maps.Map`) and for the FWT/DELFWT columns an MTZ carries.
+(:class:`torchref.maps.map.Map`) and for the FWT/DELFWT columns an MTZ carries.
 """
 
 from typing import Optional, Tuple

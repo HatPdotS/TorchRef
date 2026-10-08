@@ -822,7 +822,7 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     hybrid-36. Rows that fail to format are skipped with a printed warning; the
     remaining rows are still written. Nothing is renumbered: duplicated atom
     identifiers are written as they are (see
-    :func:`torchref.utils.sanitize_pdb_dataframe`).
+    :func:`torchref.utils.utils.sanitize_pdb_dataframe`).
     """
     with open(filepath, "w") as n:
         # Write metadata header if provided (before CRYST1)

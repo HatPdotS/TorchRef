@@ -1,8 +1,8 @@
 """Scaling and post-corrections of calculated structure factors.
 
 The full-featured :class:`Scaler`, which holds a reference to a ``Model`` and
-computes ``F_calc`` itself; see :class:`~torchref.scaling.ScalerBase` for the
-model-independent version. ``initialize()`` enables the isotropic overall scale,
+computes ``F_calc`` itself; see :class:`~torchref.scaling.scaler_base.ScalerBase` for
+the model-independent version. ``initialize()`` enables the isotropic overall scale,
 the anisotropy correction and the solvent model.
 """
 
@@ -45,7 +45,7 @@ class Scaler(ScalerBase):
     device : torch.device, optional
         Computation device. If ``None``, derived from ``model`` then ``data`` (model
         wins on mismatch); an explicit device moves both. See
-        :func:`torchref.utils.resolve_device`.
+        :func:`torchref.utils.device_resolution.resolve_device`.
 
     Attributes
     ----------

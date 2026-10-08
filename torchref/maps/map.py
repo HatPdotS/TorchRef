@@ -54,7 +54,7 @@ class Map(DeviceMixin):
         cubic Angstrom, which is meaningful only when ``data.F`` is on the absolute
         scale: every map type is on ``data.F``'s scale.
     scaler : Scaler, optional
-        A fitted :class:`~torchref.scaling.Scaler` for ``(data, model)``, e.g. a
+        A fitted :class:`~torchref.scaling.scaler.Scaler` for ``(data, model)``, e.g. a
         refinement's ``scaler``. Every map type uses ``scaler(F_calc)``, with bulk
         solvent and anisotropic scale, so F_calc is on ``data.F``'s scale. If None,
         :meth:`calculate` fits the standard one (``initialize()`` then

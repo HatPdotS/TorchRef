@@ -1,7 +1,7 @@
 """Electron density map building: maps from atomic models, voxel selection around
 atoms, solvent masks and the scatter operations behind them.
 
-The headline entry point is :func:`build_electron_density` (from ``main``), the central
+The headline entry point is :func:`~.main.build_electron_density`, the central
 table-dispatched per-atom variable-radius builder: atomic parameters in, full density map
 out.
 """

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Strip alternate conformations from a PDB file.
 
-Writes :meth:`torchref.model.Model.strip_altlocs` of the input: in each residue
+Writes :meth:`torchref.model.model.Model.strip_altlocs` of the input: in each residue
 (chain, resseq, icode) with several altlocs, the conformer with the highest mean
 occupancy is kept (the first in sorted order on a tie), so alternates carrying
 different residue names compete too. Atoms without altloc are always kept.

@@ -1,21 +1,21 @@
 """Crystallographic symmetry: symmetry groups, space groups and unit cells.
 
-:class:`Symmetry` holds a group as rotation matrices and fractional translations and
-owns every verb derivable from the operations alone -- expansion of positions and
-Miller indices, translation phases, the reflection predicates, symmetry-compatible grid
-sizes, and map symmetrization. Nothing in it is crystallographic, so a group built from
-a raw operation list serves non-crystallographic symmetry too.
+:class:`~.symmetry.Symmetry` holds a group as rotation matrices and fractional
+translations and owns every verb derivable from the operations alone -- expansion of
+positions and Miller indices, translation phases, the reflection predicates, map
+symmetrization and symmetry-compatible grid sizes. Nothing in it is crystallographic,
+so a group built from a raw operation list serves non-crystallographic symmetry too.
 
-:class:`SpaceGroup` specialises it with the crystallographic identity (Hermann-Mauguin
-naming, number, point group, crystal system) and the CCP4 asymmetric-unit verbs
-(``equivalent_hkl``, ``expand_hkl``, ``canonicalize_hkl``). It accepts a
-name, a number 1-230, a ``gemmi.SpaceGroup``, another instance, or None for P1.
+:class:`~.spacegroup.SpaceGroup` specialises it with the crystallographic identity
+(Hermann-Mauguin naming, number, point group, crystal system) and the CCP4 ASU verbs
+(``equivalent_hkl``, ``expand_hkl``, ``canonicalize_hkl``). It accepts a name, a number
+1-230, a ``gemmi.SpaceGroup``, another instance, or None for P1.
 
-:class:`Cell` is separate: it wraps the six cell parameters, not a symmetry group.
+:class:`~.cell.Cell` is separate; it wraps six cell parameters, not a symmetry group.
 
-Map and reciprocal-grid operators are reached through :class:`Symmetry`
-(:meth:`~Symmetry.symmetrize_map`, :meth:`~Symmetry.reciprocal_extractor`), which owns
-their caching -- the operator classes themselves are private.
+Map and reciprocal-grid operators are private, reached through ``Symmetry``, which owns
+their caching: :meth:`~.symmetry.Symmetry.symmetrize_map` and
+:meth:`~.symmetry.Symmetry.reciprocal_extractor`.
 """
 
 from .cell import Cell
