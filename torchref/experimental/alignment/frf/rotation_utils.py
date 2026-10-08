@@ -1,4 +1,4 @@
-"""Pure-geometry helpers shared by the FRF, the rescore, and tests.
+"""Pure-geometry helpers shared by the FRF, the MR pipeline, and tests.
 
 Edmonds active ZYZ convention throughout: a rotation matrix is built as
 ``R = R_z(α) R_y(β) R_z(γ)``.  ``α, γ ∈ [0, 2π)``, ``β ∈ [0, π]``.
