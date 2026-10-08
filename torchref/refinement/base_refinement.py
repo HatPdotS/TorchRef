@@ -33,16 +33,16 @@ from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
 
-# Default LossState weights, balancing the data term against the priors with the
-# x-ray data term as the reference (xray=1). Weights are hierarchical and
-# MULTIPLICATIVE: a target's effective weight is the product of its path levels
-# (e.g. geometry/ramachandran = weight[geometry] * weight[geometry/ramachandran];
-# see LossState.get_effective_weight), so a component key scales *within* its
-# group. Calibrated on the AlphaFold-start benchmark against geometry/ADP RMSZ.
-#
-# geometry/ramachandran=0 DISABLES the Ramachandran restraint by default (0.2 * 0
-# = 0, so aggregate() skips it). Set it back to a positive value via --weights to
-# re-enable.
+#: Default LossState weights, balancing the data term against the priors with the
+#: x-ray data term as the reference (xray=1). Weights are hierarchical and
+#: MULTIPLICATIVE: a target's effective weight is the product of its path levels
+#: (e.g. geometry/ramachandran = weight[geometry] * weight[geometry/ramachandran];
+#: see LossState.get_effective_weight), so a component key scales *within* its
+#: group. Calibrated on the AlphaFold-start benchmark against geometry/ADP RMSZ.
+#:
+#: geometry/ramachandran=0 DISABLES the Ramachandran restraint by default (0.2 * 0
+#: = 0, so aggregate() skips it). Set it back to a positive value via --weights to
+#: re-enable.
 DEFAULT_GROUP_WEIGHTS = {
     "xray": 1.0,
     "geometry": 0.2,
@@ -763,8 +763,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         with the scale being fitted, and for ``ml_full`` the body target would put a 32-node
         quadrature inside every line-search evaluation. The fit runs on the same
         :class:`~torchref.refinement.loss_state.LossState` machinery as the body steps,
-        differing only in the loss and in exposing only the scaler's parameters to it;
-        see :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`.
+        differing only in the loss and in exposing only the scaler's parameters to the
+        optimizer; see :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`.
 
         Returns
         -------

@@ -269,9 +269,9 @@ class Backend:
 class BackendTable:
     """An ordered set of backends plus the invariant that makes it a total policy.
 
-    Checked at import: exactly one base case, i.e. one backend with no device and no dtype
-    restriction. That is what makes :func:`select` unable to fail -- with no unrestricted row
-    there would be inputs no backend matched, and selection would need an error path.
+    Checked at import: exactly one base case, one backend with no device and no dtype
+    restriction. That makes :func:`~torchref.utils.backends.select` unable to fail --
+    without it some inputs would match no backend and dispatch would need an error path.
     """
 
     name: str
