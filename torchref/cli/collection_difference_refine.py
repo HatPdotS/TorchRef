@@ -1223,11 +1223,12 @@ Examples:
     )
     refine.add_argument(
         "--n-steps", type=int, default=2,
-        help="LBFGS optimisation rounds per weight step (default: 2)",
+        help="L-BFGS optimiser steps per --weight-schedule entry (default: 2)",
     )
     refine.add_argument(
         "--max-iter", type=int, default=100,
-        help="Max L-BFGS iterations per optimisation round (default: 100)",
+        help="Max L-BFGS iterations in each of the --n-steps optimiser steps "
+             "(default: 100)",
     )
     refine.add_argument(
         "--n-clean", type=int, default=2,
