@@ -912,24 +912,24 @@ class EnsembleModel(ModelFT):
     def resample_dropout(self) -> int:
         """Draw a fresh member subset and rewrite the occupancy multiplier.
 
-        Picks ``k ~ U[dropout_min, dropout_max]`` members uniformly at random,
-        sets their per-atom multiplier to ``N/k`` (so effective occupancy is
-        ``(1/N)·(N/k) = 1/k`` and the subset average is unbiased) and the rest
-        to 0. No-op when dropout is inactive. Returns ``k`` (or ``N`` when
-        inactive).
+        Picks ``k ~ U[dropout_min, dropout_max]`` (capped at ``n_alive``) of
+        the alive members uniformly at random, sets their per-atom multiplier
+        to ``n_alive/k`` (so effective occupancy is ``(1/n_alive)·(n_alive/k)
+        = 1/k``) and the rest, dead slots included, to 0. Returns ``k`` (or
+        ``n_members`` when dropout is inactive, which is a no-op).
         """
+
         if not self.dropout_active or self._dropout_occ_mult is None:
             return self.n_members
-        N = self.n_members
-        lo = max(1, int(self.dropout_min))
-        hi = min(int(self.dropout_max), N)
-        if hi < lo:
-            hi = lo
+        alive = self._alive.nonzero(as_tuple=False).flatten()
+        n_alive = int(alive.numel())
+        lo = min(max(1, int(self.dropout_min)), n_alive)
+        hi = max(min(int(self.dropout_max), n_alive), lo)
         k = int(torch.randint(lo, hi + 1, (1,)).item())
         dev = self._dropout_occ_mult.device
         dt = self._dropout_occ_mult.dtype
-        keep = torch.zeros(N, device=dev, dtype=dt)
-        keep[torch.randperm(N, device=dev)[:k]] = float(N) / float(k)
+        keep = torch.zeros(self.n_members, device=dev, dtype=dt)
+        keep[alive[torch.randperm(n_alive, device=dev)[:k]]] = n_alive / float(k)
         self._dropout_occ_mult.copy_(keep.repeat_interleave(self.n_atoms_per_member))
         return k
 

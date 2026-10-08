@@ -236,3 +236,14 @@ def test_multimodel_pool_occupancy_sums_to_one(tmp_path, small_ensemble):
     small_ensemble.write_pdb(path)
     ens = EnsembleModel.from_multimodel_pdb(path, n_members=2, n_max=4, verbose=0)
     assert torch.allclose(_member_occupancy(ens), torch.tensor([0.5, 0.5, 0.0, 0.0]))
+
+
+def test_dropout_draws_only_alive_members():
+    ens = EnsembleModel.from_single(TEST_PDB, n_members=4, n_max=6, **_POOL_KW)
+    ens.configure_dropout(True, 2, 2)
+    for _ in range(20):
+        assert ens.resample_dropout() == 2
+        mult = ens._dropout_occ_mult.view(ens.n_members, -1)[:, 0].cpu()
+        assert torch.all(mult[4:] == 0)
+        assert torch.allclose(mult[mult > 0], torch.full((2,), 2.0))
+        assert torch.allclose(_member_occupancy(ens).sum(), torch.tensor(1.0))
