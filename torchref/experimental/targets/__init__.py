@@ -18,14 +18,8 @@ the difference-refinement showcase in the main text; they are exposed
 here for users prototyping new refinement workflows.
 """
 
-# AMBER target (optional dependency: openmm) -- imported lazily so a
-# missing OpenMM install does not break the wider experimental namespace.
-try:
-    from .amber_target import AMBER14_STANDARD, AmberTarget
-except ImportError:
-    AmberTarget = None
-    AMBER14_STANDARD = None
-
+# OpenMM (the [amber] extra) is imported only when an AmberTarget is built.
+from .amber_target import AMBER14_STANDARD, AmberTarget
 from .forcefield_target import ForceFieldTarget
 from .occupancy_floor_diagnostic import OccupancyFloorDiagnostic
 from .realspace import (
