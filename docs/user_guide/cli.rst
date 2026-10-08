@@ -51,11 +51,15 @@ and a ``refinement_history.json`` log.
   itself, which is authoritative.
 * ``--sigma-a-max`` upper bound on the per-shell Luzzati σ_A (default 0.99)
 * ``--no-shrink`` disable the per-shell σ_A stability shrinkage
-* ``--adp-mode`` ``isotropic`` (default) or ``anisotropic``, the latter refining
-  6 U components for ``--anisotropic-selection`` (default: non-water heavy
-  atoms). Six parameters per atom overfits low-resolution data — check that the
-  resolution supports it rather than taking the input model's ``ANISOU`` as
-  permission
+* ``--adp-mode`` ``isotropic`` (default), ``anisotropic``, ``field``,
+  ``field_aniso`` or ``preserve``. ``anisotropic`` refines 6 U components for
+  ``--anisotropic-selection`` (default: non-water heavy atoms). Six parameters
+  per atom overfits low-resolution data — check that the resolution supports it
+  rather than taking the input model's ``ANISOU`` as permission. ``field`` and
+  ``field_aniso`` refine a node field of ADPs sized by
+  ``--reflections-per-adp-parameter`` (default 7) or ``--adp-nodes``, with
+  ``--adp-mode-set`` choosing the ``field_aniso`` mode set; ``preserve`` keeps
+  the input ADPs
 * ``--weights`` JSON overrides on the loss weights. Defaults are xray=1,
   geometry=0.2, adp=0.02, geometry/ramachandran=0. Weights are **hierarchical
   and multiplicative**: a component's effective weight is the product down its
