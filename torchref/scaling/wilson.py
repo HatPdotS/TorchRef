@@ -1,32 +1,11 @@
 """Absolute Wilson normalisation: fit ``Sigma(s)`` and divide it out.
 
-Distinct from :class:`~torchref.scaling.scaler_base.ScalerBase`, which is a
-*relative* scaler -- it puts ``F_calc`` onto ``F_obs`` and every target it can
-minimise compares the two. This one takes a single dataset and answers "what is
-the expected intensity at this resolution", so that dividing by it leaves
-``<E^2> = 1``. One dataset in, one curve out, no second dataset anywhere in the
-objective.
-
-**Why this exists as one shared class.** The repo grew at least five private
-answers to the same question -- ``base/wilson_outliers.robust_mean_intensity``,
-``base/french_wilson.fit_mean_intensity``,
-:func:`fit_wilson_b` below, the ``Sigma_N`` estimator in
-``refinement/model_error_estimation/sigma_a``, and a per-shell one inside the
-alignment package -- differing in whether they use means or medians, whether
-they divide out ``epsilon``, whether they separate centrics, and where they put
-their shell edges. Consumers that disagree about what E means cannot be compared
-with each other, which is exactly what went wrong between the rotation function
-and its own rescore.
-
-**Scaling, not weighting.** This class answers *what* we compare. It says
-nothing about how much any reflection should count -- no ``sigI``, no model
-error, no solvent. Those belong to a weight, and mixing them in here is what
-made the previous convention object impossible to reason about: it returned a
-normalisation and a weight together, so sweeping it moved a gauge quantity and a
-real one at the same time.
-
-:func:`fit_wilson_b` is the one-number summary: an overall Wilson B for priors
-and reports, not a curve to normalise by.
+:class:`WilsonNormaliser` takes one dataset and fits its expected intensity as a smooth
+function of resolution, so that dividing by it leaves ``<E^2> = 1``. Unlike
+:class:`~torchref.scaling.scaler_base.ScalerBase`, which scales ``F_calc`` onto
+``F_obs``, no second dataset enters the objective, and no weight either: how much a
+reflection counts is :mod:`torchref.scaling.weighting`'s business. :func:`fit_wilson_b`
+is the one-number summary, an overall Wilson B for priors and reports.
 """
 
 from __future__ import annotations
@@ -96,69 +75,59 @@ class WilsonNormaliser:
         acentric  I ~ Exp(Sigma)          (Gamma, shape 1)
         centric   I ~ Sigma * chi^2_1     (Gamma, shape 1/2)
 
-    i.e. a Gamma GLM with a log link and the shape as the prior weight.
-
-    **Unit mean is an identity of the fit, not a normalisation step.** The
-    constant basis column's score equation is ``sum_h k_h (I_h/mu_h - 1) = 0``,
-    which is exactly ``<E^2> = 1`` in the shape-weighted sense. Nothing is
-    rescaled afterwards and nothing can drift -- which is what makes a
-    downstream ``E^2 - 1`` a true centring rather than an approximate one.
-
-    Least squares on ``log I`` would be the obvious alternative and is wrong:
-    ``E[log Gamma]`` carries a digamma offset, and with a constant term present
-    it is absorbed into the curve's shape rather than into the level. That is
-    the defect the overall-anisotropy fit was carrying.
+    i.e. a Gamma GLM with a log link and the shape as the prior weight. Unit mean is
+    an identity of the fit, not a rescaling: the constant column's score equation,
+    ``sum_h k_h (I_h/mu_h - 1) = 0``, is ``<E^2> = 1`` in the shape-weighted sense.
 
     Parameters
     ----------
     I : torch.Tensor
-        ``(N,)`` intensities. **Intensities, not amplitudes** -- Wilson
-        statistics are exact on I and awkward on F, and measurement error is
-        near-Gaussian on I but badly behaved on F for weak reflections, which is
-        the whole reason the French-Wilson posterior exists. Negative values are
-        allowed and kept: they are meaningful, unbiased measurements. They are
-        excluded from the *fit* (the Gamma likelihood has no support there) but
-        still receive a ``Sigma`` and a signed ``E_squared``.
+        ``(N,)`` intensities, **not amplitudes**. Negative values are kept: they are
+        excluded from the fit (the Gamma likelihood has no support there) but still
+        receive a ``Sigma`` and a signed ``E_squared``.
     s_mag : torch.Tensor
-        ``(N,)`` scattering-vector magnitude ``|s| = 1/d``, in inverse Angstrom.
+        ``(N,)`` scattering-vector magnitude ``|s| = 1/d``, in Å⁻¹.
     eps : torch.Tensor, optional
-        ``(N,)`` reflection multiplicity. Divides the intensity before the fit,
-        because axial reflections are systematically stronger. ``None`` means 1
-        everywhere, which is correct for a molecular transform sampled in a P1
-        box -- multiplicity is a property of crystal symmetry and there is none
-        there.
+        ``(N,)`` reflection multiplicity, divided out before the fit. ``None`` means 1,
+        which is right for a molecular transform sampled in a P1 box.
     centric : torch.Tensor, optional
         ``(N,)`` bool, setting the Gamma shape. ``None`` means all acentric.
     n_coeff : int, optional
         Chebyshev terms. ``1`` gives a single global scale.
     s_lo, s_hi : float, optional
-        ``|s|`` range mapped onto the basis. Defaults to this dataset's own
-        extremes. **Pass both explicitly whenever the curve will be evaluated
-        outside the fitted data's range** -- comparing two fits over different
-        ranges, or fitting on a crystal lattice and evaluating on a dense
-        sampling. The basis saturates at the ends, so beyond the fitted range
-        the curve is frozen flat rather than extrapolated.
+        ``|s|`` range mapped onto the basis, in Å⁻¹; defaults to this dataset's own
+        extremes. The basis saturates at the ends, so pass both whenever the curve
+        will be evaluated outside the fitted range: beyond it the curve is flat.
     fit_mask : torch.Tensor, optional
-        ``(N,)`` bool selecting which reflections *inform* the fit. Everything
-        still receives a ``Sigma``, because the curve is smooth and evaluable
-        anywhere. Use it to hold out systematic absences -- see
-        :meth:`from_hkl`, which does exactly that.
+        ``(N,)`` bool selecting which reflections inform the fit; every reflection
+        still receives a ``Sigma``. :meth:`from_hkl` uses it to hold out absences.
+    max_iter : int, optional
+        IRLS iterations before the fit raises; a runaway guard, not a budget.
+    rtol : float, optional
+        Convergence when the last step's gain in the objective is below ``rtol``
+        times the total gain from the constant-curve start.
 
     Attributes
     ----------
     coefficients : torch.Tensor
         ``(n_coeff,)`` fitted Chebyshev coefficients of ``log Sigma``.
     sigma_wilson : torch.Tensor
-        ``(N,)`` fitted ``Sigma(s)``. Deliberately not called ``sigma``: this
-        package also carries ``sig_F``, a measurement error, and ``sigma_a``, a
-        correlation coefficient, and the three are not interchangeable.
+        ``(N,)`` fitted ``Sigma(s)``.
     mean_intensity : torch.Tensor
         ``(N,)`` ``eps * Sigma(s)``, the expected intensity of each reflection.
     E_squared : torch.Tensor
-        ``(N,)`` ``I / mean_intensity``. **Signed** -- negative observations stay
+        ``(N,)`` ``I / mean_intensity``. **Signed**: negative observations stay
         negative.
     E : torch.Tensor
         ``(N,)`` ``sqrt(max(E_squared, 0))``.
+
+    Raises
+    ------
+    ValueError
+        If ``I`` is not 1-D, ``s_mag`` does not match it, or fewer than
+        ``n_coeff + 1`` reflections are usable.
+    RuntimeError
+        If the IRLS fit diverges or does not converge in ``max_iter`` iterations.
     """
 
     MAX_HALVINGS = MAX_HALVINGS
