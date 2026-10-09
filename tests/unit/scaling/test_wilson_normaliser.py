@@ -139,16 +139,11 @@ def test_the_range_only_matters_outside_the_fitted_data():
     shared = WilsonNormaliser(I[sub], s[sub], s_lo=lo, s_hi=hi, **kw)
     own = WilsonNormaliser(I[sub], s[sub], **kw)
 
-    # Looser than the package's usual 1e-4, and the reason is the point of the
-    # test rather than an excuse. These are two INDEPENDENT fits, each stopped
-    # when its own objective stops improving by 1e-4 of what it has gained. The
-    # valley is flat along the high-order coefficients, so equal objectives
-    # there do not mean equal coefficients, and the curves separate by more than
-    # the objective did. Measured 0.2-1.6% over five draws; 3% catches a real
-    # dependence on the parameterisation without chasing the stopping rule.
+    # IRLS steps are invariant to a linear change of basis, so the two fits differ
+    # only by rounding and the ridge: at most 2.2e-5 over 200 draws in float32.
     inside = torch.linspace(0.06, 0.29, 40, dtype=torch.float64)
     assert torch.allclose(shared.evaluate(inside), own.evaluate(inside),
-                          rtol=3e-2), "the fitted function must not depend on " \
+                          rtol=1e-4), "the fitted function must not depend on " \
                                       "how the basis was parameterised"
 
     # Outside its own data, the narrow fit is pinned at its endpoint; the one

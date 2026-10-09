@@ -20,6 +20,7 @@ import torch
 from torchref.config import get_float_dtype, get_int_dtype
 from torchref.scaling._protein_gamma import protein_gamma as _protein_gamma
 from torchref.scaling.basis import chebyshev_design
+from torchref.utils.matmul import matmul
 
 __all__ = [
     "WilsonNormaliser",
@@ -36,10 +37,11 @@ __all__ = [
 #: downstream.
 DEFAULT_N_COEFF = 6
 
-#: Bound on ``log Sigma`` relative to its own constant term. A polynomial is
-#: unbounded at the ends of its range, so without this a single extreme
-#: reflection at the resolution limit can carry an arbitrary scale -- the same
-#: reason ``ScalerBase.iso_log_scale`` clamps per reflection.
+#: Bound on ``log Sigma`` either side of its mean over the fitted reflections
+#: (:func:`_log_centre`). A polynomial is unbounded at the ends of its range, so
+#: without this a single extreme reflection at the resolution limit can carry an
+#: arbitrary scale -- the same reason ``ScalerBase.iso_log_scale`` clamps per
+#: reflection.
 LOG_CLAMP = 10.0
 
 #: Step halvings allowed per IRLS iteration before the step is abandoned.
@@ -64,6 +66,18 @@ _MU_FLOOR = 1e-30
 #: that is wrong by tens of percent, so four digits is already far past what
 #: anything downstream can use.
 DEFAULT_RTOL = 1e-4
+
+
+def _log_centre(eta: torch.Tensor, w: torch.Tensor) -> float:
+    """Shape-weighted mean of ``log Sigma`` over the fitted reflections.
+
+    The anchor of the :data:`LOG_CLAMP` window. Not the constant coefficient: that is
+    the curve's average over the whole basis range ``[s_lo, s_hi]``, and when the data
+    cover only part of it the unconstrained remainder can swing far enough to put that
+    average several log units off the curve where the data are, so a window around it
+    truncates the fit. Costs one device sync.
+    """
+    return float((w * eta).sum() / w.sum())
 
 
 class WilsonNormaliser:
@@ -199,6 +213,9 @@ class WilsonNormaliser:
         self.coefficients, self.n_iter = self._irls(
             design[usable], I_reduced[usable], k[usable], max_iter, rtol,
         )
+        self._clamp_centre = _log_centre(
+            design[usable] @ self.coefficients, k[usable]
+        )
 
         log_sigma = self._eval_log_sigma(design)
         self.sigma_wilson = torch.exp(log_sigma).to(self.dtype)
@@ -211,9 +228,8 @@ class WilsonNormaliser:
     # -- fitting -----------------------------------------------------------
 
     def _eval_log_sigma(self, design: torch.Tensor) -> torch.Tensor:
-        c = self.coefficients
-        return (design @ c).clamp(
-            min=-LOG_CLAMP + float(c[0]), max=LOG_CLAMP + float(c[0]),
+        return (design @ self.coefficients).clamp(
+            min=self._clamp_centre - LOG_CLAMP, max=self._clamp_centre + LOG_CLAMP,
         )
 
     @staticmethod
@@ -228,8 +244,9 @@ class WilsonNormaliser:
         tightly the shape converged. Only the level changes, not the shape.
         """
         eta = X @ beta
-        mu = torch.exp(eta.clamp(min=-LOG_CLAMP + float(beta[0]),
-                                 max=LOG_CLAMP + float(beta[0]))).clamp(min=_MU_FLOOR)
+        centre = _log_centre(eta, w)
+        mu = torch.exp(eta.clamp(min=centre - LOG_CLAMP,
+                                 max=centre + LOG_CLAMP)).clamp(min=_MU_FLOOR)
         ratio = ((w * (y / mu)).sum() / w.sum()).clamp(min=_MU_FLOOR)
         out = beta.clone()
         out[0] = out[0] + torch.log(ratio)
@@ -260,51 +277,45 @@ class WilsonNormaliser:
         beta[0] = torch.log(((w * y).sum() / w.sum()).clamp(min=1e-30))
 
         def objective(b):
-            eta = (X @ b).clamp(
-                min=-LOG_CLAMP + float(b[0]), max=LOG_CLAMP + float(b[0]),
-            )
+            eta = X @ b
+            centre = _log_centre(eta, w)
+            eta = eta.clamp(min=centre - LOG_CLAMP, max=centre + LOG_CLAMP)
             mu = torch.exp(eta).clamp(min=_MU_FLOOR)
             return float((w * (y / mu + eta)).sum()), eta, mu
 
         L, eta, mu = objective(beta)
         L0 = L                       # the constant-curve seed, for the ratio below
 
-        # Built and factorised ONCE. For a Gamma with a log link the IRLS
-        # working weight is the shape k, which does not depend on mu -- so
-        # `X^T W X` is the same matrix at every iteration and only the working
-        # response changes. Rebuilding it per iteration costs an O(N n^2) pass
-        # over every reflection for an answer that cannot have changed.
-        XtW = X.transpose(0, 1) * w.unsqueeze(0)
-        A = XtW @ X
-        # Ridge proportional to the matrix's own scale: the high-order
-        # Chebyshev columns go near-singular when the data cover only part
-        # of the basis range.
-        A = A + torch.eye(self.n_coeff, dtype=A.dtype, device=A.device) * (
-            1e-10 * float(torch.diagonal(A).abs().max().clamp(min=1e-30))
-        )
-        # Cholesky, not LU: A is SPD by construction, and MPS has neither lu_solve
-        # nor cholesky_solve, so two triangular solves keep the loop on the device.
+        # Factorised ONCE. For a Gamma with a log link the IRLS working weight is
+        # the shape k, which does not depend on mu, so the weighted least-squares
+        # system is the same at every iteration and only the working response
+        # changes.
         #
-        # `cholesky_ex` reports rather than raises, because a fully collinear
-        # basis is a thing this fit sees: the high-order Chebyshev columns go
-        # near-singular when the data cover only part of the basis range, and
-        # the ridge does not always rescue that; that case falls back to a
-        # general solve, which needs no definiteness, instead of failing.
-        chol = torch.linalg.cholesky_ex(A)
-        L_A = chol.L if int(chol.info) == 0 else None
+        # QR of sqrt(W) X, not Cholesky of the normal matrix X^T W X: forming that
+        # squares the condition number. When the data cover only part of the basis
+        # range the high-order Chebyshev columns are near-collinear, the squared
+        # number passes 1/eps in float32, and the normal matrix rounds to
+        # indefinite while Cholesky still succeeds -- wrong coefficients, no error.
+        # The QR runs once per fit, outside the loop, so a device that falls back to
+        # the CPU for it pays one round trip; each iteration is a product and a
+        # triangular solve.
+        sw = w.sqrt()
+        Xw = X * sw.unsqueeze(1)
+        # Ridge proportional to the system's own scale, appended as rows so that R
+        # stays invertible when the basis is fully collinear over the data.
+        ridge = math.sqrt(1e-10 * float((Xw * Xw).sum(0).max().clamp(min=1e-30)))
+        Q, R = torch.linalg.qr(torch.cat([
+            Xw, ridge * torch.eye(self.n_coeff, dtype=X.dtype, device=X.device),
+        ]))
+        Q = Q[: X.shape[0]]          # the ridge rows' right-hand side is zero
 
-        def _solve(rhs):
-            if L_A is None:
-                return torch.linalg.solve(A, rhs)
-            return torch.linalg.solve_triangular(
-                L_A.mT,
-                torch.linalg.solve_triangular(L_A, rhs, upper=False),
-                upper=True,
-            )
+        def _solve(z):
+            rhs = matmul(Q.mT, sw * z).unsqueeze(-1)
+            return torch.linalg.solve_triangular(R, rhs, upper=True).squeeze(-1)
 
         for it in range(1, max_iter + 1):
             z = eta + (y - mu) / mu                      # working response
-            step = _solve((XtW @ z).unsqueeze(-1)).squeeze(-1) - beta
+            step = _solve(z) - beta
             if not torch.isfinite(step).all():
                 raise RuntimeError(
                     f"Wilson fit diverged at iteration {it}: the IRLS solve "

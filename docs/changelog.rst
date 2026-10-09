@@ -43,6 +43,7 @@ Fixes that change results
 - Refinement: frozen parameters stay frozen, rigid-body translations refine, the scaler is refit warm each cycle
 - Density kernels on CPU, CUDA and MPS; long matrix products on MPS; REMARK 3 angle RMSD reported in degrees
 - CUDA ``ls``/``nll`` X-ray kernels score a signed ``F_calc`` as ``|F_calc|``, as the eager path does
+- ``WilsonNormaliser`` with ``s_lo``/``s_hi`` wider than the data: stable in float32 and no longer truncated by its log clamp
 
 Other fixes
 ~~~~~~~~~~~
