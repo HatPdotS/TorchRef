@@ -46,6 +46,7 @@ Fixes that change results
 Other fixes
 ~~~~~~~~~~~
 - Many crash, device and dtype fixes across CPU, CUDA and MPS
+- Fixed bug were the forward cache could serve stale results when given a new input tensor and the old tensor was already freed
 
 Experimental
 ~~~~~~~~~~~~
