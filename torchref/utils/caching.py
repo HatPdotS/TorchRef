@@ -10,6 +10,7 @@ with invalidation on parameter mutation or backward propagation.
 unaffected -- it is a standalone helper its users drive themselves.
 """
 
+import weakref
 from contextlib import contextmanager
 
 import torch
@@ -44,14 +45,40 @@ class ParameterFingerprint:
         return len(self._entries) > 0
 
 
+class _TensorKey:
+    """Cache key for one tensor: the tensor itself, held weakly, plus its storage state.
+
+    Equal only to a key for the *same live tensor object* with the same ``data_ptr``,
+    ``_version`` and ``requires_grad``. ``data_ptr`` alone cannot identify a tensor: the
+    allocator hands a freed tensor's address to the next allocation, whose ``_version``
+    also starts at 0, so a new ``hkl`` would otherwise be served the old one's result.
+    """
+
+    __slots__ = ("_ref", "_state")
+
+    def __init__(self, t: torch.Tensor):
+        self._ref = weakref.ref(t)
+        self._state = (t.data_ptr(), t._version, t.requires_grad)
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, _TensorKey):
+            return NotImplemented
+        t = self._ref()
+        return t is not None and t is other._ref() and self._state == other._state
+
+    __hash__ = None
+
+
 class CachedForwardMixin:
     """Mixin that caches ``forward()`` results with automatic invalidation.
 
     Overrides ``__call__`` to return a cached result while the module's parameters, buffers
     and call arguments are unchanged and no backward has propagated through the cached
-    output. Invalidated by: any parameter/buffer ``(data_ptr, _version, requires_grad)``
-    change (so optimizer in-place updates, parameter replacement and freezing are all
-    covered); the same change on an input tensor, or a non-tensor argument change; or a
+    output. Tensors -- parameters, buffers and inputs alike -- are matched by identity (the
+    same live object, held weakly) and ``(data_ptr, _version, requires_grad)``, so a new
+    tensor never matches, even one allocated at a freed tensor's address. Invalidated by:
+    an optimizer in-place update, parameter replacement or freezing; any of those on an
+    input tensor, a different input tensor, or a non-tensor argument change; or a
     backward through the cached output, via a gradient hook that bumps a generation
     counter. A write through ``.data`` (``p.data.copy_(x)``) leaves ``data_ptr`` and
     ``_version`` as they were, so it is served stale: write under ``torch.no_grad()``
@@ -72,12 +99,9 @@ class CachedForwardMixin:
     # ---- internal helpers ------------------------------------------------
 
     def _fingerprint_state(self):
-        """Key every parameter and buffer by ``(data_ptr, _version, requires_grad)``."""
-        entries = []
-        for t in self.parameters():
-            entries.append((t.data_ptr(), t._version, t.requires_grad))
-        for t in self.buffers():
-            entries.append((t.data_ptr(), t._version, t.requires_grad))
+        """Key every parameter and buffer by identity and storage state."""
+        entries = [_TensorKey(t) for t in self.parameters()]
+        entries.extend(_TensorKey(t) for t in self.buffers())
         return tuple(entries)
 
     @staticmethod
@@ -86,13 +110,13 @@ class CachedForwardMixin:
         entries = []
         for a in args:
             if isinstance(a, torch.Tensor):
-                entries.append((a.data_ptr(), a._version, a.requires_grad))
+                entries.append(_TensorKey(a))
             else:
                 entries.append(a)
         for k in sorted(kwargs):
             v = kwargs[k]
             if isinstance(v, torch.Tensor):
-                entries.append((k, v.data_ptr(), v._version, v.requires_grad))
+                entries.append((k, _TensorKey(v)))
             else:
                 entries.append((k, v))
         return tuple(entries)

@@ -127,6 +127,46 @@ def test_graph_carrying_result_is_still_served_without_grad(module):
     assert module.n_forward == 1
 
 
+class _RowSum(CachedForwardMixin, nn.Module):
+    def forward(self, hkl):
+        return hkl.sum(dim=1)
+
+
+def test_the_same_input_tensor_is_served_from_the_cache():
+    cfg.caching.value = True
+    model = _RowSum()
+    hkl = torch.randint(0, 9, (50, 3), dtype=torch.int32)
+
+    assert model(hkl) is model(hkl)
+
+
+def test_a_new_input_tensor_misses_even_at_a_freed_tensors_address():
+    """The allocator hands a freed tensor's address to the next allocation of a similar
+    size, so an address-only key would serve the old input's result to the new one."""
+    cfg.caching.value = True
+    model = _RowSum()
+    reused = 0
+    for n in range(200, 300):
+        old = torch.randint(0, 9, (n, 3), dtype=torch.int32)
+        address = old.data_ptr()
+        model(old)
+        del old
+        new = torch.randint(0, 9, (n - 1, 3), dtype=torch.int32)
+        reused += new.data_ptr() == address
+        torch.testing.assert_close(model(new), new.sum(dim=1))
+    if reused == 0:
+        pytest.skip("allocator never reused an address; the stale-key case was not hit")
+
+
+def test_a_view_of_the_cached_input_is_a_different_input():
+    cfg.caching.value = True
+    model = _RowSum()
+    hkl = torch.randint(0, 9, (50, 3), dtype=torch.int32)
+    first = model(hkl)
+
+    assert model(hkl.view(50, 3)) is not first
+
+
 # ---------------------------------------------------------------------------
 # Caching disabled
 # ---------------------------------------------------------------------------
