@@ -256,9 +256,10 @@ class TestRealSpaceTargetsIntegration:
 
     @pytest.fixture
     def model_data_pair(self, sample_structure_pair):
-        """Load real ModelFT and ReflectionData."""
+        """Load real ModelFT and ReflectionData with an initialised Scaler."""
         from torchref.model.model_ft import ModelFT
         from torchref.io import ReflectionData
+        from torchref.scaling.scaler import Scaler
 
         model = ModelFT(max_res=2.5, verbose=0)
         model.load_cif(str(sample_structure_pair["model"]))
@@ -266,29 +267,90 @@ class TestRealSpaceTargetsIntegration:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        return model, data
+        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler.initialize(model(data.hkl))
+
+        return model, data, scaler
 
     @pytest.mark.integration
     def test_correlation_target_forward(self, model_data_pair):
         """Correlation target forward pass should produce finite value."""
         from torchref.experimental.targets import RealSpaceCorrelationTarget
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, mask_solvent=True, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
         )
 
         loss = target.forward()
         assert torch.isfinite(loss)
-        assert loss.item() >= 0.0  # 1 - RSCC >= 0 for positive correlation
-        assert loss.item() < 2.0   # 1 - RSCC < 2
+        # An inverted observed map gives a loss near 2.
+        assert 0.0 <= loss.item() < 0.5
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("map_type", ["2mFo-DFc", "Fo-Fc"])
+    def test_observed_map_requires_scaler(self, model_data_pair, map_type):
+        """Without a scaler the observed map raises instead of inverting."""
+        from torchref.experimental.targets import RealSpaceTarget
+
+        model, data, _ = model_data_pair
+        target = RealSpaceTarget(data=data, model=model, map_type=map_type)
+        with pytest.raises(ValueError, match="scaler"):
+            target._compute_observed_map()
+
+    @pytest.mark.integration
+    def test_model_density_matches_splatted_density(self, model_data_pair):
+        """The Fcalc synthesis reproduces the model's real-space density."""
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
+
+        model, data, _ = model_data_pair
+        target = RealSpaceCorrelationTarget(
+            data=data, model=model, mask_solvent=False, verbose=0
+        )
+        with torch.no_grad():
+            synthesised = target._compute_model_density().flatten()
+            splatted = model.build_complete_map().flatten()
+
+        synthesised = synthesised - synthesised.mean()
+        splatted = splatted - splatted.mean()
+        cc = (synthesised * splatted).sum() / (synthesised.norm() * splatted.norm())
+        assert cc > 0.95
+
+    @pytest.mark.integration
+    def test_free_set_does_not_enter_loss(self, model_data_pair):
+        """Changing free-set amplitudes leaves both real-space losses unchanged."""
+        from torchref.experimental.targets import (
+            RealSpaceCorrelationTarget,
+            RealSpaceDifferenceTarget,
+        )
+
+        model, data, scaler = model_data_pair
+        free = data.free.indices
+        assert free.numel() > 0
+
+        def losses():
+            return [
+                cls(
+                    data=data, model=model, scaler=scaler, mask_solvent=False, verbose=0
+                )
+                .forward()
+                .item()
+                for cls in (RealSpaceCorrelationTarget, RealSpaceDifferenceTarget)
+            ]
+
+        with torch.no_grad():
+            before = losses()
+            data.F[free] *= 1.5
+            after = losses()
+
+        assert after == pytest.approx(before, rel=1e-6)
 
     @pytest.mark.integration
     def test_difference_target_forward(self, model_data_pair):
         """Difference target forward pass should produce finite positive value."""
         from torchref.experimental.targets import RealSpaceDifferenceTarget
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceDifferenceTarget(
-            data=data, model=model, mask_solvent=True, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
         )
 
         loss = target.forward()
@@ -299,9 +361,9 @@ class TestRealSpaceTargetsIntegration:
     def test_correlation_target_gradient_flow(self, model_data_pair):
         """Gradients should flow through model parameters."""
         from torchref.experimental.targets import RealSpaceCorrelationTarget
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, mask_solvent=True, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
         )
 
         # Zero existing gradients
@@ -324,9 +386,9 @@ class TestRealSpaceTargetsIntegration:
     def test_difference_target_gradient_flow(self, model_data_pair):
         """Gradients should flow through model parameters for difference target."""
         from torchref.experimental.targets import RealSpaceDifferenceTarget
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceDifferenceTarget(
-            data=data, model=model, mask_solvent=True, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
         )
 
         # Zero existing gradients
@@ -349,9 +411,9 @@ class TestRealSpaceTargetsIntegration:
     def test_correlation_stats(self, model_data_pair):
         """Stats should return expected keys."""
         from torchref.experimental.targets import RealSpaceCorrelationTarget
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, mask_solvent=True, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
         )
 
         stats = target.stats()
@@ -363,9 +425,9 @@ class TestRealSpaceTargetsIntegration:
     def test_difference_stats(self, model_data_pair):
         """Stats should return expected keys."""
         from torchref.experimental.targets import RealSpaceDifferenceTarget
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceDifferenceTarget(
-            data=data, model=model, mask_solvent=True, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
         )
 
         stats = target.stats()
@@ -380,9 +442,9 @@ class TestRealSpaceTargetsIntegration:
     def test_mask_shape_matches_grid(self, model_data_pair):
         """Molecular mask shape should match the density grid."""
         from torchref.experimental.targets import RealSpaceCorrelationTarget
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, mask_solvent=True, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
         )
 
         # Trigger mask build
@@ -396,9 +458,9 @@ class TestRealSpaceTargetsIntegration:
     def test_update_mask(self, model_data_pair):
         """update_mask() should recompute the molecular mask."""
         from torchref.experimental.targets import RealSpaceCorrelationTarget
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, mask_solvent=True, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
         )
 
         # Build initial mask
@@ -416,9 +478,9 @@ class TestRealSpaceTargetsIntegration:
     def test_no_mask_mode(self, model_data_pair):
         """Target should work without molecular mask."""
         from torchref.experimental.targets import RealSpaceCorrelationTarget
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, mask_solvent=False, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=False, verbose=0
         )
 
         loss = target.forward()
@@ -430,9 +492,9 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceCorrelationTarget
         from torchref.refinement.loss_state import LossState
 
-        model, data = model_data_pair
+        model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, mask_solvent=True, verbose=0,
+            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
         )
 
         state = LossState()

@@ -2,7 +2,7 @@
 
 Pipeline (mirrors Phaser ``run_FRF()``):
   1. Resolution mask (both sides).
-  2. Wilson normalisation, optionally + French-Wilson + DFAC on obs.
+  2. Wilson normalisation; obs sigmas set only a per-reflection weight.
   3. Build LERF1 obs intensity.
   4. Optional per-shell variance reweight on obs intensity.
   5. σA Eterm on calc intensity.
@@ -203,8 +203,8 @@ class FastRotationFunction:
         # expansion is a per-reflection function of (F, sigma_F, |s|, centric),
         # all four of which are symmetry-invariant, so the chain runs on the
         # unique set and is broadcast at the end. That is exact -- not an
-        # approximation -- and it is the difference between doing the
-        # French-Wilson posterior once and doing it n_ops times.
+        # approximation -- and it runs the Wilson fit and the weights once
+        # rather than n_ops times.
         #
         # Without `asu_idx` every array is per-row of `s_obs` and the window is
         # applied here, which is the path direct callers and the synthetic tests
@@ -246,15 +246,8 @@ class FastRotationFunction:
         lmax_even = lmax if lmax % 2 == 0 else lmax - 1
         self.bessel_h_scale = float(lmax_even) * float(d_min)
 
-        # 3. ONE shell assignment, shared by everything below.
-        #
-        # The French-Wilson posterior, the LERF1 build and the variance reweight
-        # all normalise per resolution shell, and each used to derive its own
-        # equal-count edges from the same |s| -- one in numpy, one in torch, with
-        # different quantile-rank rounding. That put a handful of boundary
-        # reflections in different shells depending on which consumer asked,
-        # which is a difference of ~2e-4 relative on their normalisation for no
-        # reason. Assign once, pass it down.
+        # 3. Equal-count resolution shells over |s|, used only by the optional
+        #    per-shell variance reweight in step 4.
         from ..sh import assign_shells, equal_count_shell_edges
 
         shell_edges, _ = equal_count_shell_edges(smag_src, n_wilson_shells)
@@ -270,10 +263,10 @@ class FastRotationFunction:
         # that reads Sigma_obs/Sigma_calc needs them on one abscissa.
         self._s_lo = 1.0 / float(d_max) if d_max else float(smag_src.min())
         self._s_hi = 1.0 / float(d_min)
-        # No epsilon here: the observations reach this point symmetry-unrolled,
-        # which puts each reflection into the sum once per operation that maps
-        # to it, so multiplicity is already carried by the geometry. Centricity
-        # is separate and does enter -- it is the Gamma shape.
+        # No epsilon here, so E^2 = I/Sigma and a reflection with eps > 1 keeps
+        # its eps-fold expected intensity. With `asu_idx` the fit sees each
+        # unique reflection once; the unroll that later repeats it is not
+        # visible here. Centricity does enter -- it is the Gamma shape.
         conv_obs = WilsonNormaliser(
             F_obs * F_obs, smag_src, centric=centric_obs,
             n_coeff=self.wilson_n_coeff, s_lo=self._s_lo, s_hi=self._s_hi,

@@ -65,11 +65,10 @@ def build_lerf1_intensity(
     factor only (the ε(h) multiplicity is implicit in the symmetry
     reduction of the input reflection set).
 
-    ``weight`` is the per-reflection information weight that travels with
-    ``eEobs`` -- ``DFAC**2`` for the French-Wilson convention, ones for a
-    convention that does not model measurement error. It arrives already
-    squared because it is the E convention that decides what the weight *is*;
-    this function's job is to apply one, not to know it came from a D factor.
+    ``weight`` is the per-reflection measurement weight that travels with
+    ``eEobs`` -- the normalised information or inverse-variance weight built
+    from the sigmas, or ones when there are none. The caller decides what the
+    weight is; this function only applies it.
 
     Note the ``- 1``: the LERF1 intensity is CENTRED, which is what makes
     ``<eEobs**2> = 1`` load-bearing rather than cosmetic. A convention whose
@@ -161,33 +160,21 @@ def bulk_solvent_factor(
 
         solTerm(s²) = max(SIGA_MIN, 1 − fsol · exp(−bsol · s²/4))
 
-    Models the bulk solvent's contribution to the structure factor via Babinet's
-    principle. At low resolution (s→0) the term → ``1 − fsol`` ≈ 0.05 (with the
-    default ``fsol=0.95``), aggressively suppressing the calc — physically, the
-    model represents only the macromolecule, but the diffraction data sees
-    macromolecule + bulk solvent, and at low resolution the solvent's flat
-    average density partially cancels the macromolecule's contribution. At high
-    resolution (s→∞) the term → 1 (no effect).
-
-    Phaser folds this into the effective σ_A via
-    ``σ_A_eff(s) = solTerm(s²) · DLuzzati(s², vrms)`` (EnsemblePDB.cc:96-100).
-    For callers that work in σ_A space (the rescore, the FRF eterm), multiplying
-    by this factor reproduces that behaviour.
-
-    Defaults match Phaser (``DEF_SOLPAR_BULK_FSOL=0.95``,
-    ``DEF_SOLPAR_BULK_BSOL=300``, ``DEF_SOLPAR_SIGA_MIN=0.01``).
+    Phaser folds it into σ_A as ``solTerm(s²) · DLuzzati(s², vrms)``
+    (EnsemblePDB.cc:96-100). Defaults match Phaser (``DEF_SOLPAR_BULK_FSOL``,
+    ``DEF_SOLPAR_BULK_BSOL``, ``DEF_SOLPAR_SIGA_MIN``).
 
     Parameters
     ----------
-    s_mag : tensor
+    s_mag : torch.Tensor
         Per-reflection reciprocal-space magnitude |s| (Å^-1).
     fsol, bsol, sigA_min : float
-        Babinet parameters. Defaults match Phaser.
+        Solvent fraction scale, solvent B-factor (Å²) and the result's floor.
 
     Returns
     -------
     torch.Tensor
-        Per-reflection solvent multiplier, same shape as ``s_mag``. Always in
+        Per-reflection solvent multiplier, same shape as ``s_mag``, in
         ``[sigA_min, 1]``.
     """
     s2 = s_mag * s_mag
@@ -203,7 +190,7 @@ def oeffner_vrms(n_residues: int, identity: float = 1.0) -> float:
     with ``A = 0.0569``, ``B = 173``, ``C = 1.52``. The clamp avoids extrapolating
     beyond the well-populated range of Oeffner et al.'s training set
     (Acta Cryst. (2013) D69:2209-2215). For a perfect model (``identity=1``) and
-    a typical protein (~300 residues), this gives vrms ≈ 0.47 Å; large
+    a typical protein (~300 residues), this gives vrms ≈ 0.44 Å; large
     assemblies (clamped at 1500) give vrms ≈ 0.67 Å. Phaser uses this as the
     Luzzati ``vrms`` for the σ_A computation.
 
@@ -218,7 +205,7 @@ def oeffner_vrms(n_residues: int, identity: float = 1.0) -> float:
     -------
     float
         Coordinate RMS estimate in Å, suitable as ``delta_vrms_A`` for
-        :func:`compute_sigma_a_luzzati` / :func:`eterm_sigma_a`.
+        :func:`eterm_sigma_a`.
     """
     A, B, C = 0.0569, 173.0, 1.52
     n_clamped = max(125, min(int(n_residues), 1500))
@@ -345,16 +332,3 @@ def fit_relative_wilson_b(
     # Phaser: WilsonB_intensity = -4·slope, then halved → WilsonB = -2·slope.
     wilson_b = -2.0 * slope
     return float(max(-clamp_b, min(wilson_b, clamp_b)))
-
-
-# Note: a naive OLS-on-log-F² fit of anisotropic Wilson U was attempted on
-# 2026-05-28 and didn't work. The Wilson left tail (small F values produce huge
-# negative log F²) dominates the regression, returning U components of order
-# 10²–10³ Å² on real data — three orders of magnitude beyond physical, on both
-# easy (1DAW) and hard (2DQ6) cases. Robustifying via |F|-weighting + ridge
-# only made the fit saturate any sensible clamp. Phaser's ``scaleANIS``
-# (``DataB.cc``, ~500 LoC) is an iterative ML fit on ``logSigmaEsq``; that's
-# the right approach if obs-side aniso ever becomes the next lever. The 2DQ6
-# benchmark failure we were chasing turned out to be tNCS
-# (``<(E²−1)²>_acentric = 5.5`` vs Wilson = 1.0), not anisotropy, so this
-# branch is not in the immediate critical path.

@@ -6,20 +6,19 @@ development and may change without notice. Import the submodules
 directly:
 
 * :mod:`torchref.experimental.alignment` -- Patterson-based molecular
-  replacement (rotation/translation search, rigid-body refinement).
-* :mod:`torchref.experimental.kinetic` -- time-resolved / kinetic
-  refinement against collections of datasets.
+  replacement (rotation and translation search; returns a placement).
+* :mod:`torchref.experimental.ensemble` -- multi-member ensemble refinement
+  against one dataset, modelling disorder as explicit member spread.
+* :mod:`torchref.experimental.kinetic` -- time-resolved (kinetic) refinement.
 * :mod:`torchref.experimental.monolithic_refinement` -- macrocycle-free
   refinement with a differentiable, co-refined model-error variance.
 * :mod:`torchref.experimental.targets` -- experimental refinement
-  targets (AMBER14/GAFF2 force field, real-space, sampled-ML phase,
-  occupancy diagnostics).
+  targets (AMBER14/GAFF2 force field, real-space, occupancy diagnostics).
 
-Submodules are not imported eagerly here so that pulling in
-``torchref.experimental`` stays cheap and does not trigger the optional
-dependencies (e.g. JAX for alignment, OpenMM for AMBER) until a
-submodule is requested.
+Submodules are not imported eagerly, so importing ``torchref.experimental``
+stays cheap and pulls in no optional dependency (e.g. OpenMM for the AMBER
+targets) until a submodule is requested.
 """
 
 
-__all__ = ["alignment", "kinetic", "monolithic_refinement", "targets"]
+__all__ = ["alignment", "ensemble", "kinetic", "monolithic_refinement", "targets"]

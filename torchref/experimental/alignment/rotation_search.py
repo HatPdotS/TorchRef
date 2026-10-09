@@ -10,8 +10,8 @@ One call, three inputs::
 Everything else is derived from the model, the data and that error, following
 Phaser's own chain (``runMR_FRF.cc:419-448``): the spherical-harmonic bandwidth
 from the model's mean radius and the data's resolution, the sigma_A fall-off
-from the coordinate error, the Wilson normalisation and French-Wilson posterior
-from the observations and their sigmas.
+from the coordinate error, the Wilson normalisation from the observations and
+the inverse-variance measurement weight from their sigmas.
 
 The constants below are engine settings, not tuning knobs. They are scored on
 whether the true orientation lands inside the candidate window the downstream
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype
 from torchref.scaling.weighting import (DEFAULT_SNR_CAP,
                                         DEFAULT_TRUST_CAP)
 from .sh import (
@@ -43,8 +43,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ...model.model_ft import ModelFT
     from .frf.types import RotationPeak
 
-__all__ = ["FRFInputs", "RotationSolutions", "prepare_frf_inputs",
-           "rotation_search"]
+__all__ = ["RotationSolutions", "rotation_search"]
 
 # Note for anyone reaching for the constants below programmatically: the package
 # re-exports `rotation_search` (the function) under this module's own name, so
@@ -56,13 +55,9 @@ __all__ = ["FRFInputs", "RotationSolutions", "prepare_frf_inputs",
 #: for more, the resolution is coarsened to match instead -- see
 #: ``phaser_lmax_resolution``.
 #:
-#: Chosen by measurement, and the optimum is interior: over ten structures at
-#: ten seeded orientations, truth lands in the top twenty on 95/100 cells at 48,
-#: 98/100 at 64 and 98/100 at 100, but the binding case is 1AK5 (P 4 3 2), which
-#: manages 6/10, 9/10 and 8/10. Only 64 clears nine of ten on every structure.
-#: Phaser's own ceiling is 100 (``DEF_CLMN_LMAX``); here that is both worse on
-#: 1AK5 and six to ten times slower, and it needs more than 32 GB on three of
-#: the ten.
+#: 64 is the smallest cap that puts truth in the top twenty on >= 9/10 seeds
+#: for every panel structure; Phaser's 100 (``DEF_CLMN_LMAX``) is several times
+#: slower and no better.
 LMAX_CAP = 64
 
 #: SO(3) sample spacing in degrees for the rotation-function grid. Also sets the
@@ -95,16 +90,11 @@ LOW_RESOLUTION_CUTOFF_A = 100.0
 
 # Two things deliberately absent, both measured and rejected on the same panel:
 #
-# * **Orbit-deduplicated obs unroll.** Keeping only the distinct positions in
-#   each reflection's orbit, as Phaser does, rather than all n_ops copies. It
-#   moves 28 of 100 cells and in both directions -- 26 better, 13 worse against
-#   the shipped configuration -- with the binding structure unchanged at 9/10. A
-#   quarter of the results churned for no net gain.
-# * **Two-radius Patterson union.** Running the search at two integration radii
-#   and merging the peak lists by z-score. Exactly double the cost (8.7 s
-#   against 4.4 s median) and it changes 1 cell in 100, which is the engine's own
-#   run-to-run spread. An earlier measurement had favoured it; that result does
-#   not survive the anisotropy fix.
+# * **Orbit-deduplicated obs unroll** (only the distinct positions in each
+#   reflection's orbit, as Phaser does): it churns results in both directions
+#   with no net gain.
+# * **Two-radius Patterson union** (two integration radii, peak lists merged by
+#   z-score): double the cost for a change within run-to-run spread.
 
 #: Resolution window ``(d_max, d_min)`` the overall anisotropy is fitted in.
 #: The tensor is then applied across the full range. Inherited from the range
@@ -157,6 +147,15 @@ class RotationSolutions:
         return int(self.rotations.shape[0])
 
 
+def _valid_mask(data: "ReflectionData", device: torch.device) -> torch.Tensor:
+    """Return the data's validity mask, ``(n_reflections,)`` bool on ``device``."""
+    masks = getattr(data, "masks", None)
+    valid = None if masks is None else masks()
+    if valid is None:
+        return torch.ones(data.hkl.shape[0], dtype=torch.bool, device=device)
+    return valid.to(device=device, dtype=torch.bool)
+
+
 def fit_anisotropy(
     data: "ReflectionData",
     *,
@@ -170,15 +169,8 @@ def fit_anisotropy(
     Returns ``U`` in Angstrom squared as a ``(3, 3)`` at the configured float
     dtype, in the convention ``F_corrected = F * exp(+pi^2 s.U.s)``. It stays on
     the data's own device unless ``device`` says otherwise, so nothing crosses a
-    device boundary to be fitted and come back.
-
-    It used to be pinned to the host in double. Neither is needed. Measured over
-    the 16 datasets in ``tests/files/mtz``, the same fit in float32 reproduces
-    the double one to 3.3e-5 relative in ``U`` and 4.5e-6 in the correction
-    factor it exists to produce; end to end, four of five panel cases return a
-    bit-identical peak list and the fifth (2DQ6, P3121, the most nearly
-    isotropic ``U`` of the panel) keeps its top orientation and reshuffles two
-    near-tied deep ranks.
+    device boundary to be fitted and come back. Reflections outside
+    ``[d_min, d_max]`` or flagged invalid by ``data.masks()`` are left out.
 
     The projection matters: an unconstrained six-component fit can return a
     tensor the lattice forbids, and applying it then modulates the observations
@@ -195,6 +187,7 @@ def fit_anisotropy(
     s_vec_all = hkl @ rec_basis
     s_mag_all = s_vec_all.norm(dim=-1)
     keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
+    keep = keep & _valid_mask(data, dev)
     if int(keep.sum()) < n_shells * 5:
         raise ValueError(
             f"Only {int(keep.sum())} reflections in [{d_min}, {d_max}] A, too "
@@ -220,88 +213,6 @@ def fit_anisotropy(
     return symmetrize_anisotropy(U, sym_cart)
 
 
-
-@dataclass
-class FRFInputs:
-    """The observations the rotation search runs on, masked and corrected.
-
-    ``F_obs`` is anisotropy-corrected. ``sig_F`` carries the same correction,
-    which is a multiplicative factor, so ``F/sigma`` survives it unchanged -- it
-    is here because the engine builds its measurement weight from the sigmas and
-    the earlier code discarded them immediately after the Wilson step. ``None``
-    when the data carry no sigmas.
-    """
-
-    F_obs: torch.Tensor              # (N,) anisotropy-corrected amplitudes
-    sig_F: Optional[torch.Tensor]    # (N,) their sigmas, same correction
-    hkl: torch.Tensor                # (N, 3) integer Miller indices
-    s_vec: torch.Tensor              # (N, 3) reciprocal-space Cartesian
-    s_mag: torch.Tensor              # (N,) inverse Angstrom
-    centric: torch.Tensor            # (N,) bool
-    U_aniso: torch.Tensor            # (3, 3) Popov-Bourenkov U
-    device: torch.device
-
-
-def prepare_frf_inputs(
-    model: "ModelFT",
-    data: "ReflectionData",
-    *,
-    d_min: float,
-    d_max: float,
-    n_shells: int,
-    verbose: int = 0,
-) -> FRFInputs:
-    """Mask the observations to ``[d_min, d_max]`` and correct their anisotropy.
-
-    The anisotropy tensor comes from :func:`fit_anisotropy`, which is also what
-    the public :func:`rotation_search` uses. It used to be refitted here by a
-    second copy of the same six lines over the same window -- two paths to one
-    number is how they drift apart.
-
-    Everything lands on the configured default device, not on whichever device
-    ``model`` happens to sit on.
-    """
-    device = get_default_device()
-    real = get_float_dtype()
-
-    F_obs = data.F.to(real).abs()
-    hkl_all = data.hkl
-    rec_basis = data.cell.reciprocal_basis_matrix.to(real)
-    s_vec_all = hkl_all.to(real) @ rec_basis
-    s_mag_all = s_vec_all.norm(dim=-1)
-    keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
-    if keep.sum().item() < n_shells * 5:
-        raise ValueError(
-            f"Too few reflections ({keep.sum().item()}) in [{d_min},{d_max}] A "
-            f"for {n_shells} shells; widen the resolution range."
-        )
-    F_obs = F_obs[keep].to(device)
-    sig_F = getattr(data, "F_sigma", None)
-    if sig_F is not None:
-        sig_F = sig_F.to(real)[keep].to(device)
-    hkl = hkl_all[keep].to(device)
-    s_vec = s_vec_all[keep].to(device)
-    s_mag = s_mag_all[keep].to(device)
-    centric = (
-        data.centric[keep].to(torch.bool).to(device)
-        if hasattr(data, "centric")
-        else torch.zeros_like(F_obs, dtype=torch.bool)
-    )
-
-    U_aniso = fit_anisotropy(
-        data, d_min=d_min, d_max=d_max, n_shells=n_shells, device=device,
-    )
-    F_obs_aniso = apply_overall_anisotropy(F_obs, s_vec, U_aniso)
-    # Same multiplicative factor, so F/sigma survives the correction intact.
-    sig_F_aniso = (None if sig_F is None
-                   else apply_overall_anisotropy(sig_F, s_vec, U_aniso))
-
-    return FRFInputs(
-        F_obs=F_obs_aniso, sig_F=sig_F_aniso, hkl=hkl, s_vec=s_vec,
-        s_mag=s_mag, centric=centric, U_aniso=U_aniso, device=device,
-    )
-
-
 def search_peaks(
     model: "ModelFT",
     data: "ReflectionData",
@@ -322,9 +233,9 @@ def search_peaks(
 
     Returns ``(peaks, lmax, d_min)``, where ``peaks`` is a list of
     :class:`~torchref.experimental.alignment.frf.types.RotationPeak` in Edmonds
-    ZYZ. For the placement pipeline, which consumes peaks directly and has
-    already fitted ``U_aniso`` for its rescore stage; :func:`rotation_search` is
-    the entry point for everything else.
+    ZYZ. For the placement pipeline, which consumes peaks directly and fits
+    ``U_aniso`` itself; :func:`rotation_search` is the entry point for
+    everything else.
     """
     from ...utils import resolve_device
     from .frf.api import FastRotationFunction, phaser_lmax_resolution
@@ -362,14 +273,19 @@ def search_peaks(
         # The low-resolution half is live, not decorative: 3K7M carries two
         # reflections beyond 100 A that it removes.
         keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
+        keep = keep & _valid_mask(data, device)
 
         s_asu = s_vec_all[keep]
         s_mag_asu = s_mag_all[keep]
         F_obs = apply_overall_anisotropy(
             data.F.to(real).abs().to(device)[keep], s_asu, U_aniso,
         )
+        # The same multiplicative factor as F_obs, so F/sigma, and with it the
+        # inverse-variance weight, is unchanged by the correction.
         sigF = (
-            data.F_sigma.to(real).to(device)[keep]
+            apply_overall_anisotropy(
+                data.F_sigma.to(real).to(device)[keep], s_asu, U_aniso,
+            )
             if getattr(data, "F_sigma", None) is not None
             else None
         )
@@ -440,17 +356,8 @@ def search_peaks(
         s_calc = s_calc.to(device)
         F_calc = F_calc.to(device)
 
-        # No relative Wilson-B match here any more. It multiplied `F_calc` by
-        # exp(-B s^2/4) -- a smooth function of |s| -- and the engine's very next
-        # step divides out exactly such a function when it normalises. Measured:
-        # a relative B of +-30 A^2 moves E by at most 1.3e-7, the fit's own
-        # convergence tolerance. It was computing a number and having it undone.
-        #
-        # Not the same as the earlier finding that knocking it out was
-        # rank-neutral; that was a measurement about whether it mattered, this is
-        # that it is arithmetically cancelled. `fit_relative_wilson_b` survives in
-        # `frf/preprocessing` with no production caller at all -- it was kept for
-        # the ML rescore, and that was deleted.
+        # No relative Wilson-B match on F_calc: exp(-B s^2/4) is a smooth
+        # function of |s|, and the engine's normalisation divides it straight out.
 
         # Point-group rotations in the Cartesian frame, so the peak finder can
         # treat an orientation and its symmetry mates as one peak. As a set
@@ -529,8 +436,8 @@ def rotation_search(
         rotations are relative to; its position is irrelevant, since the
         rotation function works on the Patterson.
     data : ReflectionData
-        Observed amplitudes. ``F_sigma`` is used for the French-Wilson posterior
-        when present.
+        Observed amplitudes. ``F_sigma``, when present, sets the per-reflection
+        inverse-variance measurement weight.
     model_error_A : float
         Expected r.m.s. coordinate error of the model against the target, in
         Angstrom. This sets the sigma_A fall-off, and so how much weight the

@@ -232,10 +232,13 @@ class WilsonPriorTarget(DataTarget):
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """
-        Squared log-deviation of calculated intensity from the Wilson curve.
+        Wilson-prior loss of the scaled ``|F_calc|`` over the work set.
 
-        ``bin_mean`` mode reduces to one term per resolution bin;
-        ``per_reflection`` mode keeps one term per work-set reflection.
+        ``"rice"``: summed per-reflection NLL (nats) under a zero-centroid prior
+        of width ``Σ(s)`` from the Wilson curve, Rayleigh for acentrics and
+        half-normal for centrics. ``"per_reflection"``: mean squared log-deviation
+        of each ``|F_calc|²`` from the curve. ``"bin_mean"``: the same on the
+        per-bin mean intensities.
         """
         if fcalc is None:
             fcalc = self._model(self._data.hkl)
@@ -254,8 +257,7 @@ class WilsonPriorTarget(DataTarget):
         if self.mode == "rice":
             # Zero-structure Wilson prior = the ML X-ray Rice likelihood with
             # the centroid pinned to F=0 and the width pinned to the Wilson
-            # mean intensity Sigma(s_h). Mirrors ``_ml_xray_loss_math_eager``
-            # term-by-term with F_calc=0, eb=Sigma: acentric -> Rayleigh NLL,
+            # mean intensity Sigma(s_h): acentric -> Rayleigh NLL,
             # centric -> half-normal NLL. Per-reflection NLL in nats, so the
             # registered weight is a true prior strength (1.0 = honest joint
             # with the data likelihood). epsilon(h)=1 to match the X-ray
@@ -280,9 +282,7 @@ class WilsonPriorTarget(DataTarget):
                 torch.isfinite(nll), nll, torch.full_like(nll, 1e6)
             )
             # SUM over work reflections, matching the ML X-ray target's
-            # reduction. EnsembleRefinement registers this with the same
-            # 1/n_work weight it gives xray/work, so both raw losses are
-            # total-nats sums on one scale and the strength dial stays O(1).
+            # reduction, so both are total-nats sums on one per-ASU scale.
             return nll.sum()
 
         if self.mode == "per_reflection":

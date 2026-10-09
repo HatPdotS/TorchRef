@@ -107,5 +107,5 @@ __all__ = [
     # Similarity restraint
     "CoordinateSimilarityTarget",
 ]
-# Force-field, real-space, sampled-ML phase, and occupancy-diagnostic
+# Force-field, real-space and occupancy-diagnostic
 # targets are experimental and live in :mod:`torchref.experimental.targets`.

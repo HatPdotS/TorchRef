@@ -27,13 +27,13 @@ __all__ = ["clear_wigner_d_cache", "wigner_contraction_per_beta"]
 #: measurable and means no float64 is required there.
 _WIGNER_EIG_CACHE: dict = {}
 
-#: Memo for the per-l small-d blocks, keyed on (L, betas, device-str). Holds at
-#: most one entry, because the blocks are large: the per-l blocks together are
-#: ``n_beta * sum_l (2l+1)^2`` float64 scalars, 176 MB at L=65 and 659 MB at
-#: L=101 for the 60-value beta grid. One entry is all production wants --
-#: ``LMAX_CAP`` and ``GRID_SAMPLING_DEG`` in ``rotation_search`` are constants,
-#: so every call arrives with the same key. A caller that alternates bandwidths
-#: rebuilds each time, which is the uncached cost and not worse.
+#: Memo for the per-l small-d blocks, keyed on (L, device, dtype, betas). Holds
+#: at most one entry, because the blocks are large: the per-l blocks together are
+#: ``n_beta * sum_l (2l+1)^2`` scalars at the working dtype, 88 MB at L=65 and
+#: 330 MB at L=101 in float32 for the 60-value beta grid. One entry is all
+#: production wants -- ``LMAX_CAP`` and ``GRID_SAMPLING_DEG`` in ``rotation_search``
+#: are constants, so every call arrives with the same key. A caller that alternates
+#: bandwidths rebuilds each time, which is the uncached cost and not worse.
 _WIGNER_D_CACHE: dict = {}
 
 
@@ -157,7 +157,7 @@ def wigner_contraction_per_beta(
     real_dtype = torch.float64 if xi.dtype == torch.complex128 else torch.float32  # dtype-ok: follows the accumulator's width
 
     # Per-l loop over the small-d blocks, which come from the J_y
-    # eigendecomposition (small_d_stable's method, stable to any l). Contract
+    # eigendecomposition, which is stable to any l. Contract
     # each into S in turn: the full (n_beta, L, 2L-1, 2L-1) table is never
     # materialised as one array, nor is a 4-D einsum intermediate.
     S = torch.zeros((n_beta, dim, dim), dtype=xi.dtype, device=device)

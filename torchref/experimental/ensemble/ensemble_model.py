@@ -1,6 +1,6 @@
 """
-Ensemble atomic model: ``n_members`` (default 100) coordinate copies of the
-same chemistry sharing one Fourier transform.
+Ensemble atomic model: a pool of ``n_members`` coordinate copies of the same
+chemistry sharing one Fourier transform.
 
 .. warning::
 
@@ -341,9 +341,9 @@ class EnsembleModel(ModelFT):
 
        Experimental — API and behaviour may change without notice.
 
-    ``n_members`` (default 100) is rounded to a multiple of ``N_sym`` and, when
-    birth/death population dynamics are used, is the number of *alive* members
-    within a pre-allocated ``n_max`` slot pool — not a fixed copy count.
+    ``n_members`` is the size of the member-slot pool and :attr:`n_alive` the
+    number of live slots; they differ when a factory's ``n_max`` adds dead
+    spare slots or :meth:`kill_member` retires a member.
 
     Parameters
     ----------
@@ -448,7 +448,7 @@ class EnsembleModel(ModelFT):
             Path to input PDB. May contain multiple models — only the first
             is used (use :meth:`from_multimodel_pdb` to consume all).
         n_members : int
-            Number of ensemble members.
+            Number of alive members; the pool holds ``max(n_members, n_max)``.
         perturb_sigma : float
             Std-dev (Å) of Gaussian noise added to xyz of each replicated copy.
             Default 0.01 Å — only large enough to break gradient degeneracy
@@ -456,8 +456,8 @@ class EnsembleModel(ModelFT):
             LJ clashes (atoms walking inside vdW radii), which makes any
             downstream force-field restraint (AmberTarget, geometry terms)
             return huge energies / gradients. The ensemble's real disorder
-            should develop from the X-ray gradient + entropy regularizer
-            during refinement, not from the initial noise.
+            should develop from the X-ray and restraint gradients during
+            refinement, not from the initial noise.
         b_const : float
             Fixed isotropic B-factor (Å²) for every atom in every member.
             Small but non-zero to avoid FFT grid aliasing.
@@ -597,7 +597,7 @@ class EnsembleModel(ModelFT):
                 src["y"] = src["y"].astype(float) + noise[:, 1]
                 src["z"] = src["z"].astype(float) + noise[:, 2]
             src["tempfactor"] = float(b_const)
-            src["occupancy"] = 1.0 / float(n_members)
+            src["occupancy"] = 1.0 / float(pool)
             for c in ("u11", "u22", "u33", "u12", "u13", "u23"):
                 if c in src.columns:
                     src[c] = 0.0
@@ -680,7 +680,7 @@ class EnsembleModel(ModelFT):
             b_raw0.to(self.dtype_float), requires_grad=False
         )
         # Only xyz refines — B-factors fixed (ensemble spread IS the disorder),
-        # anisotropic U is unused, and occupancy is fixed at 1/N by default
+        # anisotropic U is unused, and occupancy is fixed at 1/n_alive by default
         # (per-member occupancy can be opted into via
         # enable_population_refinement, but is a known dead de-overfit lever).
         for tgt in ("adp", "u", "occupancy"):
@@ -746,7 +746,7 @@ class EnsembleModel(ModelFT):
         """Turn per-member occupancy (and optionally ADP) injection on/off.
 
         When on, ``get_iso``/``get_aniso`` substitute the live per-member
-        softmax occupancy ``w_m`` for the frozen 1/N, so
+        softmax occupancy ``w_m`` for the frozen 1/n_alive, so
         ``F̄ = Σ_{m alive} w_m·DWF(B_m)·F_m`` and gradients flow to
         ``occ_logits``. With ``refine_b=True`` the per-member softplus ADP
         ``B_m`` is also injected (gradients to ``b_raw``); otherwise B stays
@@ -804,16 +804,23 @@ class EnsembleModel(ModelFT):
         Child xyz = parent xyz + N(0, sigma) (symmetry break); the parent's
         weight is split between the two (``logit -= ln2`` on both); child B
         copies the parent's. Returns the reborn slot index, or -1 if the pool
-        is full (no dead slot available).
+        is full (no dead slot available). Raises ``RuntimeError`` after
+        :meth:`enable_low_rank` / :meth:`enable_pca`, whose ``xyz`` has no
+        per-member coordinate rows to copy.
         """
+        n_at = int(self.n_atoms_per_member)
+        flat = self.xyz.refinable_params  # (N_max*n_atoms, 3)
+        if tuple(flat.shape) != (self.n_members * n_at, 3):
+            raise RuntimeError(
+                "bifurcate_member needs per-member Cartesian xyz; it cannot run "
+                "after enable_low_rank or enable_pca."
+            )
         a = self._alive
         free = (~a).nonzero(as_tuple=False).flatten()
         if free.numel() == 0:
             return -1
         d = int(free[0].item())
-        n_at = int(self.n_atoms_per_member)
         with torch.no_grad():
-            flat = self.xyz.refinable_params  # (N_max*n_atoms, 3)
             ps, pe = parent_idx * n_at, (parent_idx + 1) * n_at
             ds, de = d * n_at, (d + 1) * n_at
             flat[ds:de] = flat[ps:pe] + torch.randn_like(flat[ps:pe]) * float(sigma)
@@ -839,10 +846,10 @@ class EnsembleModel(ModelFT):
         refinable leaf is the per-member amplitudes ``A`` (shape ``(N, K)``).
         Degrees of freedom collapse from ``N·n_atoms·3`` to ``N·K``.
 
-        The current coordinates ARE the basis source, so this must be called
-        after the ensemble is seeded with real disorder (e.g. after a
-        ``--branch-from`` overlay) — a fresh replicate-and-perturb ensemble
-        has only ~``perturb_sigma`` of near-degenerate spread.
+        The current coordinates ARE the basis source, so call this on an
+        ensemble with real disorder (loaded with :meth:`from_multimodel_pdb`
+        or a checkpoint); a fresh replicate-and-perturb ensemble has only
+        ~``perturb_sigma`` of near-degenerate spread.
 
         Parameters
         ----------
@@ -857,6 +864,7 @@ class EnsembleModel(ModelFT):
             the retained ``K`` modes.
         """
         from .low_rank_ensemble import LowRankXYZ
+        from .pca_model import PCAEnsembleParam
 
         N = int(self.n_members)
         n_atoms = int(self.n_atoms_per_member)
@@ -870,25 +878,14 @@ class EnsembleModel(ModelFT):
                 )
             K = max_rank
 
-        with torch.no_grad():
-            flat = self.xyz().detach()                       # (N*n_atoms, 3)
-            # dtype-ok: SVD seeding in float64 for numerical stability. Caveat: no
-            # .cpu() first, so this errors on MPS.
-            X = flat.reshape(N, n_atoms * 3).to(torch.float64)
-            mu = X.mean(dim=0)                               # (D,)
-            Xc = X - mu.unsqueeze(0)
-            # full_matrices=False → Vt is (min(N, D), D); S length min(N, D).
-            U, S, Vt = torch.linalg.svd(Xc, full_matrices=False)
-            Vk = Vt[:K]                                      # (K, D)
-            A0 = Xc @ Vk.T                                   # (N, K)
-            total_var = (S ** 2).sum().clamp_min(1e-30)
-            explained = float((S[:K] ** 2).sum() / total_var)
-
-        dtype = self.dtype_float
+        seed = PCAEnsembleParam.from_ensemble(
+            self.xyz().detach(), n_members=N, n_atoms=n_atoms, K=K
+        )
+        explained = seed.explained_variance
         lowrank = LowRankXYZ(
-            mu=mu.to(dtype),
-            V=Vk.to(dtype),
-            amplitudes=A0.to(dtype),
+            mu=seed.mu,
+            V=seed.V,
+            amplitudes=seed.A,
             n_members=N,
             n_atoms=n_atoms,
             explained_variance=explained,
@@ -911,8 +908,8 @@ class EnsembleModel(ModelFT):
         Like :meth:`enable_low_rank` but the mean ``mu``, basis ``V`` AND
         amplitudes ``A`` all refine (see
         :class:`~torchref.experimental.ensemble.pca_model.PCAEnsembleParam`). ``K=None`` → the
-        full rank ``N-1`` (complete reparameterization). Must be called after
-        the ensemble carries real disorder (e.g. after a ``--branch-from``).
+        full rank ``N-1`` (complete reparameterization). Call it on an ensemble
+        with real disorder (loaded with :meth:`from_multimodel_pdb` or a checkpoint).
         Returns the cumulative explained-variance fraction at seed time.
         """
         from .pca_model import PCAEnsembleParam
@@ -952,7 +949,7 @@ class EnsembleModel(ModelFT):
         X-ray/Wilson gradient — but their geometry is still restrained by
         Amber (which reads coordinates, not occupancy). This breaks the member
         co-adaptation that lets an overparameterized ensemble memorize
-        work-set noise. Disabling restores the full ``1/N`` average.
+        work-set noise. Disabling restores the full ``1/n_alive`` average.
         """
         self.dropout_active = bool(active)
         if dropout_min is not None:
@@ -970,24 +967,23 @@ class EnsembleModel(ModelFT):
     def resample_dropout(self) -> int:
         """Draw a fresh member subset and rewrite the occupancy multiplier.
 
-        Picks ``k ~ U[dropout_min, dropout_max]`` members uniformly at random,
-        sets their per-atom multiplier to ``N/k`` (so effective occupancy is
-        ``(1/N)·(N/k) = 1/k`` and the subset average is unbiased) and the rest
-        to 0. No-op when dropout is inactive. Returns ``k`` (or ``N`` when
-        inactive).
+        Picks ``k ~ U[dropout_min, dropout_max]`` (capped at ``n_alive``) of
+        the alive members uniformly at random, sets their per-atom multiplier
+        to ``n_alive/k`` (so effective occupancy is ``(1/n_alive)·(n_alive/k)
+        = 1/k``) and the rest, dead slots included, to 0. Returns ``k`` (or
+        :attr:`n_alive` when dropout is inactive, which is a no-op).
         """
         if not self.dropout_active or self._dropout_occ_mult is None:
-            return self.n_members
-        N = self.n_members
-        lo = max(1, int(self.dropout_min))
-        hi = min(int(self.dropout_max), N)
-        if hi < lo:
-            hi = lo
+            return self.n_alive
+        alive = self._alive.nonzero(as_tuple=False).flatten()
+        n_alive = int(alive.numel())
+        lo = min(max(1, int(self.dropout_min)), n_alive)
+        hi = max(min(int(self.dropout_max), n_alive), lo)
         k = int(torch.randint(lo, hi + 1, (1,)).item())
         dev = self._dropout_occ_mult.device
         dt = self._dropout_occ_mult.dtype
-        keep = torch.zeros(N, device=dev, dtype=dt)
-        keep[torch.randperm(N, device=dev)[:k]] = float(N) / float(k)
+        keep = torch.zeros(self.n_members, device=dev, dtype=dt)
+        keep[alive[torch.randperm(n_alive, device=dev)[:k]]] = n_alive / float(k)
         self._dropout_occ_mult.copy_(keep.repeat_interleave(self.n_atoms_per_member))
         return k
 
@@ -1004,19 +1000,21 @@ class EnsembleModel(ModelFT):
         return occupancy
 
     def _inject_population(self, occupancy: torch.Tensor, adp: torch.Tensor):
-        """Substitute live per-member softmax occupancy / softplus ADP.
+        """Substitute per-member occupancy (and softplus ADP) for the stored values.
 
-        Only when population refinement is on and the per-atom vector aligns
-        with the full ensemble layout (``get_iso`` covers all atoms; the
-        all-isotropic ensemble leaves ``get_aniso`` empty, so its shorter
-        vector simply skips the swap). The returned tensors are live, so
-        autograd reaches ``occ_logits``/``b_raw`` through the FFT SF path.
+        Dead slots get zero occupancy. Without population refinement the alive
+        members share it equally (``1/n_alive``); with it they carry the live
+        softmax weights, so autograd reaches ``occ_logits``/``b_raw`` through
+        the FFT SF path. Applies only when the per-atom vector aligns with the
+        full ensemble layout (``get_iso`` covers all atoms; the all-isotropic
+        ensemble leaves ``get_aniso`` empty, so its shorter vector skips this).
         """
+        idx = getattr(self, "_member_index", None)
+        if idx is None or occupancy.numel() != idx.numel():
+            return occupancy, adp
         if not getattr(self, "_refine_population", False):
-            return occupancy, adp
-        if occupancy.numel() != self._member_index.numel():
-            return occupancy, adp
-        idx = self._member_index
+            alive = self._alive.to(occupancy.dtype)
+            return (alive / alive.sum())[idx], adp
         occupancy = self.member_weights()[idx]
         # B stays frozen at b_const unless explicitly refined (free B -> 0 on
         # the weighted members = delta-function overfit; default off).
@@ -1063,14 +1061,13 @@ class EnsembleModel(ModelFT):
         """
         Write the ensemble as a multi-MODEL PDB.
 
-        Each ensemble member becomes one MODEL record. The single-copy
-        chemistry from ``self._pdb_single`` is used as the row template;
-        per-member coordinates come from ``xyz_per_member``.
-
-        Note: the written B-factor is a single scalar (atom 0's ADP) applied to
-        every atom of every member, not a per-atom value — the ensemble carries
-        a constant frozen B and the spread itself is the disorder model.
-        Occupancies are written as the uniform ``1/n_members``.
+        Each alive member becomes one MODEL record; dead pool slots are not
+        written. The single-copy chemistry from ``self._pdb_single`` is the row
+        template; coordinates come from ``xyz_per_member``. Occupancy and B are
+        the values the structure factor uses: ``1/n_alive`` per member (the
+        softmax weight under population refinement) and the frozen per-atom B
+        (the member's ``B_m`` when it is refined). :meth:`from_multimodel_pdb`
+        reads back coordinates only.
         """
         if self._pdb_single is None:
             raise RuntimeError(
@@ -1078,17 +1075,20 @@ class EnsembleModel(ModelFT):
                 "from_single / from_multimodel_pdb classmethod?"
             )
         coords = self.xyz_per_member.detach().cpu().numpy()
+        with torch.no_grad():
+            occ, b = self._inject_population(self.occupancy(), self.adp())
+        occ = occ.reshape(self.n_members, -1).cpu().numpy()
+        b = b.reshape(self.n_members, -1).cpu().numpy()
         dfs = []
-        for i in range(self.n_members):
+        for i in np.flatnonzero(self._alive.cpu().numpy()):
             df = self._pdb_single.copy(deep=True)
             df["x"] = coords[i, :, 0]
             df["y"] = coords[i, :, 1]
             df["z"] = coords[i, :, 2]
-            df["tempfactor"] = float(self.adp().detach().cpu().numpy()[0]) \
-                if self.adp is not None else 5.0
-            df["occupancy"] = 1.0 / self.n_members
+            df["tempfactor"] = b[i]
+            df["occupancy"] = occ[i]
             # Attach cell/spacegroup to first frame for the writer's CRYST1.
-            if i == 0:
+            if not dfs:
                 if self.cell is not None:
                     df.attrs["cell"] = self.cell.data.detach().cpu().numpy().tolist()
                 if self.spacegroup is not None:

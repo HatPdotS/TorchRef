@@ -15,20 +15,20 @@ explicit member spread rather than (or in addition to) B-factors.
 Key Classes
 -----------
 EnsembleRefinement
-    Orchestrator that drives LBFGS refinement of an :class:`EnsembleModel`
+    Adam-driven (optionally SGD or Langevin) refinement of an :class:`EnsembleModel`
     with ensemble-aware X-ray, rank-penalty and Wilson-prior targets.
 EnsembleModel
     Multi-member atomic model; exposes per-member coordinates and supports
     low-rank / PCA re-parameterisations of the member spread.
-LowRankXYZ, PCAEnsembleParam
-    Reduced-dimensionality parameterisations of the ensemble displacement
-    field (frozen mean + low-rank basis).
-    intensity distributions).
+LowRankXYZ
+    Frozen mean and low-rank basis; only the per-member amplitudes refine.
+PCAEnsembleParam
+    Low-rank decomposition whose mean, basis and amplitudes all refine.
 RankPenaltyTarget
     Soft de-overfitting penalty on the rank/magnitude of the ensemble
     displacement matrix.
 WilsonPriorTarget
-    Per-bin penalty keeping ``<|F_calc|^2>`` on the Wilson curve.
+    Wilson prior on ``|F_calc|``: Rice NLL (default), per-reflection or per-bin fit.
 EnsembleAmberTarget, EnsembleAmberKLTarget, QuasiCrystalAmberTarget
     Amber force-field restraints for the ensemble, built on
     :class:`~torchref.experimental.mm.OpenMMAdapter`. :class:`QuasiCrystalAmberTarget`
@@ -42,6 +42,10 @@ EnsembleAmberTarget, EnsembleAmberKLTarget, QuasiCrystalAmberTarget
     dependency, and an ensemble carrying hydrogens.
 """
 
+from torchref.experimental.ensemble.ensemble_amber_kl import (
+    EnsembleAmberKLTarget,
+    EnsembleAmberTarget,
+)
 from torchref.experimental.ensemble.ensemble_model import EnsembleModel
 from torchref.experimental.ensemble.low_rank_ensemble import LowRankXYZ
 from torchref.experimental.ensemble.pca_model import PCAEnsembleParam
@@ -49,10 +53,6 @@ from torchref.experimental.ensemble.ensemble_refinement import EnsembleRefinemen
 from torchref.experimental.ensemble.quasi_crystal_amber import QuasiCrystalAmberTarget
 from torchref.experimental.ensemble.rank_penalty import RankPenaltyTarget
 from torchref.experimental.ensemble.wilson_prior import WilsonPriorTarget
-from torchref.experimental.ensemble.ensemble_amber_kl import (
-    EnsembleAmberKLTarget,
-    EnsembleAmberTarget,
-)
 
 __all__ = [
     "EnsembleModel",

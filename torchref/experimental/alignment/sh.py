@@ -15,11 +15,8 @@ Three unrelated things share this module because they share one consumer.
   load-bearing: an unconstrained six-component fit can return a tensor the
   lattice forbids.
 
-This module used to also carry a full spherical-harmonic expansion
-(``evaluate_ylm``, ``sh_expand_ball``). Nothing called it -- the FRF's own
-expansion superseded it -- so it went. ``_bar_legendre_recurrence`` survived it:
-production does not call that either, but the FRF expansion's only *independent*
-test reference is built on it.
+``_bar_legendre_recurrence`` has no production caller; it is kept because the
+FRF expansion's only *independent* test reference is built on it.
 """
 
 from __future__ import annotations
@@ -270,8 +267,7 @@ def fit_overall_anisotropy(
     min_count: int = 20,
     n_iter: int = 12,
 ) -> torch.Tensor:
-    """
-    Fit the overall anisotropy tensor U from F_obs alone (no model needed).
+    """Fit the overall anisotropy tensor U from F_obs alone (no model needed).
 
     The Popov-Bourenkov correction models the observed intensities as a
     per-shell isotropic Wilson piece modulated by an overall anisotropic
@@ -279,56 +275,44 @@ def fit_overall_anisotropy(
 
         E[ I(h) / <I>_shell ] = c * exp(-2 pi^2 s.U.s)
 
-    That expectation is exact in **intensity** space, which is where this fits
-    it: a free constant ``c`` absorbs the overall scale, the weights come from
-    ``Var(I/<I>)`` -- 1 for acentric reflections and 2 for centric ones -- and
-    non-positive or non-finite amplitudes are dropped. Gauss-Newton from
-    ``U = 0``.
-
-    Fitting the same relation in log space instead is what the earlier version
-    did, and it is biased: ``E[ln(I/<I>)]`` is ``-gamma = -0.577`` for acentric
-    and ``-gamma - ln 2`` for centric reflections, not zero. Without a constant
-    term that offset can only be absorbed by the quadratic form, so U comes back
-    with a large spurious component -- and because centric reflections lie on
-    the zones perpendicular to the symmetry axes, the bias is
-    direction-dependent rather than a harmless overall scale.
-
-    The returned U is the correction to *apply* in the form::
-
-        F_obs_corrected(h) = F_obs(h) * exp(+pi^2 s.U.s)
-
-    so the corrected amplitudes have the same mean square in every direction.
-    Project it onto the point group with :func:`symmetrize_anisotropy` before
-    applying it: an unconstrained six-component fit can return a tensor the
-    lattice forbids.
+    Fitted in intensity space, because the log-space form is biased by the
+    Euler-gamma offset of ``E[ln(I/<I>)]``, which differs between centric and
+    acentric zones and so leaks into U by direction. A free constant ``c`` absorbs
+    the scale, the weights are ``1/Var(I/<I>)`` (1 acentric, 1/2 centric),
+    non-positive or non-finite amplitudes are dropped, and Gauss-Newton starts
+    from ``U = 0``. The returned U is the correction to *apply*,
+    ``F_corrected = F_obs * exp(+pi^2 s.U.s)``; project it with
+    :func:`symmetrize_anisotropy` first.
 
     Parameters
     ----------
-    F_obs : (N,) real
-    s_vectors : (N, 3) real, reciprocal-space Cartesian (1/Angstrom)
-    shell_idx : (N,) int64 -- shell of each reflection, in [0, P); negative
-        entries are excluded
-    centric : (N,) bool
-    P : int, number of shells
-    min_count : int, optional
-        Shells with fewer reflections than this are dropped, since their mean
-        intensity is too noisy to normalise against.
-    n_iter : int, optional
+    F_obs : torch.Tensor
+        Amplitudes of shape (N,).
+    s_vectors : torch.Tensor
+        Cartesian reciprocal-space vectors of shape (N, 3), in Å⁻¹.
+    shell_idx : torch.Tensor
+        Shell of each reflection in [0, P), shape (N,); negative entries are
+        excluded.
+    centric : torch.Tensor
+        Centric flags of shape (N,), bool.
+    P : int
+        Number of shells.
+    min_count : int
+        Shells with fewer reflections are dropped as too noisy to normalise by.
+    n_iter : int
         Gauss-Newton iterations.
 
     Returns
     -------
-    U : (3, 3) symmetric real tensor (Angstrom squared). Zero if too few
-        reflections survive to constrain seven parameters.
+    torch.Tensor
+        Symmetric U of shape (3, 3) in Å², at ``F_obs``'s dtype and device; zero
+        if fewer than 50 reflections survive to constrain seven parameters.
     """
     valid = shell_idx >= 0
-    # The fit runs at the amplitudes' own width, wherever they are. It used to
-    # force double on the host, which was measured against this: over the 16
-    # datasets in ``tests/files/mtz``, float32 reproduces U to 3.3e-5 relative
-    # and the correction it exists to apply, exp(+pi^2 s.U.s), to 4.5e-6. The
-    # design matrix is well scaled by construction -- a constant column beside
-    # 2 pi^2 s.s terms of order 0.1-1 over the fitting window -- so there is no
-    # precision cliff for seven parameters to fall off.
+    # The fit runs at the amplitudes' own width, wherever they are: the design
+    # matrix is well scaled by construction -- a constant column beside
+    # 2 pi^2 s.s terms of order 0.1-1 over the fitting window -- so float32
+    # reproduces U and its correction to ~1e-5 relative.
     work = F_obs.dtype if F_obs.is_floating_point() else get_float_dtype()
     F = F_obs[valid].to(work)
     s = s_vectors[valid].to(work)
@@ -389,10 +373,10 @@ def hkl_symops_to_cartesian(
     space vectors (`s = h @ rec_basis`, column-vector form: `s = M @ h` with
     `M = rec_basis^T`).
 
-    For column vectors: `s' = M · S · M⁻¹ · s` so `P_cart = M · S · M⁻¹`.
+    With `h' = h · S`, column vectors transform as `P_cart = M · Sᵀ · M⁻¹`.
 
-    For orthogonal cells (orthorhombic+) M is diagonal and `P_cart == S`
-    exactly. For non-orthogonal cells (monoclinic, hex/trig with γ=120°,
+    For orthogonal cells (orthorhombic+) M is diagonal and the set {P_cart}
+    equals the set {S}. For non-orthogonal cells (monoclinic, hex/trig with γ=120°,
     triclinic), the Cartesian form differs and matters for any operation
     that mixes the axes (e.g. averaging tensors over the point group).
 
@@ -422,10 +406,8 @@ def hkl_symops_to_cartesian(
     # S^T, not S: reciprocal space transforms as h' = h.S, so the operator
     # acting on Cartesian s as a column vector is (B^-1 S B)^T = M S^T M^-1
     # with M = B^T. Using S here returns matrices that are not rotations at all
-    # in a non-orthogonal basis -- measured orthogonality error 5.33 for
-    # P 3_1 2 1 and P 6_5 2 2, versus 2e-7 with the transpose. The two agree
-    # whenever the symmetry matrices are orthogonal, i.e. everywhere except
-    # trigonal/hexagonal, which is why this survived.
+    # in a non-orthogonal basis; the two agree only where the symmetry matrices
+    # are orthogonal, i.e. everywhere except trigonal/hexagonal.
     return torch.einsum("ij,klj,lm->kim", M, S, M_inv)
 
 

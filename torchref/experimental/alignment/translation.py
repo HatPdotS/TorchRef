@@ -8,14 +8,13 @@ form used here accumulates the pair coefficients
 evaluations with a single transform.
 
 Both sides of that sum are **normalised**. The observed side is the rotation
-search's own LERF1 intensity, ``cw (E_obs^2 - 1) w sigma_A^2``, built from the
-run's one Wilson fit; the calculated side is the oriented model's transform
+search's LERF1 intensity, ``cw (E_obs^2 - 1) w sigma_A^2``, built from a Wilson
+fit over the translation set; the calculated side is the oriented model's transform
 divided by its own Wilson curve, so ``<|E_calc(h, t)|^2> = 1`` per shell for
 every candidate. The score is then a covariance of two normalised intensities
-and every resolution shell carries the weight the model error gives it. The
-previous form divided raw ``|F_calc|^2`` by its own sum, which is not a
-correlation: on 2DQ6 it was 0.665 at a position 41 A from the deposited pose
-and 0.350 at the pose itself, and the search followed it there.
+and every resolution shell carries the weight the model error gives it; raw
+``|F_calc|^2`` would let the strongest calculated reflections pull the peak off
+the true position.
 
 The grid is sized to the resolution of the translation set, one FFT per
 candidate, and the best few peaks are re-scored with the full Rice/Woolfson
@@ -240,7 +239,15 @@ def prepare_candidate(
     have zero mean over ``h``. The crystal's ``<|F_calc|^2>`` is then
     ``eps n_ops Sigma_P``, and dividing by it is what puts every candidate's
     ``E_calc`` on one footing with ``E_obs`` and with each other.
+
+    Raises ``ValueError`` if ``model_p1.cell`` is not ``real_cell``: the
+    template's transform would then be sampled in another crystal's cell.
     """
+    if not np.allclose(model_p1.cell.key, real_cell.key, rtol=1e-5, atol=0.0):
+        raise ValueError(
+            f"model_p1 carries cell {model_p1.cell.key}, the crystal is "
+            f"{real_cell.key}; assign the crystal's cell to the template first."
+        )
     device = get_default_device()
     real = get_float_dtype()
     cplx = get_complex_dtype()
