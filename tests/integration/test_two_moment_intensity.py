@@ -255,8 +255,9 @@ class TestNonFiniteObservations:
         with_nan = _target(dc, mc, scaler).forward().item()
 
         # One reflection out of tens of thousands: the loss should drop slightly, not
-        # jump by a penalty term.
-        assert with_nan <= baseline
+        # jump by a penalty term. The slack is for CUDA, where repeating this ~4e7 sum
+        # moves it by ~50 while one reflection's own term is ~500.
+        assert with_nan <= baseline * (1 + 1e-5)
         assert abs(with_nan - baseline) / baseline < 1e-2
 
 
