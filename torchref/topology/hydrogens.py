@@ -5,7 +5,7 @@ each one's parent. Generating hydrogens is therefore template instantiation, not
 geometry reconstruction: align the template onto the heavy atoms that are present,
 read the hydrogen positions off it, and correct each to its ideal bond length.
 
-Two things the bond graph decides that a distance criterion previously guessed at:
+Two things are decided from the bond graph rather than from interatomic distances:
 
 * **How many hydrogens a parent can carry.** The smaller of two budgets: the parent's
   valence (including tetrahedral ammonium nitrogen) minus the heavy atoms actually

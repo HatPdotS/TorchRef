@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/torchref-banner-dark.svg">
-    <img src="assets/torchref-banner-light.svg" alt="TorchRef" width="380">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/HatPdotS/TorchRef/main/assets/torchref-banner-dark.svg">
+    <img src="https://raw.githubusercontent.com/HatPdotS/TorchRef/main/assets/torchref-banner-light.svg" alt="TorchRef" width="380">
   </picture>
 </p>
 
@@ -26,7 +26,7 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. Aut
 
 ## Benchmark
 
-![TorchRef AlphaFold-start refinement benchmark](paper/figure2_alphafold_start/figures/figure_af_benchmark.png)
+![TorchRef AlphaFold-start refinement benchmark](https://raw.githubusercontent.com/HatPdotS/TorchRef/main/paper/figure2_alphafold_start/figures/figure_af_benchmark.png)
 
 *Refinement of Phaser-placed AlphaFold models against experimental data, on a conserved set of 723 PDB structures (1.40–3.00 Å). All engines start from the same placed models and are scored by one common validator (PHENIX).*
 
@@ -93,4 +93,4 @@ Questions, feature ideas and usage discussion are welcome on the [TorchRef categ
 
 ### License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/HatPdotS/TorchRef/blob/main/LICENSE).
