@@ -13,9 +13,10 @@ Breaking changes
 - Anomalous scattering is off unless ``--wavelength`` is given (it defaulted to 1.0 Å)
 - Bulk-solvent phase offset removed; ``optimize_phase`` is deprecated
 - ``phased-difference-map`` is now ``difference-map``: fewer default columns (``--all-columns``), renamed (``dF``, ``W_InVa``)
-- Checkpoints restore only through ``load_state``; ``create_from_state_dict`` is removed
+- Refinement checkpoints restore only through ``load_state``; ``Refinement.create_from_state_dict`` is removed
 - ``french_wilson_auto`` moved to ``torchref.io.datasets``; ``CollectionRiceTarget`` is now ``CollectionMLTarget``
 - Refinement writes its own PDB/mmCIF header instead of copying the input's
+- ``DatasetCollection.scale()`` returns ``ScaledDataset`` members; ``ReflectionData`` holds no scale parameters or E values (use ``WilsonNormaliser``)
 - Many unused public functions, classes and aliases removed; numba is no longer a dependency
 
 New features
@@ -23,6 +24,7 @@ New features
 - Node-field ADP representation (``--adp-mode field|field_aniso|preserve``)
 - Refinable riding hydrogens, generated from monomer-library templates
 - Topology graph (``Topology``, ``AtomGraph``, ``ResidueGraph``) with Phenix-style ``select``
+- Joint relative scaling of observed datasets with no reference dataset (``DatasetScaler``)
 - DED weights without resolution shells (``--ded-weight``, default ``q``; ``--difference-sigma-scale``) and ``--two-moment``
 - New CLIs ``torchref.uniform-rfree`` and ``torchref.simulate-noisy-data``; CrystFEL ``.hkl`` reader
 - French–Wilson fits a smooth anisotropic Wilson prior and shrinks weak reflections instead of rejecting them
