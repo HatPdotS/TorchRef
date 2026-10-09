@@ -15,7 +15,12 @@ from torchref.base.targets.planarity import planarity_math
 from torchref.base.targets.ramachandran import ramachandran_math
 from torchref.base.targets.xray_ls import ls_xray_loss_math
 from torchref.base.targets.xray_nll import nll_sigma_obs_math
-from torchref.config import get_default_device, get_float_dtype, get_int_dtype
+from torchref.config import (
+    get_complex_dtype,
+    get_default_device,
+    get_float_dtype,
+    get_int_dtype,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -239,3 +244,26 @@ def test_amplitude_targets_score_the_magnitude_of_a_signed_fcalc(loss_math) -> N
     loss_signed.backward()
     loss_amplitude.backward()
     torch.testing.assert_close(signed.grad, amplitude.grad * signed.detach().sign())
+
+
+@pytest.mark.parametrize(
+    "loss_math", [ls_xray_loss_math, nll_sigma_obs_math], ids=["ls", "nll"]
+)
+def test_amplitude_targets_score_the_modulus_of_a_complex_fcalc(loss_math) -> None:
+    """A complex ``F_calc`` scores as its modulus.
+
+    The Triton kernels read one real scalar per element, so dispatch must send complex
+    input to the eager path rather than read interleaved re/im pairs; on CUDA this
+    compares that route against the kernel fed the real amplitude.
+    """
+    obs = torch.tensor(
+        [10.0, 20.0, 30.0, 5.0], dtype=get_float_dtype(), device=get_default_device()
+    )
+    sigma = obs.new_tensor([1.0, 2.0, 5.0, 1.0])
+    phase = obs.new_tensor([0.3, 2.0, -1.2, 3.0])
+    modulus = obs.new_tensor([12.0, 26.0, 80.0, 4.0])
+    fcalc = torch.polar(modulus, phase).to(get_complex_dtype())
+
+    torch.testing.assert_close(
+        loss_math(obs, fcalc, sigma), loss_math(obs, fcalc.abs(), sigma)
+    )
