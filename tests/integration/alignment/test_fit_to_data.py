@@ -61,7 +61,7 @@ def _best_alignment_rotation(xyz_a: torch.Tensor, xyz_b: torch.Tensor) -> torch.
     H = b.T @ a
     U, _, Vt = torch.linalg.svd(H)
     d = torch.sign(torch.det(Vt.T @ U.T))
-    D = torch.diag(torch.tensor([1.0, 1.0, d], dtype=H.dtype))
+    D = torch.diag(torch.tensor([1.0, 1.0, d], dtype=H.dtype, device=H.device))
     R = Vt.T @ D @ U.T
     return R
 

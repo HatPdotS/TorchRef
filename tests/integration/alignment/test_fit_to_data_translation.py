@@ -94,7 +94,7 @@ def test_fit_to_data_recovers_rotation_and_translation():
     H = b.T @ a
     U, _, Vt = torch.linalg.svd(H)
     d = float(torch.sign(torch.det(Vt.T @ U.T)))
-    D = torch.diag(torch.tensor([1.0, 1.0, d], dtype=H.dtype))
+    D = torch.diag(torch.tensor([1.0, 1.0, d], dtype=H.dtype, device=H.device))
     R_residual = Vt.T @ D @ U.T
     sym_cart = _cartesian_symops(data)
     errs = [rotation_angular_distance_deg(R_residual, sym_cart[k])

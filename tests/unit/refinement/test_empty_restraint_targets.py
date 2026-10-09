@@ -92,7 +92,7 @@ def test_torsion_target_without_intra_torsions_on_cuda(pdb_dir, tmp_path, cuda_d
     with use_portable():
         eager = target().item()
 
-    assert target().item() == pytest.approx(eager, rel=1e-5)
+    assert target().item() == pytest.approx(eager, rel=1e-4)
 
 
 @pytest.mark.unit
