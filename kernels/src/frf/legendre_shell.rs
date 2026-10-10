@@ -10,6 +10,15 @@
 //! Fusing removes the per-row round trip to memory that dominates the torch formulation.
 //! Work is partitioned by shell, so a worker owns every write into its shells' rows and no
 //! atomics are needed. float32 only.
+//!
+//! Rows are short (`l < L`), so a loop's scalar tail would be a large share of each one.
+//! Instead row `l` is computed over its support `0..=l` rounded up to whole [`LANES`]-wide
+//! blocks: the three row buffers and the kernel's own copies of `a` and `b` have a row
+//! stride of `L` rounded up to [`LANES`], and the coefficient copies are zero from column
+//! `l` on. The buffers start each cluster zeroed, so a padding lane computes `0 * x - 0 * y`
+//! and every entry right of the diagonal stays zero, as the next rows need; contracting it
+//! adds zero. Valid lanes do exactly the arithmetic they would unpadded, so results are
+//! unchanged up to the sign of an exact zero.
 
 use crate::ffi::{Buf, expect_len, input, no_aliasing, output};
 use crate::pool;
@@ -26,12 +35,60 @@ struct Inputs<'a> {
     rep_sin: &'a [f32],
     dr: &'a [f32],
     di: &'a [f32],
+    /// `a_coef` and `b_coef` with row stride `lp`, zero from column `l` of row `l` on.
     a: &'a [f32],
     b: &'a [f32],
     sect: &'a [f32],
     l: usize,
+    /// `l` rounded up to a whole number of [`LANES`]-wide blocks.
+    lp: usize,
     nb: usize,
     seed: f32,
+}
+
+/// Block width the rows are padded to: one AVX2 register, two NEON registers.
+const LANES: usize = 8;
+
+/// `n` rounded up to a multiple of [`LANES`].
+fn padded(n: usize) -> usize {
+    n.div_ceil(LANES) * LANES
+}
+
+/// `coef` (`l` x `l`, row-major) with row stride `lp` and every entry at or right of the
+/// diagonal zero, which is what makes the padding lanes compute zero.
+fn pad_coefficients(coef: &[f32], l: usize, lp: usize) -> Aligned {
+    let mut out = Aligned::zeroed(l * lp);
+    let t = out.as_mut_slice();
+    for r in 0..l {
+        t[r * lp..r * lp + r].copy_from_slice(&coef[r * l..r * l + r]);
+    }
+    out
+}
+
+/// A zeroed buffer whose first element sits on a [`LANES`]-block boundary, so every block
+/// of a padded row is one aligned load instead of half of them straddling a cache line.
+struct Aligned {
+    v: Vec<f32>,
+    off: usize,
+    n: usize,
+}
+
+impl Aligned {
+    fn zeroed(n: usize) -> Self {
+        let v = vec![0.0_f32; n + LANES - 1];
+        // `align_offset` may decline; then the buffer is merely unaligned, never wrong.
+        let off = v.as_ptr().align_offset(LANES * size_of::<f32>());
+        let off = if off < LANES { off } else { 0 };
+        Self { v, off, n }
+    }
+
+    fn as_slice(&self) -> &[f32] {
+        &self.v[self.off..self.off + self.n]
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [f32] {
+        &mut self.v[self.off..self.off + self.n]
+    }
 }
 
 /// Raw view of the two accumulators, shared across workers.
@@ -86,54 +143,63 @@ fn one_shell(s: usize, buf: &mut [f32], inp: &Inputs<'_>, acc: Acc) {
 
 #[inline(always)]
 fn one_shell_body<const F: bool>(s: usize, buf: &mut [f32], inp: &Inputs<'_>, acc: Acc) {
-    let l_max = inp.l;
-    let (mut prev2, rest) = buf.split_at_mut(l_max);
-    let (mut prev1, mut cur) = rest.split_at_mut(l_max);
+    let (l_max, lp) = (inp.l, inp.lp);
+    let (mut prev2, rest) = buf.split_at_mut(lp);
+    let (mut prev1, mut cur) = rest.split_at_mut(lp);
     for c in inp.off[s] as usize..inp.off[s + 1] as usize {
         let (co, si) = (inp.rep_cos[c], inp.rep_sin[c]);
         let dr = &inp.dr[c * l_max..(c + 1) * l_max];
         let di = &inp.di[c * l_max..(c + 1) * l_max];
-        prev1.fill(0.0);
         prev2.fill(0.0);
+        prev1.fill(0.0);
+        cur.fill(0.0);
         prev1[0] = inp.seed; // barP_0^0
         for l in 1..l_max {
-            let a = &inp.a[l * l_max..l * l_max + l];
-            let b = &inp.b[l * l_max..l * l_max + l];
-            // Vertical recurrence, only where the row can be non-zero.
-            // Equal-length slices and iterators, so the loop has no bounds checks and
-            // vectorises.
-            for (((c_m, &p1), &p2), (&a_m, &b_m)) in cur[..l]
-                .iter_mut()
-                .zip(&prev1[..l])
-                .zip(&prev2[..l])
-                .zip(a.iter().zip(b))
-            {
-                *c_m = madd::<f32, F>(a_m * co, p1, -(b_m * p2));
-            }
+            // Vertical recurrence over the row's support, padded to whole blocks; this also
+            // covers every column the contraction below reads.
+            let w = padded(l + 1);
+            let a = &inp.a[l * lp..l * lp + w];
+            let b = &inp.b[l * lp..l * lp + w];
+            recur::<LANES, F>(&mut cur[..w], &prev1[..w], &prev2[..w], a, b, co);
             // The sectoral m == l entry is this row's diagonal and must be in place before
             // the contraction below.
             cur[l] = inp.sect[l] * si * prev1[l - 1];
             if l >= 2 && l % 2 == 0 {
                 let pos = (l - 2) / 2;
                 let start = (pos * inp.nb + s) * l_max;
+                // Padded too, but only to the end of the accumulator row: past it lies the
+                // next shell's row, which another worker owns.
+                let w = padded(l + 1).min(l_max);
                 // SAFETY: rows (pos, s, ..) belong to this worker alone (see `Acc`), and
-                // start + l < n_even * nb * L by the shape checks in the binding.
+                // start + w <= n_even * nb * L by the shape checks in the binding.
                 let (tr, ti) = unsafe {
                     (
-                        std::slice::from_raw_parts_mut(acc.tr.add(start), l + 1),
-                        std::slice::from_raw_parts_mut(acc.ti.add(start), l + 1),
+                        std::slice::from_raw_parts_mut(acc.tr.add(start), w),
+                        std::slice::from_raw_parts_mut(acc.ti.add(start), w),
                     )
                 };
-                for ((((t_r, t_i), &c_m), &d_r), &d_i) in tr
-                    .iter_mut()
-                    .zip(ti.iter_mut())
-                    .zip(&cur[..=l])
-                    .zip(&dr[..=l])
-                    .zip(&di[..=l])
-                {
-                    *t_r = madd::<f32, F>(c_m, d_r, *t_r);
-                    *t_i = madd::<f32, F>(c_m, d_i, *t_i);
-                }
+                let (e8, e4) = (w & !7, w & !3);
+                contract::<8, F>(
+                    &mut tr[..e8],
+                    &mut ti[..e8],
+                    &cur[..e8],
+                    &dr[..e8],
+                    &di[..e8],
+                );
+                contract::<4, F>(
+                    &mut tr[e8..e4],
+                    &mut ti[e8..e4],
+                    &cur[e8..e4],
+                    &dr[e8..e4],
+                    &di[e8..e4],
+                );
+                contract::<1, F>(
+                    &mut tr[e4..],
+                    &mut ti[e4..],
+                    &cur[e4..w],
+                    &dr[e4..w],
+                    &di[e4..w],
+                );
             }
             // Rotate the three rows; nothing is copied.
             let t = prev2;
@@ -142,6 +208,73 @@ fn one_shell_body<const F: bool>(s: usize, buf: &mut [f32], inp: &Inputs<'_>, ac
             cur = t;
         }
     }
+}
+
+/// `cur = a * co * p1 - b * p2` in blocks of `W` lanes; every slice is a multiple of `W` long.
+#[inline(always)]
+fn recur<const W: usize, const F: bool>(
+    cur: &mut [f32],
+    p1: &[f32],
+    p2: &[f32],
+    a: &[f32],
+    b: &[f32],
+    co: f32,
+) {
+    debug_assert!(cur.len().is_multiple_of(W));
+    let (p1, p2, a, b) = (
+        blocks::<W>(p1),
+        blocks::<W>(p2),
+        blocks::<W>(a),
+        blocks::<W>(b),
+    );
+    for ((((c, p1), p2), a), b) in cur
+        .as_chunks_mut::<W>()
+        .0
+        .iter_mut()
+        .zip(p1)
+        .zip(p2)
+        .zip(a)
+        .zip(b)
+    {
+        // Computed into a local and stored once: stores interleaved with the next lane's
+        // loads keep the compiler from vectorising the block.
+        let mut v = [0.0_f32; W];
+        for k in 0..W {
+            v[k] = madd::<f32, F>(a[k] * co, p1[k], -(b[k] * p2[k]));
+        }
+        *c = v;
+    }
+}
+
+/// `tr += p * dr` and `ti += p * di` in blocks of `W` lanes; every slice is a multiple of
+/// `W` long. The contraction runs as blocks of 8, then at most one of 4, then at most three
+/// of 1, for the rows whose padding the accumulator's row end cuts short.
+#[inline(always)]
+fn contract<const W: usize, const F: bool>(
+    tr: &mut [f32],
+    ti: &mut [f32],
+    p: &[f32],
+    dr: &[f32],
+    di: &[f32],
+) {
+    debug_assert!(tr.len().is_multiple_of(W) && ti.len().is_multiple_of(W));
+    let (tr, ti) = (tr.as_chunks_mut::<W>().0, ti.as_chunks_mut::<W>().0);
+    let (p, dr, di) = (blocks::<W>(p), blocks::<W>(dr), blocks::<W>(di));
+    for ((((t_r, t_i), p), d_r), d_i) in tr.iter_mut().zip(ti).zip(p).zip(dr).zip(di) {
+        let (mut vr, mut vi) = (*t_r, *t_i);
+        for k in 0..W {
+            vr[k] = madd::<f32, F>(p[k], d_r[k], vr[k]);
+            vi[k] = madd::<f32, F>(p[k], d_i[k], vi[k]);
+        }
+        (*t_r, *t_i) = (vr, vi);
+    }
+}
+
+/// `x` as whole `W`-lane blocks; callers pass multiples of `W`.
+#[inline(always)]
+fn blocks<const W: usize>(x: &[f32]) -> &[[f32; W]] {
+    debug_assert!(x.len().is_multiple_of(W));
+    x.as_chunks::<W>().0
 }
 
 /// Accumulate the fused recurrence into `Tr`/`Ti` (shape `(n_even, n_shells, L)`) in place.
@@ -198,6 +331,13 @@ fn legendre_shell_accumulate_f32(
     let off = unsafe { input::<i64>(offsets, "offsets")? };
     let shell_v = unsafe { input::<i64>(shell, "shell")? };
     check_partition(off, shell_v, n_shells)?;
+    let lp = padded(l);
+    let (a_pad, b_pad) = unsafe {
+        (
+            pad_coefficients(input(a_coef, "a_coef")?, l, lp),
+            pad_coefficients(input(b_coef, "b_coef")?, l, lp),
+        )
+    };
     let inp = unsafe {
         Inputs {
             off,
@@ -205,10 +345,11 @@ fn legendre_shell_accumulate_f32(
             rep_sin: input(rep_sin, "rep_sin")?,
             dr: input(dr, "Dr")?,
             di: input(di, "Di")?,
-            a: input(a_coef, "a_coef")?,
-            b: input(b_coef, "b_coef")?,
+            a: a_pad.as_slice(),
+            b: b_pad.as_slice(),
             sect: input(sect, "sect")?,
             l,
+            lp,
             nb: n_shells,
             seed: f32::c(seed),
         }
@@ -224,8 +365,8 @@ fn legendre_shell_accumulate_f32(
             // Dynamic scheduling: clusters per shell vary by an order of magnitude, so
             // equal shell counts are not equal work.
             (0..n_shells).into_par_iter().for_each_init(
-                || vec![0.0_f32; 3 * l],
-                |buf, s| one_shell(s, buf, &inp, acc),
+                || Aligned::zeroed(3 * lp),
+                |buf, s| one_shell(s, buf.as_mut_slice(), &inp, acc),
             );
         })
     });

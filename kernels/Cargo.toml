@@ -2,6 +2,8 @@
 name = "torchref_kernels"
 version = "0.1.0-rc.1"
 edition = "2024"
+# `slice::as_chunks`.
+rust-version = "1.88"
 license = "MIT"
 description = "Prebuilt CPU kernels for TorchRef"
 repository = "https://github.com/HatPdotS/TorchRef"
