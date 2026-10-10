@@ -29,6 +29,7 @@ through the portable splat (:func:`_double_backward_vjp`).
 
 from __future__ import annotations
 
+import functools
 from typing import Optional, Tuple
 
 import torch
@@ -36,60 +37,39 @@ import torch
 from torchref.utils import native
 
 
+_INPUTS = ("xyz", "adp", "occ", "A", "B", "r2cut", "inv_frac", "frac")
+_ARG_NAMES = {
+    "fwd": ("out",) + _INPUTS,
+    "bwd": ("g_xyz", "g_adp", "g_occ", "grad") + _INPUTS,
+}
+
+
 class _RustSplat:
     """Tensor-level adapter over the ``torchref-kernels`` splat entry points.
 
-    Every tensor must already be contiguous and of ``out``'s / ``go``'s dtype;
+    Each method takes the entry point's buffers as tensors, then ``nx, ny, nz``. Every
+    tensor must already be contiguous and of the first one's dtype;
     :func:`torchref.utils.native.buf` checks that before any pointer is handed over.
     """
 
     def __init__(self, mod):
         self._mod = mod
 
-    def _fn(self, name, dtype):
+    def _call(self, name, *args):
+        *tensors, nx, ny, nz = args
+        dtype = tensors[0].dtype
         suffix = {torch.float32: "f32", torch.float64: "f64"}.get(dtype)  # dtype-ok: kernel dtype dispatch, not an allocation
         if suffix is None:
             raise ValueError(f"sphere_splat supports float32/float64, got {dtype}")
-        return getattr(self._mod, f"sphere_{name}_{suffix}")
+        names = _ARG_NAMES[name.split("_")[1]]
+        bufs = [native.buf(t, dtype, n) for n, t in zip(names, tensors, strict=True)]
+        fn = getattr(self._mod, f"sphere_{name}_{suffix}")
+        fn(*bufs, nx, ny, nz, native.num_threads())
 
-    def _call(self, name, outs, ins, nx, ny, nz):
-        dtype = outs[0][1].dtype
-        bufs = [native.buf(t, dtype, n) for n, t in outs + ins]
-        self._fn(name, dtype)(*bufs, nx, ny, nz, native.num_threads())
-
-    def iso_fwd(self, out, xyz, adp, occ, A, B, r2cut, inv_frac, frac, nx, ny, nz):
-        self._call(
-            "iso_fwd", [("out", out)],
-            [("xyz", xyz), ("adp", adp), ("occ", occ), ("A", A), ("B", B),
-             ("r2cut", r2cut), ("inv_frac", inv_frac), ("frac", frac)],
-            nx, ny, nz,
-        )
-
-    def iso_bwd(self, g_xyz, g_adp, g_occ, go, xyz, adp, occ, A, B, r2cut,
-                inv_frac, frac, nx, ny, nz):
-        self._call(
-            "iso_bwd", [("g_xyz", g_xyz), ("g_adp", g_adp), ("g_occ", g_occ)],
-            [("grad", go), ("xyz", xyz), ("adp", adp), ("occ", occ), ("A", A),
-             ("B", B), ("r2cut", r2cut), ("inv_frac", inv_frac), ("frac", frac)],
-            nx, ny, nz,
-        )
-
-    def aniso_fwd(self, out, xyz, u, occ, A, B, r2cut, inv_frac, frac, nx, ny, nz):
-        self._call(
-            "aniso_fwd", [("out", out)],
-            [("xyz", xyz), ("u", u), ("occ", occ), ("A", A), ("B", B),
-             ("r2cut", r2cut), ("inv_frac", inv_frac), ("frac", frac)],
-            nx, ny, nz,
-        )
-
-    def aniso_bwd(self, g_xyz, g_u, g_occ, go, xyz, u, occ, A, B, r2cut,
-                  inv_frac, frac, nx, ny, nz):
-        self._call(
-            "aniso_bwd", [("g_xyz", g_xyz), ("g_u", g_u), ("g_occ", g_occ)],
-            [("grad", go), ("xyz", xyz), ("u", u), ("occ", occ), ("A", A),
-             ("B", B), ("r2cut", r2cut), ("inv_frac", inv_frac), ("frac", frac)],
-            nx, ny, nz,
-        )
+    iso_fwd = functools.partialmethod(_call, "iso_fwd")
+    iso_bwd = functools.partialmethod(_call, "iso_bwd")
+    aniso_fwd = functools.partialmethod(_call, "aniso_fwd")
+    aniso_bwd = functools.partialmethod(_call, "aniso_bwd")
 
 
 _module: Optional[_RustSplat] = None

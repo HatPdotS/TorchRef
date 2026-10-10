@@ -60,7 +60,7 @@ pub fn madd<T: Real, const F: bool>(a: T, b: T, c: T) -> T {
 #[allow(clippy::excessive_precision)]
 pub fn fast_exp<const F: bool>(x: f32) -> f32 {
     let x = if x < -87.0_f32 { -87.0_f32 } else { x }; // below this, exp underflows
-    let t = x * 1.442_695_040_888_963_41_f32;
+    let t = x * std::f32::consts::LOG2_E;
     let n = t.floor();
     let f = t - n;
     let mut p = madd::<f32, F>(f, 0.001_867_13_f32, 0.009_017_03_f32);
@@ -72,90 +72,61 @@ pub fn fast_exp<const F: bool>(x: f32) -> f32 {
     p * f32::from_bits(bits as u32)
 }
 
-impl Real for f32 {
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
-    const VECTOR_EXP: bool = true;
-    #[inline(always)]
-    fn c(x: f64) -> Self {
-        x as f32
-    }
-    #[inline(always)]
-    fn from_i32(i: i32) -> Self {
-        i as f32
-    }
-    #[inline(always)]
-    fn sqrt(self) -> Self {
-        f32::sqrt(self)
-    }
-    #[inline(always)]
-    fn floor(self) -> Self {
-        f32::floor(self)
-    }
-    #[inline(always)]
-    fn ceil(self) -> Self {
-        f32::ceil(self)
-    }
-    #[inline(always)]
-    fn to_i32(self) -> i32 {
-        self as i32
-    }
-    #[inline(always)]
-    fn round_even_i32(self) -> i32 {
-        f32::round_ties_even(self) as i32
-    }
-    #[inline(always)]
-    fn fused_mul_add(self, b: Self, c: Self) -> Self {
-        f32::mul_add(self, b, c)
-    }
-    #[inline(always)]
-    fn kexp<const F: bool>(self) -> Self {
-        fast_exp::<F>(self)
-    }
+/// The `f64` kernel exponential: libm, since a float64 caller is precision-motivated by
+/// definition.
+#[inline(always)]
+pub fn libm_exp<const F: bool>(x: f64) -> f64 {
+    x.exp()
 }
 
-impl Real for f64 {
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
-    const VECTOR_EXP: bool = false;
-    #[inline(always)]
-    fn c(x: f64) -> Self {
-        x
-    }
-    #[inline(always)]
-    fn from_i32(i: i32) -> Self {
-        i as f64
-    }
-    #[inline(always)]
-    fn sqrt(self) -> Self {
-        f64::sqrt(self)
-    }
-    #[inline(always)]
-    fn floor(self) -> Self {
-        f64::floor(self)
-    }
-    #[inline(always)]
-    fn ceil(self) -> Self {
-        f64::ceil(self)
-    }
-    #[inline(always)]
-    fn to_i32(self) -> i32 {
-        self as i32
-    }
-    #[inline(always)]
-    fn round_even_i32(self) -> i32 {
-        f64::round_ties_even(self) as i32
-    }
-    // A float64 caller is precision-motivated by definition, so it gets libm.
-    #[inline(always)]
-    fn fused_mul_add(self, b: Self, c: Self) -> Self {
-        f64::mul_add(self, b, c)
-    }
-    #[inline(always)]
-    fn kexp<const F: bool>(self) -> Self {
-        f64::exp(self)
-    }
+macro_rules! impl_real {
+    ($t:ident, vector_exp: $vexp:expr, kexp: $kexp:ident) => {
+        impl Real for $t {
+            const ZERO: Self = 0.0;
+            const ONE: Self = 1.0;
+            const VECTOR_EXP: bool = $vexp;
+            #[inline(always)]
+            fn c(x: f64) -> Self {
+                x as $t
+            }
+            #[inline(always)]
+            fn from_i32(i: i32) -> Self {
+                i as $t
+            }
+            #[inline(always)]
+            fn sqrt(self) -> Self {
+                $t::sqrt(self)
+            }
+            #[inline(always)]
+            fn floor(self) -> Self {
+                $t::floor(self)
+            }
+            #[inline(always)]
+            fn ceil(self) -> Self {
+                $t::ceil(self)
+            }
+            #[inline(always)]
+            fn to_i32(self) -> i32 {
+                self as i32
+            }
+            #[inline(always)]
+            fn round_even_i32(self) -> i32 {
+                $t::round_ties_even(self) as i32
+            }
+            #[inline(always)]
+            fn fused_mul_add(self, b: Self, c: Self) -> Self {
+                $t::mul_add(self, b, c)
+            }
+            #[inline(always)]
+            fn kexp<const F: bool>(self) -> Self {
+                $kexp::<F>(self)
+            }
+        }
+    };
 }
+
+impl_real!(f32, vector_exp: true, kexp: fast_exp);
+impl_real!(f64, vector_exp: false, kexp: libm_exp);
 
 #[cfg(test)]
 mod tests {

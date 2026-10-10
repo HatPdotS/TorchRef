@@ -23,8 +23,7 @@
 use crate::ffi::{Buf, expect_len, input, no_aliasing, output};
 use crate::pool;
 use crate::real::{Real, madd};
-use multiversion::multiversion;
-use multiversion::target::target_cfg_f;
+use crate::simd::fma_variants;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -129,16 +128,8 @@ fn check_partition(off: &[i64], shell: &[i64], nb: usize) -> PyResult<()> {
     Ok(())
 }
 
-#[multiversion(targets(
-    "x86_64+avx512f+avx512bw+avx512cd+avx512dq+avx512vl+avx2+fma+bmi1+bmi2+lzcnt+movbe+f16c",
-    "x86_64+avx2+fma+bmi1+bmi2+lzcnt+movbe+f16c",
-))]
-fn one_shell(s: usize, buf: &mut [f32], inp: &Inputs<'_>, acc: Acc) {
-    if target_cfg_f!(any(target_feature = "fma", target_arch = "aarch64")) {
-        one_shell_body::<true>(s, buf, inp, acc)
-    } else {
-        one_shell_body::<false>(s, buf, inp, acc)
-    }
+fma_variants! {
+    fn one_shell(s: usize, buf: &mut [f32], inp: &Inputs<'_>, acc: Acc) => one_shell_body
 }
 
 #[inline(always)]

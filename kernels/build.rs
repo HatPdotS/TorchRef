@@ -31,7 +31,11 @@ fn main() {
     let mut rel: Vec<(String, PathBuf)> = files
         .into_iter()
         .map(|p| {
-            let r = p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            let r = p
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
             (r, p)
         })
         .collect();

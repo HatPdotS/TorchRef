@@ -1,7 +1,7 @@
 //! Cell geometry, per-atom anchors and the in-sphere run solver shared by the iso and
 //! aniso kernels.
 
-use crate::real::Real;
+use crate::real::{Real, madd};
 
 pub const PI_1P5: f64 = 5.568_327_996_831_708; // pi^1.5
 pub const PI_SQ: f64 = 9.869_604_401_089_358; // pi^2
@@ -159,9 +159,66 @@ pub fn oz_run<T: Real>(c: &Cell<T>, q: [T; 3], rc2: T, bhz: i32) -> Option<(i32,
     (zlo <= zhi).then_some((zlo, zhi))
 }
 
-/// Index of `(ix, iy)`'s z-row in a C-contiguous `(nx, ny, nz)` grid whose x range starts
-/// at `x0`.
+/// Visit atom `g`'s in-sphere voxels in the x-planes `[xlo, xhi)` of a buffer whose first
+/// plane is `xlo`.
+///
+/// Each column's run is walked as wrap-free contiguous segments (at most two unless the
+/// sphere is wider than the cell), so the caller's voxel loop has no index arithmetic and
+/// vectorises across voxels. `visit(start, len, oz, q)` gets the segment's buffer range,
+/// the `oz` offset of its first voxel and the column's atom-to-voxel vector at `oz = 0`.
 #[inline(always)]
-pub fn row_offset(ix: i32, x0: i32, iy: i32, ny: i32, nz: i32) -> usize {
-    ((ix - x0) as usize * ny as usize + iy as usize) * nz as usize
+pub fn for_each_segment<T: Real, const F: bool>(
+    c: &Cell<T>,
+    g: &Anchor<T>,
+    xlo: i32,
+    xhi: i32,
+    mut visit: impl FnMut(usize, usize, i32, [T; 3]),
+) {
+    for ox in -g.bhx..=g.bhx {
+        let vix = wrap(g.cix + ox, c.nx);
+        if vix < xlo || vix >= xhi {
+            continue;
+        }
+        let fox = T::from_i32(ox);
+        let p = [
+            fox * c.ua[0] - g.w0[0],
+            fox * c.ua[1] - g.w0[1],
+            fox * c.ua[2] - g.w0[2],
+        ];
+        for oy in -g.bhy..=g.bhy {
+            let foy = T::from_i32(oy);
+            let q = [
+                madd::<T, F>(foy, c.ub[0], p[0]),
+                madd::<T, F>(foy, c.ub[1], p[1]),
+                madd::<T, F>(foy, c.ub[2], p[2]),
+            ];
+            let Some((zlo, zhi)) = oz_run(c, q, g.rc2, g.bhz) else {
+                continue;
+            };
+            let iy = wrap(g.ciy + oy, c.ny) as usize;
+            let row = ((vix - xlo) as usize * c.ny as usize + iy) * c.nz as usize;
+            let mut oz = zlo;
+            let mut iz = wrap(g.ciz + zlo, c.nz) as usize;
+            while oz <= zhi {
+                let len = ((zhi - oz + 1) as usize).min(c.nz as usize - iz);
+                visit(row + iz, len, oz, q);
+                oz += len as i32;
+                iz = 0;
+            }
+        }
+    }
+}
+
+/// The atom-to-voxel vector `w` at `oz` in a column whose vector at `oz = 0` is `q`, and
+/// `|w|^2`.
+#[inline(always)]
+pub fn voxel<T: Real, const F: bool>(c: &Cell<T>, q: [T; 3], oz: i32) -> ([T; 3], T) {
+    let foz = T::from_i32(oz);
+    let w = [
+        madd::<T, F>(foz, c.uc[0], q[0]),
+        madd::<T, F>(foz, c.uc[1], q[1]),
+        madd::<T, F>(foz, c.uc[2], q[2]),
+    ];
+    let r2 = madd::<T, F>(w[0], w[0], madd::<T, F>(w[1], w[1], w[2] * w[2]));
+    (w, r2)
 }

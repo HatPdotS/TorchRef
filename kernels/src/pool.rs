@@ -18,10 +18,10 @@ pub fn get(n_threads: usize) -> Arc<ThreadPool> {
         n_threads
     };
     let mut guard = POOL.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((size, pool)) = guard.as_ref() {
-        if *size == n {
-            return Arc::clone(pool);
-        }
+    if let Some((size, pool)) = guard.as_ref()
+        && *size == n
+    {
+        return Arc::clone(pool);
     }
     let pool = Arc::new(
         ThreadPoolBuilder::new()
