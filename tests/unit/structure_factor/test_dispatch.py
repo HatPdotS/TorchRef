@@ -262,7 +262,7 @@ def test_triton_density_gate_probes_every_tensor(scene_small, monkeypatch):
 
     Written when the density Triton branch gated on ``should_use_triton(xyz)`` -- **only
     xyz** -- while its sibling gates probed six tensors. A float32 ``xyz`` with a float64
-    ``density_map`` therefore passed, and ``WorkQueueGridDensity.forward`` handed that
+    ``density_map`` therefore passed, and the CUDA ``iso_fwd`` kernel handed that
     float64 buffer to a kernel doing float32 ``tl.atomic_add``.
 
     The ``cuda_triton`` row now declares ``probes`` covering all six, so the mixed set

@@ -364,7 +364,7 @@ def test_fft_hvp_matches_ds_real_structure(gemmi_aniso_grad, oracle_aniso_grad):
 #   add_*_plain_var        yes -- pure autograd over ``scatter_add``
 #   add_*_mps_var          no  -- ``mps/variable_radius.py:12``: "Backward is first-order
 #                          only (like CUDA); double backward needs the portable splat"
-#   WorkQueueGridDensity*  no  -- same, no ``create_graph`` path in the Triton backward
+#   add_*_cuda_var         no  -- same, no ``create_graph`` path in the Triton backward
 #
 # So an accelerator HVP cannot be compared against the oracle: there is no HVP to compare.
 # What is testable, and tested below, is that those kernels **raise** rather than returning

@@ -6,8 +6,8 @@ precision. Two kernels:
   * ``_bond_nll_fwd_kernel``: per-bond Gaussian NLL.
   * ``_bond_nll_bwd_kernel``: scatters gradients into ``xyz`` (atomic add).
 
-The ``autograd.Function`` wrapper composes them so the result can be
-plugged directly into a backward graph.
+They are the CUDA kernels of ``torch.ops.torchref.bond_nll_{fwd,bwd}``; the
+``autograd.Function`` composing them is :data:`torchref.base.targets.ops.BondNLL`.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import torch
 import triton
 import triton.language as tl
 
-from .._dispatch import first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -133,42 +132,40 @@ def _bond_nll_bwd_kernel(
 # --------------------------------------------------------------- autograd wrap
 
 
-class _BondMathTriton(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, xyz: torch.Tensor, idx: torch.Tensor,
-                references: torch.Tensor, sigmas: torch.Tensor) -> torch.Tensor:
-        assert xyz.is_cuda and idx.is_cuda
-        assert xyz.dtype == torch.float32
-        # xyz is assumed to be row-major (N_atoms, 3) with stride (3, 1).
-        # The fix lives in MixedTensor.__init__ — see parameter_wrappers.py.
+def bond_nll_fwd(xyz: torch.Tensor, idx: torch.Tensor,
+                 references: torch.Tensor, sigmas: torch.Tensor) -> torch.Tensor:
+    """CUDA kernel of ``torch.ops.torchref.bond_nll_fwd``: the summed bond NLL.
 
-        N = idx.shape[0]
-        nll = torch.empty(N, dtype=xyz.dtype, device=xyz.device)
-        BLOCK = 256
-        grid = (triton.cdiv(N, BLOCK),)
-        _bond_nll_fwd_kernel[grid](
-            xyz, idx, references, sigmas, nll,
-            N=N, LOG_2PI=_LOG_2PI, BLOCK=BLOCK,
-        )
-        ctx.save_for_backward(xyz, idx, references, sigmas)
-        return nll.sum()
+    ``xyz`` must be row-major ``(N_atoms, 3)`` with stride ``(3, 1)``; ``MixedTensor``
+    guarantees it (``parameter_wrappers.py``).
+    """
+    assert xyz.is_cuda and idx.is_cuda
+    assert xyz.dtype == torch.float32
+    N = idx.shape[0]
+    nll = torch.empty(N, dtype=xyz.dtype, device=xyz.device)
+    BLOCK = 256
+    grid = (triton.cdiv(N, BLOCK),)
+    _bond_nll_fwd_kernel[grid](
+        xyz, idx, references, sigmas, nll,
+        N=N, LOG_2PI=_LOG_2PI, BLOCK=BLOCK,
+    )
+    return nll.sum()
 
-    @staticmethod
-    @first_order_only
-    def backward(ctx, grad_out: torch.Tensor):
-        xyz, idx, references, sigmas = ctx.saved_tensors
-        N = idx.shape[0]
-        dxyz = torch.zeros_like(xyz)
 
-        BLOCK = 256
-        grid = (triton.cdiv(N, BLOCK),)
-        # Pass grad_out as a 0-D device tensor (its data_ptr). The kernel
-        # ``tl.load``s it once per block — no ``.item()``, no host sync.
-        _bond_nll_bwd_kernel[grid](
-            xyz, idx, references, sigmas, grad_out, dxyz,
-            N=N, BLOCK=BLOCK,
-        )
-        return dxyz, None, None, None
+def bond_nll_bwd(grad_out: torch.Tensor, xyz: torch.Tensor, idx: torch.Tensor,
+                 references: torch.Tensor, sigmas: torch.Tensor) -> torch.Tensor:
+    """CUDA kernel of ``torch.ops.torchref.bond_nll_bwd``: ``grad_out * d NLL / d xyz``."""
+    N = idx.shape[0]
+    dxyz = torch.zeros_like(xyz)
+    BLOCK = 256
+    grid = (triton.cdiv(N, BLOCK),)
+    # grad_out goes in as a 0-D device tensor (its data_ptr): the kernel ``tl.load``s it
+    # once per block -- no ``.item()``, no host sync.
+    _bond_nll_bwd_kernel[grid](
+        xyz, idx, references, sigmas, grad_out, dxyz,
+        N=N, BLOCK=BLOCK,
+    )
+    return dxyz
 
 
 def bond_math_triton(
@@ -181,4 +178,6 @@ def bond_math_triton(
 
     Drop-in replacement for :func:`torchref.base.targets.bond.bond_math`.
     """
-    return _BondMathTriton.apply(xyz, idx, references, sigmas)
+    from ..ops import BondNLL
+
+    return BondNLL.apply(xyz, idx, references, sigmas)

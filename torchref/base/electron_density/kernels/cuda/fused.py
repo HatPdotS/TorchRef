@@ -10,7 +10,7 @@ Provides full autograd support for refinement of xyz, b, and occ.
 .. note::
     The CUDA float32 branch of the voxel-list ``jit_reference.vectorized_add_to_map``,
     not of ``main.build_electron_density``, which uses the variable-radius
-    ``WorkQueueGridDensity`` in
+    ``iso_fwd`` / ``iso_bwd`` in
     :mod:`torchref.base.electron_density.kernels.cuda.variable_radius`.
 """
 
@@ -462,7 +462,7 @@ def fused_add_to_map_gpu(
 
     .. note::
         The CUDA float32 branch of the voxel-list ``jit_reference.vectorized_add_to_map``;
-        ``main.build_electron_density`` uses the variable-radius ``WorkQueueGridDensity``.
+        ``main.build_electron_density`` uses the variable-radius ``torch.ops.torchref.splat_iso_fwd``.
 
     Parameters
     ----------

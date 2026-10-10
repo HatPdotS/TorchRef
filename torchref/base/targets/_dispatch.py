@@ -113,12 +113,21 @@ def first_order_only(backward: Callable) -> Callable:
     @functools.wraps(backward)
     def guarded(ctx, *grad_outputs):
         if torch.is_grad_enabled():
-            raise RuntimeError(
-                f"{backward.__qualname__}: the second derivative is not implemented, "
-                "so create_graph=True cannot differentiate through this kernel. Where "
-                "its backend table has a second-order portable row, run under "
-                "torchref.utils.use_portable() to take that instead."
-            )
+            raise second_order_error(backward.__qualname__)
         return backward(ctx, *grad_outputs)
 
     return guarded
+
+
+def second_order_error(qualname: str) -> RuntimeError:
+    """The error a first-order-only ``backward`` raises under ``create_graph=True``.
+
+    Shared by :func:`first_order_only` and by backwards that support second order on some
+    devices only, so the message -- which tests match -- is written once.
+    """
+    return RuntimeError(
+        f"{qualname}: the second derivative is not implemented, "
+        "so create_graph=True cannot differentiate through this kernel. Where "
+        "its backend table has a second-order portable row, run under "
+        "torchref.utils.use_portable() to take that instead."
+    )

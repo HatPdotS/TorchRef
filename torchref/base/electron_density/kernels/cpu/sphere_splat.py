@@ -33,6 +33,7 @@ from typing import Optional, Tuple
 
 import torch
 
+from torchref.base.electron_density.ops import SplatAniso, SplatIso
 from torchref.utils import native
 
 
@@ -132,8 +133,8 @@ def _require_module() -> _RustSplat:
 def _double_backward_vjp(plain_fn, ctx, grad_out, leaves, statics, r2cut):
     """Recompute this VJP through the portable splat for a ``create_graph=True`` backward.
 
-    The native backward has no autograd graph, so the backward methods call this instead when
-    a second derivative may be taken. Gradients are taken with respect to the saved (not
+    The native backward has no autograd graph, so :class:`~torchref.base.electron_density.ops.SplatIso`
+    and ``SplatAniso`` call this on CPU instead when a second derivative may be taken. Gradients are taken with respect to the saved (not
     detached) leaves, so the result stays on the caller's graph; the gradient with respect
     to ``density_map`` is the identity.
     """
@@ -175,103 +176,62 @@ def _prep(density_map, xyz, radius_per_atom, *tensors):
     return dtype, r2cut
 
 
-class _FusedIsoSplat(torch.autograd.Function):
-    """Isotropic fused CPU splat: returns ``density_map + splat``."""
-
-    @staticmethod
-    def forward(ctx, density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac):
-        mod = _require_module()
-        nx, ny, nz = (int(s) for s in density_map.shape)
-        out = density_map.contiguous().clone()
-        if xyz.shape[0] > 0:
-            mod.iso_fwd(
-                out.view(-1),
-                xyz.detach().contiguous(), adp.detach().contiguous(),
-                occ.detach().contiguous(), A.contiguous(), B.contiguous(),
-                r2cut, inv_frac.contiguous().view(-1), frac.contiguous().view(-1),
-                nx, ny, nz,
-            )
-        ctx.save_for_backward(xyz, adp, occ, A, B, r2cut, inv_frac, frac)
-        ctx.grid_shape = (nx, ny, nz)
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_out):
-        xyz, adp, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
-        nx, ny, nz = ctx.grid_shape
-        # Autograd runs backward under no_grad unless create_graph=True; grad_out's
-        # requires_grad cannot tell, since a top-level create_graph seed is a plain tensor.
-        if torch.is_grad_enabled():
-            from torchref.base.electron_density.kernels.cpu.variable_radius import (
-                add_isotropic_plain_var,
-            )
-
-            return _double_backward_vjp(
-                add_isotropic_plain_var, ctx, grad_out,
-                (xyz, adp, occ), (A, B, inv_frac, frac), r2cut,
-            )
-        g_xyz = torch.zeros_like(xyz)
-        g_adp = torch.zeros_like(adp)
-        g_occ = torch.zeros_like(occ)
-        if xyz.shape[0] > 0:
-            _require_module().iso_bwd(
-                g_xyz.view(-1), g_adp, g_occ,
-                grad_out.contiguous().view(-1),
-                xyz.detach().contiguous(), adp.detach().contiguous(),
-                occ.detach().contiguous(), A.contiguous(), B.contiguous(),
-                r2cut, inv_frac.contiguous().view(-1), frac.contiguous().view(-1),
-                nx, ny, nz,
-            )
-        # out = density_map + splat, so grad wrt density_map is the identity.
-        return (grad_out, g_xyz, g_adp, g_occ, None, None, None, None, None)
+def _flat_mats(inv_frac, frac):
+    return inv_frac.contiguous().view(-1), frac.contiguous().view(-1)
 
 
-class _FusedAnisoSplat(torch.autograd.Function):
-    """Anisotropic fused CPU splat: returns ``density_map + splat``."""
+def iso_fwd(density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac):
+    """CPU kernel of ``torch.ops.torchref.splat_iso_fwd``: returns ``density_map + splat``."""
+    nx, ny, nz = (int(s) for s in density_map.shape)
+    out = density_map.contiguous().clone()
+    if xyz.shape[0] > 0:
+        im, fm = _flat_mats(inv_frac, frac)
+        _require_module().iso_fwd(
+            out.view(-1), xyz.contiguous(), adp.contiguous(), occ.contiguous(),
+            A.contiguous(), B.contiguous(), r2cut.contiguous(), im, fm, nx, ny, nz,
+        )
+    return out
 
-    @staticmethod
-    def forward(ctx, density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac):
-        mod = _require_module()
-        nx, ny, nz = (int(s) for s in density_map.shape)
-        out = density_map.contiguous().clone()
-        if xyz.shape[0] > 0:
-            mod.aniso_fwd(
-                out.view(-1),
-                xyz.detach().contiguous(), u.detach().contiguous(),
-                occ.detach().contiguous(), A.contiguous(), B.contiguous(),
-                r2cut, inv_frac.contiguous().view(-1), frac.contiguous().view(-1),
-                nx, ny, nz,
-            )
-        ctx.save_for_backward(xyz, u, occ, A, B, r2cut, inv_frac, frac)
-        ctx.grid_shape = (nx, ny, nz)
-        return out
 
-    @staticmethod
-    def backward(ctx, grad_out):
-        xyz, u, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
-        nx, ny, nz = ctx.grid_shape
-        if torch.is_grad_enabled():  # see _FusedIsoSplat.backward
-            from torchref.base.electron_density.kernels.cpu.variable_radius import (
-                add_anisotropic_plain_var,
-            )
+def iso_bwd(grad, xyz, adp, occ, A, B, r2cut, inv_frac, frac):
+    """CPU kernel of ``torch.ops.torchref.splat_iso_bwd``: ``(d xyz, d adp, d occ)``."""
+    nx, ny, nz = (int(s) for s in grad.shape)
+    g_xyz, g_adp, g_occ = (torch.zeros_like(t) for t in (xyz, adp, occ))
+    if xyz.shape[0] > 0:
+        im, fm = _flat_mats(inv_frac, frac)
+        _require_module().iso_bwd(
+            g_xyz.view(-1), g_adp, g_occ, grad.contiguous().view(-1),
+            xyz.contiguous(), adp.contiguous(), occ.contiguous(), A.contiguous(),
+            B.contiguous(), r2cut.contiguous(), im, fm, nx, ny, nz,
+        )
+    return g_xyz, g_adp, g_occ
 
-            return _double_backward_vjp(
-                add_anisotropic_plain_var, ctx, grad_out,
-                (xyz, u, occ), (A, B, inv_frac, frac), r2cut,
-            )
-        g_xyz = torch.zeros_like(xyz)
-        g_u = torch.zeros_like(u)
-        g_occ = torch.zeros_like(occ)
-        if xyz.shape[0] > 0:
-            _require_module().aniso_bwd(
-                g_xyz.view(-1), g_u.view(-1), g_occ,
-                grad_out.contiguous().view(-1),
-                xyz.detach().contiguous(), u.detach().contiguous(),
-                occ.detach().contiguous(), A.contiguous(), B.contiguous(),
-                r2cut, inv_frac.contiguous().view(-1), frac.contiguous().view(-1),
-                nx, ny, nz,
-            )
-        return (grad_out, g_xyz, g_u, g_occ, None, None, None, None, None)
+
+def aniso_fwd(density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac):
+    """CPU kernel of ``torch.ops.torchref.splat_aniso_fwd``: returns ``density_map + splat``."""
+    nx, ny, nz = (int(s) for s in density_map.shape)
+    out = density_map.contiguous().clone()
+    if xyz.shape[0] > 0:
+        im, fm = _flat_mats(inv_frac, frac)
+        _require_module().aniso_fwd(
+            out.view(-1), xyz.contiguous(), u.contiguous(), occ.contiguous(),
+            A.contiguous(), B.contiguous(), r2cut.contiguous(), im, fm, nx, ny, nz,
+        )
+    return out
+
+
+def aniso_bwd(grad, xyz, u, occ, A, B, r2cut, inv_frac, frac):
+    """CPU kernel of ``torch.ops.torchref.splat_aniso_bwd``: ``(d xyz, d u, d occ)``."""
+    nx, ny, nz = (int(s) for s in grad.shape)
+    g_xyz, g_u, g_occ = (torch.zeros_like(t) for t in (xyz, u, occ))
+    if xyz.shape[0] > 0:
+        im, fm = _flat_mats(inv_frac, frac)
+        _require_module().aniso_bwd(
+            g_xyz.view(-1), g_u.view(-1), g_occ, grad.contiguous().view(-1),
+            xyz.contiguous(), u.contiguous(), occ.contiguous(), A.contiguous(),
+            B.contiguous(), r2cut.contiguous(), im, fm, nx, ny, nz,
+        )
+    return g_xyz, g_u, g_occ
 
 
 def add_isotropic_cpu_sphere_var(
@@ -296,7 +256,7 @@ def add_isotropic_cpu_sphere_var(
         requantization, so the cutoff means the same thing at any sampling.
     """
     _, r2cut = _prep(density_map, xyz, radius_per_atom, adp, occ, A, B)
-    return _FusedIsoSplat.apply(
+    return SplatIso.apply(
         density_map, xyz, adp, occ, A, B, r2cut, inv_frac_matrix, frac_matrix
     )
 
@@ -314,6 +274,6 @@ def add_anisotropic_cpu_sphere_var(
     evaluate the Mahalanobis form.
     """
     _, r2cut = _prep(density_map, xyz, radius_per_atom, u, occ, A, B)
-    return _FusedAnisoSplat.apply(
+    return SplatAniso.apply(
         density_map, xyz, u, occ, A, B, r2cut, inv_frac_matrix, frac_matrix
     )
