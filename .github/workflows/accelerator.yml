@@ -17,7 +17,7 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
-  # Lets publish.yml gate a PyPI release on this passing.
+  # Lets other workflows run the MPS suite as a job.
   workflow_call:
 
 # PYTORCH_ENABLE_MPS_FALLBACK is left alone on purpose. torchref/__init__.py
