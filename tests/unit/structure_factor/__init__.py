@@ -192,7 +192,7 @@ COS_MIN_GRADIENT_SYNTHETIC = 0.99
 RTOL_BACKEND_F32 = 2e-4
 RTOL_BACKEND_F64 = 1e-12
 
-# Gradients need their own float32 constant. The fused C++ kernel's hand-written backward
+# Gradients need their own float32 constant. The fused CPU kernel's hand-written backward
 # and the portable splat's autograd accumulate in different orders, and float32 does not
 # forgive that the way the forward pass does. Measured fused-vs-portable on ``scene_fine``
 # (60 atoms), float32:

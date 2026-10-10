@@ -316,7 +316,7 @@ def select(
 
     Two-phase by contract: device and dtype are checked for every candidate *before* any
     availability probe is called. That ordering is load-bearing -- it keeps an MPS host from
-    compiling the CPU C++ extension it will never use, and a CUDA host from importing Triton
+    loading the CPU kernel extension it will never use, and a CUDA host from importing Triton
     to answer a question about a CPU tensor.
 
     Parameters
