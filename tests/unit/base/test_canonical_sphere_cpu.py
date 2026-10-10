@@ -455,27 +455,16 @@ def test_aniso_reduces_to_isotropic(beta, pin):
 def test_fused_kernel_is_thread_invariant(n_threads):
     """The fused splat must give the same map at any thread count.
 
-    It partitions the *output* across threads via ``at::parallel_for`` rather than using
-    atomics, so a race or a partition-boundary error would show up as a thread-count
-    dependence. Deliberately non-orthogonal and dense enough that many atoms' spheres
-    overlap, since a partitioning bug is invisible when no two atoms touch the same voxel.
+    It partitions the *output* across threads by x-plane rather than using atomics, so a
+    race or a partition-boundary error would show up as a thread-count dependence.
+    Deliberately non-orthogonal and dense enough that many atoms' spheres overlap, since a
+    partitioning bug is invisible when no two atoms touch the same voxel.
 
-    **Weak on macOS.** ``_cpp_build.py`` omits ``-fopenmp`` there, and the extension
-    measurably does not parallelize on this host -- 3000 atoms on a 120x108x96 grid take
-    132/131/131 ms at 1/2/4 threads. So this passes locally largely because there is only
-    one thread to disagree with. It still earns its place: it is real coverage wherever the
-    extension is built with OpenMP (Linux, CI), and it costs milliseconds.
-
-    Bit-exactness is the right assertion and is not merely aspirational -- verified to hold
-    on this scene and on a 6x denser one at 2, 4 and 8 threads. Output partitioning means
-    each voxel is accumulated by one thread over a fixed atom order, so a nonzero
-    difference is an ordering change worth investigating, not float noise. (When checking
-    this by hand, compare the maps, not ``dm.sum()``: ``Tensor.sum`` uses a
-    thread-count-dependent tree reduction and will show a spurious difference of its own.)
-
-    Ported from the ``n_threads``-parametrized thread-safety test in
-    ``test_cpu_scatter.py``, which exercised the C++ structured scatter -- no longer
-    reachable from the dispatch.
+    Bit-exactness is the right assertion, not an aspiration: each voxel is accumulated by
+    one thread over a fixed atom order, so a nonzero difference is an ordering change worth
+    investigating, not float noise. (When checking this by hand, compare the maps, not
+    ``dm.sum()``: ``Tensor.sum`` uses a thread-count-dependent tree reduction and will show
+    a spurious difference of its own.)
     """
     if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU sphere splat unavailable: {sphere_splat.last_error()}")
@@ -512,18 +501,16 @@ def test_fused_kernel_is_thread_invariant(n_threads):
 def test_fused_gate_requires_one_shared_dtype():
     """The fused kernel takes a *uniform* dtype, not any mix of f32 and f64.
 
-    The C++ selects one ``scalar_t`` from the output map via
-    ``AT_DISPATCH_FLOATING_TYPES(out.scalar_type(), ...)`` and then reads every other
-    tensor through ``data_ptr<scalar_t>()``, which raises on any other dtype. So a float64
-    map beside float32 atoms is refused with an error (first a ValueError from the entry
-    point's dtype check), and the gate sends such a call to the portable splat instead.
+    The native kernel is compiled per scalar type and reads every tensor as that type, so
+    the wrapper refuses a float64 map beside float32 atoms (``torchref.utils.native.buf``
+    checks each dtype before any pointer is handed over), and the gate sends such a call
+    to the portable splat instead.
 
     Written down because the rule is easy to get wrong when it is restated as a set of
     permitted dtypes: "each tensor's dtype is in {f32, f64}" *admits* the mixed case, while
-    the actual requirement is "all tensors share one dtype drawn from {f32, f64}". The two
-    read almost identically and only one keeps the kernel from raising. In the table that
-    difference is the ``require_uniform_dtype`` flag, and this asserts it against the row
-    that ships.
+    the actual requirement is "all tensors share one dtype drawn from {f32, f64}". In the
+    table that difference is the ``require_uniform_dtype`` flag, and this asserts it
+    against the row that ships.
     """
     from torchref.base.electron_density._backends import DENSITY_BACKENDS
 
@@ -542,50 +529,41 @@ def test_fused_gate_requires_one_shared_dtype():
         assert why is not None and "single dtype" in why, why
 
 
-def test_fused_extension_compiles():
-    """The fused sphere splat must actually build. Fails rather than skipping.
+def test_native_kernels_are_loaded_and_optimised():
+    """The prebuilt kernels must be importable, ABI-matched and optimised. Fails, never skips.
 
-    Every other test in this file -- and in ``tests/unit/structure_factor`` -- calls
-    ``pytest.skip`` when ``why_unavailable()`` returns a reason, which is right for them:
-    they are testing numerics, and without the extension there is nothing to test. But if
-    *every* test skips, a build that has stopped working produces an all-green run while
-    the CPU production path has silently degraded to the portable splat. Dispatch is designed
-    to degrade quietly, which is correct for users and dangerous for CI.
+    Every other test in this file -- and in ``tests/unit/structure_factor`` -- skips when
+    ``why_unavailable()`` returns a reason, which is right for them: without the kernels
+    there is nothing to test numerically. But if *every* test skips, a missing or broken
+    ``torchref-kernels`` install produces an all-green run while the CPU production path
+    has silently degraded to the portable splat. So exactly one test asserts the kernels
+    load, and prints the diagnostic when they do not.
 
-    So exactly one test asserts the extension builds, and reports the captured diagnostic
-    plus environment when it does not -- the same stance, and most of the same diagnostic
-    surface, as the ``TestCompilation`` class in the now-deleted ``test_cpu_scatter.py``.
-
-    Now partly redundant with
-    ``tests/unit/utils/test_backend_tables.py::test_backend_is_available_where_it_is_expected``,
-    which generalizes this to every backend from the ``expect_available`` column. This one is
-    kept for its diagnostics: it prints ninja/CXX/PATH/``TORCH_EXTENSIONS_DIR``, which is what
-    you actually need when a build breaks.
-    That guard previously protected the C++ structured scatter, a helper; it now protects
-    the production CPU splat, so it matters more than it did.
+    In a source checkout it also rejects a **stale** build: an installed extension whose
+    source hash differs from ``kernels/src`` means Rust edits were never rebuilt, and the
+    numbers under test would come from old code.
     """
-    if sphere_splat.why_unavailable() is None:
-        return
-
     import os
-    import shutil
-    import sys
 
-    err = sphere_splat.last_error()
-    env_info = (
-        f"  python:    {sys.executable}\n"
-        f"  ninja:     {shutil.which('ninja')}\n"
-        f"  CXX env:   {os.environ.get('CXX', '<unset>')}\n"
-        f"  CC env:    {os.environ.get('CC', '<unset>')}\n"
-        f"  PATH head: {os.environ.get('PATH', '').split(':')[:5]}\n"
-        f"  TORCH_EXTENSIONS_DIR: "
-        f"{os.environ.get('TORCH_EXTENSIONS_DIR', '<unset>')}\n"
-    )
-    pytest.fail(
-        "The fused CPU sphere-splat extension failed to build, so CPU dispatch is "
-        "silently falling back to the portable eager splat for every density "
-        "calculation.\n"
-        f"Error: {err}\n\n"
-        f"Environment:\n{env_info}"
-    )
+    from torchref.utils import native
 
+    if sphere_splat.why_unavailable() is not None:
+        pytest.fail(
+            "torchref-kernels is not usable, so CPU dispatch is silently falling back to "
+            "the portable eager splat for every density calculation. Install it with "
+            "`pip install ./kernels` (needs a Rust toolchain) or from PyPI.\n"
+            f"Reason: {sphere_splat.why_unavailable()}\n"
+            f"Detail: {native.last_error()}"
+        )
+    info = native.build_info()
+    assert int(info["opt_level"]) >= 2, f"unoptimised kernel build: {info}"
+    assert info["abi_version"] == native.ABI_VERSION, info
+
+    kernels_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "kernels")
+    if os.path.isdir(os.path.join(kernels_dir, "src")):
+        on_disk = native.source_hash(kernels_dir)
+        assert info["source_hash"] == on_disk, (
+            f"the installed torchref-kernels was built from different sources "
+            f"({info['source_hash']}) than kernels/src ({on_disk}); rebuild with "
+            "`pip install ./kernels`"
+        )

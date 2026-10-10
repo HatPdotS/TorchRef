@@ -31,6 +31,7 @@ New features
 
 Performance
 ~~~~~~~~~~~
+- CPU density kernels ship prebuilt in the new ``torchref-kernels`` package (Rust): nothing is compiled at runtime, ``ninja`` is no longer a dependency, and the CPU splat is multithreaded on macOS
 - Faster CPU VDW pair search, hydrogen-mode switching and ADP-locality neighbours; ``SfFFT`` stores no real-space grid
 
 Fixes that change results

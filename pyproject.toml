@@ -41,7 +41,9 @@ dependencies = [
     "matplotlib>=3.7.0,<3.11.0",
     "reciprocalspaceship>=0.9.18,<1.1.0",
     "pyarrow>=12.0.0,<26.0.0",
-    "ninja>=1.10",
+    # Prebuilt CPU kernels (kernels/ in this repo). Only where wheels are published, so
+    # installing torchref never needs a Rust toolchain; elsewhere the portable path runs.
+    "torchref-kernels>=0.1,<0.2; (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')) or (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
 ]
 
 [project.scripts]
@@ -89,7 +91,8 @@ version = {attr = "torchref.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["torchref*"]
+# Not "torchref*": that would also match a torchref_kernels package dir.
+include = ["torchref", "torchref.*"]
 
 [tool.setuptools.package-data]
 torchref = ["data/*.csv", "data/*.json", "data/*.pt", "data/monomer_library/**/*.cif"]
