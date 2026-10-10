@@ -25,7 +25,15 @@ Installing from Source
 
    git clone https://github.com/HatPdotS/TorchRef.git
    cd TorchRef
+   pip install ./kernels
    pip install -e .
+
+``pip install ./kernels`` builds the CPU kernels (the ``torchref-kernels`` package) from
+the checkout and needs a Rust toolchain (https://rustup.rs). It may be skipped when the
+published ``torchref-kernels`` wheel matches the checkout: pip then installs it from PyPI.
+Releases ship prebuilt wheels for Linux (x86-64, aarch64), macOS (Apple silicon) and
+Windows (x86-64), so ``pip install torchref`` never compiles anything; on other platforms
+TorchRef runs its portable PyTorch kernels instead.
 
 For development, add the extras (pytest, black, isort, ruff):
 

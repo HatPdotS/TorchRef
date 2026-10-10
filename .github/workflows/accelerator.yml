@@ -13,9 +13,9 @@ name: Accelerator
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [main, master, dev]
   pull_request:
-    branches: [main, master, develop]
+    branches: [main, master]
   workflow_dispatch:
   # Lets publish.yml gate a PyPI release on this passing.
   workflow_call:
@@ -47,6 +47,9 @@ jobs:
           path: ~/Library/Caches/pip
           key: ${{ runner.os }}-pip-mps-${{ hashFiles('pyproject.toml') }}
           restore-keys: ${{ runner.os }}-pip-mps-
+
+      - name: Build and install torchref-kernels
+        uses: ./.github/actions/install-kernels
 
       - name: Install dependencies
         run: |

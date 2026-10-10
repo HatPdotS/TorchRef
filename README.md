@@ -63,9 +63,14 @@ For development:
 ```bash
 git clone --filter=blob:none --sparse https://github.com/HatPdotS/TorchRef.git
 cd TorchRef
-git sparse-checkout set torchref tests
+git sparse-checkout set torchref tests kernels
+pip install ./kernels        # the prebuilt CPU kernels; needs a Rust toolchain (rustup.rs)
 pip install -e ".[dev]"
 ```
+
+Skipping `pip install ./kernels` is fine when the published `torchref-kernels` wheel
+matches the checkout; pip then installs it from PyPI. Rebuild after editing anything in
+`kernels/`.
 
 This fetches ~40 MB instead of the full history (~800 MB, mostly test data and the paper
 figures that lived in `paper/` before v0.7.0). Files outside the checkout are fetched on demand,

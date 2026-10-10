@@ -11,7 +11,24 @@ Development Setup
 
    git clone https://github.com/HatPdotS/TorchRef.git
    cd TorchRef
+   pip install ./kernels
    pip install -e ".[dev]"
+
+Working on the CPU kernels
+--------------------------
+
+The CPU kernels live in ``kernels/`` (Rust, built with maturin) and are installed as the
+separate ``torchref-kernels`` package. Changes there take effect only after a rebuild:
+
+.. code-block:: bash
+
+   pip install ./kernels                      # or: maturin develop --release -m kernels/Cargo.toml
+   cargo test --manifest-path kernels/Cargo.toml --release
+
+``tests/unit/base/test_canonical_sphere_cpu.py`` fails if the installed kernels are an
+unoptimised build or were built from different sources than ``kernels/src``, so a
+forgotten rebuild cannot pass silently. ``tests/benchmarks/bench_cpu_kernels.py``
+compares them against the C++ reference build.
 
 Use of Generative AI
 --------------------
