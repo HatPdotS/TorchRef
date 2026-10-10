@@ -27,8 +27,7 @@ separate ``torchref-kernels`` package. Changes there take effect only after a re
 
 ``tests/unit/base/test_canonical_sphere_cpu.py`` fails if the installed kernels are an
 unoptimised build or were built from different sources than ``kernels/src``, so a
-forgotten rebuild cannot pass silently. ``tests/benchmarks/bench_cpu_kernels.py``
-compares them against the C++ reference build.
+forgotten rebuild cannot pass silently.
 
 Use of Generative AI
 --------------------
