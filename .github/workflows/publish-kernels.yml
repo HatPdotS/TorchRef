@@ -5,10 +5,6 @@ name: Publish torchref-kernels
 # Publish torchref-kernels BEFORE a torchref release that requires the new version.
 
 on:
-  # TEMPORARY, remove before merging: every push to this branch publishes its build to
-  # TestPyPI, because workflow_dispatch only works once the workflow is on main.
-  push:
-    branches: [kernels-package]
   pull_request:
     paths:
       - "kernels/**"
@@ -90,15 +86,13 @@ jobs:
           path: kernels/dist/*.tar.gz
 
   publish:
-    name: Publish to ${{ github.event_name == 'push' && 'testpypi' || inputs.target }}
+    name: Publish to ${{ inputs.target }}
     needs: [wheels, sdist]
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target != 'none')
+    if: github.event_name == 'workflow_dispatch' && inputs.target != 'none'
     runs-on: ubuntu-latest
-    env:
-      TARGET: ${{ github.event_name == 'push' && 'testpypi' || inputs.target }}
     environment:
-      name: ${{ github.event_name == 'push' && 'testpypi' || inputs.target }}-kernels
-      url: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi') && 'https://pypi.org/p/torchref-kernels' || 'https://test.pypi.org/p/torchref-kernels' }}
+      name: ${{ inputs.target }}-kernels
+      url: ${{ inputs.target == 'pypi' && 'https://pypi.org/p/torchref-kernels' || 'https://test.pypi.org/p/torchref-kernels' }}
     permissions:
       id-token: write
     steps:
@@ -109,13 +103,11 @@ jobs:
           merge-multiple: true
 
       - name: Publish to TestPyPI
-        if: env.TARGET == 'testpypi'
+        if: inputs.target == 'testpypi'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          # A push that did not bump the version re-uploads the same files; skip them.
-          skip-existing: true
 
       - name: Publish to PyPI
-        if: env.TARGET == 'pypi'
+        if: inputs.target == 'pypi'
         uses: pypa/gh-action-pypi-publish@release/v1
