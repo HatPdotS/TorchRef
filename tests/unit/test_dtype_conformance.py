@@ -20,10 +20,10 @@ to force each one to say *why* it deviates, so a reviewer can tell a considered
 choice from an oversight at a glance.
 """
 
-from pathlib import Path
 
 import pytest
 
+from tests.helpers.source_tree import PACKAGE_ROOT, requires_source_tree
 from tests.helpers.dtype_inventory import (
     EXEMPT_PREFIXES,
     JUSTIFY_MARKER,
@@ -31,7 +31,7 @@ from tests.helpers.dtype_inventory import (
     is_exempt,
 )
 
-_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "torchref"
+_PACKAGE_ROOT = PACKAGE_ROOT
 
 # The config getter each category should defer to, quoted in the failure message.
 _GETTER = {
@@ -42,6 +42,7 @@ _GETTER = {
 
 
 @pytest.mark.unit
+@requires_source_tree
 def test_no_unjustified_hardcoded_dtype():
     """Every hardcoded float/int/complex dtype on a live path is justified."""
     uses = find_hardcoded_dtypes(_PACKAGE_ROOT)
@@ -59,6 +60,7 @@ def test_no_unjustified_hardcoded_dtype():
 
 
 @pytest.mark.unit
+@requires_source_tree
 def test_justifications_carry_a_reason():
     """A ``# dtype-ok:`` marker must be followed by an actual reason, not left blank."""
     blank = []
@@ -77,6 +79,7 @@ def test_justifications_carry_a_reason():
 
 
 @pytest.mark.unit
+@requires_source_tree
 def test_exempt_prefixes_still_match_something():
     """Stop ``EXEMPT_PREFIXES`` accumulating entries for paths that are long gone.
 
