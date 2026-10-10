@@ -26,7 +26,7 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. Aut
 
 ## Benchmark
 
-![TorchRef AlphaFold-start refinement benchmark](https://raw.githubusercontent.com/HatPdotS/TorchRef/main/paper/figure2_alphafold_start/figures/figure_af_benchmark.png)
+![TorchRef AlphaFold-start refinement benchmark](https://raw.githubusercontent.com/HatPdotS/TorchRef/main/assets/figure_af_benchmark.png)
 
 *Refinement of Phaser-placed AlphaFold models against experimental data, on a conserved set of 723 PDB structures (1.40–3.00 Å). All engines start from the same placed models and are scored by one common validator (PHENIX).*
 
@@ -67,9 +67,10 @@ git sparse-checkout set torchref tests
 pip install -e ".[dev]"
 ```
 
-This fetches ~40 MB instead of ~436 MB; most of the repository is `paper/` history. Files outside
-the checkout are fetched on demand, so add paths later with `git sparse-checkout add paper`, or
-`git sparse-checkout disable` for all of it. Requires Git ≥ 2.27.
+This fetches ~40 MB instead of the full history (~800 MB, mostly test data and the paper
+figures that lived in `paper/` before v0.7.0). Files outside the checkout are fetched on demand,
+so add paths later with `git sparse-checkout add docs`, or `git sparse-checkout disable` for all
+of it. Requires Git ≥ 2.27.
 
 ### Dependencies
 
@@ -91,6 +92,18 @@ Contributions are welcome. Please use [NumPy docstring style](https://numpydoc.r
 
 Questions, feature ideas and usage discussion are welcome on the [TorchRef category of the rs-station forum](https://discourse.rs-station.org/c/software/torchref/54).
 
+### Citing
+
+If you use TorchRef in published work, please cite
+
+> Seidel, H.-P., Standfuss, J. & Weinert, T. (2026). *TorchRef: An open-source PyTorch
+> Framework for Crystallographic Refinement.* Journal of Applied Crystallography, accepted.
+
+The figure scripts, per-panel source data and the author accepted manuscript are in
+[HatPdotS/TorchRef-paper](https://github.com/HatPdotS/TorchRef-paper).
+
 ### License
 
 MIT. See [LICENSE](https://github.com/HatPdotS/TorchRef/blob/main/LICENSE).
+
+Paper-related resources were migrated to [HatPdotS/TorchRef-paper](https://github.com/HatPdotS/TorchRef-paper).

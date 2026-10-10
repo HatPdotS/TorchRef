@@ -58,6 +58,7 @@ Experimental
 Internal
 ~~~~~~~~
 - Integer tensors follow ``TORCHREF_DTYPE_INT``; tests are selected by path; CPU and MPS CI run on pull requests
+- The paper's figure scripts, source data and manuscript moved out of ``paper/`` into the companion repository `HatPdotS/TorchRef-paper <https://github.com/HatPdotS/TorchRef-paper>`_
 
 
 Version 0.6.4
