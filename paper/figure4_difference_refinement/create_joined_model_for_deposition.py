@@ -45,8 +45,8 @@ def merge_structures(st_dark, st_light, occ_dark, occ_light):
     """Merge two gemmi Structures into a multi-conformer model.
 
     For each residue, atoms from the dark model get altloc A and
-    atoms from the light model get altloc B.  Occupancies are set
-    accordingly.
+    atoms from the light model get altloc B.  Each atom's own occupancy
+    is scaled by its state's occupancy.
 
     The dark structure is used as the base (preserving all metadata).
     """
@@ -65,7 +65,7 @@ def merge_structures(st_dark, st_light, occ_dark, occ_light):
             # Set dark atoms to altloc A
             for atom in res_d:
                 atom.altloc = "A"
-                atom.occ = occ_dark
+                atom.occ *= occ_dark
 
             # Find matching light residue
             key = (chain_d.name, str(res_d.seqid), res_d.name)
@@ -77,7 +77,7 @@ def merge_structures(st_dark, st_light, occ_dark, occ_light):
             for atom in res_light:
                 new_atom = atom.clone()
                 new_atom.altloc = "B"
-                new_atom.occ = occ_light
+                new_atom.occ *= occ_light
                 res_d.add_atom(new_atom)
 
     return st_dark

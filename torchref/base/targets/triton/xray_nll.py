@@ -3,6 +3,8 @@
 Fused: the ``median(sigma)*1e-1`` clamp is computed inside the kernel. The eager
 counterpart is :func:`torchref.base.targets.xray_likelihoods.nll_math` composed with
 ``amplitude_var_from_sigma_obs``; ``xray_nll.nll_sigma_obs_math`` chooses between them.
+Like :func:`~torchref.base.targets.xray_likelihoods.nll_per_refl`, the residual is
+``F_obs - |F_calc|``, so a signed ``F_calc`` scores the same on both paths.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import torch
 import triton
 import triton.language as tl
 
+from .._dispatch import first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -40,7 +43,7 @@ def _gauss_fwd_kernel(
     m = tl.load(mask_ptr + offs, mask=valid, other=0).to(tl.float32)
 
     sig_safe = tl.where(sig < sigma_floor, sigma_floor, sig)
-    diff = F_obs - F_calc
+    diff = F_obs - tl.abs(F_calc)
     inv_s = 1.0 / sig_safe
     nll = 0.5 * (diff * inv_s) * (diff * inv_s) + tl.log(sig_safe) + 0.5 * log_2pi
     tl.store(out_ptr + offs, nll * m, mask=valid)
@@ -70,10 +73,11 @@ def _gauss_bwd_kernel(
     m = tl.load(mask_ptr + offs, mask=valid, other=0).to(tl.float32)
 
     sig_safe = tl.where(sig < sigma_floor, sigma_floor, sig)
-    diff = F_obs - F_calc
+    diff = F_obs - tl.abs(F_calc)
     inv_s2 = 1.0 / (sig_safe * sig_safe)
-    # dNLL_h / dF_calc = -diff / sigma^2
-    g = grad_out * (-diff) * inv_s2 * m
+    # dNLL_h / dF_calc = -diff * sign(F_calc) / sigma^2, with sign(0) = 0 as torch.abs
+    sign = tl.where(F_calc > 0.0, 1.0, tl.where(F_calc < 0.0, -1.0, 0.0))
+    g = grad_out * (-diff) * sign * inv_s2 * m
     tl.store(dF_calc_ptr + offs, g, mask=valid)
 
 
@@ -102,6 +106,7 @@ class _GaussXrayMathTriton(torch.autograd.Function):
         return out.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         F_obs, F_calc, sigma, mask_u8, sigma_floor_t = ctx.saved_tensors
         N = F_calc.shape[0]

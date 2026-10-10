@@ -6,29 +6,22 @@ This directory contains the complete test suite for torchref.
 
 ```
 tests/
-├── conftest.py              # Root fixtures (paths, devices, skip decorators)
+├── conftest.py              # Fixture registration and test-selection hooks
+├── fixtures/                # Shared setup, grouped by responsibility (see fixtures/README.md)
 ├── pytest.ini               # Pytest configuration
 ├── __init__.py
-├── files/                   # Test data files (CIF, PDB, MTZ)
+├── files/                   # Test data files
 │   ├── cif/                 # Model CIF files
-│   ├── pdb/                 # PDB files  
+│   ├── pdb/                 # PDB files
 │   ├── mtz/                 # Reflection MTZ files
-│   └── cif_sf/              # Structure factor CIF files
-├── unit/                    # Unit tests (fast, no I/O)
-│   ├── conftest.py          # Unit test fixtures (mock data)
-│   ├── math_functions/      # Math module tests
-│   ├── model/               # Model module tests
-│   ├── refinement/          # Refinement module tests
-│   ├── scaling/             # Scaling module tests
-│   ├── symmetrie/           # Symmetry module tests
-│   ├── io/                  # I/O module tests
-│   ├── restraints/          # Restraints module tests
-│   └── utils/               # Utils module tests
-├── integration/             # Integration tests (real I/O)
-│   ├── conftest.py          # Integration fixtures
-│   ├── test_io_cif.py       # CIF loading tests
-│   ├── test_io_reflections.py # Reflection data tests
-│   └── test_refinement_pipeline.py # Pipeline tests
+│   ├── cif_sf/              # Structure factor CIF files
+│   ├── hkl/                 # CrystFEL .hkl reflection files
+│   └── restraints/          # Monomer-library restraint CIFs
+├── unit/                    # Unit tests (fast, no I/O); subdirectories mirror torchref/
+├── integration/             # Integration tests (real I/O, complete pipelines, CLI)
+├── functional/              # Multi-component workflows on pre-loaded objects
+├── helpers/                 # Device, dtype, gradient and structure-case helpers
+├── benchmarks/              # Standalone comparison scripts, not collected by pytest
 └── scripts/                 # Test runner scripts
     ├── submit_tests.sbatch  # SLURM job for CPU tests
     ├── submit_gpu_tests.sbatch # SLURM job for GPU tests
@@ -38,6 +31,33 @@ tests/
 
 ## Running Tests
 
+### Coverage ownership
+
+| Contract | Owner |
+|---|---|
+| Loss weights, aggregation, cached loss reads | `unit/refinement/test_loss_state.py` |
+| Refinement's default group weights | `unit/refinement/test_loss_weighting.py` |
+| Gaussian amplitude-metric values and reductions | `unit/base/test_loss.py` |
+| Restraint kernel values on deposited coordinates | `unit/base/test_target_values.py` |
+| CIF atomic fields and crystal metadata | `integration/test_io_cif.py` |
+| MTZ fields, resolution bins and model/data crystal agreement | `integration/test_io_reflections.py` |
+| ModelFT forward cache and grid integration | `functional/test_model_ft_functional.py` |
+| Extra deposited files and input inventory | `integration/test_structure_compatibility.py`, `helpers/structure_cases.py` |
+| Numerical derivatives and backend parity | `unit/test_gradient_correctness.py`, `unit/structure_factor/` |
+
+A production call must participate in the assertion: computing a formula only in
+the test does not check its implementation. Kernel values, target registration,
+device transitions, and default configuration are separate contracts even when
+they exercise the same class. Keep mutation tests on fresh objects.
+
+The quick reader contracts use 1DAW. Extended reader compatibility runs with
+`pytest tests/integration/test_structure_compatibility.py --run-slow`; each file
+is a separate case and must succeed. The manifest covers the bundled CIF, MTZ
+and SF-CIF inputs, including the IHM fixture and reflection-only depositions.
+Adding a data file requires an explicit coverage assignment in the manifest.
+Extended scaler and restraint cases use 2DQ6 (trigonal) and 3A5V (body-centred
+tetragonal), with fresh objects per case and `--run-slow` required.
+
 ### Quick Local Run (on login node, for small tests only)
 
 ```bash
@@ -45,7 +65,7 @@ tests/
 python -m pytest tests/unit -v
 
 # Run specific test file
-python -m pytest tests/unit/math_functions/test_math_torch.py -v
+python -m pytest tests/unit/base/test_loss.py -v
 
 # Run tests matching a pattern
 python -m pytest tests/unit -k "test_coordinate" -v
@@ -53,9 +73,13 @@ python -m pytest tests/unit -k "test_coordinate" -v
 
 ### Interactive Run (on compute node)
 
+Partition names are site-specific: pick one with idle nodes from `sinfo -s` (AGENTS.md §1).
+The runner scripts activate a site-specific conda environment, and the `.sbatch` files name a
+partition; edit both before use.
+
 ```bash
 # Start an interactive session
-srun -c 8 -p day -t 1-00:00:00 --pty bash
+srun -c 8 -p <partition> --pty bash
 
 # Then run tests
 ./tests/scripts/run_tests.sh unit
@@ -65,7 +89,7 @@ srun -c 8 -p day -t 1-00:00:00 --pty bash
 
 Or use the convenience script directly:
 ```bash
-srun -c 8 -p day -t 1-00:00:00 tests/scripts/run_tests.sh unit
+srun -c 8 -p <partition> tests/scripts/run_tests.sh unit
 ```
 
 ### Detached Run (via SLURM)
@@ -97,18 +121,20 @@ Tests are marked with the following pytest markers:
 - `@pytest.mark.cuda` - Needs CUDA specifically (e.g. Triton kernels)
 - `@pytest.mark.mps` - Needs MPS specifically (Metal kernels)
 - `@pytest.mark.slow` - Slow tests (>30 seconds)
+- `@pytest.mark.openmm` - Needs OpenMM (the `[amber]` extra); skipped if absent
+- `@pytest.mark.amber` - Needs OpenMM + AmberTools (antechamber/parmchk2); skipped if absent
 
-### Running by marker
+### Selecting tests
 
 ```bash
 # Unit tests only (fast)
-pytest -m "unit"
+pytest tests/unit
 
 # Skip GPU tests
 pytest -m "not gpu"
 
 # Integration tests only
-pytest -m "integration"
+pytest tests/integration
 
 # Fast tests only (no slow, no gpu)
 pytest -m "not slow and not gpu"
@@ -132,7 +158,7 @@ open htmlcov/index.html
 ## GitHub Actions
 
 Tests are automatically run on GitHub via Actions:
-- Unit tests run on Python 3.9, 3.10, 3.11
+- Unit tests run on Python 3.10–3.13
 - Coverage is uploaded to Codecov
 - Integration tests run after unit tests pass
 

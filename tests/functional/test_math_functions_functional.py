@@ -126,46 +126,10 @@ class TestNLLFunctions:
         
         assert torch.all(torch.isfinite(nll))
 
-    def test_nll_xray_sum(self):
-        """Test NLL X-ray sum."""
-        from torchref.base.math_torch import nll_xray_sum
-        
-        fobs = torch.tensor([10.0, 20.0, 30.0], dtype=torch.float32)
-        fcalc = torch.tensor([11.0, 19.0, 31.0], dtype=torch.float32)
-        sigma = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32)
-        
-        nll_total = nll_xray_sum(fobs, fcalc, sigma)
-        
-        assert torch.isfinite(nll_total)
-
-    def test_log_loss(self):
-        """Test log loss function."""
-        from torchref.base.math_torch import log_loss
-        
-        fobs = torch.tensor([10.0, 20.0, 30.0], dtype=torch.float32)
-        fcalc = torch.tensor([11.0, 19.0, 31.0], dtype=torch.float32)
-        sigma = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32)
-        
-        loss = log_loss(fobs, fcalc, sigma)
-        
-        assert torch.all(torch.isfinite(loss))
-
 
 @pytest.mark.integration
 class TestGridFunctions:
     """Test grid-related functions."""
-
-    def test_find_grid_size(self, model_and_data):
-        """Test grid size calculation."""
-        from torchref.base import find_grid_size
-        
-        model = model_and_data["model"]
-        cell = model.cell
-        
-        gridsize = find_grid_size(cell, max_res=2.0)
-        
-        assert len(gridsize) == 3
-        assert all(g > 0 for g in gridsize)
 
     def test_get_real_grid(self, model_and_data):
         """Test real space grid creation."""
@@ -174,7 +138,7 @@ class TestGridFunctions:
         model = model_and_data["model"]
         cell = model.cell
         
-        grid = get_real_grid(cell, max_res=3.0, device='cpu')
+        grid = get_real_grid(cell, gridsize=cell.compute_grid_size(3.0), device="cpu")
         
         assert grid is not None
         # Should be 4D (nx, ny, nz, 3)
@@ -240,18 +204,3 @@ class TestMiscMathFunctions:
         # Should return something valid
         assert result is not None
         assert torch.all(torch.isfinite(result))
-
-    def test_rotation_function(self):
-        """Test coordinate rotation."""
-        from torchref.base.math_torch import rotate_coords_torch
-        
-        coords = torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float64)
-        phi = torch.tensor(0.0)  # No rotation (tensor form)
-        rho = torch.tensor(0.0)
-        
-        rotated = rotate_coords_torch(coords, phi, rho)
-        
-        # Should be same as original for no rotation
-        assert torch.allclose(coords, rotated, atol=1e-6)
-
-

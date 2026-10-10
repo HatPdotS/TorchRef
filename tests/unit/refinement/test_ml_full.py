@@ -1,8 +1,7 @@
 """Regression guards for the full-form MLF target (``xray_ml_full``).
 
-These lock in what the one-off screening study in ``sigma_a_rework/quad_screen.py``
-established. Several of them exist because the corresponding bug was actually made
-and caught during development, which is noted where relevant.
+These pin the quadrature accuracy that ``N_QUAD`` and ``N_SIGMA`` were chosen for,
+and the numerical traps noted where relevant.
 """
 
 import math
@@ -12,7 +11,11 @@ import pytest
 import torch
 
 from torchref.base.targets import xray_ml_full as F
-from torchref.base.targets.xray_likelihoods import rice_marginal_math, rice_per_refl
+from torchref.base.targets.xray_likelihoods import (
+    rice_marginal_math,
+    rice_marginal_per_refl,
+    rice_per_refl,
+)
 
 DT = torch.float64
 
@@ -32,6 +35,12 @@ def _no_compile():
 
 def _t(*vals):
     return [torch.as_tensor(np.asarray(v, dtype=np.float64), dtype=DT) for v in vals]
+
+
+def _log_cosh(x):
+    """Numerically safe ``log cosh(x) = |x| + log1p(exp(-2|x|)) - log 2``."""
+    ax = torch.abs(x)
+    return ax + torch.log1p(torch.exp(-2.0 * ax)) - math.log(2.0)
 
 
 def _grid(r_sig, r_fc, r_fo, Sigma=1.0):
@@ -75,7 +84,7 @@ def test_quadrature_reproduces_exact_centric_closed_form():
         return (
             0.5 * torch.log(2.0 / (math.pi * Sigma))
             - (t * t + Fc * Fc) * (0.5 * inv_S)
-            + F._log_cosh(t * Fc * inv_S)
+            + _log_cosh(t * Fc * inv_S)
             - 0.5 * (F.LOG_2PI + 2.0 * torch.log(sig))
             - (F_obs - t) ** 2 / (2.0 * sig**2)
         )
@@ -311,6 +320,22 @@ def test_log_i0_fast_accuracy_budget():
     assert err < 2e-6, f"log_i0 polynomial error {err:.3e}"
 
 
+def test_float64_defaults_to_the_exact_log_bessel():
+    """Without ``li0``, float64 inputs take ``log_i0_exact``: the polynomial's error is
+    above the float64 quadrature error, so it must not leak into the reference path."""
+    F_obs, sig, Fc, Sigma = _grid(
+        [1e-3, 1e-2, 0.1, 0.3, 1.0, 3.0, 10.0, 100.0],
+        [0.0, 0.1, 1.0, 5.0, 20.0, 50.0],
+        [0.0, 0.5, 2.0, 10.0, 200.0],
+    )
+    cen = torch.zeros_like(F_obs, dtype=torch.bool)
+    exact = F.ml_full_nll_per_refl(F_obs, sig, Fc, Sigma, cen, li0=F.log_i0_exact)
+    by_default = F.ml_full_nll_per_refl(F_obs, sig, Fc, Sigma, cen)
+    torch.testing.assert_close(by_default, exact, atol=1e-12, rtol=0.0)
+    via_likelihoods = rice_marginal_per_refl(F_obs, Fc, Sigma, sig, cen)
+    torch.testing.assert_close(via_likelihoods, exact, atol=1e-12, rtol=0.0)
+
+
 def test_float32_runs_and_tracks_float64():
     """float32 is the production dtype. Its error is set by the magnitude of the
     per-reflection NLL, not by the quadrature; keep the realistic range honest."""
@@ -394,6 +419,47 @@ def test_compile_switch_is_respected_and_float64_stays_eager():
         F._COMPILED.clear()
         F.acentric_nll(*x)
         assert not F._COMPILED, "float64 should not have triggered a compile"
+    finally:
+        cfg.compile_targets.value = False
+        F._COMPILED.clear()
+
+
+def test_a_compiled_kernel_that_fails_degrades_to_eager_once(monkeypatch):
+    """``torch.compile`` builds lazily, so codegen fails on the first call, not at
+    construction. That call must fall back to eager with one
+    ``TorchRefDegradationWarning`` and later calls must stay eager without warning.
+    """
+    import warnings
+
+    import torchref.config as cfg
+    from torchref.utils.backends import TorchRefDegradationWarning
+
+    def failing_build(fn, **kwargs):
+        def compiled(*args):
+            raise RuntimeError("codegen failed")
+
+        return compiled
+
+    g = torch.Generator().manual_seed(0)
+    x = [torch.rand(64, generator=g) * 10 + 1 for _ in range(4)]
+    expected = F._acentric_nll_eager(*x, F.N_QUAD, F.N_SIGMA, F.log_i0)
+
+    monkeypatch.setattr(torch, "compile", failing_build)
+    cfg.compile_targets.value = True
+    try:
+        F._COMPILED.clear()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            first = F.acentric_nll(*x)
+            second = F.acentric_nll(*x)
+        degraded = [
+            w for w in caught if issubclass(w.category, TorchRefDegradationWarning)
+        ]
+        assert len(degraded) == 1
+        assert "codegen failed" in str(degraded[0].message)
+        torch.testing.assert_close(first, expected)
+        torch.testing.assert_close(second, expected)
+        assert F._COMPILED[(F.N_QUAD, float(F.N_SIGMA))] is None
     finally:
         cfg.compile_targets.value = False
         F._COMPILED.clear()

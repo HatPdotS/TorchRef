@@ -1,6 +1,5 @@
 """Planarity restraint on the deviation of each atom from its best-fit plane."""
 
-import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
@@ -8,7 +7,6 @@ from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
-    StatEntry,
     stat,
 )
 
@@ -53,10 +51,9 @@ class PlanarityTarget(GeometryTarget):
         """Summed planarity NLL over plane-size buckets; 0.0 when there are no planes."""
         from torchref.base.targets.planarity import planarity_math
         xyz = self.model.xyz()
-        device = xyz.device
 
         if "plane" not in self.restraints.restraints:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
 
         # Bucketed by plane size, skipping 3-atom planes: zero signal by construction.
         plane_groups = []
@@ -70,7 +67,7 @@ class PlanarityTarget(GeometryTarget):
             plane_groups.append((indices, sigmas))
 
         if not plane_groups:
-            return torch.tensor(0.0, device=device)
+            return xyz.new_zeros(())
         return planarity_math(xyz, plane_groups)
 
     def stats(self) -> Dict[str, any]:
@@ -106,7 +103,7 @@ class PlanarityTarget(GeometryTarget):
             all_sigmas.append(sigmas.flatten())
 
         if not all_deviations:
-            return {"n": 0, "rms_delta": 0.0, "rms_z": 0.0, "mean_sigma": 0.0}
+            return {}
 
         all_deviations = torch.cat(all_deviations)
         all_sigmas = torch.cat(all_sigmas)

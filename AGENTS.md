@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Working notes for AI agents (and humans) editing TorchRef. This file is the authority on
-conventions; where `.github/instructions/*.md` disagrees with it, this file wins.
+conventions.
 
 TorchRef is GPU-accelerated **crystallographic refinement** built on PyTorch: models are
 `nn.Module`s, targets are losses, and gradients come from autograd. The domain is X-ray
@@ -51,6 +51,12 @@ Practically:
 - **Never hardcode a dtype.** Take it from the config: `torchref.config.get_float_dtype()`,
   `get_int_dtype()`, `get_complex_dtype()`, or from an input tensor. Roughly 200 call sites
   already do this; follow them.
+- Integer and index tensors take `get_int_dtype()` too (int32 by default). Plain indexing,
+  `index_select` and `index_add_` accept it. A literal int dtype survives only where torch or
+  the arithmetic forces it, with a `# dtype-ok:` marker naming the constraint: `scatter`/`gather`
+  indices (int64 on torch < 2.8), `index_copy_`/`index_fill_`/`one_hot` (int64 always), packed
+  keys such as `i * n + j` that overflow int32, compiled kernels that `TORCH_CHECK` a dtype
+  (the Legendre shell kernel), and external-library contracts (TorchMD-Net).
 - `torch.float64` *is* a supported configuration (`TORCHREF_DTYPE_FLOAT=float64`) used as an
   eager numerical reference and in gradient checks. Code must **work** in float64, must not
   **require** it, and must not silently downcast (see `tests/integration/test_dtype_config_float64.py`).
@@ -62,8 +68,8 @@ Practically:
 - NumPy interop at I/O boundaries (gemmi, reciprocalspaceship, OpenMM) is naturally float64;
   that is fine. Convert at the boundary, not deep inside a kernel.
 - Integers default to **int32**, complex to **complex64**. Note the MPS trap: `scatter_reduce`
-  `amax`/`amin` on int64 fails there — use `index_add_` or a stable `argsort` for grouped
-  reductions.
+  `amax`/`amin` on int64 fails there — use `index_add_` for grouped sums and
+  `torchref.utils.utils.first_index_per_group` (a stable `argsort`) for first occurrences.
 
 ### 2.2 Code does not track its own history
 
@@ -179,21 +185,21 @@ Black, 88 columns, `isort` with the black profile. Ruff lint with
 
 ## 3. Package structure
 
-`torchref/` — 260 modules, ~92k lines. Top-level exports live in `torchref/__init__.py`
+`torchref/` — 289 modules, ~93k lines. Top-level exports live in `torchref/__init__.py`
 (`Model`, `ModelFT`, `LBFGSRefinement`, `ReflectionData`, `Cell`, `SpaceGroup`, `Map`, …).
 
 | Package | Contents |
 |---|---|
-| `base/` | Low-level math and crystallography. `coordinates/` (Cartesian↔fractional), `reciprocal/` (basis, HKL, d-spacing, interpolation, symmetry), `direct_summation/` (F_calc by summation; eager + Triton), `electron_density/` (real-space splatting with CPU/CUDA/MPS kernels, solvent mask, radius policy), `fourier/` (FFT and grids), `scattering/` (form-factor and anomalous tables), `metrics/` (R-factors, binwise scale, loss), `targets/` (the *kernels* behind refinement targets, eager + `triton/`), `french_wilson.py`, `math_torch.py`, `alignment/` |
+| `base/` | Low-level math and crystallography. `coordinates/` (Cartesian↔fractional), `reciprocal/` (basis, HKL, d-spacing, symmetry), `direct_summation/` (F_calc by summation; eager + Triton), `electron_density/` (real-space splatting with CPU/CUDA/MPS kernels, solvent mask, radius policy), `fourier/` (FFT and grids), `scattering/` (form-factor and anomalous tables), `metrics/` (R-factors, binwise scale, loss), `targets/` (the *kernels* behind refinement targets, eager + `triton/`), `french_wilson.py`, `math_torch.py`, `alignment/` |
 | `io/` | `ReflectionData`, `DatasetCollection`, `FcalcDataset`; MTZ / PDB / CIF / IHM readers and writers; `read_mtz` / `read_pdb` / `read_cif` |
-| `model/` | `Model` (refinable atomic parameters), `ModelFT` (adds F_calc via `SfFFT` or `SfDS`), `MixedModel`, `ModelCollection`, and the parametrizations in `parameter_wrappers.py` / `rigid_xyz.py` that decide what is refinable |
-| `refinement/` | Drivers (`Refinement`, `LBFGSRefinement`, `RigidBodyRefinementStep`), `targets/` (`xray/`, `geometry/`, `adp/`, `collection/`, `combined.py`), `weighting/`, `optimizers/` (annealing, Langevin, preconditioned/seeded L-BFGS), `model_error_estimation/` (σ_A, σ_M), `loss_state.py`, `logger.py` |
-| `restraints/` | Bonds, angles, torsions, planes, chirals, VDW. Built from the CCP4 Monomer Library, resolved lazily via `get_library_manager()` — importing this package must not trigger a library download |
-| `scaling/` | `ScalerBase` (model-independent), `Scaler`, `CollectionScaler`, `SolventModel` (k_sol, B_sol) |
-| `symmetry/` | `SpaceGroup` (buffers on `nn.Module`), `Cell`, `MapSymmetry`, `ReciprocalSymmetry`, grid utilities |
+| `model/` | `Model` (refinable atomic parameters), `ModelContext` (the cell, space group, atom identity as a node-only `ctx.topology`, links, provenance, hydrogen policy and geometry restraints a model is loaded with — `model.cell` / `.spacegroup` / `.restraints` forward to it, the rest is `model.ctx.*`). **Identity is read from `ctx.topology`, values only through the wrappers (`model.xyz()`, `.adp()`, `.u()`, `.occupancy()`, `aniso_flag`); a pandas atom table appears only at construction (`ModelContext.from_atoms`, the one place a table is settled) and output (`Model.to_dataframe()`) — never read `model.pdb`, a deprecated view.** `Model._install_parameters` is the one place wrappers are built. `ModelFT` (adds F_calc via `SfFFT`; `SfDS` is a standalone direct-summation engine), `MixedModel`, `ModelCollection`, and the parametrizations in `parameter_wrappers.py` / `rigid_xyz.py` that decide what is refinable |
+| `refinement/` | Drivers (`Refinement`, `LBFGSRefinement`, `RigidBodyRefinementStep`), `targets/` (`xray/`, `geometry/`, `adp/`, `collection/`, `combined.py`), `weighting/`, `optimizers/` (Langevin simulated annealing), `model_error_estimation/` (σ_A, σ_M), `loss_state.py`, `logger.py` |
+| `topology/` | The connectivity graph (`Topology`, `AtomGraph`, `ResidueGraph`) and the restraint layer over it (`Restraints`: bonds, angles, torsions, planes, chirals, VDW pair list), hydrogen generation (`hydrogens.py`) and riding frames. Built from the CCP4 Monomer Library, resolved lazily via `monomer.library.get_library_manager()` — importing this package must not trigger a library download. `Restraints` holds no reference to a model: evaluations take the coordinates they score |
+| `scaling/` | `ScalerBase` (model-independent), `Scaler`, `CollectionScaler`, `SolventModel` (k_sol, ss_half/n_exp falloff) |
+| `symmetry/` | `Symmetry` (operations plus everything derived from them), `SpaceGroup` (adds the crystallographic identity and the CCP4 ASU verbs), `Cell`. All dataclasses over `DeviceMixin`, not `nn.Module` — they hold no refinable parameters. Map and reciprocal-grid operators are private, reached through `Symmetry` |
 | `maps/` | `Map` (2Fo−Fc, Fcalc), `DifferenceMap` |
-| `cli/` | Entry points: `torchref.refine`, `torchref.difference-refine`, `torchref.mtz2map`, `torchref.validate-ded`, `torchref.phased-difference-map`, `torchref.add-metadata`, `torchref.strip-altlocs` |
-| `experimental/` | APIs that may change without notice: `alignment/` (Patterson MR), `kinetic/` (time-resolved), `ensemble/`, `monolithic_refinement/`, `targets/` (AMBER/GAFF2, real-space, sampled-ML phase) |
+| `cli/` | Entry points: `torchref.refine`, `torchref.difference-refine`, `torchref.mtz2map`, `torchref.validate-ded`, `torchref.difference-map`, `torchref.add-metadata`, `torchref.strip-altlocs`, `torchref.uniform-rfree`, `torchref.simulate-noisy-data` |
+| `experimental/` | APIs that may change without notice: `alignment/` (Patterson MR), `kinetic/` (time-resolved), `ensemble/`, `monolithic_refinement/`, `targets/` (AMBER/GAFF2, real-space, occupancy-floor diagnostic), `mm/` (the OpenMM adapter the AMBER targets sit on: system built from `model.ctx`, symmetry copies, GAFF2 ligands) |
 | `utils/` | See §5 |
 | `config.py` | See §4 |
 
@@ -203,9 +209,9 @@ downward from `base` or `utils` into the higher layers.
 
 Two conventions worth knowing before adding re-exports: `__all__` in a package `__init__.py`
 is the public surface, and several packages deliberately keep helpers out of it (e.g.
-`torchref.utils.timing.register_timing`, the `restraints` builder classes). Where a name
-exists in two modules, the docstring says which is the source of truth — don't re-export the
-copy.
+`torchref.utils.timing.register_timing`, the `torchref.topology.builders` classes). Where a
+name exists in two modules, the docstring says which is the source of truth — don't re-export
+the copy.
 
 ---
 
@@ -229,10 +235,10 @@ torchref.config.caching.value = False
 | `TORCHREF_DTYPE_COMPLEX` | `dtypes.complex` / `get_complex_dtype()` | `complex64` | Global complex dtype; `complex128` unavailable on MPS |
 | `TORCHREF_DEVICE` | `device.current` / `get_default_device()` | `auto` | `auto` picks cuda → mps → cpu. Auto-selecting CUDA also requires compute capability ≥ the minimum `sm_*` in the torch build **and** ≥ 10 GB VRAM (`_MIN_CUDA_VRAM_GB`), else it warns and falls back. An explicit value bypasses those gates but raises if the backend is missing |
 | `TORCHREF_SIGMA_CUTOFF_ED` | `sigma_cutoff_ed.value` | `3.0` | Number of σ at which each atom's Gaussian density is truncated. Per-atom radius `clamp(ceil₀.₂₅(Nσ·σ_eff), [2, 7] Å)` with `σ_eff = sqrt((b_form + B) / 8π²)`. 3.0 is the floor |
-| `TORCHREF_COMPILE_TARGETS` | `compile_targets.value` / `get_compile_targets()` | `False` | `torch.compile` the quadrature X-ray target kernels (`--xray-mode ml_full`). Off by default: ~2 min backward-compile latency. Keep off for float64 and gradient verification |
+| `TORCHREF_COMPILE_TARGETS` | `compile_targets.value` / `get_compile_targets()` | `False` | `torch.compile` the quadrature X-ray target kernels (`--xray-mode ml_full`). Off by default: the first backward compile is slow. Keep off for float64 and gradient verification |
 | `TORCHREF_CACHING` | `caching.value` / `get_caching_enabled()` | `True` | Gates `CachedForwardMixin` **only**. Off ⇒ every `forward()` recomputes; numbers unchanged. Primary use is diagnosing stale-looking results in one step |
-| `TORCHREF_NUM_THREADS` | `torchref.N_CPUS` | auto-detected | Thread count; must be applied before torch imports, which `torchref/_bootstrap.py` handles |
-| `TORCHREF_MONOMER_LIB` | `restraints.library` | unset | Path to a local CCP4 monomer library install, checked first |
+| `TORCHREF_NUM_THREADS` | `torchref.N_CPUS` | `SLURM_CPUS_PER_TASK` if set, else CPU affinity capped at 4 | Thread count, read by `torchref/__init__.py` before torch is imported; `import torchref` overwrites `OMP_`/`MKL_`/`OPENBLAS_NUM_THREADS` with it |
+| `TORCHREF_MONOMER_LIB` | `topology.monomer.library` | unset | Path to a local CCP4 monomer library install, checked first |
 
 Also in `config.py`, not env-configurable:
 
@@ -258,19 +264,19 @@ must be imported from its own module.
 
 | Module | Public names | Notes |
 |---|---|---|
-| `utils.py` | `ModuleReference`, `TensorDict`, `TensorMasks`, `sanitize_pdb_dataframe`, `parse_phenix_selection`, `create_selection_mask` | `ModuleReference` holds an `nn.Module` without registering it (keeps its parameters out of the parent tree). `TensorDict` is buffer-backed. `TensorMasks` caches the combined logical-AND mask. Phenix-style atom-selection strings → boolean masks |
+| `utils.py` | `ModuleReference`, `TensorDict`, `TensorMasks`, `sanitize_pdb_dataframe`; module-only: `first_index_per_group` | `ModuleReference` holds an `nn.Module` without registering it (keeps its parameters out of the parent tree). `TensorDict` is buffer-backed. `TensorMasks` caches the combined logical-AND mask. `first_index_per_group` is the one grouped first-occurrence helper (no `scatter_reduce`, so MPS-safe) |
 | `device_mixin.py` | `DeviceMixin` (`DeviceMovementMixin` alias) | Hijacks `.to()`/`.cuda()`/`.cpu()` for both `nn.Module` subclasses and plain classes; recursively moves params, buffers, raw tensor attributes, tensors nested in list/tuple/dict, and unregistered modules. Cycle-safe via a thread-local `id()` set. **Every moved node gets `reset_forward_cache()`/`reset_cache()` called — a `.to()` is never free, even onto the current device** |
 | `device_resolution.py` | `resolve_device`, `require_cell_dtype` | Collapse several device-bearing constructor inputs onto one device with fixed precedence; dtype-axis counterpart |
 | `caching.py` | `CachedForwardMixin`, `ParameterFingerprint`, `no_caching` | Caches `forward()` with invalidation on parameter mutation or backward. Gated globally by `TORCHREF_CACHING`; `no_caching` scopes it to a block. `ParameterFingerprint` is standalone and ungated |
-| `backends.py` | `Backend`, `BackendTable`, `select`, `will_use`, `run_or_degrade`, `triton_available`, `force_portable`, `set_force_portable`, `use_portable`, `TorchRefDegradationWarning` | Declarative kernel dispatch — see §6 |
-| `loss_validation.py` | `validate_loss`, `NonFiniteLossError`, `reset_diagnostic_budget` | Checks loss (optionally grads and params) and dumps a per-target breakdown on failure. With `raise_on_fail=False` **the caller must reject the step itself** — in an L-BFGS closure: zero grads and return `+inf` so strong-Wolfe backtracks. Costs one GPU→CPU sync (two with `check_grads=True`) |
+| `backends.py` | `triton_available`, `force_portable`, `set_force_portable`, `use_portable`; module-only: `Backend`, `BackendTable`, `select`, `will_use`, `run_or_degrade`, `TorchRefDegradationWarning` | Declarative kernel dispatch — see §6 |
+| `loss_validation.py` | `validate_loss`, `NonFiniteLossError`, `reset_diagnostic_budget` | Checks the loss (and, with `check_grads`, the parameters' gradients; parameter values are only reported) and dumps a per-target breakdown on failure. With `raise_on_fail=False` **the caller must reject the step itself** — in an L-BFGS closure: zero grads and return `+inf` so strong-Wolfe backtracks. Costs one GPU→CPU sync (two with `check_grads=True`) |
 | `autograd_introspection.py` | `collect_loss_leaves` | Walks a loss's autograd graph to find the leaf `nn.Parameter`s it touches; used by `LossState` to disable `requires_grad` on leaves the optimizer wasn't built with |
-| `autograd_ops.py` | `gather_with_index_add` | 1-D gather whose backward uses `index_add_` instead of the radix-sorting `_index_put_impl_`. **Not bit-reproducible on CUDA** (atomics) |
-| `stats.py` | `stat`, `StatEntry`, `StatEntryEncoder`, `filter_stats`, `flatten_stats`, `format_stats_table` | Verbosity-tagged reporting: `VERBOSITY_ESSENTIAL` (0) … `_DEBUG` (3). **Import side effect: replaces stdlib `json.dumps`/`json.dump` process-wide** to default `cls=StatEntryEncoder` |
+| `matmul.py` | module-only: `matmul` | `a @ b` that splits reductions of 32767 or more on MPS: M1/M2 kernels over-read past the operands there and return silently wrong values or NaN. **Route every product that sums over reflections, atoms or voxels through it** |
+| `autograd_ops.py` | module-only: `gather_with_index_add` | 1-D gather whose backward uses `index_add_` instead of the radix-sorting `_index_put_impl_`. **Not bit-reproducible on CUDA** (atomics) |
+| `stats.py` | `stat`, `StatEntry`, `filter_stats`, `flatten_stats`, `format_stats_table`; module-only: `StatEntryEncoder` | Verbosity-tagged reporting: `VERBOSITY_ESSENTIAL` (0) … `_DEBUG` (3). **Import side effect: replaces stdlib `json.dumps`/`json.dump` process-wide** to default `cls=StatEntryEncoder` |
 | `debug_utils.py` | `DebugMixin`, `print_module_summary` | Module introspection |
-| `gradnorm.py` | `gradnorm` | Gradient-norm monitoring |
 | `serialization.py` | `convert_to_serializable` | Tensors/arrays → JSON-safe |
-| `pse.py` | `PERIODIC_TABLE` | `{symbol: {"number", "name", "mass"}}`, mass in u |
+| `selection.py` | module-only: `select_atoms`, `SELECTION_COLUMNS` | The Phenix-style selection grammar (`chain`, `resseq`, `name`, … with `not`/`and`/`or`) behind `Topology.select`; evaluates over per-atom arrays, not an atom table |
 | `timing.py` | `register_timing` | CLI-only; **not** re-exported — import from the module |
 
 ---
@@ -314,7 +320,7 @@ pytest tests/ --cov=torchref
   accelerator into a failure instead of a skip — for CI runners that lost their GPU.
 - Do **not** add a default `-m` expression to `pyproject.toml`: it deselects at collection
   time and no flag can undo it. Keep root `pyproject.toml` and `tests/pytest.ini` in step so
-  behaviour doesn't depend on the working directory.
+  behaviour doesn't depend on the invocation.
 - Markers: `unit`, `integration`, `gpu` (any accelerator), `cuda`, `mps`, `slow`, `openmm`,
   `amber`.
 - Layout: `tests/unit/` mirrors the package; `tests/integration/` covers pipelines and the

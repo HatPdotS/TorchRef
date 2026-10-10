@@ -125,12 +125,19 @@ Examples:
 
     # --- Build metadata ---
 
-    # Start with pass-through from input file
+    # Start with pass-through from input file. This tool annotates a file, it
+    # does not re-refine it -- so the input's refinement record (REMARK 3, the
+    # _refine categories) and its authors are not superseded by anything and are
+    # kept. Refinement output takes the default and drops them.
     input_suffix = input_path.suffix.lower()
     if input_suffix == ".pdb":
-        metadata = RefinementMetadata.from_pdb_file(str(input_path))
+        metadata = RefinementMetadata.from_pdb_file(
+            str(input_path), supersede_refinement=False
+        )
     elif input_suffix in (".cif", ".mmcif"):
-        metadata = RefinementMetadata.from_cif_file(str(input_path))
+        metadata = RefinementMetadata.from_cif_file(
+            str(input_path), supersede_refinement=False
+        )
     else:
         metadata = RefinementMetadata()
 

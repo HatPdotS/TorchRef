@@ -8,31 +8,19 @@ using ITC92 Gaussian parameterization.
 import numpy as np
 import torch
 
-from torchref.base.coordinates.periodic_boundary import (
-    smallest_diff,
-    smallest_diff_aniso,
-)
-
-
-def scatter_add_nd_super_slow(source, index, map):
-    """Slow reference n-dimensional scatter-add: ``source`` ``(N,)`` into ``map`` at
-    ``index`` ``(N, ndim)``, returning the modified map.
-    """
-    for i in range(source.shape[0]):
-        idx = tuple(index[i].tolist())
-        map[idx] += source[i]
-    return map
+from torchref.base.coordinates.periodic_boundary import smallest_diff_aniso
 
 
 def scatter_add_nd(source, index, map):
     """Vectorized n-dimensional scatter-add: ``source`` ``(N,)`` into ``map``
     ``(d1..dn)`` at ``index`` ``(N, ndim)``, returning the modified map.
     """
+    # dtype-ok: int64 shape/strides make the flat index int64; scatter_add_ requires int64 on torch < 2.8
     map_shape = torch.tensor(map.shape, device=index.device, dtype=torch.int64)
 
     # Convert n-dimensional indices to flat indices
     # For shape (d1, d2, d3, ..., dn), flat_index = i0 * (d1*d2*...*dn) + i1 * (d2*d3*...*dn) + ... + in
-    strides = torch.ones(len(map_shape), device=index.device, dtype=torch.int64)
+    strides = torch.ones(len(map_shape), device=index.device, dtype=torch.int64)  # dtype-ok: strides for flat scatter_add index; requires int64
     for i in range(len(map_shape) - 2, -1, -1):
         strides[i] = strides[i + 1] * map_shape[i + 1]
 
@@ -61,72 +49,6 @@ def scatter_add_nd(source, index, map):
         )
         print("Map shape: ", map.shape, "device: ", map.device, "dtype: ", map.dtype)
         raise e
-    return map
-
-
-def vectorized_add_to_map(
-    surrounding_coords,
-    voxel_indices,
-    map,
-    xyz,
-    b,
-    inv_frac_matrix,
-    frac_matrix,
-    A,
-    B,
-    occ,
-):
-    """Add isotropic atoms to a density map using the ITC92 5-Gaussian parameterization.
-
-    Parameters
-    ----------
-    surrounding_coords, voxel_indices : torch.Tensor
-        Coordinates and map indices of the voxels around each atom,
-        ``(N_atoms, N_voxels, 3)``.
-    map : torch.Tensor
-        Electron density map, ``(nx, ny, nz)``.
-    xyz, b, occ : torch.Tensor
-        Atom positions ``(N_atoms, 3)``, B-factors in A^2 and occupancies ``(N_atoms,)``.
-    inv_frac_matrix, frac_matrix : torch.Tensor
-        Fractionalization matrix and its inverse, ``(3, 3)``.
-    A, B : torch.Tensor
-        ITC92 amplitudes and widths (A^2), ``(N_atoms, 5)`` each.
-
-    Returns
-    -------
-    torch.Tensor
-        The updated map.
-    """
-    # Calculate squared distances with periodic boundary conditions
-    # diff_coords shape: (N_atoms, N_voxels)
-
-    diff_coords_squared = smallest_diff(
-        surrounding_coords - xyz.unsqueeze(1), inv_frac_matrix, frac_matrix
-    )
-
-    B_total = ((B + b.unsqueeze(1)) / 4).clamp(min=1e-1)
-
-    # Normalization constant: (π/B_total)^(3/2)
-    normalization = (np.pi / B_total) ** 1.5
-
-    # Scale amplitudes by occupancy and normalization
-    A_normalized = A * occ.unsqueeze(1) * normalization
-
-    # Calculate Gaussian with exponent: exp(-π²r²/B_total)
-    # Note: diff_coords_squared already contains r²
-    gaussian_terms = torch.exp(
-        -(np.pi**2) * diff_coords_squared.unsqueeze(2) / B_total.unsqueeze(1)
-    )
-
-    # Sum over the 5 ITC92 Gaussian components (A/B have shape (N_atoms, 5))
-    density = torch.sum(A_normalized.unsqueeze(1) * gaussian_terms, dim=2)
-
-    # Flatten to (N_atoms * N_voxels,)
-    density_flat = density.flatten()
-    voxel_indices_flat = voxel_indices.reshape(-1, 3)
-
-    # Add to map
-    map = scatter_add_nd(density_flat, voxel_indices_flat, map)
     return map
 
 
@@ -166,7 +88,7 @@ def vectorized_add_to_map_aniso(
         Cartesian positions ``(N_atoms, 3)``, ADPs ``(u11, u22, u33, u12, u13, u23)`` in A^2
         ``(N_atoms, 6)``, and occupancies ``(N_atoms,)``.
     inv_frac_matrix, frac_matrix : torch.Tensor
-        Fractionalization matrix and its inverse, ``(3, 3)``.
+        Cartesian-to-fractional and fractional-to-Cartesian, ``(3, 3)``.
     A, B : torch.Tensor
         ITC92 amplitudes and widths (A^2), ``(N_atoms, 5)`` each.
 

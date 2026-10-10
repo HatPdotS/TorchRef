@@ -1,5 +1,5 @@
 """
-Unit tests for torchref.io.Data
+Unit tests for torchref.io.ReflectionData
 
 Tests ReflectionData class for handling crystallographic reflection data.
 Note: Unit tests use mock data, not real file I/O.
@@ -125,15 +125,6 @@ class TestReflectionDataProperties:
     """Tests for ReflectionData computed properties."""
 
     @pytest.mark.unit
-    def test_wilson_b_default_none(self):
-        """Wilson B should be None initially."""
-        from torchref.io import ReflectionData
-
-        data = ReflectionData()
-
-        assert data.wilson_b is None
-
-    @pytest.mark.unit
     def test_spacegroup_default_none(self):
         """Space group should be None initially."""
         from torchref.io import ReflectionData
@@ -150,6 +141,44 @@ class TestReflectionDataProperties:
         data = ReflectionData()
 
         assert data.amplitude_source is None
+
+    @pytest.mark.unit
+    def test_space_group_identity_of_loaded_data_and_collection(self, mtz_dir):
+        """The name, H-M symbol and number come from the stored SpaceGroup."""
+        from torchref.io import DatasetCollection, FcalcDataset, ReflectionData
+
+        data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+        collection = DatasetCollection(verbose=0).add_dataset("1DAW", data)
+        fcalc = FcalcDataset.from_cell_and_resolution(
+            data.cell, data.spacegroup, d_min=4.0
+        )
+
+        for dataset in (data, collection, fcalc):
+            assert dataset.spacegroup_name == "C2"
+            assert dataset.spacegroup_hm == "C 1 2 1"
+            assert dataset.spacegroup_number == 5
+
+    @pytest.mark.unit
+    def test_from_tensors_copies_a_tensor_cell_into_a_cell(self, mtz_dir):
+        """A cell given as a tensor becomes a Cell of its own, as a list does."""
+        from torchref.io import ReflectionData
+        from torchref.symmetry import Cell
+
+        src = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+        cell = src.cell.data.clone()
+        data = ReflectionData.from_tensors(
+            src.hkl,
+            src.F,
+            src.F_sigma,
+            cell,
+            src.spacegroup,
+            rfree_flags=src.rfree_flags,
+            verbose=0,
+        )
+
+        assert isinstance(data.cell, Cell)
+        assert data.cell.data is not cell
+        torch.testing.assert_close(data.cell.volume, src.cell.volume)
 
 
 class TestMockReflectionData:
@@ -224,7 +253,7 @@ class TestFrenchWilsonToggle:
         # F should be exactly the sentinel amplitude column, untouched.
         assert torch.allclose(data.F, torch.full_like(data.F, 7.0))
         # French-Wilson must not have run.
-        assert data._FrenchWilson is None
+        assert data.FRENCH_WILSON_MASK_KEY not in data.masks
 
     @pytest.mark.unit
     def test_french_wilson_on_derives_from_intensities(self):
@@ -236,7 +265,7 @@ class TestFrenchWilsonToggle:
 
         # F is computed from I, so it differs from the sentinel 7.0 column.
         assert not torch.allclose(data.F, torch.full_like(data.F, 7.0))
-        assert data._FrenchWilson is not None
+        assert data.FRENCH_WILSON_MASK_KEY in data.masks
 
     @pytest.mark.unit
     def test_french_wilson_off_falls_back_when_no_amplitudes(self):
@@ -252,4 +281,4 @@ class TestFrenchWilsonToggle:
 
         # No amplitude columns => French-Wilson runs regardless of the flag.
         assert data.F is not None
-        assert data._FrenchWilson is not None
+        assert data.FRENCH_WILSON_MASK_KEY in data.masks

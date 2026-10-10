@@ -1,12 +1,12 @@
 """Weighting schemes for loss-component aggregation.
 
-A scheme inherits :class:`BaseWeighting` and returns a ``{component: weight}`` dict from a
-``LossState`` without mutating it. Only the **static** scheme is provided --
-:class:`ManualWeighting`, the canonical home for the default base weights
-(:data:`torchref.refinement.base_refinement.DEFAULT_GROUP_WEIGHTS`).
+A scheme subclasses :class:`~torchref.refinement.weighting.base_weighting.BaseWeighting`
+and maps a ``LossState`` to a ``{component: weight}`` dict without mutating it. Only the
+**static** :class:`~torchref.refinement.weighting.static_weighting.ManualWeighting` is
+provided; it carries :data:`torchref.refinement.base_refinement.DEFAULT_GROUP_WEIGHTS`.
 """
 
 from .base_weighting import BaseWeighting
-from .static_weighting import ManualWeighting, WeightingScheme
+from .static_weighting import ManualWeighting
 
-__all__ = ["BaseWeighting", "WeightingScheme", "ManualWeighting"]
+__all__ = ["BaseWeighting", "ManualWeighting"]

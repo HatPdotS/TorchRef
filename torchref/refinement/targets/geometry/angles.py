@@ -35,24 +35,23 @@ class AngleTarget(GeometryTarget):
         Restraint references and sigmas are stored in degrees and converted to radians
         here -- the math layer works in radians throughout.
         """
-        if "all" not in self.restraints.restraints["angle"]:
-            self.restraints.cat_dict()
-        a = self.restraints.restraints["angle"]["all"]
-        idx = a["indices"]
-        if idx is None or len(idx) == 0:
-            return torch.tensor(0.0, device=self.model.xyz().device)
+        xyz = self.model.xyz()
+        a = self._restraint_group("angle", "all")
+        if a is None:
+            return xyz.new_zeros(())
         deg2rad = float(torch.pi / 180.0)
         return angle_math(
-            self.model.xyz(), idx,
+            xyz,
+            a["indices"],
             a["references"] * deg2rad,
             a["sigmas"] * deg2rad,
         )
 
     def stats(self) -> Dict[str, StatEntry]:
-        """Get angle restraint statistics."""
-        deviations_rad, sigmas_rad = self.restraints.angle_deviations()
-        if len(deviations_rad) == 0:
+        """Get angle restraint statistics; ``{}`` when there are no angles."""
+        if self._restraint_group("angle", "all") is None:
             return {}
+        deviations_rad, sigmas_rad = self.restraints.angle_deviations(self.model.xyz())
 
         # Convert to degrees for reporting
         deviations_deg = deviations_rad * (180.0 / np.pi)

@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
@@ -36,19 +35,17 @@ class BondTarget(GeometryTarget):
         ``Restraints.bond_deviations`` so the Triton kernel can own the gather and
         the distance computation too.
         """
-        if "all" not in self.restraints.restraints["bond"]:
-            self.restraints.cat_dict()
-        bond = self.restraints.restraints["bond"]["all"]
-        idx = bond["indices"]
-        if idx is None or len(idx) == 0:
-            return torch.tensor(0.0, device=self.model.xyz().device)
-        return bond_math(self.model.xyz(), idx, bond["references"], bond["sigmas"])
+        xyz = self.model.xyz()
+        bond = self._restraint_group("bond", "all")
+        if bond is None:
+            return xyz.new_zeros(())
+        return bond_math(xyz, bond["indices"], bond["references"], bond["sigmas"])
 
     def stats(self) -> Dict[str, StatEntry]:
-        """Get bond restraint statistics."""
-        deviations, sigmas = self.restraints.bond_deviations()
-        if len(deviations) == 0:
+        """Get bond restraint statistics; ``{}`` when there are no bonds."""
+        if self._restraint_group("bond", "all") is None:
             return {}
+        deviations, sigmas = self.restraints.bond_deviations(self.model.xyz())
 
         z_scores = deviations / sigmas
         loss = self.forward()

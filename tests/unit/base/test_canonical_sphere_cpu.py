@@ -48,13 +48,19 @@ from torchref.base.electron_density.radius_policy import (
     per_atom_radius_aniso,
     per_atom_radius_iso,
 )
-from torchref.base.scattering.scattering_table import get_scattering_params_by_z
+from torchref.base.scattering.scattering_table import (
+    elements_to_z,
+    get_scattering_params_by_z,
+)
+from torchref.io.pdb import PDBReader
+from torchref.model.parameter_wrappers import u6_to_matrix
+from torchref.symmetry.cell import Cell
 from torchref.utils import use_portable
 
 pytestmark = pytest.mark.unit
 
 # float32 agreement floor. The fused kernel uses a fast 2^x exp (the CPU analogue of
-# the metal::fast::exp the Metal kernels already use), measured at 2e-5 rel L2
+# the metal::fast::exp the Metal kernels already use), measured at 2e-6 rel L2
 # against std::exp; the portable splat uses torch.exp. Both are far below the 7.9e-4
 # amplitude-truncation error at the default 3 sigma, so this tolerance bounds
 # arithmetic noise while still failing on any geometry disagreement (the smallest of
@@ -74,20 +80,14 @@ def _cell(beta_deg, dtype=torch.float32, dims=(48, 40, 34), abc=(28.0, 24.0, 20.
     return f64.to(dtype), torch.linalg.inv(f64).to(dtype), dims, f64
 
 
-def _voxel_size(f64, dims):
-    """``voxel_size`` as ``sf_fft`` derives it; unused by the kernels, still in the
-    ``build_electron_density`` signature."""
-    return (f64.norm(dim=0) / torch.tensor(dims, dtype=torch.float64)).float()
-
-
 def _iso_atoms(f64, n=36, dtype=torch.float32, seed=0):
     g = torch.Generator().manual_seed(seed)
     z = torch.tensor([6, 7, 8, 16]).repeat(n // 4 + 1)[:n]
     A, B = get_scattering_params_by_z(z, dtype=dtype)
     xyz = (torch.rand(n, 3, generator=g, dtype=torch.float64) @ f64.T).to(dtype)
     adp = (torch.rand(n, generator=g) * 35 + 8).to(dtype)
-    # never exactly 1.0: the kernels recover d/d_occ by dividing the accumulated
-    # gradient by occ, and at occ == 1 a wrong scaling is invisible
+    # never exactly 1.0: the kernels scale the xyz and ADP gradients by occ, and at
+    # occ == 1 a missing or doubled factor is invisible
     occ = (torch.rand(n, generator=g) * 0.4 + 0.6).to(dtype)
     return xyz, adp, occ, A, B
 
@@ -142,11 +142,7 @@ def _brute_aniso(dims, xyz, u, occ, A, B, inv_frac, frac, r):
     fc = _frac_grid(dims, dtype)
     out = torch.zeros(dims[0] * dims[1] * dims[2], dtype=dtype)
     xyz_frac = xyz @ inv_frac.T
-    U3 = torch.zeros(u.shape[0], 3, 3, dtype=dtype)
-    U3[:, 0, 0], U3[:, 1, 1], U3[:, 2, 2] = u[:, 0], u[:, 1], u[:, 2]
-    U3[:, 0, 1] = U3[:, 1, 0] = u[:, 3]
-    U3[:, 0, 2] = U3[:, 2, 0] = u[:, 4]
-    U3[:, 1, 2] = U3[:, 2, 1] = u[:, 5]
+    U3 = u6_to_matrix(u.to(dtype))
     M = (B[:, :, None, None] * torch.eye(3, dtype=dtype)
          + 8 * math.pi ** 2 * U3[:, None]) / 4.0
     Minv = torch.linalg.inv(M)
@@ -180,7 +176,7 @@ def _empty_iso(dtype):
 
 @pytest.mark.parametrize("beta", _BETAS)
 def test_fused_iso_matches_contract(beta):
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
     frac, inv_frac, dims, f64 = _cell(beta)
     xyz, adp, occ, A, B = _iso_atoms(f64)
@@ -192,7 +188,7 @@ def test_fused_iso_matches_contract(beta):
 
 @pytest.mark.parametrize("beta", _BETAS)
 def test_fused_aniso_matches_contract(beta):
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
     frac, inv_frac, dims, f64 = _cell(beta)
     xyz, u, occ, A, B = _aniso_atoms(f64)
@@ -227,7 +223,7 @@ def test_portable_aniso_matches_contract(beta):
 
 def test_fused_float64_is_exact():
     """float64 uses std::exp, so only fp rounding separates it from the reference."""
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip("fused CPU splat unavailable")
     frac, inv_frac, dims, f64 = _cell(100.0, dtype=torch.float64, dims=(32, 28, 24))
     xyz, adp, occ, A, B = _iso_atoms(f64, dtype=torch.float64)
@@ -238,12 +234,38 @@ def test_fused_float64_is_exact():
     assert _rel_l2(got, want) < 1e-13
 
 
+def test_fused_float32_total_density_is_unbiased(pdb_dir):
+    """The float32 fast exp adds no one-sided bias to the integrated density.
+
+    1DAW atoms on a 216x90x69 grid, float32 against float64 (``std::exp``) on the same
+    inputs: the total density must agree to 2e-6 relative. A 2^f polynomial whose error
+    has one sign, such as the Taylor series, leaves the whole map 1.3e-5 low.
+    """
+    if sphere_splat.why_unavailable() is not None:
+        pytest.skip(f"fused CPU splat unavailable: {sphere_splat.last_error()}")
+    df, cell, _ = PDBReader().read(str(pdb_dir / "1DAW.pdb"))()
+    f32 = torch.float32
+    cell = Cell(cell, device="cpu", dtype=f32)
+    xyz = torch.tensor(df[["x", "y", "z"]].to_numpy(), dtype=f32)
+    adp = torch.tensor(df["tempfactor"].to_numpy(), dtype=f32)
+    occ = torch.tensor(df["occupancy"].to_numpy(), dtype=f32)
+    A, B = get_scattering_params_by_z(elements_to_z(df["element"].tolist()), dtype=f32)
+    r = per_atom_radius_iso(adp, B, n_sigma=3.0)
+    args = (xyz, adp, occ, A, B, cell.inv_fractional_matrix, cell.fractional_matrix, r)
+    dims = (216, 90, 69)
+    got = sphere_splat.add_isotropic_cpu_sphere_var(torch.zeros(dims, dtype=f32), *args)
+    want = sphere_splat.add_isotropic_cpu_sphere_var(
+        torch.zeros(dims, dtype=torch.float64), *(t.double() for t in args)
+    )
+    bias = float(got.double().sum() / want.sum() - 1.0)
+    assert abs(bias) < 2e-6, f"float32 total density off by {bias:.2e} relative"
+
+
 # ===========================================================================
 # AUTO vs EAGER through the real dispatch: no accelerator needed
 # ===========================================================================
 
-def _build(pin, dims, frac, inv_frac, voxel, dtype, iso=None, aniso=None):
-    rsg = torch.zeros(*dims, 3, dtype=dtype)  # shape only; no kernel reads its values
+def _build(pin, dims, frac, inv_frac, dtype, iso=None, aniso=None):
     xi, ai, oi, Ai, Bi = iso if iso is not None else _empty_iso(dtype)
     kw = {}
     if aniso is not None:
@@ -251,7 +273,8 @@ def _build(pin, dims, frac, inv_frac, voxel, dtype, iso=None, aniso=None):
         kw = dict(xyz_aniso=xa, u_aniso=ua, occ_aniso=oa, A_aniso=Aa, B_aniso=Ba)
     with (use_portable() if pin else contextlib.nullcontext()):
         return build_electron_density(
-            rsg, xi, ai, oi, Ai, Bi, inv_frac, frac, voxel, dtype=dtype, **kw)
+            dims, torch.device("cpu"), xi, ai, oi, Ai, Bi, inv_frac, frac,
+            dtype=dtype, **kw)
 
 
 @pytest.mark.parametrize("beta", _BETAS)
@@ -259,10 +282,9 @@ def _build(pin, dims, frac, inv_frac, voxel, dtype, iso=None, aniso=None):
                          ids=["float32", "float64"])
 def test_auto_matches_eager_iso(beta, dtype):
     frac, inv_frac, dims, f64 = _cell(beta, dtype=dtype)
-    voxel = _voxel_size(f64, dims)
     atoms = _iso_atoms(f64, dtype=dtype)
-    ref = _build(True, dims, frac, inv_frac, voxel, dtype, iso=atoms)
-    got = _build(False, dims, frac, inv_frac, voxel, dtype, iso=atoms)
+    ref = _build(True, dims, frac, inv_frac, dtype, iso=atoms)
+    got = _build(False, dims, frac, inv_frac, dtype, iso=atoms)
     tol = _F32_TOL if dtype is torch.float32 else 1e-12
     assert _rel_l2(got, ref) < tol
 
@@ -270,10 +292,9 @@ def test_auto_matches_eager_iso(beta, dtype):
 @pytest.mark.parametrize("beta", _BETAS)
 def test_auto_matches_eager_aniso(beta):
     frac, inv_frac, dims, f64 = _cell(beta)
-    voxel = _voxel_size(f64, dims)
     atoms = _aniso_atoms(f64)
-    ref = _build(True, dims, frac, inv_frac, voxel, torch.float32, aniso=atoms)
-    got = _build(False, dims, frac, inv_frac, voxel, torch.float32, aniso=atoms)
+    ref = _build(True, dims, frac, inv_frac, torch.float32, aniso=atoms)
+    got = _build(False, dims, frac, inv_frac, torch.float32, aniso=atoms)
     assert _rel_l2(got, ref) < _F32_TOL
 
 
@@ -282,7 +303,6 @@ def test_auto_matches_eager_gradients(kind):
     """Direction *and* magnitude: a kernel returning ``2 * grad`` is perfectly
     parallel, so cosine alone cannot catch it."""
     frac, inv_frac, dims, f64 = _cell(100.0, dtype=torch.float64, dims=(32, 28, 24))
-    voxel = _voxel_size(f64, dims)
     w = torch.randn(dims, generator=torch.Generator().manual_seed(7),
                     dtype=torch.float64)
     if kind == "iso":
@@ -293,7 +313,7 @@ def test_auto_matches_eager_gradients(kind):
     def grads(pin):
         x, pp, o = (t.clone().requires_grad_() for t in (xyz, p, occ))
         pack = (x, pp, o, A, B)
-        dm = _build(pin, dims, frac, inv_frac, voxel, torch.float64,
+        dm = _build(pin, dims, frac, inv_frac, torch.float64,
                     **({"iso": pack} if kind == "iso" else {"aniso": pack}))
         (dm * w).sum().backward()
         return x.grad, pp.grad, o.grad
@@ -339,7 +359,7 @@ def test_auto_actually_dispatches_the_fused_kernel(dtype, monkeypatch):
     used to patch ``main`` instead, because the ladder there resolved the name from its own
     globals.
     """
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip("fused CPU splat unavailable")
     frac, inv_frac, dims, f64 = _cell(100.0, dtype=dtype)
     calls = []
@@ -350,7 +370,7 @@ def test_auto_actually_dispatches_the_fused_kernel(dtype, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(sphere_splat, "add_isotropic_cpu_sphere_var", recording)
-    _build(False, dims, frac, inv_frac, _voxel_size(f64, dims), dtype,
+    _build(False, dims, frac, inv_frac, dtype,
            iso=_iso_atoms(f64, dtype=dtype))
     assert calls, f"the default did not reach the fused CPU splat for {dtype}"
 
@@ -358,22 +378,20 @@ def test_auto_actually_dispatches_the_fused_kernel(dtype, monkeypatch):
 def test_empty_atom_sets():
     """A structure with no isotropic (or no anisotropic) atoms must not crash."""
     frac, inv_frac, dims, f64 = _cell(90.0)
-    voxel = _voxel_size(f64, dims)
-    only_aniso = _build(False, dims, frac, inv_frac, voxel, torch.float32,
+    only_aniso = _build(False, dims, frac, inv_frac, torch.float32,
                         aniso=_aniso_atoms(f64))
     assert torch.isfinite(only_aniso).all() and float(only_aniso.abs().sum()) > 0
-    both_empty = _build(False, dims, frac, inv_frac, voxel, torch.float32)
+    both_empty = _build(False, dims, frac, inv_frac, torch.float32)
     assert float(both_empty.abs().sum()) == 0.0
 
 
 def test_density_map_accumulates_not_overwrites():
     """Both passes add into one map, so the aniso pass must not clobber the iso one."""
     frac, inv_frac, dims, f64 = _cell(90.0)
-    voxel = _voxel_size(f64, dims)
     iso, aniso = _iso_atoms(f64), _aniso_atoms(f64)
-    a = _build(False, dims, frac, inv_frac, voxel, torch.float32, iso=iso)
-    b = _build(False, dims, frac, inv_frac, voxel, torch.float32, aniso=aniso)
-    both = _build(False, dims, frac, inv_frac, voxel, torch.float32,
+    a = _build(False, dims, frac, inv_frac, torch.float32, iso=iso)
+    b = _build(False, dims, frac, inv_frac, torch.float32, aniso=aniso)
+    both = _build(False, dims, frac, inv_frac, torch.float32,
                   iso=iso, aniso=aniso)
     assert _rel_l2(both, a + b) < 1e-6
 
@@ -407,20 +425,19 @@ def test_aniso_reduces_to_isotropic(beta, pin):
     """
     frac, inv_frac, dims, f64 = _cell(beta, dtype=torch.float64)
     xyz, adp, occ, A, B = _iso_atoms(f64, n=24, dtype=torch.float64)
-    voxel = _voxel_size(f64, dims)
-    grid = torch.zeros(*dims, 3, dtype=torch.float64)
 
     u_sph = torch.zeros(xyz.shape[0], 6, dtype=torch.float64)
     u_sph[:, :3] = (adp / (8.0 * math.pi**2)).unsqueeze(1)
 
     with (use_portable() if pin else contextlib.nullcontext()):
         iso_map = build_electron_density(
-            grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float64
+            dims, torch.device("cpu"), xyz, adp, occ, A, B, inv_frac, frac,
+            dtype=torch.float64
         )
         aniso_map = build_electron_density(
-            grid,
+            dims, torch.device("cpu"),
             xyz[:0], adp[:0], occ[:0], A[:0], B[:0],
-            inv_frac, frac, voxel,
+            inv_frac, frac,
             xyz_aniso=xyz, u_aniso=u_sph, occ_aniso=occ, A_aniso=A, B_aniso=B,
             dtype=torch.float64,
         )
@@ -460,25 +477,25 @@ def test_fused_kernel_is_thread_invariant(n_threads):
     ``test_cpu_scatter.py``, which exercised the C++ structured scatter -- no longer
     reachable from the dispatch.
     """
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU sphere splat unavailable: {sphere_splat.last_error()}")
 
     frac, inv_frac, dims, f64 = _cell(115.0, dtype=torch.float32)
     xyz, adp, occ, A, B = _iso_atoms(f64, n=96, dtype=torch.float32, seed=7)
-    voxel = _voxel_size(f64, dims)
-    grid = torch.zeros(*dims, 3, dtype=torch.float32)
 
     original = torch.get_num_threads()
     try:
         torch.set_num_threads(1)
         with contextlib.nullcontext():
             ref = build_electron_density(
-                grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float32
+                dims, torch.device("cpu"), xyz, adp, occ, A, B, inv_frac, frac,
+                dtype=torch.float32
             )
         torch.set_num_threads(n_threads)
         with contextlib.nullcontext():
             got = build_electron_density(
-                grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float32
+                dims, torch.device("cpu"), xyz, adp, occ, A, B, inv_frac, frac,
+                dtype=torch.float32
             )
     finally:
         torch.set_num_threads(original)
@@ -497,15 +514,16 @@ def test_fused_gate_requires_one_shared_dtype():
 
     The C++ selects one ``scalar_t`` from the output map via
     ``AT_DISPATCH_FLOATING_TYPES(out.scalar_type(), ...)`` and then reads every other
-    tensor through a raw pointer of that type. So a float64 map beside float32 atoms would
-    reinterpret the coordinate buffer as doubles -- garbage values and a 2x out-of-bounds
-    read -- and the gate has to refuse it.
+    tensor through ``data_ptr<scalar_t>()``, which raises on any other dtype. So a float64
+    map beside float32 atoms is refused with an error (first a ValueError from the entry
+    point's dtype check), and the gate sends such a call to the portable splat instead.
 
     Written down because the rule is easy to get wrong when it is restated as a set of
     permitted dtypes: "each tensor's dtype is in {f32, f64}" *admits* the mixed case, while
     the actual requirement is "all tensors share one dtype drawn from {f32, f64}". The two
-    read almost identically and only one is memory-safe. In the table that difference is the
-    ``require_uniform_dtype`` flag, and this asserts it against the row that ships.
+    read almost identically and only one keeps the kernel from raising. In the table that
+    difference is the ``require_uniform_dtype`` flag, and this asserts it against the row
+    that ships.
     """
     from torchref.base.electron_density._backends import DENSITY_BACKENDS
 
@@ -528,7 +546,7 @@ def test_fused_extension_compiles():
     """The fused sphere splat must actually build. Fails rather than skipping.
 
     Every other test in this file -- and in ``tests/unit/structure_factor`` -- calls
-    ``pytest.skip`` when ``sphere_splat_available()`` is False, which is right for them:
+    ``pytest.skip`` when ``why_unavailable()`` returns a reason, which is right for them:
     they are testing numerics, and without the extension there is nothing to test. But if
     *every* test skips, a build that has stopped working produces an all-green run while
     the CPU production path has silently degraded to the portable splat. Dispatch is designed
@@ -546,7 +564,7 @@ def test_fused_extension_compiles():
     That guard previously protected the C++ structured scatter, a helper; it now protects
     the production CPU splat, so it matters more than it did.
     """
-    if sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is None:
         return
 
     import os

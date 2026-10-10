@@ -1,9 +1,9 @@
 """Triton forward + analytic backward for riding-hydrogen placement.
 
 One launch each way, where the eager helper (``_place_h_jit`` in
-:mod:`torchref.restraints.hydrogen_topology`) fuses only the forward and leaves its
+:mod:`torchref.topology.riding`) fuses only the forward and leaves its
 backward to run op-by-op through autograd -- ~100 launches at 3k hydrogens, which
-dominates the non-bonded backward. The math mirrors ``_place_h_jit`` exactly:
+dominates the non-bonded backward. The math mirrors ``_place_h_jit`` exactly::
 
     pp        = xyz[parent_idx]
     nb_pos[i] = xyz[nb_idx[i]]
@@ -29,6 +29,7 @@ import torch
 import triton
 import triton.language as tl
 
+from .._dispatch import first_order_only
 
 _EPS = 1e-8
 
@@ -38,7 +39,7 @@ def _placeh_fwd_kernel(
     xyz_ptr,            # (N_heavy, 3)
     parent_ptr,         # (N_h,) int
     nb_idx_ptr,         # (N_h, 4) int (clamped to >=0)
-    nb_valid_ptr,       # (N_h, 4) float (1.0 / 0.0)
+    nb_valid_ptr,  # (N_h, 4) float slot weights; 0 masks padding
     coeff_ptr,          # (N_h, 3) float
     blen_ptr,           # (N_h,) float
     out_ptr,            # (N_h, 3) float
@@ -355,6 +356,7 @@ class _PlaceHydrogensTriton(torch.autograd.Function):
         return out
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_h):
         xyz_heavy, parent_idx, nb_idx_clamped, nb_valid, coeffs, bond_length = ctx.saved_tensors
         N_h = parent_idx.shape[0]

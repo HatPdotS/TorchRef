@@ -15,14 +15,12 @@ If α is underestimated, the model must predict ρ_light < 0 to fit the data,
 which is unphysical. This provides a floor on α.
 """
 
-import torch
-from torch import nn
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional
 
-from torchref.utils.device_mixin import DeviceMixin
+import torch
 
 if TYPE_CHECKING:
-    from torchref.model import ModelFT, MixedModel
+    from torchref.model import ModelFT
 
 
 class OccupancyFloorDiagnostic:
@@ -79,7 +77,8 @@ class OccupancyFloorDiagnostic:
         """
         Compute electron density at specific positions using Fourier summation.
 
-        This is a simplified calculation that sums F_calc * exp(2πi * h·r).
+        Sum ``Re[F_calc(h) exp(-2πi h·r)]`` over the given reflections, the
+        synthesis that inverts TorchRef's ``F = Σ f exp(+2πi h·x)``.
 
         Parameters
         ----------
@@ -88,7 +87,10 @@ class OccupancyFloorDiagnostic:
         positions : torch.Tensor
             Positions in fractional coordinates, shape (N, 3).
         hkl : torch.Tensor
-            Miller indices, shape (M, 3).
+            P1 Miller indices, shape (M, 3), one per Friedel pair (e.g.
+            ``spacegroup.expand_hkl(hkl, include_friedel=False)[0]``); the sum
+            is not symmetry-expanded, so ASU indices give a filtered density
+            that is negative at some atom sites even for identical models.
 
         Returns
         -------
@@ -98,20 +100,18 @@ class OccupancyFloorDiagnostic:
         with torch.no_grad():
             fcalc = model(hkl, recalc=True)
 
-            # Compute h·r for all position-reflection pairs
-            # positions: (N, 3), hkl: (M, 3)
-            # h_dot_r: (N, M)
             # Match hkl to the positions' (configured) dtype so the matmul
             # does not raise under a float64 config.
             h_dot_r = torch.matmul(positions, hkl.T.to(dtype=positions.dtype))
 
-            # Fourier sum: ρ(r) = Σ_h F(h) * exp(2πi * h·r)
-            # For real density, this is: Σ_h |F(h)| * cos(2π*h·r + φ(h))
+            # ρ(r) = Σ_h |F(h)| cos(2π h·r - φ(h)); a + sign gives ρ(-r).
             phase = torch.angle(fcalc)  # (M,)
             amplitude = torch.abs(fcalc)  # (M,)
 
-            # ρ(r) = Σ_h |F(h)| * cos(2π*h·r + φ(h))
-            density = (amplitude.unsqueeze(0) * torch.cos(2 * torch.pi * h_dot_r + phase.unsqueeze(0))).sum(dim=1)
+            density = (
+                amplitude.unsqueeze(0)
+                * torch.cos(2 * torch.pi * h_dot_r - phase.unsqueeze(0))
+            ).sum(dim=1)
 
             # Normalize by number of reflections (approximate)
             density = density / len(hkl)
@@ -129,20 +129,18 @@ class OccupancyFloorDiagnostic:
         Parameters
         ----------
         hkl : torch.Tensor
-            Miller indices for Fourier calculation.
+            P1 Miller indices, shape (M, 3); see ``compute_density_at_positions``.
         atom_mask : torch.Tensor, optional
             Boolean mask selecting which atoms to analyze (e.g., waters only).
 
         Returns
         -------
         dict
-            Dictionary with analysis results including:
-            - 'rho_dark': Dark model density at atom positions
-            - 'rho_light': Light model density at atom positions
-            - 'rho_ratio': ρ_light / ρ_dark (should be ≥ 0)
-            - 'negative_mask': Boolean mask of atoms with negative light density
-            - 'alpha_floor': Estimated lower bound on activation fraction
-            - 'worst_atoms': Indices of atoms with most negative density
+            ``rho_dark``, ``rho_light``, ``rho_ratio`` (ρ_light / ρ_dark) and
+            ``negative_mask`` (ρ_light < 0) per analysed atom; the counts
+            ``n_negative``, ``n_total``, ``fraction_negative``; ``min_rho_light``;
+            ``correction_factor`` (max -ρ_light / ρ_dark over negative atoms, else 0)
+            and ``worst_atoms`` (indices of the 5 lowest ρ_light, empty if none < 0).
         """
         # Get atom positions in fractional coordinates
         xyz_dark = self.model_dark.xyz()
@@ -220,11 +218,10 @@ class OccupancyFloorDiagnostic:
         sigma_cutoff: float = 3.0,
     ) -> Dict:
         """
-        Estimate alpha floor from significant negative peaks in difference map.
+        Estimate alpha floor from significantly negative difference amplitudes.
 
-        For each significant negative peak in the difference map, estimate
-        the minimum α that could produce that peak without requiring negative
-        density in the light state.
+        For the most negative reflections with ΔF/σ below ``-sigma_cutoff``,
+        estimate α as ``|ΔF_obs| / |F_calc,dark|`` and report the largest.
 
         Parameters
         ----------
@@ -235,14 +232,16 @@ class OccupancyFloorDiagnostic:
         sigma_diff : torch.Tensor
             Uncertainties on difference amplitudes.
         n_peaks : int, optional
-            Number of peaks to analyze. Default is 10.
+            Number of most negative reflections to analyze. Default is 10.
         sigma_cutoff : float, optional
-            Minimum significance (|ΔF|/σ) for peaks. Default is 3.0.
+            Minimum significance (-ΔF/σ) for a reflection. Default is 3.0.
 
         Returns
         -------
         dict
-            Dictionary with alpha floor estimates.
+            ``alpha_floor`` and ``n_negative_peaks``; when reflections pass the
+            cutoff also ``alpha_estimates``, ``peak_indices`` and ``peak_dF``,
+            otherwise ``message``.
         """
         # Find significant negative differences
         significance = delta_F_obs / sigma_diff
@@ -285,237 +284,3 @@ class OccupancyFloorDiagnostic:
             'peak_dF': neg_dF.tolist(),
             'n_negative_peaks': len(peak_indices),
         }
-
-
-class NegativeDensityPenalty(DeviceMixin, nn.Module):
-    """
-    Loss term that penalizes negative electron density in the MIXED model.
-
-    This provides a soft constraint that prevents the activation fraction
-    from being too small (which would require unphysical negative density).
-
-    The key insight: the MIXED state (not pure light) should have non-negative
-    density everywhere. If α is too small and atoms have moved, the mixed
-    model might predict negative density at some positions, which is unphysical.
-
-    Parameters
-    ----------
-    mixed_model : MixedModel
-        The mixed model (combines dark and light states with fractions).
-    model_dark : ModelFT
-        The dark/ground state model (provides reference positions to check).
-    hkl : torch.Tensor
-        Miller indices for density calculation.
-    atom_mask : torch.Tensor, optional
-        Mask selecting which atoms to monitor.
-    check_grid : bool, optional
-        If True, also check density on a grid (more thorough but slower).
-        Default is False.
-    """
-
-    def __init__(
-        self,
-        mixed_model: "MixedModel",
-        model_dark: "ModelFT",
-        hkl: torch.Tensor,
-        atom_mask: Optional[torch.Tensor] = None,
-        check_grid: bool = False,
-    ):
-        super().__init__()
-        self.mixed_model = mixed_model
-        self.model_dark = model_dark
-        self.register_buffer('hkl', hkl)
-        self.atom_mask = atom_mask
-        self.check_grid = check_grid
-
-        # Pre-compute dark positions in fractional coordinates
-        with torch.no_grad():
-            xyz_dark = model_dark.xyz()
-            cell = model_dark.cell
-            frac_dark = cell.cartesian_to_fractional(xyz_dark)
-            if atom_mask is not None:
-                frac_dark = frac_dark[atom_mask]
-            self.register_buffer('frac_positions', frac_dark)
-
-    def forward(self) -> torch.Tensor:
-        """
-        Compute penalty for negative density in mixed model.
-
-        Returns
-        -------
-        torch.Tensor
-            Scalar penalty value (0 if no negative density).
-        """
-        # Get mixed model structure factors (includes the α weighting)
-        fcalc_mixed = self.mixed_model(self.hkl, recalc=True)
-
-        # Compute density at dark atom positions (match hkl to the
-        # configured dtype of frac_positions so float64 does not raise)
-        h_dot_r = torch.matmul(
-            self.frac_positions, self.hkl.T.to(dtype=self.frac_positions.dtype)
-        )
-        phase = torch.angle(fcalc_mixed)
-        amplitude = torch.abs(fcalc_mixed)
-
-        density = (amplitude.unsqueeze(0) * torch.cos(2 * torch.pi * h_dot_r + phase.unsqueeze(0))).sum(dim=1)
-        density = density / len(self.hkl)
-
-        # Penalize negative density (ReLU-like penalty)
-        # Use a soft margin to avoid penalizing small numerical fluctuations
-        margin = 0.1  # Small positive margin
-        negative_density = torch.relu(-(density - margin))
-
-        # Return mean squared negative density
-        return (negative_density ** 2).mean()
-
-
-class DisplacementRegularizer(DeviceMixin, nn.Module):
-    """
-    Regularizer that penalizes large atomic displacements from reference structure.
-
-    This directly breaks the α-δF degeneracy by favoring solutions where atoms
-    haven't moved too far from the dark structure, which implies larger α.
-
-    The loss is: mean((xyz_light - xyz_dark)²)
-
-    Parameters
-    ----------
-    model_light : ModelFT
-        The light model being refined.
-    model_dark : ModelFT
-        The dark reference model (frozen).
-    atom_mask : torch.Tensor, optional
-        Boolean mask selecting which atoms to include.
-    max_displacement : float, optional
-        Maximum allowed displacement in Angstroms. Displacements beyond this
-        are penalized quadratically. Default is 2.0 Å.
-    """
-
-    def __init__(
-        self,
-        model_light: "ModelFT",
-        model_dark: "ModelFT",
-        atom_mask: Optional[torch.Tensor] = None,
-        max_displacement: float = 2.0,
-    ):
-        super().__init__()
-        self.model_light = model_light
-        self.model_dark = model_dark
-        self.atom_mask = atom_mask
-        self.max_displacement = max_displacement
-
-        # Store reference dark positions
-        with torch.no_grad():
-            xyz_dark = model_dark.xyz()
-            if atom_mask is not None:
-                xyz_dark = xyz_dark[atom_mask]
-            self.register_buffer('xyz_dark_ref', xyz_dark.clone())
-
-    def forward(self) -> torch.Tensor:
-        """
-        Compute displacement penalty.
-
-        Returns
-        -------
-        torch.Tensor
-            Mean squared displacement penalty.
-        """
-        xyz_light = self.model_light.xyz()
-
-        if self.atom_mask is not None:
-            xyz_light = xyz_light[self.atom_mask]
-
-        # Compute per-atom displacement
-        displacement = xyz_light - self.xyz_dark_ref
-        dist_sq = (displacement ** 2).sum(dim=1)
-
-        # Penalize ALL movement proportionally (mean squared displacement)
-        # This directly favors smaller movements → larger α
-        return dist_sq.mean()
-
-
-class DifferenceAmplitudeRegularizer(DeviceMixin, nn.Module):
-    """
-    Regularizer that encourages consistency between α and difference amplitudes.
-
-    The key insight: the ratio of calculated to observed difference amplitudes
-    should be consistent. If α is too small, the model compensates by making
-    larger structural changes, which changes this ratio in a detectable way.
-
-    This regularizer penalizes deviations from the expected relationship:
-        |ΔF_calc| ≈ |ΔF_obs|
-
-    When α is correct and the structure is correct, these should match.
-    When α is too small and structure has moved too far, the pattern of
-    |ΔF_calc| vs |ΔF_obs| will be distorted.
-
-    Parameters
-    ----------
-    dataset_collection : DatasetCollection
-        Collection with 'dark' and 'light' datasets.
-    mixed_model : MixedModel
-        The mixed model being refined.
-    model_dark : ModelFT
-        The dark reference model.
-    """
-
-    def __init__(
-        self,
-        dataset_collection,
-        mixed_model: "MixedModel",
-        model_dark: "ModelFT",
-    ):
-        super().__init__()
-        self.mixed_model = mixed_model
-        self.model_dark = model_dark
-        self._dataset_collection = dataset_collection
-
-        # Get observed amplitudes
-        _, F_light, _, _ = dataset_collection['light']()
-        _, F_dark, _, _ = dataset_collection['dark']()
-
-        if hasattr(F_light, "get_data"):
-            F_light = F_light.get_data()
-        if hasattr(F_dark, "get_data"):
-            F_dark = F_dark.get_data()
-
-        self.register_buffer('_dF_obs', F_light - F_dark)
-        self.register_buffer('_F_obs_dark', F_dark)
-
-    @property
-    def hkl(self):
-        return self._dataset_collection.hkl
-
-    def forward(self) -> torch.Tensor:
-        """
-        Compute regularization loss.
-
-        Penalizes the variance in the ratio |ΔF_calc|/|ΔF_obs|.
-        If α and structure are correct, this ratio should be ~1 everywhere.
-        If α is wrong, this ratio will have high variance.
-        """
-        hkl = self.hkl
-
-        fcalc_mixed = self.mixed_model(hkl, recalc=True)
-        fcalc_dark = self.model_dark(hkl, recalc=True)
-
-        dF_calc = torch.abs(fcalc_mixed) - torch.abs(fcalc_dark)
-
-        # Only consider reflections with significant observed difference
-        significant = torch.abs(self._dF_obs) > 0.1 * self._F_obs_dark
-
-        if significant.sum() < 100:
-            return torch.tensor(0.0, device=hkl.device)
-
-        dF_obs_sig = self._dF_obs[significant]
-        dF_calc_sig = dF_calc[significant]
-
-        # The residual between calculated and observed differences
-        # Should be small when both α and structure are correct
-        residual = dF_calc_sig - dF_obs_sig
-
-        # Normalized by observed amplitude to make it scale-invariant
-        normalized_residual = residual / (torch.abs(dF_obs_sig) + 1e-6)
-
-        # Penalize large residuals
-        return (normalized_residual ** 2).mean()

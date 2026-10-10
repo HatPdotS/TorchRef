@@ -302,7 +302,7 @@ class TestForceFieldTargetWithRealModel:
         from torchref.model import Model
         from torchref.experimental.targets import ForceFieldTarget
         # Load model WITH hydrogens
-        model = Model(strip_H=False)
+        model = Model()
         model.load_pdb(str(TEST_PDB_WITH_H))
 
         # Check we have hydrogens
@@ -333,7 +333,7 @@ class TestForceFieldTargetWithRealModel:
         from torchref.model import Model
         from torchref.experimental.targets import ForceFieldTarget
         # Load model WITH hydrogens
-        model = Model(strip_H=False)
+        model = Model()
         model.load_pdb(str(TEST_PDB_WITH_H))
 
         # Create target
@@ -360,7 +360,7 @@ class TestForceFieldTargetWithRealModel:
         """Test stats() with real model."""
         from torchref.model import Model
         from torchref.experimental.targets import ForceFieldTarget
-        model = Model(strip_H=False)
+        model = Model()
         model.load_pdb(str(TEST_PDB_WITH_H))
 
         target = ForceFieldTarget(

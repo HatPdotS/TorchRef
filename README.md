@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/torchref-banner-dark.svg">
-    <img src="assets/torchref-banner-light.svg" alt="TorchRef" width="380">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/HatPdotS/TorchRef/main/assets/torchref-banner-dark.svg">
+    <img src="https://raw.githubusercontent.com/HatPdotS/TorchRef/main/assets/torchref-banner-light.svg" alt="TorchRef" width="380">
   </picture>
 </p>
 
@@ -26,7 +26,7 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. Aut
 
 ## Benchmark
 
-![TorchRef AlphaFold-start refinement benchmark](paper/figure2_alphafold_start/figures/figure_af_benchmark.png)
+![TorchRef AlphaFold-start refinement benchmark](https://raw.githubusercontent.com/HatPdotS/TorchRef/main/paper/figure2_alphafold_start/figures/figure_af_benchmark.png)
 
 *Refinement of Phaser-placed AlphaFold models against experimental data, on a conserved set of 723 PDB structures (1.40–3.00 Å). All engines start from the same placed models and are scored by one common validator (PHENIX).*
 
@@ -49,8 +49,8 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. Aut
 | Notebook | Description |
 |----------|-------------|
 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/quickstart.ipynb) | Quickstart — MTZ + PDB to refined structure, refined MTZ and CCP4 map; selection- and parameter-type-based refinement |
-| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factors.ipynb) | Structure factors — one-liner, `FFT` class, and manual voxel pipeline; standalone scaling; autograd |
-| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/targets_and_weighting.ipynb) | Targets and weighting — standard targets, target-offset weighting, X-ray mode comparison, custom targets, driving an optimizer from a `LossState` |
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factors.ipynb) | Structure factors — one-liner, `SfFFT` class, and manual voxel pipeline; autograd |
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/targets_and_weighting.ipynb) | Targets and weighting — standard targets, static group weights, X-ray mode comparison, custom targets, driving an optimizer from a `LossState` |
 
 ### Installation
 
@@ -73,7 +73,7 @@ the checkout are fetched on demand, so add paths later with `git sparse-checkout
 
 ### Dependencies
 
-Python ≥ 3.10, PyTorch ≥ 2.4, NumPy ≥ 2.0, Pandas ≥ 2.0, SciPy ≥ 1.10, Gemmi ≥ 0.5, reciprocalspaceship ≥ 0.9.18, Numba ≥ 0.59, Matplotlib ≥ 3.7. `pyproject.toml` carries the authoritative pinned ranges; upper bounds are set one minor version above the tested maximum, so a newer dependency will refuse to install rather than fail at runtime.
+Python ≥ 3.10, PyTorch ≥ 2.4, NumPy ≥ 2.0, Pandas ≥ 2.0, SciPy ≥ 1.10, Gemmi ≥ 0.5, reciprocalspaceship ≥ 0.9.18, Matplotlib ≥ 3.7. `pyproject.toml` carries the authoritative pinned ranges; upper bounds are set one minor version above the tested maximum, so a newer dependency will refuse to install rather than fail at runtime.
 
 ### Testing
 
@@ -93,4 +93,4 @@ Questions, feature ideas and usage discussion are welcome on the [TorchRef categ
 
 ### License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/HatPdotS/TorchRef/blob/main/LICENSE).

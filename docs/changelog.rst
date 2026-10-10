@@ -2,8 +2,66 @@ Changelog
 =========
 
 
+Version 0.7.0
+-------------
+
+Breaking changes
+~~~~~~~~~~~~~~~~
+- Atom identity, topology, restraints and hydrogen policy moved from ``Model`` to ``ModelContext``; ``Model.pdb`` is deprecated
+- ``torchref.restraints`` moved into ``torchref.topology``; ``Restraints`` takes the coordinates it scores
+- ``--hydrogens keep|add|strip`` and ``--hydrogen-mode atoms|riding`` replace ``strip_H``/``add_hydrogens``
+- Anomalous scattering is off unless ``--wavelength`` is given (it defaulted to 1.0 Å)
+- Bulk-solvent phase offset removed; ``optimize_phase`` is deprecated
+- ``phased-difference-map`` is now ``difference-map``: fewer default columns (``--all-columns``), renamed (``dF``, ``W_InVa``)
+- Refinement checkpoints restore only through ``load_state``; ``Refinement.create_from_state_dict`` is removed
+- ``french_wilson_auto`` moved to ``torchref.io.datasets``; ``CollectionRiceTarget`` is now ``CollectionMLTarget``
+- Refinement writes its own PDB/mmCIF header instead of copying the input's
+- ``DatasetCollection.scale()`` returns ``ScaledDataset`` members; ``ReflectionData`` holds no scale parameters or E values (use ``WilsonNormaliser``)
+- Many unused public functions, classes and aliases removed; numba is no longer a dependency
+
+New features
+~~~~~~~~~~~~
+- Node-field ADP representation (``--adp-mode field|field_aniso|preserve``)
+- Refinable riding hydrogens, generated from monomer-library templates
+- Topology graph (``Topology``, ``AtomGraph``, ``ResidueGraph``) with Phenix-style ``select``
+- Joint relative scaling of observed datasets with no reference dataset (``DatasetScaler``)
+- DED weights without resolution shells (``--ded-weight``, default ``q``; ``--difference-sigma-scale``) and ``--two-moment``
+- New CLIs ``torchref.uniform-rfree`` and ``torchref.simulate-noisy-data``; CrystFEL ``.hkl`` reader
+- French–Wilson fits a smooth anisotropic Wilson prior and shrinks weak reflections instead of rejecting them
+
+Performance
+~~~~~~~~~~~
+- Faster CPU VDW pair search, hydrogen-mode switching and ADP-locality neighbours; ``SfFFT`` stores no real-space grid
+
+Fixes that change results
+~~~~~~~~~~~~~~~~~~~~~~~~~
+- Unit-cell metric for triclinic and rhombohedral cells; dihedral sign for sugar and nucleotide torsions
+- Anomalous f′/f″ applied in every space group, with B-factors
+- Maps: centric reflections counted once, 2Fo−Fc sign in written MTZs, ``Map`` uses scaled F_calc
+- Reading: CIF loop rows, ANISOU columns, SF-mmCIF intensities and free flags, multi-model PDBs, non-reference settings
+- Restraints: shared restraints counted once across conformers, non-bonded exclusions and H-bonds, X-Pro PTRANS
+- Refinement: frozen parameters stay frozen, rigid-body translations refine, the scaler is refit warm each cycle
+- Density kernels on CPU, CUDA and MPS; long matrix products on MPS; REMARK 3 angle RMSD reported in degrees
+- CUDA ``ls``/``nll`` X-ray kernels score a signed ``F_calc`` as ``|F_calc|``, as the eager path does
+- ``WilsonNormaliser`` with ``s_lo``/``s_hi`` wider than the data: stable in float32 and no longer truncated by its log clamp
+
+Other fixes
+~~~~~~~~~~~
+- Many crash, device and dtype fixes across CPU, CUDA and MPS
+- Fixed bug where the forward cache could serve stale results when given a new input tensor and the old tensor was already freed
+
+Experimental
+~~~~~~~~~~~~
+- Molecular replacement reworked; solutions are placed in the data's unit cell
+- OpenMM adapter with GAFF2 ligands; Amber targets rebuilt on it; ensemble, kinetic and real-space target fixes
+
+Internal
+~~~~~~~~
+- Integer tensors follow ``TORCHREF_DTYPE_INT``; tests are selected by path; CPU and MPS CI run on pull requests
+
+
 Version 0.6.4
-----------
+-------------
 - Fixed the bulk-solvent ``F_sol`` staying at the starting model's mask for every refinement macrocycle
 - Fixed restraint dictionaries defining several compounds yielding restraints for only one of them
 - Fixed chirality restraints being dropped for the ``positiv``/``negativ`` spellings used by the CCP4 library

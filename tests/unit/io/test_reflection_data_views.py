@@ -1,16 +1,18 @@
 """
 Unit tests for the work / free / validation sub-set accessor API on
-``ReflectionData`` (the ``_ReflectionSubset`` views and the separate
+``ReflectionData`` (the ``ReflectionSubset`` views and the separate
 boolean ``validation_flags``).
 """
 
 import os
+import typing
 
 import pytest
 import torch
 
+import torchref
 from torchref.io.datasets import ReflectionData
-
+from torchref.io.datasets.reflection_data import ReflectionSubset
 
 TEST_MTZ = os.path.join(
     os.path.dirname(__file__), "..", "..", "files", "mtz", "1DAW.mtz"
@@ -113,3 +115,16 @@ def test_mask_and_indices_consistent(data):
         sub = getattr(data, name)
         assert int(sub.mask.sum()) == sub.n
         assert bool(sub.mask[sub.indices].all())
+
+
+def test_views_are_public_reflection_subsets(data):
+    """Each view is a ``ReflectionSubset`` by type, return annotation and repr, and
+    the class stays out of every package ``__all__``."""
+    for kind in ("work", "free", "validation", "all"):
+        view = getattr(data, kind)
+        assert isinstance(view, ReflectionSubset)
+        assert repr(view) == f"ReflectionSubset(kind={kind!r}, n={view.n})"
+        accessor = getattr(ReflectionData, kind).fget
+        assert typing.get_type_hints(accessor)["return"] is ReflectionSubset
+    for package in (torchref, torchref.io, torchref.io.datasets):
+        assert "ReflectionSubset" not in package.__all__

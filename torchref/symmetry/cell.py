@@ -20,7 +20,7 @@ from torchref.config import (
 from torchref.utils.device_mixin import _NonModuleDeviceMixin
 
 
-@dataclass
+@dataclass(eq=False)
 class Cell(_NonModuleDeviceMixin):
     """
     Dataclass for crystallographic unit cells with cached derived quantities.
@@ -32,6 +32,12 @@ class Cell(_NonModuleDeviceMixin):
     Derived quantities (fractional_matrix, volume, etc.) are computed on first
     access and cached. The cache is cleared when the cell is moved to a
     different device or dtype.
+
+    Two cells compare and hash equal when their stored parameters (:attr:`key`)
+    are equal, on any device; float32 and float64 copies of a value float32
+    cannot represent exactly (e.g. 50.1 Angstroms) are not equal. A cell is
+    therefore a value: editing its parameter tensor in place is refused at the
+    next derived read. Build a new ``Cell`` and assign it instead.
 
     Examples
     --------
@@ -45,6 +51,7 @@ class Cell(_NonModuleDeviceMixin):
 
     _data: torch.Tensor
     _cache: dict = field(default_factory=dict, repr=False)
+    _stamp: tuple = field(default=None, repr=False)
 
     def __init__(
         self,
@@ -52,7 +59,6 @@ class Cell(_NonModuleDeviceMixin):
         *,
         dtype: torch.dtype = None,
         device: torch.device | str = None,
-        requires_grad: bool = False,
     ) -> None:
         """
         Create a new Cell.
@@ -66,8 +72,6 @@ class Cell(_NonModuleDeviceMixin):
             Desired data type. Defaults to the configured ``dtypes.float``.
         device : torch.device or str, optional
             Desired device. Defaults to the configured ``device.current``.
-        requires_grad : bool, optional
-            Whether to track gradients. Defaults to False.
 
         Raises
         ------
@@ -80,6 +84,10 @@ class Cell(_NonModuleDeviceMixin):
         # Convert to tensor first to get shape
         if isinstance(data, torch.Tensor):
             tensor = data.to(dtype=dtype, device=device)
+            if tensor is data:
+                # ``to`` returned the caller's tensor unchanged; own a copy so
+                # their later edits cannot reach into this cell.
+                tensor = tensor.clone()
         else:
             tensor = torch.tensor(data, dtype=dtype, device=device)
 
@@ -93,11 +101,9 @@ class Cell(_NonModuleDeviceMixin):
         # Ensure 1D shape
         tensor = tensor.reshape(6)
 
-        if requires_grad:
-            tensor = tensor.requires_grad_(True)
-
         object.__setattr__(self, "_data", tensor)
         object.__setattr__(self, "_cache", {})
+        self._stamp_data()
 
     # =========================================================================
     # Device/dtype movement methods
@@ -108,23 +114,35 @@ class Cell(_NonModuleDeviceMixin):
     # and any cached tensor values) and then call ``reset_cache`` below.
 
     def reset_cache(self) -> None:
-        """Clear cached derived quantities (fractional matrix, volume, etc.)."""
+        """Clear cached derived quantities (fractional matrix, volume, etc.).
+
+        Also re-stamps the parameter tensor, so a device or dtype move (which
+        rebinds it and then calls this) is not mistaken for an in-place edit.
+        """
         object.__setattr__(self, "_cache", {})
+        self._stamp_data()
 
-    def detach(self) -> "Cell":
-        """
-        Return a new Cell with detached tensor (no gradient tracking).
+    def _stamp_data(self) -> None:
+        object.__setattr__(self, "_stamp", (id(self._data), self._data._version))
 
-        Returns
-        -------
-        Cell
-            New Cell with detached data.
-        """
-        new_data = self._data.detach()
-        new_cell = Cell.__new__(Cell)
-        object.__setattr__(new_cell, "_data", new_data)
-        object.__setattr__(new_cell, "_cache", {})
-        return new_cell
+    def _assert_unmodified(self) -> None:
+        """Refuse to serve derived quantities from a tensor edited in place."""
+        stamp = getattr(self, "_stamp", None)
+        if stamp is None:
+            self._stamp_data()
+            return
+        if (id(self._data), self._data._version) == stamp:
+            return
+        cached = self._cache.get("key")
+        held = f" It held {cached}." if cached is not None else ""
+        raise RuntimeError(
+            "This Cell was edited in place after it was built." + held + " Cells are "
+            "values shared by reference (model context, structure-factor engine, "
+            "scaler), so an in-place edit changes the crystal under every holder. "
+            "Please don't edit Cell objects, create a new one -- "
+            "Cell([a, b, c, alpha, beta, gamma], dtype=cell.dtype, device=cell.device) "
+            "-- and assign it, e.g. model.cell = new_cell."
+        )
 
     def clone(self) -> "Cell":
         """
@@ -139,7 +157,40 @@ class Cell(_NonModuleDeviceMixin):
         new_cell = Cell.__new__(Cell)
         object.__setattr__(new_cell, "_data", new_data)
         object.__setattr__(new_cell, "_cache", {})
+        new_cell._stamp_data()
         return new_cell
+
+    # =========================================================================
+    # Value identity
+    # =========================================================================
+
+    @property
+    def key(self) -> tuple:
+        """The six parameters as a tuple of Python floats.
+
+        Read off the tensor once and cached alongside the derived quantities, so
+        the device synchronisation happens once per construction or
+        :meth:`reset_cache` rather than on every comparison.
+
+        Returns
+        -------
+        tuple of float
+            ``(a, b, c, alpha, beta, gamma)``.
+        """
+        self._assert_unmodified()
+        key = self._cache.get("key")
+        if key is None:
+            key = tuple(float(v) for v in self._data.tolist())
+            self._cache["key"] = key
+        return key
+
+    def __hash__(self) -> int:
+        return hash(self.key)
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, Cell):
+            return NotImplemented
+        return self.key == other.key
 
     # =========================================================================
     # Basic properties
@@ -159,11 +210,6 @@ class Cell(_NonModuleDeviceMixin):
     def data(self) -> torch.Tensor:
         """Return the underlying tensor (for buffer registration)."""
         return self._data
-
-    @property
-    def requires_grad(self) -> bool:
-        """Return whether gradients are tracked."""
-        return self._data.requires_grad
 
     # =========================================================================
     # Convenience properties for cell parameters
@@ -218,6 +264,7 @@ class Cell(_NonModuleDeviceMixin):
         torch.Tensor
             Shape (3, 3) orthogonalization matrix.
         """
+        self._assert_unmodified()
         if "fractional_matrix" not in self._cache:
             self._cache["fractional_matrix"] = self._compute_fractional_matrix()
         return self._cache["fractional_matrix"]
@@ -234,6 +281,7 @@ class Cell(_NonModuleDeviceMixin):
         torch.Tensor
             Shape (3, 3) fractionalization matrix.
         """
+        self._assert_unmodified()
         if "inv_fractional_matrix" not in self._cache:
             self._cache["inv_fractional_matrix"] = torch.linalg.inv(
                 self.fractional_matrix
@@ -250,6 +298,7 @@ class Cell(_NonModuleDeviceMixin):
         torch.Tensor
             Scalar tensor with the cell volume.
         """
+        self._assert_unmodified()
         if "volume" not in self._cache:
             self._cache["volume"] = self._compute_volume()
         return self._cache["volume"]
@@ -259,48 +308,30 @@ class Cell(_NonModuleDeviceMixin):
         """
         Reciprocal basis matrix with [a*, b*, c*] as rows.
 
+        The rows of the fractionalization matrix are the reciprocal basis vectors,
+        so this returns the same cached tensor as :attr:`inv_fractional_matrix`;
+        do not modify it in place.
+
         Returns
         -------
         torch.Tensor
-            Shape (3, 3) matrix where rows are the reciprocal basis vectors.
+            Shape (3, 3) matrix where rows are the reciprocal basis vectors, in Å⁻¹.
         """
-        if "reciprocal_basis_matrix" not in self._cache:
-            self._cache["reciprocal_basis_matrix"] = (
-                self._compute_reciprocal_basis_matrix()
-            )
-        return self._cache["reciprocal_basis_matrix"]
+        return self.inv_fractional_matrix
 
     # =========================================================================
     # Internal computation methods
     # =========================================================================
 
     def _compute_fractional_matrix(self) -> torch.Tensor:
-        """Fractional-to-Cartesian matrix, via ``math_torch.get_fractional_matrix``."""
-        from torchref.base import math_torch
+        """Fractional-to-Cartesian matrix, via ``coordinates.get_fractional_matrix``."""
+        from torchref.base.coordinates import get_fractional_matrix
 
-        return math_torch.get_fractional_matrix(self._data)
+        return get_fractional_matrix(self._data)
 
     def _compute_volume(self) -> torch.Tensor:
-        """V = abc·sqrt(1 - Σcos²angle + 2·cosα·cosβ·cosγ)."""
-        a, b, c = self._data[0], self._data[1], self._data[2]
-        angles_rad = torch.deg2rad(self._data[3:])
-        cos_alpha, cos_beta, cos_gamma = torch.cos(angles_rad)
-
-        volume_factor = torch.sqrt(
-            1
-            - cos_alpha**2
-            - cos_beta**2
-            - cos_gamma**2
-            + 2 * cos_alpha * cos_beta * cos_gamma
-        )
-
-        return a * b * c * volume_factor
-
-    def _compute_reciprocal_basis_matrix(self) -> torch.Tensor:
-        """Reciprocal basis, via ``math_torch.reciprocal_basis_matrix``."""
-        from torchref.base import math_torch
-
-        return math_torch.reciprocal_basis_matrix(self._data)
+        """V = det(B); B is upper triangular, so that is its diagonal product."""
+        return torch.diagonal(self.fractional_matrix).prod()
 
     # =========================================================================
     # Grid computation methods
@@ -409,7 +440,3 @@ class Cell(_NonModuleDeviceMixin):
     def __len__(self) -> int:
         """Return 6 (number of cell parameters)."""
         return 6
-
-
-# Keep CellTensor as an alias for backward compatibility
-CellTensor = Cell

@@ -1,5 +1,4 @@
-"""
-I/O for crystallographic data files: dataset containers, MTZ/PDB/CIF format
+"""I/O for crystallographic data files: dataset containers, MTZ/PDB/CIF format
 modules, and the top-level object-creation readers.
 
 The three layers, loosest to tightest::
@@ -8,8 +7,9 @@ The three layers, loosest to tightest::
     data = ReflectionData(verbose=1); data.load_mtz('structure.mtz')
     data_dict, cell, spacegroup = mtz.read('data.mtz')()
 
-:class:`DatasetCollection` handles several datasets jointly. The IHM reader and
-writer need ``python-ihm``; :class:`IHMEnsembleMapping` does not.
+:class:`~.datasets.collection.DatasetCollection` handles several datasets jointly.
+The IHM reader and writer need ``python-ihm``; :class:`~.ihm_mapping.IHMEnsembleMapping`
+does not.
 """
 
 # Format modules
@@ -21,33 +21,39 @@ from .cif import (
     RestraintCIFReader,
 )
 
-# Metadata
-from .metadata import RefinementMetadata
-
-# Top-level object-creation readers
-from .readers import read_cif, read_mtz, read_pdb
-
 # Dataset classes (primary API)
 from .datasets import (
     CrystalDataset,
     DatasetCollection,
-    ReflectionData,
     FcalcDataset,
+    MergeStats,
+    ReflectionData,
+    ScaledDataset,
+    merge_to_spacegroup,
 )
+
+# IHM ensemble support (mapping always available; reader/writer need python-ihm)
+from .ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMStateInfo
+
+# Metadata
+from .metadata import RefinementMetadata
 
 # Reader classes (from format modules)
 from .mtz import MTZReader
 from .pdb import PDBReader
 
-# IHM ensemble support (mapping always available; reader/writer need python-ihm)
-from .ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMStateInfo
+# Top-level object-creation readers
+from .readers import read_cif, read_mtz, read_pdb
 
 __all__ = [
     # Primary API - Datasets
     "CrystalDataset",
     "ReflectionData",
+    "ScaledDataset",
     "DatasetCollection",
     "FcalcDataset",
+    "merge_to_spacegroup",
+    "MergeStats",
     # Top-level readers
     "read_mtz",
     "read_cif",

@@ -2,50 +2,25 @@
 CIF/mmCIF reading and writing: reflections, coordinates, restraint
 dictionaries and CCP4 maps.
 
-Thin wrappers over the readers in :mod:`torchref.io.cif_readers`. The ``read_*``
-functions return a *reader object*, not the data -- call it (or one of its
-``get_*`` methods) to get the parsed content::
+Re-exports the readers of :mod:`torchref.io.cif_readers`. A reader parses its
+file on construction; call it (or ``get_all_restraints`` on a restraint reader)
+for the parsed content::
 
-    data_dict, cell, spacegroup = cif.read_reflections('structure-sf.cif')()
+    data_dict, cell, spacegroup = cif.ReflectionCIFReader('structure-sf.cif')()
     df, cell, spacegroup = cif.read_model('structure.cif')()
-    restraints = cif.read_restraints('ALA.cif').get_all_restraints()
+    restraints = cif.RestraintCIFReader('ALA.cif').get_all_restraints()
 """
-
-from typing import List, Optional
 
 import numpy as np
 import torch
 
-# Import all CIF reader classes from the existing module
-from torchref.io.cif_readers import (
+# Re-exported for torchref.io and the cif.<Reader> callers.
+from torchref.io.cif_readers import (  # noqa: F401
     CIFReader,
     ModelCIFReader,
     ReflectionCIFReader,
     RestraintCIFReader,
 )
-
-
-def read_reflections(
-    filepath: str, data_block: Optional[str] = None, verbose: int = 0
-) -> ReflectionCIFReader:
-    """
-    Read reflection data from a CIF file.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the structure factor CIF file.
-    data_block : str, optional
-        Name of the data block to read. If None, uses the first block.
-    verbose : int, optional
-        Verbosity level. Default is 0.
-
-    Returns
-    -------
-    ReflectionCIFReader
-        Reader object; call it for ``(data_dict, cell, spacegroup)``.
-    """
-    return ReflectionCIFReader(filepath, verbose=verbose, data_block=data_block)
 
 
 def read_model(filepath: str, verbose: int = 0) -> ModelCIFReader:
@@ -65,41 +40,6 @@ def read_model(filepath: str, verbose: int = 0) -> ModelCIFReader:
         Reader object; call it for ``(df, cell, spacegroup)``.
     """
     return ModelCIFReader(filepath, verbose=verbose)
-
-
-def read_restraints(filepath: str) -> RestraintCIFReader:
-    """
-    Read restraint dictionary from a CIF file.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the restraint dictionary CIF file.
-
-    Returns
-    -------
-    RestraintCIFReader
-        Reader object; use ``get_all_restraints()`` to extract them.
-    """
-    return RestraintCIFReader(filepath)
-
-
-def list_data_blocks(filepath: str) -> List[str]:
-    """
-    List available data blocks in a CIF file.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the CIF file.
-
-    Returns
-    -------
-    list of str
-        Names of available data blocks, in file order.
-    """
-    reader = CIFReader(filepath)
-    return reader.available_blocks
 
 
 def write_map(data, cell, filepath: str, spacegroup: str = "P1") -> int:
@@ -162,7 +102,8 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
     Returns
     -------
     gemmi.Structure
-        The constructed gemmi Structure object.
+        The constructed gemmi Structure object. A blank or NaN chain ID is named
+        ``A``, the same name as a real chain ``A`` if the model has one.
     """
     import gemmi
 
@@ -180,18 +121,22 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
 
     model = gemmi.Model("1")
 
-    # Group by chain, then by (resseq, icode, resname) for residues
-    for chain_id, chain_group in df.groupby("chainid", sort=False):
-        chain = gemmi.Chain(str(chain_id) if chain_id and str(chain_id) != "nan" else "A")
+    # Group by chain, then by (resseq, icode, resname) for residues. NaN keys are
+    # kept: the PDB reader reads a blank chain ID as NaN, and groupby would
+    # otherwise drop those atoms.
+    for chain_id, chain_group in df.groupby("chainid", sort=False, dropna=False):
+        chain = gemmi.Chain(
+            str(chain_id) if chain_id and str(chain_id) != "nan" else "A"
+        )
 
         for (resseq, icode, resname), res_group in chain_group.groupby(
-            ["resseq", "icode", "resname"], sort=False
+            ["resseq", "icode", "resname"], sort=False, dropna=False
         ):
             residue = gemmi.Residue()
             residue.name = str(resname).strip()
-            seq_str = str(int(resseq))
-            icode_str = str(icode).strip() if icode and str(icode) not in ("nan", " ") else ""
-            residue.seqid = gemmi.SeqId(seq_str + icode_str)
+            icode_str = str(icode).strip() if icode and str(icode) != "nan" else ""
+            # Not gemmi.SeqId("52A"): parsing a string lower-cases the insertion code.
+            residue.seqid = gemmi.SeqId(int(resseq), icode_str or " ")
 
             # Set het flag based on ATOM/HETATM
             first_atom_type = res_group.iloc[0]["ATOM"]
@@ -257,12 +202,33 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
     return st
 
 
-def _add_refine_categories(doc, metadata):
-    """Inject a :class:`RefinementMetadata`'s categories into ``doc``, in place."""
+def _cif_value(val) -> str:
+    """Render one value as a CIF token, quoting it when it needs quoting.
+
+    The unset markers ``?`` and ``.`` are passed through bare: ``gemmi.cif.quote``
+    would turn them into the quoted one-character strings ``'?'`` and ``'.'``,
+    which are data rather than nulls. Everything else goes through ``quote`` --
+    an unquoted value containing whitespace silently splits into extra loop
+    columns when the file is read back.
+    """
     import gemmi
 
+    text = str(val)
+    if text in ("?", "."):
+        return text
+    return gemmi.cif.quote(text)
+
+
+def _add_refine_categories(doc, metadata):
+    """Inject a :class:`RefinementMetadata`'s categories into ``doc``, in place.
+
+    Returns the set of category prefixes written (e.g. ``{"_refine.",
+    "_software."}``) so the caller can avoid copying the same categories in
+    again from another block and either clobbering or duplicating them.
+    """
     block = doc.sole_block()
     cats = metadata.render_cif_categories()
+    written = set()
 
     for cat_name, items in cats.items():
         # List values mean a loop category rather than key-value pairs.
@@ -274,6 +240,7 @@ def _add_refine_categories(doc, metadata):
             prefix = tags[0].rsplit(".", 1)[0] + "."
             suffixes = [t.split(".")[-1] for t in tags]
             loop = block.init_loop(prefix, suffixes)
+            written.add(prefix)
             # All list values should have same length
             n_rows = max(len(v) for v in items.values() if isinstance(v, list))
             for i in range(n_rows):
@@ -281,13 +248,17 @@ def _add_refine_categories(doc, metadata):
                 for tag in tags:
                     val = items[tag]
                     if isinstance(val, list):
-                        row.append(str(val[i]) if i < len(val) else "?")
+                        cell = val[i] if i < len(val) else "?"
                     else:
-                        row.append(str(val))
+                        cell = val
+                    row.append(_cif_value(cell))
                 loop.add_row(row)
         else:
             for key, val in items.items():
-                block.set_pair(key, gemmi.cif.quote(str(val)))
+                block.set_pair(key, _cif_value(val))
+                written.add(key.rsplit(".", 1)[0] + ".")
+
+    return written
 
 
 def write_model(df, filepath: str, metadata=None) -> None:
@@ -329,7 +300,12 @@ def write_model(df, filepath: str, metadata=None) -> None:
                 "_symmetry.space_group_name_H-M", gemmi.cif.quote(str(spacegroup))
             )
 
-        _add_refine_categories(meta_doc, metadata)
+        written = _add_refine_categories(meta_doc, metadata)
+        # Categories we just wrote from metadata, plus the two written above.
+        # The structure block gemmi builds from the DataFrame carries its own
+        # version of some of these; copying those in would clobber a pair or
+        # append a second loop for the same category.
+        written |= {"_cell.", "_symmetry."}
 
         st = dataframe_to_gemmi_structure(df, cell, spacegroup)
         struct_doc = st.make_mmcif_document()
@@ -342,14 +318,15 @@ def write_model(df, filepath: str, metadata=None) -> None:
                 tags = list(loop.tags)
                 suffixes = [t.split(".")[-1] for t in tags]
                 prefix = tags[0].rsplit(".", 1)[0] + "."
+                if prefix in written:
+                    continue
                 new_loop = meta_block.init_loop(prefix, suffixes)
                 for row_idx in range(loop.length()):
                     row = [loop[row_idx, col] for col in range(loop.width())]
                     new_loop.add_row(row)
             elif item.pair is not None:
                 tag, val = item.pair
-                # Skip cell/symmetry - already added
-                if not tag.startswith(("_cell.", "_symmetry.")):
+                if tag.rsplit(".", 1)[0] + "." not in written:
                     meta_block.set_pair(tag, val)
 
         meta_doc.write_file(filepath)
@@ -357,7 +334,3 @@ def write_model(df, filepath: str, metadata=None) -> None:
         st = dataframe_to_gemmi_structure(df, cell, spacegroup)
         doc = st.make_mmcif_document()
         doc.write_file(filepath)
-
-
-# Convenience aliases
-read = read_reflections  # Default read is for reflections

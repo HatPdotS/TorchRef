@@ -2,6 +2,8 @@
 
 import torch
 
+from torchref.config import get_int_dtype
+
 from ._common import torsions_from_xyz
 from ._dispatch import use_triton
 
@@ -13,15 +15,15 @@ def _ramachandran_math_eager(
     nll_surfaces: torch.Tensor,
     surface_type: torch.Tensor,
 ) -> torch.Tensor:
-    phi_deg = -torsions_from_xyz(xyz, phi_idx)
-    psi_deg = -torsions_from_xyz(xyz, psi_idx)
+    phi_deg = torsions_from_xyz(xyz, phi_idx)
+    psi_deg = torsions_from_xyz(xyz, psi_idx)
 
     phi_idx_grid = (phi_deg + 180.0) % 360.0
     psi_idx_grid = (psi_deg + 180.0) % 360.0
 
-    phi_lo = phi_idx_grid.detach().floor().long() % 360
+    phi_lo = phi_idx_grid.detach().floor().to(get_int_dtype()) % 360
     phi_hi = (phi_lo + 1) % 360
-    psi_lo = psi_idx_grid.detach().floor().long() % 360
+    psi_lo = psi_idx_grid.detach().floor().to(get_int_dtype()) % 360
     psi_hi = (psi_lo + 1) % 360
     phi_frac = phi_idx_grid - phi_idx_grid.detach().floor()
     psi_frac = psi_idx_grid - psi_idx_grid.detach().floor()
@@ -53,7 +55,7 @@ def ramachandran_math(
     Mirrors ``RamachandranTarget.forward``.
 
     Dispatches to
-    :func:`torchref.base.targets.triton.ramachandran_math_triton` on
+    :func:`torchref.base.targets.triton.ramachandran.ramachandran_math_triton` on
     CUDA float32. Falls back to eager
     otherwise.
 
@@ -62,7 +64,9 @@ def ramachandran_math(
     xyz : torch.Tensor
         (N_atoms, 3) Cartesian coordinates.
     phi_idx, psi_idx : torch.Tensor
-        (N, 4) atom indices for the two backbone dihedrals.
+        (N, 4) atom indices for the two backbone dihedrals, measured by
+        :func:`~torchref.base.targets._common.torsions_from_xyz` with the IUPAC sign
+        the surfaces are tabulated in.
     nll_surfaces : torch.Tensor
         (n_surface_types, 360, 360) precomputed NLL = -log P(φ, ψ | type).
     surface_type : torch.Tensor

@@ -26,10 +26,8 @@ _PORTABLE = "torchref.base.electron_density.kernels.cpu.variable_radius"
 
 #: Argument positions carrying the device/dtype contract:
 #: ``density_map, xyz, adp_or_u, occ, A, B``. The trailing three -- the two cell matrices
-#: and the per-atom radius -- are excluded because no gate has ever probed them, and
-#: widening the contract to cover them would make two currently-working backends stricter
-#: for no demonstrated bug. They *are* read as raw pointers by the C++ and CUDA kernels, so
-#: that remains an open question rather than a settled one.
+#: and the per-atom radius -- are not probed; a cell matrix of another dtype raises the
+#: same ``data_ptr`` RuntimeError in the C++ kernel instead of reading out of bounds.
 _ATOM_ARGS = (0, 1, 2, 3, 4, 5)
 
 DENSITY_BACKENDS = BackendTable(
@@ -39,7 +37,7 @@ DENSITY_BACKENDS = BackendTable(
             name="cuda_triton",
             kernel=(_CUDA, "add_isotropic_cuda_var", "add_anisotropic_cuda_var"),
             device="cuda",
-            dtypes=(torch.float32,),
+            dtypes=(torch.float32,),  # dtype-ok: backend capability declaration, not an allocation
             probes=_ATOM_ARGS,
             probe=(_CUDA, "why_unavailable"),
             expect_available="cuda",
@@ -53,7 +51,7 @@ DENSITY_BACKENDS = BackendTable(
             name="mps_metal",
             kernel=(_MPS, "add_isotropic_mps_var", "add_anisotropic_mps_var"),
             device="mps",
-            dtypes=(torch.float32,),
+            dtypes=(torch.float32,),  # dtype-ok: backend capability declaration, not an allocation
             probes=_ATOM_ARGS,
             probe=("torchref.base.electron_density.kernels.mps.compile",
                    "why_unavailable"),
@@ -66,10 +64,10 @@ DENSITY_BACKENDS = BackendTable(
             kernel=(_SPHERE, "add_isotropic_cpu_sphere_var",
                     "add_anisotropic_cpu_sphere_var"),
             device="cpu",
-            dtypes=(torch.float32, torch.float64),
-            # Uniformity, not membership: the kernel picks one ``scalar_t`` from the output
-            # map and then reads every other tensor through a raw pointer of that type, so a
-            # float64 map beside float32 atoms would be a 2x out-of-bounds read.
+            dtypes=(torch.float32, torch.float64),  # dtype-ok: backend capability declaration, not an allocation
+            # Uniformity, not membership: the entry point's ``_prep`` raises ValueError
+            # on any dtype but the map's (``data_ptr<scalar_t>()`` a RuntimeError behind
+            # it), so a mixed-dtype call goes to the portable splat instead of an error.
             require_uniform_dtype=True,
             probes=_ATOM_ARGS,
             probe=(_SPHERE, "why_unavailable"),

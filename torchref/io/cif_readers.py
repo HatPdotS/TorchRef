@@ -7,12 +7,17 @@ Space groups always come back as plain ``str`` Hermann-Mauguin names
 (``"P 1"``), validated against gemmi -- never as objects.
 """
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gemmi
 import numpy as np
+import warnings
+
 import pandas as pd
+
+from torchref.io.pdb import _require_elements
 
 #: Column holding the ``data_`` block a loop row was read from. Added only when
 #: ``parse_all_blocks`` is set, because that is the only mode in which rows from
@@ -21,6 +26,36 @@ import pandas as pd
 #: only thing that can do it. Stripped again by
 #: :meth:`RestraintCIFReader._filter_by_comp`, so it never reaches a caller.
 _SOURCE_BLOCK_COLUMN = "_source_block"
+
+#: One value of a data line. As in CIF, a quote opens a string only at the start of
+#: a value and closes it only before whitespace, so ``'it's'`` reads ``it's`` and a
+#: bare ``O5'`` keeps its prime.
+_CIF_VALUE = re.compile(r"""'(.*?)'(?=\s|$)|"(.*?)"(?=\s|$)|(\S+)""")
+
+#: Tags read as sigma(F), in order of preference, for merged and Bijvoet-pair
+#: amplitudes alike. ``F_squared_sigma`` is sigma(F^2) and is read with the
+#: intensities.
+_SIGMA_F_TAGS = ("_refln.F_meas_sigma_au", "_refln.F_meas_sigma", "_refln.SIGF-obs")
+
+#: Sigma (Å) of a plane atom whose dictionary row gives no ``dist_esd``. Component
+#: planes, link planes and ``chem_mod`` additions all take it, so they cannot drift.
+DEFAULT_PLANE_SIGMA = 0.02
+
+#: Bond-order spellings of monomer dictionaries (``_chem_comp_bond.type``) and of the
+#: wwPDB component dictionary (``_chem_comp_bond.value_order``), mapped to one
+#: vocabulary. Anything else reads as ``""``.
+_BOND_ORDERS = {
+    "single": "single",
+    "sing": "single",
+    "double": "double",
+    "doub": "double",
+    "triple": "triple",
+    "trip": "triple",
+    "aromatic": "aromatic",
+    "arom": "aromatic",
+    "deloc": "deloc",
+    "metal": "metal",
+}
 
 
 class CIFReader:
@@ -62,10 +97,9 @@ class CIFReader:
         """See the class docstring for the parameters."""
         self.data = {}
         self.filepath = None
-        self.data_block = data_block
+        self.data_block = self._requested_block = data_block
         self.parse_all_blocks = parse_all_blocks
         self.available_blocks = []
-        self.verbose = 0
         self._current_block = None
 
         if filepath:
@@ -84,6 +118,10 @@ class CIFReader:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
+        # The first block of an earlier file is no block of this one; only a block
+        # named at construction carries over.
+        self.data, self.available_blocks = {}, []
+        self.data_block = self._requested_block
         self._parse(content)
 
     def _parse(self, content: str):
@@ -108,17 +146,11 @@ class CIFReader:
         if self.parse_all_blocks:
             # Parse all blocks - don't filter by block name
             parse_all = True
-            if self.verbose > 0 and len(self.available_blocks) > 1:
-                print(f"Parsing all {len(self.available_blocks)} data blocks")
         else:
             parse_all = False
             if self.data_block is None and self.available_blocks:
                 # No specific block requested, use first one
                 self.data_block = self.available_blocks[0]
-
-            if self.verbose > 0 and len(self.available_blocks) > 1:
-                print(f"Multiple data blocks found: {self.available_blocks}")
-                print(f"Reading block: {self.data_block}")
 
         # Second pass: parse the target block(s)
         while i < len(lines):
@@ -204,10 +236,9 @@ class CIFReader:
             line = lines[i]
             stripped = line.strip()
 
-            # Check if we've reached the end of the loop
+            # A blank line is whitespace in CIF; only a tag, loop or block ends a loop.
             if not in_multiline and (
-                not stripped
-                or stripped.startswith("_")
+                stripped.startswith("_")
                 or stripped.startswith("loop_")
                 or stripped.startswith("data_")
             ):
@@ -322,47 +353,11 @@ class CIFReader:
         return start_idx + 1
 
     def _tokenize_line(self, line: str) -> List[str]:
-        """Split a data line into tokens, keeping quoted strings intact."""
-        tokens = []
-        current_token = []
-        in_quotes = False
-        quote_char = None
+        """Split a data line into values, unquoting quoted strings.
 
-        i = 0
-        while i < len(line):
-            char = line[i]
-
-            # Handle quotes
-            if char in ('"', "'") and not in_quotes:
-                in_quotes = True
-                quote_char = char
-                i += 1
-                continue
-
-            if char == quote_char and in_quotes:
-                in_quotes = False
-                quote_char = None
-                if current_token:
-                    tokens.append("".join(current_token))
-                    current_token = []
-                i += 1
-                continue
-
-            # Handle whitespace outside quotes
-            if char.isspace() and not in_quotes:
-                if current_token:
-                    tokens.append("".join(current_token))
-                    current_token = []
-                i += 1
-                continue
-
-            current_token.append(char)
-            i += 1
-
-        if current_token:
-            tokens.append("".join(current_token))
-
-        return tokens
+        A closed quote is a value even when empty: ``''`` keeps its column.
+        """
+        return [match.group(match.lastindex) for match in _CIF_VALUE.finditer(line)]
 
     def _extract_category(self, key: str) -> str:
         """Category of a CIF key: ``'_atom_site.id'`` -> ``'atom_site'``."""
@@ -390,53 +385,6 @@ class CIFReader:
                 self.data[category][attribute] = value
         else:
             self.data[key] = value
-
-    def write(self, filepath: str):
-        """Write the parsed data back out as CIF."""
-        with open(filepath, "w") as f:
-            f.write("data_structure\n")
-            f.write("#\n")
-
-            # Write single key-value pairs first
-            for category, content in sorted(self.data.items()):
-                if isinstance(content, dict):
-                    for key, value in sorted(content.items()):
-                        # Handle multiline values
-                        if "\n" in str(value):
-                            f.write(f"_{category}.{key}\n")
-                            f.write(";\n")
-                            f.write(str(value))
-                            f.write("\n;\n")
-                        else:
-                            # Quote values with spaces
-                            if " " in str(value):
-                                f.write(f"_{category}.{key} '{value}'\n")
-                            else:
-                                f.write(f"_{category}.{key} {value}\n")
-                    f.write("#\n")
-
-            # Write loops (DataFrames)
-            for category, content in sorted(self.data.items()):
-                if isinstance(content, pd.DataFrame):
-                    f.write("loop_\n")
-
-                    # Write column names
-                    for col in content.columns:
-                        f.write(f"{col}\n")
-
-                    # Write data rows
-                    for _, row in content.iterrows():
-                        row_values = []
-                        for val in row:
-                            val_str = str(val)
-                            # Quote values with spaces or special characters
-                            if " " in val_str or any(c in val_str for c in ['"', "'"]):
-                                row_values.append(f"'{val_str}'")
-                            else:
-                                row_values.append(val_str)
-                        f.write(" ".join(row_values) + "\n")
-
-                    f.write("#\n")
 
     # Dictionary-like interface
     def __getitem__(self, key: str) -> Union[pd.DataFrame, Dict, Any]:
@@ -483,19 +431,102 @@ class CIFReader:
             f"key-value_groups={len(dicts)})"
         )
 
-    def summary(self):
-        """Print a summary of the CIF contents."""
-        print(f"CIF File: {self.filepath}")
-        print(f"Total categories: {len(self.data)}")
-        print("\nLoops (DataFrames):")
-        for key, value in sorted(self.items()):
-            if isinstance(value, pd.DataFrame):
-                print(f"  {key}: {len(value)} rows × {len(value.columns)} columns")
 
-        print("\nKey-Value Groups (Dictionaries):")
-        for key, value in sorted(self.items()):
-            if isinstance(value, dict):
-                print(f"  {key}: {len(value)} items")
+def _category_table(data: Dict[str, Any], category: str) -> pd.DataFrame:
+    """``category`` of :attr:`CIFReader.data` as a table of full tag names.
+
+    A loop is stored as a DataFrame of ``_category.attribute`` columns, but a
+    category written as key-value pairs -- as wwPDB and CCD files write any
+    category with a single row -- as ``{attribute: value}``. Both come back as a
+    DataFrame, the pairs as its one row, and an absent category as an empty one.
+    A loop's DataFrame is returned as stored, not copied.
+    """
+    table = data.get(category)
+    if isinstance(table, dict):
+        return pd.DataFrame([{f"_{category}.{k}": v for k, v in table.items()}])
+    return pd.DataFrame() if table is None else table
+
+
+def _first_value(data: Dict[str, Any], tag: str) -> Any:
+    """Value of ``tag`` (``_category.attribute``) in its category's first row.
+
+    None when the tag is absent; ``?`` and ``.`` are returned as written.
+    """
+    table = _category_table(data, tag[1:].split(".", 1)[0])
+    return table[tag].iloc[0] if tag in table.columns and len(table) else None
+
+
+def _cell_parameters(data: Dict[str, Any]) -> Optional[List[float]]:
+    """Unit cell ``[a, b, c, alpha, beta, gamma]`` in Å and degrees, or None.
+
+    Read from :attr:`CIFReader.data`. None unless all three lengths are numbers;
+    an absent angle, or one written ``.``, takes the mmCIF dictionary default of
+    90 degrees.
+    """
+    lengths = [_first_value(data, f"_cell.length_{axis}") for axis in "abc"]
+    angles = [
+        _first_value(data, f"_cell.angle_{name}") for name in ("alpha", "beta", "gamma")
+    ]
+    try:
+        return [float(length) for length in lengths] + [
+            90.0 if angle in (None, ".") else float(angle) for angle in angles
+        ]
+    except (TypeError, ValueError):
+        return None
+
+
+def _space_group(data: Dict[str, Any]) -> str:
+    """Hermann-Mauguin space group name in :attr:`CIFReader.data`.
+
+    Taken from ``_symmetry.space_group_name_H-M``, else from the DDL2
+    ``_space_group.name_H-M_alt``: the first name gemmi accepts, with or without
+    its spaces, and ``"P 1"`` when there is none.
+    """
+    for tag in ("_symmetry.space_group_name_H-M", "_space_group.name_H-M_alt"):
+        name = _first_value(data, tag)
+        if name is None:
+            continue
+        for candidate in (name, name.replace(" ", "")):
+            try:
+                gemmi.SpaceGroup(candidate)
+                return candidate
+            except ValueError:
+                continue
+    return "P 1"
+
+
+def _free_flags(values: pd.Series, numeric: bool) -> np.ndarray:
+    """R-free flags as ReflectionData.load reads them: 0 free, 1 work, -1 excluded.
+
+    Split by :func:`torchref.io.rfree.work_free_flags`, as
+    :func:`torchref.io.rfree.read_sf_file` splits the same file: status letters, or
+    a numeric column such as ``pdbx_r_free_flag`` read by
+    :func:`torchref.io.rfree.read_free_set`. A numeric column without a usable value
+    excludes every row. The free set is passed on unjudged.
+
+    Parameters
+    ----------
+    values : pandas.Series
+        One flag column as text, shape (N,).
+    numeric : bool
+        Whether the column holds numbers rather than status letters.
+
+    Returns
+    -------
+    numpy.ndarray
+        int32 flags, shape (N,).
+    """
+    import reciprocalspaceship as rs
+
+    from torchref.io.rfree import read_free_set, work_free_flags
+
+    if not numeric:
+        return work_free_flags(status=values.to_numpy())
+    numbers = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    # read_free_set refuses a column without a usable value; all rows stay excluded.
+    if not (numbers >= 0).any():
+        return np.full(len(numbers), -1, dtype=np.int32)
+    return work_free_flags(read_free_set(rs.DataSet({"flag": numbers}), "flag"))
 
 
 class ReflectionCIFReader:
@@ -507,11 +538,6 @@ class ReflectionCIFReader:
     Calling the instance gives the same unpack order as ``MTZReader.__call__``::
 
         data_dict, cell, spacegroup = ReflectionCIFReader('7JI4-sf.cif')()
-
-    Mind the two naming schemes: the :meth:`get_reflection_data` DataFrame uses
-    ``F_obs``/``sigma_F_obs`` and ``I_obs``/``sigma_I_obs``, while the standalone
-    :meth:`get_amplitudes` / :meth:`get_intensities` dicts use ``'F'``/
-    ``'sigma_F'`` and ``'I'``/``'sigma_I'``.
     """
 
     def __init__(
@@ -544,7 +570,6 @@ class ReflectionCIFReader:
         self.verbose = verbose
         self.anomalous = anomalous
         self.cif_reader = CIFReader(filepath, data_block=data_block)
-        self.cif_reader.verbose = verbose
         self._validate()
         self._extract_data()
 
@@ -568,7 +593,7 @@ class ReflectionCIFReader:
             raise ValueError(error_msg)
 
     def _extract_data(self):
-        """Extract data in legacy MTZ-compatible format."""
+        """Fill ``data``, ``cell`` and ``spacegroup``, keyed as MTZReader keys them."""
         self.data = {}
 
         # Extract reflection data
@@ -583,7 +608,7 @@ class ReflectionCIFReader:
             ]
         ).astype(np.int32)
         self.data["HKL"] = hkl
-        self.data["HKL_key"] = refln_df["hkl_key"]
+        self.data["HKL_key"] = self._source_tags["HKL_key"]
         # Friedel merge state (set by get_reflection_data); False when F(+)/F(-) were
         # expanded into explicit signed-HKL Bijvoet pairs.
         self.data["friedel_merged"] = getattr(self, "_friedel_merged", True)
@@ -591,20 +616,20 @@ class ReflectionCIFReader:
         # Store amplitudes if available (standardized keys matching MTZ reader)
         if refln_df["F_obs"].notna().any():
             self.data["F"] = refln_df["F_obs"].to_numpy().astype(np.float32)
-            self.data["F_col"] = refln_df["F_obs_key"]
+            self.data["F_col"] = self._source_tags["F_col"]
 
         if refln_df["sigma_F_obs"].notna().any():
             self.data["SIGF"] = refln_df["sigma_F_obs"].to_numpy().astype(np.float32)
-            self.data["SIGF_col"] = refln_df["sigma_F_obs_key"]
+            self.data["SIGF_col"] = self._source_tags["SIGF_col"]
 
         # Store intensities if available (standardized keys matching MTZ reader)
         if refln_df["I_obs"].notna().any():
             self.data["I"] = refln_df["I_obs"].to_numpy().astype(np.float32)
-            self.data["I_col"] = refln_df["I_obs_key"]
+            self.data["I_col"] = self._source_tags["I_col"]
 
         if refln_df["sigma_I_obs"].notna().any():
             self.data["SIGI"] = refln_df["sigma_I_obs"].to_numpy().astype(np.float32)
-            self.data["SIGI_col"] = refln_df["sigma_I_obs_key"]
+            self.data["SIGI_col"] = self._source_tags["SIGI_col"]
 
         # A structure-factor CIF must carry observed amplitudes or intensities.
         # Calculated columns (e.g. _refln.F_calc) are intentionally not used as
@@ -617,32 +642,12 @@ class ReflectionCIFReader:
                 f"_refln.F_calc are not used as observations."
             )
 
-        # Store R-free flags if available (standardized keys matching MTZ reader)
-        if refln_df["free_flag"].notna().any():
-            rfree_characters = (
-                refln_df["free_flag"].str.lower().map({"f": 0, "x": -1, "o": 1})
+        flag_tag = self._source_tags["R-free-source"]
+        if flag_tag != "None":
+            self.data["R-free-flags"] = _free_flags(
+                refln_df["free_flag"], numeric=flag_tag != "_refln.status"
             )
-            percentage_work = (
-                (rfree_characters == 1).sum() / len(rfree_characters) * 100.0
-            )
-            percentage_test = (
-                (rfree_characters == 0).sum() / len(rfree_characters) * 100.0
-            )
-            if percentage_work < 0.9:
-                if self.verbose > 0:
-                    print(
-                        f"WARNING: R-free flags indicate only {percentage_work:.2f}% work reflections. Skipping R-free flags. >90% expected. Generating new Rfree flags"
-                    )
-                self.data["R-free-source"] = "None"
-            elif percentage_test < 0.01:
-                if self.verbose > 0:
-                    print(
-                        f"WARNING: R-free flags indicate only {percentage_test:.2f}% test reflections. Skipping R-free flags. >1% expected. Generating new Rfree flags"
-                    )
-                self.data["R-free-source"] = "None"
-            else:
-                self.data["R-free-flags"] = rfree_characters.to_numpy().astype(np.int32)
-                self.data["R-free-source"] = refln_df["free_flag_key"]
+            self.data["R-free-source"] = flag_tag
 
         # Extract cell and spacegroup
         self.cell = self.get_cell_parameters()
@@ -657,6 +662,10 @@ class ReflectionCIFReader:
 
         if self.verbose > 1:
             print(f"Loaded CIF file: {self.filepath}")
+            print(
+                f"  Data block: {self.cif_reader.data_block} "
+                f"of {self.cif_reader.available_blocks}"
+            )
             print(f"  Reflections: {len(refln_df)}")
             print(f"  Has F: {'F' in self.data}")
             print(f"  Has I: {'I' in self.data}")
@@ -664,15 +673,9 @@ class ReflectionCIFReader:
             print(f"  Cell: {self.cell}")
             print(f"  Spacegroup: {self.spacegroup}")
 
-    def read(self, filepath: str = None):
-        """Re-read ``filepath`` (default: the init path); returns ``self``."""
-        if filepath is not None:
-            self.__init__(filepath, verbose=self.verbose)
-        return self
-
     def __call__(self) -> Tuple[Dict[str, np.ndarray], np.ndarray, str]:
         """
-        Get data in legacy MTZ-compatible format.
+        Return ``(data, cell, spacegroup)``, the contract shared with MTZReader.
 
         Returns
         -------
@@ -681,18 +684,13 @@ class ReflectionCIFReader:
             - 'HKL': Nx3 int32 array of Miller indices (plus 'HKL_key')
             - 'F', 'SIGF': Amplitudes and sigmas (if available)
             - 'I', 'SIGI': Intensities and sigmas (if available)
-            - 'R-free-flags': R-free test set flags (if available)
+            - 'R-free-flags': int32, 0 free, 1 work, -1 excluded (if available)
         cell : numpy.ndarray
             Cell parameters [a, b, c, alpha, beta, gamma].
         spacegroup : str
             Space group Hermann-Mauguin name (e.g. "P 1").
         """
-        try:
-            return self.data, self.cell, self.spacegroup
-        except AttributeError as e:
-            raise ValueError(
-                "Data not loaded. Call read() first or provide filepath in __init__"
-            ) from e
+        return self.data, self.cell, self.spacegroup
 
     def get_reflection_data(self) -> pd.DataFrame:
         """
@@ -712,7 +710,7 @@ class ReflectionCIFReader:
         -----
         Missing columns will be filled with NaN or appropriate defaults.
         """
-        refln_df = self.cif_reader["refln"].copy()
+        refln_df = _category_table(self.cif_reader.data, "refln").copy()
 
         # Standardize column names
         result = pd.DataFrame()
@@ -720,6 +718,9 @@ class ReflectionCIFReader:
         # Friedel merge state: set False below if anomalous F(+)/F(-) (or I(+)/I(-))
         # are detected, in which case rows are expanded into signed-HKL Bijvoet pairs.
         self._friedel_merged = True
+        # The tag behind each output, filed under the provenance key MTZReader uses
+        # for the same quantity ("None" when absent); _extract_data copies them.
+        self._source_tags = {}
 
         # Miller indices (required)
         result["h"], hkey = self._extract_numeric(
@@ -731,7 +732,7 @@ class ReflectionCIFReader:
         result["l"], lkey = self._extract_numeric(
             refln_df, ["_refln.index_l", "_refln.l"], required=True, target_type="int"
         )
-        result["hkl_key"] = f"{hkey},{kkey},{lkey}"
+        self._source_tags["HKL_key"] = f"{hkey},{kkey},{lkey}"
 
         # Structure factors - check for anomalous data first
         F_plus_col = (
@@ -762,7 +763,7 @@ class ReflectionCIFReader:
                 refln_df[F_minus_col].replace(["?", "."], np.nan), errors="coerce"
             )
             result["F_obs"] = np.nan
-            result["F_obs_key"] = f"{F_plus_col}/{F_minus_col}_unstacked"
+            self._source_tags["F_col"] = f"{F_plus_col}/{F_minus_col}_unstacked"
 
             if sigF_plus_col and sigF_minus_col:
                 result["_sigF_plus"] = pd.to_numeric(
@@ -773,25 +774,18 @@ class ReflectionCIFReader:
                     errors="coerce",
                 )
                 result["sigma_F_obs"] = np.nan
-                result["sigma_F_obs_key"] = (
+                self._source_tags["SIGF_col"] = (
                     f"{sigF_plus_col}/{sigF_minus_col}_unstacked"
                 )
             else:
                 sigF, sigma_F_obs_key = self._extract_numeric(
-                    refln_df,
-                    [
-                        "_refln.F_meas_sigma_au",
-                        "_refln.F_meas_sigma",
-                        "_refln.F_squared_sigma",
-                        "_refln.SIGF-obs",
-                    ],
-                    target_type="float",
+                    refln_df, _SIGMA_F_TAGS, target_type="float"
                 )
                 # Same sigma for both mates when per-mate sigmas are unavailable.
                 result["_sigF_plus"] = sigF
                 result["_sigF_minus"] = sigF
                 result["sigma_F_obs"] = np.nan
-                result["sigma_F_obs_key"] = sigma_F_obs_key
+                self._source_tags["SIGF_col"] = sigma_F_obs_key
 
             if self.verbose > 0:
                 F_plus, F_minus = result["_F_plus"], result["_F_minus"]
@@ -814,22 +808,14 @@ class ReflectionCIFReader:
                     "_refln.F_meas",
                     "_refln.pdbx_F_plus",
                     "_refln.F-obs",
-                    "_refln.F_squared_meas",
                 ],
                 target_type="float",
             )
-            result["F_obs_key"] = F_obs_key
+            self._source_tags["F_col"] = F_obs_key
             result["sigma_F_obs"], sigma_F_obs_key = self._extract_numeric(
-                refln_df,
-                [
-                    "_refln.F_meas_sigma_au",
-                    "_refln.F_meas_sigma",
-                    "_refln.F_squared_sigma",
-                    "_refln.SIGF-obs",
-                ],
-                target_type="float",
+                refln_df, _SIGMA_F_TAGS, target_type="float"
             )
-            result["sigma_F_obs_key"] = sigma_F_obs_key
+            self._source_tags["SIGF_col"] = sigma_F_obs_key
 
         # Intensities - check for anomalous intensities
         I_plus_col = (
@@ -859,7 +845,7 @@ class ReflectionCIFReader:
                 refln_df[I_minus_col].replace(["?", "."], np.nan), errors="coerce"
             )
             result["I_obs"] = np.nan
-            result["I_obs_key"] = f"{I_plus_col}/{I_minus_col}_unstacked"
+            self._source_tags["I_col"] = f"{I_plus_col}/{I_minus_col}_unstacked"
 
             if sigI_plus_col and sigI_minus_col:
                 result["_sigI_plus"] = pd.to_numeric(
@@ -870,7 +856,7 @@ class ReflectionCIFReader:
                     errors="coerce",
                 )
                 result["sigma_I_obs"] = np.nan
-                result["sigma_I_obs_key"] = (
+                self._source_tags["SIGI_col"] = (
                     f"{sigI_plus_col}/{sigI_minus_col}_unstacked"
                 )
             else:
@@ -878,6 +864,7 @@ class ReflectionCIFReader:
                     refln_df,
                     [
                         "_refln.intensity_sigma",
+                        "_refln.F_squared_sigma",
                         "_refln.I_sigma",
                         "_refln.SIGI-obs",
                         "_refln.pdbx_I_sigma",
@@ -887,7 +874,7 @@ class ReflectionCIFReader:
                 result["_sigI_plus"] = sigI
                 result["_sigI_minus"] = sigI
                 result["sigma_I_obs"] = np.nan
-                result["sigma_I_obs_key"] = sigIobskey
+                self._source_tags["SIGI_col"] = sigIobskey
 
             if self.verbose > 0:
                 I_plus, I_minus = result["_I_plus"], result["_I_minus"]
@@ -906,6 +893,7 @@ class ReflectionCIFReader:
                 refln_df,
                 [
                     "_refln.intensity_meas",
+                    "_refln.F_squared_meas",
                     "_refln.I_meas",
                     "_refln.pdbx_I_plus",
                     "_refln.I-obs",
@@ -913,11 +901,12 @@ class ReflectionCIFReader:
                 ],
                 target_type="float",
             )
-            result["I_obs_key"] = Iobskey
+            self._source_tags["I_col"] = Iobskey
             result["sigma_I_obs"], sigIobskey = self._extract_numeric(
                 refln_df,
                 [
                     "_refln.intensity_sigma",
+                    "_refln.F_squared_sigma",
                     "_refln.I_sigma",
                     "_refln.pdbx_I_plus_sigma",
                     "_refln.SIGI-obs",
@@ -925,28 +914,26 @@ class ReflectionCIFReader:
                 ],
                 target_type="float",
             )
-            result["sigma_I_obs_key"] = sigIobskey
+            self._source_tags["SIGI_col"] = sigIobskey
 
         # Phase information
-        result["phase"], phase_key = self._extract_numeric(
+        result["phase"], _ = self._extract_numeric(
             refln_df,
             ["_refln.phase_meas", "_refln.phase_calc", "_refln.pdbx_PHIB"],
             target_type="float",
         )
-
-        result["phase_key"] = phase_key
-        result["fom"], fom_key = self._extract_numeric(
+        result["fom"], _ = self._extract_numeric(
             refln_df, ["_refln.fom", "_refln.pdbx_FOM"], target_type="float"
         )
-        result["fom_key"] = fom_key
 
-        # R-free flags
+        # Status letters win over a numeric column: they mark the rows the depositor's
+        # test set holds, where numbers leave the CCP4/Phenix convention to be inferred.
         result["free_flag"], free_flag_key = self._extract_numeric(
             refln_df,
             ["_refln.status", "_refln.pdbx_r_free_flag", "_refln.free_flag"],
             target_type="None",
         )
-        result["free_flag_key"] = free_flag_key
+        self._source_tags["R-free-source"] = free_flag_key
 
         if not self._friedel_merged:
             # Anomalous columns were detected. Honor the caller's preference:
@@ -1114,158 +1101,26 @@ class ReflectionCIFReader:
         # Return NaN series
         return pd.Series([np.nan] * len(df)), "None"
 
-    def has_miller_indices(self) -> bool:
-        """Check if file contains Miller indices."""
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        h_cols = ["_refln.index_h", "_refln.h"]
-        return any(col in df.columns for col in h_cols)
-
-    def has_amplitudes(self) -> bool:
-        """Check if file contains structure factor amplitudes.
-
-        Notes
-        -----
-        This counts *calculated* amplitudes (``_refln.F_calc``) as well as
-        observed ones, so it is not equivalent to "has observed amplitudes".
-        A calc-only file returns ``True`` here but is still rejected by the
-        loader (``_extract_data``), which uses only measured F/I as
-        observations.
-        """
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        f_cols = [
-            "_refln.F_meas_au",
-            "_refln.F_meas",
-            "_refln.pdbx_F_plus",
-            "_refln.F_calc",
-            "_refln.F-obs",
-        ]
-        return any(col in df.columns for col in f_cols)
-
-    def has_intensities(self) -> bool:
-        """Check if file contains intensity measurements."""
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        i_cols = [
-            "_refln.intensity_meas",
-            "_refln.I_meas",
-            "_refln.pdbx_I_plus",
-            "_refln.I-obs",
-            "_refln.pdbx_I",
-        ]
-        return any(col in df.columns for col in i_cols)
-
-    def has_phases(self) -> bool:
-        """Check if file contains phase information."""
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        phase_cols = ["_refln.phase_meas", "_refln.phase_calc", "_refln.pdbx_PHIB"]
-        return any(col in df.columns for col in phase_cols)
-
-    def has_rfree_flags(self) -> bool:
-        """Check if file contains R-free flags."""
-        if "refln" not in self.cif_reader:
-            return False
-        df = self.cif_reader["refln"]
-        flag_cols = ["_refln.status", "_refln.pdbx_r_free_flag", "_refln.free_flag"]
-        return any(col in df.columns for col in flag_cols)
-
-    def get_miller_indices(self) -> Optional[np.ndarray]:
-        """Miller indices as an (N, 3) array, or None if absent."""
-        data = self.get_reflection_data()
-        if data is None or "h" not in data.columns:
-            return None
-        return data[["h", "k", "l"]].values
-
-    def get_amplitudes(self) -> Optional[Dict[str, np.ndarray]]:
-        """``{'F': ..., 'sigma_F': ...}``, or None if absent."""
-        data = self.get_reflection_data()
-        if data is None or "F_obs" not in data.columns:
-            return None
-        if data["F_obs"].isna().all():
-            return None
-        return {"F": data["F_obs"].values, "sigma_F": data["sigma_F_obs"].values}
-
-    def get_intensities(self) -> Optional[Dict[str, np.ndarray]]:
-        """``{'I': ..., 'sigma_I': ...}``, or None if absent."""
-        data = self.get_reflection_data()
-        if data is None or "I_obs" not in data.columns:
-            return None
-        if data["I_obs"].isna().all():
-            return None
-        return {"I": data["I_obs"].values, "sigma_I": data["sigma_I_obs"].values}
-
     def get_cell_parameters(self) -> Optional[List[float]]:
-        """Unit cell ``[a, b, c, alpha, beta, gamma]`` as 6 floats, or None."""
-        if "cell" not in self.cif_reader:
-            return None
+        """Unit cell ``[a, b, c, alpha, beta, gamma]`` (Å, degrees), or None.
 
-        cell_data = self.cif_reader["cell"]
-        try:
-            a = float(self._get_value(cell_data, ["_cell.length_a", "length_a"], "1.0"))
-            b = float(self._get_value(cell_data, ["_cell.length_b", "length_b"], "1.0"))
-            c = float(self._get_value(cell_data, ["_cell.length_c", "length_c"], "1.0"))
-            alpha = float(
-                self._get_value(cell_data, ["_cell.angle_alpha", "angle_alpha"], "90.0")
-            )
-            beta = float(
-                self._get_value(cell_data, ["_cell.angle_beta", "angle_beta"], "90.0")
-            )
-            gamma = float(
-                self._get_value(cell_data, ["_cell.angle_gamma", "angle_gamma"], "90.0")
-            )
-            return [a, b, c, alpha, beta, gamma]
-        except Exception:
-            return None
+        None unless all three lengths are given; a missing angle is 90 degrees.
+        """
+        return _cell_parameters(self.cif_reader.data)
 
     def get_space_group(self) -> str:
         """Hermann-Mauguin space group name, falling back to ``"P 1"``."""
-        sg_name = "P 1"
-        if "symmetry" in self.cif_reader:
-            sym_data = self.cif_reader["symmetry"]
-            sg_name = self._get_value(
-                sym_data,
-                [
-                    "_symmetry.space_group_name_H-M",
-                    "space_group_name_H-M",
-                    "_space_group.name_H-M_alt",
-                ],
-                "P 1",
-            )
-
-        # Validate the name by trying to parse it
-        try:
-            gemmi.SpaceGroup(sg_name)
-            return sg_name
-        except Exception:
-            try:
-                gemmi.SpaceGroup(sg_name.replace(" ", ""))
-                return sg_name.replace(" ", "")
-            except Exception:
-                return "P 1"
-
-    def _get_value(self, data, possible_keys: List[str], default: Any = None) -> Any:
-        """Get value from DataFrame or dict, trying multiple keys."""
-        if isinstance(data, pd.DataFrame):
-            for key in possible_keys:
-                if key in data.columns and len(data) > 0:
-                    return data[key].iloc[0]
-        elif isinstance(data, dict):
-            for key in possible_keys:
-                if key in data:
-                    return data[key]
-        return default
+        return _space_group(self.cif_reader.data)
 
 
 class ModelCIFReader:
     """
     Reader for model/structure CIF files (e.g. ``*.cif`` from the PDB):
-    coordinates, altlocs, ANISOU, cell and space group.
+    coordinates, altlocs, ANISOU, cell, space group and covalent links.
+
+    Covalent and metal ``_struct_conn`` rows are exposed as ``.links`` in the same table
+    the PDB reader builds from LINK records, so :meth:`torchref.model.model.Model.load`
+    picks them up either way.
 
     Calling the instance gives the same unpack order as the PDB reader::
 
@@ -1289,11 +1144,11 @@ class ModelCIFReader:
             raise ValueError(
                 f"File {self.filepath} does not contain atomic coordinate data (_atom_site loop).\n"
                 f"This does not appear to be a model CIF file.\n"
-                f"Available data blocks: {list(self.cif.data.keys())}"
+                f"Available categories: {list(self.cif.data.keys())}"
             )
 
     def _extract_data(self):
-        """Extract data in legacy PDB-compatible format."""
+        """Fill ``dataframe``, ``cell``, ``spacegroup`` and ``links`` like PDBReader."""
         # Get atom data as DataFrame
         self.dataframe = self.get_atom_data()
 
@@ -1305,8 +1160,9 @@ class ModelCIFReader:
             self.cell = cell_params
 
         self.spacegroup = self.get_space_group()
+        self.links = self.get_link_records()
 
-        # Store as DataFrame attributes (like legacy PDB reader)
+        # Where pdb.load_as_dataframe keeps them and pdb.write reads CRYST1 from.
         self.dataframe.attrs["cell"] = self.cell
         self.dataframe.attrs["spacegroup"] = self.spacegroup
         self.dataframe.attrs["z"] = None  # CIF files typically don't have Z value
@@ -1316,16 +1172,85 @@ class ModelCIFReader:
             print(f"  Atoms: {len(self.dataframe)}")
             print(f"  Cell: {self.cell}")
             print(f"  Spacegroup: {self.spacegroup}")
+            print(f"  Links: {len(self.links)}")
 
-    def read(self, filepath: str = None):
-        """Re-read ``filepath`` (default: the init path); returns ``self``."""
-        if filepath is not None:
-            self.__init__(filepath, verbose=self.verbose)
-        return self
+    #: ``_struct_conn.conn_type_id`` prefixes that describe a covalent bond the topology
+    #: should carry. Disulfides are detected from SG-SG distance instead (the PDB reader
+    #: ignores SSBOND the same way); hydrogen bonds, salt bridges and mismatches are not
+    #: bonds.
+    _LINK_CONN_TYPES = ("covale", "metalc")
+
+    #: Symmetry operators under which a ``_struct_conn`` row joins atoms of the same
+    #: asymmetric unit copy; the PDB reader keeps LINK records with ``1555`` or blank.
+    _LINK_SYMMETRY_OK = frozenset({"1_555", "", "?", "."})
+
+    def get_link_records(self) -> pd.DataFrame:
+        """Covalent and metal links from ``_struct_conn``, in the LINK-record table.
+
+        Same columns as :func:`torchref.io.pdb.extract_link_records`. Rows whose
+        connection type is not covalent or metal, that cross a symmetry operator, or
+        whose residue numbers are unreadable are dropped. Blank alternative locations and
+        insertion codes (``?`` or ``.``) become empty strings, which is what the atom
+        table carries and what the LINK lookup compares against.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Empty, with the LINK columns, when the file has no ``_struct_conn`` loop.
+        """
+        from torchref.io.pdb import LINK_COLUMNS
+
+        empty = pd.DataFrame(columns=list(LINK_COLUMNS))
+        conn = _category_table(self.cif.data, "struct_conn")
+        if len(conn) == 0:
+            return empty
+
+        def column(names, default=""):
+            for name in names:
+                if name in conn.columns:
+                    values = conn[name].astype(str).str.strip()
+                    return values.where(~values.isin(["?", "."]), default)
+            return pd.Series([default] * len(conn), index=conn.index, dtype=object)
+
+        kind = column(["_struct_conn.conn_type_id"]).str.lower()
+        keep = kind.str.startswith(self._LINK_CONN_TYPES)
+        for side in ("1", "2"):
+            keep &= column([f"_struct_conn.ptnr{side}_symmetry"]).isin(
+                self._LINK_SYMMETRY_OK
+            )
+
+        out = pd.DataFrame(index=conn.index)
+        for side in ("1", "2"):
+            ptnr = f"_struct_conn.ptnr{side}_"
+            pdbx = f"_struct_conn.pdbx_ptnr{side}_"
+            # Same precedence as get_atom_data: label_* for atom and residue names,
+            # auth_* for chain and residue number, so the lookup matches the table.
+            out[f"name{side}"] = column([ptnr + "label_atom_id", ptnr + "auth_atom_id"])
+            out[f"altloc{side}"] = column([pdbx + "label_alt_id"])
+            out[f"resname{side}"] = column([ptnr + "label_comp_id", ptnr + "auth_comp_id"])
+            out[f"chainid{side}"] = column([ptnr + "auth_asym_id", ptnr + "label_asym_id"])
+            out[f"resseq{side}"] = pd.to_numeric(
+                column([ptnr + "auth_seq_id", ptnr + "label_seq_id"], default="nan"),
+                errors="coerce",
+            )
+            out[f"icode{side}"] = column([pdbx + "PDB_ins_code"])
+        out["length"] = pd.to_numeric(
+            column(["_struct_conn.pdbx_dist_value"], default="nan"), errors="coerce"
+        )
+
+        keep &= out["resseq1"].notna() & out["resseq2"].notna()
+        out = out.loc[keep].copy()
+        if len(out) == 0:
+            return empty
+        out["resseq1"] = out["resseq1"].astype(int)
+        out["resseq2"] = out["resseq2"].astype(int)
+        if self.verbose > 1:
+            print(f"_struct_conn: kept {len(out)} of {len(conn)} rows as links")
+        return out[list(LINK_COLUMNS)].reset_index(drop=True)
 
     def __call__(self) -> Tuple[pd.DataFrame, List[float], str]:
         """
-        Get data in legacy PDB-compatible format.
+        Return ``(dataframe, cell, spacegroup)``, the contract shared with PDBReader.
 
         Returns
         -------
@@ -1338,12 +1263,7 @@ class ModelCIFReader:
         spacegroup : str
             Space group Hermann-Mauguin name (e.g. "P 1").
         """
-        try:
-            return self.dataframe, self.cell, self.spacegroup
-        except AttributeError as e:
-            raise ValueError(
-                "Data not loaded. Call read() first or provide filepath in __init__"
-            ) from e
+        return self.dataframe, self.cell, self.spacegroup
 
     def get_atom_data(self) -> pd.DataFrame:
         """
@@ -1357,8 +1277,13 @@ class ModelCIFReader:
             - x, y, z, occupancy, tempfactor
             - element, charge
             - anisou_flag, u11, u22, u33, u12, u13, u23
+
+        Raises
+        ------
+        ValueError
+            If an atom has no element (``?`` or ``.``) in _atom_site.type_symbol.
         """
-        atom_df = self.cif.data["atom_site"].copy()
+        atom_df = _category_table(self.cif.data, "atom_site").copy()
         result = pd.DataFrame()
 
         # Record type (ATOM or HETATM)
@@ -1445,7 +1370,54 @@ class ModelCIFReader:
             "_atom_site.aniso_U[2][3]",
         ]
 
-        if all(col in atom_df.columns for col in aniso_cols):
+        # ANISOU lives in the separate _atom_site_anisotrop loop, joined on id; the
+        # in-line _atom_site.aniso_U[i][j] form is a fallback.
+        aniso_df = _category_table(self.cif.data, "atom_site_anisotrop")
+        std_cols = [f"_atom_site_anisotrop.U[{i}][{j}]"
+                    for i, j in ((1, 1), (2, 2), (3, 3), (1, 2), (1, 3), (2, 3))]
+        key, atom_key = "_atom_site_anisotrop.id", "_atom_site.id"
+        joined = None
+        if (
+            all(c in aniso_df.columns for c in std_cols)
+            and key in aniso_df.columns
+            and atom_key in atom_df.columns
+        ):
+            # Join on the id as a STRING. Coercing to a number first silently produces
+            # NaN keys for any non-integer id and then mis-pairs U tensors with atoms,
+            # which is far worse than having no anisotropy: the model is scrambled but
+            # still refines.
+            left = pd.DataFrame({"_k": atom_df[atom_key].astype(str).str.strip()})
+            right = aniso_df[[key] + std_cols].copy()
+            right["_k"] = right[key].astype(str).str.strip()
+            right = right.drop_duplicates("_k")
+            merged = left.merge(right, on="_k", how="left")
+            if len(merged) == len(atom_df):
+                joined = merged
+
+        if joined is not None:
+            for name, col in zip(("u11", "u22", "u33", "u12", "u13", "u23"), std_cols):
+                result[name] = pd.to_numeric(joined[col].to_numpy(), errors="coerce")
+            result["anisou_flag"] = ~pd.isna(result["u11"])
+            n_hit = int(result["anisou_flag"].sum())
+            frac = n_hit / max(len(aniso_df), 1)
+            if frac < 0.9:
+                # Partial coverage is legitimate in small amounts -- waters and
+                # hydrogens often carry no ANISOU -- but a large shortfall means the two
+                # loops are not labelled the same way, and then the rows that DID match
+                # cannot be trusted to have matched the right atoms. Drop the anisotropy
+                # rather than apply a possibly mis-paired subset: an isotropic model is
+                # merely less informative, a scrambled one still refines and is wrong.
+                warnings.warn(
+                    f"{self.filepath}: matched only {n_hit} of {len(aniso_df)} "
+                    "anisotropic records to atoms, so _atom_site.id and "
+                    "_atom_site_anisotrop.id do not agree; discarding the anisotropy "
+                    "and loading isotropically.",
+                    RuntimeWarning,
+                )
+                for name in ("u11", "u22", "u33", "u12", "u13", "u23"):
+                    result[name] = np.nan
+                result["anisou_flag"] = False
+        elif all(col in atom_df.columns for col in aniso_cols):
             result["u11"] = pd.to_numeric(
                 atom_df["_atom_site.aniso_U[1][1]"], errors="coerce"
             )
@@ -1474,8 +1446,9 @@ class ModelCIFReader:
             result["u23"] = np.nan
             result["anisou_flag"] = False
 
-        # Add index column for compatibility with legacy PDB format
+        # 0-based row positions, the ``index`` column pdb.load_as_dataframe adds too.
         result["index"] = np.arange(len(result), dtype=int)
+        _require_elements(result, self.filepath, "_atom_site.type_symbol")
         result["element"] = result["element"].str.strip().str.capitalize()
         return result
 
@@ -1567,140 +1540,15 @@ class ModelCIFReader:
         return pd.Series([default] * len(df))
 
     def get_cell_parameters(self) -> Optional[List[float]]:
-        """Extract unit cell parameters [a, b, c, alpha, beta, gamma]."""
-        if "cell" not in self.cif.data:
-            return None
+        """Unit cell ``[a, b, c, alpha, beta, gamma]`` (Å, degrees), or None.
 
-        cell_data = self.cif.data["cell"]
-        try:
-            a = float(
-                self._get_first_value(cell_data, ["_cell.length_a", "length_a"], "1.0")
-            )
-            b = float(
-                self._get_first_value(cell_data, ["_cell.length_b", "length_b"], "1.0")
-            )
-            c = float(
-                self._get_first_value(cell_data, ["_cell.length_c", "length_c"], "1.0")
-            )
-            alpha = float(
-                self._get_first_value(
-                    cell_data, ["_cell.angle_alpha", "angle_alpha"], "90.0"
-                )
-            )
-            beta = float(
-                self._get_first_value(
-                    cell_data, ["_cell.angle_beta", "angle_beta"], "90.0"
-                )
-            )
-            gamma = float(
-                self._get_first_value(
-                    cell_data, ["_cell.angle_gamma", "angle_gamma"], "90.0"
-                )
-            )
-            return [a, b, c, alpha, beta, gamma]
-        except Exception:
-            return None
+        None unless all three lengths are given; a missing angle is 90 degrees.
+        """
+        return _cell_parameters(self.cif.data)
 
     def get_space_group(self) -> str:
         """Hermann-Mauguin space group name, falling back to ``"P 1"``."""
-        sg_name = "P 1"
-        if "symmetry" in self.cif.data:
-            sym_data = self.cif.data["symmetry"]
-            sg_name = self._get_first_value(
-                sym_data,
-                [
-                    "_symmetry.space_group_name_H-M",
-                    "space_group_name_H-M",
-                    "_space_group.name_H-M_alt",
-                ],
-                "P 1",
-            )
-
-        # Validate the name by trying to parse it
-        try:
-            gemmi.SpaceGroup(sg_name)
-            return sg_name
-        except Exception:
-            try:
-                gemmi.SpaceGroup(sg_name.replace(" ", ""))
-                return sg_name.replace(" ", "")
-            except Exception:
-                return "P 1"
-
-    def _get_first_value(
-        self, data, possible_keys: List[str], default: Any = None
-    ) -> Any:
-        """Get value from DataFrame or dict, trying multiple keys."""
-        if isinstance(data, pd.DataFrame):
-            for key in possible_keys:
-                if key in data.columns and len(data) > 0:
-                    return data[key].iloc[0]
-        elif isinstance(data, dict):
-            for key in possible_keys:
-                if key in data:
-                    return data[key]
-        return default
-
-    # Convenience methods for testing
-    def has_coordinates(self) -> bool:
-        """Check if atomic coordinates are available."""
-        return "atom_site" in self.cif.data
-
-    def has_cell_parameters(self) -> bool:
-        """Check if unit cell parameters are available."""
-        return "cell" in self.cif.data
-
-    def has_space_group(self) -> bool:
-        """Check if space group information is available."""
-        return "symmetry" in self.cif.data
-
-    def has_occupancy(self) -> bool:
-        """Check if occupancy data is available."""
-        if "atom_site" not in self.cif.data:
-            return False
-        return "_atom_site.occupancy" in self.cif.data["atom_site"].columns
-
-    def has_bfactor(self) -> bool:
-        """Check if B-factor/temperature factor data is available."""
-        if "atom_site" not in self.cif.data:
-            return False
-        return "_atom_site.B_iso_or_equiv" in self.cif.data["atom_site"].columns
-
-    def has_anisotropic_data(self) -> bool:
-        """Check if anisotropic displacement parameters are available."""
-        if "atom_site" not in self.cif.data:
-            return False
-        aniso_cols = [
-            "_atom_site.aniso_U[1][1]",
-            "_atom_site.aniso_U[2][2]",
-            "_atom_site.aniso_U[3][3]",
-        ]
-        return all(col in self.cif.data["atom_site"].columns for col in aniso_cols)
-
-    def get_coordinates(self) -> Optional[np.ndarray]:
-        """Coordinates as an (N, 3) array of [x, y, z], or None if absent."""
-        if not self.has_coordinates():
-            return None
-
-        atom_data = self.get_atom_data()
-        return atom_data[["x", "y", "z"]].values
-
-    def get_atom_info(self) -> pd.DataFrame:
-        """Atom names, residue info and elements, without the coordinates."""
-        atom_data = self.get_atom_data()
-        return atom_data[
-            [
-                "serial",
-                "name",
-                "altloc",
-                "resname",
-                "chainid",
-                "resseq",
-                "icode",
-                "element",
-                "charge",
-            ]
-        ]
+        return _space_group(self.cif.data)
 
 
 class RestraintCIFReader:
@@ -1740,28 +1588,12 @@ class RestraintCIFReader:
         """Compound IDs present in the file, e.g. ``['ALA']``."""
         compounds = []
 
-        # Check for comp_list (monomer library format)
-        if "comp_list" in self.cif.data:
-            df = self.cif.data["comp_list"]
-            if "id" in df.columns:
-                compounds = df["id"].tolist()
-            elif "_chem_comp.id" in df.columns:
-                compounds = df["_chem_comp.id"].tolist()
-
-        # Check for chem_comp (eLBOW/phenix format)
-        if not compounds and "chem_comp" in self.cif.data:
-            df = self.cif.data["chem_comp"]
+        # The _chem_comp header: a loop in the monomer library's data_comp_list
+        # block, key-value pairs in a single-compound (CCD-style) file.
+        if "chem_comp" in self.cif.data:
+            df = _category_table(self.cif.data, "chem_comp")
             if "_chem_comp.id" in df.columns and len(df) > 0:
                 compounds = df["_chem_comp.id"].tolist()
-            elif "id" in df.columns and len(df) > 0:
-                compounds = df["id"].tolist()
-
-        if not compounds and "comp" in self.cif.data:
-            df = self.cif.data["comp"]
-            if "id" in df.columns and len(df) > 0:
-                compounds = [df["id"].iloc[0]]
-            elif "_chem_comp.id" in df.columns and len(df) > 0:
-                compounds = [df["_chem_comp.id"].iloc[0]]
 
         # If no comp_list/chem_comp header, derive the compound ID(s) from the
         # restraint data blocks themselves. Many user-supplied dictionaries
@@ -1771,19 +1603,11 @@ class RestraintCIFReader:
         # so ``_filter_by_comp`` returns nothing and the custom restraints are
         # silently overshadowed by the bundled monomer library.
         if not compounds:
-            for block in (
-                "comp_atom",
-                "chem_comp_atom",
-                "comp_bond",
-                "chem_comp_bond",
-            ):
-                df = self.cif.data.get(block)
-                if df is None or len(df) == 0:
+            for block in ("chem_comp_atom", "chem_comp_bond"):
+                df = _category_table(self.cif.data, block)
+                if len(df) == 0:
                     continue
-                id_col = next(
-                    (c for c in df.columns if c == "comp_id" or c.endswith(".comp_id")),
-                    None,
-                )
+                id_col = next((c for c in df.columns if c.endswith(".comp_id")), None)
                 if id_col is not None:
                     compounds = [c for c in df[id_col].unique().tolist() if c]
                     if compounds:
@@ -1814,12 +1638,9 @@ class RestraintCIFReader:
                 self.compounds = [comp_id]
 
         # Check for bond restraints with proper parameters
-        # Try both naming conventions: comp_bond and chem_comp_bond
         bond_df = None
-        if "comp_bond" in self.cif.data:
-            bond_df = self.cif.data["comp_bond"]
-        elif "chem_comp_bond" in self.cif.data:
-            bond_df = self.cif.data["chem_comp_bond"]
+        if "chem_comp_bond" in self.cif.data:
+            bond_df = _category_table(self.cif.data, "chem_comp_bond")
 
         if bond_df is not None:
             required_cols = ["value_dist", "value_dist_esd"]
@@ -1843,7 +1664,7 @@ class RestraintCIFReader:
         else:
             raise ValueError(
                 f"File {self.filepath} does not contain bond restraint data (_chem_comp_bond).\n"
-                f"Available data blocks: {list(self.cif.data.keys())}\n\n"
+                f"Available categories: {list(self.cif.data.keys())}\n\n"
                 f"This is not a valid restraint dictionary file."
             )
 
@@ -1854,55 +1675,14 @@ class RestraintCIFReader:
         Returns
         -------
         dict
-            Dictionary mapping compound ID to dict of restraint types::
-
-                {
-                    'ALA': {
-                        'bonds': DataFrame(atom1, atom2, value, sigma),
-                        'angles': DataFrame(atom1, atom2, atom3, value, sigma),
-                        'torsions': DataFrame(atom1, atom2, atom3, atom4, value, sigma, periodicity),
-                        'planes': DataFrame(atom, plane_id),
-                        'chirals': DataFrame(atom_centre, atom1, atom2, atom3, volume_sign)
-                    },
-                    ...
-                }
+            Each compound ID in ``compounds`` mapped to the dict of ``bonds``,
+            ``angles``, ``torsions``, ``planes``, ``chirals`` and ``atoms``
+            DataFrames that :meth:`get_compound_restraints` returns for it.
         """
         result = {}
 
         for comp_id in self.compounds:
             result[comp_id] = self.get_compound_restraints(comp_id)
-
-        # If no compounds found, try to get data directly
-        if not result:
-            comp_id = self.filepath.stem
-            raw_bonds = self.cif.data.get(
-                "comp_bond", self.cif.data.get("chem_comp_bond", pd.DataFrame())
-            )
-            raw_angles = self.cif.data.get(
-                "comp_angle", self.cif.data.get("chem_comp_angle", pd.DataFrame())
-            )
-            raw_torsions = self.cif.data.get(
-                "comp_tor", self.cif.data.get("chem_comp_tor", pd.DataFrame())
-            )
-            raw_planes = self.cif.data.get(
-                "comp_plane_atom",
-                self.cif.data.get("chem_comp_plane_atom", pd.DataFrame()),
-            )
-            raw_chirals = self.cif.data.get(
-                "comp_chir", self.cif.data.get("chem_comp_chir", pd.DataFrame())
-            )
-            raw_atoms = self.cif.data.get(
-                "comp_atom", self.cif.data.get("chem_comp_atom", pd.DataFrame())
-            )
-
-            result[comp_id] = {
-                "bonds": self._standardize_bonds(raw_bonds),
-                "angles": self._standardize_angles(raw_angles),
-                "torsions": self._standardize_torsions(raw_torsions),
-                "planes": self._standardize_planes(raw_planes),
-                "chirals": self._standardize_chirals(raw_chirals),
-                "atoms": self._standardize_atoms(raw_atoms),
-            }
 
         return result
 
@@ -1921,62 +1701,52 @@ class RestraintCIFReader:
             Dictionary of restraint DataFrames with standardized columns::
 
                 {
-                    'bonds': DataFrame(atom1, atom2, value, sigma)
+                    'bonds': DataFrame(atom1, atom2, value, sigma, order, aromatic)
                     'angles': DataFrame(atom1, atom2, atom3, value, sigma)
-                    'torsions': DataFrame(atom1, atom2, atom3, atom4, value, sigma, periodicity)
-                    'planes': DataFrame(atom, plane_id)
+                    'torsions': DataFrame(id, atom1, atom2, atom3, atom4, value, sigma, periodicity)
+                    'planes': DataFrame(atom, plane_id, sigma)
                     'chirals': DataFrame(atom_centre, atom1, atom2, atom3, volume_sign)
-                    'atoms': DataFrame(atom_id, type_symbol, charge, etc.)
+                    'atoms': DataFrame(atom_id, type_symbol, charge, type_energy)
                 }
+
+            ``atoms`` also holds the ideal coordinates ``x``, ``y``, ``z`` (Å)
+            when the dictionary gives them.
         """
         restraints = {}
 
         # Extract and standardize each restraint type
         raw_bonds = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_bond", self.cif.data.get("chem_comp_bond", pd.DataFrame())
-            ),
+            _category_table(self.cif.data, "chem_comp_bond"),
             comp_id,
         )
         restraints["bonds"] = self._standardize_bonds(raw_bonds)
 
         raw_angles = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_angle", self.cif.data.get("chem_comp_angle", pd.DataFrame())
-            ),
+            _category_table(self.cif.data, "chem_comp_angle"),
             comp_id,
         )
         restraints["angles"] = self._standardize_angles(raw_angles)
 
         raw_torsions = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_tor", self.cif.data.get("chem_comp_tor", pd.DataFrame())
-            ),
+            _category_table(self.cif.data, "chem_comp_tor"),
             comp_id,
         )
         restraints["torsions"] = self._standardize_torsions(raw_torsions)
 
         raw_planes = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_plane_atom",
-                self.cif.data.get("chem_comp_plane_atom", pd.DataFrame()),
-            ),
+            _category_table(self.cif.data, "chem_comp_plane_atom"),
             comp_id,
         )
         restraints["planes"] = self._standardize_planes(raw_planes)
 
         raw_chirals = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_chir", self.cif.data.get("chem_comp_chir", pd.DataFrame())
-            ),
+            _category_table(self.cif.data, "chem_comp_chir"),
             comp_id,
         )
         restraints["chirals"] = self._standardize_chirals(raw_chirals)
 
         raw_atoms = self._filter_by_comp(
-            self.cif.data.get(
-                "comp_atom", self.cif.data.get("chem_comp_atom", pd.DataFrame())
-            ),
+            _category_table(self.cif.data, "chem_comp_atom"),
             comp_id,
         )
         restraints["atoms"] = self._standardize_atoms(raw_atoms)
@@ -1984,29 +1754,40 @@ class RestraintCIFReader:
         return restraints
 
     def _standardize_bonds(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize bond restraint columns to: atom1, atom2, value, sigma."""
+        """Standardize bond columns to: atom1, atom2, value, sigma, order, aromatic.
+
+        ``order`` is one of ``single``, ``double``, ``triple``, ``aromatic``,
+        ``deloc`` or ``metal``, and ``""`` where the dictionary does not say;
+        ``aromatic`` is True where the dictionary flags the bond aromatic or gives
+        ``aromatic`` as its order.
+        """
         if df.empty:
-            return pd.DataFrame(columns=["atom1", "atom2", "value", "sigma"])
+            return pd.DataFrame(
+                columns=["atom1", "atom2", "value", "sigma", "order", "aromatic"]
+            )
 
         result = pd.DataFrame()
-        result["atom1"] = self._extract_col(
-            df, ["atom_id_1", "_chem_comp_bond.atom_id_1", "atom1"]
-        )
-        result["atom2"] = self._extract_col(
-            df, ["atom_id_2", "_chem_comp_bond.atom_id_2", "atom2"]
-        )
+        result["atom1"] = self._extract_col(df, ["_chem_comp_bond.atom_id_1"])
+        result["atom2"] = self._extract_col(df, ["_chem_comp_bond.atom_id_2"])
         result["value"] = pd.to_numeric(
-            self._extract_col(
-                df, ["value_dist", "_chem_comp_bond.value_dist", "value"]
-            ),
+            self._extract_col(df, ["_chem_comp_bond.value_dist"]),
             errors="coerce",
         )
         result["sigma"] = pd.to_numeric(
-            self._extract_col(
-                df, ["value_dist_esd", "_chem_comp_bond.value_dist_esd", "sigma", "esd"]
-            ),
+            self._extract_col(df, ["_chem_comp_bond.value_dist_esd"]),
             errors="coerce",
         )
+        order = self._extract_col(
+            df, ["_chem_comp_bond.type", "_chem_comp_bond.value_order"]
+        )
+        result["order"] = [
+            _BOND_ORDERS.get(str(value).strip().lower(), "") for value in order
+        ]
+        flag = self._extract_col(
+            df, ["_chem_comp_bond.aromatic", "_chem_comp_bond.pdbx_aromatic_flag"]
+        )
+        flagged = np.array([str(value).strip().lower() == "y" for value in flag])
+        result["aromatic"] = flagged | (result["order"] == "aromatic").to_numpy()
         return result
 
     def _standardize_angles(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -2015,35 +1796,25 @@ class RestraintCIFReader:
             return pd.DataFrame(columns=["atom1", "atom2", "atom3", "value", "sigma"])
 
         result = pd.DataFrame()
-        result["atom1"] = self._extract_col(
-            df, ["atom_id_1", "_chem_comp_angle.atom_id_1", "atom1"]
-        )
-        result["atom2"] = self._extract_col(
-            df, ["atom_id_2", "_chem_comp_angle.atom_id_2", "atom2"]
-        )
-        result["atom3"] = self._extract_col(
-            df, ["atom_id_3", "_chem_comp_angle.atom_id_3", "atom3"]
-        )
+        result["atom1"] = self._extract_col(df, ["_chem_comp_angle.atom_id_1"])
+        result["atom2"] = self._extract_col(df, ["_chem_comp_angle.atom_id_2"])
+        result["atom3"] = self._extract_col(df, ["_chem_comp_angle.atom_id_3"])
         result["value"] = pd.to_numeric(
-            self._extract_col(
-                df, ["value_angle", "_chem_comp_angle.value_angle", "value"]
-            ),
+            self._extract_col(df, ["_chem_comp_angle.value_angle"]),
             errors="coerce",
         )
         result["sigma"] = pd.to_numeric(
-            self._extract_col(
-                df,
-                ["value_angle_esd", "_chem_comp_angle.value_angle_esd", "sigma", "esd"],
-            ),
+            self._extract_col(df, ["_chem_comp_angle.value_angle_esd"]),
             errors="coerce",
         )
         return result
 
     def _standardize_torsions(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize torsion restraint columns to: atom1, atom2, atom3, atom4, value, sigma, periodicity."""
+        """Standardize torsion columns to id, atom1-atom4, value, sigma, periodicity."""
         if df.empty:
             return pd.DataFrame(
                 columns=[
+                    "id",
                     "atom1",
                     "atom2",
                     "atom3",
@@ -2055,33 +1826,22 @@ class RestraintCIFReader:
             )
 
         result = pd.DataFrame()
-        result["atom1"] = self._extract_col(
-            df, ["atom_id_1", "_chem_comp_tor.atom_id_1", "atom1"]
-        )
-        result["atom2"] = self._extract_col(
-            df, ["atom_id_2", "_chem_comp_tor.atom_id_2", "atom2"]
-        )
-        result["atom3"] = self._extract_col(
-            df, ["atom_id_3", "_chem_comp_tor.atom_id_3", "atom3"]
-        )
-        result["atom4"] = self._extract_col(
-            df, ["atom_id_4", "_chem_comp_tor.atom_id_4", "atom4"]
-        )
+        # The id tells apart alternative sets on the same atoms (C2e-*/C3e-* puckers).
+        result["id"] = self._extract_col(df, ["_chem_comp_tor.id"])
+        result["atom1"] = self._extract_col(df, ["_chem_comp_tor.atom_id_1"])
+        result["atom2"] = self._extract_col(df, ["_chem_comp_tor.atom_id_2"])
+        result["atom3"] = self._extract_col(df, ["_chem_comp_tor.atom_id_3"])
+        result["atom4"] = self._extract_col(df, ["_chem_comp_tor.atom_id_4"])
         result["value"] = pd.to_numeric(
-            self._extract_col(
-                df, ["value_angle", "_chem_comp_tor.value_angle", "value"]
-            ),
+            self._extract_col(df, ["_chem_comp_tor.value_angle"]),
             errors="coerce",
         )
         result["sigma"] = pd.to_numeric(
-            self._extract_col(
-                df,
-                ["value_angle_esd", "_chem_comp_tor.value_angle_esd", "sigma", "esd"],
-            ),
+            self._extract_col(df, ["_chem_comp_tor.value_angle_esd"]),
             errors="coerce",
         )
         result["periodicity"] = pd.to_numeric(
-            self._extract_col(df, ["period", "_chem_comp_tor.period", "periodicity"]),
+            self._extract_col(df, ["_chem_comp_tor.period"]),
             errors="coerce",
         )
         return result
@@ -2092,25 +1852,18 @@ class RestraintCIFReader:
             return pd.DataFrame(columns=["atom", "plane_id", "sigma"])
 
         result = pd.DataFrame()
-        result["atom"] = self._extract_col(
-            df, ["atom_id", "_chem_comp_plane_atom.atom_id", "atom"]
-        )
-        result["plane_id"] = self._extract_col(
-            df, ["plane_id", "_chem_comp_plane_atom.plane_id", "id"]
-        )
+        result["atom"] = self._extract_col(df, ["_chem_comp_plane_atom.atom_id"])
+        result["plane_id"] = self._extract_col(df, ["_chem_comp_plane_atom.plane_id"])
 
         # Extract sigma (dist_esd) and convert to numeric
         sigma = pd.to_numeric(
-            self._extract_col(
-                df, ["dist_esd", "_chem_comp_plane_atom.dist_esd", "sigma"]
-            ),
+            self._extract_col(df, ["_chem_comp_plane_atom.dist_esd"]),
             errors="coerce",
         )
 
-        # Fill missing values with 0.01 Å default, then clip minimum to 0.001 Å
-        # (avoid overly tight restraints while allowing looser ones)
-        sigma = sigma.fillna(0.01)
-        result["sigma"] = sigma.clip(lower=0.001)  # Minimum 0.001 Å, no maximum
+        # The 0.001 Å floor keeps a near-zero esd from making one plane overly
+        # tight; looser restraints pass unchanged.
+        result["sigma"] = sigma.fillna(DEFAULT_PLANE_SIGMA).clip(lower=0.001)
 
         return result
 
@@ -2123,20 +1876,12 @@ class RestraintCIFReader:
 
         result = pd.DataFrame()
         result["atom_centre"] = self._extract_col(
-            df, ["atom_id_centre", "_chem_comp_chir.atom_id_centre", "atom_centre"]
+            df, ["_chem_comp_chir.atom_id_centre"]
         )
-        result["atom1"] = self._extract_col(
-            df, ["atom_id_1", "_chem_comp_chir.atom_id_1", "atom1"]
-        )
-        result["atom2"] = self._extract_col(
-            df, ["atom_id_2", "_chem_comp_chir.atom_id_2", "atom2"]
-        )
-        result["atom3"] = self._extract_col(
-            df, ["atom_id_3", "_chem_comp_chir.atom_id_3", "atom3"]
-        )
-        result["volume_sign"] = self._extract_col(
-            df, ["volume_sign", "_chem_comp_chir.volume_sign", "sign"]
-        )
+        result["atom1"] = self._extract_col(df, ["_chem_comp_chir.atom_id_1"])
+        result["atom2"] = self._extract_col(df, ["_chem_comp_chir.atom_id_2"])
+        result["atom3"] = self._extract_col(df, ["_chem_comp_chir.atom_id_3"])
+        result["volume_sign"] = self._extract_col(df, ["_chem_comp_chir.volume_sign"])
         return result
 
     def _standardize_atoms(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -2145,26 +1890,27 @@ class RestraintCIFReader:
             return pd.DataFrame(columns=["atom_id", "type_symbol", "charge"])
 
         result = pd.DataFrame()
-        result["atom_id"] = self._extract_col(
-            df, ["atom_id", "_chem_comp_atom.atom_id", "id"]
-        )
-        result["type_symbol"] = self._extract_col(
-            df, ["type_symbol", "_chem_comp_atom.type_symbol", "symbol"]
-        )
+        result["atom_id"] = self._extract_col(df, ["_chem_comp_atom.atom_id"])
+        result["type_symbol"] = self._extract_col(df, ["_chem_comp_atom.type_symbol"])
         result["charge"] = pd.to_numeric(
-            self._extract_col(
-                df, ["charge", "_chem_comp_atom.charge", "partial_charge"]
-            ),
+            self._extract_col(df, ["_chem_comp_atom.charge"]),
             errors="coerce",
         )
+        # The CCP4 energy type (NH1, OC, CH3, ...) keys the ener_lib contact radius and
+        # hydrogen-bond role; an atom without one takes its element radius and no role.
+        type_cols = ["_chem_comp_atom.type_energy"]
+        if any(col in df.columns for col in type_cols):
+            result["type_energy"] = (
+                self._extract_col(df, type_cols).astype(str).str.strip()
+            )
+        else:
+            result["type_energy"] = ""
 
         # Include x,y,z if present (for ideal coordinates)
         for coord in ["x", "y", "z"]:
             coord_cols = [
-                f"pdbx_model_Cartn_{coord}_ideal",
                 f"_chem_comp_atom.pdbx_model_Cartn_{coord}_ideal",
                 f"_chem_comp_atom.{coord}",
-                coord,
             ]
             if any(col in df.columns for col in coord_cols):
                 result[coord] = pd.to_numeric(
@@ -2174,31 +1920,18 @@ class RestraintCIFReader:
         return result
 
     def _filter_by_comp(self, df: pd.DataFrame, comp_id: str) -> pd.DataFrame:
-        """Rows of ``df`` belonging to ``comp_id``.
-
-        The index is reset because the caller assembles its result column by
-        column: :meth:`_extract_col` preserves this frame's index for a column it
-        finds but returns a fresh ``RangeIndex`` for one it does not, so a
-        non-zero-based index makes those two disagree and pandas aligns the
-        mismatch away to NaN -- dropping values that are present. Rows only reach
-        a non-zero index once several blocks are concatenated, i.e. exactly on the
-        multi-compound dictionaries this reader now supports.
-        """
+        """Rows of ``df`` belonging to ``comp_id``, with a fresh RangeIndex."""
         if df.empty:
             return df.drop(columns=[_SOURCE_BLOCK_COLUMN], errors="ignore")
 
-        # Try different possible column names for compound ID
-        # Include all naming conventions: monomer library, eLBOW/phenix, short forms
+        # The comp_id tag of whichever restraint category df holds.
         id_cols = [
-            "comp_id",
-            "_chem_comp.id",
             "_chem_comp_bond.comp_id",
             "_chem_comp_angle.comp_id",
             "_chem_comp_tor.comp_id",
             "_chem_comp_atom.comp_id",
             "_chem_comp_plane_atom.comp_id",
             "_chem_comp_chir.comp_id",
-            "id",
         ]
 
         selected = None
@@ -2217,26 +1950,13 @@ class RestraintCIFReader:
         if selected is None:
             selected = df
 
+        # _extract_col fills an absent column on a RangeIndex; on any other index the
+        # columns it finds would align against it to NaN.
         return (
             selected.drop(columns=[_SOURCE_BLOCK_COLUMN], errors="ignore")
             .reset_index(drop=True)
             .copy()
         )
-
-    def get_bond_restraints(self, comp_id: str) -> pd.DataFrame:
-        """
-        Get bond restraints with standardized column names.
-
-        Returns
-        -------
-        pandas.DataFrame
-            DataFrame with columns:
-                - atom1, atom2: Atom names
-                - value: Ideal bond length (Å)
-                - sigma: Estimated standard deviation (Å)
-        """
-        restraints = self.get_compound_restraints(comp_id)
-        return restraints["bonds"]
 
     def _extract_col(self, df: pd.DataFrame, possible_cols: List[str]) -> pd.Series:
         """Extract column trying multiple names."""
@@ -2244,33 +1964,3 @@ class RestraintCIFReader:
             if col in df.columns:
                 return df[col]
         return pd.Series([None] * len(df))
-
-    # Convenience methods for testing
-    def get_compound_id(self) -> str:
-        """Get the primary compound ID from this file."""
-        if self.compounds:
-            return self.compounds[0]
-        return self.filepath.stem
-
-    def has_bond_restraints(self) -> bool:
-        """Check if bond restraints are available."""
-        return "comp_bond" in self.cif.data or "chem_comp_bond" in self.cif.data
-
-    def has_angle_restraints(self) -> bool:
-        """Check if angle restraints are available."""
-        return "comp_angle" in self.cif.data or "chem_comp_angle" in self.cif.data
-
-    def has_torsion_restraints(self) -> bool:
-        """Check if torsion restraints are available."""
-        return "comp_tor" in self.cif.data or "chem_comp_tor" in self.cif.data
-
-    def has_plane_restraints(self) -> bool:
-        """Check if plane restraints are available."""
-        return (
-            "comp_plane_atom" in self.cif.data
-            or "chem_comp_plane_atom" in self.cif.data
-        )
-
-    def has_chirality_restraints(self) -> bool:
-        """Check if chirality definitions are available."""
-        return "comp_chir" in self.cif.data or "chem_comp_chir" in self.cif.data

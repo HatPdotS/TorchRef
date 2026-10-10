@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Submit the 3-arm seeded-optimizer benchmark over a fixed 100-structure subset.
+"""Submit the separate-vs-joint benchmark over a fixed 100-structure subset.
 
-For each code in ``subset_100.txt`` this submits three SLURM jobs, each running
+For each code in ``subset_100.txt`` this submits one SLURM job per arm, each running
 refinement (from the Phaser-placed AF start model) + a REFMAC 0-cycle validation
 in one shot so the apples-to-apples R-factors land in ``validate.log``:
 
     bench_sep_lbfgs     -n 10 --mode separate  --xray-mode ml     (production standard)
     bench_joint_lbfgs   -n 10 --mode everything --xray-mode ml    (joint control)
-    bench_joint_seeded  -n 10 --mode everything --optimizer seeded (+ diagonal seed)
-
-`sep→joint` isolates separate-vs-joint; `joint_lbfgs→joint_seeded` isolates the
-diagonal-Hessian seed; `sep→seeded` compares the new approach to the shipped default.
 
 Usage
 -----
     ./.dev/bin/python analysis/submit_seeded_benchmark.py --dry-run --limit 1
-    ./.dev/bin/python analysis/submit_seeded_benchmark.py --limit 1      # one real triple
-    ./.dev/bin/python analysis/submit_seeded_benchmark.py               # all 100 x 3
+    ./.dev/bin/python analysis/submit_seeded_benchmark.py --limit 1      # one real pair
+    ./.dev/bin/python analysis/submit_seeded_benchmark.py               # all 100 x 2
 """
 
 from __future__ import annotations
@@ -33,10 +29,6 @@ import run_af_pipeline as P  # noqa: E402
 ARMS = {
     "bench_sep_lbfgs": "--mode separate --xray-mode ml",
     "bench_joint_lbfgs": "--mode everything --xray-mode ml",
-    "bench_joint_seeded": "--mode everything --optimizer seeded --xray-mode ml",
-    # scaler co-refinement arms (scaler folded into the joint step)
-    "bench_joint_seeded_coref": "--mode everything --optimizer seeded --corefine-scaler --xray-mode ml",
-    "bench_joint_lbfgs_coref": "--mode everything --corefine-scaler --xray-mode ml",
 }
 
 

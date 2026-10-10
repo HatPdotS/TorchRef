@@ -3,7 +3,7 @@
 """
 Command-line script for LBFGS crystallographic refinement using torchref.
 
-Uses the maximum-likelihood σ_A (Read MLF) target by default. Four other x-ray
+Uses the maximum-likelihood σ_A (Read MLF) target by default. Other x-ray
 targets are selectable via ``--xray-mode``; see
 :mod:`torchref.refinement.targets.xray._specs` for the taxonomy.
 
@@ -64,13 +64,15 @@ def _sigma_a_kwargs(args) -> dict:
     # a flag whose value changes nothing. Accepted as an on/off alias, with a warning.
     passes = getattr(args, "shrink_passes", None)
     if passes is not None:
+        # FutureWarning, not DeprecationWarning: Python's default filters hide the
+        # latter outside __main__, and this notice is for the person running the CLI.
         warnings.warn(
-            "--shrink-passes is deprecated: the stability shrinkage is one-shot now "
+            "--shrink-passes is deprecated: the stability shrinkage is one-shot "
             "(it shrinks toward a fitted sigma_A(d*^2) curve, not toward neighbouring "
-            f"shells, so passes no longer apply). Treating {passes} as "
+            f"shells, so a pass count does not apply). Treating {passes} as "
             f"{'--no-shrink' if int(passes) <= 0 else 'shrinkage enabled'}; use "
             "--no-shrink instead.",
-            DeprecationWarning,
+            FutureWarning,
             stacklevel=2,
         )
         out["shrink"] = int(passes) > 0
@@ -89,7 +91,7 @@ Examples:
   # 10 refinement cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
 
-  # Joined XYZ then ADP cycles
+  # Joint XYZ+ADP cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode everything
 
   # Plain sigma-weighted Gaussian NLL (no model-error term)
@@ -114,6 +116,29 @@ Loss weights:
 
     refine_group = parser.add_argument_group("Refinement")
     add_n_cycles_arg(refine_group)
+    refine_group.add_argument(
+        "--hydrogens",
+        choices=["keep", "add", "strip"],
+        default="keep",
+        help="What to do with the model's hydrogens on load: keep the ones the file "
+        "has (default), also generate the missing ones, or strip them all.",
+    )
+    refine_group.add_argument(
+        "--hydrogen-mode",
+        dest="hydrogen_mode",
+        choices=["atoms", "riding"],
+        default="atoms",
+        help="Refine hydrogens as ordinary atoms (default) or let them ride on their "
+        "parent heavy atoms. 'riding' cannot be combined with --hydrogens strip.",
+    )
+    refine_group.add_argument(
+        "--hydrogens-in-xray",
+        dest="hydrogens_in_xray",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include hydrogen atoms in the structure-factor calculation (default: on). "
+        "--no-hydrogens-in-xray keeps them in the restraints only.",
+    )
     refine_group.add_argument(
         "--mode",
         type=str,
@@ -248,20 +273,31 @@ Loss weights:
         print(f"Refinement mode:   {args.mode}")
         print(f"X-ray target:      {args.xray_mode}")
         print(f"Refinement cycles: {args.n_cycles}")
+        print(f"Hydrogens:         {args.hydrogens} ({args.hydrogen_mode})")
+        print(f"Hydrogens in Fcalc: {'on' if args.hydrogens_in_xray else 'off'}")
         if args.with_rigid_body:
             print(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
         print(f"Device:            {args.device}")
         if args.dmin:
             print(f"Resolution cutoff: {args.dmin:.2f} A")
         adp_line = f"ADP mode:          {args.adp_mode}"
+        if args.adp_mode == "field_aniso" and args.adp_mode_set:
+            adp_line += f" ({args.adp_mode_set})"
+        if args.adp_mode in ("field", "field_aniso"):
+            adp_line += (
+                f", {args.adp_nodes} nodes"
+                if args.adp_nodes
+                else f", sized at {args.reflections_per_adp_parameter:g} "
+                "work reflections per parameter"
+            )
         if args.adp_mode == "anisotropic":
             adp_line += (
                 "  (selection: "
                 f"{args.anisotropic_selection or 'not resname HOH and not element H'})"
             )
         print(adp_line)
-        if args.wavelength == 0:
-            print("Anomalous:         off (wavelength 0 -> Friedel-merged read)")
+        if not args.wavelength:
+            print("Anomalous:         off (no --wavelength; Friedel-merged read)")
         else:
             print(f"Wavelength:        {args.wavelength:.4g} A")
         if manual_weights:
@@ -271,12 +307,15 @@ Loss weights:
         sys.stdout.flush()
 
     device = parse_device_str(args.device)
+    sigma_a_kwargs = _sigma_a_kwargs(args)
 
     if args.verbose > 0:
         print("Initializing refinement...")
         sys.stdout.flush()
 
-    column_names = build_column_names(args.column_structure_factor, args.column_sigma)
+    column_names = build_column_names(
+        str(sf_path), args.column_structure_factor, args.column_sigma
+    )
 
     refinement = LBFGSRefinement(
         data_file=str(sf_path),
@@ -288,10 +327,16 @@ Loss weights:
         column_names=column_names,
         target_mode=args.xray_mode,
         scale_target=args.scale_target,
-        **_sigma_a_kwargs(args),
+        **sigma_a_kwargs,
         adp_mode=args.adp_mode,
+        adp_mode_set=args.adp_mode_set,
+        n_nodes=args.adp_nodes,
+        reflections_per_adp_parameter=args.reflections_per_adp_parameter,
         aniso_selection=args.anisotropic_selection,
         wavelength=args.wavelength,
+        hydrogens=args.hydrogens,
+        hydrogen_mode=args.hydrogen_mode,
+        hydrogens_in_xray=args.hydrogens_in_xray,
     )
 
     # Merge onto DEFAULT_GROUP_WEIGHTS so unspecified groups keep their defaults;
@@ -381,6 +426,9 @@ Loss weights:
             "n_cycles": args.n_cycles,
             "mode": args.mode,
             "adp_mode": args.adp_mode,
+            "adp_mode_set": args.adp_mode_set,
+            "adp_nodes": args.adp_nodes,
+            "reflections_per_adp_parameter": args.reflections_per_adp_parameter,
             "anisotropic_selection": (
                 args.anisotropic_selection if args.adp_mode == "anisotropic" else None
             ),
@@ -390,7 +438,7 @@ Loss weights:
             # archived run cannot be attributed to a scale target, and a change to the
             # default silently invalidates every cached score derived from these numbers.
             "scale_target": args.scale_target,
-            **_sigma_a_kwargs(args),
+            **sigma_a_kwargs,
             "weights": manual_weights if manual_weights else None,
             "dmin": args.dmin,
             "device": str(device),

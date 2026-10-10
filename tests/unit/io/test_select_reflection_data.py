@@ -24,9 +24,6 @@ def _make_reflection_data(n=20):
     rd.phase = torch.rand(n, dtype=torch.float32) * 6.28
     rd.fom = torch.rand(n, dtype=torch.float32)
 
-    # Non-per-reflection tensor (should NOT be indexed)
-    rd.U_aniso = torch.rand(6, dtype=torch.float32)
-
     # Cell and spacegroup
     rd.cell = Cell(
         torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0]),
@@ -85,21 +82,6 @@ class TestGetitemIntegerIndices:
         torch.testing.assert_close(sel.hkl, rd.hkl[perm])
         torch.testing.assert_close(sel.F, rd.F[perm])
         torch.testing.assert_close(sel.phase, rd.phase[perm])
-
-
-class TestNonMatchingTensors:
-    """Tensors whose first dim != n_refl should be cloned, not indexed."""
-
-    def test_u_aniso_copied(self):
-        rd = _make_reflection_data(20)
-        mask = torch.zeros(20, dtype=torch.bool)
-        mask[:10] = True
-
-        sel = rd[mask]
-
-        # U_aniso has shape (6,), not (20,), so it should be copied as-is
-        torch.testing.assert_close(sel.U_aniso, rd.U_aniso)
-        assert sel.U_aniso.shape == (6,)
 
 
 class TestCellAndSpacegroup:

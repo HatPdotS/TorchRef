@@ -2,19 +2,16 @@
 
 As a quasi-Newton method LBFGS converges in far fewer macro cycles than first-order
 optimizers; the production default is ``macro_cycles=5``. The refinement composes a
-persistent :class:`~torchref.refinement.loss_state.LossState`, persistent per-group
-LBFGS optimizers (xyz, adp+u+occupancy, joint) created lazily and reused, and scaler
-refinement which runs its own local LossState + LBFGS step between body refinements.
+persistent :class:`~torchref.refinement.loss_state.LossState`, body steps over the
+xyz, adp+u+occupancy and joint parameter groups, and scaler refinement which runs its
+own local LossState + LBFGS step between body refinements.
 
-**Each body step clears its optimizer's LBFGS curvature history first.** The Hessian
-approximation does not transfer across a mode transition (xyz -> adp), and scaler
-updates between body steps move parameters the xray target reads, so retained curvature
-is stale.
+**Each body step builds a fresh LBFGS over its parameter group, so curvature never
+carries across steps.** The Hessian approximation does not transfer across a mode
+transition (xyz -> adp), and scaler updates between body steps move parameters the
+xray target reads, so retained curvature would be stale.
 """
 
-from typing import Optional
-
-import numpy as np
 import torch
 
 from torchref.refinement.base_refinement import Refinement
@@ -77,49 +74,6 @@ class LBFGSRefinement(Refinement):
         # update it via refine_scaler(). Co-refining a few high-leverage scaler params
         # in the same LBFGS as thousands of body params is ill-conditioned.
         self.corefine_scaler = corefine_scaler
-        # Targets are already built for this mode by super().__init__(); no rebuild.
-        self.target_mode = target_mode
-
-        # Lazy persistent optimizers. Built on first access by
-        # _lbfgs_for_types so that LBFGSRefinement instances without a
-        # loaded model can still be constructed.
-        self._persistent_optimizers: dict = {}
-
-    def xray_loss(self):
-        """X-ray loss on the work set, from the instantiated target."""
-        return self.xray_loss_work()
-
-    # =========================================================================
-    # Persistent optimizer machinery
-    # =========================================================================
-
-    def _lbfgs_for_types(self, types: tuple) -> torch.optim.LBFGS:
-        """The persistent LBFGS over ``types`` (any of ``"xyz"``, ``"adp"``, ``"u"``,
-        ``"occupancy"``), cached by that tuple and reused across calls.
-
-        **Callers must clear curvature via :meth:`_reset_lbfgs_history` before each use.**
-        """
-        key = tuple(types)
-        opt = self._persistent_optimizers.get(key)
-        if opt is None:
-            params = self.model.parameters_of_types(types)
-            if not params:
-                raise RuntimeError(
-                    f"No parameters found for types={types}; cannot build LBFGS."
-                )
-            opt = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
-            self._persistent_optimizers[key] = opt
-        return opt
-
-    @staticmethod
-    def _reset_lbfgs_history(optimizer: torch.optim.Optimizer) -> None:
-        """Drop LBFGS curvature state so the next step starts from steepest descent.
-
-        The two-loop recursion needs ``(s, y)`` pairs from the *same* landscape; between
-        refine_xyz and refine_adp the active parameter set changes, and between any two body
-        calls the scaler has moved parameters the xray target reads.
-        """
-        optimizer.state.clear()
 
     # =========================================================================
     # Refinement Methods
@@ -133,10 +87,10 @@ class LBFGSRefinement(Refinement):
     ):
         """Multi-resolution per-chain rigid-body refinement.
 
-        Swaps the model for a :class:`RigidModelFT` whose ``xyz`` exposes only per-chain
+        Swaps the model's ``xyz`` in place for a
+        :class:`~torchref.model.rigid_xyz.RigidXYZTensor` that exposes only per-chain
         XYZ-Euler rotations and translations, then runs an LBFGS step at each cutoff,
-        coarse to
-        fine. Only the xray target is active.
+        coarse to fine. Only the xray target is active.
 
         Parameters
         ----------
@@ -144,13 +98,14 @@ class LBFGSRefinement(Refinement):
             High-resolution cutoffs (Å), coarse to fine. Defaults to a schedule generated from
             the native data resolution.
         iterations_per_step : int, optional
-            ``max_iter`` per cutoff. The default 30 **under-converges** in practice (9RTS needs
-            >= 100); raise it for production. Under the solvent-only (``ls_wunit_k1``)
-            inner-cycle path this is per *inner* cycle, so the total is
-            ``n_inner * iterations_per_step``.
+            ``max_iter`` per cutoff. The default 30 **under-converges** in practice;
+            raise it for production.
         commit : bool, optional
-            If True (default), bake the final coordinates back into a regular ``ModelFT`` so
-            subsequent refinement uses per-atom xyz.
+            If True (default), bake the final coordinates into a per-atom xyz container
+            on the same model so subsequent refinement uses per-atom xyz. False leaves
+            the rigid xyz installed and ``adp``, ``u`` and ``occupancy`` frozen until
+            :meth:`~torchref.model.model.Model.restore_xyz_from_rigid` is called
+            (``commit=True`` there keeps the transform).
 
         Returns
         -------
@@ -174,7 +129,7 @@ class LBFGSRefinement(Refinement):
 
         Scaler parameters (``c_iso``, ``U``, solvent) join this call only when
         ``corefine_scaler`` is True; by default they are fixed here and updated by
-        :meth:`refine_scaler`.
+        :meth:`~torchref.refinement.base_refinement.Refinement.refine_scaler`.
         """
         state = self.complete_loss_state()
         body = self.model.parameters_of_types(("xyz",))
@@ -187,7 +142,8 @@ class LBFGSRefinement(Refinement):
         """LBFGS over ``adp``, ``u`` and ``occupancy``, xyz frozen; returns the LossState.
 
         Scaler parameters join this call only when ``corefine_scaler`` is True; by default
-        they are fixed here and updated by :meth:`refine_scaler`.
+        they are fixed here and updated by
+        :meth:`~torchref.refinement.base_refinement.Refinement.refine_scaler`.
         """
         state = self.complete_loss_state()
         body = self.model.parameters_of_types(("adp", "u", "occupancy"))
@@ -202,10 +158,8 @@ class LBFGSRefinement(Refinement):
         Non-empty only with ``corefine_scaler`` (opt-in, default False): co-refining a few
         high-leverage scaler params in the same LBFGS as thousands of xyz params is
         ill-conditioned and can drive the ML-NLL down while R goes up. The ``getattr``
-        fallback
-        matches the default so an instance built without ``__init__``
-        (``create_from_state_dict``)
-        behaves the same.
+        fallback matches the default so an instance built without ``__init__`` behaves
+        the same.
         """
         if getattr(self, "corefine_scaler", False):
             return list(self.scaler.parameters())
@@ -230,18 +184,31 @@ class LBFGSRefinement(Refinement):
     def _refine_everything_lbfgs_single_cycle(self, nsteps: int = 1):
         """Joint LBFGS over xyz + adp + u + occupancy for one macro cycle.
 
-        Used by :meth:`refine_everything`, which fits the scaler via ``get_scales()``
-        immediately beforehand; this method therefore touches only body parameters.
+        Used by :meth:`refine_everything`, which refits the scaler warm via
+        :meth:`_refresh_scales` immediately beforehand; this method therefore touches
+        only body parameters.
         """
         state = self.complete_loss_state()
-        optimizer = self._lbfgs_for_types(("xyz", "adp", "u", "occupancy"))
-        self._reset_lbfgs_history(optimizer)
+        body = self.model.parameters_of_types(("xyz", "adp", "u", "occupancy"))
+        optimizer = torch.optim.LBFGS(body, **self.LBFGS_DEFAULTS)
         state.run(
             optimizer,
             nsteps=nsteps,
             context="lbfgs_refinement._refine_everything_lbfgs_single_cycle",
         )
         return state
+
+    def _refresh_scales(self):
+        """Rebuild the solvent mask at the current coordinates, then refit the scaler.
+
+        The per-cycle scale update of :meth:`refine` and :meth:`refine_everything`. Warm:
+        the scale, anisotropy and solvent refined in the previous cycle are the starting
+        point, where :meth:`~torchref.refinement.base_refinement.Refinement.get_scales`
+        would reseed them.
+        """
+        if self.scaler is not None:
+            self.scaler.update_solvent()
+        return self.refine_scaler()
 
     def refine(self, macro_cycles=5):
         """Run ``macro_cycles`` cycles of ``refine_scaler`` -> ``refine_xyz`` ->
@@ -282,11 +249,9 @@ class LBFGSRefinement(Refinement):
                 before_scaling = self.collect_metrics()
                 cycle_dict["before_scaling"] = before_scaling
 
-            if self.scaler is not None:
-                self.scaler.update_solvent()
             # Before the `after_scaling` metrics below, so that label describes this cycle's
             # scaler rather than the previous one's.
-            self.refine_scaler()
+            self._refresh_scales()
 
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
@@ -362,7 +327,7 @@ class LBFGSRefinement(Refinement):
                 print(f"LBFGS Refinement Everything - Cycle {cycle+1}/{macro_cycles}")
                 print(f"{'='*60}")
 
-            self.get_scales()
+            self._refresh_scales()
 
             self.logger.record(label="after_scaling")
             with torch.no_grad():

@@ -216,6 +216,7 @@ def test_each_mode_has_its_own_class():
         MLNoAlphaXrayTarget,
         MLXrayTarget,
         NLLBetaXrayTarget,
+        NLLIntensityXrayTarget,
         NLLXrayTarget,
         UnitWeightK1XrayTarget,
     )
@@ -227,6 +228,7 @@ def test_each_mode_has_its_own_class():
         "ml_full": MLFullXrayTarget,
         "nll_beta": NLLBetaXrayTarget,
         "nll": NLLXrayTarget,
+        "nll_i": NLLIntensityXrayTarget,
         "ls": LeastSquaresXrayTarget,
         "ls_wunit_k1": UnitWeightK1XrayTarget,
     }
@@ -239,9 +241,63 @@ def test_each_mode_has_its_own_class():
         cls = XRAY_TARGETS.by_name(name).target_cls
         assert cls not in seen, (
             f"{name} and {seen[cls]} share {cls.__name__}: a class serving two modes has to "
-            f"branch on something at runtime, which is what this refactor removed"
+            f"branch on something at runtime"
         )
         seen[cls] = name
+
+
+def test_the_observable_is_a_row_property_not_a_flag():
+    """The observable is declared by the spec AND by the class, and they must agree.
+
+    Same argument as ``test_mean_centring_is_intrinsic_to_the_spec_not_a_flag``: a
+    constructor kwarg would be a runtime branch, and would be silently dropped by the
+    construction sites that bypass ``Refinement._xray_target_kwargs`` (the ensemble
+    refinement has three of them). A row cannot be selected without selecting its class.
+    """
+    import inspect
+
+    from torchref.refinement.targets.xray import NLLIntensityXrayTarget, NLLXrayTarget
+    from torchref.refinement.targets.xray._specs import XRAY_TARGETS, XrayTargetSpec
+
+    by_obs = {}
+    for spec in XRAY_TARGETS.specs:
+        assert spec.observable in ("amplitude", "intensity"), spec.name
+        # The spec's claim and the class's own declaration must match -- a row advertising
+        # intensities while reading `sub.F` would be wrong by 2|F| with nothing to catch it.
+        assert getattr(spec.target_cls, "observable", "amplitude") == spec.observable
+        by_obs.setdefault(spec.observable, []).append(spec.name)
+
+    assert "nll_i" in by_obs["intensity"], "the intensity row went missing from the table"
+    assert "nll" in by_obs["amplitude"]
+
+    # Not a constructor flag anywhere.
+    for cls in (NLLXrayTarget, NLLIntensityXrayTarget):
+        assert "observable" not in inspect.signature(cls.__init__).parameters
+
+    # The spec rejects a class/spec mismatch rather than trusting either side.
+    with pytest.raises(ValueError, match="observable"):
+        XrayTargetSpec(
+            name="bogus", target_cls=NLLXrayTarget, doc="", observable="intensity"
+        )
+
+
+def test_rice_has_no_intensity_row():
+    """Rice is amplitude-only *by nature*, so the observable axis is not square.
+
+    Rice and the folded normal are distributions of an amplitude; the intensity analogue is
+    the exponential / chi-square_1 Wilson distribution, a different primitive. If a future
+    row pairs a Rice class with ``observable="intensity"`` it is a modelling error, not a
+    new feature -- so pin it here rather than discovering it from a bad refinement.
+    """
+    from torchref.refinement.targets.xray import SigmaAXrayTarget
+    from torchref.refinement.targets.xray._specs import XRAY_TARGETS
+
+    for spec in XRAY_TARGETS.specs:
+        if spec.observable != "intensity":
+            continue
+        assert not issubclass(
+            spec.target_cls, SigmaAXrayTarget
+        ), f"{spec.name} pairs an amplitude distribution with intensities"
 
 
 def test_only_the_estimator_backed_rows_own_an_estimator():
@@ -346,18 +402,6 @@ def test_rice_with_sigma_obs_is_not_offered():
     assert "rice" not in XRAY_TARGETS.names
     with pytest.raises(ValueError, match="Unknown X-ray target mode"):
         XRAY_TARGETS.by_name("rice")
-    # And no surviving ROW maps to the Rice-at-sigma_obs class. That class still exists --
-    # `RiceXrayTarget`, kept private for the MR aligner, which has no test coverage of its
-    # own so repointing it would be an untested numerical change -- but it must not be
-    # selectable. This replaces a check on the spec table's `distribution`/`variance`
-    # columns, which existed only to drive dispatch and were removed with it.
-    from torchref.refinement.targets.xray import RiceXrayTarget
-
-    for spec in XRAY_TARGETS.specs:
-        assert spec.target_cls is not RiceXrayTarget, (
-            f"{spec.name} makes the private Rice-at-sigma_obs target selectable again"
-        )
-        assert not issubclass(spec.target_cls, RiceXrayTarget), spec.name
 
 
 def test_finite_and_positive_variance_on_degenerate_input():

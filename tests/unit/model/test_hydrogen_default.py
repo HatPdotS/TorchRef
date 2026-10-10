@@ -1,0 +1,434 @@
+"""Keep deposited hydrogens by default and generate missing ones only on request.
+
+The interesting cases are the partially-hydrogenated file, which has to be topped up per
+parent rather than left alone, and the per-atom buffers that are cached lazily and go
+stale the moment the atom set grows.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from torchref.model.context import ModelContext
+from torchref.model.model import Model
+from torchref.model.model_ft import ModelFT
+
+
+def _elements(model):
+    return model.pdb["element"].astype(str).str.strip().values
+
+
+def _counts(model):
+    elements = _elements(model)
+    n_h = int((elements == "H").sum())
+    return len(model.pdb), n_h
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_class", [Model, ModelFT])
+@pytest.mark.parametrize("filename", ["1DAW.pdb", "1AK5_with_H.pdb", "7L84.pdb"])
+def test_default_preserves_deposited_atoms(
+    pdb_dir: Path,
+    filename: str,
+    monkeypatch: pytest.MonkeyPatch,
+    model_class: type[Model],
+) -> None:
+    """Default loading neither generates hydrogens nor removes deposited ones."""
+    from torchref.io.pdb import PDBReader
+
+    path = pdb_dir / filename
+    deposited, _, _ = PDBReader(verbose=0).read(str(path))()
+
+    def unexpected_generation(self: ModelContext, dtype) -> None:
+        pytest.fail("Default loading must not generate hydrogens")
+
+    monkeypatch.setattr(ModelContext, "_add_missing_hydrogens", unexpected_generation)
+    model = model_class(verbose=0).load_pdb(str(path))
+
+    np.testing.assert_array_equal(_elements(model), deposited["element"].str.strip())
+
+
+@pytest.mark.unit
+def test_default_cif_load_does_not_generate_hydrogens(
+    cif_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mmCIF loading also leaves missing hydrogens absent by default."""
+
+    def unexpected_generation(self: ModelContext, dtype) -> None:
+        pytest.fail("Default mmCIF loading must not generate hydrogens")
+
+    monkeypatch.setattr(ModelContext, "_add_missing_hydrogens", unexpected_generation)
+    model = Model(verbose=0).load_cif(str(cif_dir / "1DAW.cif"))
+    total, n_h = _counts(model)
+    assert total > 0
+    assert n_h == 0
+
+
+@pytest.mark.unit
+def test_context_defaults_to_no_hydrogen_generation() -> None:
+    """A standalone model context keeps the file's hydrogens as atoms."""
+    assert ModelContext().hydrogens == "keep"
+    assert ModelContext().hydrogen_mode == "atoms"
+
+
+@pytest.mark.unit
+def test_a_file_without_hydrogens_gets_them(pdb_dir):
+    """1DAW ships none, so every hydrogen here is generated."""
+    model = Model(verbose=0, hydrogens="add")
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+
+    total, n_h = _counts(model)
+    assert n_h > 0
+    heavy = total - n_h
+    assert (
+        0.7 < n_h / heavy < 1.3
+    ), f"{n_h} hydrogens on {heavy} heavy atoms is not a plausible ratio"
+
+
+@pytest.mark.unit
+def test_a_partially_hydrogenated_file_is_topped_up(pdb_dir):
+    """1AK5 ships 675 hydrogens on 2582 heavy atoms, where full is roughly 2500.
+
+    Generation is decided per parent -- the plan proposes only a hydrogen the template
+    names and the model lacks -- so a file that already has some still gets the rest. A
+    does-the-table-contain-any test would have left this structure as deposited.
+    """
+    kept = Model(verbose=0)
+    kept.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
+    _, n_kept = _counts(kept)
+
+    topped = Model(verbose=0, hydrogens="add")
+    topped.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
+    _, n_topped = _counts(topped)
+
+    assert n_kept > 0, "1AK5_with_H is supposed to ship some hydrogens"
+    assert (
+        n_topped > n_kept * 2
+    ), f"only {n_topped} hydrogens after top-up, against {n_kept} in the file"
+
+
+@pytest.mark.unit
+def test_strip_removes_everything(pdb_dir):
+    """The opt-out is unaffected: no hydrogen survives, generated or deposited."""
+    for name in ("1DAW.pdb", "7L84.pdb"):
+        model = Model(verbose=0, hydrogens="strip")
+        model.load_pdb(str(pdb_dir / name))
+        _, n_h = _counts(model)
+        assert n_h == 0, f"{name} kept {n_h} hydrogens under hydrogens='strip'"
+
+
+@pytest.mark.unit
+def test_keep_keeps_the_file_as_it_is(pdb_dir):
+    """Generation off, stripping off: exactly what the reader produced."""
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "7L84.pdb"))
+    total, n_h = _counts(model)
+    assert n_h > 0, "7L84 ships hydrogens, so they should have been kept"
+
+    generated = Model(verbose=0, hydrogens="add")
+    generated.load_pdb(str(pdb_dir / "7L84.pdb"))
+    assert _counts(generated)[0] >= total
+
+
+@pytest.mark.unit
+def test_per_atom_buffers_are_rebuilt_for_the_new_atom_set(pdb_dir):
+    """Every lazily-cached per-atom buffer matches the table after generation.
+
+    These are guarded by ``hasattr`` and returned as-is once built, which was safe only
+    while an atom-set change always produced a fresh model. Generating hydrogens in
+    place left the van der Waals radii at the heavy-atom count while the pair list
+    indexed the full set, and the non-bonded build raised ``IndexError``.
+    """
+    model = Model(verbose=0, hydrogens="add")
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    n_atoms = len(model.pdb)
+
+    assert model.get_vdw_radii().shape[0] == n_atoms
+    assert model.Z.shape[0] == n_atoms
+
+    radii = model.get_vdw_radii().detach().cpu().numpy()
+    assert np.isfinite(radii).all()
+    is_h = _elements(model) == "H"
+    assert is_h.any()
+    assert np.allclose(radii[is_h], 1.20), "hydrogens did not get a hydrogen radius"
+
+
+@pytest.mark.unit
+def test_restraints_build_over_the_hydrogenated_model(pdb_dir):
+    """Restraints cover the hydrogens, and each carries exactly one bond."""
+    model = Model(verbose=0, hydrogens="add")
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    restraints = model.restraints
+
+    elements = _elements(model)
+    is_h = elements == "H"
+    assert is_h.any()
+    bonds = restraints.restraints["bond"]["all"]["indices"].cpu().numpy()
+    involves_h = is_h[bonds[:, 0]] | is_h[bonds[:, 1]]
+    assert int(involves_h.sum()) == int(is_h.sum())
+
+    vdw = restraints.restraints["vdw"]["indices"]
+    assert int(vdw.max()) < len(
+        model.pdb
+    ), "the non-bonded pair list indexes past the end of the atom table"
+
+
+@pytest.mark.unit
+def test_riding_hydrogens_are_not_placed_when_real_ones_exist(pdb_dir):
+    """The riding stand-in goes quiet once the model carries hydrogens.
+
+    Riding hydrogens approximate the sterics of hydrogens the model does not have.
+    Placing them alongside real ones would put phantom atoms in the structure that push
+    real ones around -- and they would not even be the hydrogens the generator declined,
+    because the riding builder counts bonded neighbours by distance while the generator
+    reads them off the bond graph.
+    """
+    model = Model(verbose=0, hydrogens="add")
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    restraints = model.restraints
+
+    assert restraints.h_topo is not None
+    assert restraints.h_topo.n_hydrogens == 0
+
+    stripped = Model(verbose=0, hydrogens="strip")
+    stripped.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    assert (
+        stripped.restraints.h_topo.n_hydrogens > 0
+    ), "with hydrogens absent the riding stand-in should still be built"
+
+
+# --- The user's restraint dictionary is the one that hydrogenates ------------------
+
+RENAMED_GLU_H = {"HAX", "HBX", "HBY", "HGX", "HGY"}
+
+
+@pytest.fixture
+def renamed_glu_cif(test_files_dir):
+    """A GLU dictionary whose side-chain hydrogens carry names the library lacks."""
+    return str(test_files_dir / "restraints" / "GLU_renamed.cif")
+
+
+def _glu_hydrogen_names(model):
+    pdb = model.pdb
+    glu_h = (pdb["resname"].astype(str).str.strip() == "GLU") & (
+        pdb["element"].astype(str).str.strip() == "H"
+    )
+    return set(pdb.loc[glu_h, "name"].astype(str).str.strip())
+
+
+@pytest.mark.unit
+def test_generation_reads_the_cif_given_at_construction(pdb_dir, renamed_glu_cif):
+    """A dictionary passed to the constructor overrides the library for generation.
+
+    The names prove which dictionary was read, and the bond degree proves the generated
+    hydrogens are the ones the restraints know: a hydrogen generated from one
+    dictionary and restrained by another has no bond edge at all.
+    """
+    model = Model(verbose=0, hydrogens="add", cif_path=renamed_glu_cif)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    assert model.ctx.cif_path == renamed_glu_cif
+    names = _glu_hydrogen_names(model)
+    assert RENAMED_GLU_H <= names
+    assert not {"HA", "HB2", "HB3", "HG2", "HG3"} & names
+
+    atoms = model.restraints.topology.atoms
+    is_h = atoms.is_hydrogen.cpu().numpy()
+    degree = atoms.degree().cpu().numpy()
+    assert (degree[is_h] > 0).all(), "generated hydrogens without a bond restraint"
+
+
+@pytest.mark.unit
+def test_derived_models_keep_the_restraint_cif(pdb_dir, renamed_glu_cif):
+    """hydrogenate, strip_hydrogens and select all carry the dictionary along."""
+    model = Model(verbose=0, cif_path=renamed_glu_cif)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+
+    hydrogenated = model.hydrogenate()
+    assert hydrogenated.ctx.cif_path == renamed_glu_cif
+    assert RENAMED_GLU_H <= _glu_hydrogen_names(hydrogenated)
+    assert "GLU" in hydrogenated.restraints.cif_dict
+    template_h = set(
+        hydrogenated.restraints.cif_dict["GLU"]["atoms"]["atom_id"].astype(str).str.strip()
+    )
+    assert RENAMED_GLU_H <= template_h
+
+    assert hydrogenated.strip_hydrogens().ctx.cif_path == renamed_glu_cif
+    assert model.select("resname GLU").ctx.cif_path == renamed_glu_cif
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_class", [Model, ModelFT])
+def test_state_dict_round_trips_the_restraint_cif(
+    pdb_dir, renamed_glu_cif, model_class
+):
+    model = model_class(verbose=0, cif_path=renamed_glu_cif)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    restored = model_class.create_from_state_dict(model.state_dict(), verbose=0)
+    assert restored.ctx.cif_path == renamed_glu_cif
+
+
+@pytest.mark.unit
+def test_load_model_registers_the_cif_before_loading(pdb_dir, renamed_glu_cif):
+    """The shared CLI loader generates from the user dictionary too."""
+    from torchref.cli._common import load_model
+
+    model = load_model(
+        str(pdb_dir / "1DAW.pdb"), verbose=0, cif=renamed_glu_cif, hydrogens="add"
+    )
+    assert model.ctx.cif_path == renamed_glu_cif
+    assert RENAMED_GLU_H <= _glu_hydrogen_names(model)
+
+
+@pytest.mark.unit
+def test_generation_reads_every_compound_of_a_multi_block_cif(pdb_dir, test_files_dir):
+    """A dictionary with several ``data_comp_`` blocks hydrogenates each of its compounds.
+
+    Multi-compound dictionaries once restrained only their last block; generation now
+    reads the same dictionary, so both renamed sets must appear and every generated
+    hydrogen must carry a bond edge.
+    """
+    cif = test_files_dir / "restraints" / "GLU_ASP_renamed.cif"
+    blocks = [l for l in cif.read_text().splitlines() if l.startswith("data_comp_")]
+    assert len(blocks) == 3, blocks  # comp_list + GLU + ASP: the fixture is really multi-block
+
+    model = Model(verbose=0, hydrogens="add", cif_path=str(cif))
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    pdb = model.pdb
+    is_h = pdb["element"].astype(str).str.strip() == "H"
+    resname = pdb["resname"].astype(str).str.strip()
+    names = pdb["name"].astype(str).str.strip()
+    assert RENAMED_GLU_H <= set(names[is_h & (resname == "GLU")])
+    assert {"HBQ", "HBR"} <= set(names[is_h & (resname == "ASP")])
+    assert not {"HB2", "HB3"} & set(names[is_h & (resname == "ASP")])
+
+    atoms = model.restraints.topology.atoms
+    degree = atoms.degree().cpu().numpy()
+    assert (degree[atoms.is_hydrogen.cpu().numpy()] > 0).all()
+
+
+@pytest.mark.unit
+def test_riding_hydrogens_read_the_dictionary_they_are_given(
+    pdb_dir, renamed_glu_cif, monkeypatch
+):
+    """A residue only the given dictionary defines gets its riding hydrogens from it,
+    with no monomer-library lookup: here 1DAW's GLU, renamed to a code the library
+    lacks, rides on exactly the parents the library GLU gives it."""
+    from torchref.topology.monomer.cif import read_cif
+    from torchref.topology.monomer.library import MonomerLibraryManager
+    from torchref.topology.riding import build_hydrogen_topology
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    restraints = model.restraints
+    table = restraints._riding_table(model.xyz())
+    reference = build_hydrogen_topology(table, cif_dict=restraints.cif_dict)
+
+    glu = (table["resname"].astype(str).str.strip() == "GLU").to_numpy()
+    table.loc[glu, "resname"] = "GLZ"
+    cif_dict = {k: v for k, v in restraints.cif_dict.items() if k != "GLU"}
+    cif_dict["GLZ"] = read_cif(renamed_glu_cif)["GLU"]
+
+    def no_library(self, resname):
+        raise AssertionError(f"{resname} was looked up in the monomer library")
+
+    monkeypatch.setattr(MonomerLibraryManager, "get_cif_file", no_library)
+    riding = build_hydrogen_topology(table, cif_dict=cif_dict)
+
+    expected = reference.h_parent_idx.cpu().numpy()
+    parents = riding.h_parent_idx.cpu().numpy()
+    assert glu[parents].sum() > 0
+    assert sorted(parents[glu[parents]]) == sorted(expected[glu[expected]])
+
+
+@pytest.mark.unit
+def test_restraints_ride_on_their_own_dictionary(pdb_dir, monkeypatch):
+    """Rebuilding the pair list places riding hydrogens from the dictionaries the
+    restraints were built from, with no monomer-library lookup, and loses none of the
+    library's: in 3K7M that includes the waters with a heavy atom in bonding range."""
+    from torchref.topology.monomer.library import MonomerLibraryManager
+    from torchref.topology.riding import build_hydrogen_topology
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "3K7M.pdb"))
+    restraints = model.restraints
+    library = build_hydrogen_topology(restraints._riding_table(model.xyz()))
+    water = restraints.topology.is_water
+    assert water[library.h_parent_idx.cpu().numpy()].sum() > 0
+
+    def no_library(self, resname):
+        raise AssertionError(f"{resname} was looked up in the monomer library")
+
+    monkeypatch.setattr(MonomerLibraryManager, "get_cif_file", no_library)
+    restraints.rebuild_vdw_restraints(model.xyz())
+    np.testing.assert_array_equal(
+        restraints.h_topo.h_parent_idx.cpu().numpy(),
+        library.h_parent_idx.cpu().numpy(),
+    )
+
+
+# The monomer library's NH2 entry, cut to the columns the reader needs.
+NH2_CIF = """\
+data_comp_NH2
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+_chem_comp_atom.type_energy
+_chem_comp_atom.x
+_chem_comp_atom.y
+_chem_comp_atom.z
+NH2 N   N N33 10.097 8.960 -7.822
+NH2 HN1 H H   10.995 8.960 -7.822
+NH2 HN2 H H    9.648 9.738 -7.822
+NH2 H   H H    9.648 8.182 -7.822
+loop_
+_chem_comp_bond.comp_id
+_chem_comp_bond.atom_id_1
+_chem_comp_bond.atom_id_2
+_chem_comp_bond.value_dist
+_chem_comp_bond.value_dist_esd
+NH2 N HN1 0.898 0.020
+NH2 N HN2 0.898 0.020
+NH2 N H   0.898 0.020
+"""
+
+
+@pytest.mark.unit
+def test_a_one_atom_residue_rides_on_its_library_template(
+    pdb_dir, tmp_path, monkeypatch
+):
+    """A residue written as one atom whose library template carries hydrogens rides as
+    the library places them, and a rebuild looks nothing up: here 1DAW with its
+    C-terminal OXT turned into an NH2 cap, whose nitrogen has room for two."""
+    from torchref.topology.monomer.library import MonomerLibraryManager
+    from torchref.topology.riding import build_hydrogen_topology
+
+    nh2 = tmp_path / "NH2.cif"
+    nh2.write_text(NH2_CIF)
+    serve = MonomerLibraryManager.get_cif_file
+    monkeypatch.setattr(
+        MonomerLibraryManager,
+        "get_cif_file",
+        lambda self, resname: nh2 if resname == "NH2" else serve(self, resname),
+    )
+    deposited = (pdb_dir / "1DAW.pdb").read_text()
+    oxt = next(line for line in deposited.splitlines() if line[12:16] == " OXT")
+    capped = tmp_path / "1DAW_NH2.pdb"
+    capped.write_text(
+        deposited.replace(oxt, f"HETATM{oxt[6:12]} N   NH2 A 334{oxt[26:76]} N")
+    )
+
+    model = Model(verbose=0).load_pdb(str(capped))
+    restraints = model.restraints
+    library = build_hydrogen_topology(restraints._riding_table(model.xyz()))
+    expected = library.h_parent_idx.cpu().numpy()
+    cap = restraints.topology.atoms.resname.astype(str) == "NH2"
+    assert cap[expected].sum() == 2
+
+    def no_library(self, resname):
+        raise AssertionError(f"{resname} was looked up in the monomer library")
+
+    monkeypatch.setattr(MonomerLibraryManager, "get_cif_file", no_library)
+    restraints.rebuild_vdw_restraints(model.xyz())
+    np.testing.assert_array_equal(restraints.h_topo.h_parent_idx.cpu().numpy(), expected)

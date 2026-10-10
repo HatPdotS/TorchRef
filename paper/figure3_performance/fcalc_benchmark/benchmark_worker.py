@@ -22,6 +22,7 @@ from pathlib import Path
 n_threads = int(os.environ.get("TORCHREF_NUM_THREADS", 1))
 
 import torch
+
 from torchref import ModelFT, ReflectionData
 
 
@@ -104,7 +105,7 @@ def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu",
     data = ReflectionData(device=device).load_mtz(mtz_file)
     d_min = data.d_min
     M = ModelFT(max_res=d_min, device=device).load_pdb(pdb_file)
-    hkl, _, _, _ = data()
+    hkl = data.hkl
 
     n_atoms = M.xyz().shape[0]
     n_reflections = hkl.shape[0]
@@ -116,7 +117,7 @@ def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu",
             t.clone().detach().requires_grad_(True) if t is not None else None
             for t in aniso_ref
         )
-    
+
     def _forward():
         sf, _ed = M.fft.compute_structure_factors(hkl, *iso, *aniso)
 

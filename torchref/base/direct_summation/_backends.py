@@ -74,7 +74,7 @@ DS_BACKENDS = BackendTable(
             name="ds_triton",
             kernel=(_THIS, "_ds_iso_triton", "_ds_aniso_triton"),
             device="cuda",
-            dtypes=(torch.float32,),
+            dtypes=(torch.float32,),  # dtype-ok: backend capability declaration, not an allocation
             # Every argument except ``hkl`` (position 0), whose dtype provably costs
             # nothing -- see the module docstring.
             probes=(1, 2, 3, 4, 5, 6),
@@ -90,14 +90,13 @@ DS_BACKENDS = BackendTable(
                 "_checkpointed_iso",
                 "_checkpointed_aniso",
             ),
-            # METAL is here because there is no Metal DS kernel; see the module docstring.
-            # TRITON is absent, which is what makes that engine strict.
+            # The base case: no device or dtype restriction, so it serves MPS (there is no
+            # Metal DS kernel) and every call the Triton row declines.
             expect_available="always",
             on_failure="raise",
             # First-order only: the backward replays each chunk under ``enable_grad`` but
             # without ``create_graph``, so a second derivative raises rather than returning
-            # something wrong. ``_eager_*`` is the double-differentiable reference and is
-            # deliberately not in this table -- it is not a production dispatch target.
+            # something wrong.
             second_order=False,
         ),
     ),

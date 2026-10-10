@@ -29,14 +29,16 @@ def binwise_scale(
     Parameters
     ----------
     F_calc, F_obs : torch.Tensor
-        Calculated and observed structure factors, shape ``(N,)``. Complex
-        inputs are reduced to amplitudes via ``abs``.
+        Calculated and observed structure factors, shape ``(N,)``, real or
+        complex. Both are reduced to amplitudes with ``abs``.
     bins : torch.Tensor
         Per-reflection bin index, shape ``(N,)`` (cast to ``int64`` internally).
     valid : torch.Tensor, optional
         Boolean mask of the reflections used to *fit* the scale (default all); it
         is multiplied into ``weights``, so a non-boolean tensor reweights rather
-        than gates. The returned scale applies to every reflection regardless.
+        than gates. Rows without a positive weight are left out of the sums, so
+        they may hold non-finite values. The returned scale applies to every
+        reflection regardless.
     nbins : int, optional
         Number of bins. Defaults to ``bins.max() + 1``.
     weights : torch.Tensor, optional
@@ -52,12 +54,11 @@ def binwise_scale(
     torch.Tensor
         Per-bin scale factors, shape ``(nbins,)``.
     """
-    Fc = F_calc.abs() if F_calc.is_complex() else F_calc.abs()
-    Fo = F_obs.abs() if F_obs.is_complex() else F_obs.abs()
-    Fc = Fc.reshape(-1)
-    Fo = Fo.reshape(-1)
+    Fc = F_calc.abs().reshape(-1)
+    Fo = F_obs.abs().reshape(-1)
     device, dtype = Fc.device, Fc.dtype
 
+    # dtype-ok: scatter_add index; int64 required on torch < 2.8
     bins = bins.reshape(-1).to(device=device, dtype=torch.int64)
     if nbins is None:
         nbins = int(bins.max().item()) + 1 if bins.numel() else 0
@@ -73,14 +74,17 @@ def binwise_scale(
     if nbins == 0:
         return torch.ones(0, device=device, dtype=dtype)
 
+    # Selected, not just weighted: 0 * NaN is NaN, so an excluded non-finite row
+    # would otherwise poison its whole bin.
+    fitted = w > 0
     num = torch.zeros(nbins, device=device, dtype=dtype).scatter_add(
-        0, bins, w * Fo * Fc
+        0, bins, torch.where(fitted, w * Fo * Fc, 0.0)
     )
     den = torch.zeros(nbins, device=device, dtype=dtype).scatter_add(
-        0, bins, w * Fc * Fc
+        0, bins, torch.where(fitted, w * Fc * Fc, 0.0)
     )
     count = torch.zeros(nbins, device=device, dtype=dtype).scatter_add(
-        0, bins, (w > 0).to(dtype)
+        0, bins, fitted.to(dtype)
     )
 
     c = torch.where(

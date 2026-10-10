@@ -21,9 +21,11 @@ from typing import Optional, Tuple
 
 import torch
 
+from torchref.base.fourier.coefficients import map_coefficients
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.cif import write_map
-from torchref.symmetry.grid_utils import calculate_optimal_grid_size
+from torchref.scaling.scaler import Scaler
+from torchref.symmetry import SpaceGroup
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
@@ -41,38 +43,31 @@ class Map(DeviceMixin):
         Grid dimensions (nx, ny, nz). If None, determined automatically
         from cell parameters and resolution.
     map_type : str, optional
-        Type of map to compute. One of ``"2Fo-Fc"`` or ``"Fcalc"``.
-        Default is ``"2Fo-Fc"``. Note ``"2Fo-Fc"`` is a *plain* 2Fo-Fc map
-        (no figure-of-merit ``m`` and no sigma-A coefficient ``D``; i.e.
-        ``m=1``, ``D=1``), not a likelihood-weighted 2mFo-DFc map.
+        ``"2Fo-Fc"`` (default; unweighted, see :mod:`torchref.maps.map`) or
+        ``"Fcalc"``.
+    device : torch.device, optional
+        Computation device. ``data`` and ``model`` are moved onto it in place; if
+        None, ``model`` is moved onto ``data``'s device.
+    units : str, optional
+        ``"normalized"`` (default) keeps the FFT's ``1/N`` normalisation;
+        ``"electrons"`` gives ``(1/V) sum_h F(h) exp(-2 pi i h.x)``, electrons per
+        cubic Angstrom, which is meaningful only when ``data.F`` is on the absolute
+        scale: every map type is on ``data.F``'s scale.
+    scaler : Scaler, optional
+        A fitted :class:`~torchref.scaling.scaler.Scaler` for ``(data, model)``, e.g. a
+        refinement's ``scaler``. Every map type uses ``scaler(F_calc)``, with bulk
+        solvent and anisotropic scale, so F_calc is on ``data.F``'s scale. If None,
+        :meth:`calculate` fits the standard one (``initialize()`` then
+        ``refine_lbfgs()``) on each call.
 
     Attributes
     ----------
-    data : ReflectionData
-        The observed reflection data.
-    model : ModelFT
-        The model used to compute structure factors.
-    gridsize : tuple of int or None
-        Requested grid dimensions; ``None`` means auto-determined at
-        ``calculate()`` time.
-    map_type : str
-        The configured map type (one of ``VALID_MAP_TYPES``).
     map_data : torch.Tensor or None
         The computed 3D real-space map, or ``None`` before ``calculate()``.
-    device : torch.device
-        Computation device.
-
-    Methods
-    -------
-    calculate()
-        Compute and return the 3D real-space map.
-    write(filepath)
-        Write the map to a CCP4 file (computing it first if needed).
-    reset_cache()
-        Discard the cached map so it is recomputed on next access.
     """
 
     VALID_MAP_TYPES = ("2Fo-Fc", "Fcalc")
+    VALID_UNITS = ("normalized", "electrons")
 
     def __init__(
         self,
@@ -81,16 +76,22 @@ class Map(DeviceMixin):
         gridsize: Optional[Tuple[int, int, int]] = None,
         map_type: str = "2Fo-Fc",
         device: Optional[torch.device] = None,
+        units: str = "normalized",
+        scaler: Optional[Scaler] = None,
     ):
         if map_type not in self.VALID_MAP_TYPES:
             raise ValueError(
                 f"map_type must be one of {self.VALID_MAP_TYPES}, got '{map_type}'"
             )
+        if units not in self.VALID_UNITS:
+            raise ValueError(f"units must be one of {self.VALID_UNITS}, got '{units}'")
+        self.units = units
         self.device = resolve_device(data, model, device=device)
         self.data = data
         self.model = model
         self.gridsize = gridsize
         self.map_type = map_type
+        self.scaler = scaler
         self._map: Optional[torch.Tensor] = None
 
     def reset_cache(self) -> None:
@@ -104,10 +105,8 @@ class Map(DeviceMixin):
 
     def _determine_gridsize(self) -> Tuple[int, int, int]:
         """Determine optimal grid size from cell, resolution, and spacegroup."""
-        cell_params = self.data.cell.data
         max_res = float(self.data.resolution.min())
-        spacegroup = self.data.spacegroup.name
-        return calculate_optimal_grid_size(cell_params, max_res, spacegroup)
+        return self.data.spacegroup.optimal_grid_size(self.data.cell, max_res)
 
     def _compute_map_coefficients(
         self, fobs: torch.Tensor, fcalc: torch.Tensor
@@ -119,7 +118,7 @@ class Map(DeviceMixin):
         fobs : torch.Tensor
             Observed amplitudes, shape (N,).
         fcalc : torch.Tensor
-            Complex structure factors from model, shape (N,).
+            Complex model structure factors on ``fobs``'s scale, shape (N,).
 
         Returns
         -------
@@ -129,13 +128,7 @@ class Map(DeviceMixin):
         if self.map_type == "Fcalc":
             return fcalc
 
-        # 2Fo-Fc: (2*Fobs - |Fcalc|) * exp(i * phi_calc). Note this is a plain
-        # 2Fo-Fc map: no figure-of-merit ``m`` weights Fobs and no sigma-A
-        # coefficient ``D`` scales Fcalc (i.e. m=1, D=1), so it is not a true
-        # likelihood-weighted 2mFo-DFc map.
-        fcalc_amp = fcalc.abs()
-        phi_calc = torch.angle(fcalc)
-        return (2.0 * fobs - fcalc_amp) * torch.exp(1j * phi_calc)
+        return map_coefficients(fobs, fcalc)[0]
 
     def calculate(self) -> torch.Tensor:
         """Compute the electron density map.
@@ -145,16 +138,18 @@ class Map(DeviceMixin):
         torch.Tensor
             3D real-space map tensor.
         """
-        # Expand to P1 without Friedel mates (place_on_grid handles
-        # Hermitian symmetry via enforce_hermitian=True)
-        data_p1 = self.data.expand_to_p1(include_friedel=False)
-        hkl_p1, fobs_p1, _, _ = data_p1.data_indexed()
+        # One amplitude per reflection: the Hermitian placement would otherwise
+        # count every measured Bijvoet pair twice.
+        valid = self.data.masks()
+        rows = self.data.bijvoet_representatives(valid)
+        fobs = self.data.bijvoet_mean(self.data.F, valid)[rows]
+        coefficients = self._compute_map_coefficients(fobs, self._scaled_fcalc()[rows])
 
-        # Compute Fcalc for P1-expanded hkl
-        fcalc_p1 = self.model.get_structure_factor(hkl_p1)
-
-        # Compute map coefficients
-        coefficients_p1 = self._compute_map_coefficients(fobs_p1, fcalc_p1)
+        # The coefficients exist on the data's own rows, so they are expanded with
+        # their phase shifts; place_on_grid adds the Friedel half.
+        sg = self.data.spacegroup or SpaceGroup("P1", device=self.data.device)
+        hkl_p1, idx, shifts = sg.expand_hkl(self.data.hkl[rows], include_friedel=False)
+        coefficients_p1 = coefficients[idx] * torch.exp(1j * shifts)
 
         # Determine grid size
         if self.gridsize is not None:
@@ -169,8 +164,30 @@ class Map(DeviceMixin):
         # FFT to real space: ρ(r) = (1/N) * sum_h F(h) * exp(-2πi h·r)
         # (norm="forward" applies the 1/N normalization, N = grid points)
         self._map = torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
+        self._map = self._to_units(self._map)
 
         return self._map
+
+    def _scaled_fcalc(self) -> torch.Tensor:
+        """``scaler(F_calc)``, shape (N,), row-aligned with ``data.hkl``.
+
+        The model is evaluated with ``cached=False`` so this no-grad pass leaves
+        no detached tensor in its forward cache.
+        """
+        scaler = self.scaler
+        if scaler is None:
+            scaler = Scaler(self.model, self.data, verbose=0, device=self.device)
+            scaler.initialize()
+            scaler.refine_lbfgs(verbose=False)
+        with torch.no_grad():
+            return scaler(self.data.structure_factors(self.model, cached=False))
+
+    def _to_units(self, real_map: torch.Tensor) -> torch.Tensor:
+        """Rescale a ``1/N``-normalised FFT map to the configured units."""
+        if self.units == "electrons":
+            volume = self.data.cell.volume.to(real_map.dtype)
+            return real_map * (real_map.numel() / volume)
+        return real_map
 
     def write(self, filepath: str) -> int:
         """Write the map to a CCP4 file.

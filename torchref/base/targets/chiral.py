@@ -42,7 +42,7 @@ def chiral_math(
     ``V = v1 . (v2 x v3)`` where ``vi = xyz[i] - xyz[center]``. Achiral
     centers (``ideal_volumes == 0``) are restrained on ``|V|`` against 2.5.
 
-    Dispatches to :func:`torchref.base.targets.triton.chiral_math_triton`
+    Dispatches to :func:`torchref.base.targets.triton.chiral.chiral_math_triton`
     on CUDA float32. Falls back to eager otherwise.
 
     Parameters

@@ -10,6 +10,7 @@ with invalidation on parameter mutation or backward propagation.
 unaffected -- it is a standalone helper its users drive themselves.
 """
 
+import weakref
 from contextlib import contextmanager
 
 import torch
@@ -44,20 +45,49 @@ class ParameterFingerprint:
         return len(self._entries) > 0
 
 
+class _TensorKey:
+    """Cache key for one tensor: the tensor itself, held weakly, plus its storage state.
+
+    Equal only to a key for the *same live tensor object* with the same ``data_ptr``,
+    ``_version`` and ``requires_grad``. ``data_ptr`` alone cannot identify a tensor: the
+    allocator hands a freed tensor's address to the next allocation, whose ``_version``
+    also starts at 0, so a new ``hkl`` would otherwise be served the old one's result.
+    """
+
+    __slots__ = ("_ref", "_state")
+
+    def __init__(self, t: torch.Tensor):
+        self._ref = weakref.ref(t)
+        self._state = (t.data_ptr(), t._version, t.requires_grad)
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, _TensorKey):
+            return NotImplemented
+        t = self._ref()
+        return t is not None and t is other._ref() and self._state == other._state
+
+    __hash__ = None
+
+
 class CachedForwardMixin:
     """Mixin that caches ``forward()`` results with automatic invalidation.
 
     Overrides ``__call__`` to return a cached result while the module's parameters, buffers
     and call arguments are unchanged and no backward has propagated through the cached
-    output. Invalidated by: any parameter/buffer ``(data_ptr, _version)`` change (so
-    optimizer in-place updates and parameter replacement are both covered); any input
-    tensor ``(data_ptr, _version)`` or non-tensor argument change; or a backward through
-    the cached output, via a gradient hook that bumps a generation counter.
+    output. Tensors -- parameters, buffers and inputs alike -- are matched by identity (the
+    same live object, held weakly) and ``(data_ptr, _version, requires_grad)``, so a new
+    tensor never matches, even one allocated at a freed tensor's address. Invalidated by:
+    an optimizer in-place update, parameter replacement or freezing; any of those on an
+    input tensor, a different input tensor, or a non-tensor argument change; or a
+    backward through the cached output, via a gradient hook that bumps a generation
+    counter. A write through ``.data`` (``p.data.copy_(x)``) leaves ``data_ptr`` and
+    ``_version`` as they were, so it is served stale: write under ``torch.no_grad()``
+    without ``.data``, or call :meth:`reset_forward_cache` after.
 
     The cached tensor **keeps its autograd graph**, so gradients flow on the first backward
     and the cache is invalidated after it -- a second backward on the same result needs
-    ``retain_graph``. A caller that reads the result under ``no_grad`` and stores it will
-    poison the cache with a detached tensor; call :meth:`reset_forward_cache` after.
+    ``retain_graph``. A result computed with grad disabled has no graph, so it is served
+    only while grad stays disabled; a grad-enabled call recomputes it.
 
     Fingerprints inline rather than via :class:`ParameterFingerprint`, which is a separate
     mechanism and also tracks ``numel``.
@@ -69,27 +99,24 @@ class CachedForwardMixin:
     # ---- internal helpers ------------------------------------------------
 
     def _fingerprint_state(self):
-        """Fingerprint all parameters and buffers by ``(data_ptr, _version)``."""
-        entries = []
-        for t in self.parameters():
-            entries.append((t.data_ptr(), t._version))
-        for t in self.buffers():
-            entries.append((t.data_ptr(), t._version))
+        """Key every parameter and buffer by identity and storage state."""
+        entries = [_TensorKey(t) for t in self.parameters()]
+        entries.extend(_TensorKey(t) for t in self.buffers())
         return tuple(entries)
 
     @staticmethod
     def _fingerprint_inputs(args, kwargs):
-        """Fingerprint call arguments (tensor ptr/version, else by value)."""
+        """Key call arguments: tensors as in the state key, the rest by value."""
         entries = []
         for a in args:
             if isinstance(a, torch.Tensor):
-                entries.append((a.data_ptr(), a._version))
+                entries.append(_TensorKey(a))
             else:
                 entries.append(a)
         for k in sorted(kwargs):
             v = kwargs[k]
             if isinstance(v, torch.Tensor):
-                entries.append((k, v.data_ptr(), v._version))
+                entries.append((k, _TensorKey(v)))
             else:
                 entries.append((k, v))
         return tuple(entries)
@@ -127,10 +154,13 @@ class CachedForwardMixin:
             state_fp = self._fingerprint_state()
             input_fp = self._fingerprint_inputs(args, kwargs)
             gen = getattr(self, "_fwd_current_gen", 0)
+            # One-sided: a result computed without grad has no graph to give a grad-mode
+            # call, while a graph-carrying result is still right under ``no_grad``.
             if (
                 state_fp == self._fwd_cached_state_fp
                 and input_fp == self._fwd_cached_input_fp
                 and gen == self._fwd_cache_gen
+                and (self._fwd_cached_with_grad or not torch.is_grad_enabled())
             ):
                 return cached
 
@@ -145,6 +175,7 @@ class CachedForwardMixin:
 
         # Store cache state
         self._fwd_cached_output = result
+        self._fwd_cached_with_grad = torch.is_grad_enabled()
         self._fwd_cached_state_fp = self._fingerprint_state()
         self._fwd_cached_input_fp = self._fingerprint_inputs(args, kwargs)
         if not hasattr(self, "_fwd_current_gen"):
@@ -172,11 +203,6 @@ def no_caching():
 
     Flips **process-global** state and is therefore not thread-safe: other threads see the
     change too, and nesting only restores correctly if the blocks are properly nested.
-
-    Examples
-    --------
-    >>> with no_caching():
-    ...     reference = model(hkl)  # doctest: +SKIP
     """
     previous = _caching_config.value
     _caching_config.value = False

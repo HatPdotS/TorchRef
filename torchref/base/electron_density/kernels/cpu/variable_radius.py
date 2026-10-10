@@ -1,12 +1,14 @@
 """Portable per-atom variable-radius density splatting.
 
-Reached by ``force_portable`` on any device, by CUDA/MPS float64, and whenever the fused
-C++ kernel could not be built. Plain ``scatter_add`` only, so it runs on every device,
-supports float64, and is double-differentiable -- which makes it the reference the
-accelerator kernels are checked against.
+The base case of ``DENSITY_BACKENDS`` (``electron_density/_backends.py``): it runs when
+no accelerator row matches the inputs (CUDA float64, a mixed-dtype CPU call) or none is
+available (no Triton, Metal or C++ build), under ``force_portable``, and after a
+``"degrade"`` failure of the CUDA or Metal kernel. Plain ``scatter_add`` only, so it
+runs on every device, supports float64, and is double-differentiable -- which makes it
+the reference the accelerator kernels are checked against.
 
-One truncation contract, shared with the Triton, Metal and fused-CPU kernels, so AUTO and
-EAGER agree to float noise on every device:
+One truncation contract, shared with the Triton, Metal and fused-CPU kernels, so all of
+them agree to float32 rounding on every device:
 
     voxel v gets atom i's density iff ``||w||^2 <= r_i^2``, where ``w`` is the Cartesian
     atom->voxel vector (sphere centred on the ATOM, not on its anchor node) and ``r_i``
@@ -18,8 +20,9 @@ statement.
 
 Out-of-sphere voxels are zeroed rather than dropped, keeping the box dense so one
 ``scatter_add`` covers the chunk -- some wasted writes, the right trade for a portable
-reference. These functions ADD into the supplied ``density_map`` (so the isotropic and
-anisotropic passes accumulate into one map) and are autograd-connected in
+reference. These functions return ``density_map + splat`` and do not modify
+``density_map`` (with no atoms the result is a view of it), so the isotropic and
+anisotropic passes chain through the return value; they are autograd-connected in
 xyz / adp / u / occ.
 """
 
@@ -30,6 +33,7 @@ import math
 import torch
 
 from torchref.base.electron_density.radius_policy import _u6_to_u3
+from torchref.config import get_int_dtype
 
 _PI = math.pi
 _PI_SQ = _PI * _PI
@@ -51,22 +55,25 @@ def _bucket_by_radius(radius: torch.Tensor, center_1d: torch.Tensor):
         order_parts.append(idx)
         spans.append((float(r), cursor, cursor + idx.numel()))
         cursor += idx.numel()
-    order = (torch.cat(order_parts) if order_parts
-             else torch.zeros(0, dtype=torch.long, device=radius.device))
+    order = (
+        torch.cat(order_parts)
+        if order_parts
+        else torch.zeros(0, dtype=get_int_dtype(), device=radius.device)
+    )
     return order, spans
 
 
 def _axis_half_widths(r: float, inv_frac: torch.Tensor, grid_dims):
     """``ceil(r * n_axis * ||inv_frac row_axis||)`` -- the kernels' enumeration box.
 
-    The norm is taken in float64 **on the CPU**, never on the input's device: this path also
-    serves ``force_portable`` on MPS, which has no float64 and raises on ``.double()``.
-    float64 matters because the result feeds a ``ceil`` -- a value landing a hair under an
-    integer in float32 shrinks the box by one voxel and silently clips the sphere.
+    The norm is taken on the CPU, since the result is three Python ints anyway.
     """
-    row_norms = torch.linalg.norm(inv_frac.detach().cpu().double(), dim=1)
+    row_norms = torch.linalg.norm(inv_frac.detach().cpu(), dim=1)
+    # The value feeds a ``ceil``: one that rounds a hair under an integer would shrink
+    # the box by a voxel and clip the sphere. The 1e-6 slack is ~10 float32 ulps, so the
+    # box is never undersized; an oversized one costs only voxels the radius test drops.
     return tuple(
-        int(math.ceil(r * float(n) * float(row_norms[i])))
+        int(math.ceil(r * float(n) * float(row_norms[i]) * (1.0 + 1e-6)))
         for i, n in enumerate(grid_dims)
     )
 
@@ -88,19 +95,22 @@ def _canonical_setup(xyz, inv_frac, frac, grid_dims, radius_per_atom, dtype):
     nx, ny, nz = grid_dims
     grid_f = torch.tensor(grid_dims, device=device, dtype=dtype)
     xyz_frac = (xyz @ inv_frac.T) % 1.0
-    center_idx = torch.round(xyz_frac * grid_f).to(torch.long)
+    center_idx = torch.round(xyz_frac * grid_f).to(get_int_dtype())
     # w0: atom position relative to its anchor node, in Cartesian. This is what
     # centres the sphere on the atom rather than on the node.
     w0 = (xyz_frac - center_idx.to(dtype) / grid_f) @ frac.T
-    center_1d = ((center_idx[:, 0] % nx) * (ny * nz)
-                 + (center_idx[:, 1] % ny) * nz + (center_idx[:, 2] % nz))
+    # dtype-ok: the flat voxel index overflows int32 above 2**31 voxels
+    c = center_idx.to(torch.int64)
+    center_1d = (c[:, 0] % nx) * (ny * nz) + (c[:, 1] % ny) * nz + (c[:, 2] % nz)
     order, spans = _bucket_by_radius(radius_per_atom, center_1d)
     return order, spans, center_idx[order], w0[order]
 
 
 def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
                             inv_frac_matrix, frac_matrix, radius_per_atom):
-    """Portable canonical-sphere isotropic splat; adds into ``density_map``.
+    """Portable canonical-sphere isotropic splat; returns ``density_map + splat``.
+
+    ``density_map`` is not modified.
 
     Signature mirrors
     :func:`~torchref.base.electron_density.kernels.cpu.sphere_splat.add_isotropic_cpu_sphere_var`
@@ -111,8 +121,9 @@ def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)
     grid_dims = (nx, ny, nz)
+    # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
     strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
-    grid_shape = torch.tensor(grid_dims, device=device, dtype=torch.long)
+    grid_shape = torch.tensor(grid_dims, device=device, dtype=get_int_dtype())
 
     order, spans, center_idx, w0 = _canonical_setup(
         xyz, inv_frac_matrix, frac_matrix, grid_dims, radius_per_atom, dtype)
@@ -139,7 +150,9 @@ def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
 
 def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
                               inv_frac_matrix, frac_matrix, radius_per_atom):
-    """Portable canonical-sphere anisotropic splat; adds into ``density_map``.
+    """Portable canonical-sphere anisotropic splat; returns ``density_map + splat``.
+
+    ``density_map`` is not modified.
 
     Signature mirrors
     :func:`~torchref.base.electron_density.kernels.cpu.sphere_splat.add_anisotropic_cpu_sphere_var`.
@@ -151,8 +164,9 @@ def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)
     grid_dims = (nx, ny, nz)
+    # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
     strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
-    grid_shape = torch.tensor(grid_dims, device=device, dtype=torch.long)
+    grid_shape = torch.tensor(grid_dims, device=device, dtype=get_int_dtype())
 
     order, spans, center_idx, w0 = _canonical_setup(
         xyz, inv_frac_matrix, frac_matrix, grid_dims, radius_per_atom, dtype)

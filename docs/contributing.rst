@@ -38,7 +38,9 @@ numbers and superseded approaches to the commit history.
 
 .. code-block:: python
 
-   def compute_structure_factors(hkl, xyz, b_factors):
+   def compute_structure_factors(
+       hkl: torch.Tensor, xyz: torch.Tensor, b_factors: torch.Tensor
+   ) -> torch.Tensor:
        """Compute structure factors for the given reflections.
 
        Parameters
@@ -63,8 +65,8 @@ numbers and superseded approaches to the commit history.
 
 Don't restate the signature in prose — types live in the annotations. Don't add
 an ``Examples`` block that is entirely ``# doctest: +SKIP``: it costs lines and
-tests nothing. The examples in :doc:`quickstart` run under
-``sphinx.ext.doctest``, so put runnable examples there and they will be checked.
+tests nothing. The examples in :doc:`quickstart` are ``sphinx.ext.doctest`` tests,
+so put runnable examples there and check them with ``make -C docs doctest``.
 
 Running Tests
 -------------
@@ -75,7 +77,9 @@ Running Tests
    pytest tests/ --cov=torchref     # with coverage
    pytest tests/unit/               # fast unit tests only
 
-GPU, slow, and Amber tests are skipped unless enabled. See :doc:`user_guide/testing`.
+Slow tests need ``--run-slow``; accelerator and Amber tests run wherever their
+hardware or dependencies are present and are skipped otherwise. See
+:doc:`user_guide/testing`.
 
 Submitting Changes
 ------------------

@@ -2,8 +2,8 @@
 Utility functions and classes for TorchRef.
 
 Tensor containers (``TensorMasks``, ``TensorDict``), device/dtype movement
-(``DeviceMixin``, ``resolve_device``), debugging mixins, statistics formatting, gradient
-norms, PDB/selection parsing, loss-finiteness validation, autograd introspection, JSON
+(``DeviceMixin``, ``resolve_device``), debugging mixins, statistics formatting,
+PDB atom-table sanitizing, loss-finiteness validation, autograd introspection, JSON
 serialization and backend dispatch.
 
 ``__all__`` is the package's public surface. Submodule-only helpers -- e.g.
@@ -24,9 +24,6 @@ from .debug_utils import DebugMixin, print_module_summary
 # Device movement
 from .device_mixin import DeviceMixin, DeviceMovementMixin
 from .device_resolution import require_cell_dtype, resolve_device
-
-# Gradient utilities
-from .gradnorm import gradnorm
 
 # Loss finiteness validator
 from .loss_validation import (
@@ -60,8 +57,6 @@ from .utils import (
     ModuleReference,
     TensorDict,
     TensorMasks,
-    create_selection_mask,
-    parse_phenix_selection,
     sanitize_pdb_dataframe,
 )
 
@@ -80,8 +75,6 @@ __all__ = [
     "TensorDict",
     "ModuleReference",
     "sanitize_pdb_dataframe",
-    "parse_phenix_selection",
-    "create_selection_mask",
     # Debugging
     "DebugMixin",
     "print_module_summary",
@@ -93,8 +86,6 @@ __all__ = [
     "format_stats_table",
     # Serialization
     "convert_to_serializable",
-    # Gradients
-    "gradnorm",
     # Loss finiteness validator
     "validate_loss",
     "NonFiniteLossError",

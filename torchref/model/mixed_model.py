@@ -6,7 +6,7 @@ with learnable population fractions, enabling refinement of time-resolved
 crystallographic data with multiple conformational states.
 """
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 import torch
 from torch import nn
@@ -16,6 +16,33 @@ from torchref.utils.device_resolution import resolve_device
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
+
+
+def _check_fractions(fractions: Sequence[float], n_models: int, atol: float) -> None:
+    """Raise ``ValueError`` unless ``fractions`` are populations of ``n_models`` models.
+
+    Checked before any logit or log is taken, because those clamp a negative entry
+    onto the simplex without a word.
+
+    Parameters
+    ----------
+    fractions : sequence of float
+        One population per model.
+    n_models : int
+        Number of models the fractions weight.
+    atol : float
+        Allowed distance of the sum from 1.
+    """
+    if len(fractions) != n_models:
+        raise ValueError(
+            f"Number of fractions ({len(fractions)}) must match "
+            f"number of models ({n_models})."
+        )
+    if not all(f >= 0 for f in fractions):
+        raise ValueError(f"Fractions must be non-negative, got {list(fractions)}.")
+    total = sum(fractions)
+    if abs(total - 1.0) > atol:
+        raise ValueError(f"Initial fractions must sum to 1.0, got {total:.6f}.")
 
 
 class MixedModel(DeviceMovementMixin, nn.Module):
@@ -32,13 +59,16 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         List of ModelFT objects to combine. All models must have compatible
         cell parameters and space groups.
     initial_fractions : List[float], optional
-        Initial population fractions for each model. Must sum to 1.0.
-        If None, equal fractions are used (1/N for each model).
+        Initial population fractions for each model, non-negative and summing to
+        1.0. If None, equal fractions are used (1/N for each model).
     frozen_fractions : bool, optional
         If True, fractions are not updated during optimization.
         Default is False.
     verbose : int, optional
         Verbosity level. Default is 0.
+    device : torch.device, optional
+        Device to place the model and parameters on. If None, infers from
+        the first model's device.
 
     Attributes
     ----------
@@ -46,6 +76,12 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         Constituent ModelFT objects (proper submodule registration).
     fraction_params : nn.Parameter
         Raw parameters for fraction computation (softmax applied).
+
+    Raises
+    ------
+    ValueError
+        If models list is empty, fractions don't match model count, are
+        negative or don't sum to 1, or models have incompatible parameters.
     """
 
     def __init__(
@@ -56,29 +92,7 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         verbose: int = 0,
         device: Optional[torch.device] = None,
     ):
-        """
-        Initialize MixedModel.
-
-        Parameters
-        ----------
-        models : List[ModelFT]
-            List of ModelFT objects to combine.
-        initial_fractions : List[float], optional
-            Initial population fractions. Must sum to 1.0.
-        frozen_fractions : bool, optional
-            If True, fractions are frozen. Default is False.
-        verbose : int, optional
-            Verbosity level. Default is 0.
-        device : torch.device, optional
-            Device to place the model and parameters on. If None, infers from
-            the first model's device.
-
-        Raises
-        ------
-        ValueError
-            If models list is empty, fractions don't match model count,
-            fractions don't sum to 1, or models have incompatible parameters.
-        """
+        """Initialize a MixedModel; see the class docstring for the arguments."""
         super().__init__()
 
         if not models:
@@ -97,16 +111,7 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         if initial_fractions is None:
             initial_fractions = [1.0 / n_models] * n_models
         else:
-            if len(initial_fractions) != n_models:
-                raise ValueError(
-                    f"Number of fractions ({len(initial_fractions)}) must match "
-                    f"number of models ({n_models})."
-                )
-            total = sum(initial_fractions)
-            if abs(total - 1.0) > 1e-6:
-                raise ValueError(
-                    f"Initial fractions must sum to 1.0, got {total:.6f}."
-                )
+            _check_fractions(initial_fractions, n_models, atol=1e-6)
 
         # Inverse softmax: softmax(theta) = fractions, so theta = log(fractions).
         # Built at the base models' float dtype so the mixing weights stay
@@ -123,11 +128,10 @@ class MixedModel(DeviceMovementMixin, nn.Module):
             print(f"  Fractions frozen: {frozen_fractions}")
 
     def _validate_models(self):
-        """Check that the models agree on unit cell and space group.
+        """Raise ``ValueError`` unless the models agree on unit cell and space group.
 
-        A space-group mismatch raises ``ValueError``. The cell check is an
-        ``assert`` (1 Å / 1 % tolerance) that compares the reference model with
-        itself, so it never fires -- do not rely on cells being validated here.
+        Cells agree when every parameter lies within 1 Å (or 1°) plus 1 % of the
+        first model's; space groups when their numbers match.
         """
         if len(self.models) < 2:
             return  # Single model always compatible with itself
@@ -137,9 +141,13 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         ref_sg = ref_model.spacegroup
 
         for i, model in enumerate(self.models[1:], start=1):
-            # Check cell compatibility (allow small tolerance)
-            if ref_cell is not None and model.cell is not None:
-                assert torch.allclose( ref_model.cell.data, ref_cell.data,atol=1, rtol=0.01)
+            cell = model.cell
+            if ref_cell is not None and cell is not None:
+                if not torch.allclose(cell.data, ref_cell.data, atol=1, rtol=0.01):
+                    raise ValueError(
+                        f"Model {i} has an incompatible unit cell. "
+                        f"Reference: {ref_cell.tolist()}, Model {i}: {cell.tolist()}"
+                    )
 
             # Check spacegroup compatibility
             if ref_sg is not None and model.spacegroup is not None:
@@ -178,10 +186,14 @@ class MixedModel(DeviceMovementMixin, nn.Module):
     # Grid infrastructure (delegates to constituent models)
     # =========================================================================
 
+    def real_space_grid(self) -> torch.Tensor:
+        """Build the Cartesian grid from the first model (shared cell → same grid)."""
+        return self.models[0].real_space_grid()
+
     @property
-    def real_space_grid(self) -> Optional[torch.Tensor]:
-        """Real-space coordinate grid from first model (shared cell → same grid)."""
-        return self.models[0].real_space_grid
+    def grid_shape(self) -> Optional[tuple]:
+        """Map dimensions (nx, ny, nz) from the first model."""
+        return self.models[0].grid_shape
 
     @property
     def fft(self):
@@ -194,18 +206,13 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         return self.models[0].gridsize
 
     @property
-    def map_symmetry(self):
-        """Map symmetry operator from first model."""
-        return self.models[0].map_symmetry
-
-    @property
     def inv_fractional_matrix(self) -> torch.Tensor:
-        """Inverse fractionalization (orthogonalization) matrix."""
+        """``(3, 3)`` fractionalization matrix B^-1 (Cartesian -> fractional)."""
         return self.cell.inv_fractional_matrix.to(dtype=self.dtype_float)
 
     @property
     def fractional_matrix(self) -> torch.Tensor:
-        """Fractionalization matrix."""
+        """``(3, 3)`` orthogonalization matrix B (fractional -> Cartesian)."""
         return self.cell.fractional_matrix.to(dtype=self.dtype_float)
 
     def setup_grid(self, max_res=None, gridsize=None):
@@ -225,24 +232,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         """
         for model in self.models:
             model.setup_grid(max_res=max_res, gridsize=gridsize)
-
-    def get_radius(self, min_radius_Angstrom: float = 4.0) -> int:
-        """
-        Get the radius in voxels for density calculation.
-
-        Delegates to first model (same grid → same voxel size).
-
-        Parameters
-        ----------
-        min_radius_Angstrom : float, optional
-            Minimum radius in Angstroms. Default is 4.0.
-
-        Returns
-        -------
-        int
-            Radius in voxels.
-        """
-        return self.models[0].get_radius(min_radius_Angstrom)
 
     def build_complete_map(self) -> torch.Tensor:
         """
@@ -325,26 +314,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
             print(f"MixedModel forward: fractions = {fractions.detach().tolist()}")
 
         return f_mixed
-
-    def get_individual_fcalc(
-        self, hkl: torch.Tensor, recalc: bool = True
-    ) -> List[torch.Tensor]:
-        """
-        Get structure factors from each model individually.
-
-        Parameters
-        ----------
-        hkl : torch.Tensor
-            Miller indices with shape (n_reflections, 3).
-        recalc : bool, optional
-            If True, force recalculation. Default is True.
-
-        Returns
-        -------
-        List[torch.Tensor]
-            List of structure factor tensors, one per model.
-        """
-        return [model(hkl, recalc=recalc) for model in self.models]
 
     def copy(self) -> "MixedModel":
         """
@@ -430,30 +399,11 @@ class MixedModel(DeviceMovementMixin, nn.Module):
             )
         ]
 
-        # Extract cell/spacegroup from first model
-        cell = None
-        spacegroup = None
-        model0 = self.models[0]
-        if hasattr(model0, "cell") and model0.cell is not None:
-            cell_obj = model0.cell
-            if hasattr(cell_obj, "tolist"):
-                cell = cell_obj.tolist()
-            elif hasattr(cell_obj, "parameters"):
-                cell = cell_obj.parameters.tolist()
-        if hasattr(model0, "spacegroup") and model0.spacegroup is not None:
-            sg = model0.spacegroup
-            if hasattr(sg, "hm"):
-                spacegroup = sg.hm
-            elif hasattr(sg, "xhm"):
-                spacegroup = sg.xhm()
-            else:
-                spacegroup = str(sg)
-
         mapping = IHMEnsembleMapping(
             states=states,
             model_groups=groups,
-            cell=cell,
-            spacegroup=spacegroup,
+            cell=None if self.cell is None else self.cell.tolist(),
+            spacegroup=None if self.spacegroup is None else self.spacegroup.hm,
         )
 
         # Create a temporary ModelCollection-like wrapper for the writer

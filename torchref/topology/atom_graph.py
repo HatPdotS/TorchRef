@@ -1,0 +1,460 @@
+"""The atom level of a topology: atoms as nodes, typed edge blocks over them.
+
+Bonds are promoted to a real adjacency structure -- a CSR pair built once from the bond
+block -- so :meth:`AtomGraph.neighbors` answers "what is atom *i* bonded to" without
+inferring it from restraint index lists. Angles, torsions, chirals and planes stay typed
+hyperedge sets read from the monomer library, because the library deliberately does not
+restrain every path the bond graph implies.
+
+Every indexing structure here is a tensor, so it moves with ``.to(device)``
+alongside the edge blocks. Only the per-atom identifiers are NumPy, because they are
+strings.
+
+The identity (names, elements, altlocs, record type, charge, residue membership) exists
+from the moment an atom table is read; the edge blocks stay empty until the graph is
+connected against the monomer dictionaries.
+"""
+
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Set, Tuple
+
+import numpy as np
+import torch
+
+from torchref.config import get_int_dtype
+from torchref.topology.edges import EdgeBlock
+from torchref.utils.device_mixin import DeviceMixin
+
+
+def _build_csr(bonds: torch.Tensor, n_atoms: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Symmetric CSR adjacency from an ``(E, 2)`` bond list.
+
+    Parameters
+    ----------
+    bonds : torch.Tensor
+        Bond atom indices, shape ``(E, 2)``, integer dtype.
+    n_atoms : int
+        Number of atoms, so isolated trailing atoms still get an entry.
+
+    Returns
+    -------
+    indptr, indices : torch.Tensor
+        ``indices[indptr[i]:indptr[i + 1]]`` are atom ``i``'s bonded neighbours,
+        ascending, each partner listed once, so a bond row the edge list repeats
+        does not inflate an atom's degree.
+    """
+    device = bonds.device
+    if bonds.numel() == 0:
+        return (
+            torch.zeros(n_atoms + 1, dtype=get_int_dtype(), device=device),
+            torch.zeros(0, dtype=get_int_dtype(), device=device),
+        )
+
+    src = torch.cat([bonds[:, 0], bonds[:, 1]])
+    dst = torch.cat([bonds[:, 1], bonds[:, 0]])
+
+    # Unique directed pairs, which ``torch.unique`` returns in lexicographic
+    # (src, dst) order -- the CSR layout wanted below.
+    pairs = torch.unique(torch.stack([src, dst], dim=1), dim=0)
+    src, dst = pairs[:, 0], pairs[:, 1]
+
+    counts = torch.bincount(src, minlength=n_atoms)
+    indptr = torch.zeros(n_atoms + 1, dtype=get_int_dtype(), device=device)
+    torch.cumsum(counts, dim=0, out=indptr[1:])
+    return indptr, dst.to(get_int_dtype())
+
+
+def _extend_paths(
+    indptr: torch.Tensor, indices: torch.Tensor, paths: torch.Tensor
+) -> torch.Tensor:
+    """Extend each bonded path by one bonded step, without doubling back.
+
+    Parameters
+    ----------
+    indptr, indices : torch.Tensor
+        CSR adjacency.
+    paths : torch.Tensor
+        Existing paths, shape ``(P, L)`` with ``L >= 2``, each row a chain of bonded
+        atoms.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(P', L + 1)``. A path is extended by every bonded neighbour of its last
+        atom except the one it just came from, so ``(i, j, k)`` never yields ``k = i``.
+    """
+    device = paths.device
+    if paths.numel() == 0:
+        return torch.zeros(
+            (0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device
+        )
+
+    last, prev = paths[:, -1], paths[:, -2]
+    counts = indptr[last + 1] - indptr[last]
+    total = int(counts.sum())
+    if total == 0:
+        return torch.zeros(
+            (0, paths.shape[1] + 1), dtype=get_int_dtype(), device=device
+        )
+
+    row = torch.repeat_interleave(torch.arange(len(paths), device=device), counts)
+    # Offset of each slot within its own neighbour list.
+    exclusive = torch.cumsum(counts, dim=0) - counts
+    pos = torch.arange(total, device=device) - torch.repeat_interleave(
+        exclusive, counts
+    )
+    nxt = indices[torch.repeat_interleave(indptr[last], counts) + pos]
+
+    keep = nxt != prev[row]
+    return torch.cat([paths[row][keep], nxt[keep, None]], dim=1)
+
+
+@dataclass(eq=False, repr=False)
+class AtomGraph(DeviceMixin):
+    """Atoms as nodes, typed edges over them, with bond adjacency.
+
+    Parameters
+    ----------
+    name, element, altloc : numpy.ndarray
+        Per-atom identifiers, shape ``(N,)``. Strings, so NumPy rather than tensors;
+        residue-level identity is reached through ``residue_of`` rather than duplicated
+        here. ``altloc`` is ``' '`` for atoms in no alternative conformation.
+    resname : numpy.ndarray, optional
+        Chemical residue identity per atom, shape ``(N,)``, preserving identities
+        of alternate conformers at one sequence position.
+    residue_of : torch.Tensor
+        Residue index per atom, shape ``(N,)``, in the configured int dtype.
+    is_hetatm : numpy.ndarray, optional
+        True for HETATM records, shape ``(N,)``. Defaults to all False.
+    charge : numpy.ndarray, optional
+        Formal charge per atom, shape ``(N,)``, integer. Defaults to zeros.
+    bonds, angles, torsions, chirals : EdgeBlock, optional
+        Typed edge blocks, empty until the graph is connected. ``bonds`` also backs the
+        adjacency.
+    planes : dict
+        ``{n_atoms_in_plane: EdgeBlock}`` -- planes are ragged, so they are grouped by
+        atom count the way the plane restraints already are.
+    energy_type : numpy.ndarray, optional
+        CCP4 energy type per atom (``NH1``, ``OC``, ``CH3``, ...), shape ``(N,)``,
+        ``''`` where the template does not say. Keys the contact radii
+        (:attr:`vdw_radii`) and the hydrogen-bond roles (``hb_type``).
+    template_h_count : torch.Tensor, optional
+        How many hydrogens the atom carries in its template, shape ``(N,)``,
+        ``int8``; ``-1`` where unknown. Together with the bonded hydrogens actually
+        present this gives :meth:`implicit_h_count`.
+    hb_type : torch.Tensor, optional
+        Hydrogen-bond role per atom, shape ``(N,)``, in the configured int dtype: the
+        ``HB_*`` flags of :mod:`torchref.topology.nonbonded`, read from the ener_lib
+        ``hb_type`` of the energy type, or ``HB_HYDROGEN`` for a hydrogen bonded to a
+        donor; 0 where there is no role or no type. Derived from ``energy_type`` and
+        the bonds at construction when not given; None for a graph without energy
+        types.
+
+    Notes
+    -----
+    Holds no refinable parameters, so this is a dataclass rather than an ``nn.Module``.
+    The adjacency is derived from ``bonds`` at construction and rebuilt by
+    :meth:`rebuild_adjacency` if the bond block is replaced.
+    """
+
+    name: np.ndarray
+    element: np.ndarray
+    altloc: np.ndarray
+    residue_of: torch.Tensor
+    is_hetatm: Optional[np.ndarray] = None
+    charge: Optional[np.ndarray] = None
+    bonds: Optional[EdgeBlock] = None
+    angles: Optional[EdgeBlock] = None
+    torsions: Optional[EdgeBlock] = None
+    chirals: Optional[EdgeBlock] = None
+    planes: Dict[int, EdgeBlock] = field(default_factory=dict)
+    energy_type: Optional[np.ndarray] = None
+    template_h_count: Optional[torch.Tensor] = None
+    hb_type: Optional[torch.Tensor] = None
+    resname: Optional[np.ndarray] = None
+
+    _adj_indptr: Optional[torch.Tensor] = field(default=None, repr=False)
+    _adj_indices: Optional[torch.Tensor] = field(default=None, repr=False)
+    # (element array it was parsed from, hydrogen flags); see is_hydrogen.
+    _is_h_cache: Optional[Tuple[np.ndarray, np.ndarray]] = field(default=None, repr=False)
+    # (element array, symbols, atomic numbers, van der Waals radii); see _element_table.
+    _element_cache: Optional[Tuple[np.ndarray, ...]] = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        n = len(self.name)
+        device = self.residue_of.device
+        if self.is_hetatm is None:
+            self.is_hetatm = np.zeros(n, dtype=bool)
+        if self.charge is None:
+            self.charge = np.zeros(n, dtype=np.int64)
+        arities = (("bonds", 2), ("angles", 3), ("torsions", 4), ("chirals", 4))
+        for edge, arity in arities:
+            if getattr(self, edge) is None:
+                setattr(self, edge, EdgeBlock.empty(arity, device=device))
+        if self._adj_indptr is None:
+            self.rebuild_adjacency()
+        if self.hb_type is None and self.energy_type is not None:
+            self.hb_type = self._hydrogen_bond_roles()
+
+    @property
+    def device(self) -> torch.device:
+        """Where the indexing tensors live. Derived from the bond block."""
+        return self.bonds.indices.device
+
+    @property
+    def n_atoms(self) -> int:
+        """Number of atom nodes."""
+        return len(self.name)
+
+    @property
+    def is_hydrogen(self) -> torch.Tensor:
+        """Boolean mask of hydrogen atoms, shape ``(N,)``.
+
+        The element strings are parsed once and cached against the ``element`` array
+        they came from, so replacing that array invalidates the cache. Hydrogen
+        placement and the riding frames read this once per atom, and re-parsing every
+        time made them O(N^2). Each call returns a fresh tensor, so callers may modify it.
+        """
+        cache = self._is_h_cache
+        if cache is None or cache[0] is not self.element:
+            flags = np.char.upper(np.char.strip(self.element.astype(str))) == "H"
+            cache = self._is_h_cache = (self.element, flags)
+        return torch.tensor(cache[1], device=self.bonds.indices.device)
+
+    def _element_table(self) -> Tuple[np.ndarray, ...]:
+        """``(symbols, atomic numbers, vdW radii)``, parsed once per ``element``."""
+        cache = self._element_cache
+        if cache is None or cache[0] is not self.element:
+            import gemmi
+
+            from torchref.topology.nonbonded import vdw_radii_for_elements
+
+            symbols = np.char.capitalize(np.char.strip(self.element.astype(str)))
+            numbers = np.array([gemmi.Element(s).atomic_number for s in symbols])
+            cache = self._element_cache = (
+                self.element,
+                symbols,
+                numbers.astype(np.int64),
+                vdw_radii_for_elements(symbols),
+            )
+        return cache[1:]
+
+    @property
+    def symbols(self) -> np.ndarray:
+        """Element symbols normalised to ``'C'``, ``'Fe'``, ..., shape ``(N,)``."""
+        return self._element_table()[0]
+
+    @property
+    def atomic_number(self) -> np.ndarray:
+        """Atomic number per atom, shape ``(N,)``, int64; 0 for an unknown element."""
+        return self._element_table()[1]
+
+    @property
+    def vdw_radii(self) -> np.ndarray:
+        """Contact radius per atom in Å, shape ``(N,)``, float64.
+
+        The ener_lib radius of the atom's energy type: ``vdwh_radius``, which folds the
+        atom's own hydrogens in, where :meth:`implicit_h_count` is positive, otherwise
+        ``vdw_radius``. Only a graph that carries hydrogens has implicit ones; a graph
+        without any gets them back as riding hydrogens
+        (:mod:`torchref.topology.riding`), whose own contacts carry their sterics. An
+        atom without a typed radius -- no energy type, or none in ener_lib -- takes its
+        element radius (:func:`~torchref.topology.nonbonded.vdw_radii_for_elements`).
+        """
+        element_radii = self._element_table()[2]
+        if self.energy_type is None:
+            return element_radii
+        from torchref.topology.nonbonded import energy_type_table
+
+        table, none = energy_type_table(), (0, np.nan, np.nan)
+        typed = np.array(
+            [table.get(str(kind).strip(), none)[1:] for kind in self.energy_type],
+            dtype=np.float64,
+        ).reshape(-1, 2)
+        radii = np.where(np.isfinite(typed[:, 0]), typed[:, 0], element_radii)
+        implicit = self.implicit_h_count()
+        if implicit is None or not bool(self.is_hydrogen.any()):
+            return radii
+        folded = (implicit.cpu().numpy() > 0) & np.isfinite(typed[:, 1])
+        return np.where(folded, typed[:, 1], radii)
+
+    def _hydrogen_bond_roles(self) -> torch.Tensor:
+        """``hb_type`` from the energy types and, for hydrogens, from their parents."""
+        from torchref.topology.nonbonded import energy_type_table, hydrogen_roles
+
+        table = energy_type_table()
+        roles = torch.tensor(
+            [table.get(str(kind).strip(), (0,))[0] for kind in self.energy_type],
+            dtype=get_int_dtype(),
+            device=self.residue_of.device,
+        )
+        is_h = self.is_hydrogen.to(roles.device)
+        bonds = self.bonds.indices.to(roles.device)
+        for h, parent in ((bonds[:, 0], bonds[:, 1]), (bonds[:, 1], bonds[:, 0])):
+            polar = is_h[h] & ~is_h[parent]
+            roles[h[polar]] = hydrogen_roles(roles[parent[polar]])
+        return roles
+
+    def copy(self) -> "AtomGraph":
+        """An independent copy sharing no storage with this one."""
+        return AtomGraph(
+            resname=None if self.resname is None else self.resname.copy(),
+            name=self.name.copy(),
+            element=self.element.copy(),
+            altloc=self.altloc.copy(),
+            residue_of=self.residue_of.clone(),
+            is_hetatm=self.is_hetatm.copy(),
+            charge=self.charge.copy(),
+            bonds=self.bonds.copy(),
+            angles=self.angles.copy(),
+            torsions=self.torsions.copy(),
+            chirals=self.chirals.copy(),
+            planes={size: block.copy() for size, block in self.planes.items()},
+            energy_type=None if self.energy_type is None else self.energy_type.copy(),
+            template_h_count=(
+                None if self.template_h_count is None else self.template_h_count.clone()
+            ),
+            hb_type=None if self.hb_type is None else self.hb_type.clone(),
+        )
+
+    def implicit_h_count(self) -> Optional[torch.Tensor]:
+        """Hydrogens each atom should carry but the table does not hold, ``(N,)``.
+
+        ``template_h_count`` minus the bonded hydrogens actually present, floored at
+        zero; ``0`` where the template count is unknown. None when the graph carries
+        no template counts. In a graph that carries hydrogens, what decides whether an
+        atom takes its with-hydrogen contact radius (:attr:`vdw_radii`).
+        """
+        if self.template_h_count is None:
+            return None
+        is_h = self.is_hydrogen
+        bonds = self.bonds.indices
+        present = torch.zeros(self.n_atoms, dtype=get_int_dtype(), device=bonds.device)
+        if bonds.numel():
+            heavy_of_h = torch.cat(
+                [bonds[is_h[bonds[:, 1]] & ~is_h[bonds[:, 0]], 0],
+                 bonds[is_h[bonds[:, 0]] & ~is_h[bonds[:, 1]], 1]]
+            )
+            if heavy_of_h.numel():
+                present = torch.bincount(heavy_of_h, minlength=self.n_atoms).to(
+                    present.dtype
+                )
+        known = self.template_h_count >= 0
+        missing = self.template_h_count.to(present.dtype) - present
+        return torch.where(known, missing.clamp(min=0), torch.zeros_like(missing))
+
+    def subset(self, remap: torch.Tensor, residue_remap: torch.Tensor) -> "AtomGraph":
+        """The atoms ``remap`` keeps, with every edge set reindexed.
+
+        Parameters
+        ----------
+        remap : torch.Tensor
+            Old atom index to new, shape ``(N_old,)``, ``-1`` where dropped.
+        residue_remap : torch.Tensor
+            Old residue index to new, shape ``(R_old,)``, ``-1`` where dropped.
+
+        Returns
+        -------
+        AtomGraph
+            Adjacency is rebuilt from the surviving bond block rather than subsetted:
+            CSR row offsets are not meaningful once the atoms are renumbered.
+        """
+        keep = (remap >= 0).cpu().numpy()
+        planes = {}
+        for size, block in self.planes.items():
+            reduced = block.subset(remap)
+            if reduced.n_edges:
+                planes[size] = reduced
+
+        keep_t = torch.as_tensor(keep, device=self.residue_of.device)
+        return AtomGraph(
+            resname=None if self.resname is None else self.resname[keep],
+            name=self.name[keep],
+            element=self.element[keep],
+            altloc=self.altloc[keep],
+            residue_of=residue_remap[self.residue_of[keep_t]],
+            is_hetatm=self.is_hetatm[keep],
+            charge=self.charge[keep],
+            bonds=self.bonds.subset(remap),
+            angles=self.angles.subset(remap),
+            torsions=self.torsions.subset(remap),
+            chirals=self.chirals.subset(remap),
+            planes=planes,
+            energy_type=None if self.energy_type is None else self.energy_type[keep],
+            template_h_count=(
+                None if self.template_h_count is None else self.template_h_count[keep_t]
+            ),
+            hb_type=None if self.hb_type is None else self.hb_type[keep_t],
+        )
+
+    def rebuild_adjacency(self) -> None:
+        """Rebuild the CSR adjacency from the current bond block."""
+        self._adj_indptr, self._adj_indices = _build_csr(
+            self.bonds.indices, self.n_atoms
+        )
+
+    def neighbors(self, i: int) -> torch.Tensor:
+        """Atoms bonded to atom ``i``, ascending.
+
+        Returns
+        -------
+        torch.Tensor
+            Neighbour indices, a view into the adjacency, on the graph's device.
+        """
+        return self._adj_indices[self._adj_indptr[i] : self._adj_indptr[i + 1]]
+
+    def degree(self, i: int = None) -> torch.Tensor:
+        """Bonded-neighbour count, for atom ``i`` or for every atom."""
+        deg = self._adj_indptr[1:] - self._adj_indptr[:-1]
+        return deg if i is None else deg[i]
+
+    def _directed_bonds(self) -> torch.Tensor:
+        """Bonds as ``(2E, 2)`` directed pairs."""
+        b = self.bonds.indices
+        return torch.cat([b, b.flip(1)], dim=0)
+
+    # ------------------------------------------------------------------
+    # Non-bonded exclusions
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pair_set(pairs: torch.Tensor) -> Set[Tuple[int, int]]:
+        """``(low, high)`` tuples of a ``(P, 2)`` index tensor, self-pairs dropped."""
+        if pairs.numel() == 0:
+            return set()
+        lo = torch.minimum(pairs[:, 0], pairs[:, 1])
+        hi = torch.maximum(pairs[:, 0], pairs[:, 1])
+        keep = lo != hi
+        return set(zip(lo[keep].cpu().tolist(), hi[keep].cpu().tolist()))
+
+    def exclusions_12_13_14(self) -> Set[Tuple[int, int]]:
+        """1-2, 1-3 and 1-4 pairs derived from bond **connectivity** alone.
+
+        Walks the adjacency two and three steps out, so the result does not depend on
+        which angles and torsions the monomer library happens to restrain. These are
+        the pairs the non-bonded (VDW) term leaves out of its intra-ASU pair list.
+
+        Returns
+        -------
+        set of tuple of int
+            ``(low, high)`` atom index pairs.
+        """
+        p2 = self._directed_bonds()
+        p3 = _extend_paths(self._adj_indptr, self._adj_indices, p2)
+        p4 = _extend_paths(self._adj_indptr, self._adj_indices, p3)
+        return (
+            self._pair_set(p2)
+            | self._pair_set(p3[:, (0, 2)])
+            | self._pair_set(p4[:, (0, 3)])
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"AtomGraph(n_atoms={self.n_atoms}, bonds={self.bonds.n_edges}, "
+            f"angles={self.angles.n_edges}, torsions={self.torsions.n_edges}, "
+            f"chirals={self.chirals.n_edges}, "
+            f"planes={sum(b.n_edges for b in self.planes.values())})"
+        )
+
+
+__all__ = ["AtomGraph"]

@@ -8,8 +8,8 @@ occupancy fractions.
 Key Classes
 -----------
 ModelCollection
-    Named dictionary of MixedModel instances at different timepoints,
-    sharing the same base structural models.
+    Re-exported :class:`torchref.model.ModelCollection`: per-timepoint views
+    over shared base models with collection-owned population parameters.
 KineticRefinement
     Orchestrator combining DatasetCollection + ModelCollection with
     difference and ML targets, geometry/ADP restraints, and optional
@@ -30,7 +30,7 @@ from torchref.model.model_collection import ModelCollection
 from torchref.experimental.kinetic.refinement import KineticRefinement
 from torchref.experimental.kinetic.targets import (
     CollectionDifferenceTarget,
-    CollectionRiceTarget,
+    CollectionMLTarget,
     MultiModelGeometryTarget,
     MultiModelADPTarget,
     KineticPriorTarget,
@@ -44,7 +44,7 @@ __all__ = [
     "ModelCollection",
     "KineticRefinement",
     "CollectionDifferenceTarget",
-    "CollectionRiceTarget",
+    "CollectionMLTarget",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
     "KineticPriorTarget",

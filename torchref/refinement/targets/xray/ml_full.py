@@ -22,7 +22,7 @@ class MLFullXrayTarget(AlphaCentredMixin, SigmaAXrayTarget):
 
     It is kept because it is the correct treatment of the two error kinds.
 
-    The only row that overrides :meth:`_model_error`, and the only one carrying extra state.
+    The only row that overrides ``_model_error``, and the only one carrying extra state.
     """
 
     def __init__(self, *args, **kwargs):

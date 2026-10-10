@@ -14,62 +14,27 @@ marginalised (MLF of Pannu & Read, 1996)::
 
 Centric reflections have an exact closed form (:func:`centric_nll`); acentric
 ones have none and go through 1-D Gauss-Legendre quadrature
-(:func:`acentric_nll`). ``N_QUAD`` / ``N_SIGMA`` are empirical -- do not change
-them without re-running ``sigma_a_rework/quad_screen.py``; see
-``QUAD_PROVENANCE`` below.
+(:func:`acentric_nll`), whose node count ``N_QUAD`` and window ``N_SIGMA`` are
+empirical; the comment on them states the accuracy they were chosen for.
 """
 
 import math
+import warnings
 
 import numpy as np
 import torch
 
 from torchref.config import get_compile_targets
+from torchref.utils.backends import TorchRefDegradationWarning
 
 LOG_2PI = math.log(2.0 * math.pi)
 
-# --- screened quadrature parameters ----------------------------------------
-# Do NOT change these without re-running sigma_a_rework/quad_screen.py.
+# Gauss-Legendre nodes and window half-width in Laplace widths. Against a float64
+# reference (max|dNLL| < 1e-6, |bias| < 1e-8, relative gradient error < 1e-5) the
+# smallest passing setting is 24/6; 32/8 adds a grid level and avoids n_sigma=6's
+# 1.5e-8 truncation floor. tests/unit/refinement/test_ml_full.py pins the result.
 N_QUAD = 32
 N_SIGMA = 8.0
-
-QUAD_PROVENANCE = """
-Gauss-Legendre, N_QUAD=32 nodes, window +-8 Laplace widths. From
-sigma_a_rework/quad_screen.py over 990 dimensionless grid points x both parities
-(sigma_obs/sqrt(Sigma) 1e-3..1e2, Fc/sqrt(Sigma) 0..50, F_obs/sigma_obs 0..200),
-in float64 against an adaptive-quadrature reference that is itself validated
-against the exact centric closed form to 3.6e-12.
-
-Achieved at N=32, n_sigma=8 (acentric):
-    max |dNLL|            7.3e-12   (the reference's own floor)
-    signed bias           1.2e-12   -> 1.2e-7 summed over 1e5 reflections
-    max rel. grad error   1.0e-8
-Accept criterion, fixed in advance: max|dNLL| < 1e-6, |bias| < 1e-8,
-max relative gradient error < 1e-5.
-
-Why these values and not smaller:
-  * Smallest passing config was N=24, n_sigma=6; N=32 is one grid level of margin.
-  * n_sigma=6 imposes a TRUNCATION FLOOR at 1.5e-8 that no node count removes
-    (identical from N=24 through N=128). n_sigma=8 converges instead. Cost is
-    linear in N and independent of n_sigma, so the wider window is free.
-  * n_sigma=3 would be badly wrong: truncating a Gaussian at 3 sigma discards
-    2.7e-3 of the mass, which lands directly in the NLL.
-  * Gauss-Hermite (nodes symmetric about the peak) was screened head-to-head and
-    lost by ~10 orders of magnitude: 1.3e-2 at N=32 vs 7.3e-12 for GL, with far
-    worse gradients. It has to drop nodes at t<0, which is exactly the weak-data
-    regime this target exists to handle.
-
-Worst grid points at the adopted config:
-    value    F_obs=0, sigma_obs=1,  Fc=0,   Sigma=1
-    gradient F_obs=0, sigma_obs=10, Fc=0.1, Sigma=1
-
-float32 (the production dtype) is the binding limit, not the quadrature:
-max|f32-f64| = 2.3e-3, set by the magnitude of the per-reflection NLL rather than
-by the integration. That is not a regression -- it is far BETTER conditioned than
-the current `ml` target, which reaches max|NLL| ~ 4e8 (f32 error 13.1) on the same
-grid because with no measurement error a large residual is charged entirely to
-model error. ml_full caps max|NLL| at ~2e4.
-"""
 
 _GL_CACHE: dict = {}
 _SIGMA_FLOOR = 1e-6
@@ -112,8 +77,8 @@ def log_i0(z: torch.Tensor) -> torch.Tensor:
     Replaces ``i0e`` + ``log``, which at 25x ``exp`` per element would dominate
     this kernel (~2x measured per forward). Accuracy is max ``|dlog I0|`` = 4.7e-7
     against :func:`log_i0_exact` over ``z`` in [0, 1e4] -- under the target's
-    float32 floor, but *above* the float64 quadrature error, so the float64 /
-    EAGER reference path must use :func:`log_i0_exact` instead.
+    float32 floor, but *above* the float64 quadrature error, which is why
+    :func:`acentric_nll` takes :func:`log_i0_exact` for float64 inputs.
 
     Both branches run everywhere and are selected with ``where``, each input first
     clamped into its own valid domain so the unused branch cannot emit a NaN that
@@ -157,27 +122,9 @@ def log_i0(z: torch.Tensor) -> torch.Tensor:
     return torch.where(zc <= 3.75, small, large)
 
 
-def _log_cosh(x: torch.Tensor) -> torch.Tensor:
-    """Numerically safe ``log cosh(x) = |x| + log1p(exp(-2|x|)) - log 2``."""
-    ax = torch.abs(x)
-    return ax + torch.log1p(torch.exp(-2.0 * ax)) - math.log(2.0)
-
-
 # =====================================================================
-# log-integrand and its analytic Laplace centre
+# analytic Laplace centre of the log-integrand
 # =====================================================================
-
-
-def _log_h_acentric(t, F_obs, sigma, Fc, Sigma, li0):
-    """``log[ Rice(t; Fc, Sigma) * N(F_obs; t, sigma) ]``."""
-    inv_S = 1.0 / Sigma
-    return (
-        torch.log(2.0 * t * inv_S)
-        - (t * t + Fc * Fc) * inv_S
-        + li0(2.0 * t * Fc * inv_S)
-        - 0.5 * (LOG_2PI + 2.0 * torch.log(sigma))
-        - (F_obs - t) ** 2 / (2.0 * sigma**2)
-    )
 
 
 def _laplace_centre_acentric(F_obs, sigma, Fc, Sigma):
@@ -199,7 +146,7 @@ def _laplace_centre_acentric(F_obs, sigma, Fc, Sigma):
 # =====================================================================
 
 
-def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=log_i0):
+def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=None):
     """Per-reflection acentric NLL by Gauss-Legendre + log-sum-exp.
 
     The window is **detached**: it need only *cover* the mass, and not
@@ -210,23 +157,44 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=log_i0)
     reflections. The integrand is a product of two log-concave densities, hence
     log-concave and unimodal, so one window suffices and there is no second mode.
 
+    ``li0`` is the ``log I0`` implementation; ``None`` takes :func:`log_i0_exact` for
+    float64 inputs and the fast :func:`log_i0` otherwise.
+
     Routes through a ``torch.compile(dynamic=True)`` build when
-    ``torchref.compile_targets`` is on (the default) and the standard configuration
-    is in use -- eager costs ~20 array passes per node, so fusing is worth an order
-    of magnitude. See :class:`torchref.config.CompileTargetsConfig`.
+    ``torchref.config.compile_targets`` is on (off by default;
+    ``TORCHREF_COMPILE_TARGETS``) and the standard configuration is in use -- eager
+    costs ~20 array passes per node, so fusing is worth an order of magnitude. See
+    :class:`torchref.config.CompileTargetsConfig`. A compiled kernel that fails falls
+    back to eager for the rest of the process with one
+    :class:`~torchref.utils.backends.TorchRefDegradationWarning`.
     """
     n_quad = N_QUAD if n_quad is None else n_quad
     n_sigma = N_SIGMA if n_sigma is None else n_sigma
+    if li0 is None:
+        # dtype-ok: selects the reference log-Bessel for float64, not an allocation
+        li0 = log_i0_exact if F_obs.dtype is torch.float64 else log_i0
 
     if (
         li0 is log_i0
+        # dtype-ok: validation guard (compile eligibility), not an allocation
         and F_obs.dtype is not torch.float64
         and F_obs.numel() > 1  # 0/1-specialisation would force a 2nd compile
         and get_compile_targets()
     ):
-        fn = _compiled_acentric(n_quad, n_sigma)
-        if fn is not None:
-            return fn(F_obs, sigma, Fc, Sigma)
+        key = (n_quad, float(n_sigma))
+        try:
+            fn = _compiled_acentric(key)
+            if fn is not None:
+                return fn(F_obs, sigma, Fc, Sigma)
+        except Exception as exc:  # noqa: BLE001 - the fallback is the point
+            # torch.compile builds lazily, so codegen fails here on the first call.
+            _COMPILED[key] = None
+            warnings.warn(
+                "acentric_nll: the compiled kernel failed and fell back to eager "
+                f"({type(exc).__name__}: {exc}). Results are correct but slower.",
+                TorchRefDegradationWarning,
+                stacklevel=2,
+            )
 
     return _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, li0)
 
@@ -234,22 +202,21 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=log_i0)
 _COMPILED: dict = {}
 
 
-def _compiled_acentric(n_quad: int, n_sigma: float):
-    """Lazily-built compiled kernel, one per ``(n_quad, n_sigma)``.
+def _compiled_acentric(key: tuple):
+    """Lazily-built compiled kernel for ``key = (n_quad, n_sigma)``; ``None`` once
+    it has failed.
 
     Both are closed over rather than passed, so the unrolled node loop is a
     compile-time constant; only the leading dimension varies, and ``dynamic=True``
     then gives one compilation for every dataset size.
     """
-    key = (n_quad, float(n_sigma))
     if key not in _COMPILED:
+        n_quad, n_sigma = key
+
         def worker(F_obs, sigma, Fc, Sigma):
             return _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, log_i0)
 
-        try:
-            _COMPILED[key] = torch.compile(worker, dynamic=True)
-        except Exception:  # pragma: no cover - no inductor/triton available
-            _COMPILED[key] = None
+        _COMPILED[key] = torch.compile(worker, dynamic=True)
     return _COMPILED[key]
 
 
@@ -288,7 +255,9 @@ def _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, li0):
         half = (hi - lo) * 0.5
         mid = (hi + lo) * 0.5
         # Shift computed on the t-dependent part alone, so `const` cancels out of
-        # the loop entirely rather than being added and subtracted 32 times.
+        # the loop entirely rather than being added and subtracted 32 times. All
+        # three probes are needed: t0 alone underestimates the peak when the two
+        # densities are far apart, and exp(h - shift) then overflows.
         shift = torch.maximum(
             log_h_var(torch.clamp(t0, min=1e-30)),
             torch.maximum(
@@ -303,25 +272,6 @@ def _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, li0):
         t = torch.clamp(mid + half * x[k], min=1e-30)
         acc = acc + w[k] * torch.exp(log_h_var(t) - shift)
     return -(torch.log(acc) + torch.log(half) + shift + const)
-
-
-def _log_shift(F_obs, sigma, Fc, Sigma, t0, li0):
-    """Log-sum-exp shift: ``max h`` over three cheap candidate peak locations.
-
-    A fixed analytic shift (not a running max) keeps the node loop at one ``exp``
-    per node with no ``(n, n_quad)`` intermediate. All three probes are needed:
-    ``t0`` alone *under*estimates the peak when the measurement spike and model
-    density are far apart, and an under-estimated shift overflows ``exp(h - shift)``.
-    """
-    out = None
-    for t in (
-        torch.clamp(t0, min=1e-30),
-        torch.clamp(F_obs, min=1e-30),
-        torch.clamp(Fc, min=1e-30),
-    ):
-        h = _log_h_acentric(t, F_obs, sigma, Fc, Sigma, li0)
-        out = h if out is None else torch.maximum(out, h)
-    return out
 
 
 # =====================================================================
@@ -382,7 +332,7 @@ def ml_full_nll_per_refl(
     alpha=None,
     n_quad=None,
     n_sigma=None,
-    li0=log_i0,
+    li0=None,
     idx=None,
 ):
     """Per-reflection full-form NLL (NOT masked/summed).
@@ -399,7 +349,8 @@ def ml_full_nll_per_refl(
     never evaluated cannot poison anything.
 
     Pass ``idx=(idx_acentric, idx_centric)`` from :func:`parity_indices` to avoid a
-    per-call ``nonzero`` (and the device sync it implies).
+    per-call ``nonzero`` (and the device sync it implies). ``li0`` is passed to
+    :func:`acentric_nll`, which resolves ``None`` by dtype.
     """
     F_obs = F_obs.reshape(-1)
     Fc = torch.abs(F_calc).reshape(-1)

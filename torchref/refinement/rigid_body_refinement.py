@@ -4,14 +4,16 @@ Wraps an :class:`~torchref.refinement.lbfgs_refinement.LBFGSRefinement`, swaps t
 model's ``xyz`` for a :class:`~torchref.model.rigid_xyz.RigidXYZTensor` via
 :meth:`~torchref.model.model.Model.use_rigid_xyz`, and runs one LBFGS step per cutoff
 coarse to fine. Above 6 Å the xray target is Phenix-style ``ls_wunit_k1`` (unit weights,
-per-bin optimal scale recomputed every gradient call, no external scaler); at 6 Å and
-below it switches to ``ml`` with the normal Scaler.
+one global K refit every gradient call) over a Scaler cut to one isotropic coefficient,
+anisotropy and bulk solvent; at 6 Å and below it is ``ml`` with a full Scaler.
 """
 
+import copy
 from typing import List, Optional
 
 import torch
 
+from torchref.refinement.loss_state import LossState
 from torchref.scaling.scaler import Scaler
 
 
@@ -21,18 +23,22 @@ class RigidBodyRefinementStep:
     Parameters
     ----------
     refinement : LBFGSRefinement
-        Its ``model`` is swapped for a rigid model for the duration of the run.
+        Refinement whose model is refined in place, its ``xyz`` swapped for a
+        :class:`~torchref.model.rigid_xyz.RigidXYZTensor` (see ``commit``). Its data,
+        targets, weights and scaler parameters are left as they were; the scaler's
+        solvent mask is rebuilt at the refined coordinates.
     cutoffs : list of float, optional
         High-resolution cutoffs (Å), coarse to fine. ``None`` generates a schedule from the
         native data resolution via :meth:`default_cutoffs`.
     iterations_per_step : int, optional
-        ``max_iter`` per cutoff. The default 30 **under-converges** in practice (9RTS needs
-        >= 100); raise it for production. Under the solvent-only (``ls_wunit_k1``)
-        inner-cycle path this is per *inner* cycle, so total rigid-body iterations are
-        ``n_inner * iterations_per_step``.
+        ``max_iter`` per cutoff. The default 30 **under-converges** in practice; raise
+        it for production.
     commit : bool, optional
-        If True (default), bake the final coordinates into a plain ``ModelFT`` so later
-        refinement sees normal per-atom xyz; False leaves the rigid model installed.
+        If True (default), bake the final coordinates into a per-atom xyz container on
+        the same model so later refinement sees normal per-atom xyz. False leaves the
+        rigid xyz installed and ``adp``, ``u`` and ``occupancy`` frozen until
+        :meth:`~torchref.model.model.Model.restore_xyz_from_rigid` is called
+        (``commit=True`` there keeps the transform).
     """
 
     DEFAULT_LBFGS_KWARGS = dict(
@@ -88,23 +94,62 @@ class RigidBodyRefinementStep:
     # -----------------------------------------------------------------------
     # Run
     # -----------------------------------------------------------------------
+    @staticmethod
+    def _sandbox(ref):
+        """Shallow clone of ``ref`` whose attribute assignments do not reach ``ref``.
+
+        ``__dict__``, ``_modules``, ``_parameters`` and ``_buffers`` are private copies,
+        so the ``reflection_data``, ``scaler`` and x-ray targets that
+        :meth:`_rebind_for_data` assigns per cutoff stay on the clone. The objects they
+        hold are shared: the model, so refined xyz reaches the caller by identity, and
+        the caller's ``ReflectionData``, whose resolution mask :meth:`_run` restores.
+        """
+        sandbox = copy.copy(ref)
+        sandbox.__dict__ = dict(ref.__dict__)
+        for slot in ("_modules", "_parameters", "_buffers"):
+            if slot in sandbox.__dict__:
+                sandbox.__dict__[slot] = dict(ref.__dict__[slot])
+        return sandbox
+
     def run(self):
         """Step through every cutoff coarse to fine and return
         ``[(d_min, LossState), ...]``.
-
-        Restores the original ``reflection_data`` on exit, and bakes the final transform
-        back
-        into a plain ``ModelFT`` unless ``commit=False``.
         """
+        real = self.refinement
+        self.refinement = self._sandbox(real)
+        try:
+            history = self._run()
+        finally:
+            self.refinement = real
+        # Each cutoff's scaler got a mask of its own in the sandbox; the caller's mask
+        # still surrounds the coordinates the run started from.
+        real.scaler.update_solvent()
+        return history
+
+    def _run(self):
         ref = self.refinement
         original_data = ref.reflection_data
 
-        native_dmin = float(original_data.get_max_res())
+        native_dmin = float(original_data.d_min)
         cutoffs = (
             self.cutoffs
             if self.cutoffs is not None
             else self.default_cutoffs(native_dmin)
         )
+
+        # ``filter_by_resolution`` masks in place and returns ``self``, so each
+        # cutoff below stamps ``masks["resolution"]`` on the caller's own object and
+        # rebinding restores nothing. Snapshot it (or its absence) to put back.
+        had_resolution_mask = "resolution" in original_data.masks
+        saved_resolution_mask = (
+            original_data.masks["resolution"].clone() if had_resolution_mask else None
+        )
+
+        def restore_resolution_mask():
+            if had_resolution_mask:
+                original_data.masks["resolution"] = saved_resolution_mask
+            else:
+                original_data.masks.pop("resolution", None)
 
         # Swap the model's xyz container in place for a RigidXYZTensor.
         ref.model.use_rigid_xyz()
@@ -114,28 +159,24 @@ class RigidBodyRefinementStep:
             for d_min in cutoffs:
                 xray_mode = self._xray_mode_for_cutoff(d_min)
                 self._rebind_for_data(
-                    original_data.cut_res(highres=float(d_min)),
+                    original_data.filter_by_resolution(d_min=float(d_min)),
                     xray_mode=xray_mode,
                 )
                 step_state = self._run_one_cutoff(d_min)
                 history.append((float(d_min), step_state))
         finally:
-            # Restore full-resolution data view.
-            self._rebind_for_data(original_data)
+            restore_resolution_mask()
 
         if self.commit:
-            # Bake rigid coords into a fresh MixedTensor and re-bind
-            # scaler/targets/loss-state against the per-atom xyz.
             ref.model.restore_xyz_from_rigid(commit=True)
-            self._rebind_for_data(original_data)
 
         return history
 
     # -----------------------------------------------------------------------
     # Internal helpers
     # -----------------------------------------------------------------------
-    def _rebind_for_data(self, data, model=None, xray_mode=None):
-        """Point scaler, targets and loss state at ``data``.
+    def _rebind_for_data(self, data, xray_mode, model=None):
+        """Point a new scaler and the ``xray_mode`` targets at ``data``.
 
         For ``ls_wunit_k1`` cutoffs the Scaler is built with ``nbins=1`` -- the mask-based
         bulk-solvent term is added to F_calc and the LS target's closed-form ``c[bins]``
@@ -146,9 +187,6 @@ class RigidBodyRefinementStep:
         if model is None:
             model = ref.model
         ref.reflection_data = data
-
-        if xray_mode is None:
-            xray_mode = getattr(ref, "target_mode", "ml")
 
         ref.scaler = Scaler(
             model, data,
@@ -161,162 +199,67 @@ class RigidBodyRefinementStep:
             verbose=ref.verbose,
             device=ref.device,
         )
-        ref.scaler.initialize()
-        ref._init_targets(xray_mode=xray_mode)
-
-        ref.reset_loss_state()
-        # Clear cached LBFGS optimizers (they were built over the old model's
-        # parameters and would now point at stale leaves).
-        if hasattr(ref, "_persistent_optimizers"):
-            ref._persistent_optimizers.clear()
+        # Only the x-ray half of _init_targets: the step optimizes against x-ray data
+        # alone, and TotalGeometryTarget / TotalADPTarget would be constructed here
+        # purely to be left unused -- NonBondedTarget's pair list among them.
+        # get_scales() still runs: it cold-starts the new scaler, whose parameters the
+        # x-ray target reads.
+        ref._build_xray_targets(xray_mode)
+        ref.get_scales()
         model.reset_cache()
 
     def _run_one_cutoff(self, d_min: float):
         ref = self.refinement
         rigid_model = ref.model
 
-        state = ref.complete_loss_state()
+        # Active targets during rigid-body refinement: x-ray only. Internal bonded
+        # geometry is rigid by construction; ADP / occupancy are frozen. Inter-chain vdW
+        # is intentionally off -- Phenix runs rigid-body without atomistic restraints,
+        # and we have measured that vdW adds no signal here and destabilizes the
+        # coarsest cutoff.
+        #
+        # A state of its own rather than the refinement's: nothing here has to be undone
+        # afterwards, no maintenance() hook of a target we are not using can fire (in
+        # particular NonBondedTarget rebuilds its VDW pair list whenever atoms drift
+        # >1 A, seconds of work for a term that is not in the sum), and the caller's
+        # state keeps its targets and any weights registered on it.
+        #
+        # Weight 1.0: with one term the weight is a scalar on the whole objective, and
+        # 1.0 is what DEFAULT_GROUP_WEIGHTS gives x-ray anyway.
+        state = LossState(device=ref.device)
+        state.register_target("xray", ref.xray_target_work)
+        state.set_weight("xray", 1.0)
+        state.cache_losses()
 
-        # Snapshot weights so we can restore after the step.
-        original_weights = dict(state.weights)
-        try:
-            # Active targets during rigid-body refinement: xray only. Internal
-            # bonded geometry is rigid by construction; ADP / occupancy are
-            # frozen. Inter-chain vdW is intentionally off — Phenix runs
-            # rigid-body without atomistic restraints and we've observed vdW
-            # adds no signal here and destabilizes the coarsest cutoff.
-            #
-            # We DROP non-xray targets from state entirely (not just zero
-            # their weight) so their maintenance() hooks don't fire during
-            # the rigid-body LBFGS. In particular ``NonBondedTarget``
-            # rebuilds its VDW pair list whenever atoms drift >1 Å, a
-            # multi-second recomputation that's pure waste when the
-            # target weight is 0. State is rebuilt fresh on the next
-            # cutoff via _rebind_for_data → reset_loss_state →
-            # _init_targets, so this drop is local to this cutoff.
-            keep_names = {"xray"}
-            for name in list(state.targets.keys()):
-                if name not in keep_names:
-                    state.targets.pop(name, None)
-                    original_weights.pop(name, None)
+        # Rigid parameters only. The body target centres on
+        # ``alpha*|F_calc|`` and ``alpha`` absorbs a rescaling of ``F_calc``
+        # exactly, so the scale has a flat direction here -- the rule
+        # ``SCALE_TARGETS`` states for the scale fit. ``refine_scaler``
+        # (objective ``ls``) owns the scale, between cutoffs. Omitting them
+        # is enough: ``LossState.run`` freezes leaves the optimizer lacks.
+        rigid_params = [
+            rigid_model.xyz.euler_angles,
+            rigid_model.xyz.translations,
+        ]
 
-            rigid_params = [
-                rigid_model.xyz.euler_angles,
-                rigid_model.xyz.translations,
-            ]
-
-            # Decide whether to use the inner-cycle (mask-refresh) loop.
-            # Triggered when the scaler has a bulk-solvent component whose
-            # mask depends on atom positions (ls_wunit_k1 path here). For
-            # the ml path the scaler is fully refit between cutoffs
-            # and co-optimized with rigid params in a single LBFGS.
-            use_inner_cycles = (
-                ref.scaler is not None
-                and getattr(ref.scaler, "solvent", None) is not None
-                and getattr(ref.scaler, "c_iso", None) is not None
-                and ref.scaler.c_iso.requires_grad is False
-            )
-
-            if use_inner_cycles:
-                self._run_inner_cycles(d_min, state, rigid_params, n_inner=5)
-            else:
-                # Single-shot path: rigid params + scaler params co-optimized.
-                if ref.scaler is not None:
-                    opt_params = rigid_params + list(ref.scaler.parameters())
-                else:
-                    opt_params = rigid_params
-
-                rigid_model.reset_cache()
-                opt = torch.optim.LBFGS(
-                    opt_params,
-                    max_iter=self.iterations_per_step,
-                    **self.DEFAULT_LBFGS_KWARGS,
+        rigid_model.reset_cache()
+        opt = torch.optim.LBFGS(
+            rigid_params,
+            max_iter=self.iterations_per_step,
+            **self.DEFAULT_LBFGS_KWARGS,
+        )
+        state.step(
+            opt,
+            context=f"rigid_body[d_min={d_min:.2f}]",
+        )
+        if ref.verbose > 0:
+            try:
+                rwork, rfree = ref.get_rfactor()
+                print(
+                    f"  rigid-body d_min={d_min:.2f} "
+                    f"(lbfgs, iters={self.iterations_per_step}): "
+                    f"Rwork={rwork:.4f} Rfree={rfree:.4f}"
                 )
-                state.step(
-                    opt,
-                    context=f"rigid_body[d_min={d_min:.2f}]",
-                )
-            if ref.verbose > 0:
-                try:
-                    rwork, rfree = ref.get_rfactor()
-                    print(
-                        f"  rigid-body d_min={d_min:.2f} "
-                        f"(lbfgs, iters={self.iterations_per_step}): "
-                        f"Rwork={rwork:.4f} Rfree={rfree:.4f}"
-                    )
-                except Exception:
-                    pass
-        finally:
-            # Restore weights.
-            for name, w in original_weights.items():
-                state.set_weight(name, w)
+            except Exception:
+                pass
         return state
-
-    def _run_inner_cycles(self, d_min, state, rigid_params, n_inner: int = 5):
-        """Phenix-style inner cycle: refresh mask, refit solvent, then rigid LBFGS.
-
-        Used at coarse cutoffs with a solvent-only scaler. Each cycle rebuilds the
-        bulk-solvent mask FFT at the current positions, runs a short LBFGS over the solvent
-        parameters, runs the rigid-body LBFGS for ``iterations_per_step`` iterations
-        with the
-        mask frozen, then ``bake()``s the transform into ``original_xyz`` and zeroes the
-        euler/translation params (matching Phenix's per-macro-cycle reset). Total rigid
-        LBFGS
-        work per cutoff is therefore ``n_inner * iterations_per_step``.
-        """
-        ref = self.refinement
-        rigid_model = ref.model
-        solvent = ref.scaler.solvent
-
-        # Build the solvent parameter list — only the ones that are
-        # actually refinable.
-        solvent_params = []
-        for name in ("log_k_solvent", "log_ss_half", "log_n_exp"):
-            p = getattr(solvent, name, None)
-            if isinstance(p, torch.nn.Parameter) and p.requires_grad:
-                solvent_params.append(p)
-        phase = getattr(solvent, "phase_offset", None)
-        if isinstance(phase, torch.nn.Parameter) and phase.requires_grad:
-            solvent_params.append(phase)
-
-        # In the inner-cycle path, iterations_per_step is the per-INNER
-        # LBFGS max_iter (Phenix uses 25). Total rigid LBFGS work per
-        # cutoff = n_inner × iterations_per_step.
-        iters_per_inner = self.iterations_per_step
-
-        for inner in range(n_inner):
-            # (a) Refresh the bulk-solvent mask at current positions.
-            ref.scaler.update_solvent()
-            rigid_model.reset_cache()
-
-            # (b) Refit solvent params (k_sol, B_sol[, phase]) against F_obs
-            # — only if any solvent params are actually refinable.
-            if solvent_params:
-                sol_opt = torch.optim.LBFGS(
-                    solvent_params,
-                    max_iter=20,
-                    **self.DEFAULT_LBFGS_KWARGS,
-                )
-                state.step(
-                    sol_opt,
-                    context=f"rigid_body[d_min={d_min:.2f},inner={inner + 1},solvent]",
-                )
-
-            # (c) Rigid LBFGS — mask + solvent params frozen here.
-            rigid_model.reset_cache()
-            rb_opt = torch.optim.LBFGS(
-                rigid_params,
-                max_iter=iters_per_inner,
-                **self.DEFAULT_LBFGS_KWARGS,
-            )
-            state.step(
-                rb_opt,
-                context=f"rigid_body[d_min={d_min:.2f},inner={inner + 1},rigid]",
-            )
-
-            # (d) Bake the current rigid transform into original_xyz and
-            # zero euler+translation, matching Phenix's per-macro-cycle
-            # reset (mmtbx/refinement/rigid_body.py:344-370). Keeps the
-            # next solve in the small-angle regime with a clean Hessian.
-            rigid_model.xyz.bake()
-            rigid_model.reset_cache()

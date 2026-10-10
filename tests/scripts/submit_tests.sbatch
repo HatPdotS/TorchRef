@@ -56,7 +56,7 @@ case ${TEST_TYPE} in
     unit)
         echo "Running unit tests..."
         python -m pytest tests/unit \
-            -m "unit and not gpu" \
+            -m "not gpu" \
             --cov=torchref \
             --cov-report=term-missing \
             --cov-report=html:tests/scripts/logs/coverage_html \
@@ -67,7 +67,7 @@ case ${TEST_TYPE} in
     integration)
         echo "Running integration tests..."
         python -m pytest tests/integration \
-            -m "integration and not gpu" \
+            -m "not gpu" \
             --cov=torchref \
             --cov-report=term-missing \
             -v \

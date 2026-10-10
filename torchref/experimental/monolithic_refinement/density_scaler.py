@@ -9,7 +9,7 @@ Two pieces:
 ``DensityDerivedSolvent``
     A thin ``nn.Module`` exposing the exact interface ``ScalerBase.forward``
     expects from its ``solvent`` attribute (``get_rec_solvent`` / ``log_k_solvent``
-    / falloff / ``optimize_phase``), backed by a ``DensitySolventModel``.
+    / falloff), backed by a ``DensitySolventModel``.
     Unlike the vdW-mask ``SolventModel`` (whose mask FFT is detached / static),
     ``get_rec_solvent`` here is **live** -- it stays in the autograd graph, so
     ``F_sol`` tracks atom moves and gradients flow ``rho -> xyz/adp``. The raw
@@ -36,7 +36,7 @@ mask's own ``k_sol`` + falloff.
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_default_device, get_float_dtype, get_int_dtype
 from torchref.scaling.scaler import Scaler
 from torchref.scaling.solvent import SolventModel
 from torchref.experimental.monolithic_refinement.density_solvent import (
@@ -85,7 +85,6 @@ class DensityDerivedSolvent(nn.Module):
         super().__init__()
         device = device or get_default_device()
         dtype = dtype or get_float_dtype()
-        self.optimize_phase = False
         # rho_s frozen at 1: the scaler's k_sol is the refinable contrast, so the
         # raw solvent SF returned here is pure density shape (ifft(M)).
         self.density = DensitySolventModel(
@@ -127,7 +126,7 @@ class DensityDerivedSolvent(nn.Module):
         Not detached: ``F_sol`` follows the moving atoms so gradients reach
         ``xyz``/``adp``. The scaler applies the contrast and falloff on top.
         """
-        return self.density(hkl.to(torch.long))
+        return self.density(hkl.to(get_int_dtype()))
 
     def update_solvent(self):
         """No-op: the density mask is rebuilt live on every scaler forward."""

@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING
 
+import torch
+
 from ..base import ModelTarget
 
 if TYPE_CHECKING:
@@ -28,11 +30,9 @@ class ADPTarget(ModelTarget):
 
     Notes
     -----
-    ``**kwargs`` accepted by ``__init__`` are forwarded to
-    :class:`~torchref.refinement.targets.base.ModelTarget`, which currently
-    discards them. Passing ``target_value`` / ``sigma`` here therefore has no
-    effect on the loss; per-target tuning is done through each subclass's own
-    explicit parameters (e.g. ``sigma`` buffers stored on the subclass).
+    Extra keyword arguments are discarded, not forwarded, so ``target_value`` or
+    ``sigma`` passed here has no effect on the loss; each subclass takes its tuning
+    through its own explicit parameters.
     """
 
     def __init__(
@@ -43,3 +43,11 @@ class ADPTarget(ModelTarget):
         **kwargs,
     ):
         super().__init__(model, verbose, device=device)
+
+    def _b_values(self) -> torch.Tensor:
+        """Return per-atom B_eq in Å², shape ``(n_atoms,)``, from ``Model._b_eq``.
+
+        Read B through this rather than ``model.adp()``, whose value for an anisotropic
+        atom is not refined; the written ``tempfactor`` column reads the same B_eq.
+        """
+        return self.model._b_eq()

@@ -1,14 +1,18 @@
-"""``vectorized_add_to_map`` with automatic CPU/GPU path selection.
+"""``vectorized_add_to_map``: the voxel-list density splat, chosen by device.
 
-Adds atoms to a density map under the ITC92 5-Gaussian parameterization, choosing the
-implementation from the tensor device: CPU uses a JIT-scripted einsum kernel with a metric
-tensor; on GPU, when the shared targets gate permits Triton (CUDA + float32, dispatch
-AUTO/TRITON), the fused Triton branch is selected, otherwise the pure-torch,
-double-differentiable ``_add_to_map_gpu_simple``. The CPU JIT and simple GPU paths are
-fully differentiable and compile on import.
+Adds atoms to a density map under the ITC92 5-Gaussian parameterization. On CUDA the
+``triton`` row of :data:`torchref.base.targets._dispatch.TARGET_BACKENDS` decides (CUDA
+float32, off under ``force_portable``): the fused Triton kernel where it matches, the
+eager, double-differentiable ``_add_to_map_gpu_simple`` otherwise. Every other device
+runs a TorchScript einsum kernel with a metric tensor, scripted on first use or by
+:func:`warmup` and cached under :func:`get_cache_dir`.
 """
 
+import glob
+import hashlib
+import inspect
 import os
+
 import torch
 
 from torchref.base.targets._dispatch import use_triton
@@ -21,11 +25,9 @@ _CACHE_DIR = os.environ.get(
     "TORCHREF_COMPILE_CACHE",
     os.path.join(os.path.expanduser("~"), ".cache", "torchref", "inductor"),
 )
-os.makedirs(_CACHE_DIR, exist_ok=True)
 
 __all__ = [
     "vectorized_add_to_map",
-    "build_electron_density",
     "compute_metric_tensor",
     "precompute_fractional_coords",
     "warmup",
@@ -34,11 +36,10 @@ __all__ = [
 ]
 
 # =============================================================================
-# Kernel state - compiled on import
+# Kernel state - built on first use
 # =============================================================================
 
 _jit_cpu_kernel = None
-_jit_gpu_kernel = None
 
 # Triton kernel (lazy import, with fallback)
 _triton_kernel = None
@@ -89,8 +90,6 @@ def precompute_fractional_coords(
 # CPU JIT kernel - uses einsum with metric tensor
 # =============================================================================
 
-_JIT_CPU_CACHE_PATH = os.path.join(_CACHE_DIR, "jit_cpu_kernel.pt")
-
 
 class _CpuDensityKernel(torch.nn.Module):
     """JIT-scriptable CPU density computation kernel."""
@@ -135,13 +134,29 @@ class _CpuDensityKernel(torch.nn.Module):
         # Scatter add to density map
         ny: int = density_map.shape[1]
         nz: int = density_map.shape[2]
+        # Compiled by TorchScript: no Tensor.new_tensor, no config dtype getters.
         strides = torch.tensor(
-            [ny * nz, nz, 1], device=voxel_indices.device, dtype=torch.long
+            [ny * nz, nz, 1],
+            device=voxel_indices.device,
+            # dtype-ok: int64 strides make the flat voxel index int64; scatter_add_ requires int64 on torch < 2.8
+            dtype=torch.long,
         )
-        index_flat = torch.sum(voxel_indices.to(torch.long) * strides, dim=-1).view(-1)
+        index_flat = torch.sum(voxel_indices.to(torch.long) * strides, dim=-1).view(-1)  # dtype-ok: voxel indices flattened for scatter; indexing requires long
 
         density_map.view(-1).scatter_add_(0, index_flat, density.reshape(-1))
         return density_map
+
+
+def _jit_cpu_cache_path() -> str:
+    """Cache file of the scripted CPU kernel.
+
+    Named after the torch version and a hash of the kernel source, so a file written by
+    another torch build or for an edited kernel is never loaded.
+    """
+    source = inspect.getsource(_CpuDensityKernel).encode()
+    digest = hashlib.sha256(source).hexdigest()[:16]
+    name = f"jit_cpu_kernel-{torch.__version__}-{digest}.pt"
+    return os.path.join(_CACHE_DIR, name)
 
 
 def _get_jit_cpu_kernel():
@@ -151,10 +166,10 @@ def _get_jit_cpu_kernel():
     if _jit_cpu_kernel is not None:
         return _jit_cpu_kernel
 
-    # Try loading from cache
-    if os.path.exists(_JIT_CPU_CACHE_PATH):
+    cache_path = _jit_cpu_cache_path()
+    if os.path.exists(cache_path):
         try:
-            _jit_cpu_kernel = torch.jit.load(_JIT_CPU_CACHE_PATH)
+            _jit_cpu_kernel = torch.jit.load(cache_path)
             return _jit_cpu_kernel
         except Exception:
             pass  # Cache corrupted, will recreate
@@ -165,108 +180,12 @@ def _get_jit_cpu_kernel():
 
     # Save to cache
     try:
-        os.makedirs(os.path.dirname(_JIT_CPU_CACHE_PATH), exist_ok=True)
-        torch.jit.save(_jit_cpu_kernel, _JIT_CPU_CACHE_PATH)
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        torch.jit.save(_jit_cpu_kernel, cache_path)
     except Exception:
         pass
 
     return _jit_cpu_kernel
-
-
-# =============================================================================
-# GPU JIT kernel - uses batch matmul (more efficient on GPU than einsum)
-# =============================================================================
-
-_JIT_GPU_CACHE_PATH = os.path.join(_CACHE_DIR, "jit_gpu_kernel.pt")
-
-
-class _GpuDensityKernel(torch.nn.Module):
-    """JIT-scriptable GPU density computation kernel."""
-
-    def forward(
-        self,
-        surrounding_coords: torch.Tensor,
-        voxel_indices: torch.Tensor,
-        density_map: torch.Tensor,
-        xyz: torch.Tensor,
-        b: torch.Tensor,
-        inv_frac_matrix: torch.Tensor,
-        frac_matrix: torch.Tensor,
-        A: torch.Tensor,
-        B: torch.Tensor,
-        occ: torch.Tensor,
-    ) -> torch.Tensor:
-        # Compute diff in Cartesian space
-        diff = surrounding_coords - xyz[:, None, :]
-
-        # Apply PBC using batch matmul (efficient on GPU)
-        diff_frac = torch.matmul(diff, inv_frac_matrix.T)
-        translation = torch.round(diff_frac)
-        correction = torch.matmul(translation, frac_matrix.T)
-        diff_wrapped = diff - correction
-
-        # Compute r²
-        r_squared = (diff_wrapped * diff_wrapped).sum(dim=-1)
-
-        # Compute B_total with clamp
-        B_total = ((B + b[:, None]) * 0.25).clamp(min=0.1)
-
-        # Normalization = (π / B_total)^1.5
-        pi: float = 3.141592653589793
-        pi_sq: float = pi * pi
-        pi_1p5: float = pi * 1.7724538509055159  # sqrt(pi)
-        normalization = pi_1p5 / (B_total * torch.sqrt(B_total))
-
-        # A_normalized
-        A_normalized = A * occ[:, None] * normalization
-
-        # Gaussian terms
-        exponents = -pi_sq * r_squared[:, :, None] / B_total[:, None, :]
-        gaussian_terms = torch.exp(exponents)
-
-        # Density
-        density = (A_normalized[:, None, :] * gaussian_terms).sum(dim=-1)
-
-        # Scatter add to density map
-        ny: int = density_map.shape[1]
-        nz: int = density_map.shape[2]
-        index_flat = (
-            voxel_indices[:, :, 0].to(torch.int64) * (ny * nz)
-            + voxel_indices[:, :, 1].to(torch.int64) * nz
-            + voxel_indices[:, :, 2].to(torch.int64)
-        ).flatten()
-
-        density_map.view(-1).scatter_add_(0, index_flat, density.flatten())
-        return density_map
-
-
-def _get_jit_gpu_kernel():
-    """Get or create the JIT-scripted GPU kernel."""
-    global _jit_gpu_kernel
-
-    if _jit_gpu_kernel is not None:
-        return _jit_gpu_kernel
-
-    # Try loading from cache
-    if os.path.exists(_JIT_GPU_CACHE_PATH):
-        try:
-            _jit_gpu_kernel = torch.jit.load(_JIT_GPU_CACHE_PATH)
-            return _jit_gpu_kernel
-        except Exception:
-            pass  # Cache corrupted, will recreate
-
-    # Create and script the kernel
-    kernel = _GpuDensityKernel()
-    _jit_gpu_kernel = torch.jit.script(kernel)
-
-    # Save to cache
-    try:
-        os.makedirs(os.path.dirname(_JIT_GPU_CACHE_PATH), exist_ok=True)
-        torch.jit.save(_jit_gpu_kernel, _JIT_GPU_CACHE_PATH)
-    except Exception:
-        pass
-
-    return _jit_gpu_kernel
 
 
 # =============================================================================
@@ -286,7 +205,7 @@ def _add_to_map_gpu_simple(
     B: torch.Tensor,
     occ: torch.Tensor,
 ) -> torch.Tensor:
-    """Simple GPU implementation without JIT (for debugging)."""
+    """Splat eagerly with Cartesian wrapping; the CUDA path when Triton is not used."""
     import numpy as np
 
     diff = surrounding_coords - xyz[:, None, :]
@@ -307,9 +226,9 @@ def _add_to_map_gpu_simple(
 
     ny, nz = density_map.shape[1], density_map.shape[2]
     index_flat = (
-        voxel_indices[:, :, 0].to(torch.int64) * (ny * nz)
-        + voxel_indices[:, :, 1].to(torch.int64) * nz
-        + voxel_indices[:, :, 2].to(torch.int64)
+        voxel_indices[:, :, 0].to(torch.int64) * (ny * nz)  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
+        + voxel_indices[:, :, 1].to(torch.int64) * nz  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
+        + voxel_indices[:, :, 2].to(torch.int64)  # dtype-ok: voxel-index flat-arithmetic term for scatter; requires int64
     ).flatten()
 
     density_map.view(-1).scatter_add_(0, index_flat, density.flatten())
@@ -335,10 +254,9 @@ def vectorized_add_to_map(
 ) -> torch.Tensor:
     """Add atoms to a density map using the ITC92 5-Gaussian parameterization.
 
-    The backend follows the shared targets gate: the Triton fused kernel where Triton is
-    permitted (CUDA + float32, engine AUTO/TRITON), the pure-torch
-    ``_add_to_map_gpu_simple`` otherwise (force_portable, float64, no Triton), and the JIT
-    kernel on CPU.
+    On CUDA the ``triton`` row of ``TARGET_BACKENDS`` picks the fused Triton kernel
+    (float32, Triton importable, ``force_portable`` off), else the eager
+    ``_add_to_map_gpu_simple``; other devices run the TorchScript kernel.
 
     Parameters
     ----------
@@ -349,7 +267,7 @@ def vectorized_add_to_map(
     xyz, b, occ : torch.Tensor
         Positions ``(N_atoms, 3)``, isotropic B-factors and occupancies ``(N_atoms,)``.
     inv_frac_matrix, frac_matrix : torch.Tensor
-        Fractionalization matrix and its inverse, ``(3, 3)``.
+        Cartesian-to-fractional and fractional-to-Cartesian, ``(3, 3)``.
     A, B : torch.Tensor
         ITC92 amplitudes and widths, ``(N_atoms, 5)`` each.
 
@@ -361,10 +279,8 @@ def vectorized_add_to_map(
         leaves the input unchanged, so callers must always use the returned value.
     """
     if density_map.device.type == "cuda":
-        # The shared targets gate is the only switch: use the Triton kernel when it
-        # permits (CUDA + float32); otherwise — force_portable,
-        # float64, or Triton unavailable — the pure-torch, double-differentiable
-        # ``_add_to_map_gpu_simple``.
+        # TARGET_BACKENDS probes the target Triton kernels, not the fused splat, so a
+        # splat that fails to import still lands on the eager path.
         if use_triton(xyz):
             triton_fn = _get_triton_kernel()
             if triton_fn is not None:
@@ -409,37 +325,6 @@ def vectorized_add_to_map(
             B,
             occ,
         )
-
-
-def build_electron_density(
-    surrounding_coords: torch.Tensor,
-    voxel_indices: torch.Tensor,
-    density_map: torch.Tensor,
-    xyz: torch.Tensor,
-    b: torch.Tensor,
-    inv_frac_matrix: torch.Tensor,
-    frac_matrix: torch.Tensor,
-    A: torch.Tensor,
-    B: torch.Tensor,
-    occ: torch.Tensor,
-) -> torch.Tensor:
-    """Alias for :func:`vectorized_add_to_map`, taking the same *voxel-level* arguments.
-
-    Distinct from :func:`torchref.base.electron_density.main.build_electron_density`, which
-    takes *atomic* parameters and performs the full table-based variable-radius dispatch.
-    """
-    return vectorized_add_to_map(
-        surrounding_coords,
-        voxel_indices,
-        density_map,
-        xyz,
-        b,
-        inv_frac_matrix,
-        frac_matrix,
-        A,
-        B,
-        occ,
-    )
 
 
 # =============================================================================
@@ -497,25 +382,14 @@ def get_cache_dir() -> str:
 
 
 def clear_cache() -> None:
-    """Clear the JIT kernel cache."""
-    import shutil
+    """Drop the scripted kernel from memory and delete its cache files.
 
-    global _jit_cpu_kernel, _jit_gpu_kernel
+    Only the ``jit_cpu_kernel*.pt`` files in :func:`get_cache_dir` are removed; the
+    directory and anything else in it are kept, since ``TORCHREF_COMPILE_CACHE`` may
+    name a directory shared with other caches.
+    """
+    global _jit_cpu_kernel
     _jit_cpu_kernel = None
-    _jit_gpu_kernel = None
 
-    if os.path.exists(_CACHE_DIR):
-        shutil.rmtree(_CACHE_DIR)
-        os.makedirs(_CACHE_DIR, exist_ok=True)
-
-
-# =============================================================================
-# Compile kernels on import
-# =============================================================================
-
-# CPU kernel always compiles (fast, ~0.1s)
-_get_jit_cpu_kernel()
-
-# GPU kernel compiles if CUDA is available
-if torch.cuda.is_available():
-    _get_jit_gpu_kernel()
+    for path in glob.glob(os.path.join(_CACHE_DIR, "jit_cpu_kernel*.pt")):
+        os.remove(path)

@@ -16,9 +16,6 @@ from torchref.refinement.weighting.base_weighting import BaseWeighting
 if TYPE_CHECKING:
     from torchref.refinement.loss_state import LossState
 
-# Alias retained for backward compatibility with the pre-Springclean API.
-WeightingScheme = BaseWeighting
-
 
 class ManualWeighting(BaseWeighting):
     """Apply fixed manual weights, ignoring the ``LossState`` entirely.
@@ -45,4 +42,4 @@ class ManualWeighting(BaseWeighting):
         return dict(self._weights)
 
 
-__all__ = ["WeightingScheme", "ManualWeighting"]
+__all__ = ["ManualWeighting"]

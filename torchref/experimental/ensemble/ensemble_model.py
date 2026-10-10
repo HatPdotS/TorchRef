@@ -1,6 +1,6 @@
 """
-Ensemble atomic model: ``n_members`` (default 100) coordinate copies of the
-same chemistry sharing one Fourier transform.
+Ensemble atomic model: a pool of ``n_members`` coordinate copies of the same
+chemistry sharing one Fourier transform.
 
 .. warning::
 
@@ -38,7 +38,7 @@ than fabricating cross-member bonds from the flat replicated DataFrame.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -261,6 +261,37 @@ class _SyntheticPDBReader:
         return self.dataframe, self.cell, self.spacegroup
 
 
+#: Where an ensemble's hydrogens come from: stripped, the file's own, or the file's
+#: topped up from the monomer templates before replication.
+HYDROGEN_SOURCES = ("strip", "keep", "add")
+
+
+def _add_hydrogens_df(
+    df: pd.DataFrame, cell, spacegroup, seed: Optional[int], device=None
+) -> pd.DataFrame:
+    """One copy's atom table with the hydrogens its monomer templates name.
+
+    Generated in memory through a :class:`~torchref.model.model.Model` loaded with
+    ``hydrogens="add"`` on ``device`` (default: the configured device); free water
+    orientations are drawn under ``seed``.
+    """
+    from torchref.model.model import Model
+
+    with torch.random.fork_rng():
+        if seed is not None:
+            torch.manual_seed(seed)
+        single = Model(verbose=0, hydrogens="add", device=device)
+        single.load(_SyntheticPDBReader(df.reset_index(drop=True), cell, spacegroup))
+    return single.to_dataframe().reset_index(drop=True)
+
+
+def _check_hydrogen_source(hydrogens: str) -> None:
+    if hydrogens not in HYDROGEN_SOURCES:
+        raise ValueError(
+            f"hydrogens must be one of {HYDROGEN_SOURCES}, got {hydrogens!r}"
+        )
+
+
 def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
     """Build a single-conformation :class:`~torchref.model.model.Model` from an
     ensemble's single-copy chemistry (``EnsembleModel._pdb_single``).
@@ -283,7 +314,7 @@ def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
     Returns
     -------
     Model
-        A single-conformation model exposing ``.pdb`` / ``.update_pdb()`` /
+        A single-conformation model exposing ``.to_dataframe()`` / ``.ctx.topology`` /
         ``.xyz()`` / ``.device`` over the selected atoms.
     """
     from torchref.model.model import Model
@@ -291,7 +322,7 @@ def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
     df = ensemble._pdb_single
     if atom_idx is not None:
         df = df.iloc[np.asarray(atom_idx)]
-    chem = Model(verbose=verbose, strip_H=False, device=ensemble.device)
+    chem = Model(verbose=verbose, hydrogens="keep", device=ensemble.device)
     chem.load(
         _SyntheticPDBReader(
             df.reset_index(drop=True).copy(),
@@ -310,9 +341,9 @@ class EnsembleModel(ModelFT):
 
        Experimental — API and behaviour may change without notice.
 
-    ``n_members`` (default 100) is rounded to a multiple of ``N_sym`` and, when
-    birth/death population dynamics are used, is the number of *alive* members
-    within a pre-allocated ``n_max`` slot pool — not a fixed copy count.
+    ``n_members`` is the size of the member-slot pool and :attr:`n_alive` the
+    number of live slots; they differ when a factory's ``n_max`` adds dead
+    spare slots or :meth:`kill_member` retires a member.
 
     Parameters
     ----------
@@ -322,8 +353,10 @@ class EnsembleModel(ModelFT):
         Verbosity.
     device : torch.device
         Computation device.
-    strip_H : bool
-        Whether to strip hydrogens (inherited).
+    hydrogens : {"keep", "strip"}
+        Hydrogen policy on load (inherited). ``"add"`` is refused: the atom set is
+        the replicated single copy the factories build, and ``_finalize_ensemble``
+        reshapes by ``n_atoms_per_member``, which generated hydrogens would break.
     max_res : float
         FFT grid target resolution (inherited).
 
@@ -339,12 +372,20 @@ class EnsembleModel(ModelFT):
         dtype_float=None,
         verbose: int = 1,
         device=None,
-        strip_H: bool = True,
+        hydrogens: str = "keep",
         max_res: float = 1.0,
-        gridsize: Optional[int] = None,
-        wavelength: float = 1.0,
+        gridsize: Optional[Tuple[int, int, int]] = None,
+        wavelength: Optional[float] = None,
         anomalous_threshold: float = 0.5,
+        apply_bijvoet: bool = False,
+        cif_path=None,
+        hydrogens_in_xray: bool = True,
     ):
+        if hydrogens == "add":
+            raise ValueError(
+                "EnsembleModel cannot generate hydrogens: its atom set is the "
+                "replicated single copy; hydrogenate the input first."
+            )
         if dtype_float is None:
             dtype_float = get_float_dtype()
         if device is None:
@@ -353,11 +394,14 @@ class EnsembleModel(ModelFT):
             dtype_float=dtype_float,
             verbose=verbose,
             device=device,
-            strip_H=strip_H,
+            hydrogens=hydrogens,
             max_res=max_res,
             gridsize=gridsize,
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
+            apply_bijvoet=apply_bijvoet,
+            cif_path=cif_path,
+            hydrogens_in_xray=hydrogens_in_xray,
         )
         # Filled in by ``_finalize_ensemble`` after ``load`` returns.
         self.n_members: int = 0
@@ -365,6 +409,8 @@ class EnsembleModel(ModelFT):
         # Single-copy PDB DataFrame, preserved for restraint / topology
         # builders that must not see the flat replicated atom list.
         self._pdb_single: Optional[pd.DataFrame] = None
+        # Set by the factories; "add" means TorchRef generated the hydrogens.
+        self.hydrogen_source: str = hydrogens
         # Ensemble dropout (regularization). When active, each structure-
         # factor forward uses a random subset of members (see
         # :meth:`configure_dropout`). The per-atom occupancy multiplier is a
@@ -388,7 +434,7 @@ class EnsembleModel(ModelFT):
         seed: Optional[int] = None,
         verbose: int = 1,
         device=None,
-        strip_H: bool = True,
+        hydrogens: str = "strip",
         max_res: float = 1.0,
         n_max: Optional[int] = None,
         **modelft_kwargs,
@@ -402,7 +448,7 @@ class EnsembleModel(ModelFT):
             Path to input PDB. May contain multiple models — only the first
             is used (use :meth:`from_multimodel_pdb` to consume all).
         n_members : int
-            Number of ensemble members.
+            Number of alive members; the pool holds ``max(n_members, n_max)``.
         perturb_sigma : float
             Std-dev (Å) of Gaussian noise added to xyz of each replicated copy.
             Default 0.01 Å — only large enough to break gradient degeneracy
@@ -410,8 +456,8 @@ class EnsembleModel(ModelFT):
             LJ clashes (atoms walking inside vdW radii), which makes any
             downstream force-field restraint (AmberTarget, geometry terms)
             return huge energies / gradients. The ensemble's real disorder
-            should develop from the X-ray gradient + entropy regularizer
-            during refinement, not from the initial noise.
+            should develop from the X-ray and restraint gradients during
+            refinement, not from the initial noise.
         b_const : float
             Fixed isotropic B-factor (Å²) for every atom in every member.
             Small but non-zero to avoid FFT grid aliasing.
@@ -421,8 +467,11 @@ class EnsembleModel(ModelFT):
             Verbosity.
         device : torch.device, optional
             Computation device.
-        strip_H : bool
-            Strip hydrogens before replication (default True).
+        hydrogens : {"strip", "keep", "add"}
+            Strip hydrogens before replication (default), keep the file's, or keep
+            them and add the ones the monomer templates name before replication,
+            the free water orientations drawn under ``seed``. Recorded as
+            :attr:`hydrogen_source`.
         max_res : float
             FFT grid target resolution (Å), forwarded to ``ModelFT``.
         n_max : int, optional
@@ -433,15 +482,18 @@ class EnsembleModel(ModelFT):
         **modelft_kwargs
             Extra keyword arguments forwarded to the ``ModelFT`` constructor.
         """
+        _check_hydrogen_source(hydrogens)
         reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
         df, cell, spacegroup = reader()
-        if strip_H:
+        if hydrogens == "strip":
             df = df.loc[df["element"].astype(str).str.strip() != "H"].reset_index(drop=True)
         # Strip alternate conformations: the ensemble IS the disorder model,
         # so per-residue altlocs would double-count atoms in OpenMM topology,
         # FFT, restraints, etc. Mirrors Model.strip_altlocs.
         df = _strip_altlocs_df(df)
         df.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"], inplace=True)
+        if hydrogens == "add":
+            df = _add_hydrogens_df(df, cell, spacegroup, seed, device)
 
         pool = max(int(n_members), int(n_max) if n_max else int(n_members))
         rng = np.random.default_rng(seed)
@@ -451,11 +503,14 @@ class EnsembleModel(ModelFT):
         )
 
         model = cls(
-            verbose=verbose, device=device, strip_H=False,  # already stripped
+            verbose=verbose,
+            device=device,
+            hydrogens="keep",  # already stripped, if asked
             max_res=max_res,
             **modelft_kwargs,
         )
         model._pdb_single = df.reset_index(drop=True).copy()
+        model.hydrogen_source = hydrogens
         synthetic = _SyntheticPDBReader(replicated, cell, spacegroup)
         model.load(synthetic)
         model._finalize_ensemble(n_members=pool, n_atoms_per_member=len(df))
@@ -473,7 +528,7 @@ class EnsembleModel(ModelFT):
         seed: Optional[int] = None,
         verbose: int = 1,
         device=None,
-        strip_H: bool = True,
+        hydrogens: str = "strip",
         max_res: float = 1.0,
         n_max: Optional[int] = None,
         **modelft_kwargs,
@@ -491,8 +546,12 @@ class EnsembleModel(ModelFT):
         start alive, slots ``[n_members:n_max]`` start dead (perturbed seeds
         ready for bifurcation to reactivate). Default ``n_max = n_members``
         (no spare slots; bifurcation can only reuse slots freed by deaths).
+
+        ``hydrogens`` is as in :meth:`from_single`. With ``"add"`` every MODEL is
+        hydrogenated on its own and all must gain the same atoms.
         """
-        models = _parse_multi_model_pdb(pdb_path, strip_H=strip_H)
+        _check_hydrogen_source(hydrogens)
+        models = _parse_multi_model_pdb(pdb_path, strip_H=hydrogens == "strip")
         if len(models) == 0:
             raise ValueError(f"No usable atomic models parsed from {pdb_path}")
         if n_members is None:
@@ -513,6 +572,18 @@ class EnsembleModel(ModelFT):
         # Read cell / spacegroup via a separate reader on the unmodified file.
         cell_reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
         cell, spacegroup = cell_reader.cell, cell_reader.spacegroup
+        if hydrogens == "add":
+            models = [
+                _add_hydrogens_df(m, cell, spacegroup, seed, device) for m in models
+            ]
+            identity = ["chainid", "resseq", "icode", "resname", "name"]
+            for k, m in enumerate(models[1:], start=2):
+                if not m[identity].equals(models[0][identity]):
+                    raise ValueError(
+                        f"MODEL {k} gains different hydrogens from MODEL 1; ensemble "
+                        "members need identical chemistry. Hydrogenate the file first."
+                    )
+            n_atoms = len(models[0])
 
         pool = max(int(n_members), int(n_max) if n_max else int(n_members))
         rng = np.random.default_rng(seed)
@@ -526,7 +597,7 @@ class EnsembleModel(ModelFT):
                 src["y"] = src["y"].astype(float) + noise[:, 1]
                 src["z"] = src["z"].astype(float) + noise[:, 2]
             src["tempfactor"] = float(b_const)
-            src["occupancy"] = 1.0 / float(n_members)
+            src["occupancy"] = 1.0 / float(pool)
             for c in ("u11", "u22", "u33", "u12", "u13", "u23"):
                 if c in src.columns:
                     src[c] = 0.0
@@ -537,11 +608,14 @@ class EnsembleModel(ModelFT):
         replicated = pd.concat(pieces, ignore_index=True)
 
         model = cls(
-            verbose=verbose, device=device, strip_H=False,
+            verbose=verbose,
+            device=device,
+            hydrogens="keep",  # already stripped, if asked
             max_res=max_res,
             **modelft_kwargs,
         )
         model._pdb_single = models[0].reset_index(drop=True).copy()
+        model.hydrogen_source = hydrogens
         synthetic = _SyntheticPDBReader(replicated, cell, spacegroup)
         model.load(synthetic)
         model._finalize_ensemble(n_members=pool, n_atoms_per_member=n_atoms)
@@ -606,15 +680,61 @@ class EnsembleModel(ModelFT):
             b_raw0.to(self.dtype_float), requires_grad=False
         )
         # Only xyz refines — B-factors fixed (ensemble spread IS the disorder),
-        # anisotropic U is unused, and occupancy is fixed at 1/N by default
+        # anisotropic U is unused, and occupancy is fixed at 1/n_alive by default
         # (per-member occupancy can be opted into via
         # enable_population_refinement, but is a known dead de-overfit lever).
         for tgt in ("adp", "u", "occupancy"):
             try:
                 self.freeze(tgt)
             except Exception:
-                if self.verbose > 0:
+                if self.ctx.verbose > 0:
                     print(f"  EnsembleModel: freeze({tgt!r}) failed (ignored)")
+
+    def copy(self) -> "EnsembleModel":
+        """Create a deep copy of the ensemble, of the same class.
+
+        :meth:`Model.copy` carries the context, buffers and parameter wrappers.
+        This adds the state an ensemble holds outside them: the member layout,
+        the single-copy atom table, the dropout and population-refinement
+        settings, the per-member ``occ_logits`` / ``b_raw`` (``requires_grad``
+        kept), and a low-rank or PCA ``xyz``, which has no ``copy`` of its own.
+
+        Returns
+        -------
+        EnsembleModel
+            A new, fully independent ensemble.
+        """
+        import copy as copy_module
+
+        duplicate = super().copy()
+        for name in (
+            "n_members",
+            "n_atoms_per_member",
+            "hydrogen_source",
+            "dropout_active",
+            "dropout_min",
+            "dropout_max",
+            "_refine_population",
+            "_refine_member_b",
+        ):
+            if hasattr(self, name):
+                setattr(duplicate, name, getattr(self, name))
+        if self._pdb_single is not None:
+            duplicate._pdb_single = self._pdb_single.copy(deep=True)
+        for name, param in self._parameters.items():
+            if param is not None:
+                setattr(
+                    duplicate,
+                    name,
+                    torch.nn.Parameter(
+                        param.detach().clone(), requires_grad=param.requires_grad
+                    ),
+                )
+        if not hasattr(self.xyz, "copy"):
+            duplicate.xyz = copy_module.deepcopy(self.xyz)
+            duplicate._repoint_coordinate_accessors()
+        duplicate.reset_cache()
+        return duplicate
 
     # ------------------------------------------------------------------
     # Per-member occupancy + ADP + birth/death population dynamics
@@ -626,7 +746,7 @@ class EnsembleModel(ModelFT):
         """Turn per-member occupancy (and optionally ADP) injection on/off.
 
         When on, ``get_iso``/``get_aniso`` substitute the live per-member
-        softmax occupancy ``w_m`` for the frozen 1/N, so
+        softmax occupancy ``w_m`` for the frozen 1/n_alive, so
         ``F̄ = Σ_{m alive} w_m·DWF(B_m)·F_m`` and gradients flow to
         ``occ_logits``. With ``refine_b=True`` the per-member softplus ADP
         ``B_m`` is also injected (gradients to ``b_raw``); otherwise B stays
@@ -684,16 +804,23 @@ class EnsembleModel(ModelFT):
         Child xyz = parent xyz + N(0, sigma) (symmetry break); the parent's
         weight is split between the two (``logit -= ln2`` on both); child B
         copies the parent's. Returns the reborn slot index, or -1 if the pool
-        is full (no dead slot available).
+        is full (no dead slot available). Raises ``RuntimeError`` after
+        :meth:`enable_low_rank` / :meth:`enable_pca`, whose ``xyz`` has no
+        per-member coordinate rows to copy.
         """
+        n_at = int(self.n_atoms_per_member)
+        flat = self.xyz.refinable_params  # (N_max*n_atoms, 3)
+        if tuple(flat.shape) != (self.n_members * n_at, 3):
+            raise RuntimeError(
+                "bifurcate_member needs per-member Cartesian xyz; it cannot run "
+                "after enable_low_rank or enable_pca."
+            )
         a = self._alive
         free = (~a).nonzero(as_tuple=False).flatten()
         if free.numel() == 0:
             return -1
         d = int(free[0].item())
-        n_at = int(self.n_atoms_per_member)
         with torch.no_grad():
-            flat = self.xyz.refinable_params  # (N_max*n_atoms, 3)
             ps, pe = parent_idx * n_at, (parent_idx + 1) * n_at
             ds, de = d * n_at, (d + 1) * n_at
             flat[ds:de] = flat[ps:pe] + torch.randn_like(flat[ps:pe]) * float(sigma)
@@ -719,10 +846,10 @@ class EnsembleModel(ModelFT):
         refinable leaf is the per-member amplitudes ``A`` (shape ``(N, K)``).
         Degrees of freedom collapse from ``N·n_atoms·3`` to ``N·K``.
 
-        The current coordinates ARE the basis source, so this must be called
-        after the ensemble is seeded with real disorder (e.g. after a
-        ``--branch-from`` overlay) — a fresh replicate-and-perturb ensemble
-        has only ~``perturb_sigma`` of near-degenerate spread.
+        The current coordinates ARE the basis source, so call this on an
+        ensemble with real disorder (loaded with :meth:`from_multimodel_pdb`
+        or a checkpoint); a fresh replicate-and-perturb ensemble has only
+        ~``perturb_sigma`` of near-degenerate spread.
 
         Parameters
         ----------
@@ -737,36 +864,28 @@ class EnsembleModel(ModelFT):
             the retained ``K`` modes.
         """
         from .low_rank_ensemble import LowRankXYZ
+        from .pca_model import PCAEnsembleParam
 
         N = int(self.n_members)
         n_atoms = int(self.n_atoms_per_member)
         K = int(K)
         max_rank = max(1, N - 1)
         if K > max_rank:
-            if self.verbose > 0:
+            if self.ctx.verbose > 0:
                 print(
                     f"  EnsembleModel.enable_low_rank: K={K} exceeds rank "
                     f"N-1={max_rank}; clamping to {max_rank}."
                 )
             K = max_rank
 
-        with torch.no_grad():
-            flat = self.xyz().detach()                       # (N*n_atoms, 3)
-            X = flat.reshape(N, n_atoms * 3).to(torch.float64)
-            mu = X.mean(dim=0)                               # (D,)
-            Xc = X - mu.unsqueeze(0)
-            # full_matrices=False → Vt is (min(N, D), D); S length min(N, D).
-            U, S, Vt = torch.linalg.svd(Xc, full_matrices=False)
-            Vk = Vt[:K]                                      # (K, D)
-            A0 = Xc @ Vk.T                                   # (N, K)
-            total_var = (S ** 2).sum().clamp_min(1e-30)
-            explained = float((S[:K] ** 2).sum() / total_var)
-
-        dtype = self.dtype_float
+        seed = PCAEnsembleParam.from_ensemble(
+            self.xyz().detach(), n_members=N, n_atoms=n_atoms, K=K
+        )
+        explained = seed.explained_variance
         lowrank = LowRankXYZ(
-            mu=mu.to(dtype),
-            V=Vk.to(dtype),
-            amplitudes=A0.to(dtype),
+            mu=seed.mu,
+            V=seed.V,
+            amplitudes=seed.A,
             n_members=N,
             n_atoms=n_atoms,
             explained_variance=explained,
@@ -774,7 +893,7 @@ class EnsembleModel(ModelFT):
         self.xyz = lowrank
         self.reset_cache()
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(
                 f"  EnsembleModel.enable_low_rank: K={K} modes, "
                 f"DOF {N * n_atoms * 3} -> {N * K} "
@@ -789,8 +908,8 @@ class EnsembleModel(ModelFT):
         Like :meth:`enable_low_rank` but the mean ``mu``, basis ``V`` AND
         amplitudes ``A`` all refine (see
         :class:`~torchref.experimental.ensemble.pca_model.PCAEnsembleParam`). ``K=None`` → the
-        full rank ``N-1`` (complete reparameterization). Must be called after
-        the ensemble carries real disorder (e.g. after a ``--branch-from``).
+        full rank ``N-1`` (complete reparameterization). Call it on an ensemble
+        with real disorder (loaded with :meth:`from_multimodel_pdb` or a checkpoint).
         Returns the cumulative explained-variance fraction at seed time.
         """
         from .pca_model import PCAEnsembleParam
@@ -804,7 +923,7 @@ class EnsembleModel(ModelFT):
         )
         self.xyz = pca.to(self.device)
         self.reset_cache()
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(
                 f"  EnsembleModel.enable_pca: K={self.xyz.K} modes (refine μ,A,V), "
                 f"explained variance = {self.xyz.explained_variance * 100:.2f}%"
@@ -830,7 +949,7 @@ class EnsembleModel(ModelFT):
         X-ray/Wilson gradient — but their geometry is still restrained by
         Amber (which reads coordinates, not occupancy). This breaks the member
         co-adaptation that lets an overparameterized ensemble memorize
-        work-set noise. Disabling restores the full ``1/N`` average.
+        work-set noise. Disabling restores the full ``1/n_alive`` average.
         """
         self.dropout_active = bool(active)
         if dropout_min is not None:
@@ -848,24 +967,23 @@ class EnsembleModel(ModelFT):
     def resample_dropout(self) -> int:
         """Draw a fresh member subset and rewrite the occupancy multiplier.
 
-        Picks ``k ~ U[dropout_min, dropout_max]`` members uniformly at random,
-        sets their per-atom multiplier to ``N/k`` (so effective occupancy is
-        ``(1/N)·(N/k) = 1/k`` and the subset average is unbiased) and the rest
-        to 0. No-op when dropout is inactive. Returns ``k`` (or ``N`` when
-        inactive).
+        Picks ``k ~ U[dropout_min, dropout_max]`` (capped at ``n_alive``) of
+        the alive members uniformly at random, sets their per-atom multiplier
+        to ``n_alive/k`` (so effective occupancy is ``(1/n_alive)·(n_alive/k)
+        = 1/k``) and the rest, dead slots included, to 0. Returns ``k`` (or
+        :attr:`n_alive` when dropout is inactive, which is a no-op).
         """
         if not self.dropout_active or self._dropout_occ_mult is None:
-            return self.n_members
-        N = self.n_members
-        lo = max(1, int(self.dropout_min))
-        hi = min(int(self.dropout_max), N)
-        if hi < lo:
-            hi = lo
+            return self.n_alive
+        alive = self._alive.nonzero(as_tuple=False).flatten()
+        n_alive = int(alive.numel())
+        lo = min(max(1, int(self.dropout_min)), n_alive)
+        hi = max(min(int(self.dropout_max), n_alive), lo)
         k = int(torch.randint(lo, hi + 1, (1,)).item())
         dev = self._dropout_occ_mult.device
         dt = self._dropout_occ_mult.dtype
-        keep = torch.zeros(N, device=dev, dtype=dt)
-        keep[torch.randperm(N, device=dev)[:k]] = float(N) / float(k)
+        keep = torch.zeros(self.n_members, device=dev, dtype=dt)
+        keep[alive[torch.randperm(n_alive, device=dev)[:k]]] = n_alive / float(k)
         self._dropout_occ_mult.copy_(keep.repeat_interleave(self.n_atoms_per_member))
         return k
 
@@ -882,19 +1000,21 @@ class EnsembleModel(ModelFT):
         return occupancy
 
     def _inject_population(self, occupancy: torch.Tensor, adp: torch.Tensor):
-        """Substitute live per-member softmax occupancy / softplus ADP.
+        """Substitute per-member occupancy (and softplus ADP) for the stored values.
 
-        Only when population refinement is on and the per-atom vector aligns
-        with the full ensemble layout (``get_iso`` covers all atoms; the
-        all-isotropic ensemble leaves ``get_aniso`` empty, so its shorter
-        vector simply skips the swap). The returned tensors are live, so
-        autograd reaches ``occ_logits``/``b_raw`` through the FFT SF path.
+        Dead slots get zero occupancy. Without population refinement the alive
+        members share it equally (``1/n_alive``); with it they carry the live
+        softmax weights, so autograd reaches ``occ_logits``/``b_raw`` through
+        the FFT SF path. Applies only when the per-atom vector aligns with the
+        full ensemble layout (``get_iso`` covers all atoms; the all-isotropic
+        ensemble leaves ``get_aniso`` empty, so its shorter vector skips this).
         """
+        idx = getattr(self, "_member_index", None)
+        if idx is None or occupancy.numel() != idx.numel():
+            return occupancy, adp
         if not getattr(self, "_refine_population", False):
-            return occupancy, adp
-        if occupancy.numel() != self._member_index.numel():
-            return occupancy, adp
-        idx = self._member_index
+            alive = self._alive.to(occupancy.dtype)
+            return (alive / alive.sum())[idx], adp
         occupancy = self.member_weights()[idx]
         # B stays frozen at b_const unless explicitly refined (free B -> 0 on
         # the weighted members = delta-function overfit; default off).
@@ -941,14 +1061,13 @@ class EnsembleModel(ModelFT):
         """
         Write the ensemble as a multi-MODEL PDB.
 
-        Each ensemble member becomes one MODEL record. The single-copy
-        chemistry from ``self._pdb_single`` is used as the row template;
-        per-member coordinates come from ``xyz_per_member``.
-
-        Note: the written B-factor is a single scalar (atom 0's ADP) applied to
-        every atom of every member, not a per-atom value — the ensemble carries
-        a constant frozen B and the spread itself is the disorder model.
-        Occupancies are written as the uniform ``1/n_members``.
+        Each alive member becomes one MODEL record; dead pool slots are not
+        written. The single-copy chemistry from ``self._pdb_single`` is the row
+        template; coordinates come from ``xyz_per_member``. Occupancy and B are
+        the values the structure factor uses: ``1/n_alive`` per member (the
+        softmax weight under population refinement) and the frozen per-atom B
+        (the member's ``B_m`` when it is refined). :meth:`from_multimodel_pdb`
+        reads back coordinates only.
         """
         if self._pdb_single is None:
             raise RuntimeError(
@@ -956,17 +1075,20 @@ class EnsembleModel(ModelFT):
                 "from_single / from_multimodel_pdb classmethod?"
             )
         coords = self.xyz_per_member.detach().cpu().numpy()
+        with torch.no_grad():
+            occ, b = self._inject_population(self.occupancy(), self.adp())
+        occ = occ.reshape(self.n_members, -1).cpu().numpy()
+        b = b.reshape(self.n_members, -1).cpu().numpy()
         dfs = []
-        for i in range(self.n_members):
+        for i in np.flatnonzero(self._alive.cpu().numpy()):
             df = self._pdb_single.copy(deep=True)
             df["x"] = coords[i, :, 0]
             df["y"] = coords[i, :, 1]
             df["z"] = coords[i, :, 2]
-            df["tempfactor"] = float(self.adp().detach().cpu().numpy()[0]) \
-                if self.adp is not None else 5.0
-            df["occupancy"] = 1.0 / self.n_members
+            df["tempfactor"] = b[i]
+            df["occupancy"] = occ[i]
             # Attach cell/spacegroup to first frame for the writer's CRYST1.
-            if i == 0:
+            if not dfs:
                 if self.cell is not None:
                     df.attrs["cell"] = self.cell.data.detach().cpu().numpy().tolist()
                 if self.spacegroup is not None:

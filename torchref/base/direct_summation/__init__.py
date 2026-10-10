@@ -1,11 +1,9 @@
 """
-Structure factor calculation functions.
+Direct-summation P1 structure factors.
 
-This submodule provides functions for computing structure factors
-from atomic models:
-- Isotropic structure factor calculations
-- Anisotropic structure factor calculations
-- Correction terms (anharmonic, core deformation)
+``ds_iso`` and ``ds_aniso`` run the backend that ``_backends.DS_BACKENDS`` selects (the
+Triton kernel or the checkpointed reference), and ``compute_scattering_factors_batch`` is
+the ITC92 f(s) sum the reference evaluates. Symmetry is applied by the caller.
 """
 
 import torch
@@ -45,23 +43,6 @@ def compute_scattering_factors_batch(
     return torch.sum(A_exp * exp_terms, dim=-1)
 
 
-from .isotropic import (
-    iso_structure_factor_torched,
-    iso_structure_factor_torched_no_complex,
-)
-
-from .anisotropic import (
-    aniso_structure_factor_torched,
-    aniso_structure_factor_torched_no_complex,
-)
-
-from .corrections import (
-    anharmonic_correction,
-    anharmonic_correction_no_complex,
-    core_deformation,
-    multiplication_quasi_complex_tensor,
-)
-
 # Capability-based backend dispatch (Triton on CUDA+fp32, else checkpointed
 # eager). Keep ``triton_ds`` itself lazy (loaded inside dispatch) so a broken
 # Triton install never breaks ``import torchref``.
@@ -70,17 +51,6 @@ from .dispatch import ds_aniso, ds_iso
 __all__ = [
     # Scattering factor batch helper
     "compute_scattering_factors_batch",
-    # Isotropic
-    "iso_structure_factor_torched",
-    "iso_structure_factor_torched_no_complex",
-    # Anisotropic
-    "aniso_structure_factor_torched",
-    "aniso_structure_factor_torched_no_complex",
-    # Corrections
-    "anharmonic_correction",
-    "anharmonic_correction_no_complex",
-    "core_deformation",
-    "multiplication_quasi_complex_tensor",
     # Dispatch
     "ds_iso",
     "ds_aniso",

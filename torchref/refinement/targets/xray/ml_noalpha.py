@@ -13,8 +13,8 @@ class MLNoAlphaXrayTarget(SigmaAXrayTarget):
     it admissible at all.
 
     Also the row ``ScalerBase.refine_lbfgs`` instantiates for ``scale_target='ml_noalpha'``,
-    and the right choice there because ``alpha`` is degenerate with the per-bin scale being
-    fitted.
+    and the right choice there because ``alpha`` is degenerate with the isotropic scale
+    being fitted.
 
     The mean is the base class default, so there is nothing to override but this docstring.
     """

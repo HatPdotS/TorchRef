@@ -1,0 +1,209 @@
+"""The restraint storage: plain dict, views into the edge blocks, no per-access work.
+
+The geometry targets read ``restraints[edge_type][origin][property]`` on every
+iteration, so the properties tested here are load-bearing rather than cosmetic: the
+mapping must be a plain dict of already-materialised tensors, the per-origin entries
+must alias the contiguous blocks rather than copy them, and none of that may come
+undone on a device move or a copy.
+"""
+
+import pytest
+import torch
+
+from torchref.model.model import Model
+from torchref.refinement.targets import gaussian_nll
+from torchref.utils.caching import ParameterFingerprint
+
+KEYED_TYPES = ("bond", "angle", "torsion")
+
+#: The surface the geometry targets rely on. Guards the contract from drifting: 'phi'
+#: and 'psi' are conformationally free and must NOT acquire a reference value or sigma,
+#: and 'omega' must keep the proline flag its own target reads.
+EXPECTED_PROPERTIES = {
+    ("bond", "all"): {"indices", "references", "sigmas"},
+    ("bond", "intra"): {"indices", "references", "sigmas"},
+    ("angle", "all"): {"indices", "references", "sigmas"},
+    ("torsion", "all"): {"indices", "references", "sigmas", "periods"},
+    ("torsion", "phi"): {"indices", "periods"},
+    ("torsion", "psi"): {"indices", "periods"},
+    ("torsion", "omega"): {
+        "indices",
+        "references",
+        "sigmas",
+        "periods",
+        "is_proline",
+    },
+}
+
+
+@pytest.fixture(scope="module")
+def restraints(pdb_dir):
+    """Restraints for a structure with altlocs, disulfides and peptide links."""
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "7L84.pdb"))
+    model.ctx.set_cif_path(None)
+    return model.restraints
+
+
+@pytest.mark.unit
+def test_restraints_is_a_plain_dict(restraints):
+    """Not an accessor object that has to be constructed per access."""
+    assert type(restraints.restraints) is dict
+    assert restraints.restraints is restraints.restraints
+
+
+@pytest.mark.unit
+def test_access_allocates_nothing(restraints):
+    """Every level of the lookup returns the same object each time.
+
+    This is what makes the read cheap: three dict lookups and no construction. The
+    previous storage built a fresh accessor, then a fresh per-type accessor, then a
+    fresh dict of six string-keyed buffer lookups, on every call.
+    """
+    first = restraints.restraints["bond"]["all"]
+    second = restraints.restraints["bond"]["all"]
+    assert first is second
+    assert first["indices"] is second["indices"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("edge_type", KEYED_TYPES)
+def test_origin_entries_alias_the_block(restraints, edge_type):
+    """Per-origin indices are slices of one block, not copies of it."""
+    block = restraints.topology.edge_block(edge_type)
+    entries = restraints.restraints[edge_type]
+
+    for origin, bounds in block.origin_bounds.items():
+        indices = entries[origin]["indices"]
+        assert indices.data_ptr() == block.indices[bounds[0] : bounds[1]].data_ptr()
+        assert indices.shape[0] == bounds[1] - bounds[0]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("edge_type", KEYED_TYPES)
+def test_all_group_is_a_view(restraints, edge_type):
+    """The combined group the targets read is a span of the block, not a concatenation.
+
+    The block layout deliberately keeps each type's ``all`` members adjacent so this
+    holds; ``torsion`` is the one that needs it, since its group is only ``intra`` plus
+    ``disulfide``.
+    """
+    block = restraints.topology.edge_block(edge_type)
+    combined = restraints.restraints[edge_type]["all"]["indices"]
+    assert combined.data_ptr() == block.indices.data_ptr()
+
+
+@pytest.mark.unit
+def test_in_place_block_edit_is_visible_through_every_entry(restraints):
+    """Shared storage means a block edit needs no invalidation to be seen."""
+    block = restraints.topology.atoms.bonds
+    entries = restraints.restraints["bond"]
+    origin = block.origins()[0]
+
+    saved = int(block.indices[0, 0])
+    try:
+        block.indices[0, 0] = saved + 7
+        assert int(entries[origin]["indices"][0, 0]) == saved + 7
+        assert int(entries["all"]["indices"][0, 0]) == saved + 7
+    finally:
+        block.indices[0, 0] = saved
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("key", sorted(EXPECTED_PROPERTIES))
+def test_expected_properties_present(restraints, key):
+    """Each group carries exactly the properties its consumers expect."""
+    edge_type, origin = key
+    group = restraints.restraints[edge_type][origin]
+    assert set(group) == EXPECTED_PROPERTIES[key]
+
+
+@pytest.mark.unit
+def test_entries_survive_a_device_apply(restraints):
+    """A ``.to()`` re-slices the entries instead of leaving them stale or duplicated.
+
+    ``DeviceMixin``'s walk recurses into dicts, so without the ``_apply`` override each
+    view would be moved on its own and become an independent tensor.
+    """
+    before = restraints.restraints["bond"]["all"]["indices"].clone()
+    n_before = {
+        t: restraints.restraints[t]["all"]["indices"].shape[0] for t in KEYED_TYPES
+    }
+
+    restraints.to(torch.device("cpu"))
+
+    block = restraints.topology.atoms.bonds.indices
+    after = restraints.restraints["bond"]["all"]["indices"]
+    assert after.data_ptr() == block.data_ptr(), "entries no longer alias the block"
+    # ``before`` was cloned prior to the move, so it sits on device.current; the move
+    # target here is CPU, which is only a no-op when those already agree.
+    assert torch.equal(after, before.cpu())
+    assert {
+        t: restraints.restraints[t]["all"]["indices"].shape[0] for t in KEYED_TYPES
+    } == n_before
+    assert restraints.restraints["vdw"].get("indices") is not None
+
+
+@pytest.mark.unit
+def test_blocks_are_untouched_by_a_refinement_step(restraints):
+    """The edge tensors are constants; nothing in a loss evaluation may mutate them."""
+    blocks = [restraints.topology.edge_block(t).indices for t in KEYED_TYPES]
+    fingerprint = ParameterFingerprint(blocks)
+
+    xyz = restraints._last_vdw_build_xyz.clone().requires_grad_(True)
+    loss = (
+        gaussian_nll(*restraints.bond_deviations(xyz)).sum()
+        + gaussian_nll(*restraints.angle_deviations(xyz)).sum()
+    )
+    loss.backward()
+
+    assert fingerprint.matches(
+        [restraints.topology.edge_block(t).indices for t in KEYED_TYPES]
+    )
+
+
+@pytest.mark.unit
+def test_rebuilding_entries_reslices_onto_the_current_blocks(restraints):
+    """Re-deriving the entries produces fresh views of the same blocks.
+
+    This is the operation ``_apply`` and ``copy`` both rely on, and the one that has to
+    stay cheap: it re-slices rather than recomputing anything.
+    """
+    block = restraints.topology.atoms.bonds.indices
+    before = restraints.restraints["bond"]["all"]["indices"].clone()
+
+    restraints._rebuild_entries()
+
+    after = restraints.restraints["bond"]["all"]["indices"]
+    assert after.data_ptr() == block.data_ptr()
+    assert torch.equal(after, before)
+    for origin, bounds in restraints.topology.atoms.bonds.origin_bounds.items():
+        entry = restraints.restraints["bond"][origin]["indices"]
+        assert entry.shape[0] == bounds[1] - bounds[0]
+    assert restraints.restraints["vdw"].get("indices") is not None
+
+
+@pytest.mark.unit
+def test_copy_aliases_its_own_blocks(restraints):
+    """A copy re-slices its entries onto its own blocks, not the original's."""
+    duplicate = restraints.copy()
+    block = duplicate.topology.atoms.bonds.indices
+    entry = duplicate.restraints["bond"]["all"]["indices"]
+    assert entry.data_ptr() == block.data_ptr()
+    assert block.data_ptr() != restraints.topology.atoms.bonds.indices.data_ptr()
+
+
+@pytest.mark.unit
+def test_moving_restraints_leaves_the_model_cell(pdb_dir):
+    """The restraints move their own copy of the crystal, never the model's."""
+    model = Model(verbose=0, device=torch.device("cpu"))
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    cell, spacegroup = model.ctx.cell, model.ctx.spacegroup
+    dtype = cell.dtype
+
+    model.restraints.to(torch.float64)
+
+    assert model.ctx.cell is cell and cell.dtype == dtype
+    assert spacegroup.matrices.dtype == dtype
+    assert model.restraints._cell.dtype == torch.float64
+    assert model.restraints._spacegroup.matrices.dtype == torch.float64

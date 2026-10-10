@@ -68,23 +68,6 @@ class TestRfactorCalculations:
         assert 0 <= r_work <= 1
         assert 0 <= r_free <= 1
 
-    @pytest.mark.integration
-    def test_bin_wise_rfactors(self):
-        """Test bin-wise R-factor computation."""
-        from torchref.base.math_torch import bin_wise_rfactors
-        
-        # Create synthetic data
-        n_refl = 100
-        fobs = torch.rand(n_refl, dtype=torch.float32) * 100 + 10
-        fcalc = fobs * (1 + torch.randn(n_refl) * 0.1)  # ~10% noise
-        rfree_mask = torch.rand(n_refl) > 0.1  # 90% work set
-        bins = torch.randint(0, 5, (n_refl,))
-        
-        r_work_bins, r_free_bins = bin_wise_rfactors(fobs, fcalc, rfree_mask, bins)
-        
-        assert r_work_bins is not None
-        assert r_free_bins is not None
-
 
 class TestNLLFunctions:
     """Tests for negative log-likelihood functions."""

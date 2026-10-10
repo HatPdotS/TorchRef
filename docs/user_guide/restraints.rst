@@ -2,26 +2,29 @@ Geometry Restraints
 ===================
 
 Geometry restraints keep the model chemically reasonable during refinement.
-:class:`~torchref.restraints.Restraints` (the exported alias of
-``RestraintsNew``) builds and holds bond, angle, torsion, planarity, chirality,
-and non-bonded (VDW) restraints.
+:class:`~torchref.topology.restraints.Restraints` builds and holds bond, angle, torsion,
+planarity, chirality, and non-bonded (VDW) restraints.
 
 Restraint Setup
 ---------------
 
-You do not normally construct ``Restraints`` yourself. ``model.restraints`` is a
-lazy property that builds them from the monomer library — fetched per monomer on
-demand — on first access. Point it at extra CIF definitions *before* that first
-access:
+You do not normally construct ``Restraints`` yourself. They live on the model's
+context, ``model.ctx.restraints``, and ``model.restraints`` builds them from the
+monomer library -- fetched per monomer on demand -- on first access. Point it at
+extra CIF definitions *before* that first access:
 
 .. code-block:: python
 
-   model.set_restraints_cif("ligand.cif")     # or a list of paths; chainable
+   model.ctx.set_cif_path("ligand.cif")       # or a list of paths
    restraints = model.restraints              # built here, on first access
+   deviations, sigmas = restraints.bond_deviations(model.xyz())
 
-``Restraints.__init__`` takes a PDB DataFrame plus accessor callables
-(``pdb, cif_path, xyz_fn, adp_fn, vdw_radii_fn, cell, spacegroup, links,
-verbose``), not a model — that is what the lazy property assembles for you.
+Restraints hold no reference to the model: every evaluation takes the
+coordinates (or B-factors) it scores, and the non-bonded pair list is rebuilt
+from the coordinates the non-bonded target passes in. ``Restraints.__init__``
+takes a node-only topology (``model.ctx.topology``, or
+``Topology.from_table(table)``) and the coordinates to build over
+(``topology, cif_path, xyz, cell, spacegroup, links, verbose, nonbonded``).
 
 Residues for which no restraints could be built are frozen in ``xyz`` rather
 than refined unrestrained, so a missing ligand definition shows up as an
@@ -65,28 +68,30 @@ Restraints are reached through a nested-dict interface, ``[type][origin][field]`
 
    n_bonds = restraints.restraints["bond"]["all"]["indices"].shape[0]
 
-- **Types** with an origin level: ``"bond"``, ``"angle"``, ``"torsion"``,
-  ``"plane"``. Note ``"plane"`` in *storage* — the matching *target* and its
-  ``stats()`` entry are called ``"planarity"``, so the two keys differ.
+- **Types** with an origin level: ``"bond"``, ``"angle"``, ``"torsion"``.
+  ``"plane"`` is keyed by plane size instead (``"4_atoms"``, ...; fields
+  ``indices`` and ``sigmas``, no ``"all"``). Note ``"plane"`` in *storage* — the
+  matching *target* and its ``stats()`` entry are called ``"planarity"``.
 - **Origins** are where the restraint came from: ``"intra"``, ``"link"``,
   ``"peptide"``, ``"disulfide"``, and for torsions ``"phi"`` / ``"psi"`` /
   ``"omega"``.
-- ``"all"`` is the merged origin the targets actually read. It is built lazily by
-  ``restraints.cat_dict()``, so it is missing until a target has run once —
-  targets guard with ``if "all" not in ...: self.cat_dict()`` and so should you.
+- ``"all"`` is the merged origin the targets actually read. It is built with the
+  rest when the restraints are built; a type with nothing to merge (the torsions
+  of a glycine-only model without hydrogens) has none, so probe with ``in``.
   Bond and angle ``"all"`` merge every origin; torsion ``"all"`` merges only
-  ``"intra"`` and ``"disulfide"``, because phi/psi carry no reference values and
-  omega has its own target.
+  ``"intra"`` and ``"disulfide"``, because phi/psi carry no reference values
+  and omega has its own target.
 - **Flat types** with no origin level: ``"vdw"`` and ``"chiral"`` are indexed
   straight by field, ``restraints.restraints["vdw"]["indices"]``.
 - **Fields** beyond the three above, where the restraint type has them:
-  ``periods``, ``min_distances``.
+  ``periods``, ``min_distances``; chirals carry ``ideal_volumes`` instead of
+  ``references``.
 
-The nesting is an accessor over a flat ``TensorDict`` keyed ``bond_all_indices``,
-not a real dict — it supports ``[]``, ``keys()``, ``get()`` and ``in``, but
-assigning a whole type (``restraints["bond"] = ...``) raises ``TypeError`` for
-the nested types. A type absent from the model is absent from ``keys()``, so
-probe with ``in`` before indexing.
+The nesting is a plain nested dict of tensors, assembled once at build time.
+Its entries are views into the topology's edge blocks, re-sliced into a new dict
+after every device or dtype move, so read ``restraints.restraints`` again after a
+``.to()`` instead of keeping an old reference. A type absent from the model is
+absent from the dict, so probe with ``in`` before indexing.
 
 Restraint Types
 ---------------
@@ -103,9 +108,11 @@ in the deviation from ideal:
        + \log \sigma_i + \tfrac{1}{2}\log 2\pi \right]
 
 with :math:`q` the interatomic distance or the bond angle (angles in radians,
-sigmas converted from the CIF's degrees). Torsions use a periodic von Mises NLL,
-planarity restrains a group's out-of-plane deviations, chirality preserves
-stereochemistry, and the non-bonded term is a steep PROLSQ-style repulsion
+sigmas converted from the CIF's degrees). Torsions are measured with the IUPAC sign
+the monomer library uses (the same as ``gemmi.calculate_dihedral``) and scored with
+a periodic von Mises NLL, planarity restrains a group's out-of-plane deviations,
+chirality preserves stereochemistry, and the non-bonded term is a steep PROLSQ-style
+repulsion
 (:math:`E \sim \text{violation}^4`) applied to symmetry mates as well as to the
 asymmetric unit.
 
@@ -118,8 +125,8 @@ the geometry *targets*, not off ``Restraints``:
 .. code-block:: python
 
    # Raw per-restraint deviations and their sigmas
-   deviations, sigmas = restraints.bond_deviations()
-   deviations, sigmas = restraints.angle_deviations()
+   deviations, sigmas = restraints.bond_deviations(model.xyz())
+   deviations, sigmas = restraints.angle_deviations(model.xyz())
 
    # Summary statistics, keyed by component: bond, angle, torsion, planarity,
    # chiral, nonbonded, ramachandran

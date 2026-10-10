@@ -1,8 +1,8 @@
 """TorchRef - GPU-accelerated crystallographic refinement built on PyTorch.
 
-Refinement as ``nn.Module``s and autograd, so a custom target function
-differentiates itself. Start from :class:`LBFGSRefinement`, which takes the MTZ and
-PDB paths directly::
+Refinement as ``nn.Module`` objects and autograd, so a custom target function
+differentiates itself. :class:`~torchref.refinement.lbfgs_refinement.LBFGSRefinement`
+is the entry point and takes the MTZ and PDB paths directly::
 
     from torchref import LBFGSRefinement
 
@@ -19,15 +19,13 @@ model
     Atomic structure models (coordinates, B-factors, occupancies).
 refinement
     Core refinement framework with targets and weighting schemes.
-restraints
-    Geometry restraints (bonds, angles, torsions, planes); initialized lazily, since it
-    needs the monomer library downloaded.
+topology
+    Connectivity graph, geometry restraints and hydrogens; the monomer library is
+    resolved lazily.
 scaling
     Structure factor scaling and bulk solvent models.
 symmetry
     Crystallographic symmetry operations.
-alignment
-    Patterson-based structure alignment.
 maps
     Map calculation, including difference maps (``Map``, ``DifferenceMap``).
 base
@@ -35,12 +33,13 @@ base
 cli
     Command-line entry points (``torchref.refine``, ``torchref.difference-refine``, ...).
 experimental
-    Experimental features (e.g. kinetic targets, monolithic refinement).
+    Experimental features (e.g. kinetic targets, monolithic refinement, Patterson
+    alignment).
 utils
     General utilities and debugging tools.
 """
 
-__version__ = "0.6.4"
+__version__ = "0.7.0"
 
 
 import os
@@ -93,11 +92,14 @@ PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 from torchref.io import (
     DatasetCollection,
     ReflectionData,
-    FcalcDataset,
-    read_mtz,
+    ScaledDataset,
     read_cif,
+    read_mtz,
     read_pdb,
 )
+
+# Maps
+from torchref.maps import DifferenceMap, Map
 
 # Model
 from torchref.model import Model, ModelFT
@@ -106,19 +108,18 @@ from torchref.model.rigid_xyz import RigidXYZTensor
 # Refinement
 from torchref.refinement import LBFGSRefinement, Refinement
 from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
-from torchref.symmetry import Cell, SpaceGroup
-
-# Restraints
-# from torchref.restraints import Restraints # Initialized lazily due to monomer library download requirement
 
 # Scaling
-from torchref.scaling import Scaler, SolventModel, ScalerBase
-
-# Maps
-from torchref.maps import DifferenceMap, Map
+from torchref.scaling import Scaler, ScalerBase, SolventModel
+from torchref.symmetry import Cell, SpaceGroup, Symmetry
 
 # Device movement mixin (public API for extension code)
 from torchref.utils.device_mixin import DeviceMixin
+
+# Restraints
+# torchref.topology.restraints.Restraints is not imported here: constructing it can
+# trigger a monomer-library download, so it stays lazy.
+
 
 __all__ = [
     # Version and paths
@@ -132,6 +133,7 @@ __all__ = [
     "sigma_cutoff_ed",
     # Data I/O
     "ReflectionData",
+    "ScaledDataset",
     "DatasetCollection",
     "read_mtz",
     "read_cif",
@@ -151,6 +153,7 @@ __all__ = [
     # Symmetry
     "Cell",
     "SpaceGroup",
+    "Symmetry",
     # Maps
     "Map",
     "DifferenceMap",

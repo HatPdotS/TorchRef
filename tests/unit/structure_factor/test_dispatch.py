@@ -21,6 +21,8 @@ contracts are not accuracy and had no replacement.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
@@ -45,18 +47,14 @@ def _build(scene, device, dtype, force_portable=False, aniso=False):
     """
     s = scene.to(device=device, dtype=dtype)
     dims = H._grid_dims(s)
-    grid = torch.zeros(*dims, 3, dtype=dtype, device=device)
-    voxel = torch.tensor(
-        [float(s.cell.data[i]) / dims[i] for i in range(3)], dtype=dtype, device=device
-    )
     empty1 = s.xyz.new_zeros(0)
     empty3 = s.xyz.new_zeros(0, 3)
     empty5 = s.A.new_zeros(0, 5)
     kw = dict(
-        real_space_grid=grid,
+        grid_shape=dims,
+        device=device,
         inv_frac_matrix=s.inv_frac_matrix,
         frac_matrix=s.frac_matrix,
-        voxel_size=voxel,
         dtype=dtype,
     )
     kw["force_portable"] = force_portable
@@ -345,14 +343,13 @@ def test_triton_ds_does_not_silently_truncate_hkl(scene_small):
     is not whether the two Triton calls agree with each other, it is whether the truncation
     costs accuracy that the caller asked for by supplying float64.
     """
-    from torchref.base.direct_summation.dispatch import _eager_iso
     from torchref.base.direct_summation.triton_ds import ds_iso_triton
 
     cuda = torch.device("cuda")
     s64 = scene_small.to(device=cuda, dtype=torch.float64)
     s32 = scene_small.to(device=cuda, dtype=torch.float32)
 
-    ref = _eager_iso(
+    ref = H._eager_iso(
         s64.hkl, s64.s, s64.xyz_frac, s64.occ, s64.adp, s64.A, s64.B, None
     )
     # float64 hkl with float32 xyz_frac: the gate passes, and hkl gets truncated.
@@ -393,9 +390,16 @@ def test_sfds_backend_toggle_end_to_end(scene_fine):
     s = scene_fine.to(device=cuda, dtype=torch.float32)
     obs = H.synthetic_obs(H.ds_direct(scene_fine, "eager").detach()).to(cuda, torch.float32)
 
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
     def run(force_portable):
+        ctx = ModelContext(
+            cell=s.cell,
+            spacegroup=SpaceGroup("P212121", dtype=torch.float32, device=cuda),
+        )
         sf = SfDS(
-            cell=s.cell, spacegroup="P212121", force_portable=force_portable,
+            ctx, force_portable=force_portable,
             dtype_float=torch.float32, device=cuda, max_memory_gb=2.0,
         )
         leaves = tuple(t.clone().requires_grad_(True) for t in (s.xyz, s.adp, s.occ))
@@ -414,3 +418,84 @@ def test_sfds_backend_toggle_end_to_end(scene_fine):
         rel = rel_error(a, b)
         print(f"    {name:4s} grad relL2 {rel:.3e}")
         assert rel < RTOL_DS_F32, f"SfDS {name} gradient differs by engine: rel {rel:.3e}"
+
+
+def _one_atom_triton_vs_portable(abc, dims, frac_xyz, radius, b_iso, device):
+    """Max abs difference between the Triton and portable splats of one carbon atom.
+
+    Orthogonal P1 cell with edges ``abc`` (Å), grid ``dims``, the atom at fractional
+    ``frac_xyz`` with ADP ``b_iso`` (Å², and a U of the same size for the anisotropic
+    splat) and a fixed ``radius`` (Å), so the box sides are set by the test rather than
+    by the radius policy. Returns ``(iso_diff, aniso_diff, map_max)``.
+    """
+    from torchref.base.electron_density.kernels.cpu.variable_radius import (
+        add_anisotropic_plain_var,
+        add_isotropic_plain_var,
+    )
+    from torchref.base.electron_density.kernels.cuda.variable_radius import (
+        add_anisotropic_cuda_var,
+        add_isotropic_cuda_var,
+    )
+    from torchref.base.scattering.scattering_table import get_scattering_params_by_z
+
+    f32 = torch.float32  # dtype-ok: the Triton kernels are float32-only
+    frac = torch.diag(torch.tensor(abc, dtype=f32, device=device))
+    inv_frac = torch.linalg.inv(frac)
+    xyz = torch.tensor([frac_xyz], dtype=f32, device=device) @ frac.T
+    A, B = get_scattering_params_by_z(torch.tensor([6], device=device), dtype=f32)
+    occ = torch.ones(1, dtype=f32, device=device)
+    adp = torch.full((1,), b_iso, dtype=f32, device=device)
+    shape = torch.tensor([[1.0, 0.8, 0.9, 0.05, -0.03, 0.04]], dtype=f32, device=device)
+    u = shape * (b_iso / (8 * math.pi**2))
+    r = torch.full((1,), radius, dtype=f32, device=device)
+    zeros = torch.zeros(*dims, dtype=f32, device=device)
+    args = (A, B, inv_frac, frac, r)
+    iso = add_isotropic_cuda_var(zeros, xyz, adp, occ, *args)
+    iso_ref = add_isotropic_plain_var(zeros, xyz, adp, occ, *args)
+    aniso = add_anisotropic_cuda_var(zeros, xyz, u, occ, *args)
+    aniso_ref = add_anisotropic_plain_var(zeros, xyz, u, occ, *args)
+    return (
+        float((iso - iso_ref).abs().max()),
+        float((aniso - aniso_ref).abs().max()),
+        float(iso_ref.abs().max()),
+    )
+
+
+@pytest.mark.cuda
+def test_triton_splat_decodes_every_box_voxel():
+    """A 29 x 41 voxel y/z box: every offset is decoded to itself, z faces included.
+
+    The kernels decode a lane index into box offsets through float reciprocals of the box
+    sides; a 41-voxel side is one where a reciprocal that is not exact misdecodes rows
+    unless the decode is taken at the half index. The atom sits 0.1 Å below its z anchor
+    so the -z face voxels lie inside the sphere, and the large ADP keeps their density
+    well above float noise.
+    """
+    iso, aniso, top = _one_atom_triton_vs_portable(
+        (20.0, 20.0, 20.0),
+        (40, 56, 80),
+        (0.5, 0.5, 0.5 - 0.1 / 20.0),
+        4.99,
+        300.0,
+        torch.device("cuda"),
+    )
+    assert iso <= 1e-5 * top and aniso <= 1e-5 * top, (iso, aniso, top)
+
+
+@pytest.mark.cuda
+def test_triton_splat_wraps_a_box_wider_than_the_cell():
+    """A 7 Å radius in a 4.8 Å cell edge: the box spans the cell more than once.
+
+    Every voxel index must wrap fully into the map, as the portable, C++ and Metal splats
+    do, so periodic images of the same atom add into the same voxels. The large ADP keeps
+    the density at the far x faces of the box well above float noise.
+    """
+    iso, aniso, top = _one_atom_triton_vs_portable(
+        (4.8, 20.0, 20.0),
+        (16, 56, 56),
+        (0.3, 0.5, 0.5),
+        7.0,
+        300.0,
+        torch.device("cuda"),
+    )
+    assert iso <= 1e-5 * top and aniso <= 1e-5 * top, (iso, aniso, top)

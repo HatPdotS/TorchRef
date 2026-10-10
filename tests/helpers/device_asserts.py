@@ -95,7 +95,7 @@ def _iter_attributes(obj: Any) -> Iterable[Tuple[str, Any]]:
 
     Covers ``__dict__`` (skipping ``nn.Module`` bookkeeping), ``__slots__``, and
     dataclass fields -- a dataclass with ``__slots__`` exposes neither through
-    ``__dict__``, which is how ``_ReflectionSubset``-style views hide tensors
+    ``__dict__``, which is how ``ReflectionSubset``-style views hide tensors
     from a naive walk.
     """
     seen: Set[str] = set()

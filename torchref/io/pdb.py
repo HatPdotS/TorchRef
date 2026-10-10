@@ -11,6 +11,7 @@ not in columns, so a DataFrame rebuilt from scratch loses them and
 :func:`write` then emits no CRYST1 record.
 """
 
+import re
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -49,9 +50,7 @@ def find_header_length(filepath: str, max_header_length: int = 100000) -> int:
     """
     Find the number of header lines in a PDB file.
 
-    Stops at the first line whose leading columns *contain* ``"ATOM"`` (cols
-    1-4) or ``"HETATM"`` (cols 1-6) -- a substring test, not a record-type
-    ``startswith``, so a header line with those letters there ends the scan.
+    Stops at the first line starting with ``ATOM`` or ``HETATM``.
 
     Parameters
     ----------
@@ -131,13 +130,81 @@ def read_crystallographic_info(
     return None, None, None
 
 
+def _require_elements(atoms: pd.DataFrame, source, field: str) -> None:
+    """Raise if an atom has no element symbol: blank, NaN, ``?`` or ``.``.
+
+    Shared by the PDB and mmCIF readers. The element is not guessed from the atom
+    name: an unknown element scatters as Z = 0, so a wrong guess, like a blank,
+    would load without complaint.
+
+    Parameters
+    ----------
+    atoms : pandas.DataFrame
+        Atom table with ``serial``, ``name``, ``resname`` and ``element``.
+    source : str or path-like
+        File the table was read from, for the message.
+    field : str
+        Where that format keeps the element, for the message.
+
+    Raises
+    ------
+    ValueError
+        Naming the first atoms without an element.
+    """
+    element = atoms["element"]
+    blank = element.isna() | element.astype(str).str.strip().isin(["", "?", "."])
+    if blank.any():
+        first = atoms.loc[blank].head(5)
+        listed = ", ".join(
+            f"{serial} {name} {resname}"
+            for serial, name, resname in zip(
+                first["serial"], first["name"], first["resname"]
+            )
+        )
+        raise ValueError(
+            f"{source}: {int(blank.sum())} atoms have no element in {field}, "
+            f"starting with {listed}. Add the element symbols first, e.g. with "
+            "gemmi, pdbset or phenix.pdbtools."
+        )
+
+
+def _model_numbers(filepath: str, skipheader: int, skipfooter: int) -> dict:
+    """MODEL number of each atom and ANISOU record that load_as_dataframe reads.
+
+    Records outside any MODEL record are model 1, as in ModelCIFReader. The number
+    is the first field after MODEL, or the count of MODEL records if it has none.
+
+    Returns
+    -------
+    dict
+        ``"ATOM"`` (ATOM and HETATM records) and ``"ANISOU"``: lists of model
+        numbers, one per record in file order.
+    """
+    with open(filepath, "r") as f:
+        lines = f.readlines()
+    numbers = {"ATOM": [], "ANISOU": []}
+    current, n_models = 1, 0
+    for i, line in enumerate(lines[: len(lines) - skipfooter]):
+        record = line[:6].strip()
+        if record == "MODEL":
+            n_models += 1
+            fields = line[6:].split()
+            current = int(fields[0]) if fields and fields[0].isdigit() else n_models
+        elif i >= skipheader and record in ("ATOM", "HETATM", "ANISOU"):
+            numbers["ANISOU" if record == "ANISOU" else "ATOM"].append(current)
+    return numbers
+
+
 def load_as_dataframe(
-    filepath: str, skipheader: int = 0, skipfooter: int = 1
+    filepath: str, skipheader: int = 0, skipfooter: int = 0
 ) -> pd.DataFrame:
     """
     Load a PDB file into a pandas DataFrame.
 
-    Parses ATOM, HETATM and ANISOU records by fixed column positions.
+    Parses ATOM, HETATM and ANISOU records by fixed column positions. Serials
+    above 99999 and residue numbers above 9999 are read as hybrid-36; a serial
+    that is neither decimal nor hybrid-36 (``*****``) becomes the atom's 1-based
+    position.
 
     Parameters
     ----------
@@ -146,16 +213,25 @@ def load_as_dataframe(
     skipheader : int, optional
         Number of header lines to skip. If 0, automatically detected.
     skipfooter : int, optional
-        Number of footer lines to skip. Default is 1.
+        Number of lines to skip at the end of the file. Default is 0; END, TER
+        and MASTER records are dropped with every other non-atom record.
 
     Returns
     -------
     pd.DataFrame
         DataFrame whose columns include (among others, in no contractual
         order): ATOM, serial, name, altloc, resname, chainid, resseq, icode,
-        x, y, z, occupancy, tempfactor, element, charge, anisou_flag, u11,
-        u22, u33, u12, u13, u23, index.
+        x, y, z, occupancy, tempfactor, element, charge, model_num,
+        anisou_flag, u11, u22, u33, u12, u13, u23, index. ``model_num`` is the
+        MODEL record number, 1 throughout a file without MODEL records; the
+        models of a multi-model file are concatenated in file order.
         DataFrame attributes include 'cell', 'spacegroup', and 'z'.
+
+    Raises
+    ------
+    ValueError
+        If an ATOM or HETATM record has no element in columns 77-78, or columns
+        79-80 hold anything but a formal charge (``2-``, ``-2``, ``2`` or blank).
     """
     if skipheader == 0:
         skipheader = find_header_length(filepath)
@@ -195,6 +271,9 @@ def load_as_dataframe(
         "charge",
     ]
 
+    # serial, resseq and charge stay text until decoded below, so that a hybrid-36
+    # value cannot give the ATOM and ANISOU merge keys different dtypes and a charge
+    # column holding only sign-first values ('-1') is not read as floats.
     pdb = pd.read_fwf(
         filepath,
         names=names,
@@ -203,6 +282,7 @@ def load_as_dataframe(
         skipfooter=skipfooter,
         keep_default_na=False,
         na_values=[""],
+        dtype={"serial": str, "resseq": str, "charge": str},
     )
     pdb["anisou_flag"] = False
 
@@ -231,11 +311,11 @@ def load_as_dataframe(
         (17, 20),
         (21, 22),
         (22, 26),
-        (29, 35),
-        (36, 42),
-        (43, 49),
-        (50, 56),
-        (57, 63),
+        (28, 35),
+        (35, 42),
+        (42, 49),
+        (49, 56),
+        (56, 63),
         (63, 70),
         (76, 78),
     ]
@@ -247,35 +327,58 @@ def load_as_dataframe(
         skipfooter=skipfooter,
         keep_default_na=False,
         na_values=[""],
+        dtype={"serial": str, "resseq": str},
     )
-    anisou = anisou.loc[anisou["ATOM"] == "ANISOU"]
-    pdb = pdb.loc[(pdb["ATOM"] == "ATOM") | (pdb["ATOM"] == "HETATM")]
+    models = _model_numbers(filepath, skipheader, skipfooter)
+    anisou = anisou.loc[anisou["ATOM"] == "ANISOU"].assign(model_num=models["ANISOU"])
+    pdb = pdb.loc[(pdb["ATOM"] == "ATOM") | (pdb["ATOM"] == "HETATM")].assign(
+        model_num=models["ATOM"]
+    )
 
     anisou.drop(columns=["ATOM"], inplace=True)
+    # Every model repeats the same atom identities, so ANISOU records are matched
+    # within their own model.
     pdb = pdb.merge(
         anisou,
-        on=["serial", "name", "altloc", "resname", "chainid", "resseq", "element"],
+        on=[
+            "serial",
+            "name",
+            "altloc",
+            "resname",
+            "chainid",
+            "resseq",
+            "element",
+            "model_num",
+        ],
         how="left",
     )
     pdb.loc[pdb["u11"].notnull(), "anisou_flag"] = True
     pdb[["u11", "u22", "u33", "u12", "u13", "u23"]] = (
         pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].astype(float) / 1e4
     )
-    pdb[["serial", "resseq"]] = pdb[["serial", "resseq"]].astype(int)
+    # A serial that is neither decimal nor hybrid-36, such as the '*****' some
+    # programs write past 99999, takes its position among the atoms instead.
+    serials = []
+    for position, text in enumerate(pdb["serial"], start=1):
+        try:
+            serials.append(_hy36_decode(_text(text), 5))
+        except ValueError:
+            serials.append(position)
+    pdb["serial"] = serials
+    pdb["resseq"] = [_hy36_decode(_text(text), 4) for text in pdb["resseq"]]
     pdb[["x", "y", "z", "occupancy", "tempfactor"]] = pdb[
         ["x", "y", "z", "occupancy", "tempfactor"]
     ].astype(float)
     pdb[["altloc", "icode"]] = pdb[["altloc", "icode"]].fillna("")
-    pdb["charge"] = (
-        pdb["charge"]
-        .astype(str)
-        .str.strip("+")
-        .str.replace("1-", "-1")
-        .str.replace("2-", "-2")
-        .astype(float)
-        .fillna(0)
-        .astype(int)
-    )
+    charges = []
+    for text in map(_text, pdb["charge"]):
+        match = re.fullmatch(r"([+-]?)(\d)([+-]?)", text)
+        if match is None and text:
+            raise ValueError(f"{filepath}: {text!r} in columns 79-80 is not a charge")
+        sign = -1 if match and "-" in match[1] + match[3] else 1
+        charges.append(sign * int(match[2]) if match else 0)
+    pdb["charge"] = charges
+    _require_elements(pdb, filepath, "columns 77-78")
     pdb["element"] = pdb["element"].astype(str).str.strip().str.capitalize()
     pdb["index"] = np.arange(pdb.shape[0]).astype(int)
 
@@ -387,27 +490,13 @@ def read(filepath: str, verbose: int = 0) -> PDBReader:
     return PDBReader(verbose=verbose).read(filepath)
 
 
-def extract_pdb_headers(filepath: str) -> list:
-    """Read all header lines (before first ATOM/HETATM) from a PDB file.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the PDB file.
-
-    Returns
-    -------
-    list of str
-        Header lines (without trailing newlines).
-    """
-    headers = []
-    with open(filepath, "r") as f:
-        for line in f:
-            record = line[:6].strip()
-            if record in ("ATOM", "HETATM"):
-                break
-            headers.append(line.rstrip("\n"))
-    return headers
+#: Columns of the LINK-record table that ``Model.load`` reads off a reader's ``.links``.
+#: Shared by the PDB and mmCIF readers so the topology builder sees one schema.
+LINK_COLUMNS = (
+    "name1", "altloc1", "resname1", "chainid1", "resseq1", "icode1",
+    "name2", "altloc2", "resname2", "chainid2", "resseq2", "icode2",
+    "length",
+)
 
 
 def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
@@ -460,13 +549,13 @@ def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
                         "altloc1": line[16:17].strip(),
                         "resname1": line[17:20].strip(),
                         "chainid1": line[21:22].strip(),
-                        "resseq1": int(line[22:26]),
+                        "resseq1": _hy36_decode(line[22:26], 4),
                         "icode1": line[26:27].strip(),
                         "name2": line[42:46].strip(),
                         "altloc2": line[46:47].strip(),
                         "resname2": line[47:50].strip(),
                         "chainid2": line[51:52].strip(),
-                        "resseq2": int(line[52:56]),
+                        "resseq2": _hy36_decode(line[52:56], 4),
                         "icode2": line[56:57].strip(),
                         "length": length,
                     }
@@ -476,14 +565,7 @@ def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
                 if verbose > 1:
                     print(f"Warning: skipping malformed LINK: {line.rstrip()}")
 
-    df = pd.DataFrame(
-        rows,
-        columns=[
-            "name1", "altloc1", "resname1", "chainid1", "resseq1", "icode1",
-            "name2", "altloc2", "resname2", "chainid2", "resseq2", "icode2",
-            "length",
-        ],
-    )
+    df = pd.DataFrame(rows, columns=list(LINK_COLUMNS))
     if verbose > 0 and (len(df) or skipped_sym or skipped_bad):
         print(
             f"LINK records: parsed {len(df)}, "
@@ -492,23 +574,242 @@ def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
     return df
 
 
-def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) -> None:
+_ATOM_COLUMNS = (
+    "ATOM",
+    "serial",
+    "name",
+    "altloc",
+    "resname",
+    "chainid",
+    "resseq",
+    "icode",
+    "x",
+    "y",
+    "z",
+    "occupancy",
+    "tempfactor",
+    "element",
+    "charge",
+)
+
+_U_COLUMNS = ("u11", "u22", "u33", "u12", "u13", "u23")
+
+
+def _text(value) -> str:
+    """``value`` as stripped text, with None, NaN and the string ``'nan'`` blank.
+
+    The reader leaves a blank chain ID as NaN, which ``astype(str)`` downstream
+    turns into ``'nan'``; both mean the field is empty.
+    """
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text == "nan" else text
+
+
+_HY36_DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _hy36_encode(value: int, width: int) -> str:
+    """``value`` in a ``width``-character field, hybrid-36 once decimal overflows.
+
+    Hybrid-36 (cctbx, phenix; gemmi reads it) continues past ``10**width - 1``
+    with upper-case base 36 from ``A0000`` (width 5, atom serials) or ``A000``
+    (width 4, residue numbers), then lower-case from ``a0000``.
+
+    Raises
+    ------
+    ValueError
+        If ``value`` is beyond the range of the field.
+    """
+    if -(10 ** (width - 1)) < value < 10**width:
+        return f"{value:>{width}d}"
+    n, digits = value - 10**width + 10 * 36 ** (width - 1), _HY36_DIGITS
+    if n >= 36**width:
+        n, digits = n - 26 * 36 ** (width - 1), _HY36_DIGITS.lower()
+    if value < 0 or n >= 36**width:
+        raise ValueError(f"{value} does not fit a {width}-character PDB field")
+    text = ""
+    for _ in range(width):
+        n, digit = divmod(n, 36)
+        text = digits[digit] + text
+    return text
+
+
+def _hy36_decode(text: str, width: int) -> int:
+    """The integer in a decimal or hybrid-36 field; inverse of :func:`_hy36_encode`.
+
+    Raises
+    ------
+    ValueError
+        If ``text`` is neither, e.g. blank or ``*****``.
+    """
+    text = text.strip()
+    if text.lstrip("-").isdigit():
+        return int(text)
+    if len(text) == width and text.isalnum() and text[0].isalpha():
+        if text[0].isupper():
+            return int(text, 36) - 10 * 36 ** (width - 1) + 10**width
+        return int(text, 36) + 16 * 36 ** (width - 1) + 10**width
+    raise ValueError(f"{text!r} is neither a decimal nor a hybrid-36 number")
+
+
+def _format_charge(charge) -> str:
+    """Formal charge for columns 79-80: blank when neutral, else ``2+`` / ``1-``."""
+    charge = 0 if pd.isna(charge) else int(charge)
+    return f"{abs(charge)}{'-' if charge < 0 else '+'}" if charge else ""
+
+
+def _format_atom_identity(row) -> str:
+    """Columns 7-27 of an ATOM, HETATM or ANISOU record: which atom it describes.
+
+    wwPDB v3.3 layout: serial 7-11, atom name 13-16, altLoc 17, resName 18-20,
+    chainID 22, resSeq 23-26, iCode 27. A two-character chain ID takes columns
+    21-22, where gemmi reads and writes it.
+
+    Parameters
+    ----------
+    row : mapping
+        One atom; reads ``serial``, ``name``, ``element``, ``altloc``,
+        ``resname``, ``chainid``, ``resseq`` and ``icode``.
+
+    Returns
+    -------
+    str
+        Exactly 21 characters; a serial above 99999 or a residue number above
+        9999 is written in hybrid-36. A 4-character residue name is not
+        truncated and shifts every later column.
+
+    Raises
+    ------
+    ValueError
+        If the serial or residue number is beyond hybrid-36 range.
+    """
+    name = _format_pdb_atom_name(row["name"], _text(row["element"]))
+    return (
+        f"{_hy36_encode(int(row['serial']), 5)} {name}{_text(row['altloc']):1}"
+        f"{_text(row['resname']):>3}{_text(row['chainid']):>2}"
+        f"{_hy36_encode(int(row['resseq']), 4)}{_text(row['icode']):1}"
+    )
+
+
+def _format_atom_records(row, anisou: bool) -> str:
+    """The ATOM or HETATM record of one atom, then its ANISOU record if ``anisou``.
+
+    Both records take columns 7-27 from :func:`_format_atom_identity`, so they
+    cannot disagree about the atom. ANISOU holds round(U * 10^4) with U in Å².
+
+    Parameters
+    ----------
+    row : mapping
+        One atom with the columns :func:`write` requires, plus ``u11`` ...
+        ``u23`` when ``anisou`` is true.
+    anisou : bool
+        Whether to append the ANISOU record.
+
+    Returns
+    -------
+    str
+        One or two newline-terminated 80-column records.
+    """
+    identity = _format_atom_identity(row)
+    element_charge = f"{_text(row['element']):>2}{_format_charge(row['charge']):>2}"
+    records = (
+        f"{_text(row['ATOM']):<6}{identity}   "
+        f"{row['x']:8.3f}{row['y']:8.3f}{row['z']:8.3f}"
+        f"{row['occupancy']:6.2f}{row['tempfactor']:6.2f}"
+        f"{'':10}{element_charge}\n"
+    )
+    if anisou:
+        u = "".join(f"{round(float(row[c]) * 1e4):7d}" for c in _U_COLUMNS)
+        records += f"ANISOU{identity} {u}{'':6}{element_charge}\n"
+    return records
+
+
+def _write_atom_records(handle, df: pd.DataFrame, anisou: bool) -> None:
+    """Write one ATOM/HETATM record per row of ``df``, in row order.
+
+    With ``anisou``, rows whose ``anisou_flag`` is set also get an ANISOU
+    record. A row that cannot be formatted is skipped whole, with a printed
+    warning, so one bad value costs one atom rather than the file.
+
+    Raises
+    ------
+    ValueError
+        If a residue is numbered below -999, before any record of ``df`` is
+        written: no PDB file can hold it, so skipping would lose whole residues.
+    """
+    low = df["resseq"] < -999
+    if low.any():
+        residues = df.loc[low, ["resname", "chainid", "resseq", "icode"]]
+        residues = residues.drop_duplicates()
+        listed = ", ".join(
+            f"{_text(name)} {_text(chain)} {int(number)}{_text(icode)}"
+            for name, chain, number, icode in residues.head(5).itertuples(index=False)
+        )
+        raise ValueError(
+            f"{len(residues)} residues are numbered below -999, which the PDB resSeq "
+            f"field cannot hold even in hybrid-36, starting with {listed}. Write "
+            "mmCIF instead (cif.write_model, Model.write_cif)."
+        )
+    anisou = anisou and "anisou_flag" in df.columns and bool(df["anisou_flag"].any())
+    columns = list(_ATOM_COLUMNS)
+    if anisou:
+        columns += ["anisou_flag", *_U_COLUMNS]
+    for i, row in enumerate(df[columns].to_dict("records")):
+        try:
+            records = _format_atom_records(row, anisou and bool(row["anisou_flag"]))
+        except (TypeError, ValueError) as error:
+            print(f"Skipping atom row {i}, which cannot be formatted: {error}")
+            continue
+        handle.write(records)
+
+
+def _cryst1_record(attrs) -> str:
+    """The CRYST1 record of a table's ``attrs``: ``cell``, ``spacegroup``, ``z``.
+
+    The columns :func:`read_crystallographic_info` reads: a, b, c 7-33 (Å),
+    alpha, beta, gamma 34-54 (degrees), space group 56-66 and Z 67-70, blank when
+    ``z`` is missing or not a number.
+
+    Raises
+    ------
+    KeyError, TypeError
+        If ``cell`` or ``spacegroup`` is missing or None.
+    """
+    cell, spacegroup = attrs["cell"], attrs["spacegroup"]
+    try:
+        z = str(int(attrs.get("z")))
+    except (TypeError, ValueError):
+        z = ""
+    lengths = "".join(f"{length:9.3f}" for length in cell[:3])
+    angles = "".join(f"{angle:7.2f}" for angle in cell[3:])
+    return f"CRYST1{lengths}{angles} {spacegroup:<11}{z:>4}\n"
+
+
+def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     """
     Write a DataFrame to a PDB file.
 
     Parameters
     ----------
     df : pandas.DataFrame
-        DataFrame containing atom data with columns: ATOM, serial, name,
-        altloc, resname, chainid, resseq, icode, x, y, z, occupancy,
-        tempfactor, element, charge.
+        Atom table with columns ATOM, serial, name, altloc, resname, chainid,
+        resseq, icode, x, y, z (Cartesian, Å), occupancy, tempfactor (Å²),
+        element and charge. Rows whose optional ``anisou_flag`` is set also get
+        an ANISOU record from ``u11`` ... ``u23`` (Å²).
     filepath : str
         Output PDB filename.
-    template : str, optional
-        PDB template file to copy header from. Deprecated in favour of
-        ``metadata``; no ``DeprecationWarning`` is emitted when it is used.
     metadata : RefinementMetadata, optional
         Metadata to render as PDB header (REMARK 3, TITLE, etc.).
+
+    Raises
+    ------
+    KeyError
+        If a required column is missing.
+    ValueError
+        If a residue is numbered below -999, which no PDB file can hold; write
+        mmCIF instead.
 
     Notes
     -----
@@ -517,125 +818,24 @@ def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) 
     ``df.attrs.get("z")`` (not from columns). If any of these are missing,
     the file is written without a CRYST1 record and a warning is printed.
 
-    Rows that fail to format are skipped with a printed warning; the
-    remaining rows are still written.
+    Serials above 99999 and residue numbers above 9999 are written as
+    hybrid-36. Rows that fail to format are skipped with a printed warning; the
+    remaining rows are still written. Nothing is renumbered: duplicated atom
+    identifiers are written as they are (see
+    :func:`torchref.utils.utils.sanitize_pdb_dataframe`).
     """
     with open(filepath, "w") as n:
         # Write metadata header if provided (before CRYST1)
         if metadata is not None:
             n.write(metadata.render_pdb_header())
 
-        # Copy template header if provided (deprecated path)
-        if template is not None:
-            with open(template) as t:
-                for line in t:
-                    if "REMARK" not in line and "ATOM" in line:
-                        break
-                    n.write(line)
-
         # Write CRYST1 record if cell info available (directly before atoms)
         try:
-            cell = df.attrs["cell"]
-            spacegroup = df.attrs["spacegroup"]
-            cell_abc = cell[:3]
-            cell_angles = cell[3:]
-            z = df.attrs.get("z", "")
-            try:
-                strz = str(int(z))
-            except:
-                strz = ""
-            line = (
-                "CRYST1"
-                + "".join([f"{i:>9.3f}" for i in cell_abc])
-                + "".join([f"{i:>7.2f}" for i in cell_angles])
-                + " "
-                + f"{spacegroup:<14}"
-                + strz
-                + "\n"
-            )
-            n.write(line)
+            n.write(_cryst1_record(df.attrs))
         except:
             print("No cell information found, writing without cell and spacegroup")
 
-        # Write atom records
-        for i, row in df.iterrows():
-            (
-                ATOM,
-                serial,
-                name,
-                altloc,
-                resname,
-                chainid,
-                resseq,
-                icode,
-                x,
-                y,
-                z_coord,
-                occupancy,
-                tempfactor,
-                element,
-                charge,
-            ) = row[
-                [
-                    "ATOM",
-                    "serial",
-                    "name",
-                    "altloc",
-                    "resname",
-                    "chainid",
-                    "resseq",
-                    "icode",
-                    "x",
-                    "y",
-                    "z",
-                    "occupancy",
-                    "tempfactor",
-                    "element",
-                    "charge",
-                ]
-            ]
-
-            if charge > 0:
-                charge = "+" + str(charge)
-            elif charge == 0:
-                charge = ""
-            else:
-                charge = str(charge)
-
-            # 4-character PDB atom-name field (cols 13-16); preceded by the
-            # blank col 12 in the format string below.
-            name_field = _format_pdb_atom_name(name, element)
-
-            if chainid is None or str(chainid) == "nan":
-                chainid = ""
-
-            try:
-                s = (
-                    f"{str(ATOM):<6}{int(serial):>5} {name_field}{str(altloc):>1}"
-                    f"{str(resname):>3}{str(chainid):>2}{int(resseq):>4}{str(icode):>4}"
-                    f"{round(x, 3):>8}{round(y, 3):>8}{round(z_coord, 3):>8}"
-                    f"{round(occupancy, 3):>6.2f}{round(tempfactor, 2):>6}"
-                    f"{str(element):>12}{charge:>2}\n"
-                )
-                n.write(s)
-            except:
-                print("row", i, "failed")
-                print(row)
-
-            # Write ANISOU record if present
-            if row["anisou_flag"]:
-                u11, u22, u33, u12, u13, u23 = row[
-                    ["u11", "u22", "u33", "u12", "u13", "u23"]
-                ]
-                s = (
-                    f"ANISOU{int(serial):>5} {name_field}{str(altloc):>1}"
-                    f"{str(resname):>3}{str(chainid):>2}{int(resseq):>4}  "
-                    f"{int(u11 * 1e4):>{7}}{int(u22 * 1e4):>{7}}{int(u33 * 1e4):>{7}}"
-                    f"{int(u12 * 1e4):>{7}}{int(u13 * 1e4):>{7}}{int(u23 * 1e4):>{7}}"
-                    f"      {str(element):>{2}}{str(charge):>2}\n"
-                )
-                n.write(s)
-
+        _write_atom_records(n, df, anisou=True)
         n.write("END")
 
 
@@ -648,44 +848,34 @@ def write_multi_model(
     Write multiple models to a single PDB file with MODEL/ENDMDL records.
 
     Each DataFrame is wrapped in a MODEL/ENDMDL pair, producing a
-    multi-model PDB file suitable for ensemble or time-resolved data.
+    multi-model PDB file suitable for ensemble or time-resolved data. Atom
+    records are formatted as by :func:`write`, but without ANISOU records:
+    each model's ADPs are its isotropic ``tempfactor``.
 
     Parameters
     ----------
     dataframes : list of pandas.DataFrame
-        List of atom DataFrames (same format as ``write()`` expects).
+        List of atom DataFrames, with the columns :func:`write` requires.
     filepath : str
         Output PDB filename.
     model_names : list of str, optional
         Names for each model (written as REMARK before each MODEL record).
         If None, models are numbered sequentially.
+
+    Raises
+    ------
+    KeyError
+        If a DataFrame lacks a required column.
+    ValueError
+        If a residue is numbered below -999, as in :func:`write`.
     """
     if not dataframes:
         return
 
     with open(filepath, "w") as f:
         # Write CRYST1 from first model if available
-        first_df = dataframes[0]
         try:
-            cell = first_df.attrs["cell"]
-            spacegroup = first_df.attrs["spacegroup"]
-            cell_abc = cell[:3]
-            cell_angles = cell[3:]
-            z = first_df.attrs.get("z", "")
-            try:
-                strz = str(int(z))
-            except Exception:
-                strz = ""
-            line = (
-                "CRYST1"
-                + "".join([f"{i:>9.3f}" for i in cell_abc])
-                + "".join([f"{i:>7.2f}" for i in cell_angles])
-                + " "
-                + f"{spacegroup:<14}"
-                + strz
-                + "\n"
-            )
-            f.write(line)
+            f.write(_cryst1_record(dataframes[0].attrs))
         except Exception:
             pass
 
@@ -694,58 +884,7 @@ def write_multi_model(
             if model_names and model_idx < len(model_names):
                 f.write(f"REMARK   3  MODEL {model_num}: {model_names[model_idx]}\n")
             f.write(f"MODEL     {model_num:>4}\n")
-
-            for i, row in df.iterrows():
-                ATOM = row.get("ATOM", "ATOM")
-                serial = row.get("serial", i + 1)
-                name = str(row.get("name", "CA"))
-                altloc = str(row.get("altloc", ""))
-                resname = str(row.get("resname", "UNK"))
-                chainid = str(row.get("chainid", ""))
-                resseq = int(row.get("resseq", 1))
-                icode = str(row.get("icode", ""))
-                x = float(row.get("x", 0.0))
-                y = float(row.get("y", 0.0))
-                z_coord = float(row.get("z", 0.0))
-                occupancy = float(row.get("occupancy", 1.0))
-                tempfactor = float(row.get("tempfactor", 20.0))
-                element = str(row.get("element", "C"))
-                charge = row.get("charge", 0)
-
-                if charge > 0:
-                    charge_str = "+" + str(charge)
-                elif charge == 0:
-                    charge_str = ""
-                else:
-                    charge_str = str(charge)
-
-                # 4-character PDB atom-name field (cols 13-16); preceded by the
-                # blank col 12 in the format string below.
-                name_field = _format_pdb_atom_name(name, element)
-
-                if chainid is None or chainid == "nan":
-                    chainid = ""
-
-                try:
-                    s = (
-                        f"{str(ATOM):<6}{int(serial):>5} {name_field}{altloc:>1}"
-                        f"{resname:>3}{chainid:>2}{resseq:>4}{icode:>4}"
-                        f"{round(x, 3):>8}{round(y, 3):>8}{round(z_coord, 3):>8}"
-                        f"{round(occupancy, 3):>6.2f}{round(tempfactor, 2):>6}"
-                        f"{element:>12}{charge_str:>2}\n"
-                    )
-                    f.write(s)
-                except Exception:
-                    pass
-
+            _write_atom_records(f, df, anisou=False)
             f.write("ENDMDL\n")
 
         f.write("END\n")
-
-
-# Deprecated aliases kept for backwards compatibility; prefer the canonical
-# names (PDBReader, find_header_length, load_as_dataframe). Slated for removal
-# in a future release. These are public symbols.
-PDB = PDBReader
-find_header_length_pdb_file = find_header_length
-load_pdb_as_pd = load_as_dataframe

@@ -125,6 +125,21 @@ def test_stored_table_matches_gemmi():
     assert checked >= 90, f"only {checked} elements checked -- table lookup is not working"
 
 
+def test_ion_lookup_returns_neutral_coefficients():
+    """Ionic form factors are not modelled: any charge gives the neutral atom's row."""
+    from torchref.base.scattering.scattering_table import (
+        elements_to_z,
+        get_scattering_params_by_z,
+        get_scattering_params_for_ion,
+    )
+
+    for element, charge in (("Fe", 2), ("Fe", 3), ("O", -2), ("Zn", 2), ("Na", 1)):
+        A_ion, B_ion = get_scattering_params_for_ion(element, charge)
+        A, B = get_scattering_params_by_z(elements_to_z([element]))
+        assert torch.equal(A_ion, A[0]) and torch.equal(B_ion, B[0]), (element, charge)
+    assert get_scattering_params_for_ion("Xx", 2) is None
+
+
 def test_ls_target_is_phase_blind(scene_small):
     """An amplitude target and its gradients are invariant under conjugating ``F``.
 
@@ -245,19 +260,23 @@ def test_sfds_matches_gemmi_with_symmetry(gemmi_iso_symmetry):
 
     This is also the only symmetric comparison in the package. A DS-vs-FFT check cannot
     validate symmetry, because both routes call the same
-    ``compute_symmetry_equivalent_hkls`` / ``compute_translation_phases`` and the shared
+    ``Symmetry.expand_reciprocal`` / ``Symmetry.phase_factors`` and the shared
     algebra cancels; gemmi does not share it.
     """
     scene, structure = gemmi_iso_symmetry
     assert len(structure.cell.images) > 0, "structure was not set up with symmetry"
 
     F_gemmi = H.gemmi_sf(structure, scene.hkl_list)
-    ds = SfDS(
+    from torchref.model.context import ModelContext
+    from torchref.symmetry import SpaceGroup
+
+    ctx = ModelContext(
         cell=scene.cell,
-        spacegroup=scene.spacegroup,
-        dtype_float=torch.float64,
-        device=torch.device("cpu"),
+        spacegroup=SpaceGroup(
+            scene.spacegroup, dtype=torch.float64, device=torch.device("cpu")
+        ),
     )
+    ds = SfDS(ctx, dtype_float=torch.float64, device=torch.device("cpu"))
     with torch.no_grad():
         F_sym, _ = ds.compute_structure_factors(
             scene.hkl, scene.xyz, scene.adp, scene.occ, scene.A, scene.B,

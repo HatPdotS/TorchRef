@@ -1,8 +1,8 @@
 """Triton forward + analytic backward for the non-bonded prolsq VDW target.
 
 The forward fuses the gather + (optional) cartesian symmetry transform +
-prolsq shape energy + per-pair constant into one kernel. The backward
-chains through:
+prolsq shape energy + per-pair constant, times the pair's weight, into one
+kernel. The backward chains through:
 
     v(d)  = max(0, d_vdw + buf − d)
     E(v)  = c_rep · v^r_exp      (when v > 0)
@@ -13,7 +13,10 @@ chains through:
 
 Cartesian symmetry transforms (M·R·M⁻¹ and M·t) are precomputed once on
 the host, so the kernel only does a 3×3 matvec (forward) and 3×3
-transposed matvec (backward) per pair.
+transposed matvec (backward) per pair. As in the eager
+:func:`~torchref.base.targets.nonbonded.nonbonded_pair_positions`, every pair
+is transformed whenever symmetry tensors are passed:
+``M·R·M⁻¹·x + M·t + M·n = M·(R·M⁻¹·x + t + n)``, the eager image term for term.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import torch
 import triton
 import triton.language as tl
 
+from .._dispatch import first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -41,6 +45,7 @@ def _nb_fwd_kernel(
     c_rep_ptr,              # 0-D tensor (was C_REP constexpr — see file docstring)
     r_exp_ptr,              # 0-D tensor (was R_EXP constexpr)
     log_sig_plus_ptr,       # 0-D tensor: log(sigma_vdw) + 0.5*log(2pi)
+    w_ptr,  # (N_pairs,) weight of each pair's NLL
     has_symmetry: tl.constexpr,
     N: tl.constexpr,
     BUFFER: tl.constexpr,
@@ -94,7 +99,8 @@ def _nb_fwd_kernel(
     v = md + BUFFER - d
     v = tl.where(v > 0.0, v, 0.0)
     e = C_REP * tl.exp(R_EXP * tl.log(v + 1e-30)) * tl.where(v > 0.0, 1.0, 0.0)
-    nll = e + LOG_SIG_PLUS_HALF_LOG_2PI
+    w = tl.load(w_ptr + offs, mask=mask, other=0.0)
+    nll = (e + LOG_SIG_PLUS_HALF_LOG_2PI) * w
     tl.store(out_ptr + offs, nll, mask=mask)
 
 
@@ -111,6 +117,7 @@ def _nb_bwd_kernel(
     dxyz_ptr,                 # (N_atoms, 3)
     c_rep_ptr,                # 0-D tensor (was C_REP constexpr)
     r_exp_ptr,                # 0-D tensor (was R_EXP constexpr)
+    w_ptr,
     has_symmetry: tl.constexpr,
     N: tl.constexpr,
     BUFFER: tl.constexpr,
@@ -119,7 +126,7 @@ def _nb_bwd_kernel(
     """Analytic backward for the prolsq nonbonded NLL.
 
     For each pair: recompute v and d, then
-        coef = grad_out · c_rep · r_exp · v^(r_exp−1)   when v > 0, else 0
+        coef = grad_out · w · c_rep · r_exp · v^(r_exp−1)   when v > 0, else 0
         grad_pos1 = -coef · (diff/d)
         grad_pos2 = +coef · (diff/d)
         grad_pos2_source = R_cartᵀ · grad_pos2     (with symmetry; identity otherwise)
@@ -177,7 +184,8 @@ def _nb_bwd_kernel(
     # dE/dv = C_REP * R_EXP * v^(R_EXP - 1)
     dEdv = C_REP * R_EXP * tl.exp((R_EXP - 1.0) * tl.log(v_safe))
     dEdv = tl.where(active, dEdv, 0.0)
-    coef = grad_out * dEdv / d  # multiplier on (dx, dy, dz)
+    w = tl.load(w_ptr + offs, mask=mask, other=0.0)
+    coef = grad_out * w * dEdv / d  # multiplier on (dx, dy, dz)
 
     # gradient magnitude on (dx, dy, dz); sign per atom applied at the
     # scatter below (see the ∂E/∂pos block before the atomic_add).
@@ -217,27 +225,43 @@ def _build_cartesian_symops(symop_matrices, symop_translations,
 
 class _NonbondedHeavyMathTriton(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, xyz, indices, min_distances,
-                symop_indices, cell_offsets,
-                symop_matrices, symop_translations,
-                fractional_matrix, inv_fractional_matrix,
-                c_rep, r_exp, buffer_, sigma_vdw):
+    def forward(
+        ctx,
+        xyz,
+        indices,
+        min_distances,
+        symop_indices,
+        cell_offsets,
+        symop_matrices,
+        symop_translations,
+        fractional_matrix,
+        inv_fractional_matrix,
+        c_rep,
+        r_exp,
+        buffer_,
+        sigma_vdw,
+        weights=None,
+    ):
         assert xyz.is_cuda and xyz.dtype == torch.float32
         N = indices.shape[0]
         nll = torch.empty(N, dtype=xyz.dtype, device=xyz.device)
 
-        has_sym = (
-            symop_indices is not None
-            and symop_indices.numel() > 0
-            and not bool((symop_indices == 0).all())
-        )
+        # The eager rule (``nonbonded_pair_positions``): with symmetry tensors present
+        # every pair is imaged, identity rows included. Testing the operations alone
+        # would drop the lattice translation of a pair whose operation is the identity,
+        # which is every crystal contact in P1.
+        has_sym = symop_indices is not None
         if has_sym:
             cart_mat, cart_off = _build_cartesian_symops(
                 symop_matrices, symop_translations,
                 fractional_matrix, inv_fractional_matrix,
             )
-            cell_off_cart = (cell_offsets.to(xyz.dtype)
-                             @ fractional_matrix.T).contiguous()
+            if cell_offsets is None:
+                cell_off_cart = torch.zeros(N, 3, device=xyz.device, dtype=xyz.dtype)
+            else:
+                cell_off_cart = (
+                    cell_offsets.to(xyz.dtype) @ fractional_matrix.T
+                ).contiguous()
             symop_i32 = symop_indices.to(torch.int32).contiguous()
         else:
             cart_mat = torch.zeros(1, 3, 3, device=xyz.device, dtype=xyz.dtype)
@@ -258,6 +282,10 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
         sigma_vdw_t = _as_device_tensor(sigma_vdw, xyz)
         c_rep_t = _as_device_tensor(c_rep, xyz)
         r_exp_t = _as_device_tensor(r_exp, xyz)
+        if weights is None:
+            w_t = torch.ones(N, device=xyz.device, dtype=xyz.dtype)
+        else:
+            w_t = _as_device_tensor(weights, xyz)
         log_sig_plus = torch.log(sigma_vdw_t) + 0.5 * _LOG_2PI
         buf_f = float(buffer_)
         BLOCK = 256
@@ -266,6 +294,7 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
             xyz, indices, min_distances, symop_i32, cart_mat, cart_off,
             cell_off_cart, nll,
             c_rep_t, r_exp_t, log_sig_plus,
+            w_t,
             has_symmetry=bool(has_sym),
             N=N, BUFFER=buf_f, BLOCK=BLOCK,
         )
@@ -274,15 +303,27 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
             xyz, indices, min_distances,
             symop_i32, cart_mat, cart_off, cell_off_cart,
             c_rep_t, r_exp_t,
+            w_t,
         )
         ctx.buffer = buf_f
         ctx.has_sym = bool(has_sym)
         return nll.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
-        (xyz, indices, min_distances, symop_i32,
-         cart_mat, cart_off, cell_off_cart, c_rep_t, r_exp_t) = ctx.saved_tensors
+        (
+            xyz,
+            indices,
+            min_distances,
+            symop_i32,
+            cart_mat,
+            cart_off,
+            cell_off_cart,
+            c_rep_t,
+            r_exp_t,
+            w_t,
+        ) = ctx.saved_tensors
         N = indices.shape[0]
         dxyz = torch.zeros_like(xyz)
         BLOCK = 256
@@ -292,11 +333,12 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
             cart_mat, cart_off, cell_off_cart,
             grad_out, dxyz,
             c_rep_t, r_exp_t,
+            w_t,
             has_symmetry=ctx.has_sym,
             N=N, BUFFER=ctx.buffer,
             BLOCK=BLOCK,
         )
-        return (dxyz,) + (None,) * 12
+        return (dxyz,) + (None,) * 13
 
 
 def nonbonded_heavy_math_triton(
@@ -305,12 +347,17 @@ def nonbonded_heavy_math_triton(
     symop_matrices, symop_translations,
     fractional_matrix, inv_fractional_matrix,
     c_rep, r_exp, buffer_, sigma_vdw,
+    weights=None,
 ):
-    """Triton-backed heavy-heavy VDW prolsq NLL with analytic backward."""
+    """Triton-backed heavy-heavy VDW prolsq NLL with analytic backward.
+
+    CUDA float32 only; arguments as :func:`~.nonbonded.nonbonded_heavy_math`.
+    """
     return _NonbondedHeavyMathTriton.apply(
         xyz, indices, min_distances,
         symop_indices, cell_offsets,
         symop_matrices, symop_translations,
         fractional_matrix, inv_fractional_matrix,
         c_rep, r_exp, buffer_, sigma_vdw,
+        weights,
     )

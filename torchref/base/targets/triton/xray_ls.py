@@ -1,7 +1,9 @@
 """Triton kernels for the Least-Squares X-ray target.
 
 Supports two weighting modes: 'sigma' (1/sigma^2 weights, with the same
-median-floor as the eager target) and 'unit' (all weights = 1).
+median-floor as the eager target) and 'unit' (all weights = 1). The residual is
+``F_obs - |F_calc|``, as in :func:`torchref.base.targets.xray_ls.ls_per_refl`, so a
+signed ``F_calc`` scores the same on both paths.
 
 All scalars (``sigma_floor``, ``grad_out``) are passed as 0-D device
 tensors and ``tl.load``ed in-kernel — no host ``.item()`` syncs.
@@ -12,6 +14,8 @@ from __future__ import annotations
 import torch
 import triton
 import triton.language as tl
+
+from .._dispatch import first_order_only
 
 
 @triton.jit
@@ -34,7 +38,7 @@ def _ls_fwd_kernel(
     F_calc = tl.load(F_calc_ptr + offs, mask=valid, other=0.0)
     m = tl.load(mask_ptr + offs, mask=valid, other=0).to(tl.float32)
 
-    diff = F_obs - F_calc
+    diff = F_obs - tl.abs(F_calc)
     if USE_UNIT_W:
         w = 1.0
     else:
@@ -69,7 +73,7 @@ def _ls_bwd_kernel(
     F_calc = tl.load(F_calc_ptr + offs, mask=valid, other=0.0)
     m = tl.load(mask_ptr + offs, mask=valid, other=0).to(tl.float32)
 
-    diff = F_obs - F_calc
+    diff = F_obs - tl.abs(F_calc)
     if USE_UNIT_W:
         w = 1.0
     else:
@@ -78,8 +82,9 @@ def _ls_bwd_kernel(
         sig_safe = tl.where(sig < sigma_floor, sigma_floor, sig)
         w = 1.0 / (sig_safe * sig_safe)
 
-    # dL_h / dF_calc = -w * diff
-    g = grad_out * (-w) * diff * m
+    # dL_h / dF_calc = -w * diff * sign(F_calc), with sign(0) = 0 as torch.abs has it
+    sign = tl.where(F_calc > 0.0, 1.0, tl.where(F_calc < 0.0, -1.0, 0.0))
+    g = grad_out * (-w) * diff * sign * m
     tl.store(dF_calc_ptr + offs, g, mask=valid)
 
 
@@ -115,6 +120,7 @@ class _LSXrayMathTriton(torch.autograd.Function):
         return out.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         F_obs, F_calc, sigma, mask_u8, sigma_floor_t = ctx.saved_tensors
         N = F_calc.shape[0]

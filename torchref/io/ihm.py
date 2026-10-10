@@ -13,11 +13,12 @@ Detection of IHM files (via ``is_ihm_file``) uses only gemmi and does
 not require ``python-ihm``.
 """
 
+import itertools
+import string
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import gemmi
-import numpy as np
 import pandas as pd
 
 from torchref.io.ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMStateInfo
@@ -25,8 +26,8 @@ from torchref.io.ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMSt
 if TYPE_CHECKING:
     import torch
 
+    from torchref.io.datasets.reflection_data import ReflectionData
     from torchref.model.model_collection import ModelCollection
-    from torchref.model.model_ft import ModelFT
 
 
 def _check_ihm_available():
@@ -38,6 +39,56 @@ def _check_ihm_available():
             "python-ihm is required for IHM mmCIF support. "
             "Install with: pip install torchref[ihm]"
         )
+
+
+def _is_ihm_block(block: gemmi.cif.Block) -> bool:
+    """Whether ``block`` has an ``_ihm_model_list`` or ``_ihm_multi_state_modeling``.
+
+    Shared by :meth:`IHMReader.is_ihm_file` and ``read_cif``'s content dispatch;
+    a loop and a key-value item both count.
+    """
+    return bool(
+        block.find(["_ihm_model_list.model_id"])
+        or block.find(["_ihm_multi_state_modeling.state_id"])
+    )
+
+
+def _add_group_with_independent_populations(collection, name, fractions):
+    """Add an IHM model group, keeping its populations exactly as deposited.
+
+    ``ModelCollection`` stores populations as one activation fraction shared across
+    timepoints plus a per-timepoint branching, which is the right model for a kinetic
+    series driven by a single pump. An IHM ensemble is not that: its model groups carry
+    arbitrary, independently deposited populations, and two groups may well disagree
+    about how much of the sample is in the reference state.
+
+    So a conflicting group is registered at the activation the collection holds, and
+    its deposited fractions, validated as for any timepoint, are installed as an
+    override, which ``fractions`` returns verbatim and ``write_ihm`` round-trips.
+    """
+    import torch
+
+    from torchref.model.model_collection import _ActivationConflict
+
+    try:
+        collection.add_timepoint(name, fractions=fractions)
+        return
+    except _ActivationConflict:
+        pass
+
+    n = len(fractions)
+    placeholder = [0.0] * n
+    placeholder[0] = 1.0 - float(collection.alpha_mean)
+    if n > 1:
+        placeholder[1] = 1.0 - placeholder[0]
+    collection.add_timepoint(name, fractions=placeholder)
+    collection[name].set_fraction_override(
+        torch.tensor(
+            fractions,
+            dtype=collection._activation_logit.dtype,
+            device=collection._activation_logit.device,
+        )
+    )
 
 
 class IHMReader:
@@ -78,7 +129,7 @@ class IHMReader:
     @staticmethod
     def is_ihm_file(filepath: str) -> bool:
         """
-        Quick check for ``_ihm_model_list`` / ``_ihm_multi_state_modeling`` loops.
+        Quick check for ``_ihm_model_list`` / ``_ihm_multi_state_modeling`` categories.
 
         Uses gemmi only, so detection does not require ``python-ihm``.
 
@@ -95,13 +146,7 @@ class IHMReader:
             doc = gemmi.cif.read(str(filepath))
         except Exception:
             return False
-
-        for block in doc:
-            if block.find(["_ihm_model_list.model_id"]):
-                return True
-            if block.find(["_ihm_multi_state_modeling.state_id"]):
-                return True
-        return False
+        return any(_is_ihm_block(block) for block in doc)
 
     # ------------------------------------------------------------------
     # Read IHM metadata -> IHMEnsembleMapping
@@ -111,11 +156,15 @@ class IHMReader:
         """
         Parse the IHM categories into an ``IHMEnsembleMapping``.
 
-        ``_ihm_multi_state_modeling`` gives the states, ``_ihm_model_group``
-        (+ ``_ihm_model_group_link``) the groups and
-        ``_ihm_multi_state_model_group_link`` the per-group state fractions;
-        cell and spacegroup come from the standard categories. Atom data is
-        NOT read -- see :meth:`read_atom_data`.
+        Each ``_ihm_multi_state_modeling`` state group is one timepoint. Every
+        model a state's model groups hold is one structural state, keyed by its
+        ``_ihm_model_list.model_id`` (its ``pdbx_PDB_model_num``) and named
+        after the first state holding it; the state's population fraction is
+        shared equally by its models. A missing fraction counts as 0, and a
+        timepoint without any fraction gets equal fractions. A timepoint takes
+        the name its model groups share, else ``group_<n>``.
+        Cell and space group are read as ``ModelCIFReader`` reads them, ``"P 1"``
+        when none is named. Atom data is NOT read -- see :meth:`read_atom_data`.
 
         Returns
         -------
@@ -129,80 +178,60 @@ class IHMReader:
         if not systems:
             raise ValueError(f"No IHM system found in {self.filepath}")
 
-        system = systems[0]
-
-        # --- Extract named states (skip unnamed container states) ---
-        states = []
-        state_groups = getattr(system, "state_groups", [])
-        named_states = []  # (ihm.model.State, model_num)
-
-        if state_groups:
-            model_num = 1
-            for sg in state_groups:
-                for state in sg:
-                    name = getattr(state, "name", None)
-                    stype = getattr(state, "type", None)
-                    # Skip unnamed states that are just model containers
-                    if name is None and stype is None:
-                        continue
-                    details = getattr(state, "details", "") or ""
-                    states.append(
-                        IHMStateInfo(
-                            state_id=model_num,
-                            name=name or f"state_{model_num}",
-                            details=details,
-                            model_num=model_num,
-                        )
-                    )
-                    named_states.append((state, model_num))
-                    model_num += 1
-
-        # Fallback: if no named states, infer from models
-        if not states:
-            states = self._infer_states_from_models(system)
-
-        # --- Extract model groups from all state groups ---
+        # python-ihm files models and model groups that no state references
+        # under a state group of their own, so every model is reached here.
+        by_model: Dict[str, IHMStateInfo] = {}
         model_groups = []
-        seen_ids = set()  # deduplicate by Python object identity
-        group_id = 1
-
-        if state_groups:
-            for sg in state_groups:
-                for state in sg:
-                    for mg in state:
-                        if id(mg) in seen_ids:
-                            continue
-                        seen_ids.add(id(mg))
-                        mg_name = getattr(mg, "name", None)
-                        # Skip unnamed placeholder groups with no models
-                        if mg_name is None and len(mg) == 0:
-                            continue
-                        mg_name = mg_name or f"group_{group_id}"
-                        model_groups.append(
-                            IHMModelGroupInfo(
-                                group_id=group_id,
-                                name=mg_name,
-                                state_fractions={},
-                            )
+        for state_group in systems[0].state_groups:
+            fractions: Dict[int, float] = {}
+            for state in state_group:
+                models = list(dict.fromkeys(m for mg in state for m in mg))
+                fraction = state.population_fraction
+                for model in models:
+                    info = by_model.get(model._id)
+                    if info is None:
+                        info = by_model[model._id] = IHMStateInfo(
+                            state_id=len(by_model) + 1,
+                            name=state.name or model.name or f"state_{model._id}",
+                            details=state.details or "",
+                            model_num=int(model._id),
                         )
-                        group_id += 1
+                    share = (
+                        fraction / len(models) if isinstance(fraction, float) else 0.0
+                    )
+                    fractions[info.state_id] = fractions.get(info.state_id, 0.0) + share
+            if not fractions:
+                continue
+            if not any(isinstance(st.population_fraction, float) for st in state_group):
+                fractions = dict.fromkeys(fractions, 1.0 / len(fractions))
+            names = {mg.name for state in state_group for mg in state if mg.name}
+            group_id = len(model_groups) + 1
+            model_groups.append(
+                IHMModelGroupInfo(
+                    group_id=group_id,
+                    name=names.pop() if len(names) == 1 else f"group_{group_id}",
+                    state_fractions=fractions,
+                )
+            )
+        states = list(by_model.values())
 
-        # Fallback: build groups from model groups directly
-        if not model_groups:
-            model_groups = self._infer_groups_from_system(system, states)
+        from torchref.io.cif_readers import _cell_parameters, _space_group
 
-        # --- Fill in fractions from _ihm_multi_state_model_group_link ---
-        # Parse fractions directly from gemmi since python-ihm may not
-        # fully expose them on the State objects
-        self._fill_fractions_from_cif(states, model_groups)
-
-        # --- Extract cell and spacegroup ---
-        cell = None
-        spacegroup = None
-        doc = gemmi.cif.read(str(self.filepath))
-        for block in doc:
-            cell = self._extract_cell_from_block(block)
-            spacegroup = self._extract_spacegroup_from_block(block)
+        # The CIF readers' rule, from the first block with a cell. It reads tables
+        # as CIFReader stores them: first-row values unquoted, "?" and "." as written.
+        cell = spacegroup = None
+        for block in gemmi.cif.read(str(self.filepath)):
+            data = {
+                category: {
+                    attribute: v if gemmi.cif.is_null(v) else gemmi.cif.as_string(v)
+                    for attribute, values in block.get_mmcif_category(
+                        f"_{category}.", raw=True
+                    ).items()
+                    for v in values[:1]
+                }
+                for category in ("cell", "symmetry", "space_group")
+            }
+            cell, spacegroup = _cell_parameters(data), _space_group(data)
             if cell is not None:
                 break
 
@@ -222,141 +251,6 @@ class IHMReader:
 
         return mapping
 
-    def _infer_states_from_models(self, system) -> List[IHMStateInfo]:
-        """Infer states from ihm.System model groups when state_groups is empty."""
-        states = []
-        model_nums = set()
-
-        for mg in getattr(system, "model_groups", []):
-            for model in mg:
-                num = getattr(model, "_id", len(states) + 1)
-                if num not in model_nums:
-                    model_nums.add(num)
-                    name = getattr(model, "name", None) or f"state_{num}"
-                    states.append(
-                        IHMStateInfo(
-                            state_id=num, name=name, details="", model_num=num
-                        )
-                    )
-
-        if not states:
-            # Last resort: use atom_site model numbers
-            states = self._infer_states_from_atom_site()
-
-        return states
-
-    def _infer_states_from_atom_site(self) -> List[IHMStateInfo]:
-        """Infer states from pdbx_PDB_model_num in _atom_site."""
-        from torchref.io.cif_readers import ModelCIFReader
-
-        reader = ModelCIFReader(str(self.filepath), verbose=0)
-        by_model = reader.get_atom_data_by_model()
-
-        return [
-            IHMStateInfo(
-                state_id=num,
-                name=f"state_{num}",
-                details="",
-                model_num=num,
-            )
-            for num in sorted(by_model.keys())
-        ]
-
-    def _infer_groups_from_system(
-        self, system, states: List[IHMStateInfo]
-    ) -> List[IHMModelGroupInfo]:
-        """Build model groups with equal fractions when IHM categories are sparse."""
-        n_states = len(states)
-        if n_states == 0:
-            return []
-
-        equal_frac = 1.0 / n_states
-        fracs = {s.state_id: equal_frac for s in states}
-
-        return [
-            IHMModelGroupInfo(
-                group_id=1,
-                name="ensemble",
-                state_fractions=fracs,
-            )
-        ]
-
-    def _fill_fractions_from_cif(
-        self,
-        states: List[IHMStateInfo],
-        model_groups: List[IHMModelGroupInfo],
-    ) -> None:
-        """
-        Parse ``_ihm_multi_state_model_group_link`` via gemmi to fill
-        population fractions in model groups.
-        """
-        doc = gemmi.cif.read(str(self.filepath))
-        for block in doc:
-            table = block.find(
-                [
-                    "_ihm_multi_state_model_group_link.state_id",
-                    "_ihm_multi_state_model_group_link.group_id",
-                    "_ihm_multi_state_model_group_link.population_fraction",
-                ]
-            )
-            if not table:
-                continue
-
-            # Build lookup: group_id -> IHMModelGroupInfo
-            group_by_id = {g.group_id: g for g in model_groups}
-            state_ids = [s.state_id for s in states]
-
-            # Initialize all fractions to 0
-            for g in model_groups:
-                g.state_fractions = {sid: 0.0 for sid in state_ids}
-
-            for row in table:
-                sid = int(row[0])
-                gid = int(row[1])
-                frac_str = row[2]
-                frac = float(frac_str) if frac_str not in (".", "?") else 0.0
-                if gid in group_by_id and sid in state_ids:
-                    group_by_id[gid].state_fractions[sid] = frac
-            return
-
-        # No link table found — use equal fractions as fallback
-        n_states = len(states)
-        if n_states > 0:
-            equal = 1.0 / n_states
-            for g in model_groups:
-                g.state_fractions = {s.state_id: equal for s in states}
-
-    def _extract_cell_from_block(self, block) -> Optional[List[float]]:
-        """Extract unit cell from a gemmi CIF block."""
-        try:
-            a = block.find_value("_cell.length_a")
-            b = block.find_value("_cell.length_b")
-            c = block.find_value("_cell.length_c")
-            alpha = block.find_value("_cell.angle_alpha")
-            beta = block.find_value("_cell.angle_beta")
-            gamma = block.find_value("_cell.angle_gamma")
-            if a and b and c:
-                return [
-                    float(a), float(b), float(c),
-                    float(alpha) if alpha else 90.0,
-                    float(beta) if beta else 90.0,
-                    float(gamma) if gamma else 90.0,
-                ]
-        except (ValueError, TypeError):
-            pass
-        return None
-
-    def _extract_spacegroup_from_block(self, block) -> Optional[str]:
-        """Extract space group from a gemmi CIF block."""
-        for tag in [
-            "_symmetry.space_group_name_H-M",
-            "_space_group.name_H-M_alt",
-        ]:
-            val = block.find_value(tag)
-            if val and val not in ("?", "."):
-                return val.strip("'\"")
-        return None
-
     # ------------------------------------------------------------------
     # Read atom data split by state
     # ------------------------------------------------------------------
@@ -368,12 +262,14 @@ class IHMReader:
         Parameters
         ----------
         mapping : IHMEnsembleMapping
-            Mapping whose states carry the ``model_num`` to select on.
+            Mapping whose states carry the ``model_num`` to select on. Updated
+            in place: the result is stored as its ``atom_data_per_state``,
+            where :meth:`build_model_collection` reads it.
 
         Returns
         -------
         dict of int -> pandas.DataFrame
-            ``state_id`` -> atom DataFrame.
+            ``state_id`` -> atom DataFrame, the dict stored on ``mapping``.
         """
         from torchref.io.cif_readers import ModelCIFReader
 
@@ -392,12 +288,13 @@ class IHMReader:
         # Validate atom consistency across states
         self._validate_atom_consistency(result, mapping)
 
+        mapping.atom_data_per_state = result
         return result
 
     def _validate_atom_consistency(
         self, atom_data: Dict[int, pd.DataFrame], mapping: IHMEnsembleMapping
     ) -> None:
-        """Check that all states have the same atoms in the same order."""
+        """Raise if the states' atom counts differ."""
         state_ids = sorted(atom_data.keys())
         if len(state_ids) < 2:
             return
@@ -445,8 +342,6 @@ class IHMReader:
         -------
         ModelCollection
         """
-        import torch
-
         from torchref.model.model_collection import ModelCollection
         from torchref.model.model_ft import ModelFT
 
@@ -491,23 +386,22 @@ class IHMReader:
         # Add timepoints from model groups
         dark_name = mapping.identify_dark_group()
         for group in sorted(mapping.model_groups, key=lambda g: g.group_id):
-            state_ids = mapping.get_state_ids()
-            fractions = [
-                group.state_fractions.get(sid, 0.0) for sid in state_ids
-            ]
+            fractions = mapping.get_fractions_for_group(group.name)
 
             # Normalize fractions
             total = sum(fractions)
             if total > 0:
                 fractions = [f / total for f in fractions]
-            else:
+            elif not any(fractions):
                 fractions = [1.0 / len(fractions)] * len(fractions)
 
             is_dark = (group.name == dark_name)
             if is_dark:
                 collection.add_dark(fractions=fractions)
             else:
-                collection.add_timepoint(group.name, fractions=fractions)
+                _add_group_with_independent_populations(
+                    collection, group.name, fractions
+                )
 
         return collection
 
@@ -535,7 +429,7 @@ class IHMReader:
         tuple of (ModelCollection, IHMEnsembleMapping)
         """
         mapping = self.read_mapping()
-        mapping.atom_data_per_state = self.read_atom_data(mapping)
+        self.read_atom_data(mapping)
         model_collection = self.build_model_collection(
             mapping,
             max_res=max_res,
@@ -560,6 +454,164 @@ class _DataFrameReader:
 
     def __call__(self):
         return self.df, self.cell, self.spacegroup
+
+
+def _residue_key(chain, resseq, icode) -> Tuple[str, int, str]:
+    """``(chain, resseq, icode)`` with a NaN or ``"nan"`` chain or code as ``""``."""
+    from torchref.io.pdb import _text
+
+    return _text(chain), int(resseq), _text(icode)
+
+
+def _asym_ids(taken: set):
+    """Yield ``A`` ... ``Z``, ``AA``, ``AB`` ... skipping, and adding to, ``taken``."""
+    for width in itertools.count(1):
+        for letters in itertools.product(string.ascii_uppercase, repeat=width):
+            asym_id = "".join(letters)
+            if asym_id not in taken:
+                taken.add(asym_id)
+                yield asym_id
+
+
+def _add_asym_units(system, model) -> Tuple[list, Dict[Tuple[str, int, str], tuple]]:
+    """Add an entity and asym unit for every residue of ``model`` to ``system``.
+
+    Polymer chains become one polymer entity per distinct sequence and an asym unit
+    per chain, its id the chain id. Following the wwPDB convention, each ligand
+    residue is an asym unit of a non-polymer entity per residue name, and each
+    chain's waters one asym unit of a water entity per name (HOH, DOD, ...). Ligand
+    and water asym ids, and the name of a blank chain, are ids no chain uses: a
+    blank ``label_asym_id`` would leave its ``_atom_site`` row a column short.
+
+    Parameters
+    ----------
+    system : ihm.System
+        System the entities and asym units are appended to.
+    model : Model
+        Model whose ``ctx.topology`` residues are described.
+
+    Returns
+    -------
+    asym_units : list of ihm.AsymUnit
+        The asym units added, polymers first.
+    labels : dict
+        :func:`_residue_key` -> ``(label_asym_id, auth_asym_id, label_seq_id)``.
+        ``label_seq_id`` is the 1-based position in the entity sequence for a
+        polymer residue, whatever its author numbering, and ``"."`` otherwise.
+    """
+    import ihm
+
+    from torchref.model.context import THREE_TO_ONE
+    from torchref.topology.monomer.cif import read_component_groups
+    from torchref.topology.residue_graph import WATER_RESNAMES, polymer_type
+
+    residues = model.ctx.topology.residues
+    found: Dict[Tuple[str, int, str], str] = {}
+    for r in range(residues.n_residues):
+        found.setdefault(
+            _residue_key(*residues.key(r)), str(residues.resname[r]).strip()
+        )
+
+    chains = list(dict.fromkeys(key[0] for key in found))
+    new_id = _asym_ids(set(chains))
+    auth = {chain: chain or next(new_id) for chain in chains}
+
+    lpep, dna, rna = ihm.LPeptideAlphabet(), ihm.DNAAlphabet(), ihm.RNAAlphabet()
+    groups = read_component_groups()
+    asym_units = []
+    # Chains of one sequence are copies of one molecule: mmCIF makes them one
+    # entity with an asym unit each, and python-ihm refuses equal entities.
+    # Keyed by the Entity itself, so "equal" is python-ihm's sequence equality.
+    entities = {}
+    labels = {}
+    for chain_id, chain_residues in model.ctx._polymer_residues():
+        chain = auth[_residue_key(chain_id, 0, "")[0]]
+        names = [resname for _, _, resname in chain_residues]
+        seq = []
+        for name, kind in zip(names, polymer_type(names)):
+            if kind == "protein":
+                comp = lpep[THREE_TO_ONE.get(name, "UNK")]
+                # PDBx names a modified residue (MSE) in the sequence as in
+                # _atom_site; only the canonical code is its parent's (M).
+                if comp.id != name:
+                    comp = ihm.LPeptideChemComp(name, name, comp.code_canonical)
+                seq.append(comp)
+            elif name in dna:
+                seq.append(dna[name])
+            elif name in rna:
+                seq.append(rna[name])
+            # A modified nucleotide keeps its own name rather than
+            # collapsing onto a standard base; its library group types it.
+            elif "DNA" in groups.get(name, "").upper():
+                seq.append(ihm.DNAChemComp(name, name, "N"))
+            else:
+                seq.append(ihm.RNAChemComp(name, name, "N"))
+        entity = ihm.Entity(seq)
+        entity, entity_chains = entities.setdefault(entity, (entity, []))
+        entity_chains.append(chain)
+        seq_map = {}
+        for position, (resseq, icode, _) in enumerate(chain_residues, start=1):
+            key = _residue_key(chain_id, resseq, icode)
+            seq_map[position] = (key[1], key[2] or None)
+            labels[key] = (chain, chain, str(position))
+        asym_units.append(
+            ihm.AsymUnit(
+                entity,
+                details=f"Chain {chain}",
+                id=chain,
+                auth_seq_id_map=seq_map,
+            )
+        )
+    for entity, entity_chains in entities.values():
+        entity.description = "Chain " + ", ".join(entity_chains)
+
+    ligands: Dict[str, ihm.Entity] = {}
+    waters: Dict[Tuple[str, str], list] = {}
+    for key, resname in found.items():
+        chain, resseq, icode = auth[key[0]], key[1], key[2]
+        if key in labels:
+            continue
+        if resname in WATER_RESNAMES:
+            waters.setdefault((resname, chain), []).append(key)
+        else:
+            entity = ligands.setdefault(
+                resname,
+                ihm.Entity([ihm.NonPolymerChemComp(resname)], description=resname),
+            )
+            asym = ihm.AsymUnit(
+                entity,
+                details=f"{resname} {chain}{resseq}{icode}",
+                id=next(new_id),
+                auth_seq_id_map={1: (resseq, icode or None)},
+                strand_id=chain,
+            )
+            asym_units.append(asym)
+            labels[key] = (asym.id, chain, ".")
+    water_entities: Dict[str, ihm.Entity] = {}
+    for (resname, chain), keys in waters.items():
+        if resname not in water_entities:
+            # python-ihm calls an entity water only if its component's code is
+            # HOH, so a DOD or WAT keeps that code under its own id.
+            comp = ihm.WaterChemComp()
+            if resname != comp.id:
+                comp.id, comp.formula = resname, None
+            water_entities[resname] = ihm.Entity([comp], description="water")
+        asym = ihm.WaterAsymUnit(
+            water_entities[resname],
+            len(keys),
+            details=f"Water, chain {chain}",
+            id=next(new_id),
+            auth_seq_id_map={i: (k[1], k[2] or None) for i, k in enumerate(keys, 1)},
+            strand_id=chain,
+        )
+        asym_units.append(asym)
+        labels.update((key, (asym.id, chain, ".")) for key in keys)
+
+    system.entities.extend(entity for entity, _ in entities.values())
+    system.entities.extend(ligands.values())
+    system.entities.extend(water_entities.values())
+    system.asym_units.extend(asym_units)
+    return asym_units, labels
 
 
 class IHMWriter:
@@ -638,19 +690,9 @@ class IHMWriter:
         if mc.n_base_models > 0:
             model0 = mc.base_models[0]
             if hasattr(model0, "cell") and model0.cell is not None:
-                cell_obj = model0.cell
-                if hasattr(cell_obj, "parameters"):
-                    cell = cell_obj.parameters.tolist()
-                elif hasattr(cell_obj, "tolist"):
-                    cell = cell_obj.tolist()
+                cell = model0.cell.tolist()
             if hasattr(model0, "spacegroup") and model0.spacegroup is not None:
-                sg = model0.spacegroup
-                if hasattr(sg, "hm"):
-                    spacegroup = sg.hm
-                elif hasattr(sg, "xhm"):
-                    spacegroup = sg.xhm()
-                else:
-                    spacegroup = str(sg)
+                spacegroup = model0.spacegroup.hm
 
         return IHMEnsembleMapping(
             states=states,
@@ -664,17 +706,26 @@ class IHMWriter:
         Write the IHM mmCIF file: entity/assembly, multi-state definitions,
         model groups, and per-state coordinates keyed by ``pdbx_PDB_model_num``.
 
-        Two caveats. Population fractions go onto ``ihm.model.State``, whose
-        ``population_fraction`` is a single per-state scalar, so linking several
-        groups to one state overwrites earlier values -- the mapping's per-group
-        ``state_fractions`` are NOT fully round-tripped. And the file is written
-        more than once: gemmi re-reads and rewrites it to append the multi-model
-        ``_atom_site`` loop, plus ``_refln`` blocks when ``datasets`` was given.
+        Each timepoint is one ``_ihm_multi_state_modeling`` state group holding
+        every structural state with that timepoint's population fraction, and
+        each state links a model group (named after the timepoint) holding the
+        structural state's model. Model ``n`` is the ``n``-th state in
+        ``state_id`` order, ``pdbx_PDB_model_num`` ``n`` in ``_atom_site``;
+        :meth:`IHMReader.read_mapping` reads this layout back, with the
+        fractions rounded to the three decimals python-ihm writes. The file
+        is written more than once: gemmi re-reads and rewrites it to append the
+        models and the multi-model ``_atom_site`` loop, plus ``_refln`` blocks
+        when ``datasets`` was given.
 
         Parameters
         ----------
         filepath : str
             Output file path.
+
+        Raises
+        ------
+        ValueError
+            If a base model has a residue that base model 0 lacks; nothing is written.
         """
         import ihm
         import ihm.dumper
@@ -685,33 +736,26 @@ class IHMWriter:
         mc = self.model_collection
         mapping = self.mapping
 
-        # --- Build entities and asym units from first base model ---
         import ihm.representation
 
-        lpep = ihm.LPeptideAlphabet()
-        asym_units = []
-
-        if mc.n_base_models > 0:
-            model0 = mc.base_models[0]
-            for chain_id, seq_str in model0.chain_sequences:
-                seq = []
-                for char in seq_str:
-                    if char == "?":
-                        continue  # skip gaps
-                    try:
-                        seq.append(lpep[char])
-                    except KeyError:
-                        seq.append(lpep["UNK"])
-                if seq:
-                    entity = ihm.Entity(seq, description=f"Chain {chain_id}")
-                    system.entities.append(entity)
-                    asym = ihm.AsymUnit(entity, details=f"Chain {chain_id}")
-                    system.asym_units.append(asym)
-                    asym_units.append(asym)
-
+        asym_units, labels = (
+            _add_asym_units(system, mc.base_models[0])
+            if mc.n_base_models > 0
+            else ([], {})
+        )
+        for i in range(1, mc.n_base_models):
+            residues = mc.base_models[i].ctx.topology.residues
+            for r in range(residues.n_residues):
+                chain, resseq, icode = _residue_key(*residues.key(r))
+                if (chain, resseq, icode) not in labels:
+                    raise ValueError(
+                        f"Base model {i} has residue {residues.resname[r]} "
+                        f"{chain}{resseq}{icode}, which base model 0 lacks: one IHM "
+                        "file describes all its models with one set of asym units."
+                    )
         if not asym_units:
             entity = ihm.Entity(
-                [lpep["UNK"]],
+                [ihm.LPeptideAlphabet()["UNK"]],
                 description="Crystallographic model",
             )
             system.entities.append(entity)
@@ -728,27 +772,29 @@ class IHMWriter:
         )
         system.orphan_representations.append(rep)
 
-        # --- Build states ---
-        state_group = ihm.model.StateGroup()
-        ihm_states = {}
-
-        for state_info in sorted(mapping.states, key=lambda s: s.state_id):
-            ihm_state = ihm.model.State(name=state_info.name)
-            ihm_states[state_info.state_id] = ihm_state
-            state_group.append(ihm_state)
-
-        system.state_groups.append(state_group)
-
-        # --- Build model groups and link to states ---
+        # --- One state group per timepoint ---
+        # A structural state's model belongs to one model group per timepoint,
+        # which python-ihm cannot dump (it lists a model once per group holding
+        # it), so the model groups stay empty here and _append_models writes the
+        # models and their group links.
+        states = sorted(mapping.states, key=lambda s: s.state_id)
+        model_links = []
         for group_info in sorted(mapping.model_groups, key=lambda g: g.group_id):
-            mg = ihm.model.ModelGroup(name=group_info.name)
-
-            for state_id, fraction in group_info.state_fractions.items():
-                if state_id in ihm_states:
-                    ihm_state = ihm_states[state_id]
-                    ihm_state.append(mg)
-                    if fraction > 0:
-                        ihm_state.population_fraction = fraction
+            state_group = ihm.model.StateGroup()
+            for model_num, state_info in enumerate(states, start=1):
+                mg = ihm.model.ModelGroup(name=group_info.name)
+                model_links.append((mg, model_num))
+                state_group.append(
+                    ihm.model.State(
+                        [mg],
+                        name=state_info.name,
+                        details=state_info.details or None,
+                        population_fraction=group_info.state_fractions.get(
+                            state_info.state_id, 0.0
+                        ),
+                    )
+                )
+            system.state_groups.append(state_group)
 
         # --- Write atom coordinates as a separate _atom_site block ---
         # python-ihm writes IHM categories; we append atom_site via gemmi
@@ -758,8 +804,17 @@ class IHMWriter:
         with open(filepath, "w") as f:
             ihm.dumper.write(f, [system])
 
-        # Then append multi-model atom_site data via gemmi
-        self._append_atom_site(filepath, mapping)
+        # Then append the models and multi-model atom_site data via gemmi; the
+        # group, assembly and representation ids exist only once python-ihm
+        # has dumped the system.
+        self._append_models(
+            filepath,
+            mapping,
+            [(mg._id, model_num) for mg, model_num in model_links],
+            assembly._id,
+            rep._id,
+            labels,
+        )
 
         # Append per-timepoint reflection data blocks if provided
         if self.datasets:
@@ -803,14 +858,25 @@ class IHMWriter:
         writer.verbose = verbose
         return writer
 
-    def _append_atom_site(
-        self, filepath: Path, mapping: IHMEnsembleMapping
+    def _append_models(
+        self,
+        filepath: Path,
+        mapping: IHMEnsembleMapping,
+        model_links: List[Tuple[int, int]],
+        assembly_id: int,
+        representation_id: int,
+        labels: Dict[Tuple[str, int, str], Tuple[str, str, str]],
     ) -> None:
         """
-        Append ``_atom_site`` loop with ``pdbx_PDB_model_num`` to the CIF file.
+        Append the per-state models to the CIF file.
 
-        Iterates over base models, extracts current coordinates,
-        and writes combined atom data with model numbers distinguishing states.
+        Writes ``_ihm_model_list`` (model ``n`` is the ``n``-th state in
+        ``state_id`` order), the ``(group_id, model_id)`` rows of
+        ``model_links`` as ``_ihm_model_group_link``, and the current
+        coordinates of the base models as one ``_atom_site`` loop whose
+        ``pdbx_PDB_model_num`` is the model id. ``labels`` maps each residue's
+        :func:`_residue_key` to its ``label_asym_id``, ``auth_asym_id`` and
+        ``label_seq_id``, as :func:`_add_asym_units` returns them.
         """
         mc = self.model_collection
 
@@ -834,28 +900,55 @@ class IHMWriter:
                 sg_val = f"'{sg_val}'"
             block.set_pair("_symmetry.space_group_name_H-M", sg_val)
 
+        states_sorted = sorted(mapping.states, key=lambda s: s.state_id)
+        model_list = block.init_loop(
+            "_ihm_model_list.",
+            [
+                "model_id",
+                "model_name",
+                "assembly_id",
+                "protocol_id",
+                "representation_id",
+            ],
+        )
+        for model_num, state in enumerate(states_sorted, start=1):
+            model_list.add_row(
+                [
+                    str(model_num),
+                    gemmi.cif.quote(state.name),
+                    str(assembly_id),
+                    ".",
+                    str(representation_id),
+                ]
+            )
+        if model_links:
+            group_links = block.init_loop(
+                "_ihm_model_group_link.", ["group_id", "model_id"]
+            )
+            for group_id, model_num in model_links:
+                group_links.add_row([str(group_id), str(model_num)])
+
         # Collect all atom data with model numbers
         all_rows = []
-        states_sorted = sorted(mapping.states, key=lambda s: s.state_id)
 
         for i, state in enumerate(states_sorted):
             if i >= mc.n_base_models:
                 break
 
             model = mc.base_models[i]
-            # Update PDB DataFrame with current refined coordinates
-            if hasattr(model, "update_pdb"):
-                model.update_pdb()
-
-            pdb_df = model.pdb
+            pdb_df = model.to_dataframe()
 
             for _, row in pdb_df.iterrows():
                 atom_name = str(row.get("name", "CA"))
                 altloc = str(row.get("altloc", ".")) or "."
                 resname = str(row.get("resname", "UNK"))
-                chainid = str(row.get("chainid", "A"))
                 resseq = str(row.get("resseq", 1))
                 icode = str(row.get("icode", ".")) or "."
+                asym_id, chainid, seq_id = labels[
+                    _residue_key(
+                        row.get("chainid"), row.get("resseq"), row.get("icode")
+                    )
+                ]
 
                 all_rows.append(
                     {
@@ -865,8 +958,8 @@ class IHMWriter:
                         "label_atom_id": atom_name,
                         "label_alt_id": altloc,
                         "label_comp_id": resname,
-                        "label_asym_id": chainid,
-                        "label_seq_id": resseq,
+                        "label_asym_id": asym_id,
+                        "label_seq_id": seq_id,
                         "pdbx_PDB_ins_code": icode,
                         "Cartn_x": f"{row.get('x', 0.0):.3f}",
                         "Cartn_y": f"{row.get('y', 0.0):.3f}",
@@ -877,7 +970,7 @@ class IHMWriter:
                         "auth_comp_id": resname,
                         "auth_asym_id": chainid,
                         "auth_atom_id": atom_name,
-                        "pdbx_PDB_model_num": str(state.model_num),
+                        "pdbx_PDB_model_num": str(i + 1),
                     }
                 )
 
@@ -948,6 +1041,8 @@ class IHMWriter:
         Each dataset gets its own CIF data block with cell, spacegroup,
         and a ``_refln`` loop containing HKL, F, σF, and R-free status.
         """
+        from torchref.io.mtz import _rfree_column
+
         doc = gemmi.cif.read(str(filepath))
 
         datasets = self.datasets
@@ -994,7 +1089,7 @@ class IHMWriter:
             sigF_np = dataset.F_sigma.detach().cpu().numpy() if has_sigF else None
             I_np = dataset.I.detach().cpu().numpy() if has_I else None
             sigI_np = dataset.I_sigma.detach().cpu().numpy() if has_sigI else None
-            rfree_np = dataset.rfree_flags.detach().cpu().numpy() if has_rfree else None
+            rfree_np = _rfree_column(dataset) if has_rfree else None
 
             # Build tag list
             tags = ["index_h", "index_k", "index_l"]
@@ -1022,76 +1117,14 @@ class IHMWriter:
                 if has_sigI:
                     row.append(f"{sigI_np[i]:.4f}")
                 if has_rfree:
-                    # CIF convention: 'f'=free, 'o'=working
-                    row.append("f" if int(rfree_np[i]) == 0 else "o")
+                    # _refln.status: o = work, f = free, x = excluded
+                    row.append({1: "o", 0: "f", -1: "x"}[int(rfree_np[i])])
                 loop.add_row(row)
 
             if self.verbose > 0:
                 print(f"  Dataset '{name}': {n_refln} reflections")
 
         doc.write_file(str(filepath))
-
-    # ------------------------------------------------------------------
-    # Convenience for building mapping from ModelCollection + metadata
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def mapping_from_kinetic_refinement(
-        model_collection: "ModelCollection",
-        state_names: Optional[List[str]] = None,
-        time_delays: Optional[Dict[str, float]] = None,
-    ) -> IHMEnsembleMapping:
-        """
-        Build an ``IHMEnsembleMapping`` from a ``ModelCollection`` with
-        optional kinetic metadata.
-
-        Parameters
-        ----------
-        model_collection : ModelCollection
-            The refined model collection.
-        state_names : list of str, optional
-            Names for each base model / state. Default: state_1, state_2, ...
-        time_delays : dict, optional
-            Mapping of timepoint name -> time delay in seconds.
-
-        Returns
-        -------
-        IHMEnsembleMapping
-        """
-        mc = model_collection
-
-        # States
-        states = []
-        for i in range(mc.n_base_models):
-            name = state_names[i] if state_names and i < len(state_names) else f"state_{i + 1}"
-            states.append(
-                IHMStateInfo(
-                    state_id=i + 1,
-                    name=name,
-                    model_num=i + 1,
-                )
-            )
-
-        # Model groups from timepoints
-        state_ids = [s.state_id for s in states]
-        model_groups = []
-        for group_id, (name, mixed) in enumerate(mc, start=1):
-            fracs = mixed.fractions.detach().cpu().tolist()
-            state_fractions = dict(zip(state_ids, fracs))
-            delay = time_delays.get(name) if time_delays else None
-            model_groups.append(
-                IHMModelGroupInfo(
-                    group_id=group_id,
-                    name=name,
-                    state_fractions=state_fractions,
-                    time_delay=delay,
-                )
-            )
-
-        return IHMEnsembleMapping(
-            states=states,
-            model_groups=model_groups,
-        )
 
 
 class _MixedModelAdapter:

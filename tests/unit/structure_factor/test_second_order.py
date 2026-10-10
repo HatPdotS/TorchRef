@@ -37,7 +37,6 @@ import pytest
 import torch
 
 from tests.helpers.grad_asserts import cosine_similarity, hvp, hvp_central_fd, rel_error
-from torchref.base.direct_summation.dispatch import _eager_aniso, _eager_iso
 from torchref.base.electron_density._backends import DENSITY_BACKENDS
 
 from . import (
@@ -49,7 +48,8 @@ from . import (
     RTOL_HVP,
 )
 from . import helpers as H
-from .conftest import DEVICE_DTYPE_KERNELS
+from .conftest import DEVICE_DTYPE_KERNELS, DS_DEVICE_DTYPE_KERNELS
+from .helpers import _eager_aniso, _eager_iso
 
 pytestmark = pytest.mark.unit
 
@@ -119,32 +119,39 @@ def test_ds_hvp_matches_finite_differences(scene_small, kind):
 # ---------------------------------------------------------------------------
 # 2. The first-order-only contract of the public DS API, made explicit
 # ---------------------------------------------------------------------------
-def test_public_ds_api_raises_on_double_backward(scene_small):
-    """``ds_iso`` and ``SfDS`` are first-order only. Assert it, so it is documented.
+#: What ``first_order_only`` raises on the ``create_graph=True`` pass.
+_FIRST_ORDER_ONLY = "the second derivative is not implemented"
 
-    ``_CheckpointedSF.backward`` calls ``torch.autograd.grad`` without
-    ``create_graph=True`` on detached copies
-    (``torchref/base/direct_summation/dispatch.py:197``), so the returned gradients carry
-    no graph. It is *not* decorated ``@once_differentiable``, so nothing warns you; the
-    failure surfaces only when a second derivative is requested.
+#: The extra term is the case ``once_differentiable`` misses: the first gradient still
+#: requires grad through ``(x**2).sum()``, so without the guard the second derivative
+#: comes back finite and silently missing the kernel's curvature.
+_OWN_TERM = pytest.mark.parametrize("x2_term", [False, True], ids=["ls", "ls+x2"])
 
-    It does at least fail loudly rather than returning zeros -- verified: it raises
-    ``element 0 of tensors does not require grad``. This test pins that, so if anyone
-    later makes the checkpointed path double-differentiable it fails here and the oracle
-    guidance in this package's docstring gets revisited rather than quietly going stale.
+
+@_OWN_TERM
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DS_DEVICE_DTYPE_KERNELS)
+def test_ds_kernel_rejects_double_backward(
+    scene_small, device, dtype, kernel, kind, x2_term
+):
+    """Every production DS kernel, ``ds_*``/``SfDS``'s, raises under ``create_graph=True``.
+
+    Their backwards return gradients that carry no graph, so the ``create_graph=True``
+    pass itself must raise, naming the Function -- not a later pass, which a loss with a
+    term of its own in ``x`` never reaches.
     """
-    from torchref.base.direct_summation.dispatch import ds_iso
-
-    s = scene_small
-    x = s.xyz_frac.clone().requires_grad_(True)
-    F = ds_iso(s.hkl, s.s, x, s.occ, s.adp, s.A, s.B)
+    aniso = kind == "aniso"
+    scene = scene_small.to(device=device, dtype=dtype)
+    third = scene.u6 if aniso else scene.adp
+    x = scene.xyz_frac.clone().requires_grad_(True)
+    F = H.ds_direct(scene, kernel, x, scene.occ, third, aniso=aniso)
     with torch.no_grad():
         obs = H.synthetic_obs(F)
-    (g1,) = torch.autograd.grad(H.ls_target(F, obs), x, create_graph=True)
+    loss = H.ls_target(F, obs) + ((x**2).sum() if x2_term else 0.0)
 
-    v = torch.ones_like(x)
-    with pytest.raises(RuntimeError, match="does not require grad"):
-        torch.autograd.grad((g1 * v).sum(), x)
+    named = rf"(_CheckpointedSF|_DS(Iso|Aniso)Triton)\.backward: {_FIRST_ORDER_ONLY}"
+    with pytest.raises(RuntimeError, match=named):
+        torch.autograd.grad(loss, x, create_graph=True)
 
 
 def test_eager_ds_survives_double_backward_where_public_api_does_not(scene_small):
@@ -219,7 +226,7 @@ def test_fused_cpu_kernel_uses_the_double_backward_fallback(
     """
     from torchref.base.electron_density.kernels.cpu import sphere_splat
 
-    if not sphere_splat.sphere_splat_available():
+    if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU sphere splat unavailable: {sphere_splat.last_error()}")
 
     calls = {"fallback": 0}
@@ -405,15 +412,17 @@ def test_kernel_hvp_matches_ds(scene_fine, oracle_fine, device, dtype, kernel, k
     assert rel < RTOL_HVP, f"{device.type}/{dtype}/{kernel}/{kind}: HVP rel {rel:.3e}"
 
 
+@_OWN_TERM
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
 @pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
-def test_kernel_rejects_double_backward(scene_fine, oracle_fine, device, dtype, kernel, kind):
+def test_kernel_rejects_double_backward(
+    scene_fine, oracle_fine, device, dtype, kernel, kind, x2_term
+):
     """First-order-only kernels must raise under ``create_graph=True``, not return garbage.
 
     The accelerator kernels have hand-written backwards that return tensors carrying no
-    graph, and neither is decorated ``@once_differentiable`` -- so nothing warns, and the
-    only signal is whatever autograd does when asked for a second derivative. Pinning that
-    it *raises* is what distinguishes "unsupported" from "silently wrong".
+    graph, so the ``create_graph=True`` pass itself must raise. Pinning that it *raises*
+    is what distinguishes "unsupported" from "silently wrong".
 
     The positive half of the pair is :func:`test_kernel_hvp_matches_ds`; together they say
     which kernels an optimizer may take a Hessian through.
@@ -427,8 +436,7 @@ def test_kernel_rejects_double_backward(scene_fine, oracle_fine, device, dtype, 
 
     x = scene.xyz.clone().requires_grad_(True)
     F = H.density_to_F(scene, H.splat_direct(scene, kernel, x, occ, third, aniso=aniso))
-    (g1,) = torch.autograd.grad(H.ls_target(F, obs), x, create_graph=True)
+    loss = H.ls_target(F, obs) + ((x**2).sum() if x2_term else 0.0)
 
-    with pytest.raises(RuntimeError) as exc:
-        torch.autograd.grad((g1 * torch.ones_like(x)).sum(), x)
-    print(f"\n  {device.type}/{dtype}/{kernel}/{kind} raised: {str(exc.value)[:70]}")
+    with pytest.raises(RuntimeError, match=_FIRST_ORDER_ONLY):
+        torch.autograd.grad(loss, x, create_graph=True)

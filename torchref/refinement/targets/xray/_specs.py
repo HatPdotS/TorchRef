@@ -1,46 +1,35 @@
-"""The X-ray target taxonomy, as data.
+"""The X-ray target taxonomy, as data: one row per selectable ``--xray-mode``.
 
-One row per selectable ``--xray-mode``. This table is the **single source of truth**:
+:data:`XRAY_TARGETS` is the single source of truth:
 :func:`~torchref.refinement.targets.xray.factory.create_xray_target` dispatches from it and
-the CLI derives its ``choices=`` from it, so a mode added in one place cannot go missing
-from the other. Frozen dataclass rows plus a table that checks its own invariants at import,
-following :mod:`torchref.utils.backends`; string literals validated against a table, not
-enums, is the house convention.
+``torchref.refine`` takes its ``--xray-mode`` choices from it. Frozen dataclass rows
+plus a table that checks its own invariants at import, following
+:mod:`torchref.utils.backends`. Each row's ``observable`` names the column it fits,
+``F_obs`` or (``nll_i``) ``I_obs``; see
+:mod:`torchref.refinement.targets.xray.observable`.
 
-## The sigma_A family
+The amplitude likelihoods, as (distribution) x (mean) x (variance):
 
-Each is a choice of (distribution) x (variance) x (mean):
+==============  ========================  ============  ================================
+mode            distribution              mean          variance
+==============  ========================  ============  ================================
+``nll``         Gaussian on ``|F|``       ``|F_c|``     ``sigma_obs**2``
+``nll_beta``    Gaussian on ``|F|``       ``|F_c|``     ``eps*beta`` -> amplitude var.
+``ml``          Rice / folded normal      ``a*|F_c|``   ``eps*beta``
+``ml_noalpha``  Rice / folded normal      ``|F_c|``     ``eps*beta``
+``ml_full``     Rice (x) Gaussian, marg.  ``a*|F_c|``   ``eps*beta_model`` + sigma_obs
+==============  ========================  ============  ================================
 
-=============  ========================  ============  ================================
-mode           distribution              mean          variance
-=============  ========================  ============  ================================
-``nll``        Gaussian on |F|           ``|F_c|``     ``sigma_obs**2``
-``nll_beta``   Gaussian on |F|           ``|F_c|``     ``eps*beta`` -> amplitude var.
-``ml``         Rice / folded normal      ``a*|F_c|``   ``eps*beta``
-``ml_noalpha`` Rice / folded normal      ``|F_c|``     ``eps*beta``
-``ml_full``    Rice (x) Gaussian, marg.  ``a*|F_c|``   ``eps*beta_model`` + sigma_obs
-=============  ========================  ============  ================================
+``mean`` is where the likelihood centres: the estimator behind ``beta`` fits ``alpha``
+for every row that has one, as :mod:`torchref.refinement.model_error_estimation.sigma_a`
+explains. :mod:`torchref.base.targets.xray_likelihoods` says why no row pairs Rice with
+``sigma_obs``.
 
-``ml`` is the default and centres on ``alpha*|F_calc|``; ``ml_noalpha`` is the same
-likelihood with the coupling pinned at 1, which is the correct choice for a **scale** fit,
-where ``alpha`` is degenerate with the per-bin scale being optimised -- an ``alpha``-centred
-row drives the scale to absorb ``1/alpha`` and inflates every R-factor computed from
-``k*|F_calc|``. That constraint is enforced, not advised:
-:data:`~torchref.scaling.scaler_base.SCALE_TARGETS` admits only ``nll`` and ``ml_noalpha``,
-and :meth:`ScalerBase.refine_lbfgs` builds its objective from *this* table. ``ml_full`` is
-the most principled row (it treats the two error kinds as the different objects they are) but
-costs a 32-node quadrature per loss evaluation, so it is not the default.
-
-**The ``mean`` column describes the LIKELIHOOD, never the estimator.** The estimator behind
-``beta`` fits ``alpha`` and ``beta`` *jointly* for every row, including rows whose mean is
-``|F_c|``, because pinning the mean during the fit biases ``sigma_A`` high. Read
-``mean = |F_c|`` as "this row does not *centre* on alpha", not "alpha is absent here".
-
-Nothing else varies by row: same estimator, same ``sigma_obs``, same shrinkage, so a
-comparison between two rows measures the likelihood and nothing else.
-
-There is deliberately no Rice-with-``sigma_obs`` row; see
-:mod:`torchref.base.targets.xray_likelihoods` for why the pairing is never correct.
+A row is not thereby a scale-fit objective:
+:meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs` builds its objective from
+this table but accepts only :data:`~torchref.scaling.scaler_base.SCALE_TARGETS`
+(``nll``, ``ml_noalpha`` and ``ls``), and says why no ``alpha``-centred row may fit a
+scale.
 """
 
 from dataclasses import dataclass, field
@@ -54,6 +43,7 @@ from .ml_full import MLFullXrayTarget
 from .ml_noalpha import MLNoAlphaXrayTarget
 from .nll import NLLXrayTarget
 from .nll_beta import NLLBetaXrayTarget
+from .observable import IntensityObservableMixin, NLLIntensityXrayTarget  # noqa: F401
 
 #: The mode built when none is given.
 DEFAULT_XRAY_MODE = "ml"
@@ -75,17 +65,37 @@ class XrayTargetSpec:
     aliases
         Retired spellings kept working; resolving one emits a ``DeprecationWarning``. No row
         carries one at present, so the tests exercise this with their own table.
+    observable
+        Which measured column the row fits: ``"amplitude"`` or ``"intensity"``. Declarative
+        rather than a constructor flag, because it is a property of the row -- see
+        :mod:`torchref.refinement.targets.xray.observable`. Checked here against the class,
+        so a spec and its implementation cannot disagree.
     """
 
     name: str
     target_cls: type
     doc: str
     aliases: Tuple[str, ...] = ()
+    observable: str = "amplitude"
 
     def __post_init__(self):
         if not (isinstance(self.target_cls, type) and issubclass(self.target_cls, XrayTarget)):
             raise TypeError(
                 f"{self.name}: target_cls {self.target_cls!r} is not an XrayTarget subclass"
+            )
+        if self.observable not in ("amplitude", "intensity"):
+            raise ValueError(
+                f"{self.name}: observable must be 'amplitude' or 'intensity', "
+                f"got {self.observable!r}"
+            )
+        # The class declares its own observable (the mixin sets it); the spec must agree.
+        # Otherwise a row could advertise intensities while reading `sub.F`, which no test
+        # downstream of here would notice -- the loss would simply be wrong by 2|F|.
+        declared = getattr(self.target_cls, "observable", "amplitude")
+        if declared != self.observable:
+            raise ValueError(
+                f"{self.name}: spec says observable={self.observable!r} but "
+                f"{self.target_cls.__name__} says {declared!r}"
             )
 
 
@@ -113,7 +123,7 @@ class XrayTargetTable:
                     f"{spec.name} and {by_cls[spec.target_cls].name} both map to "
                     f"{spec.target_cls.__name__}. One class per mode is the invariant this "
                     f"table exists to enforce: a class serving two modes has to branch on "
-                    f"something at runtime, which is what the 2026-08 refactor removed."
+                    f"something at runtime."
                 )
             by_cls[spec.target_cls] = spec
         object.__setattr__(self, "_by_name", lookup)
@@ -170,6 +180,13 @@ XRAY_TARGETS = XrayTargetTable(
             target_cls=NLLXrayTarget,
             doc="Gaussian amplitude NLL weighted by the experimental sigma only. No "
             "model-error term, so it does not control overfitting.",
+        ),
+        XrayTargetSpec(
+            name="nll_i",
+            target_cls=NLLIntensityXrayTarget,
+            observable="intensity",
+            doc="Gaussian NLL on the observed INTENSITIES weighted by sigma(I). As 'nll' "
+            "but skips the French-Wilson conversion, which reshapes the weak tail.",
         ),
         XrayTargetSpec(
             name="ls",

@@ -9,11 +9,10 @@ Re-exported here: ``bond``/``angle``/``chiral``/``planarity``/``torsion``/
 ``ramachandran``/``nonbonded`` for the geometry targets, ``adp.adp_simu_math``,
 ``xray_nll.nll_sigma_obs_math`` and ``xray_ls.ls_xray_loss_math``.
 
-Deliberately **not** re-exported, though they live here: the anisotropic-ADP family
-(``adp.adp_*_aniso_math``) and the model-error likelihoods
-(``xray_likelihoods.rice_math`` / ``nll_math`` / ``rice_marginal_math`` and the
-variance builders). They are the heaviest modules in the package and importing them
-eagerly would drag them into every consumer. Their ``beta`` comes from
+Everything else is imported from its module: the anisotropic-ADP family
+(``adp.adp_*_aniso_math``, the U6 helpers) and the SIGD prior ``adp.adp_sigd_math``,
+the model-error likelihoods and variance builders of ``xray_likelihoods``,
+``xray_ml_full`` and ``dataset_scaling``. The likelihoods' ``beta`` comes from
 :mod:`torchref.refinement.model_error_estimation`, not from here.
 """
 

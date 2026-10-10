@@ -153,17 +153,15 @@ class TestCollectionTargetsRelocated:
 
     def test_exported_from_refinement_targets(self):
         from torchref.refinement.targets import (  # noqa: F401
+            COLLECTION_XRAY_TARGETS,
+            CollectionDifferenceIntensityTarget,
             CollectionDifferenceTarget,
             CollectionMLTarget,
-            CollectionRiceTarget,
             MultiModelADPTarget,
             MultiModelGeometryTarget,
         )
 
     def test_kinetic_backcompat_reexports(self):
-        from torchref.experimental.kinetic.targets import (  # noqa: F401
-            CollectionRiceTarget,
-        )
         from torchref.experimental.kinetic.targets import CollectionMLTarget as KinCML
         from torchref.experimental.kinetic.targets import (  # noqa: F401
             KineticPriorTarget,
@@ -173,12 +171,29 @@ class TestCollectionTargetsRelocated:
 
         assert RefCML is KinCML
 
-    def test_collection_ml_base_weight(self):
+    def test_collection_ml_has_its_maintenance_hook(self):
+        """``LossState`` calls it after each step block to drop the shared beta."""
         from torchref.refinement.targets import CollectionMLTarget
 
-        assert CollectionMLTarget.DEFAULT_BASE_WEIGHT == 10.0
-        # maintenance hook present (resets the target's own shared beta)
         assert hasattr(CollectionMLTarget, "maintenance")
+
+    def test_the_sigma_obs_in_a_rice_sigma_row_is_gone(self):
+        """``CollectionRiceTarget`` set ``beta = sigma_obs**2``.
+
+        That pairs a measurement sigma with a Rice ``Sigma``, asserting an isotropic
+        *complex* error where ``sigma_obs`` carries no phase at all. The single-dataset
+        table refuses to offer such a row
+        (``test_nll_beta.py::test_rice_with_sigma_obs_is_not_offered``); the collection
+        table now agrees, and ``CollectionMLTarget`` -- one shared Luzzati beta -- is the
+        absolute channel instead.
+        """
+        import torchref.refinement.targets as T
+        from torchref.refinement.targets.collection import COLLECTION_XRAY_TARGETS
+
+        assert not hasattr(T, "CollectionRiceTarget")
+        assert "rice" not in COLLECTION_XRAY_TARGETS.names
+        with pytest.raises(ValueError, match="Unknown collection X-ray target"):
+            COLLECTION_XRAY_TARGETS.by_name("rice")
 
 
 @pytest.mark.unit

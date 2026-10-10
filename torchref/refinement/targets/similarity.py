@@ -9,6 +9,7 @@ import torch
 from typing import TYPE_CHECKING, Dict
 
 from .base import Target
+from torchref.config import get_int_dtype
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -68,10 +69,10 @@ class CoordinateSimilarityTarget(Target):
         # path (the one ``load_state_dict`` uses) would have no such buffers at all.
         # ``_build_atom_map`` overwrites them rather than creating them.
         self.register_buffer(
-            "_idx_dark", torch.zeros(0, dtype=torch.long, device=self.device)
+            "_idx_dark", torch.zeros(0, dtype=get_int_dtype(), device=self.device)
         )
         self.register_buffer(
-            "_idx_light", torch.zeros(0, dtype=torch.long, device=self.device)
+            "_idx_light", torch.zeros(0, dtype=get_int_dtype(), device=self.device)
         )
         if model_dark is not None and model_light is not None:
             self._build_atom_map()
@@ -104,21 +105,25 @@ class CoordinateSimilarityTarget(Target):
         import pandas as pd
         import warnings
 
-        pdb_dark = self._model_dark.pdb.copy()
-        pdb_light = self._model_light.pdb.copy()
-
-        for df in (pdb_dark, pdb_light):
-            df["_key"] = (
-                df["chainid"].astype(str)
-                + "_"
-                + df["resseq"].astype(str)
-                + "_"
-                + df["icode"].astype(str).str.strip()
-                + "_"
-                + df["name"].astype(str).str.strip()
-                + "_"
-                + df["altloc"].astype(str).str.strip()
+        def identity(model):
+            columns = model.ctx.topology.columns()
+            return pd.DataFrame(
+                {
+                    "_key": [
+                        f"{c}_{r}_{i.strip()}_{n.strip()}_{a.strip()}"
+                        for c, r, i, n, a in zip(
+                            columns["chain"],
+                            columns["resseq"],
+                            columns["icode"],
+                            columns["name"],
+                            columns["altloc"],
+                        )
+                    ]
+                }
             )
+
+        pdb_dark = identity(self._model_dark)
+        pdb_light = identity(self._model_light)
 
         pdb_dark["_idx"] = range(len(pdb_dark))
         pdb_light["_idx"] = range(len(pdb_light))
@@ -140,10 +145,10 @@ class CoordinateSimilarityTarget(Target):
                 "dark and light models"
             )
             self.register_buffer(
-                "_idx_dark", torch.zeros(0, dtype=torch.long, device=self.device)
+                "_idx_dark", torch.zeros(0, dtype=get_int_dtype(), device=self.device)
             )
             self.register_buffer(
-                "_idx_light", torch.zeros(0, dtype=torch.long, device=self.device)
+                "_idx_light", torch.zeros(0, dtype=get_int_dtype(), device=self.device)
             )
             return
 
@@ -166,13 +171,13 @@ class CoordinateSimilarityTarget(Target):
         self.register_buffer(
             "_idx_dark",
             torch.tensor(
-                merged["_idx_dark"].values, dtype=torch.long, device=self.device
+                merged["_idx_dark"].values, dtype=get_int_dtype(), device=self.device
             ),
         )
         self.register_buffer(
             "_idx_light",
             torch.tensor(
-                merged["_idx_light"].values, dtype=torch.long, device=self.device
+                merged["_idx_light"].values, dtype=get_int_dtype(), device=self.device
             ),
         )
 

@@ -5,8 +5,8 @@ This module provides target (loss) functions for X-ray, geometry, and ADP restra
 """
 
 from .adp import (
-    ADPSigdTarget,
     ADPLocalityTarget,
+    ADPSigdTarget,
     ADPSimilarityTarget,
     ADPTarget,
     RigidBondTarget,
@@ -15,28 +15,23 @@ from .base import (
     DataTarget,
     ModelTarget,
     Target,
-    adp_similarity_nll,
     gaussian_nll,
-    von_mises_nll,
 )
 from .collection import (
+    COLLECTION_XRAY_TARGETS,
+    CollectionDifferenceIntensityTarget,
+    CollectionDifferenceSigmaDTarget,
     CollectionDifferenceTarget,
     CollectionMLTarget,
-    CollectionRiceTarget,
+    CollectionTwoMomentIntensityTarget,
     MultiModelADPTarget,
     MultiModelGeometryTarget,
 )
 from .combined import (
-    CombinedTargets,
     TotalADPTarget,
     TotalGeometryTarget,
 )
-from .difference import (
-    DifferenceXrayTarget,
-    PhaseInformedDifferenceTarget,
-    RiceDifferenceTarget,
-    TaylorCorrectedDifferenceTarget,
-)
+from .dataset_scaling import DatasetScalingTarget
 from .geometry import (
     AngleTarget,
     BondTarget,
@@ -56,7 +51,6 @@ from .xray import (
     MLXrayTarget,
     NLLBetaXrayTarget,
     NLLXrayTarget,
-    RiceXrayTarget,
     SigmaAXrayTarget,
     UnitWeightK1XrayTarget,
     XrayTarget,
@@ -64,14 +58,13 @@ from .xray import (
 )
 
 __all__ = [
+    "DatasetScalingTarget",
     # Base classes
     "Target",
     "ModelTarget",
     "DataTarget",
     # Utility functions
     "gaussian_nll",
-    "von_mises_nll",
-    "adp_similarity_nll",
     # X-ray targets
     "XrayTarget",
     "SigmaAXrayTarget",
@@ -82,19 +75,16 @@ __all__ = [
     "MLFullXrayTarget",
     "LeastSquaresXrayTarget",
     "UnitWeightK1XrayTarget",
-    "RiceXrayTarget",
     "create_xray_target",
     # Collection (multi-dataset) targets
     "CollectionDifferenceTarget",
-    "CollectionRiceTarget",
+    "CollectionTwoMomentIntensityTarget",
     "CollectionMLTarget",
+    "CollectionDifferenceIntensityTarget",
+    "CollectionDifferenceSigmaDTarget",
+    "COLLECTION_XRAY_TARGETS",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
-    # Difference targets
-    "DifferenceXrayTarget",
-    "PhaseInformedDifferenceTarget",
-    "RiceDifferenceTarget",
-    "TaylorCorrectedDifferenceTarget",
     # Geometry targets
     "GeometryTarget",
     "BondTarget",
@@ -112,11 +102,10 @@ __all__ = [
     "ADPSigdTarget",
     "ADPLocalityTarget",
     # Combined targets
-    "CombinedTargets",
     "TotalGeometryTarget",
     "TotalADPTarget",
     # Similarity restraint
     "CoordinateSimilarityTarget",
 ]
-# Force-field, real-space, sampled-ML phase, and occupancy-diagnostic
+# Force-field, real-space and occupancy-diagnostic
 # targets are experimental and live in :mod:`torchref.experimental.targets`.

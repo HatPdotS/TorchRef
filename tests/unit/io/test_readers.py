@@ -14,6 +14,26 @@ class TestReadMtz:
         assert isinstance(data, ReflectionData)
         assert data.hkl.shape[0] > 0
 
+    def test_read_mtz_estimates_sigmas_beside_missing_amplitudes(
+        self, mtz_dir, tmp_path
+    ):
+        """An F-only MTZ with missing amplitudes loads, each measured F with a sigma."""
+        import gemmi
+        import numpy as np
+        import torch
+
+        from torchref import read_mtz
+
+        mtz = gemmi.read_mtz_file(str(mtz_dir / "3E98.mtz"))
+        assert np.isnan(mtz.column_with_label("FP").array).any()
+        mtz.remove_column(mtz.column_labels().index("SIGFP"))
+        path = tmp_path / "3E98_no_sigma.mtz"
+        mtz.write_to_file(str(path))
+
+        data = read_mtz(str(path), verbose=0)
+        measured = torch.isfinite(data.F)
+        assert torch.isfinite(data.F_sigma[measured]).all()
+
 
 @pytest.mark.unit
 class TestReadPdb:
@@ -43,6 +63,15 @@ class TestReadCif:
         obj = read_cif(str(cif_dir / "1DAW.cif"), verbose=0)
         assert isinstance(obj, ModelFT)
         assert len(obj.pdb) > 0
+
+    def test_read_cif_model_takes_verbose(self, cif_dir, capsys):
+        """``verbose`` reaches the model the structure branch builds."""
+        from torchref import read_cif
+        from torchref.model import Model
+
+        model = read_cif(str(cif_dir / "1DAW.cif"), model_class=Model, verbose=0)
+        assert model.ctx.verbose == 0
+        assert capsys.readouterr().out == ""
 
     def test_read_cif_reflections(self, cif_sf_dir):
         from torchref import read_cif
@@ -77,6 +106,39 @@ LIG C2 O1 SINGLE 1.430 0.010
 """
 
 
+# One compound written CCD style: a category with a single row (_chem_comp,
+# _chem_comp_chir) as key-value pairs instead of a loop.
+_KEY_VALUE_CIF = """\
+data_LIG
+_chem_comp.id LIG
+_chem_comp.type non-polymer
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+LIG C1 C
+LIG C2 C
+LIG O1 O
+LIG N1 N
+loop_
+_chem_comp_bond.comp_id
+_chem_comp_bond.atom_id_1
+_chem_comp_bond.atom_id_2
+_chem_comp_bond.value_dist
+_chem_comp_bond.value_dist_esd
+LIG C1 C2 1.530 0.020
+LIG C1 O1 1.430 0.020
+LIG C1 N1 1.470 0.020
+_chem_comp_chir.comp_id LIG
+_chem_comp_chir.id chir_01
+_chem_comp_chir.atom_id_centre C1
+_chem_comp_chir.atom_id_1 C2
+_chem_comp_chir.atom_id_2 O1
+_chem_comp_chir.atom_id_3 N1
+_chem_comp_chir.volume_sign positive
+"""
+
+
 @pytest.mark.unit
 class TestRestraintCompIdExtraction:
     """A restraint dict without ``comp_list`` must still resolve its compound
@@ -99,3 +161,22 @@ class TestRestraintCompIdExtraction:
         assert "LIG" in restraints
         bonds = restraints["LIG"]["bonds"]
         assert len(bonds) == 2  # restraints survive the comp-id filter
+
+    def test_categories_written_as_key_value_pairs(self, tmp_path):
+        from torchref.io.cif_readers import RestraintCIFReader
+
+        cif = tmp_path / "ccd_style.cif"
+        cif.write_text(_KEY_VALUE_CIF)
+
+        reader = RestraintCIFReader(str(cif))
+        assert reader.compounds == ["LIG"]
+        chirals = reader.get_all_restraints()["LIG"]["chirals"]
+        assert chirals.to_dict("records") == [
+            {
+                "atom_centre": "C1",
+                "atom1": "C2",
+                "atom2": "O1",
+                "atom3": "N1",
+                "volume_sign": "positive",
+            }
+        ]

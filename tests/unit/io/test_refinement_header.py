@@ -1,0 +1,677 @@
+"""Regression tests for the refinement output header.
+
+The writer used to carry an input PDB's header through verbatim and then append
+its own ``REMARK 3``, so a refined file asserted two different refinements at
+once -- the previous program's R-factors first, ours several hundred lines
+later. The selection was also inverted: TITLE, AUTHOR and REMARK were kept
+(including the superseded statistics) while SEQRES, SSBOND, LINK, CISPEP,
+EXPDTA, COMPND, DBREF and FORMUL were dropped, i.e. the chemistry refinement
+does not invalidate.
+
+What is asserted here is the resulting contract: exactly one refinement block
+and it is ours; records that describe the crystal survive; records that describe
+a superseded refinement do not; and the chain of programs applied to the model
+is preserved through mmCIF's ``_software`` loop rather than by hoarding the
+previous program's output.
+"""
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import gemmi
+import pandas as pd
+import pytest
+
+from torchref.io import cif, pdb
+from torchref.io.metadata import RefinementMetadata
+
+# 3GR5 was refined with REFMAC 5.1.24 and carries a full deposition header:
+# 420 lines including REMARK 2/3/500, JRNL, AUTHOR, SEQRES, SSBOND and SITE.
+INPUT_PDB = str(Path(__file__).resolve().parents[2] / "files" / "pdb" / "3GR5.pdb")
+
+# 1DAW was refined with REFMAC; both its PDB and its mmCIF carry the record.
+PDB_1DAW = str(Path(__file__).resolve().parents[2] / "files" / "pdb" / "1DAW.pdb")
+CIF_1DAW = str(Path(__file__).resolve().parents[2] / "files" / "cif" / "1DAW.cif")
+
+#: PDB record order, abridged to the records this writer can emit. The format
+#: mandates this sequence; TITLE used to be written *after* REMARK 900.
+RECORD_ORDER = [
+    "TITLE", "COMPND", "SOURCE", "KEYWDS", "EXPDTA", "MDLTYP", "AUTHOR",
+    "REMARK", "DBREF", "DBREF1", "DBREF2", "SEQADV", "SEQRES", "MODRES",
+    "HET", "HETNAM", "HETSYN", "FORMUL", "SSBOND", "LINK", "CISPEP", "SITE",
+]
+
+
+def _atom_df():
+    """Two atoms whose coordinates exercise trailing-zero formatting.
+
+    ``18.3`` and ``31.51`` are the values that exposed the writer using
+    ``str()`` semantics on a rounded float instead of ``%8.3f``.
+    """
+    df = pd.DataFrame(
+        {
+            "ATOM": ["ATOM", "HETATM"],
+            "serial": [1, 2],
+            "name": ["CA", "O"],
+            "altloc": ["", ""],
+            "resname": ["LEU", "HOH"],
+            "chainid": ["A", "A"],
+            "resseq": [1, 2],
+            "icode": ["", ""],
+            "x": [-7.223, -9.22],
+            "y": [29.982, 31.51],
+            "z": [18.3, 20.364],
+            "occupancy": [1.0, 1.0],
+            "tempfactor": [95.4, 30.0],
+            "element": ["C", "O"],
+            "charge": [0, 0],
+            "anisou_flag": [False, False],
+            "u11": [0.0, 0.0],
+            "u22": [0.0, 0.0],
+            "u33": [0.0, 0.0],
+            "u12": [0.0, 0.0],
+            "u13": [0.0, 0.0],
+            "u23": [0.0, 0.0],
+        }
+    )
+    df.attrs["cell"] = [90.645, 90.645, 133.422, 90.0, 90.0, 120.0]
+    df.attrs["spacegroup"] = "P 65 2 2"
+    return df
+
+
+def _refined_metadata():
+    """Input header plus this refinement's statistics, as the writer builds it."""
+    meta = RefinementMetadata.from_pdb_file(INPUT_PDB)
+    ours = RefinementMetadata(
+        program_version="0.7.0",
+        target_function="ML",
+        optimizer="1 MACROCYCLE, SEPARATE, ISOTROPIC ADP, SCALE TARGET NLL",
+        r_work=0.2083,
+        r_free=0.2471,
+        percent_free=9.9,
+        n_reflections_all=20942,
+        n_reflections_test=2063,
+        resolution_high=2.05,
+        resolution_low=18.69,
+        starting_model=INPUT_PDB,
+        rfree_selection="MTZReader FreeR",
+    )
+    return meta.merge(ours)
+
+
+def _header_lines():
+    return _refined_metadata().render_pdb_header().splitlines()
+
+
+def _remark_number(line):
+    try:
+        return int(line[7:10])
+    except ValueError:
+        return None
+
+
+# ====================================================================== #
+#  One refinement block, and it is ours
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_exactly_one_refinement_block():
+    header = "\n".join(_header_lines())
+    assert header.count("REMARK   3 REFINEMENT.") == 1
+    assert "TORCHREF" in header
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("program", ["REFMAC", "PHENIX", "BUSTER", "CNS"])
+def test_no_foreign_program_is_credited(program):
+    """The input was refined by REFMAC; the output must not say so anywhere."""
+    assert program not in "\n".join(_header_lines())
+
+
+@pytest.mark.unit
+def test_superseded_statistics_are_dropped():
+    """REMARK 2, 3 and 500 describe a resolution and a model we replaced."""
+    numbers = {_remark_number(line) for line in _header_lines()
+               if line.startswith("REMARK")}
+    assert 2 not in numbers            # resolution: regenerated
+    assert 500 not in numbers          # geometry outliers of old coordinates
+    assert 3 in numbers                # ours, and the only one
+
+
+@pytest.mark.unit
+def test_input_remark_3_is_not_carried_through():
+    """The specific inversion this module exists to prevent."""
+    meta = RefinementMetadata.from_pdb_file(INPUT_PDB)
+    assert not any(_remark_number(r) == 3 for r in meta.passthrough_pdb_remarks)
+    # ... while the input genuinely has one, so the assertion has teeth.
+    with open(INPUT_PDB) as handle:
+        assert any(line.startswith("REMARK   3") for line in handle)
+
+
+# ====================================================================== #
+#  Attribution
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_authors_and_journal_are_not_inherited():
+    """Both credit the deposition, not this refinement."""
+    meta = RefinementMetadata.from_pdb_file(INPUT_PDB)
+    assert meta.authors == []
+    lines = _header_lines()
+    assert not any(line.startswith(("AUTHOR", "JRNL")) for line in lines)
+
+
+@pytest.mark.unit
+def test_explicitly_set_authors_are_written():
+    """Not inheriting authors must not stop --authors from working."""
+    meta = _refined_metadata()
+    meta.authors = ["A.Person", "B.Other"]
+    lines = meta.render_pdb_header().splitlines()
+    author = [line for line in lines if line.startswith("AUTHOR")]
+    assert author and "A.Person" in author[0]
+
+
+# ====================================================================== #
+#  Records that survive
+# ====================================================================== #
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "record", ["COMPND", "SOURCE", "KEYWDS", "EXPDTA", "DBREF", "SEQADV",
+               "SEQRES", "HETNAM", "FORMUL", "SSBOND", "SITE"]
+)
+def test_structural_records_are_carried_through(record):
+    """Refinement moves atoms; it does not change the sequence or chemistry."""
+    with open(INPUT_PDB) as handle:
+        expected = sum(1 for line in handle if line.startswith(record))
+    assert expected > 0, f"{record} absent from the fixture"
+    written = sum(1 for line in _header_lines() if line.startswith(record))
+    assert written == expected
+
+
+@pytest.mark.unit
+def test_secondary_structure_is_not_emitted():
+    """Nothing here computes HELIX/SHEET, so carrying them can only mislead."""
+    lines = _header_lines()
+    assert not any(line.startswith(("HELIX", "SHEET")) for line in lines)
+
+
+@pytest.mark.unit
+def test_records_are_in_mandated_order():
+    seen = []
+    for line in _header_lines():
+        record = line[:6].strip()
+        if record and (not seen or seen[-1] != record):
+            seen.append(record)
+    assert all(r in RECORD_ORDER for r in seen), [
+        r for r in seen if r not in RECORD_ORDER
+    ]
+    positions = [RECORD_ORDER.index(r) for r in seen]
+    assert positions == sorted(positions), seen
+
+
+@pytest.mark.unit
+def test_remarks_ascend_with_ours_at_three():
+    numbers = [
+        _remark_number(line) for line in _header_lines()
+        if line.startswith("REMARK")
+    ]
+    assert numbers == sorted(numbers)
+    assert 3 in numbers
+
+
+# ====================================================================== #
+#  Free text is the author's, never generated
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_no_remarks_section_without_author_text():
+    assert "OTHER REFINEMENT REMARKS" not in "\n".join(_header_lines())
+
+
+@pytest.mark.unit
+def test_author_text_is_written_when_supplied():
+    meta = _refined_metadata()
+    meta.output_remarks = "Re-refined for the benchmark.\n\nSecond paragraph."
+    header = meta.render_pdb_header()
+    assert "REMARK   3  OTHER REFINEMENT REMARKS:" in header
+    assert "Re-refined for the benchmark." in header
+    assert "Second paragraph." in header
+
+
+@pytest.mark.unit
+def test_free_set_provenance_is_reported():
+    """R-free from a different test set is not comparable; say which one."""
+    header = "\n".join(_header_lines())
+    assert "FREE R VALUE TEST SET SELECTION" in header
+    assert "MTZReader FreeR" in header
+
+
+@pytest.mark.unit
+def test_remark_3_colons_line_up_within_each_block():
+    """Colons used to be ragged, because alignment relied on caller padding.
+
+    Two columns exist by design, which is what REFMAC does too: a narrow one
+    for the identification lines (``PROGRAM     :``) and a wide one for the
+    statistics (``RESOLUTION RANGE HIGH (ANGSTROMS) :``). Each must be
+    internally consistent, including on wrapped continuation lines.
+    """
+    columns = [
+        line.index(" : ") for line in _header_lines()
+        if line.startswith("REMARK   3   ") and " : " in line
+    ]
+    assert set(columns) == {24, 46}, sorted(set(columns))
+
+
+@pytest.mark.unit
+def test_header_lines_fit_the_format():
+    assert [line for line in _header_lines() if len(line) > 80] == []
+
+
+@pytest.mark.unit
+def test_long_statistic_values_wrap_rather_than_overflow():
+    """A generated free set's provenance is wider than the statistics column."""
+    meta = _refined_metadata()
+    meta.rfree_selection = "Generated (resolution-binned, ASU-grouped, seed 0)"
+    lines = meta.render_pdb_header().splitlines()
+    assert [line for line in lines if len(line) > 80] == []
+    head = next(
+        i for i, line in enumerate(lines) if "FREE R VALUE TEST SET SELECTION" in line
+    )
+    assert lines[head + 1].startswith("REMARK   3" + " " * 37 + ": ")
+    joined = " ".join(line.split(" : ", 1)[1] for line in lines[head : head + 2])
+    assert joined == meta.rfree_selection
+
+
+@pytest.mark.unit
+def test_long_identification_values_wrap_rather_than_overflow():
+    """Naming cycles, mode, ADP model and scale target overruns column 80."""
+    meta = _refined_metadata()
+    meta.optimizer = (
+        "12 MACROCYCLES, EVERYTHING, FIELD_ANISO ADP, SCALE TARGET ML_NOALPHA, "
+        "RIGID BODY 5 ITERATIONS"
+    )
+    lines = meta.render_pdb_header().splitlines()
+    assert [line for line in lines if len(line) > 80] == []
+    optimizer = [line for line in lines if "OPTIMIZER" in line]
+    assert len(optimizer) == 1                       # one head line ...
+    head = lines.index(optimizer[0])
+    assert lines[head + 1].startswith("REMARK   3               : ")
+    # ... and the value survives the wrap intact.
+    joined = " ".join(
+        line.split(":", 1)[1].strip()
+        for line in lines[head:head + 3]
+        if " : " in line
+    )
+    assert "RIGID BODY 5 ITERATIONS" in joined
+
+
+@pytest.mark.unit
+def test_reflection_statistics_cover_the_reflections_refined(mtz_dir):
+    """A resolution cut shows in the reported range and counts."""
+    from torchref.io.datasets.reflection_data import ReflectionData
+
+    data = ReflectionData(verbose=0)
+    data.load_mtz(str(mtz_dir / "1DAW.mtz"))
+    data.filter_by_resolution(d_min=2.5)
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(reflection_data=data))
+
+    assert meta.resolution_high == pytest.approx(2.5, abs=0.01)
+    assert meta.n_reflections_work == data.work.n
+    assert meta.n_reflections_test == data.free.n
+    assert meta.n_reflections_all == data.work.n + data.free.n
+    assert meta.n_reflections_all < len(data.hkl)
+
+
+@pytest.mark.unit
+def test_atom_counts_match_the_deposited_refine_hist(pdb_dir):
+    """1DAW's _refine_hist: 2733 protein, 0 nucleic-acid, 285 water and 3051
+    non-hydrogen atoms.
+
+    The 33 AMP-PNP and magnesium atoms count only in the total.
+    """
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.n_atoms_protein == 2733
+    assert meta.n_atoms_nucleic_acid == 0
+    assert meta.n_atoms_solvent == 285
+    assert meta.n_atoms_total == 3051
+    hist = meta.render_cif_categories()["_refine_hist"]
+    assert hist["_refine_hist.pdbx_number_atoms_protein"] == "2733"
+    assert hist["_refine_hist.pdbx_number_atoms_nucleic_acid"] == "0"
+    assert "_refine_hist.number_atoms_protein" not in hist
+
+
+@pytest.mark.unit
+def test_hetatm_selenomethionines_count_as_protein(pdb_dir):
+    """3E98's selenomethionines, written as HETATM, are protein: what is left
+    besides protein and water is its deposited 12 ligand (ethylene glycol) atoms."""
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "3E98.pdb"))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.n_atoms_total - meta.n_atoms_protein - meta.n_atoms_solvent == 12
+    assert meta.n_atoms_solvent == 75
+    assert meta.n_atoms_nucleic_acid == 0
+
+
+@pytest.mark.unit
+def test_nucleic_acid_atoms_are_counted_apart_from_protein():
+    """DNA and RNA residues count as nucleic acid in both records, not as protein
+    or ligand; the ethylene glycol counts only in the total."""
+    from torchref.topology import Topology
+
+    atoms = [
+        ("A", 1, "ALA", ["N", "CA", "C", "O", "H"]),
+        ("B", 1, "DA", ["P", "C1'", "N9"]),
+        ("B", 2, "U", ["P", "C1'"]),
+        ("C", 1, "EDO", ["C1", "O1"]),
+        ("C", 2, "HOH", ["O"]),
+    ]
+    table = pd.DataFrame(
+        [(c, r, n, a, a[0]) for c, r, n, names in atoms for a in names],
+        columns=["chainid", "resseq", "resname", "name", "element"],
+    )
+    topology = Topology.from_table(table)
+    model = SimpleNamespace(ctx=SimpleNamespace(topology=topology, initialized=False))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.n_atoms_protein == 4
+    assert meta.n_atoms_nucleic_acid == 5
+    assert meta.n_atoms_solvent == 1
+    assert meta.n_atoms_total == 12
+    hist = meta.render_cif_categories()["_refine_hist"]
+    assert hist["_refine_hist.pdbx_number_atoms_nucleic_acid"] == "5"
+    header = meta.render_pdb_header().splitlines()
+    assert next(line for line in header if "NUCLEIC ACID ATOMS" in line).endswith(": 5")
+
+
+@pytest.mark.unit
+def test_restraint_kind_without_entries_leaves_its_rmsd_unset():
+    """Empty deviations, as for a model without bonds, give no RMSD, not NaN."""
+    import torch
+
+    no_bonds = SimpleNamespace(
+        bond_deviations=lambda xyz: (xyz.new_zeros(0), xyz.new_zeros(0)),
+        angle_deviations=lambda xyz: (xyz.new_full((4,), 0.02), xyz.new_ones(4)),
+    )
+    model = SimpleNamespace(
+        ctx=SimpleNamespace(initialized=True, restraints=no_bonds),
+        restraints=no_bonds,
+        xyz=lambda: torch.zeros(3, 3),
+    )
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.rmsd_bond_lengths is None
+    assert meta.rmsd_bond_angles is not None
+    header = meta.render_pdb_header().splitlines()
+    assert next(line for line in header if "BOND LENGTHS" in line).endswith("NULL")
+
+
+@pytest.mark.unit
+def test_bond_angle_rmsd_is_reported_in_degrees(pdb_dir):
+    """The RMSD on REMARK 3's BOND ANGLES (DEGREES) line is in degrees."""
+    import math
+
+    import torch
+
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    with torch.no_grad():
+        radians, _ = model.restraints.angle_deviations(model.xyz())
+    degrees = math.degrees(float(torch.sqrt((radians**2).mean())))
+    meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
+
+    assert meta.rmsd_bond_angles == pytest.approx(degrees, rel=1e-5)
+    header = meta.render_pdb_header().splitlines()
+    line = next(line for line in header if "BOND ANGLES" in line)
+    assert line.endswith(f": {degrees:.2f}")
+
+
+# ====================================================================== #
+#  Coordinates
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_numeric_columns_keep_their_decimals(tmp_path):
+    """``18.3`` must be written ``  18.300`` and ``95.4`` as `` 95.40``.
+
+    Both fields were formatted as ``str()`` of a rounded float rather than with
+    an explicit precision, so trailing zeros vanished.
+    """
+    out = tmp_path / "out.pdb"
+    pdb.write(_atom_df(), str(out))
+    atoms = [
+        line for line in out.read_text().splitlines()
+        if line.startswith(("ATOM", "HETATM"))
+    ]
+    assert atoms
+    for line in atoms:
+        assert len(line) == 80, repr(line)
+        # x, y, z: %8.3f
+        for start in (30, 38, 46):
+            field = line[start:start + 8]
+            assert len(field.split(".")[1]) == 3, repr(field)
+        # occupancy and B: %6.2f
+        for start in (54, 60):
+            field = line[start:start + 6]
+            assert len(field.split(".")[1]) == 2, repr(field)
+    assert " 95.40" in atoms[0]
+
+
+# ====================================================================== #
+#  The software chain -- mmCIF's only room for prior work
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_software_is_a_loop_with_an_ordinal():
+    cats = _refined_metadata().render_cif_categories()
+    software = cats["_software"]
+    assert software["_software.pdbx_ordinal"] == ["1"]
+    assert software["_software.name"] == ["TORCHREF"]
+
+
+@pytest.mark.unit
+def test_software_ordinal_increments_across_refinements(tmp_path):
+    """Refining a refined file must append to the chain, not replace it."""
+    first = tmp_path / "first.cif"
+    cif.write_model(_atom_df(), str(first), metadata=_refined_metadata())
+
+    # Read it back the way a second refinement would, then write again.
+    carried = RefinementMetadata.from_cif_file(str(first))
+    assert len(carried.software_chain) == 1
+
+    second_meta = carried.merge(
+        RefinementMetadata(program_version="0.7.0", optimizer="2 MACROCYCLES")
+    )
+    second = tmp_path / "second.cif"
+    cif.write_model(_atom_df(), str(second), metadata=second_meta)
+
+    chain = RefinementMetadata.from_cif_file(str(second)).software_chain
+    assert [e.get("pdbx_ordinal") for e in chain] == ["1", "2"]
+
+
+@pytest.mark.unit
+def test_previous_refinement_description_survives_the_round_trip(tmp_path):
+    """The chain is worthless if it cannot say what each program did."""
+    out = tmp_path / "one.cif"
+    meta = _refined_metadata()
+    meta.optimizer = "7 MACROCYCLES, SEPARATE, ISOTROPIC ADP"
+    cif.write_model(_atom_df(), str(out), metadata=meta)
+
+    chain = RefinementMetadata.from_cif_file(str(out)).software_chain
+    assert "7 MACROCYCLES" in chain[0]["description"]
+
+
+@pytest.mark.unit
+def test_loop_values_with_spaces_survive_a_round_trip(tmp_path):
+    """An unquoted loop cell silently splits into extra columns when re-read."""
+    out = tmp_path / "quoted.cif"
+    meta = _refined_metadata()
+    meta.optimizer = "MANY WORDS, WITH COMMAS, AND SPACES"
+    cif.write_model(_atom_df(), str(out), metadata=meta)
+
+    chain = RefinementMetadata.from_cif_file(str(out)).software_chain
+    assert len(chain) == 1
+    assert chain[0]["description"].endswith("AND SPACES")
+
+
+@pytest.mark.unit
+def test_input_refine_statistics_are_not_carried_into_cif(tmp_path):
+    """The mmCIF form of the duplicated REMARK 3."""
+    source = tmp_path / "prior.cif"
+    prior = RefinementMetadata(program="REFMAC", r_work=0.213, r_free=0.251)
+    cif.write_model(_atom_df(), str(source), metadata=prior)
+
+    carried = RefinementMetadata.from_cif_file(str(source))
+    assert "_refine" not in carried.passthrough_cif_categories
+    assert carried.r_work is None
+    # The prior program is remembered as a link in the chain, not as statistics.
+    assert [e["name"] for e in carried.software_chain] == ["REFMAC"]
+
+
+@pytest.mark.unit
+def test_refinement_method_is_not_a_structure_determination_method():
+    """pdbx_method_to_determine_struct holds the phasing method (SAD, MR, ...)."""
+    meta = RefinementMetadata(refinement_method="difference-refine")
+    cats = meta.render_cif_categories()
+    assert "_refine.pdbx_method_to_determine_struct" not in cats.get("_refine", {})
+    assert cats["_software"]["_software.description"] == ["difference-refine"]
+
+
+@pytest.mark.unit
+def test_starting_model_is_recorded_as_an_accession(tmp_path):
+    cats = _refined_metadata().render_cif_categories()
+    initial = cats["_pdbx_initial_refinement_model"]
+    assert initial["_pdbx_initial_refinement_model.accession_code"] == "3GR5"
+    assert initial["_pdbx_initial_refinement_model.type"] == "experimental model"
+    assert cats["_refine"]["_refine.pdbx_starting_model"] == "3GR5.pdb"
+
+
+@pytest.mark.unit
+def test_starting_model_is_named_without_its_local_path():
+    """The input's directory is the refiner's filesystem, not provenance."""
+    meta = _refined_metadata()
+    meta.starting_model = "/home/someone/projects/secret_project/run_07/model.pdb"
+    cats = meta.render_cif_categories()
+    header = meta.render_pdb_header()
+    assert "/" not in cats["_refine"]["_refine.pdbx_starting_model"]
+    assert "secret_project" not in header
+    assert "REMARK   3  STARTING MODEL: model.pdb" in header.splitlines()
+
+
+@pytest.mark.unit
+def test_unaccessionable_starting_model_is_named_not_guessed():
+    meta = _refined_metadata()
+    meta.starting_model = "/tmp/my_working_model_v3.pdb"
+    initial = meta.render_cif_categories()["_pdbx_initial_refinement_model"]
+    assert "accession_code" not in " ".join(initial)
+    assert initial["_pdbx_initial_refinement_model.details"] == (
+        "my_working_model_v3.pdb"
+    )
+
+
+# ====================================================================== #
+#  Annotating a file is not refining it
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_annotation_keeps_the_existing_refinement():
+    """``add-metadata`` adds a title; it does not re-refine.
+
+    Nothing supersedes the input's REMARK 3 or AUTHOR records in that case, so
+    dropping them would discard statistics and credit that are still accurate.
+    """
+    meta = RefinementMetadata.from_pdb_file(
+        INPUT_PDB, supersede_refinement=False
+    )
+    numbers = {_remark_number(r) for r in meta.passthrough_pdb_remarks}
+    assert {2, 3, 500} <= numbers
+    assert meta.authors  # REFMAC-era depositors keep their credit
+
+
+@pytest.mark.unit
+def test_refinement_output_supersedes_by_default():
+    """The default is the refinement case: the old block goes."""
+    meta = RefinementMetadata.from_pdb_file(INPUT_PDB)
+    numbers = {_remark_number(r) for r in meta.passthrough_pdb_remarks}
+    assert not ({2, 3, 500} & numbers)
+    assert meta.authors == []
+
+
+@pytest.mark.unit
+def test_annotation_keeps_the_input_remark_3():
+    """A title alone does not replace the REFMAC record with a TORCHREF one."""
+    meta = RefinementMetadata.from_pdb_file(PDB_1DAW, supersede_refinement=False)
+    meta.title = "Annotated"
+    header = meta.render_pdb_header().splitlines()
+    with open(PDB_1DAW) as handle:
+        remark3 = [
+            line.rstrip("\n") for line in handle if line.startswith("REMARK   3")
+        ]
+    assert [line for line in header if line.startswith("REMARK   3")] == remark3
+    assert not any("PROGRAM     : TORCHREF" in line for line in header)
+
+
+@pytest.mark.unit
+def test_annotation_without_an_input_remark_3_generates_none():
+    """An mmCIF input has no REMARK 3 to keep; a title still credits no TORCHREF."""
+    meta = RefinementMetadata.from_cif_file(CIF_1DAW, supersede_refinement=False)
+    meta.title = "Annotated"
+    header = meta.render_pdb_header().splitlines()
+    assert not any("PROGRAM     : TORCHREF" in line for line in header)
+    assert not any(line.startswith("REMARK   3") for line in header)
+
+
+@pytest.mark.unit
+def test_a_statistic_turns_annotation_into_our_record():
+    meta = RefinementMetadata.from_pdb_file(PDB_1DAW, supersede_refinement=False)
+    meta.r_work = 0.2
+    header = meta.render_pdb_header()
+    assert "PROGRAM     : TORCHREF" in header
+    assert "PROGRAM     : REFMAC" not in header
+
+
+@pytest.mark.unit
+def test_carried_cif_values_are_quoted_once(tmp_path):
+    """Values carried from an mmCIF input are re-quoted once, so the file parses."""
+    out = tmp_path / "carried.cif"
+    meta = RefinementMetadata.from_cif_file(CIF_1DAW)
+    cif.write_model(_atom_df(), str(out), metadata=meta)
+
+    block = gemmi.cif.read(str(out)).sole_block()
+    assert "'PROTEIN KINASE CK2'" in list(block.find_values("_entity.pdbx_description"))
+
+
+@pytest.mark.unit
+def test_cif_annotation_keeps_the_input_refinement():
+    """The mmCIF counterpart: _refine and the authors stay, TORCHREF is not added."""
+    meta = RefinementMetadata.from_cif_file(CIF_1DAW, supersede_refinement=False)
+    meta.title = "Annotated"
+    cats = meta.render_cif_categories()
+    assert cats["_refine"]["_refine.ls_R_factor_R_work"] == "0.2120000"
+    assert "_refine_hist" in cats
+    assert cats["_software"]["_software.name"][0] == "REFMAC"
+    assert "TORCHREF" not in cats["_software"]["_software.name"]
+    assert meta.authors
+
+    meta.r_work = 0.2
+    cats = meta.render_cif_categories()
+    assert cats["_refine"] == {"_refine.ls_R_factor_R_work": "0.2000"}
+    assert "_refine_hist" not in cats
+    assert cats["_software"]["_software.name"][-1] == "TORCHREF"

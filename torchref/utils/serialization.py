@@ -19,11 +19,11 @@ def convert_to_serializable(obj):
     -------
     object
         A JSON-serializable equivalent. Note the shape asymmetry: a one-element tensor
-        collapses to a **scalar** via ``.item()`` while anything longer becomes a list, so a
-        shape-``(1,)`` tensor does not round-trip to a list.
+        collapses to a **scalar** via ``.item()`` while any other, empty included,
+        becomes a list, so a shape-``(1,)`` tensor does not round-trip to a list.
     """
     if isinstance(obj, torch.Tensor):
-        return obj.tolist() if obj.numel() > 1 else obj.item()
+        return obj.item() if obj.numel() == 1 else obj.tolist()
     try:
         import numpy as np
 

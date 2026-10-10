@@ -1,13 +1,12 @@
-import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
 from torchref.base.targets.chiral import chiral_math
+from torchref.config import get_int_dtype
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
-    StatEntry,
     stat,
 )
 
@@ -51,14 +50,12 @@ class ChiralTarget(GeometryTarget):
     def forward(self) -> torch.Tensor:
         """Summed chiral-volume NLL; 0.0 when there are no chiral centres."""
         xyz = self.model.xyz()
-        if "chiral" not in self.restraints.restraints:
-            return torch.tensor(0.0, device=xyz.device)
-        chiral_data = self.restraints.restraints["chiral"]
-        indices = chiral_data.get("indices")
-        if indices is None or len(indices) == 0:
-            return torch.tensor(0.0, device=xyz.device)
+        chiral_data = self._restraint_group("chiral")
+        if chiral_data is None:
+            return xyz.new_zeros(())
         return chiral_math(
-            xyz, indices,
+            xyz,
+            chiral_data["indices"],
             chiral_data["ideal_volumes"],
             chiral_data["sigmas"],
         )
@@ -80,17 +77,17 @@ class ChiralTarget(GeometryTarget):
         xyz = self.model.xyz()
         device = xyz.device
 
-        if "chiral" not in self.restraints.restraints:
+        chiral_data = self._restraint_group("chiral")
+        if chiral_data is None:
             return {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(
-                    0, 4
-                ),
-                "volumes": torch.tensor([], device=device),
-                "ideal_volumes": torch.tensor([], device=device),
-                "deviations": torch.tensor([], device=device),
+                "indices": torch.tensor(
+                    [], dtype=get_int_dtype(), device=device
+                ).reshape(0, 4),
+                "volumes": xyz.new_zeros(0),
+                "ideal_volumes": xyz.new_zeros(0),
+                "deviations": xyz.new_zeros(0),
             }
 
-        chiral_data = self.restraints.restraints["chiral"]
         indices = chiral_data["indices"]
         ideal_volumes = chiral_data["ideal_volumes"]
 
@@ -129,20 +126,16 @@ class ChiralTarget(GeometryTarget):
         }
 
     def stats(self) -> Dict[str, any]:
-        """Get chiral volume statistics."""
+        """Get chiral volume statistics; ``{}`` when there are no chiral centres."""
         xyz = self.model.xyz()
-        device = xyz.device
 
-        if "chiral" not in self.restraints.restraints:
+        chiral_data = self._restraint_group("chiral")
+        if chiral_data is None:
             return {}
 
-        chiral_data = self.restraints.restraints["chiral"]
         indices = chiral_data["indices"]
         ideal_volumes = chiral_data["ideal_volumes"]
         sigmas = chiral_data["sigmas"]
-
-        if len(indices) == 0:
-            return {}
 
         # Compute current volumes
         pos_center = xyz[indices[:, 0]]

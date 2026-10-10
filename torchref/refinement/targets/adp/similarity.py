@@ -1,13 +1,12 @@
-import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
 from torchref.base.targets.adp import adp_simu_math, adp_simu_aniso_math
+from torchref.config import get_int_dtype
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
-    StatEntry,
     stat,
 )
 
@@ -94,8 +93,9 @@ class ADPSimilarityTarget(ADPTarget):
         if chunks:
             cached = torch.cat(chunks, dim=0).contiguous()
         else:
-            cached = torch.empty(0, 2, dtype=torch.long,
-                                 device=self.model.xyz().device)
+            cached = torch.empty(
+                0, 2, dtype=get_int_dtype(), device=self.model.xyz().device
+            )
         self._simu_pair_indices_cache = cached
         return cached
 
@@ -115,8 +115,12 @@ class ADPSimilarityTarget(ADPTarget):
         return adp_simu_math(adp_t, pair_indices, self._simu_sigma)
 
     def stats(self) -> Dict[str, any]:
-        """Get SIMU restraint statistics."""
-        b_diffs = self.restraints.adp_b_differences()
+        """Get SIMU restraint statistics.
+
+        The ΔB figures and z-scores are of B_eq over the bonded pairs; on an
+        anisotropic model the deviatoric channel shows only in ``loss``.
+        """
+        b_diffs = self.restraints.adp_b_differences(self._b_values())
 
         if len(b_diffs) == 0:
             return {}

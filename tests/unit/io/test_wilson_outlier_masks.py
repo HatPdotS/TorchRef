@@ -16,9 +16,18 @@ outlier rate.
 import pytest
 import torch
 
+from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.io.datasets.reflection_data import ReflectionData
 
 CELL = (50.0, 60.0, 70.0, 90.0, 90.0, 90.0)
+
+
+def _held_out(data):
+    """The reflections a dataset keeps out of anything fitted: free and validation."""
+    held_out = ~data.rfree_flags.to(torch.bool)
+    if data.validation_flags is not None:
+        held_out = held_out | data.validation_flags.to(torch.bool)
+    return held_out
 
 
 def _synthetic(F, F_sigma, hkl=None, device="cpu"):
@@ -126,10 +135,10 @@ def test_planted_zingers_are_rejected():
 
 
 @pytest.mark.unit
-def test_absent_measurements_are_sanity_not_outliers():
+def test_absent_measurements_are_sanity_not_outliers(mtz_dir):
     """A row with no measurement is not an improbable observation, and counting
     it as one is what made the old report meaningless."""
-    data = ReflectionData(verbose=0).load_mtz("tests/files/mtz/6G9X.mtz")
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "6G9X.mtz"))
 
     absent = ~data.masks["sanity_F"]
     assert int(absent.sum()) > 20000, "6G9X carries a large absent population"
@@ -140,18 +149,74 @@ def test_absent_measurements_are_sanity_not_outliers():
 
 
 @pytest.mark.unit
-def test_intensity_path_keeps_french_wilsons_guard_under_its_own_key():
-    data = ReflectionData(verbose=0).load_mtz("tests/files/mtz/4BX9.mtz")
+def test_intensity_path_keeps_french_wilsons_guard_under_its_own_key(mtz_dir):
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "4BX9.mtz"))
 
     assert data.I is not None, "4BX9 should load via the intensity path"
     assert ReflectionData.FRENCH_WILSON_MASK_KEY in data.masks
-    torch.testing.assert_close(
-        data.masks[ReflectionData.FRENCH_WILSON_MASK_KEY].sum(),
-        data._FrenchWilson.valid_mask.sum(),
+    _, _, keep = french_wilson_auto(
+        data.I,
+        data.I_sigma,
+        data.hkl,
+        data.resolution,
+        data.spacegroup,
+        exclude_from_fit=_held_out(data),
     )
+    torch.testing.assert_close(data.masks[ReflectionData.FRENCH_WILSON_MASK_KEY], keep)
     # And the outlier test still ran on top of it, rather than being skipped
     # because a mask was already present.
     assert ReflectionData.WILSON_MASK_KEY in data.masks
+
+
+@pytest.mark.unit
+def test_french_wilson_is_row_aligned_after_canonicalization(mtz_dir):
+    """Converting the loaded intensities again reproduces the loaded amplitudes.
+
+    6G9X is stored off the CCP4 ASU order, so ``load`` reorders its rows after
+    French-Wilson has run; F, sigma_F and the guard mask must move with them.
+    """
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "6G9X.mtz"))
+    assert data.I is not None, "6G9X should load via the intensity path"
+
+    F, sigma_F, keep = french_wilson_auto(
+        data.I,
+        data.I_sigma,
+        data.hkl,
+        data.resolution,
+        data.spacegroup,
+        exclude_from_fit=_held_out(data),
+    )
+
+    torch.testing.assert_close(data.masks[ReflectionData.FRENCH_WILSON_MASK_KEY], keep)
+    torch.testing.assert_close(F[keep], data.F[keep])
+    torch.testing.assert_close(sigma_F[keep], data.F_sigma[keep])
+
+
+@pytest.mark.unit
+def test_french_wilson_prior_leaves_out_a_generated_test_set(mtz_dir):
+    """A test set drawn after loading is still kept out of the prior.
+
+    Generated flags only exist once the rows are canonical, after the first
+    conversion; the amplitudes must be the ones converted without them.
+    """
+    source = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    data_dict = {
+        "HKL": source.hkl.cpu().numpy(),
+        "I": source.I.cpu().numpy(),
+        "SIGI": source.I_sigma.cpu().numpy(),
+        "I_col": "I",
+    }
+    cell = source.cell.data.tolist()
+    data = ReflectionData(verbose=0).load(lambda: (data_dict, cell, source.spacegroup))
+    assert data.rfree_source.startswith("Generated")
+
+    args = (data.I, data.I_sigma, data.hkl, data.resolution, data.spacegroup)
+    F, sigma_F, keep = french_wilson_auto(*args, exclude_from_fit=_held_out(data))
+    torch.testing.assert_close(data.masks[ReflectionData.FRENCH_WILSON_MASK_KEY], keep)
+    torch.testing.assert_close(F[keep], data.F[keep])
+    torch.testing.assert_close(sigma_F[keep], data.F_sigma[keep])
+    F_all, _, _ = french_wilson_auto(*args)
+    assert not torch.equal(F_all[keep], data.F[keep])
 
 
 # =============================================================================
@@ -164,11 +229,11 @@ def test_intensity_path_keeps_french_wilsons_guard_under_its_own_key():
     "name",
     ["1DAW", "2DQ6", "3A5V", "3E98", "3GR5", "3K7M", "3VRJ", "4BX9", "5BOV", "6G9X"],
 )
-def test_deposited_structures_lose_almost_nothing(name, pdb_dir):
+def test_deposited_structures_lose_almost_nothing(name, mtz_dir):
     """Deposited data has already been through processing and merging; a
     criterion that rejects percent-level populations of it is mis-calibrated,
     not perceptive."""
-    data = ReflectionData(verbose=0).load_mtz(f"tests/files/mtz/{name}.mtz")
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / f"{name}.mtz"))
 
     measured = int(data.masks["sanity_F"].sum())
     rejected = int((~data.masks[ReflectionData.WILSON_MASK_KEY]).sum())
@@ -177,7 +242,7 @@ def test_deposited_structures_lose_almost_nothing(name, pdb_dir):
 
 
 @pytest.mark.unit
-def test_flagged_reflections_show_no_directional_bias():
+def test_flagged_reflections_show_no_directional_bias(mtz_dir):
     """The regression that catches a lost anisotropy correction.
 
     1DAW diffracts about four times more strongly along ``h*`` than ``l*``. A
@@ -185,7 +250,7 @@ def test_flagged_reflections_show_no_directional_bias():
     the strong one, so the flagged set piles up along ``h*`` -- 52 of 56 with
     mean ``|h|`` nearly twice the dataset's, before the correction existed.
     """
-    data = ReflectionData(verbose=0).load_mtz("tests/files/mtz/1DAW.mtz")
+    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
 
     _, flagged = _plant_zingers(data, n=400, seed=13)
     assert len(flagged) > 100, "the planted population must be found first"
@@ -229,7 +294,6 @@ def test_refuses_to_fall_back_when_everything_is_rejected(monkeypatch):
             "n_strong": n,
             "n_weak": 0,
             "log_p_threshold": 0.0,
-            "h_min": 0.0,
             "U": torch.zeros(6),
         }
 
@@ -255,17 +319,6 @@ def test_french_wilson_guard_refuses_an_all_false_mask():
 
 
 @pytest.mark.unit
-def test_suspicious_sigma_is_no_longer_run_at_load():
-    hkl, F, F_sigma = _wilson_grid(half_width=8)
-    data = _synthetic(F, F_sigma, hkl=hkl)
-    assert "flagged_sigma" not in data.masks
-
-    # Still available for diagnostics, and still writes its own key.
-    data.flag_suspicious_sigma()
-    assert "flagged_sigma" in data.masks
-
-
-@pytest.mark.unit
 def test_too_few_reflections_are_left_alone():
     """Wilson statistics cannot be estimated from a handful of reflections, and
     guessing at them would reject real data."""
@@ -276,21 +329,18 @@ def test_too_few_reflections_are_left_alone():
 
 
 @pytest.mark.unit
-def test_french_wilson_records_its_own_mask_full_size():
-    from torchref.base.french_wilson import FrenchWilson
-
+def test_french_wilson_returns_its_own_mask_full_size():
     hkl = torch.tensor([[1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]])
-    fw = FrenchWilson(hkl, torch.tensor(CELL), "P 1", verbose=0)
-    assert fw.valid_mask is None
-
+    d = CELL[0] / hkl[:, 0].float()
     I = torch.tensor([100.0, 50.0, -5.0, float("nan")])
     sigma_I = torch.tensor([10.0, 8.0, 7.0, 5.0])
-    fw(I, sigma_I)
 
-    assert fw.valid_mask is not None
-    assert fw.valid_mask.shape == I.shape
-    assert fw.valid_mask.dtype == torch.bool
+    F, sigma_F, keep = french_wilson_auto(I, sigma_I, hkl, d, "P 1")
+
+    assert keep.shape == I.shape
+    assert keep.dtype == torch.bool
     # Well-measured reflections survive; the NaN row never converted, so it is
     # not kept on the strength of a comparison that was never made.
-    assert fw.valid_mask[:2].all()
-    assert not bool(fw.valid_mask[3])
+    assert keep[:2].all()
+    assert not bool(keep[3])
+    assert torch.isnan(F[3]) and torch.isnan(sigma_F[3])

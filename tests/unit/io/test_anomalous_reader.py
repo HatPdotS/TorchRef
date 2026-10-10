@@ -15,7 +15,6 @@ import pytest
 import reciprocalspaceship as rs
 import torch
 
-from torchref.base.french_wilson import is_centric_from_hkl
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model.model_ft import ModelFT
 
@@ -77,16 +76,55 @@ def test_anomalous_opt_out_forces_merged(anomalous_two_column_mtz, mtz_dir):
     assert len(forced.hkl) > n_merged
 
 
+def test_a_pinned_merged_column_loads_merged_data(mtz_dir, tmp_path):
+    """Pinning the merged FP beside I(+)/I(-) loads FP's merged rows; without the
+    pin the intensity pairs are still stacked."""
+    ds = rs.read_mtz(str(mtz_dir / "1DAW.mtz"))
+    path = str(tmp_path / "fp_beside_anomalous_i.mtz")
+    ds.unstack_anomalous(columns=["I", "SIGI"]).write_mtz(path)
+    pins = {"F": "FP", "SIGF": "SIGFP"}
+    plain = ReflectionData(verbose=0)
+    plain.load_mtz(str(mtz_dir / "1DAW.mtz"), column_names=pins)
+
+    pinned = ReflectionData(verbose=0)
+    pinned.load_mtz(path, column_names=pins)
+    unpinned = ReflectionData(verbose=0)
+    unpinned.load_mtz(path)
+
+    assert pinned.friedel_merged is True
+    assert len(pinned.hkl) == len(ds) == 23356
+    torch.testing.assert_close(pinned.F, plain.F, rtol=0, atol=0)
+    assert unpinned.friedel_merged is False
+    assert len(unpinned.hkl) > len(ds)
+
+
 def test_centrics_not_duplicated(anomalous_two_column_mtz):
     path, _ = anomalous_two_column_mtz
     d = ReflectionData(verbose=0)
     d.load_mtz(path)
-    centric = is_centric_from_hkl(d.hkl, d.spacegroup)
+    centric = d.spacegroup.is_centric(d.hkl)
     # Centric reflections obey Friedel's law and must appear exactly once each.
     canon = [tuple(h) for h in d.hkl[centric].tolist()]
     assert len(canon) == len(set(canon))
     # ... and are never flagged as conjugated mates.
     assert not bool((d.friedel_flags & centric).any())
+
+
+def test_validate_hkl_matches_bijvoet_mates_by_signed_index(anomalous_two_column_mtz):
+    """Mates share a canonical HKL, so aligning on it alone is refused; aligning on
+    the signed indices keeps each mate's own amplitude."""
+    path, _ = anomalous_two_column_mtz
+    d = ReflectionData(verbose=0)
+    d.load_mtz(path)
+    d.F[d.friedel_flags] *= 0.5
+    F, signed = d.F.clone(), d.hkl_anomalous.clone()
+
+    with pytest.raises(ValueError, match="identity_hkl"):
+        d.validate_hkl(d.hkl.clone())
+
+    d.validate_hkl(d.hkl.clone(), identity_hkl=signed.clone())
+    assert torch.equal(d.F, F)
+    assert torch.equal(d.hkl_anomalous, signed)
 
 
 def _mixed_partition_groups(d, include_validation=False):
@@ -127,8 +165,12 @@ def test_generated_rfree_shared_across_mates(anomalous_two_column_mtz):
     assert d.friedel_merged is False
     assert bool(d.friedel_flags.any())
 
-    d.regenerate_rfree_flags(force=True, seed=0)
-    assert d.rfree_source == "Generated (resolution-binned, ASU-grouped)"
+    d.generate_rfree_flags(force=True, seed=0)
+    # The seed is part of the provenance: "generated" without it names a draw
+    # nobody can reproduce.
+    assert d.rfree_source == (
+        "Generated (resolution-binned, ASU-grouped, seed 0)"
+    )
     assert bool((d.rfree_flags == 0).any())  # a free set actually exists
     assert _mixed_partition_groups(d) == []
 
@@ -138,7 +180,7 @@ def test_generated_validation_set_shared_across_mates(anomalous_two_column_mtz):
     path, _ = anomalous_two_column_mtz
     d = ReflectionData(verbose=0)
     d.load_mtz(path)
-    d.regenerate_rfree_flags(force=True, seed=0)
+    d.generate_rfree_flags(force=True, seed=0)
     d.generate_validation_set(val_fraction_of_free=0.5, seed=0)
 
     assert bool(d.validation_flags.any())

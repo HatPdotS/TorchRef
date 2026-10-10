@@ -10,8 +10,9 @@ Test Categories
 
 - ``tests/unit/`` — fast, isolated, mock data, no file I/O. Mirrors the package
   layout (``model/``, ``io/``, ``refinement/``, ``scaling/``, ``symmetry/``,
-  ``restraints/``, ``structure_factor/``, ``scattering/``, ``maps/``, ``base/``,
-  ``utils/``, ``experimental/``).
+  ``topology/``, ``monomer/``, ``structure_factor/``, ``scattering/``, ``maps/``,
+  ``base/``, ``utils/``, ``cli/``, ``alignment/``, ``frf_separate/``,
+  ``experimental/``).
 - ``tests/integration/`` — real file I/O and complete pipelines.
 - ``tests/functional/`` — multi-component workflows on pre-loaded objects.
 - ``tests/files/`` — test data: ``cif/``, ``pdb/``, ``mtz/``, ``cif_sf/``.
@@ -39,14 +40,20 @@ PDB ID  d_min (Å)   Space group
 ``tests/files/`` also holds partial sets — ``1AK5_with_H.pdb`` + ``1AK5.mtz``
 (no CIF), ``7L84.pdb`` + ``7L84-sf.cif`` (no MTZ), ``test_ihm_ensemble.cif`` —
 so a test that globs one directory and assumes a matching file in another will
-fail on those. Use ``sample_structure_pair`` / ``all_test_structures``.
+fail on those. Use ``sample_structure_pair`` for the quick reference crystal,
+or ``compatibility_structure_pair`` for named extended cases. The latter carries
+the ``slow`` marker and selects paths without loading objects.
+
+``tests/helpers/structure_cases.py`` assigns bundled CIF, MTZ and SF-CIF files to
+the quick or extended compatibility panel. Additional files require an explicit
+assignment; directory growth does not silently expand numerical test work.
 
 Running Tests
 -------------
 
 .. code-block:: bash
 
-    pytest -m "not gpu and not slow" -v     # recommended during development
+    pytest tests/ -v                        # everything this host supports; slow tests need --run-slow
     pytest tests/unit -v                    # by category
     pytest tests/unit/model/ -v             # by module
     pytest tests/unit/model/test_model.py::TestModelInitialization -v
@@ -69,7 +76,7 @@ Markers
 - ``@pytest.mark.slow`` — long-running
 - ``@pytest.mark.openmm`` — needs OpenMM (the ``[amber]`` extra)
 - ``@pytest.mark.amber`` — needs OpenMM **and** AmberTools (``antechamber`` /
-  ``tleap`` on ``PATH``)
+  ``parmchk2`` on ``PATH``)
 
 Skipped by Default
 ~~~~~~~~~~~~~~~~~~
@@ -94,16 +101,16 @@ The Amber stack, if you want it:
 .. code-block:: bash
 
     pip install -e ".[amber]"                  # OpenMM + Amber helpers
-    conda install -c conda-forge ambertools     # antechamber / tleap
+    conda install -c conda-forge ambertools     # antechamber / parmchk2
 
 Fixtures
 --------
 
-Almost everything lives in the root ``tests/conftest.py`` and is therefore
-available from every category — the ``integration/`` and ``functional/``
-conftests are docstrings only. Mock data is the exception:
-``tests/unit/conftest.py``. Read those two files for the authoritative list; the
-ones you will reach for most:
+Reusable setup lives in ``tests/fixtures/``. The root ``tests/conftest.py``
+registers shared plugins and owns test-selection hooks. The unit conftest exposes
+synthetic numerical factories; the functional conftest exposes the module-scoped,
+read-only Fourier-model fixture. See ``tests/fixtures/README.md`` for ownership
+and mutation rules. Common fixtures include:
 
 - Paths (session-scoped): ``tests_root``, ``project_root``, ``test_files_dir``,
   the per-format ``cif_dir``, ``mtz_dir``, ``pdb_dir``, ``cif_sf_dir``, and
@@ -118,9 +125,11 @@ ones you will reach for most:
   ``mock_aniso_u``, ``mock_scattering_factors``, ``mock_weights``.
 - Real files: ``sample_cif_file``, ``sample_pdb_file``, ``sample_mtz_file``,
   ``sample_structure_factor_cif``, ``sample_structure_pair`` (matched model +
-  data), ``all_structure_pairs``, ``all_test_structures``.
-- Loaded objects: ``loaded_model``, ``loaded_reflection_data``,
-  ``model_and_data``, ``initialized_scaler``.
+  data), ``compatibility_structure_pair`` (one named slow crystal).
+- Loaded objects: ``loaded_model``, ``loaded_model_ft``, ``loaded_reflection_data``,
+  ``model_and_data``, ``initialized_scaler``. ``compatibility_model`` and
+  ``compatibility_model_and_data`` load only the current slow case and remain
+  function-scoped to isolate mutations.
 
 The mock-data fixtures yield a *factory* taking ``n_atoms`` / ``n_reflections``
 and ``seed``; ``mock_cell`` and ``mock_cell_triclinic`` yield the tensor
@@ -159,8 +168,8 @@ free of file I/O:
         def test_load_cif(self, sample_cif_file):
             model = Model()
             model.load_cif(str(sample_cif_file))
-            assert model.initialized
-            assert len(model.pdb) > 0
+            assert model.ctx.initialized
+            assert model.n_atoms > 0
 
 Cover the edge cases that actually bite here: empty selections, degenerate
 geometry (which is where gradients go NaN), and non-default dtype/device.
@@ -169,8 +178,8 @@ CI
 --
 
 ``tox.ini`` defines the environments: ``py310``–``py313`` against current
-dependencies, plus boundary environments pinning NumPy, Numba, PyTorch, Pandas
-and Gemmi versions and a ``lowerbounds`` pair at the declared minimums. Refer to
+dependencies, plus boundary environments pinning NumPy, PyTorch, Pandas and
+Gemmi versions and a ``lowerbounds`` pair at the declared minimums. Refer to
 the file itself for the authoritative list.
 
 .. code-block:: bash
@@ -182,10 +191,10 @@ the file itself for the authoritative list.
 Troubleshooting
 ---------------
 
-**Tests not found** — run from the repository root, where
-``[tool.pytest.ini_options]`` in ``pyproject.toml`` sets ``testpaths``, or from
-inside ``tests/``, where ``tests/pytest.ini`` takes over. The two are kept in
-step deliberately.
+**Tests not found** — run from the repository root. A bare ``pytest`` there
+reads ``[tool.pytest.ini_options]`` in ``pyproject.toml``, which sets
+``testpaths``; any path under ``tests/`` (``pytest tests/unit``) selects
+``tests/pytest.ini``. The two are kept in step deliberately.
 
 **GPU tests skipped** — the host has no CUDA/MPS device. The marks are gated on
 real availability, not on a flag, and a ``cuda``-marked test also skips on an

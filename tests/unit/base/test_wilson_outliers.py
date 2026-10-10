@@ -1,11 +1,10 @@
-"""Wilson-probability outlier rejection.
+"""French-Wilson's statistic and its keep rule.
 
 ``h = I/sigma - sigma/Sigma`` is the standardized argument of the Wilson prior
-convolved with Gaussian measurement error, so French-Wilson's ``h >= h_min``
-guard is a tail-probability cut on the observation. These tests lock the
-statistic to its historical inline form, pin the behaviour that matters
-(negative intensities explainable as noise are *kept*), and document the one
-thing the amplitude-only path cannot do.
+convolved with Gaussian measurement error. These tests lock the statistic to its
+inline form, pin that an intensity is rejected only when it is too negative for
+its own sigma -- never because the prior is small -- and document the one thing
+the amplitude-only path cannot do.
 """
 
 import pytest
@@ -63,7 +62,7 @@ def test_negative_intensities_within_noise_are_kept():
     #                 mildly negative, well within noise ... then absurd
     I = torch.tensor([-5.0, -15.0, -25.0, -5000.0])
 
-    keep = french_wilson_valid_mask(I, sigma_I, Sigma, h_min=-4.0)
+    keep = french_wilson_valid_mask(I, sigma_I, Sigma)
 
     # The first three are ordinary weak measurements that happen to come out
     # negative; only the last is too negative for any Wilson reflection.
@@ -71,16 +70,22 @@ def test_negative_intensities_within_noise_are_kept():
 
 
 @pytest.mark.unit
-def test_inflated_sigma_drives_h_down():
-    """The -sigma/Sigma term is what folds sigma and the shell mean together."""
+def test_a_measurement_without_information_gets_the_prior():
+    """The -sigma/Sigma term folds sigma and the prior together; a sigma that
+    dwarfs the prior leaves exactly the prior's amplitude, not a rejection."""
     I = torch.tensor([0.0, 0.0])
     Sigma = torch.tensor([100.0, 100.0])
-    sigma_I = torch.tensor([10.0, 1000.0])  # second sigma is nonsense
+    sigma_I = torch.tensor([10.0, 1.0e4])  # second sigma carries no information
 
     h = french_wilson_h(I, sigma_I, Sigma)
     assert h[0] > h[1]
-    keep = french_wilson_valid_mask(I, sigma_I, Sigma, h_min=-4.0)
-    assert keep.tolist() == [True, False]
+    F, sigma_F, keep = french_wilson(I, sigma_I, Sigma)
+    assert keep.tolist() == [True, True]
+    # Mean and standard deviation of sqrt(J) for J ~ Exp(Sigma).
+    torch.testing.assert_close(F[1], torch.tensor(0.886227 * 10.0), rtol=1e-3, atol=0)
+    torch.testing.assert_close(
+        sigma_F[1], torch.tensor(0.463251 * 10.0), rtol=1e-3, atol=0
+    )
 
 
 @pytest.mark.unit
@@ -89,7 +94,7 @@ def test_valid_mask_rejects_rather_than_propagating_non_finite():
     sigma_I = torch.tensor([1.0, 0.0, 1.0])  # zero sigma -> h is not finite
     Sigma = torch.tensor([50.0, 50.0, 50.0])
 
-    keep = french_wilson_valid_mask(I, sigma_I, Sigma, h_min=-4.0)
+    keep = french_wilson_valid_mask(I, sigma_I, Sigma)
     assert keep.tolist() == [True, False, False]
 
 

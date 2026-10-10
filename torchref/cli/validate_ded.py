@@ -1,8 +1,8 @@
 #!/usr/bin/env python3 -u
-"""Validate difference electron density (DED) by correlating DFo and DFc maps.
+"""Validate difference electron density (DED) by correlating dFo and dFc maps.
 
 Takes separate dark and light MTZ files, computes weighted difference amplitudes
-internally, then compares the weighted DFo and DFcalc maps using dark-state phases.
+internally, then compares the weighted dFo and dFcalc maps using dark-state phases.
 Phenix-style atom selections give regional correlations, e.g. around a ligand site.
 
 Examples
@@ -24,25 +24,34 @@ Or programmatically::
 import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from torchref.cli._common import (
-    add_dual_model_args,
+    add_ded_weight_args,
     add_dmin_arg,
+    add_dual_model_args,
     add_general_args,
     add_outdir_arg,
-
     build_dual_column_names,
     configure_unbuffered_output,
+    difference_config_from_args,
+    intensity_difference,
     load_model,
     load_reflection_data,
-    register_timing,
     parse_device_str,
+    register_timing,
     validate_cif_files,
     validate_files,
+)
+from torchref.config import get_int_dtype
+from torchref.maps.ded_weights import (
+    DEFAULT_SCHEME,
+    DedWeightFallbackWarning,
+    all_ded_weights,
 )
 from torchref.utils.serialization import convert_to_serializable
 
@@ -63,6 +72,8 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
     """
     from torchref.base.coordinates.transforms_torch import (
         get_fractional_matrix,
+    )
+    from torchref.base.coordinates.transforms_torch import (
         get_inv_fractional_matrix_torch as get_inverse_fractional_matrix,
     )
     from torchref.base.electron_density.solvent_mask import add_to_solvent_mask
@@ -80,7 +91,7 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
         inv_frac_matrix=inv_frac,
     )
 
-    mask = torch.zeros(grid_shape, dtype=torch.int32, device=device)
+    mask = torch.zeros(grid_shape, dtype=get_int_dtype(), device=device)
     mask = add_to_solvent_mask(
         surrounding_coords,
         voxel_indices,
@@ -195,11 +206,10 @@ def setup_ded_context(
     col_light=None,
     n_bins=20,
     verbose=0,
+    ded_weight=DEFAULT_SCHEME,
+    difference_config=None,
 ):
-    """Load reflection data and prepare shared state for DED validation.
-
-    This sets up the observation side (weighted DFo, P1 expansion, resolution
-    bins, free/work masks) that is independent of any particular model.
+    """Load reflection data and prepare the model-independent side of DED validation.
 
     Parameters
     ----------
@@ -208,29 +218,31 @@ def setup_ded_context(
     dmin : float, optional
         High-resolution cutoff in Angstroms.
     device : torch.device, optional
-        Compute device. Defaults to CPU.
+        Compute device; defaults to :func:`torchref.config.get_default_device`.
     col_dark, col_light : dict, optional
         Column name overrides for data loading.
     n_bins : int
         Number of resolution bins for reciprocal-space CC (default 20).
     verbose : int
         Verbosity level.
+    ded_weight : str
+        Scheme in :data:`torchref.maps.ded_weights.SCHEMES` behind ``weights``.
+    difference_config : DifferencePowerConfig, optional
+        Fixes the difference-power exponent ``gamma``; None fits it.
 
     Returns
     -------
     dict
-        Context dictionary with keys: device, collection, data_dark,
-        data_light, hkl_all, hkl, refl_mask, w_dfo, weights, d_spacing,
-        cell_t, cell_np, sg_name, d_min, gridsize, hkl_p1, orig_idx,
-        phase_shifts, w_dfo_p1, weights_p1, work_mask, free_mask.
+        device, collection, data_dark, data_light, hkl_all, hkl, refl_mask, w_dfo, dfo,
+        weights, dfo_p1, weights_by_scheme, ded_weight, ded_weight_applied, d_spacing,
+        ded_weight_diagnostics, cell_t, cell_np, sg_name, d_min, gridsize, hkl_p1,
+        orig_idx, phase_shifts, w_dfo_p1, weights_p1, work_mask, free_mask, n_bins.
     """
     import gemmi
 
     from torchref import DatasetCollection
-    from torchref.symmetry.grid_utils import calculate_optimal_grid_size
-    from torchref.symmetry.reciprocal_symmetry import expand_hkl
-
-    from torchref.config import normalize_device
+    from torchref.config import get_float_dtype, normalize_device
+    from torchref.symmetry import Cell, SpaceGroup
 
     device = normalize_device(device)
 
@@ -242,22 +254,17 @@ def setup_ded_context(
         str(light_sf), device=device, column_names=col_light, verbose=0
     )
     if dmin is not None:
-        data_dark.cut_res(highres=dmin)
-        data_light.cut_res(highres=dmin)
+        data_dark.filter_by_resolution(d_min=dmin)
+        data_light.filter_by_resolution(d_min=dmin)
 
     collection = DatasetCollection(device=str(device))
     collection.add_dataset("dark", data_dark)
     collection.add_dataset("light", data_light)
     collection.scale()
+    data_dark, data_light = collection["dark"], collection["light"]
 
     if verbose >= 1:
-        print(f"Scale parameters after optimization:")
-        for name, ds in collection:
-            if hasattr(ds, "log_scale") and ds.log_scale is not None:
-                print(
-                    f"  {name}: log_scale={ds.log_scale.item():.6f} "
-                    f"(scale={torch.exp(ds.log_scale).item():.6f})"
-                )
+        print("Inter-dataset scaling:", collection.scaling_metrics)
 
     # Extract matched reflections
     hkl_all = data_dark.hkl
@@ -286,11 +293,26 @@ def setup_ded_context(
     else:
         free_mask = work_mask = None
 
-    # Weighted difference Fo
+    # Difference Fo and the registered weights; the selected scheme is the headline.
     dfo = F_light - F_dark
-    sig_diff = (sig_dark**2 + sig_light**2) ** 0.5
-    weights = 1 / sig_diff**2
-    weights = weights / weights.mean()
+    sig_diff = torch.sqrt(sig_dark**2 + sig_light**2)
+    delta_I, sig_delta_I = intensity_difference(data_dark, data_light, refl_mask)
+    all_w = all_ded_weights(
+        delta_obs=dfo,
+        sigma_diff=sig_diff,
+        delta_intensity=delta_I,
+        sigma_delta_intensity=sig_delta_I,
+        hkl=hkl,
+        cell=data_dark.cell,
+        spacegroup=data_dark.spacegroup,
+        f_dark=F_dark,
+        gamma=difference_config.gamma if difference_config is not None else None,
+        sigma_scale=(
+            difference_config.sigma_scale if difference_config is not None else 1.0
+        ),
+    )
+    selected = all_w[ded_weight]
+    weights = selected.weights
     w_dfo = dfo * weights
 
     # Cell, spacegroup, d-spacings
@@ -305,15 +327,19 @@ def setup_ded_context(
     )
     if dmin is None:
         dmin = float(d_spacings.min())
-    d_spacing = torch.tensor(d_spacings, dtype=torch.float32, device=device)
+    d_spacing = torch.tensor(d_spacings, dtype=get_float_dtype(), device=device)
 
     # P1 expansion and grid
-    gridsize = calculate_optimal_grid_size(cell_t, dmin, sg_name)
-    hkl_p1, orig_idx, phase_shifts = expand_hkl(
-        hkl, sg_name, include_friedel=False, remove_absences=True
+    sg = SpaceGroup(sg_name, device=device)
+    gridsize = sg.optimal_grid_size(Cell(cell_t, device=device), dmin)
+    hkl_p1, orig_idx, phase_shifts = sg.expand_hkl(
+        hkl, include_friedel=False, remove_absences=True
     )
     w_dfo_p1 = w_dfo[orig_idx]
     weights_p1 = weights[orig_idx]
+    weights_by_scheme = {
+        name: (w.weights, w.weights[orig_idx]) for name, w in all_w.items()
+    }
 
     if verbose >= 1:
         print(f"Matched reflections: {len(hkl)}")
@@ -331,6 +357,12 @@ def setup_ded_context(
         "refl_mask": refl_mask,
         "w_dfo": w_dfo,
         "weights": weights,
+        "dfo": dfo,
+        "dfo_p1": dfo[orig_idx],
+        "weights_by_scheme": weights_by_scheme,
+        "ded_weight": ded_weight,
+        "ded_weight_applied": selected.applied,
+        "ded_weight_diagnostics": dict(all_w["q"].diagnostics),
         "d_spacing": d_spacing,
         "cell_t": cell_t,
         "cell_np": cell_np,
@@ -383,15 +415,15 @@ def compute_ded_maps(
     Returns
     -------
     dict
-        Keys: map_dfo, map_dfc, mask_dict, realspace_correlation,
+        Keys: map_dfo, map_dfc, mask_dict, by_weight, realspace_correlation,
         resolution_bins, reciprocal_cc_overall, reciprocal_cc_work,
         reciprocal_cc_free, w_delta_fcalc_asu.
     """
-    from torchref.model.model_collection import ModelCollection
+    from torchref.base.fourier.grid import get_real_grid
     from torchref.cli.collection_difference_refine import (
         setup_scaler as setup_collection_scaler,
     )
-    from torchref.base.fourier.grid import get_real_grid
+    from torchref.model.model_collection import ModelCollection
 
     device = ctx["device"]
 
@@ -424,12 +456,12 @@ def compute_ded_maps(
     w_delta_fcalc = delta_fcalc * ctx["weights_p1"]
     phi_dark_p1 = torch.angle(fcalc_dark_p1)
 
-    # ASU-level weighted DFcalc
+    # ASU-level weighted dFcalc
     delta_fcalc_asu = fcalc_mixed_asu.abs() - fcalc_dark_asu.abs()
     w_delta_fcalc_asu = delta_fcalc_asu * ctx["weights"]
 
     if verbose >= 1:
-        print(f"  |DFcalc| mean: {delta_fcalc.abs().mean():.3f}")
+        print(f"  |dFcalc| mean: {delta_fcalc.abs().mean():.3f}")
         print(f"  |WDFcalc| mean: {w_delta_fcalc.abs().mean():.3f}")
 
     # Compute maps
@@ -460,7 +492,6 @@ def compute_ded_maps(
 
         real_space_grid = get_real_grid(
             ctx["cell_t"],
-            max_res=ctx["d_min"],
             gridsize=torch.tensor(ctx["gridsize"]),
             device=device,
         )
@@ -531,10 +562,48 @@ def compute_ded_maps(
         if cc_work is not None:
             print(f"  Work CC = {cc_work:.4f}, Free CC = {cc_free:.4f}")
 
+    # Every registered scheme on the same coefficients, for side-by-side reporting.
+    by_weight = {}
+    for name, (w_asu, w_p1) in ctx.get("weights_by_scheme", {}).items():
+        with torch.no_grad():
+            m_o = compute_map_from_coefficients(
+                ctx["dfo_p1"] * w_p1, phi_dark_p1, ctx["hkl_p1"], ctx["gridsize"]
+            )
+            m_c = compute_map_from_coefficients(
+                delta_fcalc * w_p1, phi_dark_p1, ctx["hkl_p1"], ctx["gridsize"]
+            )
+        entry = {
+            "realspace_correlation": {
+                mname: round(float(compute_correlation(m_o, m_c, mm)), 4)
+                for mname, mm in mask_dict.items()
+            }
+        }
+        wo, wc = ctx["dfo"] * w_asu, delta_fcalc_asu * w_asu
+        entry["reciprocal_cc_overall"] = round(
+            torch.corrcoef(torch.stack([wo, wc]))[0, 1].item(), 4
+        )
+        if free_mask is not None and free_mask.sum() > 10:
+            entry["reciprocal_cc_work"] = round(
+                torch.corrcoef(torch.stack([wo[work_mask], wc[work_mask]]))[
+                    0, 1
+                ].item(),
+                4,
+            )
+            entry["reciprocal_cc_free"] = round(
+                torch.corrcoef(torch.stack([wo[free_mask], wc[free_mask]]))[
+                    0, 1
+                ].item(),
+                4,
+            )
+        else:
+            entry["reciprocal_cc_work"] = entry["reciprocal_cc_free"] = None
+        by_weight[name] = entry
+
     return {
         "map_dfo": map_dfo,
         "map_dfc": map_dfc,
         "mask_dict": mask_dict,
+        "by_weight": by_weight,
         "realspace_correlation": rs_corr,
         "resolution_bins": bin_results,
         "reciprocal_cc_overall": round(cc_overall, 4),
@@ -551,11 +620,13 @@ def compute_ded_maps(
 
 def run_validation(args):
     """Run the DED validation pipeline."""
-    from torchref.cli.collection_difference_refine import compute_rfactors
-    from torchref.model.model_collection import ModelCollection
+    from torchref.cli.collection_difference_refine import (
+        compute_rfactors,
+    )
     from torchref.cli.collection_difference_refine import (
         setup_scaler as setup_collection_scaler,
     )
+    from torchref.model.model_collection import ModelCollection
 
     device = parse_device_str(args.device)
     outdir = Path(args.outdir)
@@ -570,16 +641,27 @@ def run_validation(args):
         print(f"  Light SF:  {args.light_structure_factor}")
 
     col_dark, col_light = build_dual_column_names(args)
-    ctx = setup_ded_context(
-        args.dark_structure_factor,
-        args.light_structure_factor,
-        dmin=args.dmin,
-        device=device,
-        col_dark=col_dark,
-        col_light=col_light,
-        n_bins=args.n_bins,
-        verbose=args.verbose,
-    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DedWeightFallbackWarning)
+        ctx = setup_ded_context(
+            args.dark_structure_factor,
+            args.light_structure_factor,
+            dmin=args.dmin,
+            device=device,
+            col_dark=col_dark,
+            col_light=col_light,
+            n_bins=args.n_bins,
+            verbose=args.verbose,
+            ded_weight=args.ded_weight,
+            difference_config=difference_config_from_args(args),
+        )
+    fallback_messages = [
+        str(w.message)
+        for w in caught
+        if issubclass(w.category, DedWeightFallbackWarning)
+    ]
+    for message in fallback_messages:
+        print(f"WARNING: {message}")
     d_min = ctx["d_min"]
 
     # Load models
@@ -594,8 +676,8 @@ def run_validation(args):
     )
 
     if args.verbose >= 1:
-        print(f"  Dark model: {len(model_dark.pdb)} atoms")
-        print(f"  Light model: {len(model_light.pdb)} atoms")
+        print(f"  Dark model: {model_dark.n_atoms} atoms")
+        print(f"  Light model: {model_light.n_atoms} atoms")
         print(f"  Fraction: {args.fraction}")
 
     # R-factors (verbose only, before DED computation)
@@ -638,9 +720,31 @@ def run_validation(args):
             "light_model": str(args.light_model),
             "fraction": args.fraction,
             "selection": args.selection,
+            # Mask choice changes which density enters the correlation, so record it
+            # alongside the score for reproducibility.
+            "mask_source": args.mask_source,
             "mask_radius": args.mask_radius,
             "dmin": d_min,
         },
+        "weights": {
+            "requested": ctx["ded_weight"],
+            "applied": ctx["ded_weight_applied"],
+            **{
+                k: ctx["ded_weight_diagnostics"].get(k)
+                for k in (
+                    "source",
+                    "gamma",
+                    "gamma_fitted",
+                    "sigma_scale",
+                    "sigma_scale_fitted",
+                    "sigma_scale_fallback",
+                    "centric_factor",
+                    "snr_floor",
+                    "fallback_reason",
+                )
+            },
+        },
+        "by_weight": result["by_weight"],
         "realspace_correlation": result["realspace_correlation"],
         "reciprocal_cc_overall": result["reciprocal_cc_overall"],
         "reciprocal_cc_work": result["reciprocal_cc_work"],
@@ -689,10 +793,25 @@ def run_validation(args):
     # Summary
     if args.verbose >= 1:
         print(f"\n{'=' * 70}")
-        print("Summary:")
+        print(
+            f"Summary (headline weights: {ctx['ded_weight']}, "
+            f"applied: {ctx['ded_weight_applied']}):"
+        )
         for name, corr in result["realspace_correlation"].items():
             print(f"  {name}: CC = {corr['cc']:.4f}")
         print(f"  Reciprocal-space CC (overall): {result['reciprocal_cc_overall']}")
+        masks = list(result["realspace_correlation"])
+        header = "  {:<17s}".format("weights") + "".join(
+            f"{m[:12]:>13s}" for m in masks
+        )
+        print(header + f"{'recip. CC':>13s}")
+        for name, entry in result["by_weight"].items():
+            row = f"  {name:<17s}" + "".join(
+                f"{entry['realspace_correlation'][m]:13.4f}" for m in masks
+            )
+            print(row + f"{entry['reciprocal_cc_overall']:13.4f}")
+        for message in fallback_messages:
+            print(f"  WARNING: {message}")
         print(f"{'=' * 70}")
 
     return 0
@@ -707,7 +826,7 @@ def main():
     """Entry point for ``torchref.validate-ded``; returns the exit code."""
     parser = argparse.ArgumentParser(
         description="Validate difference electron density by correlating "
-        "weighted DFo and DFcalc maps.",
+        "weighted dFo and dFcalc maps.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -784,6 +903,7 @@ Examples:
         action="store_true",
         help="Write CCP4 map files for WDFo and WDFcalc",
     )
+    add_ded_weight_args(analysis)
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)

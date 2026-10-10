@@ -58,14 +58,12 @@ class TestReflectionSubset:
             (work_before | free_before) - val
         )  # nothing new appears
 
-    def test_F_matches_legacy_masking(self, data_1daw):
+    def test_F_matches_valid_partition_masking(self, data_1daw):
+        """Subset amplitudes apply both validity and work/free partition masks."""
         d = data_1daw
         valid = d.masks().to(torch.bool)
-        _, F, _, rfree = d()  # legacy call
-        F_data = F.get_data() if hasattr(F, "get_data") else F
-        vmask = F.get_mask() if hasattr(F, "get_mask") else valid
-        assert torch.allclose(d.work.F, F_data[vmask & rfree.bool()])
-        assert torch.allclose(d.free.F, F_data[vmask & ~rfree.bool()])
+        assert torch.allclose(d.work.F, d.F[valid & d.rfree_flags.bool()])
+        assert torch.allclose(d.free.F, d.F[valid & ~d.rfree_flags.bool()])
 
     def test_select_aligns_full_array(self, data_1daw):
         d = data_1daw
@@ -91,3 +89,11 @@ class TestReflectionSubset:
         d.filter_by_resolution(d_min=3.0)  # adds a "resolution" mask
         n_after = d.work.indices.numel()
         assert n_after < n_before  # cache rebuilt against the new mask
+
+
+@pytest.mark.unit
+def test_resolution_filter_reports_the_range_it_applies(data_1daw, capsys):
+    """Without d_min the filter keeps everything up to d_max: the range is [d_max - 0]."""
+    data_1daw.verbose = 1
+    data_1daw.filter_by_resolution(d_max=10.0)
+    assert "[10.0 - 0] Å" in capsys.readouterr().out

@@ -11,58 +11,31 @@ import pytest
 import torch
 
 
-
 @pytest.mark.unit
 def test_translation_phases_complex_dtype_float64(double_cpu):
-    """compute_translation_phases must honor the configured complex dtype."""
-    from torchref.base.reciprocal.symmetry import compute_translation_phases
+    """Symmetry.phase_factors must honor the configured complex dtype."""
+    from torchref.symmetry import SpaceGroup
 
-    hkl = torch.tensor([[1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [0.0, 0.0, 3.0]])
-    translations = torch.tensor([[0.0, 0.0, 0.0], [0.5, 0.5, 0.0]])
+    # P21 gives two operations, one carrying a half translation.
+    sym = SpaceGroup("P 21")
+    hkl = torch.tensor([[1, 0, 0], [2, 1, 0], [0, 0, 3]])
 
-    phases = compute_translation_phases(hkl, translations)
+    phases = sym.phase_factors(hkl)
 
-    # Was complex64 (float32 hardcode); under float64 config must be complex128.
+    # Must not narrow to complex64 under a float64 configuration.
     assert phases.dtype == torch.complex128
     assert phases.shape == (2, 3)
     assert torch.isfinite(phases.real).all()
 
 
 @pytest.mark.integration
-def test_scaler_binwise_mean_intensity_float64(double_cpu, sample_structure_pair):
-    """Scaler.get_binwise_mean_intensity used to crash in scatter_add under float64."""
-    from torchref.io import ReflectionData
-    from torchref.model.model_ft import ModelFT
-    from torchref.scaling.scaler import Scaler
-
-    model = ModelFT()
-    model.load_cif(str(sample_structure_pair["model"]))
-
-    data = ReflectionData()
-    data.load_mtz(str(sample_structure_pair["reflections"]))
-
-    scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
-
-    hkl = data()[0]
-    fcalc = model(hkl)
-    assert fcalc.dtype == torch.complex128
-
-    # Pre-fix this raised: scatter_add float32 accumulator vs float64 source.
-    mean_obs, mean_calc, mean_res = scaler.get_binwise_mean_intensity(fcalc)
-
-    assert mean_obs.dtype == torch.float64
-    assert mean_calc.dtype == torch.float64
-    assert torch.isfinite(mean_obs).all()
-
-
-@pytest.mark.integration
 def test_occupancy_floor_density_matmul_float64(double_cpu, sample_structure_pair):
     """compute_density_at_positions hardcoded hkl.T.float(); matmul raised under float64."""
-    from torchref.io import ReflectionData
-    from torchref.model.model_ft import ModelFT
     from torchref.experimental.targets.occupancy_floor_diagnostic import (
         OccupancyFloorDiagnostic,
     )
+    from torchref.io import ReflectionData
+    from torchref.model.model_ft import ModelFT
 
     model = ModelFT()
     model.load_cif(str(sample_structure_pair["model"]))
@@ -74,7 +47,7 @@ def test_occupancy_floor_density_matmul_float64(double_cpu, sample_structure_pai
     positions = model.cell.cartesian_to_fractional(model.xyz())
     assert positions.dtype == torch.float64
 
-    hkl = data()[0]
+    hkl = data.hkl
 
     diagnostic = OccupancyFloorDiagnostic(model_dark=model, model_light=model)
     # Pre-fix this raised: float64 positions @ float32 hkl.T.
@@ -83,3 +56,45 @@ def test_occupancy_floor_density_matmul_float64(double_cpu, sample_structure_pai
     assert density.dtype == torch.float64
     assert density.shape[0] == positions.shape[0]
     assert torch.isfinite(density).all()
+
+
+@pytest.mark.integration
+def test_disulfide_values_keep_float64(double_cpu, pdb_dir):
+    """Disulfide targets reach the float64 restraints unrounded."""
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "3A5V.pdb"))
+    entries = model.restraints.restraints
+
+    for edge_type, reference, sigma in (
+        ("bond", 2.031, 0.020),
+        ("angle", 103.8, 1.8),
+        ("torsion", 90.0, 10.0),
+    ):
+        group = entries[edge_type]["disulfide"]
+        assert group["references"].dtype == torch.float64
+        assert float((group["references"] - reference).abs().max()) < 1e-12
+        assert float((group["sigmas"] - sigma).abs().max()) < 1e-12
+
+
+@pytest.mark.integration
+def test_torsion_wrap_keeps_float64(double_cpu, pdb_dir):
+    """An n-fold torsion deviation folds by 2π/n in float64, not float32."""
+    from torchref.model.model import Model
+
+    model = Model(verbose=0)
+    model.load_pdb(str(pdb_dir / "3A5V.pdb"))
+    restraints = model.restraints
+    xyz = model.xyz().detach()
+    group = restraints.restraints["torsion"]["all"]
+
+    deviations, _ = restraints.torsion_deviations_with_sigmas(xyz)
+    calculated = restraints.torsions(group["indices"], xyz)
+    diff = (calculated - group["references"]) * (torch.pi / 180.0)
+    periodic = group["periods"] > 1
+    half_step = torch.pi / group["periods"][periodic].to(diff.dtype)
+    folded = torch.remainder(diff[periodic] + half_step, 2 * half_step) - half_step
+
+    assert periodic.any() and deviations.dtype == torch.float64
+    assert float((deviations[periodic] - folded).abs().max()) < 1e-12

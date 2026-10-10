@@ -7,10 +7,10 @@ chains:
     d(NLL)/d(phi_frac)  = (1-ψf)(v10−v00) + ψf·(v11−v01)
     d(NLL)/d(psi_frac)  = (1-φf)(v01−v00) + φf·(v11−v10)
     d(phi_frac)/d(phi_deg) = 1
-    d(phi_deg)/d(positions) = −(180/π) · F_dihedral
+    d(phi_deg)/d(positions) = (180/π) · F_dihedral
 
-(the leading minus is because the eager target uses ``-torsions_from_xyz``;
-F_dihedral comes from :mod:`_dihedral`.) Same for ψ.
+(F_dihedral comes from :mod:`_dihedral`, whose angle carries the IUPAC sign the
+surfaces are tabulated in.) Same for ψ.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import torch
 import triton
 import triton.language as tl
 
+from .._dispatch import first_order_only
 from ._dihedral import dihedral_and_grad
 
 
@@ -62,7 +63,7 @@ def _rama_nll_fwd_kernel(
      _F3x, _F3y, _F3z, _F4x, _F4y, _F4z) = dihedral_and_grad(
         pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, pdx, pdy, pdz,
     )
-    phi_deg = -phi_rad * (180.0 / 3.141592653589793)
+    phi_deg = phi_rad * (180.0 / 3.141592653589793)
 
     a = tl.load(psi_idx_ptr + offs * 4 + 0, mask=mask, other=0)
     b = tl.load(psi_idx_ptr + offs * 4 + 1, mask=mask, other=0)
@@ -84,7 +85,7 @@ def _rama_nll_fwd_kernel(
      _F3x, _F3y, _F3z, _F4x, _F4y, _F4z) = dihedral_and_grad(
         pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, pdx, pdy, pdz,
     )
-    psi_deg = -psi_rad * (180.0 / 3.141592653589793)
+    psi_deg = psi_rad * (180.0 / 3.141592653589793)
 
     phi_g = (phi_deg + 180.0) % 360.0
     psi_g = (psi_deg + 180.0) % 360.0
@@ -150,7 +151,7 @@ def _rama_nll_bwd_kernel(
         pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, pdx, pdy, pdz,
     )
     phi_a = a; phi_b = b; phi_c = c; phi_d = d
-    phi_deg = -phi_rad * RAD2DEG
+    phi_deg = phi_rad * RAD2DEG
 
     # --- psi ---
     a = tl.load(psi_idx_ptr + offs * 4 + 0, mask=mask, other=0)
@@ -174,7 +175,7 @@ def _rama_nll_bwd_kernel(
         pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, pdx, pdy, pdz,
     )
     psi_a = a; psi_b = b; psi_c = c; psi_d = d
-    psi_deg = -psi_rad * RAD2DEG
+    psi_deg = psi_rad * RAD2DEG
 
     # --- bilinear: gather corner values, compute fractional gradients ---
     phi_g = (phi_deg + 180.0) % 360.0
@@ -200,10 +201,10 @@ def _rama_nll_bwd_kernel(
 
     # phi_g = (phi_deg + 180) % 360 → dphi_g/dphi_deg = 1 a.e.
     # phi_frac = phi_g - floor(phi_g.detach()) → dphi_frac/dphi_g = 1
-    # phi_deg = -phi_rad · RAD2DEG → dphi_deg/dphi_rad = -RAD2DEG
-    # So dNLL/dphi_rad = -RAD2DEG · dNLL_dphi_frac
-    coef_phi = grad_out * (-RAD2DEG) * dNLL_dphi_frac
-    coef_psi = grad_out * (-RAD2DEG) * dNLL_dpsi_frac
+    # phi_deg = phi_rad · RAD2DEG → dphi_deg/dphi_rad = RAD2DEG
+    # So dNLL/dphi_rad = RAD2DEG · dNLL_dphi_frac
+    coef_phi = grad_out * RAD2DEG * dNLL_dphi_frac
+    coef_psi = grad_out * RAD2DEG * dNLL_dpsi_frac
 
     # Scatter phi forces
     tl.atomic_add(dxyz_ptr + phi_a * 3 + 0, coef_phi * PF1x, mask=mask)
@@ -251,6 +252,7 @@ class _RamachandranMathTriton(torch.autograd.Function):
         return nll.sum()
 
     @staticmethod
+    @first_order_only
     def backward(ctx, grad_out):
         xyz, phi_idx, psi_idx, surfaces, s32 = ctx.saved_tensors
         N = phi_idx.shape[0]

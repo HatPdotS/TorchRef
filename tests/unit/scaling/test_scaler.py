@@ -34,6 +34,23 @@ class TestScalerInitialization:
         assert isinstance(scaler, nn.Module)
 
     @pytest.mark.unit
+    def test_assigned_model_is_held_unregistered(self):
+        """``scaler.model = m`` binds m without adding it as a submodule."""
+        from torchref.scaling.scaler import Scaler
+
+        scaler = Scaler(verbose=0)
+        model = nn.Linear(2, 2)
+        scaler.model = model
+
+        assert scaler.model is model
+        assert list(scaler.parameters()) == []
+        assert list(scaler.children()) == []
+        assert not any(k.startswith("model") for k in scaler.state_dict())
+
+        scaler.model = None
+        assert scaler.model is None
+
+    @pytest.mark.unit
     def test_scaler_default_nbins(self):
         """Test default number of resolution bins."""
         from torchref.scaling.scaler import Scaler
@@ -90,17 +107,14 @@ class TestScalingCalculations:
     @pytest.mark.unit
     def test_resolution_binning_logic(self, mock_hkl_indices, mock_cell):
         """Test resolution binning creates correct number of bins."""
-        from torchref.base.reciprocal import get_s
+        from torchref.base.reciprocal import get_scattering_vectors
 
-        hkl = mock_hkl_indices(n_reflections=1000).numpy()
-        cell = mock_cell.numpy()
-        
-        # Calculate s values
-        s = get_s(hkl, cell)
-        
+        hkl = mock_hkl_indices(n_reflections=1000)
+        s = get_scattering_vectors(hkl, mock_cell).norm(dim=1)
+
         # Create bins
         nbins = 10
-        s_sorted = torch.tensor(sorted(s))
+        s_sorted = torch.sort(s).values
         bin_edges = torch.linspace(s_sorted[0], s_sorted[-1], nbins + 1)
         
         assert len(bin_edges) == nbins + 1
@@ -137,11 +151,10 @@ class TestBFactorScaling:
     @pytest.mark.unit
     def test_b_factor_debye_waller(self, mock_hkl_indices, mock_cell):
         """Test Debye-Waller factor calculation."""
-        from torchref.base.reciprocal import get_s
+        from torchref.base.reciprocal import get_scattering_vectors
 
-        hkl = mock_hkl_indices(n_reflections=100).numpy()
-        cell = mock_cell.numpy()
-        s = torch.tensor(get_s(hkl, cell))
+        hkl = mock_hkl_indices(n_reflections=100)
+        s = get_scattering_vectors(hkl, mock_cell).norm(dim=1)
         
         B_factor = 20.0  # Å²
         
@@ -155,20 +168,15 @@ class TestBFactorScaling:
     @pytest.mark.unit
     def test_b_factor_high_resolution_attenuation(self, mock_cell):
         """Higher resolution (larger s) should have more attenuation."""
-        from torchref.base.reciprocal import get_s
+        from torchref.base.reciprocal import get_scattering_vectors
 
-        cell = mock_cell.numpy()
-        
         # Low and high resolution reflections
-        hkl_low = torch.tensor([[1, 0, 0]], dtype=torch.float64).numpy()
-        hkl_high = torch.tensor([[10, 10, 10]], dtype=torch.float64).numpy()
-        
-        s_low = get_s(hkl_low, cell)[0]
-        s_high = get_s(hkl_high, cell)[0]
-        
+        hkl = torch.tensor([[1, 0, 0], [10, 10, 10]])
+        s_low, s_high = get_scattering_vectors(hkl, mock_cell).norm(dim=1)
+
         B_factor = 20.0
-        dw_low = torch.exp(torch.tensor(-B_factor * (s_low ** 2) / 4))
-        dw_high = torch.exp(torch.tensor(-B_factor * (s_high ** 2) / 4))
+        dw_low = torch.exp(-B_factor * s_low**2 / 4)
+        dw_high = torch.exp(-B_factor * s_high**2 / 4)
         
         # High resolution should be more attenuated
         assert dw_high < dw_low
@@ -180,7 +188,7 @@ class TestAnisotropicScaling:
     @pytest.mark.unit
     def test_u_to_matrix_shape(self, mock_aniso_u):
         """Test U tensor to matrix conversion."""
-        from torchref.base.math_torch import U_to_matrix
+        from torchref.base.targets.adp import U_to_matrix
         
         U = mock_aniso_u(n_atoms=10)
         
@@ -193,7 +201,7 @@ class TestAnisotropicScaling:
     @pytest.mark.unit
     def test_u_matrix_symmetric(self, mock_aniso_u):
         """U matrices should be symmetric."""
-        from torchref.base.math_torch import U_to_matrix
+        from torchref.base.targets.adp import U_to_matrix
         
         U = mock_aniso_u(n_atoms=5)
         U_matrices = U_to_matrix(U)
@@ -201,3 +209,26 @@ class TestAnisotropicScaling:
         for i in range(5):
             mat = U_matrices[i]
             assert torch.allclose(mat, mat.T, atol=1e-6)
+
+
+class TestAnisotropyStart:
+    """``U`` starts at zero, the identity correction, so every scale fit starts alike."""
+
+    @pytest.mark.unit
+    def test_setup_gives_the_same_zero_tensor_every_time(self, mtz_dir):
+        from torchref.io import ReflectionData
+        from torchref.scaling.scaler_base import ScalerBase
+
+        data = ReflectionData(verbose=0, device="cpu").load_mtz(
+            str(mtz_dir / "1DAW.mtz")
+        )
+        scaler = ScalerBase(data=data, nbins=10, verbose=0)
+
+        scaler.setup_anisotropy_correction()
+        first = scaler.U.detach().clone()
+        scaler.setup_anisotropy_correction()
+
+        assert torch.equal(first, torch.zeros_like(first))
+        assert torch.equal(scaler.U.detach(), first)
+        correction = scaler.anisotropy_correction()
+        assert torch.equal(correction, torch.ones_like(correction))

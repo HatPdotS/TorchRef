@@ -189,7 +189,11 @@ def test_only_one_scale_fit_entry_point():
 @pytest.mark.unit
 def test_refine_scaler_does_not_minimise_the_body_loss():
     """The regression guard. The body loss carries the alpha-centred mean."""
-    src = inspect.getsource(Refinement.refine_scaler)
+    func = ast.parse(textwrap.dedent(inspect.getsource(Refinement.refine_scaler))).body[0]
+    # The docstring links LossState; only the code may not touch the body loss.
+    if ast.get_docstring(func) is not None:
+        func.body = func.body[1:]
+    src = ast.unparse(func)
     for forbidden in ("complete_loss_state", "xray_target_work", "loss_state"):
         assert forbidden not in src, (
             f"refine_scaler references {forbidden!r}: fitting the scale against the body "
@@ -243,8 +247,9 @@ def test_refine_fits_the_scale_before_reporting_after_scaling():
     cycle -- so the field reported the previous cycle's scaler. That field is what the
     per-cycle benchmark figure plots.
     """
+    assert "self.refine_scaler()" in inspect.getsource(LBFGSRefinement._refresh_scales)
     src = inspect.getsource(LBFGSRefinement.refine)
-    fit = src.index("self.refine_scaler()")
+    fit = src.index("self._refresh_scales()")
     label = src.index('cycle_dict["after_scaling"]')
     assert fit < label, (
         "refine() records after_scaling before fitting the scale; the label describes "

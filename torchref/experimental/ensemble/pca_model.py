@@ -10,19 +10,19 @@ Where :class:`~torchref.experimental.ensemble.low_rank_ensemble.LowRankXYZ` free
 basis (only amplitudes refine), this module refines **all three** factors of the
 low-rank decomposition::
 
-    xyz_i = μ + Σ_k a_{ik} v_k          (Xc = A Vᵀ, rank K)
+    xyz_i = μ + Σ_k a_{ik} v_k          (Xc = A V, rank K)
 
 with ``μ`` (mean structure), ``V`` (K basis modes) and ``A`` (per-member
-amplitudes) all ``nn.Parameter``. Seeded by an SVD of an existing (overfit)
-ensemble — in the de-overfit workflow that ensemble must come from a saved
-checkpoint (seed via ``--branch-from ckpt``, *not* ``--init-pdb``), since the
-basis is only meaningful once real disorder has developed. Hypothesis:
+amplitudes) all ``nn.Parameter``. Seeded by an SVD of an existing refined
+ensemble — loaded with ``EnsembleModel.from_multimodel_pdb`` or from a
+checkpoint — since the basis is only meaningful once real disorder has
+developed. Hypothesis:
 refining in collective-coordinate space is an easier
 landscape than raw Cartesian, and the explicit spectrum is the natural place for
 the maxent (shrink + diversity) regularizer to act.
 
-The loss depends only on the product ``μ + A Vᵀ``, which is gauge-invariant
-under ``A → A R``, ``V → R⁻ᵀ V`` — so the A↔V rotational redundancy is harmless
+The loss depends only on the product ``μ + A V``, which is gauge-invariant
+under ``A → A R``, ``V → R⁻¹ V`` — so the A↔V rotational redundancy is harmless
 to the optimizer (no gauge-fixing needed); a post-hoc SVD of the reconstruction
 recovers a clean orthonormal PCA. ``K = N-1`` is a complete reparameterization
 (same expressiveness as full Cartesian); smaller K is a hard rank cap.
@@ -41,7 +41,7 @@ from torch import nn
 
 
 class PCAEnsembleParam(nn.Module):
-    """Refinable low-rank PCA parameterization ``xyz = μ + A Vᵀ``.
+    """Refinable low-rank PCA parameterization ``xyz = μ + A V``.
 
     .. warning::
 
@@ -89,11 +89,14 @@ class PCAEnsembleParam(nn.Module):
         K: Optional[int] = None,
     ) -> "PCAEnsembleParam":
         """Seed from a flat ``(N*n_atoms, 3)`` ensemble via SVD of the centered
-        member matrix. ``K`` defaults to ``N-1`` (complete reparameterization)."""
+        member matrix, in ``xyz_flat``'s dtype and on its device. ``K`` defaults
+        to ``N-1`` (complete reparameterization)."""
         N = int(n_members)
         with torch.no_grad():
-            X = xyz_flat.detach().reshape(N, n_atoms * 3).to(torch.float64)
+            X = xyz_flat.detach().reshape(N, n_atoms * 3)
             mu = X.mean(dim=0)
+            # Centring removes the ~10² Å absolute coordinates, leaving the Å-scale
+            # spread the SVD resolves, so the working dtype suffices.
             Xc = X - mu.unsqueeze(0)
             U, S, Vt = torch.linalg.svd(Xc, full_matrices=False)
             max_rank = max(1, N - 1)
@@ -102,11 +105,9 @@ class PCAEnsembleParam(nn.Module):
             A0 = Xc @ Vk.T                                   # (N, K) = U S
             total = (S ** 2).sum().clamp_min(1e-30)
             explained = float((S[:K] ** 2).sum() / total)
-        dtype = xyz_flat.dtype
         return cls(
-            mu.to(dtype), Vk.to(dtype), A0.to(dtype),
-            n_members=N, n_atoms=n_atoms, explained_variance=explained,
-        ).to(xyz_flat.device)
+            mu, Vk, A0, n_members=N, n_atoms=n_atoms, explained_variance=explained
+        )
 
     def forward(self) -> torch.Tensor:
         """Reconstruct the flat ``(N*n_atoms, 3)`` coordinate tensor."""
