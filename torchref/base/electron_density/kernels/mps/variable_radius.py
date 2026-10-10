@@ -2,9 +2,8 @@
 
 ``add_isotropic_mps_var`` / ``add_anisotropic_mps_var`` mirror the portable CPU reference
 signatures, so the dispatch site in ``main.py`` is a near-copy of the CPU branch. Each
-calls the shared :class:`~torchref.base.electron_density.ops.SplatIso` /
-``SplatAniso``, whose operators dispatch to the Metal kernels below (one thread per atom)
-for forward and analytic backward.
+delegates to a ``torch.autograd.Function`` dispatching the compiled Metal kernels (one
+thread per atom) for forward and analytic backward.
 
 Gradients flow to ``xyz``, ``adp``/``u`` and ``occ``, with identity to the input
 ``density_map``; ``A``/``B`` and the cell matrices get none, as on CUDA. **Backward is
@@ -16,7 +15,7 @@ from __future__ import annotations
 import torch
 
 from torchref.base.electron_density.kernels.mps.compile import _get_lib
-from torchref.base.electron_density.ops import SplatAniso, SplatIso
+from torchref.base.targets._dispatch import first_order_only
 
 
 def _r2cut(radius_per_atom):
@@ -30,41 +29,66 @@ def _r2cut(radius_per_atom):
     return radius_per_atom * radius_per_atom
 
 
-def iso_fwd(density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac):
-    """MPS kernel of ``torch.ops.torchref.splat_iso_fwd``: returns ``density_map + splat``."""
-    lib = _get_lib()
-    if lib is None:
-        raise RuntimeError("Metal splat kernels unavailable")
-    nx, ny, nz = (int(s) for s in density_map.shape)
-    out = density_map.contiguous().clone()
-    n = xyz.shape[0]
-    if n > 0:
-        lib.iso_splat_fwd(
-            out.view(-1), xyz.contiguous(), adp.contiguous(), occ.contiguous(),
-            A.contiguous(), B.contiguous(), r2cut.contiguous(),
-            inv_frac.contiguous().view(-1), frac.contiguous().view(-1),
-            n, nx, ny, nz,
-            threads=[n],
-        )
-    return out
+class MetalGridDensity(torch.autograd.Function):
+    """Isotropic per-atom Metal splat: returns ``density_map + splat``."""
 
+    @staticmethod
+    def forward(ctx, density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac):
+        lib = _get_lib()
+        if lib is None:
+            raise RuntimeError("Metal splat kernels unavailable")
+        nx, ny, nz = (int(s) for s in density_map.shape)
+        out = density_map.contiguous().clone()
+        n = xyz.shape[0]
+        if n > 0:
+            lib.iso_splat_fwd(
+                out.view(-1),
+                xyz.contiguous(),
+                adp.contiguous(),
+                occ.contiguous(),
+                A.contiguous(),
+                B.contiguous(),
+                r2cut.contiguous(),
+                inv_frac.contiguous().view(-1),
+                frac.contiguous().view(-1),
+                n, nx, ny, nz,
+                threads=[n],
+            )
+        ctx.save_for_backward(xyz, adp, occ, A, B, r2cut, inv_frac, frac)
+        ctx.grid_shape = (nx, ny, nz)
+        return out
 
-def iso_bwd(grad, xyz, adp, occ, A, B, r2cut, inv_frac, frac):
-    """MPS kernel of ``torch.ops.torchref.splat_iso_bwd``: ``(d xyz, d adp, d occ)``."""
-    nx, ny, nz = (int(s) for s in grad.shape)
-    n = xyz.shape[0]
-    grad_xyz = torch.zeros_like(xyz)
-    grad_adp = torch.zeros_like(adp)
-    grad_occ = torch.zeros_like(occ)
-    if n > 0:
-        _get_lib().iso_splat_bwd(
-            grad_xyz.view(-1), grad_adp.view(-1), grad_occ, grad.contiguous().view(-1),
-            xyz.contiguous(), adp.contiguous(), occ.contiguous(), A.contiguous(),
-            B.contiguous(), r2cut.contiguous(), inv_frac.contiguous().view(-1),
-            frac.contiguous().view(-1), n, nx, ny, nz,
-            threads=[n],
-        )
-    return grad_xyz, grad_adp, grad_occ
+    @staticmethod
+    @first_order_only
+    def backward(ctx, grad_out):
+        xyz, adp, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
+        nx, ny, nz = ctx.grid_shape
+        n = xyz.shape[0]
+        grad_xyz = torch.zeros_like(xyz)
+        grad_adp = torch.zeros_like(adp)
+        grad_occ = torch.zeros_like(occ)
+        if n > 0:
+            lib = _get_lib()
+            lib.iso_splat_bwd(
+                grad_xyz.view(-1),
+                grad_adp,
+                grad_occ,
+                grad_out.contiguous().view(-1),
+                xyz.contiguous(),
+                adp.contiguous(),
+                occ.contiguous(),
+                A.contiguous(),
+                B.contiguous(),
+                r2cut.contiguous(),
+                inv_frac.contiguous().view(-1),
+                frac.contiguous().view(-1),
+                n, nx, ny, nz,
+                threads=[n],
+            )
+        # forward returned density_map + splat -> grad wrt density_map is identity.
+        # order: density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac
+        return (grad_out, grad_xyz, grad_adp, grad_occ,
+                None, None, None, None, None)
 
 
 def add_isotropic_mps_var(
@@ -80,46 +104,70 @@ def add_isotropic_mps_var(
     ``voxel_size`` is taken. The radius is the policy radius used raw; see :func:`_r2cut`.
     """
     r2cut = _r2cut(radius_per_atom)
-    return SplatIso.apply(
+    return MetalGridDensity.apply(
         density_map, xyz, adp, occ, A, B, r2cut, inv_frac_matrix, frac_matrix
     )
 
 
-def aniso_fwd(density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac):
-    """MPS kernel of ``torch.ops.torchref.splat_aniso_fwd``: returns ``density_map + splat``."""
-    lib = _get_lib()
-    if lib is None:
-        raise RuntimeError("Metal splat kernels unavailable")
-    nx, ny, nz = (int(s) for s in density_map.shape)
-    out = density_map.contiguous().clone()
-    n = xyz.shape[0]
-    if n > 0:
-        lib.aniso_splat_fwd(
-            out.view(-1), xyz.contiguous(), u.contiguous(), occ.contiguous(),
-            A.contiguous(), B.contiguous(), r2cut.contiguous(),
-            inv_frac.contiguous().view(-1), frac.contiguous().view(-1),
-            n, nx, ny, nz,
-            threads=[n],
-        )
-    return out
+class MetalGridDensityAniso(torch.autograd.Function):
+    """Anisotropic per-atom Metal splat: returns ``density_map + splat``."""
 
+    @staticmethod
+    def forward(ctx, density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac):
+        lib = _get_lib()
+        if lib is None:
+            raise RuntimeError("Metal splat kernels unavailable")
+        nx, ny, nz = (int(s) for s in density_map.shape)
+        out = density_map.contiguous().clone()
+        n = xyz.shape[0]
+        if n > 0:
+            lib.aniso_splat_fwd(
+                out.view(-1),
+                xyz.contiguous(),
+                u.contiguous(),
+                occ.contiguous(),
+                A.contiguous(),
+                B.contiguous(),
+                r2cut.contiguous(),
+                inv_frac.contiguous().view(-1),
+                frac.contiguous().view(-1),
+                n, nx, ny, nz,
+                threads=[n],
+            )
+        ctx.save_for_backward(xyz, u, occ, A, B, r2cut, inv_frac, frac)
+        ctx.grid_shape = (nx, ny, nz)
+        return out
 
-def aniso_bwd(grad, xyz, u, occ, A, B, r2cut, inv_frac, frac):
-    """MPS kernel of ``torch.ops.torchref.splat_aniso_bwd``: ``(d xyz, d u, d occ)``."""
-    nx, ny, nz = (int(s) for s in grad.shape)
-    n = xyz.shape[0]
-    grad_xyz = torch.zeros_like(xyz)
-    grad_u = torch.zeros_like(u)
-    grad_occ = torch.zeros_like(occ)
-    if n > 0:
-        _get_lib().aniso_splat_bwd(
-            grad_xyz.view(-1), grad_u.view(-1), grad_occ, grad.contiguous().view(-1),
-            xyz.contiguous(), u.contiguous(), occ.contiguous(), A.contiguous(),
-            B.contiguous(), r2cut.contiguous(), inv_frac.contiguous().view(-1),
-            frac.contiguous().view(-1), n, nx, ny, nz,
-            threads=[n],
-        )
-    return grad_xyz, grad_u, grad_occ
+    @staticmethod
+    @first_order_only
+    def backward(ctx, grad_out):
+        xyz, u, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
+        nx, ny, nz = ctx.grid_shape
+        n = xyz.shape[0]
+        grad_xyz = torch.zeros_like(xyz)
+        grad_u = torch.zeros_like(u)
+        grad_occ = torch.zeros_like(occ)
+        if n > 0:
+            lib = _get_lib()
+            lib.aniso_splat_bwd(
+                grad_xyz.view(-1),
+                grad_u.view(-1),
+                grad_occ,
+                grad_out.contiguous().view(-1),
+                xyz.contiguous(),
+                u.contiguous(),
+                occ.contiguous(),
+                A.contiguous(),
+                B.contiguous(),
+                r2cut.contiguous(),
+                inv_frac.contiguous().view(-1),
+                frac.contiguous().view(-1),
+                n, nx, ny, nz,
+                threads=[n],
+            )
+        # order: density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac
+        return (grad_out, grad_xyz, grad_u, grad_occ,
+                None, None, None, None, None)
 
 
 def add_anisotropic_mps_var(
@@ -135,6 +183,6 @@ def add_anisotropic_mps_var(
     fused-CPU kernels apply.
     """
     r2cut = _r2cut(radius_per_atom)
-    return SplatAniso.apply(
+    return MetalGridDensityAniso.apply(
         density_map, xyz, u, occ, A, B, r2cut, inv_frac_matrix, frac_matrix
     )

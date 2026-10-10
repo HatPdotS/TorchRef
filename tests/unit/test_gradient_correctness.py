@@ -206,7 +206,7 @@ def test_triton_bond_refuses_a_second_derivative():
 
     assert use_triton(x)
     loss = bond_math(x, idx, references, sigmas)
-    with pytest.raises(RuntimeError, match=r"BondNLL\.backward: the second"):
+    with pytest.raises(RuntimeError, match=r"_BondMathTriton\.backward: the second"):
         torch.autograd.grad(loss, x, create_graph=True)
 
     with use_portable():
