@@ -105,5 +105,3 @@ The figure scripts, per-panel source data and the author accepted manuscript are
 ### License
 
 MIT. See [LICENSE](https://github.com/HatPdotS/TorchRef/blob/main/LICENSE).
-
-Paper-related resources were migrated to [HatPdotS/TorchRef-paper](https://github.com/HatPdotS/TorchRef-paper).
