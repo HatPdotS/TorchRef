@@ -43,7 +43,7 @@ dependencies = [
     "pyarrow>=12.0.0,<26.0.0",
     # Prebuilt CPU kernels (kernels/ in this repo). Only where wheels are published, so
     # installing torchref never needs a Rust toolchain; elsewhere the portable path runs.
-    "torchref-kernels>=0.1,<0.2; (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')) or (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
+    "torchref-kernels>=0.1.0rc1,<0.2; (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')) or (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
 ]
 
 [project.scripts]
