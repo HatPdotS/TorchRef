@@ -26,8 +26,8 @@ _PORTABLE = "torchref.base.electron_density.kernels.cpu.variable_radius"
 
 #: Argument positions carrying the device/dtype contract:
 #: ``density_map, xyz, adp_or_u, occ, A, B``. The trailing three -- the two cell matrices
-#: and the per-atom radius -- are not probed; a cell matrix of another dtype raises the
-#: same ``data_ptr`` RuntimeError in the C++ kernel instead of reading out of bounds.
+#: and the per-atom radius -- are not probed; a cell matrix of another dtype is refused
+#: with a ValueError by the CPU kernel's wrapper instead of being read as the wrong type.
 _ATOM_ARGS = (0, 1, 2, 3, 4, 5)
 
 DENSITY_BACKENDS = BackendTable(
@@ -65,18 +65,19 @@ DENSITY_BACKENDS = BackendTable(
                     "add_anisotropic_cpu_sphere_var"),
             device="cpu",
             dtypes=(torch.float32, torch.float64),  # dtype-ok: backend capability declaration, not an allocation
-            # Uniformity, not membership: the entry point's ``_prep`` raises ValueError
-            # on any dtype but the map's (``data_ptr<scalar_t>()`` a RuntimeError behind
-            # it), so a mixed-dtype call goes to the portable splat instead of an error.
+            # Uniformity, not membership: the entry point raises ValueError on any dtype
+            # but the map's, so a mixed-dtype call goes to the portable splat instead of
+            # an error.
             require_uniform_dtype=True,
             probes=_ATOM_ARGS,
             probe=(_SPHERE, "why_unavailable"),
-            # A pure C++ build with no hardware requirement, so it must work everywhere. The
-            # expectation is what makes a broken build a CI failure instead of a skip.
+            # A prebuilt CPU kernel with no hardware requirement, so it must work wherever
+            # torchref-kernels is installed. The expectation is what makes a missing or
+            # broken install a CI failure instead of a skip.
             expect_available="always",
-            # Deliberately not "degrade". The extension having failed to *build* already
+            # Deliberately not "degrade". A missing or unloadable kernel package already
             # yields a reason from the probe, so this governs only a runtime throw from a
-            # kernel that compiled -- a genuine bug. Falling back would turn wrong results
+            # kernel that loaded -- a genuine bug. Falling back would turn wrong results
             # into a ~100x slowdown whose numbers still look plausible, because the portable
             # splat implements the same truncation contract.
             on_failure="raise",

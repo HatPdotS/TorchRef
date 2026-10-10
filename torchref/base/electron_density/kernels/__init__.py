@@ -1,6 +1,6 @@
 """Density-splatting kernels, organized by device.
 
-* ``cpu/`` -- ``sphere_splat`` (the production fused C++ splat), ``variable_radius``
+* ``cpu/`` -- ``sphere_splat`` (the production fused CPU splat, prebuilt in ``torchref-kernels``), ``variable_radius``
   (the portable base case) and ``jit_reference`` (the voxel-list API).
 * ``cuda/`` -- ``variable_radius`` (the production splat) and ``fused`` (the Triton
   branch of the voxel-list API). ``mps/`` -- the Metal splat.

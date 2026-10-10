@@ -157,7 +157,7 @@ if _HAVE_TRITON:
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
             # Write index, wrapped fully (the box may span the cell more than once) as
-            # wrap_idx does in the C++ kernel; % takes the dividend's sign, hence the add.
+            # wrap does in the CPU kernel; % takes the dividend's sign, hence the add.
             vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
             viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
             viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)
@@ -282,7 +282,7 @@ if _HAVE_TRITON:
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
             # Write index, wrapped fully (the box may span the cell more than once) as
-            # wrap_idx does in the C++ kernel; % takes the dividend's sign, hence the add.
+            # wrap does in the CPU kernel; % takes the dividend's sign, hence the add.
             vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
             viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
             viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)
@@ -438,7 +438,7 @@ if _HAVE_TRITON:
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
             # Write index, wrapped fully (the box may span the cell more than once) as
-            # wrap_idx does in the C++ kernel; % takes the dividend's sign, hence the add.
+            # wrap does in the CPU kernel; % takes the dividend's sign, hence the add.
             vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
             viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
             viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)
@@ -575,7 +575,7 @@ if _HAVE_TRITON:
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
             # Write index, wrapped fully (the box may span the cell more than once) as
-            # wrap_idx does in the C++ kernel; % takes the dividend's sign, hence the add.
+            # wrap does in the CPU kernel; % takes the dividend's sign, hence the add.
             vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
             viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
             viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)

@@ -314,3 +314,39 @@ conformer. Takes two positional arguments, not flags.
    torchref.strip-altlocs input.pdb output.pdb
 
 :API: :mod:`torchref.cli.strip_altlocs`
+
+Threads and CPU Performance
+---------------------------
+
+The tools run on ``TORCHREF_NUM_THREADS`` CPU threads: by default
+``SLURM_CPUS_PER_TASK`` inside a SLURM job, otherwise the CPUs the process may run
+on, capped at 4.
+
+They also set ``OMP_WAIT_POLICY=PASSIVE`` for their own process, unless the
+variable is already set. PyTorch runs its CPU operations on an OpenMP thread pool
+whose idle workers, by default, keep spinning for several milliseconds after every
+operation. TorchRef's CPU kernels (the density splat and its gradient, from
+``torchref-kernels``) run on a thread pool of their own, and while the OpenMP
+workers spin on the same cores those kernels run at a fraction of their speed.
+With passive workers, the refinement cycles on an 8-CPU cluster allocation took a
+fifth to a quarter less time in our measurements, with the same results.
+
+Only the console scripts do this: ``import torchref`` leaves the setting alone,
+because it would change every other OpenMP library in the process too. To get the
+same behaviour when using TorchRef from Python (scripts, notebooks), set the
+variable before torch is imported, either in the shell:
+
+.. code-block:: bash
+
+   export OMP_WAIT_POLICY=PASSIVE
+
+or at the very top of the script, before ``import torch`` or ``import torchref``:
+
+.. code-block:: python
+
+   import os
+
+   os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+
+Set after torch has been imported, it has no effect. ``python -m
+torchref.cli.<tool>`` does not apply it either; use the console scripts.

@@ -303,7 +303,7 @@ def test_availability_is_not_probed_when_device_already_mismatches():
     """Device/dtype must be rejected before the probe is consulted.
 
     Enforced with a probe that raises if reached, because getting the order wrong is
-    invisible to a return-value assertion: an MPS host would compile the CPU C++ extension it
+    invisible to a return-value assertion: an MPS host would load the CPU kernel extension it
     never uses, and a CPU-only host would import Triton to answer a question about a CPU
     tensor.
     """
