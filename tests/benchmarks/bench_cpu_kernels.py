@@ -24,7 +24,12 @@ import statistics
 import sys
 import time
 
-import torch
+# The process settings the CLIs run under (the OpenMP wait policy among them); they only
+# take effect before torch is imported.
+import _torchref_cli  # isort: skip
+
+_torchref_cli.configure_process()
+import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

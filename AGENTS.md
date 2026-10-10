@@ -304,6 +304,12 @@ rebuild with `pip install ./kernels`; `test_canonical_sphere_cpu.py` fails on a 
 unoptimised build. A new CPU kernel is a module there plus one registration line in
 `kernels/src/lib.rs`; bump `ABI_VERSION` (Rust and `native.py`) when an entry point changes.
 
+The kernels' rayon pool shares the cores with torch's OpenMP workers, which spin after
+every parallel op unless `OMP_WAIT_POLICY=PASSIVE`. The console scripts set that through
+`_torchref_cli.py` (repo root, outside the package, so it runs before torch loads); `import
+torchref` deliberately does not, since it would change every OpenMP library in the user's
+process. A new CLI gets its entry point there, never a direct `torchref.cli.<module>:main`.
+
 Silent degradation is a test failure: `TorchRefDegradationWarning` is promoted to an error in
 `pyproject.toml`'s `filterwarnings`.
 
