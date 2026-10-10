@@ -14,6 +14,8 @@ build is a reason, never an import error.
 from __future__ import annotations
 
 import os
+import platform
+import sys
 import traceback
 from typing import Optional, Tuple
 
@@ -25,6 +27,12 @@ ABI_VERSION = 1
 
 # Below this, a Rust build is an unoptimised debug build and runs 10-100x slower.
 _MIN_OPT_LEVEL = 2
+
+#: ``(sys.platform, platform.machine())`` of every host torchref-kernels publishes a wheel
+#: for. Must match the environment marker on the dependency in ``pyproject.toml``.
+WHEEL_PLATFORMS = frozenset(
+    {("linux", "x86_64"), ("linux", "aarch64"), ("darwin", "arm64"), ("win32", "AMD64")}
+)
 
 _native = None
 _failed = False
@@ -64,6 +72,15 @@ def native():
         _failed = True
         _error = (f"{type(exc).__name__}: {exc}", traceback.format_exc())
     return _native
+
+
+def expected_here() -> bool:
+    """Whether this host gets torchref-kernels from a plain ``pip install torchref``.
+
+    Elsewhere the dependency is skipped and the portable kernels run, unless the package
+    was built from source (``pip install ./kernels``).
+    """
+    return (sys.platform, platform.machine()) in WHEEL_PLATFORMS
 
 
 def why_unavailable() -> Optional[str]:

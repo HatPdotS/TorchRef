@@ -530,7 +530,11 @@ def test_fused_gate_requires_one_shared_dtype():
 
 
 def test_native_kernels_are_loaded_and_optimised():
-    """The prebuilt kernels must be importable, ABI-matched and optimised. Fails, never skips.
+    """The prebuilt kernels must be importable, ABI-matched and optimised.
+
+    Fails rather than skips on every platform torchref-kernels publishes a wheel for
+    (``native.expected_here()``); elsewhere a missing package is the documented
+    portable-only install.
 
     Every other test in this file -- and in ``tests/unit/structure_factor`` -- skips when
     ``why_unavailable()`` returns a reason, which is right for them: without the kernels
@@ -548,6 +552,8 @@ def test_native_kernels_are_loaded_and_optimised():
     from torchref.utils import native
 
     if sphere_splat.why_unavailable() is not None:
+        if not native.expected_here():
+            pytest.skip("torchref-kernels publishes no wheel for this platform")
         pytest.fail(
             "torchref-kernels is not usable, so CPU dispatch is silently falling back to "
             "the portable eager splat for every density calculation. Install it with "

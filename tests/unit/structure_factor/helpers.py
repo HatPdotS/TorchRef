@@ -584,6 +584,8 @@ def _table_names_for(table, device: torch.device, dtype: torch.dtype):
     Reads ``Backend.device`` / ``Backend.dtypes`` rather than calling ``select``: the point
     is to enumerate every kernel that *can* run here so each gets its own direct-call
     accuracy test, whereas ``select`` answers the narrower question of which one wins.
+    A backend that is unavailable on a host where it is not expected (``expect_available``)
+    is left out too; where it is expected, it stays in and fails.
     """
     if not device_supports_dtype(device, dtype):
         return []
@@ -592,6 +594,8 @@ def _table_names_for(table, device: torch.device, dtype: torch.dtype):
         if b.device is not None and b.device != device.type:
             continue
         if b.dtypes is not None and dtype not in b.dtypes:
+            continue
+        if not b.expected_here() and b.unavailable() is not None:
             continue
         out.append(b.name)
     return out

@@ -177,6 +177,9 @@ def test_density_selection_on_cpu(dtype, pin, expected):
     needed a monkeypatched spy -- and unlike a spy it can assert the float64 legs, which the
     accelerator provenance tests cannot reach at all.
     """
+    row = next(b for b in DENSITY_BACKENDS.backends if b.name == expected)
+    if not row.expected_here() and row.unavailable() is not None:
+        expected = "portable"  # no torchref-kernels wheel for this platform
     got = select(DENSITY_BACKENDS, _six("cpu", dtype), force_portable=pin).name
     assert got == expected
 

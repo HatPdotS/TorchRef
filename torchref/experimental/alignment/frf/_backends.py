@@ -42,9 +42,8 @@ LEGENDRE_BACKENDS = BackendTable(
             require_uniform_dtype=True,
             probes=_FLOAT_ARGS,
             probe=(_CPU, "why_unavailable"),
-            # A compiler is not guaranteed on every host, and a missing one is a
-            # performance problem, not an outage.
-            expect_available="never",
+            # Same package as the CPU splat, so the same expectation.
+            expect_available="native",
             # NOT "degrade": the kernel accumulates into Tr/Ti as it goes, so a
             # mid-run failure leaves them partly written and the portable path
             # would add its own contributions on top. There is nothing to fall

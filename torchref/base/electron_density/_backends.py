@@ -71,10 +71,9 @@ DENSITY_BACKENDS = BackendTable(
             require_uniform_dtype=True,
             probes=_ATOM_ARGS,
             probe=(_SPHERE, "why_unavailable"),
-            # A prebuilt CPU kernel with no hardware requirement, so it must work wherever
-            # torchref-kernels is installed. The expectation is what makes a missing or
-            # broken install a CI failure instead of a skip.
-            expect_available="always",
+            # Required wherever torchref-kernels publishes a wheel, so a missing or broken
+            # install there is a CI failure instead of a skip.
+            expect_available="native",
             # Deliberately not "degrade". A missing or unloadable kernel package already
             # yields a reason from the probe, so this governs only a runtime throw from a
             # kernel that loaded -- a genuine bug. Falling back would turn wrong results
