@@ -182,7 +182,7 @@ def test_fft_hvp_matches_ds(scene_fine, oracle_fine, kind, dtype, pin):
 
     This is the replacement for the two failing FD-based tests, and it covers strictly
     more: both dtypes and both backends, where the originals covered float64-plain and
-    float32-C++ only, each with its own hand-tuned ``eps``.
+    float32-fused only, each with its own hand-tuned ``eps``.
 
     Both sides contract with the same seeded direction ``v`` (from the oracle fixture),
     since an HVP is only comparable along a shared direction.
@@ -214,7 +214,7 @@ def test_fused_cpu_kernel_uses_the_double_backward_fallback(
 ):
     """Non-vacuity guard for the AUTO second-order path.
 
-    The fused C++ sphere splat has a hand-written first-order backward with no graph, so
+    The fused CPU sphere splat has a hand-written first-order backward with no graph, so
     under ``create_graph=True`` it routes through ``_double_backward_vjp``, which re-runs
     the forward through the portable torch splat on the *saved* leaves and differentiates
     that. Without this guard, ``test_fft_hvp_matches_ds[auto]`` would still pass if AUTO

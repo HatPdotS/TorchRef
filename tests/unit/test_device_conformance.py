@@ -16,7 +16,6 @@ Before this file, the only test that exercised a real device transition was
 CUDA-gated -- meaning zero coverage on CPU-only CI and on Apple silicon.
 """
 
-from pathlib import Path
 
 import pytest
 import torch
@@ -36,6 +35,7 @@ from tests.helpers.device_cases import (
     UNCOVERED_PREFIXES,
 )
 from tests.helpers.device_inventory import device_mixin_classes
+from tests.helpers.source_tree import PACKAGE_ROOT, requires_source_tree
 
 _IDS = [c.name for c in CASES]
 
@@ -88,6 +88,7 @@ def test_tracker_agrees_with_owned_tensor(case, any_device):
 
 
 @pytest.mark.unit
+@requires_source_tree
 def test_every_device_bearing_class_is_accounted_for():
     """A new device-bearing class must be given a case or an explicit excuse.
 
@@ -95,7 +96,7 @@ def test_every_device_bearing_class_is_accounted_for():
     the runtime hook only sees classes whose module happens to be imported, so
     it would silently under-report exactly when coverage regressed.
     """
-    package_root = Path(__file__).resolve().parents[2] / "torchref"
+    package_root = PACKAGE_ROOT
     found = device_mixin_classes(package_root)
 
     covered = (
@@ -147,9 +148,10 @@ def test_dataset_space_group_follows_the_requested_device(mtz_dir, monkeypatch):
 
 
 @pytest.mark.unit
+@requires_source_tree
 def test_uncovered_entries_still_exist():
     """Stop ``UNCOVERED`` accumulating excuses for classes that are long gone."""
-    package_root = Path(__file__).resolve().parents[2] / "torchref"
+    package_root = PACKAGE_ROOT
     found = set(device_mixin_classes(package_root))
     stale = sorted(set(UNCOVERED) - found)
     assert not stale, f"UNCOVERED lists classes that no longer exist: {stale}"

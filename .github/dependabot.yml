@@ -30,6 +30,17 @@ updates:
       - dependency-name: "torch"
         update-types: ["version-update:semver-major"]
 
+  # Rust kernels (kernels/Cargo.toml)
+  - package-ecosystem: "cargo"
+    directory: "/kernels"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "deps(kernels)"
+
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"

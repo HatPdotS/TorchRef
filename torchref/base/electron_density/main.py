@@ -14,7 +14,7 @@ Which kernel runs, and whether a runtime failure may degrade, is read from
 Selection needs no configuration and there are no env-var knobs: the fastest kernel for
 the device and dtype wins. An unavailable accelerator falls through to the next row
 silently (CI catches it through ``expect_available``), a CUDA or Metal kernel that throws
-degrades to the portable splat with a ``TorchRefDegradationWarning``, and the C++
+degrades to the portable splat with a ``TorchRefDegradationWarning``, and the CPU
 kernel's runtime errors propagate. The one override is ``force_portable`` (per call, or
 ``with use_portable(): ...``), for the single failure automatic fallback cannot detect
 -- a kernel that runs and returns *wrong numbers* rather than raising.

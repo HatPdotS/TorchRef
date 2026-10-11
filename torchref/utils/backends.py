@@ -109,12 +109,19 @@ def _mps_present() -> bool:
     return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 
 
+def _native_wheel_host() -> bool:
+    from torchref.utils import native
+
+    return native.expected_here()
+
+
 #: Host conditions a backend can declare via ``Backend.expect_available``.
 _EXPECTATIONS = {
     "never": lambda: False,
     "always": lambda: True,
     "cuda": torch.cuda.is_available,
     "mps": _mps_present,
+    "native": _native_wheel_host,
 }
 
 
@@ -158,9 +165,10 @@ class Backend:
         ``(module_path, attr)`` of a zero-argument callable returning ``None`` when the
         backend is usable, else a human-readable reason; ``None`` means always available.
         Resolved late, so a cache the callable consults can still be invalidated.
-    expect_available : {"never", "always", "cuda", "mps"}
+    expect_available : {"never", "always", "cuda", "mps", "native"}
         The host condition under which this backend *must* work, so a broken build fails
-        instead of skipping. Distinct from ``probe``, which reports what is true; this
+        instead of skipping. ``"native"`` means a host torchref-kernels ships a wheel for
+        (:func:`torchref.utils.native.expected_here`). Distinct from ``probe``, which reports what is true; this
         states what ought to be, and is **not** consulted by :func:`select`.
     on_failure : {"raise", "degrade"}
         What a *runtime* exception from the kernel means: ``"degrade"`` falls back to the
@@ -316,7 +324,7 @@ def select(
 
     Two-phase by contract: device and dtype are checked for every candidate *before* any
     availability probe is called. That ordering is load-bearing -- it keeps an MPS host from
-    compiling the CPU C++ extension it will never use, and a CUDA host from importing Triton
+    loading the CPU kernel extension it will never use, and a CUDA host from importing Triton
     to answer a question about a CPU tensor.
 
     Parameters

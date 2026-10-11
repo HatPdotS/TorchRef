@@ -1,0 +1,34 @@
+[package]
+name = "torchref_kernels"
+version = "0.1.0-rc.1"
+edition = "2024"
+# `slice::as_chunks`.
+rust-version = "1.88"
+license = "MIT"
+description = "Prebuilt CPU kernels for TorchRef"
+repository = "https://github.com/HatPdotS/TorchRef"
+build = "build.rs"
+
+[lib]
+name = "torchref_kernels"
+# cdylib is the Python extension; rlib lets `cargo test` link the kernels.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+multiversion = "0.9.0"
+pyo3 = { version = "0.29.3", features = ["abi3-py310"] }
+rayon = "1.12.0"
+
+[features]
+# Enabled by maturin (pyproject.toml). Off for `cargo test`, which must link libpython.
+extension-module = ["pyo3/extension-module"]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+
+# A forgotten `--release` on `maturin develop` must not produce a kernel that is
+# silently 10-100x slower; debug assertions stay on so dev builds still check bounds.
+[profile.dev]
+opt-level = 3

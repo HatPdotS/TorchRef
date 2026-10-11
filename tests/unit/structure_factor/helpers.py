@@ -557,10 +557,10 @@ def maybe_portable(pin: bool):
     ``[Engine.AUTO, Engine.EAGER]`` parametrizations used.
 
     Those parametrizations are all still two *distinct* kernels, which is worth stating
-    because it is easy to assume otherwise: on CPU the default selects the fused C++ sphere
+    because it is easy to assume otherwise: on CPU the default selects the fused CPU sphere
     splat and the pin selects the portable ``scatter_add`` one. Even at second order they
     differ -- only the double-backward *re-derivation* borrows the portable splat, while the
-    forward and first derivative stay in C++.
+    forward and first derivative stay in the fused kernel.
     """
     return use_portable() if pin else contextlib.nullcontext()
 
@@ -584,6 +584,8 @@ def _table_names_for(table, device: torch.device, dtype: torch.dtype):
     Reads ``Backend.device`` / ``Backend.dtypes`` rather than calling ``select``: the point
     is to enumerate every kernel that *can* run here so each gets its own direct-call
     accuracy test, whereas ``select`` answers the narrower question of which one wins.
+    A backend that is unavailable on a host where it is not expected (``expect_available``)
+    is left out too; where it is expected, it stays in and fails.
     """
     if not device_supports_dtype(device, dtype):
         return []
@@ -592,6 +594,8 @@ def _table_names_for(table, device: torch.device, dtype: torch.dtype):
         if b.device is not None and b.device != device.type:
             continue
         if b.dtypes is not None and dtype not in b.dtypes:
+            continue
+        if not b.expected_here() and b.unavailable() is not None:
             continue
         out.append(b.name)
     return out

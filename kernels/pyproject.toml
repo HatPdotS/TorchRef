@@ -1,0 +1,34 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "torchref-kernels"
+dynamic = ["version"]
+description = "Prebuilt CPU kernels for TorchRef"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "HansPeterSeidel"}]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "torchref_kernels._native"
+features = ["extension-module"]
+# `pip install ./kernels` and the wheels build in release; `maturin develop` uses the dev
+# profile, which Cargo.toml also optimises, so neither path yields a slow kernel.
+profile = "release"
+
+[tool.uv]
+# uv only rebuilds a local package when these change; without them a Rust edit is ignored.
+cache-keys = [
+    {file = "pyproject.toml"},
+    {file = "Cargo.toml"},
+    {file = "Cargo.lock"},
+    {file = "build.rs"},
+    {file = "src/**/*.rs"},
+]

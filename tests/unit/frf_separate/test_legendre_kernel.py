@@ -51,7 +51,12 @@ def _run(fn, case):
     return Tr, Ti
 
 
-@pytest.mark.parametrize("L,n_clusters,n_shells", [(13, 500, 40),
+# The kernel pads rows to 8-lane blocks: L = 5, 16 and 17 sit below, on and just past
+# a block boundary.
+@pytest.mark.parametrize("L,n_clusters,n_shells", [(5, 200, 10),
+                                                   (13, 500, 40),
+                                                   (16, 500, 40),
+                                                   (17, 500, 40),
                                                    (65, 4000, 300),
                                                    (101, 3000, 250)])
 def test_fused_agrees_with_portable(L, n_clusters, n_shells):

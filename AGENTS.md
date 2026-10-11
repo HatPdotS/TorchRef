@@ -55,8 +55,8 @@ Practically:
   `index_select` and `index_add_` accept it. A literal int dtype survives only where torch or
   the arithmetic forces it, with a `# dtype-ok:` marker naming the constraint: `scatter`/`gather`
   indices (int64 on torch < 2.8), `index_copy_`/`index_fill_`/`one_hot` (int64 always), packed
-  keys such as `i * n + j` that overflow int32, compiled kernels that `TORCH_CHECK` a dtype
-  (the Legendre shell kernel), and external-library contracts (TorchMD-Net).
+  keys such as `i * n + j` that overflow int32, native kernels that read a fixed dtype
+  (the Legendre shell kernel's int64 labels), and external-library contracts (TorchMD-Net).
 - `torch.float64` *is* a supported configuration (`TORCHREF_DTYPE_FLOAT=float64`) used as an
   eager numerical reference and in gradient checks. Code must **work** in float64, must not
   **require** it, and must not silently downcast (see `tests/integration/test_dtype_config_float64.py`).
@@ -296,6 +296,19 @@ defined. Accelerator gates are pairwise device-disjoint, so at most one non-base
 matches. `set_force_portable(True)` pins dispatch to the reference kernel — the one override
 that exists, for the failure automatic fallback cannot detect: an accelerator that runs and
 returns wrong numbers.
+
+The CPU kernels are prebuilt Rust in `kernels/`, shipped as the separate `torchref-kernels`
+package and loaded through `torchref/utils/native.py` (which owns the tensor→pointer
+conversion and its checks). Nothing is compiled at runtime. After editing `kernels/`,
+rebuild with `pip install ./kernels`; `test_canonical_sphere_cpu.py` fails on a stale or
+unoptimised build. A new CPU kernel is a module there plus one registration line in
+`kernels/src/lib.rs`; bump `ABI_VERSION` (Rust and `native.py`) when an entry point changes.
+
+The kernels' rayon pool shares the cores with torch's OpenMP workers, which spin after
+every parallel op unless `OMP_WAIT_POLICY=PASSIVE`. The console scripts set that through
+`_torchref_cli.py` (repo root, outside the package, so it runs before torch loads); `import
+torchref` deliberately does not, since it would change every OpenMP library in the user's
+process. A new CLI gets its entry point there, never a direct `torchref.cli.<module>:main`.
 
 Silent degradation is a test failure: `TorchRefDegradationWarning` is promoted to an error in
 `pyproject.toml`'s `filterwarnings`.

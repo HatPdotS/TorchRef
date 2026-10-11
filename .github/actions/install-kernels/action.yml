@@ -1,0 +1,23 @@
+name: Install torchref-kernels from source
+description: >
+  Build the Rust CPU kernels in kernels/ with a release profile and install them into
+  the active Python, so the job tests this checkout's kernels rather than a PyPI wheel.
+  Run after actions/setup-python and before installing torchref.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Rust build
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: kernels
+
+    - name: Build and install torchref-kernels
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install ./kernels
+        python -c "import torchref_kernels as k; print(k.build_info())"

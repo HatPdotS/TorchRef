@@ -31,7 +31,9 @@ New features
 
 Performance
 ~~~~~~~~~~~
+- CPU density kernels ship prebuilt in the new ``torchref-kernels`` package (Rust): nothing is compiled at runtime, ``ninja`` is no longer a dependency, and the CPU splat is multithreaded on macOS. Wheels cover Linux x86_64/aarch64, macOS arm64 and Windows x86_64; other platforms run the portable CPU kernels unless ``torchref-kernels`` is built from source
 - Faster CPU VDW pair search, hydrogen-mode switching and ADP-locality neighbours; ``SfFFT`` stores no real-space grid
+- The command-line tools set ``OMP_WAIT_POLICY=PASSIVE``, so idle OpenMP workers no longer spin on the cores the CPU kernels need: multithreaded CPU refinement is faster. Library use is unchanged; see the CLI guide to opt in
 
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~

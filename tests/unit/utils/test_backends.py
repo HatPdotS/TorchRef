@@ -16,6 +16,7 @@ against the shipping tables.
 import pytest
 import torch
 
+from tests.helpers.source_tree import PACKAGE_ROOT
 from torchref.utils.backends import (
     Backend,
     BackendTable,
@@ -199,6 +200,41 @@ def test_expectation_conditions_are_evaluated_against_the_host():
     assert mk("always").expected_here() is True
     assert mk("never").expected_here() is False
     assert mk("cuda").expected_here() is torch.cuda.is_available()
+    from torchref.utils import native
+
+    assert mk("native").expected_here() is native.expected_here()
+
+
+@pytest.mark.parametrize(
+    "sys_platform,machine",
+    [
+        (p, m)
+        for p in ("linux", "darwin", "win32")
+        for m in ("x86_64", "aarch64", "arm64", "AMD64", "ARM64", "ppc64le")
+    ],
+)
+def test_native_expectation_matches_the_kernel_dependency_marker(sys_platform, machine):
+    """``"native"`` expects the kernels exactly where pip installs them.
+
+    The torchref-kernels dependency in ``pyproject.toml`` carries a platform marker; a host
+    it excludes runs the portable kernels, and must not fail the availability tests.
+    """
+    tomllib = pytest.importorskip("tomllib")
+    requirements = pytest.importorskip("packaging.requirements")
+    from torchref.utils import native
+
+    pyproject = PACKAGE_ROOT.parent / "pyproject.toml"
+    if not pyproject.is_file():
+        pytest.skip(f"no pyproject.toml at {pyproject}")
+    with open(pyproject, "rb") as f:
+        deps = tomllib.load(f)["project"]["dependencies"]
+    (kernels,) = [
+        r for r in map(requirements.Requirement, deps) if r.name == "torchref-kernels"
+    ]
+    env = {"sys_platform": sys_platform, "platform_machine": machine}
+    assert kernels.marker.evaluate(env) == (
+        (sys_platform, machine) in native.WHEEL_PLATFORMS
+    )
 
 
 def test_expectation_does_not_influence_selection():
@@ -303,7 +339,7 @@ def test_availability_is_not_probed_when_device_already_mismatches():
     """Device/dtype must be rejected before the probe is consulted.
 
     Enforced with a probe that raises if reached, because getting the order wrong is
-    invisible to a return-value assertion: an MPS host would compile the CPU C++ extension it
+    invisible to a return-value assertion: an MPS host would load the CPU kernel extension it
     never uses, and a CPU-only host would import Triton to answer a question about a CPU
     tensor.
     """

@@ -486,7 +486,7 @@ def test_triton_splat_decodes_every_box_voxel():
 def test_triton_splat_wraps_a_box_wider_than_the_cell():
     """A 7 Å radius in a 4.8 Å cell edge: the box spans the cell more than once.
 
-    Every voxel index must wrap fully into the map, as the portable, C++ and Metal splats
+    Every voxel index must wrap fully into the map, as the portable, fused CPU and Metal splats
     do, so periodic images of the same atom add into the same voxels. The large ADP keeps
     the density at the far x faces of the box well above float noise.
     """

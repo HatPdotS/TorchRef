@@ -41,19 +41,22 @@ dependencies = [
     "matplotlib>=3.7.0,<3.11.0",
     "reciprocalspaceship>=0.9.18,<1.1.0",
     "pyarrow>=12.0.0,<26.0.0",
-    "ninja>=1.10",
+    # Prebuilt CPU kernels (kernels/ in this repo). Only where wheels are published, so
+    # installing torchref never needs a Rust toolchain; elsewhere the portable path runs.
+    "torchref-kernels>=0.1.0rc1,<0.2; (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')) or (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
 ]
 
 [project.scripts]
-"torchref.refine" = "torchref.cli.refine:main"
-"torchref.difference-refine" = "torchref.cli.collection_difference_refine:main"
-"torchref.simulate-noisy-data" = "torchref.cli.simulate_noisy_data:main"
-"torchref.mtz2map" = "torchref.cli.mtz2map:main"
-"torchref.validate-ded" = "torchref.cli.validate_ded:main"
-"torchref.difference-map" = "torchref.cli.difference_map:main"
-"torchref.add-metadata" = "torchref.cli.add_metadata:main"
-"torchref.strip-altlocs" = "torchref.cli.strip_altlocs:main"
-"torchref.uniform-rfree" = "torchref.cli.uniform_rfree:main"
+# All through _torchref_cli, which applies process settings before torch is imported.
+"torchref.refine" = "_torchref_cli:refine"
+"torchref.difference-refine" = "_torchref_cli:collection_difference_refine"
+"torchref.simulate-noisy-data" = "_torchref_cli:simulate_noisy_data"
+"torchref.mtz2map" = "_torchref_cli:mtz2map"
+"torchref.validate-ded" = "_torchref_cli:validate_ded"
+"torchref.difference-map" = "_torchref_cli:difference_map"
+"torchref.add-metadata" = "_torchref_cli:add_metadata"
+"torchref.strip-altlocs" = "_torchref_cli:strip_altlocs"
+"torchref.uniform-rfree" = "_torchref_cli:uniform_rfree"
 
 [project.optional-dependencies]
 
@@ -87,9 +90,14 @@ docs = [
 [tool.setuptools.dynamic]
 version = {attr = "torchref.__version__"}
 
+[tool.setuptools]
+# The console-script launcher; outside the package so it runs before torch is imported.
+py-modules = ["_torchref_cli"]
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["torchref*"]
+# Not "torchref*": that would also match a torchref_kernels package dir.
+include = ["torchref", "torchref.*"]
 
 [tool.setuptools.package-data]
 torchref = ["data/*.csv", "data/*.json", "data/*.pt", "data/monomer_library/**/*.cif"]

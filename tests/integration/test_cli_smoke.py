@@ -2,7 +2,8 @@
 Smoke tests for every registered ``torchref.*`` CLI entry point.
 
 For each script declared in ``pyproject.toml`` under ``[project.scripts]``
-we verify two cheap invariants:
+we run its entry point the way the generated console script does and verify
+two cheap invariants:
 
 1. ``--help`` exits 0 with non-empty stdout — proves the module imports
    cleanly and its argparse setup is well-formed.
@@ -51,14 +52,9 @@ def _parse_project_scripts(pyproject_path: Path):
     return scripts
 
 
-def _entry_point_to_module(target: str) -> str:
-    """``torchref.cli.refine:main`` -> ``torchref.cli.refine``."""
-    return target.split(":", 1)[0]
-
-
 def _collect_clis(project_root: Path):
     scripts = _parse_project_scripts(project_root / "pyproject.toml")
-    return [(name, _entry_point_to_module(target)) for name, target in scripts.items()]
+    return list(scripts.items())
 
 
 def _project_root_for_collection() -> Path:
@@ -67,6 +63,25 @@ def _project_root_for_collection() -> Path:
 
 
 CLI_ENTRY_POINTS = _collect_clis(_project_root_for_collection())
+
+
+def _run_entry_point(cli_name: str, target: str, *args: str):
+    """Run ``module:attr`` as its console script would, with ``args``."""
+    module, attr = target.split(":", 1)
+    code = (
+        "import sys\n"
+        f"sys.argv[0] = {cli_name!r}\n"
+        f"from {module} import {attr}\n"
+        f"sys.exit({attr}())\n"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", code, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=_project_root_for_collection(),
+    )
 
 
 @pytest.mark.integration
@@ -80,18 +95,13 @@ def test_pyproject_scripts_section_found():
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "cli_name,module_name",
+    "cli_name,target",
     CLI_ENTRY_POINTS,
     ids=[name for name, _ in CLI_ENTRY_POINTS],
 )
-def test_cli_help(cli_name, module_name):
-    """``python -m <module> --help`` exits 0 with non-empty stdout."""
-    result = subprocess.run(
-        [sys.executable, "-m", module_name, "--help"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+def test_cli_help(cli_name, target):
+    """``<cli> --help`` exits 0 with non-empty stdout."""
+    result = _run_entry_point(cli_name, target, "--help")
     assert result.returncode == 0, (
         f"{cli_name}: --help exited {result.returncode}. "
         f"stderr tail: {result.stderr[-500:]}"
@@ -103,23 +113,18 @@ def test_cli_help(cli_name, module_name):
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "cli_name,module_name",
+    "cli_name,target",
     CLI_ENTRY_POINTS,
     ids=[name for name, _ in CLI_ENTRY_POINTS],
 )
-def test_cli_rejects_missing_args(cli_name, module_name):
+def test_cli_rejects_missing_args(cli_name, target):
     """Running with no arguments must produce a non-zero exit.
 
     Every CLI in torchref takes at least one required argument (an input
     file or similar). Invoking with nothing should therefore fail; an exit
     code of 0 would mean we silently no-op'd or accepted bogus inputs.
     """
-    result = subprocess.run(
-        [sys.executable, "-m", module_name],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    result = _run_entry_point(cli_name, target)
     assert result.returncode != 0, (
         f"{cli_name}: expected non-zero exit on no-args invocation, "
         f"got 0. stdout tail: {result.stdout[-500:]}"
