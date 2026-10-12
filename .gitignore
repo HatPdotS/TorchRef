@@ -88,11 +88,8 @@ graphify-out/
 anisotropic/
 torchref_refine_optimization/runs/
 
-# Alignment lab: keep lab/, diagnostics/, analysis/ and tests/ tracked;
-# ignore run outputs (CSVs, Phaser working dirs) and scheduler logs.
-alignment_lab/runs/
-alignment_lab/slurm/
-alignment_lab/**/__pycache__/
+# Alignment lab: a local experiment workspace, kept out of the repository entirely.
+alignment_lab/
 
 # Third-party Phaser source copy (from PHENIX 1.20-4459) for FRF map instrumentation
 phaser_src/
