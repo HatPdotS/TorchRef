@@ -7,6 +7,9 @@ the parsed value; importing that table imports torch, which ``--help`` must not 
 #: :data:`torchref.maps.ded_weights.SCHEMES` and ``DEFAULT_SCHEME``.
 DED_WEIGHT_SCHEMES, DEFAULT_DED_WEIGHT_SCHEME = ("none", "inverse_variance", "q"), "q"
 
+#: ``difference_power.SIGMA_SCALE_BOUNDS`` (``refinement.model_error_estimation``).
+SIGMA_SCALE_BOUNDS = (0.1, 10.0)
+
 #: :data:`torchref.scaling.scaler_base.SCALE_TARGETS` and ``DEFAULT_SCALE_TARGET``.
 SCALE_TARGETS, DEFAULT_SCALE_TARGET = ("nll", "ml_noalpha", "ls"), "ls"
 

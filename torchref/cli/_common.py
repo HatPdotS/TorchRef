@@ -404,16 +404,14 @@ def add_all_columns_arg(parser: argparse.ArgumentParser) -> None:
 
 def _sigma_scale_arg(value: str) -> float | None:
     """``--difference-sigma-scale``: ``fit`` (``None``) or a scale within bounds."""
-    from torchref.refinement.model_error_estimation.difference_power import (
-        _check_sigma_scale,
-    )
+    from torchref.cli._choices import SIGMA_SCALE_BOUNDS
 
     if value.strip().lower() == "fit":
         return None
-    try:
-        return _check_sigma_scale(float(value))
-    except ValueError as err:
-        raise argparse.ArgumentTypeError(str(err)) from None
+    lo, hi = SIGMA_SCALE_BOUNDS
+    if not lo <= float(value) <= hi:
+        raise argparse.ArgumentTypeError(f"must lie in {lo}..{hi}, got {value}")
+    return float(value)
 
 
 def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
