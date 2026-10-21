@@ -18,6 +18,9 @@ amplitude biases the map toward the very model the experiment is testing.
 Given ``-lm``, the light state's amplitude and phase and the extrapolated map follow.
 ``--all-columns`` adds the alternative constructions of both.
 
+Beside the MTZ, ``<name>_summary.json`` records the inputs, the dataset scaling, the
+R-factors and the fits behind the weights and the extrapolation shrinkage.
+
 Examples
 --------
 ::
@@ -32,23 +35,23 @@ Examples
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-import torch
-
+from torchref.cli._choices import DEFAULT_DED_WEIGHT_SCHEME
 from torchref.cli._common import (
     add_all_columns_arg,
     add_ded_weight_args,
-    add_dual_model_args,
     add_dmin_arg,
+    add_dual_model_args,
     add_general_args,
     add_output_arg,
     build_dual_column_names,
     configure_unbuffered_output,
-    register_timing,
-    parse_device_str,
     difference_config_from_args,
+    parse_device_str,
+    register_timing,
     validate_cif_files,
     validate_files,
 )
@@ -56,13 +59,64 @@ from torchref.cli._common import (
 configure_unbuffered_output()
 
 
+def _summary_path(out_path: Path) -> Path:
+    """The summary JSON beside the MTZ: ``results.mtz`` -> ``results_summary.json``."""
+    return out_path.with_name(f"{out_path.stem}_summary.json")
+
+
+def _check_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace):
+    """Refuse argument combinations that would be silently ignored.
+
+    Runs before any data is read, so a mistake costs no scale fit.
+    """
+    has_light_model = args.light_model is not None
+    if has_light_model and args.fraction is None:
+        parser.error(
+            "--fraction is required with -lm/--light-model: the extrapolation "
+            "divides by the light-state occupancy."
+        )
+    if not has_light_model and args.fraction is not None:
+        parser.error(
+            "--fraction needs -lm/--light-model. Without a light model only the "
+            "weighted difference map is written, and it carries no occupancy: the "
+            "amplitude is |Fo_light| - |Fo_dark| and the weight comes from the "
+            "sigmas."
+        )
+    if not has_light_model and args.all_columns:
+        parser.error(
+            "--all-columns needs -lm/--light-model: every column it adds is built from "
+            "the light state's model. The difference map alone has no alternatives."
+        )
+    if args.ded_weight != DEFAULT_DED_WEIGHT_SCHEME and not (
+        has_light_model and args.all_columns
+    ):
+        parser.error(
+            "--ded-weight only weights the model-phased difference columns that "
+            "-lm/--light-model with --all-columns adds. The difference map carries "
+            "every scheme's weight as its own column (W_Q, W_InVa): choose one when "
+            "building the map, e.g. torchref.mtz2map -csf dF -cw W_InVa -cphi PHDELWT."
+        )
+
+    out_path = Path(args.output)
+    if out_path.is_dir() or args.output.endswith(("/", "\\")):
+        parser.error(
+            f"-o/--output names the MTZ file to write, not a directory: {args.output}"
+        )
+    if out_path.suffix.lower() != ".mtz":
+        parser.error(f"-o/--output must end in .mtz, got {args.output}")
+
+
 def main():
     """Entry point for ``torchref.difference-map``; returns the exit code."""
     parser = argparse.ArgumentParser(
+        prog="torchref.difference-map",
         description="Compute difference and extrapolated map coefficients "
                     "(no refinement).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Writes the MTZ named by -o and, beside it, <name>_summary.json with the inputs,
+the dataset scaling, the R-factors and the difference-weight fit.
+
 Examples:
   # difference map only -- needs no light model and no fraction
   torchref.difference-map \\
@@ -84,7 +138,11 @@ Examples:
     add_dual_model_args(parser, fraction_required=False, light_model_required=False)
 
     output = parser.add_argument_group("Output")
-    add_output_arg(output, help="Output MTZ file path (e.g. results.mtz)")
+    add_output_arg(
+        output,
+        help="Output MTZ file (e.g. results.mtz); the JSON summary is written beside "
+        "it as <name>_summary.json",
+    )
     add_all_columns_arg(output)
     add_ded_weight_args(output)
 
@@ -94,27 +152,9 @@ Examples:
     add_general_args(parser)
 
     args = parser.parse_args()
-
-    register_timing()
+    _check_arguments(parser, args)
 
     has_light_model = args.light_model is not None
-    if has_light_model:
-        if args.fraction is None:
-            parser.error(
-                "--fraction is required with -lm/--light-model: the extrapolation "
-                "divides by the light-state occupancy."
-            )
-        fractions = [1.0 - args.fraction, args.fraction]
-    else:
-        fractions = None
-        if args.fraction is not None:
-            parser.error(
-                "--fraction needs -lm/--light-model. Without a light model only the "
-                "weighted difference map is written, and it carries no occupancy: the "
-                "amplitude is |Fo_light| - |Fo_dark| and the weight comes from the "
-                "sigmas."
-            )
-
     to_check = [
         (args.dark_model, "dark model"),
         (args.dark_structure_factor, "dark structure factor"),
@@ -128,10 +168,28 @@ Examples:
     if validate_cif_files(args.cif):
         return 1
 
+    col_dark, col_light = build_dual_column_names(args)
+
+    import torch
+
+    from torchref.cli.collection_difference_refine import (
+        compute_rfactors,
+        setup_dark_only,
+        setup_dataset_collection,
+        setup_model_collection,
+        setup_scaler,
+        write_results_mtz,
+    )
+    from torchref.utils.serialization import convert_to_serializable
+
+    register_timing()
+
     out_path = Path(args.output)
+    summary_path = _summary_path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     device = parse_device_str(args.device)
+    fractions = [1.0 - args.fraction, args.fraction] if has_light_model else None
 
     if args.verbose > 0:
         print("=" * 72)
@@ -146,7 +204,8 @@ Examples:
             print("Light model:       (none) -- difference map only")
         print(f"Dark SF:           {args.dark_structure_factor}")
         print(f"Light SF:          {args.light_structure_factor}")
-        print(f"Output:            {args.output}")
+        print(f"Output:            {out_path}")
+        print(f"Summary:           {summary_path}")
         print(f"Device:            {device}")
         if args.dmin:
             print(f"Resolution cutoff: {args.dmin:.2f} A")
@@ -158,27 +217,20 @@ Examples:
         print()
         sys.stdout.flush()
 
-    from torchref.cli.collection_difference_refine import (
-        compute_rfactors,
-        setup_dark_only,
-        setup_model_collection,
-        setup_dataset_collection,
-        setup_scaler,
-        write_results_mtz,
-    )
-
-    d_min = args.dmin if args.dmin is not None else 1.0
-
     if args.verbose > 0:
         print("Loading reflection data...")
         sys.stdout.flush()
-
-    col_dark, col_light = build_dual_column_names(args)
 
     dc = setup_dataset_collection(
         args.dark_structure_factor, args.light_structure_factor, args.dmin, device,
         column_names_dark=col_dark, column_names_light=col_light,
     )
+
+    # The model's FFT grid has to reach the data it is compared with, so without
+    # --dmin it is sized from the data's own high-resolution limit.
+    d_min = args.dmin
+    if d_min is None:
+        d_min = min(float(dc[key].resolution.min()) for key in ("dark", "light"))
 
     if args.verbose > 0:
         print("Setting up models...")
@@ -196,31 +248,28 @@ Examples:
             sys.stdout.flush()
         scaler = setup_scaler(dc, mc, device, args.verbose)
         dark_model = mc.dark_model
-
-        if args.verbose > 0:
-            r_work_d, r_free_d = compute_rfactors(dark_model, dc["dark"], scaler)
-            r_work_l, r_free_l = compute_rfactors(mc["light"], dc["light"], scaler)
-            print(f"  R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
-            print(f"  R-factor (mixed): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
-            print()
-            sys.stdout.flush()
     else:
         mc = None
         dark_model, scaler = setup_dark_only(
             args.dark_model, dc, args.cif, d_min, device, args.verbose,
         )
-        if args.verbose > 0:
-            r_work_d, r_free_d = compute_rfactors(dark_model, dc["dark"], scaler)
-            print(f"  R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
-            print()
-            sys.stdout.flush()
 
+    fits = {"dark": (dark_model, dc["dark"])}
+    if has_light_model:
+        fits["mixed"] = (mc["light"], dc["light"])
+    r_factors = {}
+    for name, (model, data) in fits.items():
+        r_work, r_free = compute_rfactors(model, data, scaler)
+        r_factors[name] = {"r_work": r_work, "r_free": r_free}
+        if args.verbose > 0:
+            print(f"  R-factor ({name}): R_work={r_work:.4f}  R_free={r_free:.4f}")
     if args.verbose > 0:
+        print()
         print("Computing map coefficients...")
         sys.stdout.flush()
 
     with torch.no_grad():
-        write_results_mtz(
+        map_diagnostics = write_results_mtz(
             dc,
             dark_model,
             scaler,
@@ -230,9 +279,33 @@ Examples:
             verbose=args.verbose,
             ded_weight=args.ded_weight,
             difference_config=difference_config_from_args(args),
+            program="difference-map",
         )
 
+    summary = {
+        "input": {
+            "dark_model": args.dark_model,
+            "light_model": args.light_model,
+            "dark_structure_factor": args.dark_structure_factor,
+            "light_structure_factor": args.light_structure_factor,
+            "fractions": fractions,
+            "cif": args.cif,
+            "dmin": args.dmin,
+            "model_grid_dmin": d_min,
+            "all_columns": args.all_columns,
+            "ded_weight": args.ded_weight,
+            "difference_gamma": args.difference_gamma,
+            "difference_sigma_scale": args.difference_sigma_scale,
+        },
+        "dataset_scaling": dc.scaling_metrics,
+        "results": {"r_factors": r_factors, **map_diagnostics},
+        "output_files": {"mtz": str(out_path), "summary": str(summary_path)},
+    }
+    with open(summary_path, "w") as f:
+        json.dump(convert_to_serializable(summary), f, indent=2)
+
     if args.verbose > 0:
+        print(f"  Summary written to {summary_path}")
         print()
         print("Done.")
         sys.stdout.flush()

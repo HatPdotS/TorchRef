@@ -422,7 +422,10 @@ def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
     choice here decides which one the headline products (validate-ded correlations,
     model-phased difference columns) carry.
     """
-    from torchref.maps.ded_weights import DEFAULT_SCHEME, SCHEMES
+    from torchref.cli._choices import (
+        DED_WEIGHT_SCHEMES as SCHEMES,
+        DEFAULT_DED_WEIGHT_SCHEME as DEFAULT_SCHEME,
+    )
 
     parser.add_argument(
         "--ded-weight",

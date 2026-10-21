@@ -267,8 +267,16 @@ records this: the columns sit in named MTZ datasets -- ``observed``, ``differenc
 column chooser shows ``/torchref/extrapolated_light/FWT``, and ``gemmi mtz`` prints a
 history line per dataset. ``torchref.difference-refine`` writes the same file.
 
+``-o`` names the MTZ file (it must end in ``.mtz``), and ``<name>_summary.json`` is
+written beside it with the inputs, the dataset scaling, the R-factors and the fits
+behind the ``q`` weights and the extrapolation shrinkage. Options that would change
+nothing in the output are refused rather than ignored: ``--all-columns`` needs ``-lm``,
+and ``--ded-weight`` only weights the model-phased columns that ``-lm`` with
+``--all-columns`` adds -- the difference map itself carries every scheme's weight as a
+column, chosen with ``mtz2map -cw``.
+
 **Key options:** ``--ded-weight {q,inverse_variance,none}`` selects the scheme the
-model-phased and two-moment difference columns carry (default ``q``; its fit uses the
+model-phased difference columns carry (default ``q``; its fit uses the
 intensity differences when the data carry ``I``/``SIGI``, and falls back to inverse
 variance with a warning when too few reflections exist to fit); ``--difference-gamma``
 fixes the dark-amplitude exponent of the difference power law instead of fitting it;

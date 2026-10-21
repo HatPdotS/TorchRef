@@ -20,15 +20,19 @@ Examples
         --fraction 0.37 -o output/
 """
 
+# torch is imported inside the functions, after parse_args, so that --help does not
+# wait for it; the annotations that name it stay strings.
+from __future__ import annotations
+
 import argparse
 import itertools
 import json
 import sys
 import warnings
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import torch
-
+from torchref.cli._choices import DEFAULT_DED_WEIGHT_SCHEME
 from torchref.cli._common import (
     add_all_columns_arg,
     add_ded_weight_args,
@@ -52,15 +56,9 @@ from torchref.cli._common import (
     validate_cif_files,
     validate_files,
 )
-from torchref.io.datasets.french_wilson import french_wilson_auto
-from torchref.maps.ded_weights import (
-    DEFAULT_SCHEME,
-    WEIGHT_COLUMNS,
-    DedWeightFallbackWarning,
-    all_ded_weights,
-    difference_snr,
-)
-from torchref.utils.serialization import convert_to_serializable
+
+if TYPE_CHECKING:
+    import torch
 
 configure_unbuffered_output()
 
@@ -192,6 +190,8 @@ def compute_rfactors(model, data, scaler):
 
     Takes either scaler kind; see the branch below.
     """
+    import torch
+
     from torchref.base.metrics.rfactor import rfactor_work_free
 
     with torch.no_grad():
@@ -344,6 +344,8 @@ def compute_bayes_extrapolated_amplitudes(
         per reflection. The variance holds the model phases and the fitted weight
         fixed, so it excludes uncertainty in the fit, phases and occupancy.
     """
+    import torch
+
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
     z = F_dark_phased + (F_light_phased - F_dark_phased) / f
@@ -405,6 +407,9 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
         the type beside the value preserves the crystallographic column type.
     """
     import numpy as np
+    import torch
+
+    from torchref.io.datasets.french_wilson import french_wilson_auto
 
     empty = ({}, {})
     if float(mc.sigma_alpha_sq) == 0.0:
@@ -609,6 +614,8 @@ def _phasing_columns(mc, scaler, hkl_all, mask, *, fcalc_dark, Fobs_dark_vals,
     Returns ``(columns, types, ctx)``. ``ctx`` carries the intermediates the
     extrapolation and two-moment layers need, so nothing is computed twice.
     """
+    import torch
+
     mixed_model = mc["light"]
 
     with torch.no_grad():
@@ -701,6 +708,8 @@ def _extrapolation_columns(
     matters: the scaler contributes one through ``f_sol``, so the three fits do not agree
     and pairing these coefficients with another fit's phase would be wrong.
     """
+    import torch
+
     from torchref import ReflectionData, Scaler
     from torchref.base.metrics.rfactor import rfactor_work_free
 
@@ -812,10 +821,6 @@ def _extrapolation_columns(
     return columns, types, diagnostics
 
 
-_DIFFERENCE_DATASET_COLUMNS = (
-    "dF", "SIGdF", "PHDELWT", "KSCALE", *WEIGHT_COLUMNS.values()
-)
-
 # One history line per MTZ dataset, in the order they are written. MTZ history lines
 # are at most 80 characters.
 _MTZ_DATASET_HISTORY = {
@@ -831,7 +836,7 @@ _MTZ_DATASET_HISTORY = {
 }
 
 
-def _annotate_mtz(filename, datasets):
+def _annotate_mtz(filename, datasets, program="difference-refine"):
     """Group the columns of a written MTZ into named datasets and describe them.
 
     The column labels are left alone -- Coot's auto-open looks for ``FWT``/``PHWT`` by
@@ -847,6 +852,8 @@ def _annotate_mtz(filename, datasets):
     datasets : dict[str, str]
         Column label to dataset name. Unlisted columns, Miller indices included, stay
         in ``observed``.
+    program : str
+        The ``torchref.<program>`` named in the first history line.
     """
     import gemmi
 
@@ -873,7 +880,7 @@ def _annotate_mtz(filename, datasets):
             col.dataset_id = ids[datasets[col.label]]
 
     mtz.history = [
-        "torchref difference-refine map coefficients, grouped by dataset:",
+        f"torchref {program} map coefficients, grouped by dataset:",
         *(_MTZ_DATASET_HISTORY[name] for name in ids),
     ]
     mtz.write_to_file(filename)
@@ -888,8 +895,9 @@ def write_results_mtz(
     mc=None,
     all_columns=False,
     verbose=1,
-    ded_weight=DEFAULT_SCHEME,
+    ded_weight=DEFAULT_DED_WEIGHT_SCHEME,
     difference_config=None,
+    program="difference-refine",
 ):
     """Write the difference map, and map coefficients when a light model is given.
 
@@ -926,6 +934,8 @@ def write_results_mtz(
         Its ``gamma`` fixes the ``F_dark`` exponent of the ``q`` scheme and its
         ``sigma_scale`` the scale on the reported sigmas of the SNR the ``q`` weights
         and the extrapolation share.
+    program : str
+        The tool named in the MTZ history, ``torchref.<program>``.
 
     Returns
     -------
@@ -936,6 +946,14 @@ def write_results_mtz(
         extrapolated map is over-shrunk.
     """
     import reciprocalspaceship as rs
+    import torch
+
+    from torchref.maps.ded_weights import (
+        WEIGHT_COLUMNS,
+        DedWeightFallbackWarning,
+        all_ded_weights,
+        difference_snr,
+    )
 
     data_dark = dc[mc.dark_key] if mc is not None else dc["dark"]
     data_light = dc["light"]
@@ -1058,7 +1076,9 @@ def write_results_mtz(
         weight_columns=weight_columns,
         kscale=kscale,
     )
-    datasets = {name: "difference" for name in _DIFFERENCE_DATASET_COLUMNS}
+    datasets = dict.fromkeys(
+        ["dF", "SIGdF", "PHDELWT", "KSCALE", *weight_columns], "difference"
+    )
 
     if mc is not None:
         phase_cols, phase_types, ctx = _phasing_columns(
@@ -1118,7 +1138,7 @@ def write_results_mtz(
     df = df.infer_mtz_dtypes()
     df.set_index(["H", "K", "L"], inplace=True)
     df.write_mtz(filename)
-    _annotate_mtz(filename, datasets)
+    _annotate_mtz(filename, datasets, program=program)
 
     if verbose > 0:
         print(f"  Results MTZ written to {filename} ({len(columns)} columns)")
@@ -1142,6 +1162,8 @@ def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
     optimizer's intent. The dark model effectively becomes a frozen
     reference at the autograd level for the duration of each step.
     """
+    import torch
+
     parameters = list(parameters)
 
     def _make_optimizer():
@@ -1269,6 +1291,11 @@ Examples:
     add_general_args(parser)
 
     args = parser.parse_args()
+
+    import torch
+
+    from torchref.utils.serialization import convert_to_serializable
+
     register_timing()
 
     # --- Parse fractions ---

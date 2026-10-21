@@ -13,6 +13,8 @@ Breaking changes
 - Anomalous scattering is off unless ``--wavelength`` is given (it defaulted to 1.0 Å)
 - Bulk-solvent phase offset removed; ``optimize_phase`` is deprecated
 - ``phased-difference-map`` is now ``difference-map``: fewer default columns (``--all-columns``), renamed (``dF``, ``W_InVa``)
+- ``import torchref`` no longer imports torch: the top-level names (``Model``, ``ReflectionData``, ``dtypes``, ...) load on first access, and ``TORCHREF_DTYPE_*``/``TORCHREF_DEVICE`` are read then
+- ``torchref.difference-map`` refuses options it would ignore (``--all-columns`` or a non-default ``--ded-weight`` without ``-lm``, a ``-o`` that is not a ``.mtz`` file) and writes ``<name>_summary.json`` beside the MTZ
 - Refinement checkpoints restore only through ``load_state``; ``Refinement.create_from_state_dict`` is removed
 - ``french_wilson_auto`` moved to ``torchref.io.datasets``; ``CollectionRiceTarget`` is now ``CollectionMLTarget``
 - Refinement writes its own PDB/mmCIF header instead of copying the input's
@@ -33,6 +35,7 @@ Performance
 ~~~~~~~~~~~
 - CPU density kernels ship prebuilt in the new ``torchref-kernels`` package (Rust): nothing is compiled at runtime, ``ninja`` is no longer a dependency, and the CPU splat is multithreaded on macOS. Wheels cover Linux x86_64/aarch64, macOS arm64 and Windows x86_64; other platforms run the portable CPU kernels unless ``torchref-kernels`` is built from source
 - Faster CPU VDW pair search, hydrogen-mode switching and ADP-locality neighbours; ``SfFFT`` stores no real-space grid
+- Every command-line tool answers ``--help`` and argument errors without importing torch
 - The command-line tools set ``OMP_WAIT_POLICY=PASSIVE``, so idle OpenMP workers no longer spin on the cores the CPU kernels need: multithreaded CPU refinement is faster. Library use is unchanged; see the CLI guide to opt in
 
 Fixes that change results
@@ -45,6 +48,7 @@ Fixes that change results
 - Refinement: frozen parameters stay frozen, rigid-body translations refine, the scaler is refit warm each cycle
 - Density kernels on CPU, CUDA and MPS; long matrix products on MPS; REMARK 3 angle RMSD reported in degrees
 - CUDA ``ls``/``nll`` X-ray kernels score a signed ``F_calc`` as ``|F_calc|``, as the eager path does
+- ``torchref.difference-map`` without ``--dmin`` sizes the model's FFT grid from the data's resolution instead of a fixed 1.0 Å
 - ``WilsonNormaliser`` with ``s_lo``/``s_hi`` wider than the data: stable in float32 and no longer truncated by its log clamp
 
 Other fixes

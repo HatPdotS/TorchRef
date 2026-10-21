@@ -11,6 +11,12 @@ is the entry point and takes the MTZ and PDB paths directly::
     )
     refinement.refine(macro_cycles=10)
 
+``import torchref`` sets the thread count and ``PYTORCH_ENABLE_MPS_FALLBACK`` but does
+not import torch: the re-exported names below (``Model``, ``ReflectionData``,
+``dtypes``, ...) and the subpackages are imported on first access. The environment
+variables :mod:`torchref.config` reads are therefore read on that first access, not at
+``import torchref``.
+
 Modules
 -------
 io
@@ -42,12 +48,14 @@ utils
 __version__ = "0.7.0"
 
 
+import importlib
 import os
-
-# Must be set before torch is imported below, or it has no effect.
-os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+import sys
 import warnings
 from pathlib import Path
+
+# Must be set before torch is first imported, or it has no effect.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 from torchref._bootstrap import configure_threading, detect_available_cpus
 
@@ -68,12 +76,10 @@ else:
 
 configure_threading(N_CPUS)
 
-import torch
-
-torch.set_num_threads(N_CPUS)
-
-# Must come after torch: reads its dtype/device state at import.
-from torchref.config import device, dtypes, sigma_cutoff_ed
+# A torch already imported has read its thread count; one imported later reads it from
+# the OMP_NUM_THREADS just set.
+if "torch" in sys.modules:
+    sys.modules["torch"].set_num_threads(N_CPUS)
 
 # Project root path for referencing package files
 ROOT_TORCHREF = Path(__file__).parent.parent.resolve()
@@ -83,42 +89,55 @@ PATH_TORCHREF = Path(__file__).parent.resolve()
 
 PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 
-# =============================================================================
-# Convenience imports for common classes
-# =============================================================================
+# Public name -> defining module. Resolved on first access by ``__getattr__`` so that
+# ``import torchref`` (and with it every ``torchref.cli`` module, whose ``--help`` must
+# not wait for torch) does not import torch. ``Restraints`` is deliberately absent:
+# constructing it can trigger a monomer-library download.
+_LAZY_EXPORTS = {
+    "dtypes": "torchref.config",
+    "device": "torchref.config",
+    "sigma_cutoff_ed": "torchref.config",
+    "DatasetCollection": "torchref.io",
+    "ReflectionData": "torchref.io",
+    "ScaledDataset": "torchref.io",
+    "read_cif": "torchref.io",
+    "read_mtz": "torchref.io",
+    "read_pdb": "torchref.io",
+    "DifferenceMap": "torchref.maps",
+    "Map": "torchref.maps",
+    "Model": "torchref.model",
+    "ModelFT": "torchref.model",
+    "RigidXYZTensor": "torchref.model.rigid_xyz",
+    "LBFGSRefinement": "torchref.refinement",
+    "Refinement": "torchref.refinement",
+    "RigidBodyRefinementStep": "torchref.refinement.rigid_body_refinement",
+    "Scaler": "torchref.scaling",
+    "ScalerBase": "torchref.scaling",
+    "SolventModel": "torchref.scaling",
+    "Cell": "torchref.symmetry",
+    "SpaceGroup": "torchref.symmetry",
+    "Symmetry": "torchref.symmetry",
+    "DeviceMixin": "torchref.utils.device_mixin",
+}
 
 
-# Data I/O
-from torchref.io import (
-    DatasetCollection,
-    ReflectionData,
-    ScaledDataset,
-    read_cif,
-    read_mtz,
-    read_pdb,
-)
+def __getattr__(name: str):
+    """Import a re-exported name, or a subpackage, on first access."""
+    if name in _LAZY_EXPORTS:
+        value = getattr(importlib.import_module(_LAZY_EXPORTS[name]), name)
+    elif not name.startswith("_") and (
+        (PATH_TORCHREF / name / "__init__.py").exists()
+        or (PATH_TORCHREF / f"{name}.py").exists()
+    ):
+        value = importlib.import_module(f"{__name__}.{name}")
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value
 
-# Maps
-from torchref.maps import DifferenceMap, Map
 
-# Model
-from torchref.model import Model, ModelFT
-from torchref.model.rigid_xyz import RigidXYZTensor
-
-# Refinement
-from torchref.refinement import LBFGSRefinement, Refinement
-from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
-
-# Scaling
-from torchref.scaling import Scaler, ScalerBase, SolventModel
-from torchref.symmetry import Cell, SpaceGroup, Symmetry
-
-# Device movement mixin (public API for extension code)
-from torchref.utils.device_mixin import DeviceMixin
-
-# Restraints
-# torchref.topology.restraints.Restraints is not imported here: constructing it can
-# trigger a monomer-library download, so it stays lazy.
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))
 
 
 __all__ = [
