@@ -16,11 +16,7 @@ import sys
 import warnings
 from pathlib import Path
 
-from torchref.cli._choices import (
-    DEFAULT_SCALE_TARGET,
-    SCALE_TARGETS,
-    XRAY_TARGET_DOCS,
-)
+from torchref.cli._choices import DEFAULT_SCALE_TARGET, SCALE_TARGETS, XRAY_TARGET_DOCS
 from torchref.cli._common import (
     add_adp_mode_arg,
     add_dmin_arg,
@@ -148,12 +144,9 @@ Loss weights:
         "--xray-mode",
         type=str,
         default="ml",
-        choices=[name for name, _ in XRAY_TARGET_DOCS],
-        # Choices and help both come from the mirror of XRAY_TARGETS, which a test pins
-        # to the table, so the two cannot drift from each other or from the dispatch.
-        help="X-ray target function. " + "  ".join(
-            f"'{name}': {doc}" for name, doc in XRAY_TARGET_DOCS
-        ),
+        choices=list(XRAY_TARGET_DOCS),
+        help="X-ray target function. "
+        + "  ".join(f"'{name}': {doc}" for name, doc in XRAY_TARGET_DOCS.items()),
     )
     refine_group.add_argument(
         "--scale-target",
@@ -231,8 +224,7 @@ Loss weights:
 
     import torch
 
-    # Imported before any json output: it makes StatEntry serialisable process-wide.
-    import torchref.utils.stats  # noqa: F401
+    import torchref.utils.stats  # noqa: F401  (makes json serialise StatEntry)
     from torchref.utils.serialization import convert_to_serializable
 
     register_timing()

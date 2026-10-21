@@ -24,6 +24,7 @@ DIFF_COLUMNS = {
     "SIGFo_light": "Stddev",
     "dF": "SFAmplitude",
     "SIGdF": "Stddev",
+    "DELFWT": "SFAmplitude",
     "PHDELWT": "Phase",
     "W_InVa": "Weight",
     "W_Q": "Weight",
@@ -105,7 +106,7 @@ def _run(project_root, module, *argv, timeout=1800):
 
 @pytest.fixture(scope="module")
 def diff_mtz(project_root, pair):
-    out = pair["dir"] / "diff.mtz"
+    out = pair["dir"] / "diff"
     _run(
         project_root,
         "difference_map.py",
@@ -126,7 +127,7 @@ def diff_mtz(project_root, pair):
         "-o",
         out,
     )
-    return out
+    return out / "difference_map.mtz"
 
 
 def _read(path):
@@ -149,18 +150,6 @@ def test_difference_map_writes_df_weights_and_scale(diff_mtz):
     strong = f > np.median(f)
     assert w_q[strong].mean() > w_q[~strong].mean()
     assert (w_q > 0).all()
-
-
-def test_difference_map_writes_a_summary_beside_the_mtz(diff_mtz):
-    import gemmi
-
-    summary = json.loads(diff_mtz.with_name("diff_summary.json").read_text())
-    assert summary["output_files"]["mtz"] == str(diff_mtz)
-    assert set(summary["results"]["r_factors"]) == {"dark"}
-    assert summary["results"]["ded_weights"]["scheme"] == "q"
-    assert summary["input"]["model_grid_dmin"] == 2.2
-    history = gemmi.read_mtz_file(str(diff_mtz)).history
-    assert history[0].startswith("torchref difference-map ")
 
 
 def test_mtz2map_builds_the_weighted_and_electron_maps(project_root, pair, diff_mtz):

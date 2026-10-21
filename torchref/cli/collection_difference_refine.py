@@ -36,12 +36,12 @@ from torchref.cli._choices import DEFAULT_DED_WEIGHT_SCHEME
 from torchref.cli._common import (
     add_all_columns_arg,
     add_ded_weight_args,
-    add_dmin_arg,
     add_dual_model_args,
     add_general_args,
     add_metadata_args,
     add_outdir_arg,
     add_output_format_args,
+    add_resolution_args,
     add_weights_arg,
     apply_metadata_args,
     build_dual_column_names,
@@ -111,9 +111,9 @@ def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min, device, v
     return mc
 
 
-def setup_dataset_collection(sf_dark, sf_light, d_min, device,
-                             column_names_dark=None, column_names_light=None):
-    """Load reflection data and create a DatasetCollection."""
+def setup_dataset_collection(sf_dark, sf_light, d_min, device, column_names_dark=None,
+                             column_names_light=None, d_max=None):
+    """Load reflection data, cut to ``d_min``..``d_max`` (Å), and scale it jointly."""
     from torchref import DatasetCollection
 
     data_dark = load_reflection_data(
@@ -122,9 +122,9 @@ def setup_dataset_collection(sf_dark, sf_light, d_min, device,
     data_light = load_reflection_data(
         sf_light, device=device, column_names=column_names_light,
     )
-    if d_min is not None:
-        data_dark.filter_by_resolution(d_min=d_min)
-        data_light.filter_by_resolution(d_min=d_min)
+    if d_min is not None or d_max is not None:
+        data_dark.filter_by_resolution(d_min=d_min, d_max=d_max)
+        data_light.filter_by_resolution(d_min=d_min, d_max=d_max)
 
     dc = DatasetCollection(device=device)
     dc.add_dataset("dark", data_dark)
@@ -149,36 +149,21 @@ def setup_scaler(dataset_collection, model_collection, device, verbose=1):
     return scaler
 
 
-def setup_dark_only(pdb_dark, dc, cif, d_min, device, verbose):
-    """Load the dark model alone and scale it against the dark data.
+def setup_dark_scaler(model_dark, data_dark, device, verbose):
+    """Scale the dark model alone against the dark data; the difference map's phases.
 
-    This is everything a weighted difference map needs. The amplitude is
-    ``|Fo_light| - |Fo_dark|``, which :meth:`DatasetCollection.scale` has already put on
-    one scale without reference to any model, and the phase comes from the dark state.
-    So there is no mixed model, no occupancy fraction, and no joint model-to-data fit --
-    the joint fit exists to share scale parameters between two models, and here there is
-    only one.
-
-    A fitted scaler rather than a bare ``angle(model(hkl))`` because bulk solvent
-    contributes a phase at low resolution, which is exactly where difference density is
-    largest.
-
-    Returns
-    -------
-    tuple
-        ``(model_dark, scaler)`` -- ready to hand to :func:`write_results_mtz` with
-        ``mc=None``.
+    The difference amplitude ``|Fo_light| - |Fo_dark|`` is already on one scale
+    (:meth:`DatasetCollection.scale`) without reference to any model, so its phases need
+    the dark state only. Fitting them without the light model keeps the difference map
+    the same whether or not one is given. A fitted scaler rather than a bare
+    ``angle(model(hkl))`` because bulk solvent contributes a phase at low resolution,
+    which is exactly where difference density is largest.
     """
     from torchref import Scaler
 
-    model_dark = load_model(
-        pdb_dark, max_res=d_min, device=device, verbose=verbose, cif=cif,
-    )
-    scaler = Scaler(
-        model_dark, dc["dark"], device=device, verbose=max(-1, verbose - 1),
-    )
+    scaler = Scaler(model_dark, data_dark, device=device, verbose=max(-1, verbose - 1))
     scaler.initialize().refine_lbfgs()
-    return model_dark, scaler
+    return scaler
 
 
 def compute_rfactors(model, data, scaler):
@@ -371,10 +356,9 @@ def compute_bayes_extrapolated_amplitudes(
     return F_ext_bayes, var_ext_bayes, w
 
 
-def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
-                        *, weights, diff_Fobs, Fcalc_diff_amp, Fobs_dark,
-                        sig_dark, phi_mixed, F_obs_dark_phased, all_columns=False):
-    """Two-moment diagnostic columns, or empty dicts when the model is off.
+def _two_moment_columns(mc, dc, mask, ctx, *, weights, diff_Fobs, Fobs_dark, sig_dark,
+                        all_columns=False):
+    """Two-moment diagnostic columns, or an empty dict when the model is off.
 
     The observed light intensity carries a positive, phase-blind contamination
     ``sigma_alpha^2 |dF|^2`` from the spread of activation across crystals. Subtracting
@@ -394,30 +378,27 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     mask : torch.Tensor
         The dark-and-light validity intersection the writer uses; the returned columns
         are already reduced to it.
-    fcalc_dark_full, fcalc_mixed_full : torch.Tensor
-        Scaled complex structure factors on the **full** HKL list.
-    weights, diff_Fobs, Fcalc_diff_amp, Fobs_dark, sig_dark : numpy.ndarray
+    ctx : dict
+        The light-model intermediates of :func:`_phasing_columns`.
+    weights, diff_Fobs, Fobs_dark, sig_dark : numpy.ndarray
         Masked quantities the writer has already computed, reused so the corrected
         columns are constructed exactly like their uncorrected counterparts.
 
     Returns
     -------
-    tuple
-        ``(columns, types)`` -- the values, and the MTZ type letter for each. Carrying
-        the type beside the value preserves the crystallographic column type.
+    dict
+        ``{label: (values, MTZ type letter)}``.
     """
     import numpy as np
     import torch
 
     from torchref.io.datasets.french_wilson import french_wilson_auto
 
-    empty = ({}, {})
-    if float(mc.sigma_alpha_sq) == 0.0:
-        return empty
-
     data_light = dc["light"]
-    if data_light.I is None:
-        return empty
+    if float(mc.sigma_alpha_sq) == 0.0 or data_light.I is None:
+        return {}
+    fcalc_dark_full, fcalc_mixed_full = ctx["fcalc_dark_full"], ctx["fcalc_mixed_full"]
+    F_obs_dark_phased, Fcalc_diff_amp = ctx["F_obs_dark_phased"], ctx["Fcalc_diff_amp"]
 
     with torch.no_grad():
         # Full-size, so French-Wilson fits its prior to every working reflection.
@@ -460,7 +441,7 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     # coefficient retains the phase rotation between the dark and light states.
     F_corr_phased = torch.as_tensor(
         F_corr, dtype=F_obs_dark_phased.real.dtype, device=F_obs_dark_phased.device
-    ) * torch.exp(1j * phi_mixed)
+    ) * torch.exp(1j * ctx["phi_mixed"])
     Fobs_diff_phased_corr = (
         torch.abs(F_corr_phased - F_obs_dark_phased).detach().cpu().numpy()
     )
@@ -474,43 +455,25 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
 
     columns = {
         # dF_corr times the selected weight, on the dark phases PHDELWT.
-        "DELFWT_corr": dF_corr * weights,
-        "Fo_light_corr": F_corr,
-        "SIGFo_light_corr": sig_F_corr,
-        "dF_corr": dF_corr,
-        "SIGdF_corr": sig_dF_corr,
-        "ddF": ddF,
-    }
-    types = {
-        "DELFWT_corr": "F",
-        "Fo_light_corr": "F",
-        "SIGFo_light_corr": "Q",
-        "dF_corr": "F",
-        "SIGdF_corr": "Q",
-        "ddF": "F",
+        "DELFWT_corr": (dF_corr * weights, "F"),
+        "Fo_light_corr": (F_corr, "F"),
+        "SIGFo_light_corr": (sig_F_corr, "Q"),
+        "dF_corr": (dF_corr, "F"),
+        "SIGdF_corr": (sig_dF_corr, "Q"),
+        "ddF": (ddF, "F"),
     }
     if all_columns:
         columns.update({
-            "Io_light": I_light,
-            "SIGIo_light": sig_I_light,
-            "Ic_light_coh": I_coherent,
-            "Ic_light_2mom": I_two_moment,
-            "IVAR_ALPHA": variance,
-            "W_2MOM": w_two_moment,
-            "2mDFop-DFc_corr": amp_2_corr,
-            "mDFop-DFc_corr": amp_1_corr,
+            "Io_light": (I_light, "J"),
+            "SIGIo_light": (sig_I_light, "Q"),
+            "Ic_light_coh": (I_coherent, "J"),
+            "Ic_light_2mom": (I_two_moment, "J"),
+            "IVAR_ALPHA": (variance, "J"),
+            "W_2MOM": (w_two_moment, "W"),
+            "2mDFop-DFc_corr": (amp_2_corr, "F"),
+            "mDFop-DFc_corr": (amp_1_corr, "F"),
         })
-        types.update({
-            "Io_light": "J",
-            "SIGIo_light": "Q",
-            "Ic_light_coh": "J",
-            "Ic_light_2mom": "J",
-            "IVAR_ALPHA": "J",
-            "W_2MOM": "W",
-            "2mDFop-DFc_corr": "F",
-            "mDFop-DFc_corr": "F",
-        })
-    return columns, types
+    return columns
 
 
 def _difference_columns(
@@ -527,6 +490,7 @@ def _difference_columns(
     phases_dark,
     diff_Fobs,
     sig_diff,
+    weights,
     weight_columns,
     kscale,
 ):
@@ -535,9 +499,11 @@ def _difference_columns(
     ``dF``/``SIGdF`` is the signed amplitude difference ``|Fo_light| - |Fo_dark|`` with
     its propagated uncertainty, ``PHDELWT`` the **dark** model's phase it is carried on:
     the isomorphous difference Fourier, and the construction ``torchref.validate-ded``
-    correlates against. One weight column per registered scheme (``W_Q``, ``W_InVa``;
-    MTZ type ``W``, mean one) sits beside it, so any weighting is ``dF`` times a column
-    and reproducible from the file: ``torchref.mtz2map -csf dF -cw W_Q -cphi PHDELWT``.
+    correlates against. ``DELFWT`` is ``dF`` times ``weights``, the ``--ded-weight``
+    scheme, so Coot opens ``DELFWT``/``PHDELWT`` as the difference map. One weight
+    column per registered scheme (``W_Q``, ``W_InVa``; MTZ type ``W``, mean one) sits
+    beside it, so any other weighting is reproducible from the file:
+    ``torchref.mtz2map -csf dF -cw W_InVa -cphi PHDELWT``.
     ``KSCALE`` (type ``R``) is the scaler's multiplicative factor from model to observed
     scale, so ``dF / KSCALE`` is in electrons and ``mtz2map --units electrons`` gives
     e/A^3.
@@ -546,6 +512,8 @@ def _difference_columns(
     and the phase comes from the dark model. Keeping the light state's model out is the
     point -- a phased construction puts its phases into the observed amplitude, biasing
     the map toward the very model the experiment is testing.
+
+    ``Fc_dark`` is the dark model's amplitude on the same fit as ``PHDELWT``.
     """
     import numpy as np
 
@@ -556,115 +524,90 @@ def _difference_columns(
             return np.ones(n, dtype=int)
         return data.rfree_flags[mask].cpu().numpy().astype(int)
 
-    columns = {
-        "H": hkl_np[:, 0],
-        "K": hkl_np[:, 1],
-        "L": hkl_np[:, 2],
-        "Fo_dark": Fobs_dark,
-        "SIGFo_dark": sig_dark,
-        "Fo_light": Fobs_light,
-        "SIGFo_light": sig_light,
-        "dF": diff_Fobs,
-        "SIGdF": sig_diff,
-        "PHDELWT": phases_dark,
-        **weight_columns,
-        "KSCALE": kscale,
-        "Fc_dark": Fcalc_dark,
+    return {
+        **{label: (hkl_np[:, i], "H") for i, label in enumerate("HKL")},
+        "Fo_dark": (Fobs_dark, "F"),
+        "SIGFo_dark": (sig_dark, "Q"),
+        "Fo_light": (Fobs_light, "F"),
+        "SIGFo_light": (sig_light, "Q"),
+        "DELFWT": (diff_Fobs * weights, "F"),
+        "PHDELWT": (phases_dark, "P"),
+        "dF": (diff_Fobs, "F"),
+        "SIGdF": (sig_diff, "Q"),
+        **{name: (w, "W") for name, w in weight_columns.items()},
+        "KSCALE": (kscale, "R"),
+        "Fc_dark": (Fcalc_dark, "F"),
         # 1 = work, 0 = free. Both are kept: the two datasets can disagree, and
         # picking one would silently report an R-free against the wrong test set.
-        "FreeR_flag_dark": _flags(data_dark),
-        "FreeR_flag_light": _flags(data_light),
+        "FreeR_flag_dark": (_flags(data_dark), "I"),
+        "FreeR_flag_light": (_flags(data_light), "I"),
     }
-    types = {
-        "H": "H",
-        "K": "H",
-        "L": "H",
-        "Fo_dark": "F",
-        "SIGFo_dark": "Q",
-        "Fo_light": "F",
-        "SIGFo_light": "Q",
-        "dF": "F",
-        "SIGdF": "Q",
-        "PHDELWT": "P",
-        **{name: "W" for name in weight_columns},
-        "KSCALE": "R",
-        "Fc_dark": "F",
-        "FreeR_flag_dark": "I",
-        "FreeR_flag_light": "I",
-    }
-    return columns, types
 
 
-def _phasing_columns(mc, scaler, hkl_all, mask, *, fcalc_dark, Fobs_dark_vals,
-                     Fobs_light_vals, phi_dark, Fcalc_dark, weights,
-                     all_columns=False):
-    """Mixed-model amplitude and phase, and the phased difference residuals.
+def _phasing_columns(mc, scaler, hkl_all, mask, *, Fobs_dark_vals, Fobs_light_vals,
+                     weights, all_columns=False):
+    """The light data's model amplitude and phase, and the phased difference residuals.
 
-    Everything here needs the light state's model. ``FC``/``PHIC`` are the mixed model's
-    scaled amplitude and phase.
+    Everything here needs the light state's model and comes from the joint ``scaler``.
+    ``Fc_light``/``PHFc_light`` are the scaled amplitude and phase of the mixed model,
+    the model of the light data as ``Fc_dark`` is of the dark data.
 
     Under ``all_columns`` the phased difference residual coefficients come too --
     ``(|Fo_light e^{i phi_mixed} - Fo_dark e^{i phi_dark}| - |dFc|) * w`` on
-    ``PHIC_diff``. These are a *different object* from the plain difference Fourier
+    ``PHdFc``. These are a *different object* from the plain difference Fourier
     ``dF`` on ``PHDELWT``, not a refinement of it: the light state's model phases
     enter the observed amplitude, so they are model-biased where ``dF`` is not. They
     are kept because they are informative once that is understood, and gated because
     the name alone does not say it.
 
-    Returns ``(columns, types, ctx)``. ``ctx`` carries the intermediates the
+    Returns ``(columns, ctx)``. ``ctx`` carries the joint fit's intermediates the
     extrapolation and two-moment layers need, so nothing is computed twice.
     """
     import torch
 
-    mixed_model = mc["light"]
-
+    dark_model, mixed_model = mc.dark_model, mc["light"]
     with torch.no_grad():
-        fcalc_mixed_full = scaler.forward_mixed(
-            mixed_model(hkl_all), mixed_model.fractions
+        fcalc_dark_full, fcalc_mixed_full = (
+            scaler.forward_mixed(model(hkl_all), model.fractions)
+            for model in (dark_model, mixed_model)
         )
-        fcalc_mixed = fcalc_mixed_full[mask]
+    fcalc_dark, fcalc_mixed = fcalc_dark_full[mask], fcalc_mixed_full[mask]
     fcalc_diff = fcalc_mixed - fcalc_dark
 
-    phi_mixed = torch.angle(fcalc_mixed)
+    phi_dark, phi_mixed = torch.angle(fcalc_dark), torch.angle(fcalc_mixed)
     F_obs_dark_phased = Fobs_dark_vals * torch.exp(1j * phi_dark)
     F_obs_light_phased = Fobs_light_vals * torch.exp(1j * phi_mixed)
 
-    Fcalc_light = torch.abs(fcalc_mixed).detach().cpu().numpy()
-    Fcalc_diff_amp = torch.abs(fcalc_diff).detach().cpu().numpy()
+    def _np(t):
+        return t.detach().cpu().numpy()
 
+    Fcalc_light = _np(torch.abs(fcalc_mixed))
+    Fcalc_diff_amp = _np(torch.abs(fcalc_diff))
     columns = {
-        "FC": Fcalc_light,
-        "PHIC": phi_mixed.detach().rad2deg().cpu().numpy(),
+        "Fc_light": (Fcalc_light, "F"),
+        "PHFc_light": (_np(phi_mixed.rad2deg()), "P"),
     }
-    types = {"FC": "F", "PHIC": "P"}
-
     if all_columns:
-        Fobs_diff_phased = torch.abs(
-            F_obs_light_phased - F_obs_dark_phased
-        ).detach().cpu().numpy()
-        columns.update(
-            {
-                "2mDFop-DFc": (2 * Fobs_diff_phased - Fcalc_diff_amp) * weights,
-                "mDFop-DFc": (Fobs_diff_phased - Fcalc_diff_amp) * weights,
-                "PHIC_diff": torch.angle(fcalc_diff).detach().rad2deg().cpu().numpy(),
-                "dFc": Fcalc_light - Fcalc_dark,
-                # This column holds the real modulus of the complex vector difference.
-                "dFc_phased": Fcalc_diff_amp,
-            }
-        )
-        types.update({
-            "2mDFop-DFc": "F", "mDFop-DFc": "F", "PHIC_diff": "P",
-            "dFc": "F", "dFc_phased": "F",
+        Fobs_diff_phased = _np(torch.abs(F_obs_light_phased - F_obs_dark_phased))
+        columns.update({
+            "2mDFop-DFc": ((2 * Fobs_diff_phased - Fcalc_diff_amp) * weights, "F"),
+            "mDFop-DFc": ((Fobs_diff_phased - Fcalc_diff_amp) * weights, "F"),
+            "PHdFc": (_np(torch.angle(fcalc_diff).rad2deg()), "P"),
+            "dFc": (Fcalc_light - _np(torch.abs(fcalc_dark)), "F"),
+            # The real modulus of the complex vector difference.
+            "dFc_phased": (Fcalc_diff_amp, "F"),
         })
 
     ctx = {
+        "fcalc_dark_full": fcalc_dark_full,
         "fcalc_mixed_full": fcalc_mixed_full,
+        "phi_dark": phi_dark,
         "phi_mixed": phi_mixed,
         "F_obs_dark_phased": F_obs_dark_phased,
         "F_obs_light_phased": F_obs_light_phased,
         "Fcalc_diff_amp": Fcalc_diff_amp,
     }
-    return columns, types, ctx
+    return columns, ctx
 
 
 def _extrapolation_columns(
@@ -676,14 +619,12 @@ def _extrapolation_columns(
     Fobs_light_vals,
     sig_dark_vals,
     sig_light_vals,
-    phi_dark,
     ctx,
     rfree_flags_masked,
     snr_est,
-    all_columns=False,
     verbose=1,
 ):
-    """Extrapolated light-state amplitudes and the map to view them in.
+    """Extrapolated light-state amplitudes and the maps to view them in.
 
     ``snr_est`` is the :class:`~torchref.maps.ded_weights.DifferenceSNR` of the
     light-minus-dark differences on the same reflections; ``None`` (the fit failed)
@@ -691,22 +632,19 @@ def _extrapolation_columns(
 
     Three constructions of the same quantity, all needing the light model:
 
-    ``FEXT`` (default, shrunk)
+    ``FEXT`` (shrunk), map ``FWT``/``PHWT``
         The phase-aware amplitude shrunk toward ``Fo_dark`` by the signal fraction of
         each reflection's difference (:func:`compute_bayes_extrapolated_amplitudes`),
         which quiets the reflections where the extrapolation is noisiest.
-    ``FEXT_PHASED`` (``all_columns``)
+    ``FEXT_PHASED``, map ``2FEXT_PHASED-Fc``/``PHFEXT_PHASED``
         The unshrunk phase-aware amplitude.
-    ``FEXT_SCALAR`` (``all_columns``)
-        ``(Fo_light - w_dark * Fo_dark) / w_light`` on amplitudes only.
+    ``FEXT_SCALAR``, map ``2FEXT_SCALAR-Fc``/``PHFEXT_SCALAR``
+        The classic ``(Fo_light - w_dark * Fo_dark) / w_light`` on amplitudes only.
 
-    Each needs ``F_calc`` rescaled against *its own* amplitudes -- the three sets differ
-    in overall scale -- so each costs one LBFGS scale fit. Only the default one runs
-    unless ``all_columns`` is set.
-
-    ``FWT``/``PHWT`` is ``2 * FEXT - Fc`` with the phase from the Bayes fit. The phase
-    matters: the scaler contributes one through ``f_sol``, so the three fits do not agree
-    and pairing these coefficients with another fit's phase would be wrong.
+    Each map is ``2 * FEXT - Fc`` with ``F_calc`` rescaled against *its own* amplitudes
+    -- the three sets differ in overall scale -- so each costs one LBFGS scale fit, and
+    each takes the phase of its own fit: the scaler contributes one through ``f_sol``,
+    so pairing these coefficients with another fit's phase would be wrong.
     """
     import torch
 
@@ -728,10 +666,7 @@ def _extrapolation_columns(
         sc.initialize().refine_lbfgs()
         return data, sc(mc.base_models[1](hkl))
 
-    # The phase-aware amplitude, and the one propagated sigma for this extrapolation.
-    F_light_extra = (
-        ctx["F_obs_light_phased"] - w_dark * ctx["F_obs_dark_phased"]
-    ) / w_light
+    # The propagated sigma of the unshrunk extrapolations.
     sig_light_extra = torch.sqrt(
         sig_light_vals**2 + w_dark**2 * sig_dark_vals**2
     ) / w_light
@@ -745,92 +680,64 @@ def _extrapolation_columns(
         Fobs_dark_vals,
         Fobs_light_vals,
         sig_dark_vals,
-        phi_dark,
+        ctx["phi_dark"],
         ctx["phi_mixed"],
         w_light,
         snr=snr,
         sig_light=sig_light_vals,
     )
-    sig_ext_bayes = torch.sqrt(var_ext_bayes)
-
-    data_bayes, F_calc_bayes = _fit(F_ext_bayes_amp, sig_ext_bayes)
-    amp_calc_bayes = torch.abs(F_calc_bayes)
+    F_light_extra = (
+        ctx["F_obs_light_phased"] - w_dark * ctx["F_obs_dark_phased"]
+    ) / w_light
+    F_light_scalar = (Fobs_light_vals - w_dark * Fobs_dark_vals) / w_light
+    constructions = (
+        ("", "Bayes", F_ext_bayes_amp, torch.sqrt(var_ext_bayes)),
+        ("_PHASED", "Phase-aware", torch.abs(F_light_extra), sig_light_extra),
+        ("_SCALAR", "Scalar", F_light_scalar, sig_light_extra),
+    )
 
     def _np(t):
         return t.detach().cpu().numpy()
 
-    columns = {
-        "FEXT": _np(F_ext_bayes_amp),
-        "SIGFEXT": _np(sig_ext_bayes),
-        "FWT": _np(2 * F_ext_bayes_amp - amp_calc_bayes),
-        "PHWT": _np(torch.angle(F_calc_bayes).rad2deg()),
-    }
-    types = {"FEXT": "F", "SIGFEXT": "Q", "FWT": "F", "PHWT": "P"}
-
-    if verbose > 0:
-        print(
-            "  Bayes extrapolation rfactors:",
-            rfactor_work_free(data_bayes, amp_calc_bayes),
+    columns = {}
+    for suffix, name, amp, sig in constructions:
+        data, F_calc = _fit(amp, sig)
+        amp_calc = torch.abs(F_calc)
+        # The shrunk map keeps the labels Coot opens by default.
+        map_label, phase_label = (
+            (f"2FEXT{suffix}-Fc", f"PHFEXT{suffix}") if suffix else ("FWT", "PHWT")
         )
+        columns.update({
+            f"FEXT{suffix}": (_np(amp), "F"),
+            f"SIGFEXT{suffix}": (_np(sig), "Q"),
+            map_label: (_np(2 * amp - amp_calc), "F"),
+            phase_label: (_np(torch.angle(F_calc).rad2deg()), "P"),
+        })
+        if verbose > 0:
+            print(f"  {name} extrapolation R:", rfactor_work_free(data, amp_calc))
+    if verbose > 0:
         print(
             f"  Shrinkage: SNR from {source} differences, "
             f"mean w(h) = {w_shrinkage.mean().item():.3f}, "
             f"min w(h) = {w_shrinkage.min().item():.3g}"
         )
 
-    if all_columns:
-        amp_phased = torch.abs(F_light_extra)
-        data_phased, F_calc_phased = _fit(amp_phased, sig_light_extra)
-        amp_calc_phased = torch.abs(F_calc_phased)
-
-        amp_scalar = (Fobs_light_vals - w_dark * Fobs_dark_vals) / w_light
-        data_scalar, F_calc_scalar = _fit(amp_scalar, sig_light_extra)
-        amp_calc_scalar = torch.abs(F_calc_scalar)
-
-        columns.update({
-            "FEXT_PHASED": _np(amp_phased),
-            "SIGFEXT_PHASED": _np(sig_light_extra),
-            "2FEXT_PHASED-Fc": _np(2 * amp_phased - amp_calc_phased),
-            "FEXT_PHASED-Fc": _np(amp_phased - amp_calc_phased),
-            "PHFEXT_PHASED": _np(torch.angle(F_calc_phased).rad2deg()),
-            "FEXT_SCALAR": _np(amp_scalar),
-            "SIGFEXT_SCALAR": _np(sig_light_extra),
-            "2FEXT_SCALAR-Fc": _np(2 * amp_scalar - amp_calc_scalar),
-            "FEXT_SCALAR-Fc": _np(amp_scalar - amp_calc_scalar),
-            "PHFEXT_SCALAR": _np(torch.angle(F_calc_scalar).rad2deg()),
-        })
-        types.update({
-            "FEXT_PHASED": "F", "SIGFEXT_PHASED": "Q",
-            "2FEXT_PHASED-Fc": "F", "FEXT_PHASED-Fc": "F",
-            "PHFEXT_PHASED": "P",
-            "FEXT_SCALAR": "F", "SIGFEXT_SCALAR": "Q",
-            "2FEXT_SCALAR-Fc": "F", "FEXT_SCALAR-Fc": "F",
-            "PHFEXT_SCALAR": "P",
-        })
-        if verbose > 0:
-            print("  Phase-aware extrapolation rfactors:",
-                  rfactor_work_free(data_phased, amp_calc_phased))
-            print("  Scalar extrapolation rfactors:",
-                  rfactor_work_free(data_scalar, amp_calc_scalar))
-
     diagnostics = {
         "shrinkage_source": source,
         "w_shrinkage_mean": float(w_shrinkage.mean().item()),
         "w_shrinkage_min": float(w_shrinkage.min().item()),
     }
-    return columns, types, diagnostics
+    return columns, diagnostics
 
 
 # One history line per MTZ dataset, in the order they are written. MTZ history lines
 # are at most 80 characters.
 _MTZ_DATASET_HISTORY = {
     "observed": "observed: Fo_dark, Fo_light and flags on the shared scale; Fc_dark",
-    "difference": "difference: dF/SIGdF on dark phases PHDELWT; weights W_Q, W_InVa",
-    "light_model": (
-        "light_model: FC/PHIC, amplitude and phase of the mixed dark+light model"
-    ),
+    "difference": "difference: DELFWT/PHDELWT = weighted dF; dF, SIGdF, W_Q, W_InVa",
+    "light_model": "light_model: Fc_light/PHFc_light, the mixed dark+light model",
     "extrapolated_light": (
-        "extrapolated_light: FWT/PHWT = 2*FEXT - Fc, the extrapolated light map"
+        "extrapolated_light: FWT/PHWT = 2*FEXT-Fc (shrunk), FEXT_PHASED, FEXT_SCALAR"
     ),
     "two_moment": "two_moment: difference columns with the two-moment correction",
 }
@@ -893,6 +800,7 @@ def write_results_mtz(
     filename,
     *,
     mc=None,
+    joint_scaler=None,
     all_columns=False,
     verbose=1,
     ded_weight=DEFAULT_DED_WEIGHT_SCHEME,
@@ -902,10 +810,10 @@ def write_results_mtz(
     """Write the difference map, and map coefficients when a light model is given.
 
     The default output is the difference map on the dark model's phases
-    (:func:`_difference_columns`). It needs no light-state model, which is why ``mc``
-    is optional: with a dark model alone this writes a difference map and nothing else,
-    and runs no scale fit beyond the one that produced ``scaler``. Given ``mc``, the
-    light-state, extrapolated and two-moment layers follow (:func:`_phasing_columns`,
+    (:func:`_difference_columns`). It needs no light-state model, and takes its phases
+    from the dark-only ``scaler`` either way, so the difference map does not depend on
+    whether a light model is given. Given ``mc`` and ``joint_scaler``, the light-state,
+    extrapolated and two-moment layers follow (:func:`_phasing_columns`,
     :func:`_extrapolation_columns`), grouped into MTZ datasets by
     :func:`_annotate_mtz`. Coot auto-opens ``FWT``/``PHWT``, which here is the
     *extrapolated light-state* map, not a ``2mFo-DFc``.
@@ -914,22 +822,23 @@ def write_results_mtz(
     ----------
     dc : DatasetCollection
         Dark and light data, already inter-scaled by :meth:`DatasetCollection.scale`.
-    dark_model : Model or _SharedMixedModel
+    dark_model : Model
         Supplies ``Fc_dark`` and the phases the difference map is carried on.
-    scaler : Scaler or CollectionScaler
-        Scales ``dark_model`` against the dark data. A ``CollectionScaler`` when ``mc``
-        is given, a single-dataset ``Scaler`` otherwise.
+    scaler : Scaler
+        Scales ``dark_model`` against the dark data alone (:func:`setup_dark_scaler`).
     filename : str
         Output MTZ path.
     mc : ModelCollection, optional
         The dark+light collection. Absent means difference map only.
+    joint_scaler : CollectionScaler, optional
+        Scales ``mc`` against both datasets; required with ``mc``.
     all_columns : bool
         Also write the alternatives within each layer.
     verbose : int
         Verbosity level.
     ded_weight : str, optional
-        Weight scheme for the model-phased and two-moment difference columns; one of
-        :data:`torchref.maps.ded_weights.SCHEMES`.
+        Weight scheme ``DELFWT`` and the model-phased and two-moment difference columns
+        carry; one of :data:`torchref.maps.ded_weights.SCHEMES`.
     difference_config : DifferencePowerConfig, optional
         Its ``gamma`` fixes the ``F_dark`` exponent of the ``q`` scheme and its
         ``sigma_scale`` the scale on the reported sigmas of the SNR the ``q`` weights
@@ -955,7 +864,7 @@ def write_results_mtz(
         difference_snr,
     )
 
-    data_dark = dc[mc.dark_key] if mc is not None else dc["dark"]
+    data_dark = dc["dark"]
     data_light = dc["light"]
 
     hkl_all = data_dark.hkl
@@ -972,19 +881,10 @@ def write_results_mtz(
         data_light.rfree_flags[mask] if data_light.rfree_flags is not None else None
     )
 
-    # Fcalc on the full HKL list then masked, because the scalers were fitted on the
-    # full datasets. ``forward_mixed`` exists only on CollectionScaler; the dark-only
-    # path carries a single-dataset Scaler, whose ``forward`` is the plain call.
+    # Fcalc on the full HKL list then masked, because the scaler was fitted on the
+    # full dataset.
     with torch.no_grad():
-        if hasattr(scaler, "forward_mixed"):
-            fcalc_dark_full = scaler.forward_mixed(
-                dark_model(hkl_all), dark_model.fractions
-            )
-        else:
-            fcalc_dark_full = scaler(dark_model(hkl_all))
-        fcalc_dark = fcalc_dark_full[mask]
-
-    phi_dark = torch.angle(fcalc_dark)
+        fcalc_dark = scaler(dark_model(hkl_all))[mask]
 
     hkl_np = hkl.cpu().numpy()
     Fobs_dark = Fobs_dark_vals.cpu().numpy()
@@ -992,7 +892,7 @@ def write_results_mtz(
     sig_dark = sig_dark_vals.cpu().numpy()
     sig_light = sig_light_vals.cpu().numpy()
     Fcalc_dark = torch.abs(fcalc_dark).detach().cpu().numpy()
-    phases_dark = phi_dark.detach().rad2deg().cpu().numpy()
+    phases_dark = torch.angle(fcalc_dark).rad2deg().cpu().numpy()
 
     diff_t = Fobs_light_vals - Fobs_dark_vals
     sig_diff_t = torch.sqrt(sig_dark_vals**2 + sig_light_vals**2)
@@ -1060,7 +960,7 @@ def write_results_mtz(
                 f"before normalisation"
             )
 
-    columns, types = _difference_columns(
+    columns = _difference_columns(
         data_dark,
         data_light,
         mask,
@@ -1073,25 +973,24 @@ def write_results_mtz(
         phases_dark=phases_dark,
         diff_Fobs=diff_Fobs,
         sig_diff=sig_diff,
+        weights=weights,
         weight_columns=weight_columns,
         kscale=kscale,
     )
     datasets = dict.fromkeys(
-        ["dF", "SIGdF", "PHDELWT", "KSCALE", *weight_columns], "difference"
+        ["DELFWT", "PHDELWT", "dF", "SIGdF", *weight_columns, "KSCALE"], "difference"
     )
 
     if mc is not None:
-        phase_cols, phase_types, ctx = _phasing_columns(
-            mc, scaler, hkl_all, mask,
-            fcalc_dark=fcalc_dark, Fobs_dark_vals=Fobs_dark_vals,
-            Fobs_light_vals=Fobs_light_vals, phi_dark=phi_dark,
-            Fcalc_dark=Fcalc_dark, weights=weights, all_columns=all_columns,
+        phase_cols, ctx = _phasing_columns(
+            mc, joint_scaler, hkl_all, mask,
+            Fobs_dark_vals=Fobs_dark_vals, Fobs_light_vals=Fobs_light_vals,
+            weights=weights, all_columns=all_columns,
         )
         columns.update(phase_cols)
         datasets.update(dict.fromkeys(phase_cols, "light_model"))
-        types.update(phase_types)
 
-        ext_cols, ext_types, ext_diagnostics = _extrapolation_columns(
+        ext_cols, ext_diagnostics = _extrapolation_columns(
             mc,
             dc,
             hkl,
@@ -1099,41 +998,30 @@ def write_results_mtz(
             Fobs_light_vals=Fobs_light_vals,
             sig_dark_vals=sig_dark_vals,
             sig_light_vals=sig_light_vals,
-            phi_dark=phi_dark,
             ctx=ctx,
             rfree_flags_masked=rfree_flags_masked,
             snr_est=None if isinstance(snr_est, ValueError) else snr_est,
-            all_columns=all_columns,
             verbose=verbose,
         )
         diagnostics.update(ext_diagnostics)
         columns.update(ext_cols)
         datasets.update(dict.fromkeys(ext_cols, "extrapolated_light"))
-        types.update(ext_types)
 
-        tm_cols, tm_types = _two_moment_columns(
-            mc, dc, mask, fcalc_dark_full, ctx["fcalc_mixed_full"],
-            weights=weights, diff_Fobs=diff_Fobs,
-            Fcalc_diff_amp=ctx["Fcalc_diff_amp"], Fobs_dark=Fobs_dark,
-            sig_dark=sig_dark, phi_mixed=ctx["phi_mixed"],
-            F_obs_dark_phased=ctx["F_obs_dark_phased"],
-            all_columns=all_columns,
+        tm_cols = _two_moment_columns(
+            mc, dc, mask, ctx, weights=weights, diff_Fobs=diff_Fobs,
+            Fobs_dark=Fobs_dark, sig_dark=sig_dark, all_columns=all_columns,
         )
         columns.update(tm_cols)
         datasets.update(dict.fromkeys(tm_cols, "two_moment"))
-        types.update(tm_types)
 
     df = rs.DataSet(
-        columns,
+        {name: values for name, (values, _) in columns.items()},
         cell=data_dark.cell.data.cpu().tolist(),
         spacegroup=data_dark.spacegroup.hm,
     )
     # Carry MTZ types with the values; infer_mtz_dtypes also checks the
     # result using the canonical writer's rules.
-    missing = set(columns) - set(types)
-    if missing:
-        raise AssertionError(f"columns with no declared MTZ type: {sorted(missing)}")
-    for name, letter in types.items():
+    for name, (_, letter) in columns.items():
         df[name] = df[name].astype(letter)
     df = df.infer_mtz_dtypes()
     df.set_index(["H", "K", "L"], inplace=True)
@@ -1286,7 +1174,7 @@ Examples:
     )
 
     res = parser.add_argument_group("Resolution")
-    add_dmin_arg(res)
+    add_resolution_args(res)
 
     add_general_args(parser)
 
@@ -1372,8 +1260,6 @@ Examples:
     outdir.mkdir(parents=True, exist_ok=True)
 
     device = parse_device_str(args.device)
-    d_min = args.dmin if args.dmin is not None else 1.0
-
     # --- Header ---
     if args.verbose > 0:
         print("=" * 72)
@@ -1406,6 +1292,23 @@ Examples:
         print()
         sys.stdout.flush()
 
+    # --- Setup data ---
+    if args.verbose > 0:
+        print("Loading reflection data...")
+        sys.stdout.flush()
+
+    col_dark, col_light = build_dual_column_names(args)
+
+    dc = setup_dataset_collection(
+        args.dark_structure_factor, args.light_structure_factor,
+        args.dmin, device,
+        column_names_dark=col_dark, column_names_light=col_light, d_max=args.dmax,
+    )
+    data_dark = dc["dark"]
+    data_light = dc["light"]
+    # The models' FFT grid has to reach the data, so without --dmin it follows them.
+    d_min = args.dmin or min(data_dark.d_min, data_light.d_min)
+
     # --- Setup models ---
     if args.verbose > 0:
         print("Setting up models...")
@@ -1424,21 +1327,6 @@ Examples:
         mixed.unfreeze_fractions()
     else:
         mixed.freeze_fractions()
-
-    # --- Setup data ---
-    if args.verbose > 0:
-        print("Loading reflection data...")
-        sys.stdout.flush()
-
-    col_dark, col_light = build_dual_column_names(args)
-
-    dc = setup_dataset_collection(
-        args.dark_structure_factor, args.light_structure_factor,
-        args.dmin, device,
-        column_names_dark=col_dark, column_names_light=col_light,
-    )
-    data_dark = dc["dark"]
-    data_light = dc["light"]
 
     if args.verbose > 0:
         # Compare R-free flags between datasets
@@ -1756,10 +1644,11 @@ Examples:
 
     map_diagnostics = write_results_mtz(
         dc,
-        mc.dark_model,
-        scaler,
+        model_dark,
+        setup_dark_scaler(model_dark, data_dark, device, args.verbose),
         diff_mtz_out,
         mc=mc,
+        joint_scaler=scaler,
         all_columns=args.all_columns,
         verbose=args.verbose,
         ded_weight=args.ded_weight,
@@ -1776,6 +1665,7 @@ Examples:
             "fractions": fractions,
             "cif": args.cif,
             "dmin": args.dmin,
+            "dmax": args.dmax,
         },
         "dataset_scaling": dc.scaling_metrics,
         "parameters": {

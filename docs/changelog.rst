@@ -14,7 +14,7 @@ Breaking changes
 - Bulk-solvent phase offset removed; ``optimize_phase`` is deprecated
 - ``phased-difference-map`` is now ``difference-map``: fewer default columns (``--all-columns``), renamed (``dF``, ``W_InVa``)
 - ``import torchref`` no longer imports torch: the top-level names (``Model``, ``ReflectionData``, ``dtypes``, ...) load on first access, and ``TORCHREF_DTYPE_*``/``TORCHREF_DEVICE`` are read then
-- ``torchref.difference-map`` refuses options it would ignore (``--all-columns`` or a non-default ``--ded-weight`` without ``-lm``, a ``-o`` that is not a ``.mtz`` file) and writes ``<name>_summary.json`` beside the MTZ
+- ``torchref.difference-map`` takes ``-o`` as a directory (``difference_map.mtz``, ``summary.json``) and gains ``--dmax``; the difference MTZ adds ``DELFWT`` (``dF`` times the ``--ded-weight`` weight), writes the phase-aware and scalar extrapolations by default, and renames ``FC``/``PHIC``/``PHIC_diff`` to ``Fc_light``/``PHFc_light``/``PHdFc``
 - Refinement checkpoints restore only through ``load_state``; ``Refinement.create_from_state_dict`` is removed
 - ``french_wilson_auto`` moved to ``torchref.io.datasets``; ``CollectionRiceTarget`` is now ``CollectionMLTarget``
 - Refinement writes its own PDB/mmCIF header instead of copying the input's
@@ -48,7 +48,7 @@ Fixes that change results
 - Refinement: frozen parameters stay frozen, rigid-body translations refine, the scaler is refit warm each cycle
 - Density kernels on CPU, CUDA and MPS; long matrix products on MPS; REMARK 3 angle RMSD reported in degrees
 - CUDA ``ls``/``nll`` X-ray kernels score a signed ``F_calc`` as ``|F_calc|``, as the eager path does
-- ``torchref.difference-map`` without ``--dmin`` sizes the model's FFT grid from the data's resolution instead of a fixed 1.0 Å
+- Difference maps take their phases from a fit of the dark model alone, so they no longer change with ``-lm``; without ``--dmin`` the models' FFT grid follows the data instead of a fixed 1.0 Å
 - ``WilsonNormaliser`` with ``s_lo``/``s_hi`` wider than the data: stable in float32 and no longer truncated by its log clamp
 
 Other fixes

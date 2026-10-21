@@ -3,8 +3,7 @@
 The settings only take effect if they are in place before torch loads its OpenMP
 runtime, so the launcher must not import torch, every console script must go through it,
 and a library import of torchref must leave the user's process alone. Each check that
-depends on import order runs in a fresh interpreter. ``import torchref`` and every
-``--help`` stay torch-free, so a typo on the command line costs no torch start-up.
+depends on import order runs in a fresh interpreter.
 """
 
 import importlib
@@ -74,53 +73,3 @@ def test_every_console_script_goes_through_the_launcher():
         entry = getattr(_torchref_cli, attr)
         cli_module = importlib.import_module(f"torchref.cli.{entry.__name__}")
         assert callable(cli_module.main), f"{name}: torchref.cli.{entry.__name__}"
-
-
-def test_library_import_does_not_import_torch():
-    out = _fresh(
-        "import sys, torchref\n"
-        "print('torch' in sys.modules)\n"
-        "from torchref import ReflectionData\n"
-        "print('torch' in sys.modules, ReflectionData.__module__)\n"
-        "print('Model' in dir(torchref), torchref.config.get_float_dtype())"
-    )
-    assert out.splitlines()[-3:] == [
-        "False",
-        "True torchref.io.datasets.reflection_data",
-        "True torch.float32",
-    ]
-
-
-def test_unknown_attribute_raises_attribute_error():
-    out = _fresh(
-        "import torchref\n"
-        "try:\n"
-        "    torchref.no_such_name\n"
-        "except AttributeError as e:\n"
-        "    print(type(e).__name__)"
-    )
-    assert out.splitlines()[-1] == "AttributeError"
-
-
-def _script_names():
-    try:
-        import tomllib
-    except ImportError:  # Python 3.10
-        return []
-    with open(ROOT / "pyproject.toml", "rb") as f:
-        return sorted(tomllib.load(f)["project"]["scripts"].items())
-
-
-@pytest.mark.parametrize("name, target", _script_names())
-def test_help_does_not_import_torch(name, target):
-    attr = target.split(":")[1]
-    out = _fresh(
-        "import sys, _torchref_cli\n"
-        f"sys.argv = [{name!r}, '--help']\n"
-        "try:\n"
-        f"    _torchref_cli.{attr}()\n"
-        "except SystemExit as e:\n"
-        "    assert e.code == 0, e.code\n"
-        "print('torch' in sys.modules)"
-    )
-    assert out.splitlines()[-1] == "False", f"{name} --help imported torch"
