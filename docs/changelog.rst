@@ -42,6 +42,7 @@ Fixes that change results
 - Maps: centric reflections counted once, 2Fo−Fc sign in written MTZs, ``Map`` uses scaled F_calc
 - Reading: CIF loop rows, ANISOU columns, SF-mmCIF intensities and free flags, multi-model PDBs, non-reference settings
 - Restraints: shared restraints counted once across conformers, non-bonded exclusions and H-bonds, X-Pro PTRANS
+- Disulfide detection no longer bonds conformer ``A`` of one cysteine to conformer ``B`` of its partner: an ``SG`` with an altloc pairs only with the same altloc or a blank one
 - Refinement: frozen parameters stay frozen, rigid-body translations refine, the scaler is refit warm each cycle
 - Density kernels on CPU, CUDA and MPS; long matrix products on MPS; REMARK 3 angle RMSD reported in degrees
 - CUDA ``ls``/``nll`` X-ray kernels score a signed ``F_calc`` as ``|F_calc|``, as the eager path does
