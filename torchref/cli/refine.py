@@ -16,8 +16,7 @@ import sys
 import warnings
 from pathlib import Path
 
-import torch
-
+from torchref.cli._choices import DEFAULT_SCALE_TARGET, SCALE_TARGETS, XRAY_TARGET_DOCS
 from torchref.cli._common import (
     add_adp_mode_arg,
     add_dmin_arg,
@@ -37,14 +36,8 @@ from torchref.cli._common import (
     validate_files,
     write_refinement_outputs,
 )
-from torchref.refinement.targets.xray._specs import XRAY_TARGETS
-from torchref.scaling.scaler_base import DEFAULT_SCALE_TARGET, SCALE_TARGETS
-from torchref.utils.serialization import convert_to_serializable
 
 configure_unbuffered_output()
-
-# Import stats module early to patch json with StatEntry encoder
-import torchref.utils.stats  # noqa: F401,E402
 
 
 def _sigma_a_kwargs(args) -> dict:
@@ -151,15 +144,9 @@ Loss weights:
         "--xray-mode",
         type=str,
         default="ml",
-        choices=list(XRAY_TARGETS.names),
-        # Generated from the table, not hand-written. The hand-written version drifted
-        # badly: it advertised 'bhattacharyya' (not in `choices`, so argparse rejected it)
-        # and 'gaussian' (an alias), while never mentioning ml_noalpha, nll_beta or nll --
-        # three of the modes it actually accepted. `spec.doc` promised it was "surfaced in
-        # --help" and had no reader at all.
-        help="X-ray target function. " + "  ".join(
-            f"'{spec.name}': {spec.doc}" for spec in XRAY_TARGETS.specs
-        ),
+        choices=list(XRAY_TARGET_DOCS),
+        help="X-ray target function. "
+        + "  ".join(f"'{name}': {doc}" for name, doc in XRAY_TARGET_DOCS.items()),
     )
     refine_group.add_argument(
         "--scale-target",
@@ -234,6 +221,11 @@ Loss weights:
     add_general_args(parser)
 
     args = parser.parse_args()
+
+    import torch
+
+    import torchref.utils.stats  # noqa: F401  (makes json serialise StatEntry)
+    from torchref.utils.serialization import convert_to_serializable
 
     register_timing()
 

@@ -236,29 +236,36 @@ Compute difference and extrapolated map coefficients without refinement.
 Uses the same pipeline as ``torchref.difference-refine`` but the input
 models are kept as-is.
 
-The default output is the difference map: the amplitude difference ``dF``/``SIGdF``
-on the **dark** model's phases ``PHDELWT``, with one mean-one weight column per
-registered scheme beside it -- ``W_Q``, the q-weight (the default), and ``W_InVa``,
-the inverse variance ``1/sigma^2`` -- and ``KSCALE``, the scaler's factor from model to observed
-scale. This is the construction ``torchref.validate-ded`` correlates against. Build the
-map with ``torchref.mtz2map -csf dF -cw W_Q -cphi PHDELWT``, adding
-``--units electrons`` for e/A^3. It needs no light-state model, so ``-lm`` is optional:
+The default output is the difference map ``DELFWT``/``PHDELWT``: the amplitude
+difference ``dF`` times the ``--ded-weight`` weight, on the **dark** model's phases, which
+Coot opens directly. The phases come from a fit of the dark model alone, so the
+difference map is the same with or without a light model. Beside it sit ``dF``/``SIGdF``,
+one mean-one weight column per registered scheme -- ``W_Q``, the q-weight (the default),
+and ``W_InVa``, the inverse variance ``1/sigma^2`` -- and ``KSCALE``, the scaler's factor
+from model to observed scale, so another weighting is
+``torchref.mtz2map -csf dF -cw W_InVa -cphi PHDELWT`` (``--units electrons`` for e/A^3).
+This is the construction ``torchref.validate-ded`` correlates against. ``-o`` is a
+directory; it receives ``difference_map.mtz`` and ``summary.json`` (inputs, dataset
+scaling, R-factors, the ``q``-weight fit and the extrapolation shrinkage).
 
 .. code-block:: bash
 
    torchref.difference-map \
        -dm dark.pdb \
-       -dsf dark.mtz -lsf light.mtz -o results.mtz
+       -dsf dark.mtz -lsf light.mtz -o results/
 
-Supplying ``-lm`` (with ``--fraction``) adds the light state's amplitude and
-phase and the extrapolated map ``FWT``/``PHWT``:
+The light-state model is optional. Supplying ``-lm`` (with ``--fraction``) adds the
+light data's model ``Fc_light``/``PHFc_light`` and three extrapolated light-state maps:
+``FWT``/``PHWT`` from the shrunk amplitudes ``FEXT``, ``2FEXT_PHASED-Fc``/``PHFEXT_PHASED``
+from the phase-aware ones and ``2FEXT_SCALAR-Fc``/``PHFEXT_SCALAR`` from the classic
+``(Fo_light - w_dark Fo_dark) / w_light``, each on its own scale fit:
 
 .. code-block:: bash
 
    torchref.difference-map \
        -dm dark.pdb -lm light.pdb \
        -dsf dark.mtz -lsf light.mtz \
-       --fraction 0.37 -o results.mtz
+       --fraction 0.37 -o results/
 
 ``FWT``/``PHWT`` keep the standard labels so Coot auto-opens the map, but here they
 are the extrapolated light-state map ``2*FEXT - Fc``, not a ``2mFo-DFc``. The file
@@ -267,18 +274,18 @@ records this: the columns sit in named MTZ datasets -- ``observed``, ``differenc
 column chooser shows ``/torchref/extrapolated_light/FWT``, and ``gemmi mtz`` prints a
 history line per dataset. ``torchref.difference-refine`` writes the same file.
 
-**Key options:** ``--ded-weight {q,inverse_variance,none}`` selects the scheme the
-model-phased and two-moment difference columns carry (default ``q``; its fit uses the
-intensity differences when the data carry ``I``/``SIGI``, and falls back to inverse
-variance with a warning when too few reflections exist to fit); ``--difference-gamma``
-fixes the dark-amplitude exponent of the difference power law instead of fitting it;
-``--difference-sigma-scale`` scales the reported sigmas the ``q`` weight and the
-extrapolation take as the noise (default 1; ``fit`` estimates the scale from the
-differences, which reads noise as signal when the sigmas' calibration changes with
-resolution, as French-Wilson and other posterior amplitude sigmas' does);
-``--all-columns`` writes every alternative map coefficient and diagnostic -- the
-model-phased difference, the two other extrapolations and the intensity block -- at
-the cost of two further scale fits.
+**Key options:** ``--dmin``/``--dmax`` resolution limits (without ``--dmin`` the
+models' grid follows the data); ``--ded-weight {q,inverse_variance,none}`` selects the
+scheme ``DELFWT`` and the model-phased difference columns carry (default ``q``; its fit
+uses the intensity differences when the data carry ``I``/``SIGI``, and falls back to
+inverse variance with a warning when too few reflections exist to fit);
+``--difference-gamma`` fixes the dark-amplitude exponent of the difference power law
+instead of fitting it; ``--difference-sigma-scale`` scales the reported sigmas the ``q``
+weight and the extrapolation take as the noise (default 1; ``fit`` estimates the scale
+from the differences, which reads noise as signal when the sigmas' calibration changes
+with resolution, as French-Wilson and other posterior amplitude sigmas' does);
+``--all-columns`` (needs ``-lm``) adds the model-phased difference and the intensity
+block.
 
 :API: :mod:`torchref.cli.difference_map`
 

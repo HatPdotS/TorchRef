@@ -27,9 +27,7 @@ import sys
 import warnings
 from pathlib import Path
 
-import numpy as np
-import torch
-
+from torchref.cli._choices import DEFAULT_DED_WEIGHT_SCHEME
 from torchref.cli._common import (
     add_ded_weight_args,
     add_dmin_arg,
@@ -47,14 +45,6 @@ from torchref.cli._common import (
     validate_cif_files,
     validate_files,
 )
-from torchref.config import get_int_dtype
-from torchref.maps.ded_weights import (
-    DEFAULT_SCHEME,
-    DedWeightFallbackWarning,
-    all_ded_weights,
-)
-from torchref.utils.serialization import convert_to_serializable
-
 configure_unbuffered_output()
 
 
@@ -70,6 +60,8 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
     ``real_space_grid`` comes from ``get_real_grid()`` and ``cell`` may be a ``Cell`` or the
     raw parameter tensor.
     """
+    import torch
+
     from torchref.base.coordinates.transforms_torch import (
         get_fractional_matrix,
     )
@@ -78,6 +70,7 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
     )
     from torchref.base.electron_density.solvent_mask import add_to_solvent_mask
     from torchref.base.electron_density.voxel_utils import find_relevant_voxels
+    from torchref.config import get_int_dtype
 
     grid_shape = real_space_grid.shape[:3]
     cell_t = cell.data if hasattr(cell, "data") else cell
@@ -106,6 +99,8 @@ def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
 
 def compute_correlation(map1, map2, mask):
     """Pearson correlation coefficient between two maps within a mask."""
+    import torch
+
     v1 = map1[mask]
     v2 = map2[mask]
     v1 = v1 - v1.mean()
@@ -120,6 +115,8 @@ def compute_map_from_coefficients(amplitudes, phases_rad, hkl_p1, gridsize):
     Takes ``amplitudes`` ``(N,)`` (which may be signed), ``phases_rad`` ``(N,)`` and
     P1-expanded ``hkl_p1`` ``(N, 3)``.
     """
+    import torch
+
     from torchref.base.reciprocal.grid_operations import place_on_grid
 
     coefficients = amplitudes * torch.exp(1j * phases_rad)
@@ -206,7 +203,7 @@ def setup_ded_context(
     col_light=None,
     n_bins=20,
     verbose=0,
-    ded_weight=DEFAULT_SCHEME,
+    ded_weight=DEFAULT_DED_WEIGHT_SCHEME,
     difference_config=None,
 ):
     """Load reflection data and prepare the model-independent side of DED validation.
@@ -239,9 +236,12 @@ def setup_ded_context(
         orig_idx, phase_shifts, w_dfo_p1, weights_p1, work_mask, free_mask, n_bins.
     """
     import gemmi
+    import numpy as np
+    import torch
 
     from torchref import DatasetCollection
     from torchref.config import get_float_dtype, normalize_device
+    from torchref.maps.ded_weights import all_ded_weights
     from torchref.symmetry import Cell, SpaceGroup
 
     device = normalize_device(device)
@@ -419,6 +419,8 @@ def compute_ded_maps(
         resolution_bins, reciprocal_cc_overall, reciprocal_cc_work,
         reciprocal_cc_free, w_delta_fcalc_asu.
     """
+    import torch
+
     from torchref.base.fourier.grid import get_real_grid
     from torchref.cli.collection_difference_refine import (
         setup_scaler as setup_collection_scaler,
@@ -626,7 +628,9 @@ def run_validation(args):
     from torchref.cli.collection_difference_refine import (
         setup_scaler as setup_collection_scaler,
     )
+    from torchref.maps.ded_weights import DedWeightFallbackWarning
     from torchref.model.model_collection import ModelCollection
+    from torchref.utils.serialization import convert_to_serializable
 
     device = parse_device_str(args.device)
     outdir = Path(args.outdir)

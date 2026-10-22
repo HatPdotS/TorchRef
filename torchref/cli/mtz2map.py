@@ -15,16 +15,12 @@ Examples
 import argparse
 import sys
 
-import numpy as np
-import torch
-
 from torchref.cli._common import (
     add_general_args,
     add_resolution_args,
     register_timing,
     parse_device_str,
 )
-from torchref.config import get_float_dtype, get_int_dtype
 
 
 def main():
@@ -119,6 +115,11 @@ def main():
     add_general_args(parser)
 
     args = parser.parse_args()
+
+    import numpy as np
+    import torch
+
+    from torchref.config import get_float_dtype, get_int_dtype
 
     register_timing()
 

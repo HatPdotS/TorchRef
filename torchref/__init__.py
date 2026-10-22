@@ -11,6 +11,9 @@ is the entry point and takes the MTZ and PDB paths directly::
     )
     refinement.refine(macro_cycles=10)
 
+``import torchref`` does not import torch: the names re-exported here and the
+subpackages load on first access, and :mod:`torchref.config` reads its environment then.
+
 Modules
 -------
 io
@@ -42,12 +45,14 @@ utils
 __version__ = "0.7.0"
 
 
+import importlib
 import os
-
-# Must be set before torch is imported below, or it has no effect.
-os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+import sys
 import warnings
 from pathlib import Path
+
+# Must be set before torch is first imported, or it has no effect.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 from torchref._bootstrap import configure_threading, detect_available_cpus
 
@@ -68,12 +73,10 @@ else:
 
 configure_threading(N_CPUS)
 
-import torch
-
-torch.set_num_threads(N_CPUS)
-
-# Must come after torch: reads its dtype/device state at import.
-from torchref.config import device, dtypes, sigma_cutoff_ed
+# A torch already imported has read its thread count; one imported later reads it from
+# the OMP_NUM_THREADS just set.
+if "torch" in sys.modules:
+    sys.modules["torch"].set_num_threads(N_CPUS)
 
 # Project root path for referencing package files
 ROOT_TORCHREF = Path(__file__).parent.parent.resolve()
@@ -83,80 +86,44 @@ PATH_TORCHREF = Path(__file__).parent.resolve()
 
 PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 
-# =============================================================================
-# Convenience imports for common classes
-# =============================================================================
+# Defining module -> public names, imported on first access by ``__getattr__`` so that
+# ``import torchref`` (and every CLI ``--help``) doesn't import torch. ``Restraints`` is
+# deliberately absent: constructing it can trigger a monomer-library download.
+_LAZY_EXPORTS = {
+    name: module
+    for module, names in {
+        "torchref.config": "dtypes device sigma_cutoff_ed",
+        "torchref.io": "ReflectionData ScaledDataset DatasetCollection"
+        " read_mtz read_cif read_pdb",
+        "torchref.model": "Model ModelFT",
+        "torchref.model.rigid_xyz": "RigidXYZTensor",
+        "torchref.refinement": "Refinement LBFGSRefinement",
+        "torchref.refinement.rigid_body_refinement": "RigidBodyRefinementStep",
+        "torchref.scaling": "Scaler ScalerBase SolventModel",
+        "torchref.symmetry": "Cell SpaceGroup Symmetry",
+        "torchref.maps": "Map DifferenceMap",
+        "torchref.utils.device_mixin": "DeviceMixin",
+    }.items()
+    for name in names.split()
+}
 
 
-# Data I/O
-from torchref.io import (
-    DatasetCollection,
-    ReflectionData,
-    ScaledDataset,
-    read_cif,
-    read_mtz,
-    read_pdb,
-)
-
-# Maps
-from torchref.maps import DifferenceMap, Map
-
-# Model
-from torchref.model import Model, ModelFT
-from torchref.model.rigid_xyz import RigidXYZTensor
-
-# Refinement
-from torchref.refinement import LBFGSRefinement, Refinement
-from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
-
-# Scaling
-from torchref.scaling import Scaler, ScalerBase, SolventModel
-from torchref.symmetry import Cell, SpaceGroup, Symmetry
-
-# Device movement mixin (public API for extension code)
-from torchref.utils.device_mixin import DeviceMixin
-
-# Restraints
-# torchref.topology.restraints.Restraints is not imported here: constructing it can
-# trigger a monomer-library download, so it stays lazy.
+def __getattr__(name: str):
+    """Import a re-exported name, or a subpackage, on first access."""
+    if name in _LAZY_EXPORTS:
+        value = getattr(importlib.import_module(_LAZY_EXPORTS[name]), name)
+    elif not name.startswith("_") and any(
+        (PATH_TORCHREF / n).exists() for n in (name, f"{name}.py")
+    ):
+        value = importlib.import_module(f"{__name__}.{name}")
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value
 
 
-__all__ = [
-    # Version and paths
-    "__version__",
-    "ROOT_TORCHREF",
-    "PATH_TORCHREF",
-    "N_CPUS",
-    # Dtype and device configuration
-    "dtypes",
-    "device",
-    "sigma_cutoff_ed",
-    # Data I/O
-    "ReflectionData",
-    "ScaledDataset",
-    "DatasetCollection",
-    "read_mtz",
-    "read_cif",
-    "read_pdb",
-    # Model
-    "Model",
-    "ModelFT",
-    "RigidXYZTensor",
-    # Refinement
-    "Refinement",
-    "LBFGSRefinement",
-    "RigidBodyRefinementStep",
-    # Scaling
-    "Scaler",
-    "ScalerBase",
-    "SolventModel",
-    # Symmetry
-    "Cell",
-    "SpaceGroup",
-    "Symmetry",
-    # Maps
-    "Map",
-    "DifferenceMap",
-    # Device mixin
-    "DeviceMixin",
-]
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))
+
+
+__all__ = ["__version__", "ROOT_TORCHREF", "PATH_TORCHREF", "N_CPUS", *_LAZY_EXPORTS]

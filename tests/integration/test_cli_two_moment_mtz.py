@@ -19,20 +19,29 @@ DEFAULT_COLUMNS = {
     "SIGFo_light": "Stddev",
     "dF": "SFAmplitude",
     "SIGdF": "Stddev",
-    # The difference map: dF on the dark phases, one weight column per registered
-    # scheme, and the observed-to-model scale.
+    # The difference map: weighted dF on the dark phases, one weight column per
+    # registered scheme, and the observed-to-model scale.
+    "DELFWT": "SFAmplitude",
     "PHDELWT": "Phase",
     "W_InVa": "Weight",
     "W_Q": "Weight",
     "KSCALE": "MTZReal",
     "Fc_dark": "SFAmplitude",
-    # The mixed model, and the extrapolated map to refine against.
-    "FC": "SFAmplitude",
-    "PHIC": "Phase",
+    # The light data's (mixed) model, and the three extrapolated maps.
+    "Fc_light": "SFAmplitude",
+    "PHFc_light": "Phase",
     "FEXT": "SFAmplitude",
     "SIGFEXT": "Stddev",
     "FWT": "SFAmplitude",
     "PHWT": "Phase",
+    "FEXT_PHASED": "SFAmplitude",
+    "SIGFEXT_PHASED": "Stddev",
+    "2FEXT_PHASED-Fc": "SFAmplitude",
+    "PHFEXT_PHASED": "Phase",
+    "FEXT_SCALAR": "SFAmplitude",
+    "SIGFEXT_SCALAR": "Stddev",
+    "2FEXT_SCALAR-Fc": "SFAmplitude",
+    "PHFEXT_SCALAR": "Phase",
 }
 FLAG_COLUMNS = {"FreeR_flag_dark", "FreeR_flag_light"}
 
@@ -49,19 +58,9 @@ TWO_MOMENT_COLUMNS = {
 ALL_COLUMNS_EXTRA = {
     "2mDFop-DFc": "SFAmplitude",
     "mDFop-DFc": "SFAmplitude",
-    "PHIC_diff": "Phase",
+    "PHdFc": "Phase",
     "dFc": "SFAmplitude",
     "dFc_phased": "SFAmplitude",
-    "FEXT_PHASED": "SFAmplitude",
-    "SIGFEXT_PHASED": "Stddev",
-    "2FEXT_PHASED-Fc": "SFAmplitude",
-    "FEXT_PHASED-Fc": "SFAmplitude",
-    "PHFEXT_PHASED": "Phase",
-    "FEXT_SCALAR": "SFAmplitude",
-    "SIGFEXT_SCALAR": "Stddev",
-    "2FEXT_SCALAR-Fc": "SFAmplitude",
-    "FEXT_SCALAR-Fc": "SFAmplitude",
-    "PHFEXT_SCALAR": "Phase",
 }
 
 # And what it adds again once the two-moment model is on.
@@ -229,8 +228,8 @@ def test_map_coefficients_are_grouped_into_described_datasets(two_moment_all_mtz
 
     assert where["FWT"] == where["PHWT"] == where["FEXT"] == "extrapolated_light"
     assert where["FEXT_PHASED"] == where["FEXT_SCALAR"] == "extrapolated_light"
-    assert where["dF"] == where["PHDELWT"] == where["W_Q"] == "difference"
-    assert where["FC"] == where["PHIC"] == "light_model"
+    assert where["DELFWT"] == where["PHDELWT"] == where["W_Q"] == "difference"
+    assert where["Fc_light"] == where["PHFc_light"] == "light_model"
     assert where["dF_corr"] == "two_moment"
     assert where["H"] == where["Fo_dark"] == where["FreeR_flag_dark"] == "observed"
     assert all(ds.crystal_name == "torchref" for ds in mtz.datasets)
@@ -246,8 +245,8 @@ class TestDefaultLayout:
         self, baseline_mtz
     ):
         """``dF`` must be ``Fo_light - Fo_dark``, ``W_InVa`` the mean-normalised inverse
-        variance and ``W_Q`` a mean-one weight -- the constructions
-        ``torchref.validate-ded`` correlates against. If these ever diverge, the map
+        variance, ``W_Q`` a mean-one weight and ``DELFWT`` ``dF * W_Q`` -- the
+        constructions ``torchref.validate-ded`` correlates against. If these ever diverge, the map
         built from the file stops being the map the validation reports on, which is how
         the output drifted from the science before."""
         import numpy as np
@@ -270,12 +269,14 @@ class TestDefaultLayout:
         assert np.abs(got_w - w).max() / max(float(np.abs(w).max()), 1e-30) < 1e-4
         w_q = df["W_Q"].to_numpy().astype(float)
         assert np.isfinite(w_q).all() and abs(w_q.mean() - 1.0) < 1e-4
+        got_delfwt = df["DELFWT"].to_numpy().astype(float)
+        assert np.abs(got_delfwt - got_df * w_q).max() / scale < 1e-5
         assert (df["KSCALE"].to_numpy().astype(float) > 0).all()
 
         # And the phase is the dark model's, not the mixed model's.
         assert not np.allclose(
             df["PHDELWT"].to_numpy().astype(float),
-            df["PHIC"].to_numpy().astype(float),
+            df["PHFc_light"].to_numpy().astype(float),
         )
 
 

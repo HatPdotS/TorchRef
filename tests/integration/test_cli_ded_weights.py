@@ -24,6 +24,7 @@ DIFF_COLUMNS = {
     "SIGFo_light": "Stddev",
     "dF": "SFAmplitude",
     "SIGdF": "Stddev",
+    "DELFWT": "SFAmplitude",
     "PHDELWT": "Phase",
     "W_InVa": "Weight",
     "W_Q": "Weight",
@@ -105,7 +106,7 @@ def _run(project_root, module, *argv, timeout=1800):
 
 @pytest.fixture(scope="module")
 def diff_mtz(project_root, pair):
-    out = pair["dir"] / "diff.mtz"
+    out = pair["dir"] / "diff"
     _run(
         project_root,
         "difference_map.py",
@@ -126,7 +127,7 @@ def diff_mtz(project_root, pair):
         "-o",
         out,
     )
-    return out
+    return out / "difference_map.mtz"
 
 
 def _read(path):

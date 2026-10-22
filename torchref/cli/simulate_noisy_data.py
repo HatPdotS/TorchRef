@@ -40,9 +40,7 @@ Usage
 import argparse
 import sys
 from pathlib import Path
-
-import pandas as pd
-import torch
+from typing import TYPE_CHECKING
 
 from torchref.cli._common import (
     add_device_arg,
@@ -51,8 +49,9 @@ from torchref.cli._common import (
     load_model,
     parse_device_str,
 )
-from torchref.io import mtz
-from torchref.io.datasets import FcalcDataset
+
+if TYPE_CHECKING:
+    from torchref.io.datasets import FcalcDataset
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -158,8 +157,11 @@ def main():
 
 def _run_reference_mode(args, model, device) -> int:
     """Reference-driven: scale model to CrystFEL hkl and graft sigmas."""
+    import torch
+
     from torchref import ReflectionData
     from torchref.base.reciprocal import get_d_spacing
+    from torchref.io.datasets import FcalcDataset
     from torchref.scaling import Scaler
 
     if args.verbose:
@@ -219,6 +221,8 @@ def _run_reference_mode(args, model, device) -> int:
 
 def _run_parametric_mode(args, model, device) -> int:
     """No reference: build HKL from cell+resolution, use three-term model."""
+    from torchref.io.datasets import FcalcDataset
+
     if args.verbose:
         print(
             f"Generating HKL to d_min={args.d_min} A"
@@ -248,8 +252,12 @@ def _run_parametric_mode(args, model, device) -> int:
     return 0
 
 
-def _write_output(args, noisy: FcalcDataset) -> None:
+def _write_output(args, noisy: "FcalcDataset") -> None:
     """Write noisy amplitudes or intensities and their uncertainties to MTZ."""
+    import pandas as pd
+
+    from torchref.io import mtz
+
     hkl_np = noisy.hkl.cpu().numpy()
     columns = {
         "H": hkl_np[:, 0],

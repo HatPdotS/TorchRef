@@ -18,8 +18,6 @@ Usage
 import argparse
 import sys
 
-from torchref import Model
-
 
 def main():
     """Entry point for ``torchref.strip-altlocs``; returns the exit code."""
@@ -31,6 +29,8 @@ def main():
     parser.add_argument("input", help="Input PDB file")
     parser.add_argument("output", help="Output PDB file")
     args = parser.parse_args()
+
+    from torchref import Model
 
     # Pure bookkeeping on the atom table: no reason to start an accelerator.
     model = Model(device="cpu", verbose=0).load_pdb(args.input)

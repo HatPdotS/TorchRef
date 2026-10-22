@@ -335,7 +335,8 @@ def add_dual_model_args(
 
     ``light_model_required=False`` makes ``-lm`` optional, for tools that can do
     something useful with the dark model alone -- a weighted difference map needs only
-    the dark state's phases. Refinement cannot: it refines the light model.
+    the dark state's phases. Refinement cannot: it refines the light model. ``-lm`` and
+    ``--fraction`` then sit in their own *optional* group, so ``--help`` says so.
     """
     inp = parser.add_argument_group("Input files")
     inp.add_argument(
@@ -345,14 +346,17 @@ def add_dual_model_args(
         type=str,
         help="Dark / reference state model file (PDB or CIF)",
     )
-    light_help = "Light / triggered state model file (PDB or CIF)"
-    if not light_model_required:
-        light_help += (
-            ". Optional: without it only the weighted difference map is written, "
-            "using the dark state's phases."
-        )
-    inp.add_argument(
-        "-lm", "--light-model", required=light_model_required, type=str, help=light_help
+    light = inp if light_model_required else parser.add_argument_group(
+        "Light-state model (optional)",
+        "Without these only the difference map, on the dark model's phases, is\n"
+        "written; with them the light-model and extrapolated maps are added.",
+    )
+    light.add_argument(
+        "-lm",
+        "--light-model",
+        required=light_model_required,
+        type=str,
+        help="Light / triggered state model file (PDB or CIF)",
     )
     inp.add_argument(
         "-dsf",
@@ -377,7 +381,7 @@ def add_dual_model_args(
         frac_kwargs["required"] = True
     else:
         frac_kwargs["default"] = fraction_default
-    inp.add_argument("--fraction", **frac_kwargs)
+    light.add_argument("--fraction", **frac_kwargs)
     add_cif_arg(inp)
 
     col = parser.add_argument_group("Column selection")
@@ -387,31 +391,27 @@ def add_dual_model_args(
 def add_all_columns_arg(parser: argparse.ArgumentParser) -> None:
     """Add ``--all-columns`` for the difference MTZ writer.
 
-    Off by default so the output file holds the map a reader wants and can identify.
-    The gated columns are alternative constructions of the same quantities -- a
-    model-phased difference, two more extrapolations, the intensity block -- which are
+    Off by default so the output file holds the maps a reader wants and can identify.
+    The gated columns -- the model-phased difference and the intensity block -- are
     useful once you know which is which and misleading before then.
     """
     parser.add_argument(
         "--all-columns", action="store_true", default=False,
-        help="Write every alternative map coefficient and diagnostic column, not just "
-             "the default difference and extrapolated maps. Costs two further scale "
-             "fits for the extra extrapolations.",
+        help="Also write the model-phased difference and diagnostic columns, beyond "
+             "the default difference and extrapolated maps (needs a light model).",
     )
 
 
 def _sigma_scale_arg(value: str) -> float | None:
     """``--difference-sigma-scale``: ``fit`` (``None``) or a scale within bounds."""
-    from torchref.refinement.model_error_estimation.difference_power import (
-        _check_sigma_scale,
-    )
+    from torchref.cli._choices import SIGMA_SCALE_BOUNDS
 
     if value.strip().lower() == "fit":
         return None
-    try:
-        return _check_sigma_scale(float(value))
-    except ValueError as err:
-        raise argparse.ArgumentTypeError(str(err)) from None
+    lo, hi = SIGMA_SCALE_BOUNDS
+    if not lo <= float(value) <= hi:
+        raise argparse.ArgumentTypeError(f"must lie in {lo}..{hi}, got {value}")
+    return float(value)
 
 
 def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
@@ -419,20 +419,20 @@ def add_ded_weight_args(parser: argparse.ArgumentParser) -> None:
     for the difference-map writers.
 
     Every registered scheme's weight is written to the difference MTZ regardless; the
-    choice here decides which one the headline products (validate-ded correlations,
-    model-phased difference columns) carry.
+    choice here decides which one the headline products (``DELFWT``, validate-ded
+    correlations, model-phased difference columns) carry.
     """
-    from torchref.maps.ded_weights import DEFAULT_SCHEME, SCHEMES
+    from torchref.cli._choices import DED_WEIGHT_SCHEMES, DEFAULT_DED_WEIGHT_SCHEME
 
     parser.add_argument(
         "--ded-weight",
-        choices=list(SCHEMES),
-        default=DEFAULT_SCHEME,
+        choices=list(DED_WEIGHT_SCHEMES),
+        default=DEFAULT_DED_WEIGHT_SCHEME,
         help="Per-reflection weight for difference coefficients: 'q' is the "
         "q-weight, a Wiener weight from a shell-free fit of the expected difference "
         "power that down-weights noisy reflections to no less than a tenth, "
         "'inverse_variance' is 1/sigma^2, 'none' is flat (default: "
-        f"{DEFAULT_SCHEME}). All weights are written as columns.",
+        f"{DEFAULT_DED_WEIGHT_SCHEME}). All weights are written as columns.",
     )
     parser.add_argument(
         "--difference-gamma",
