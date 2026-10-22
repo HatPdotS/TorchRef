@@ -1002,7 +1002,7 @@ def build_topology_with_values(
             residue_of_row[row] = r
 
     sg_rows = [row for row in range(len(cols["name"])) if cols["name"][row] == "SG"]
-    disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz)
+    disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz, cols["altloc"])
     disulfide, disulfide_values = _disulfide_edges(
         topology, residue_of_row, disulfide_pairs, link_dict, verbose
     )

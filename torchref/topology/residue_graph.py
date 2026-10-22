@@ -312,6 +312,7 @@ def find_disulfide_links(
     sg_rows: Sequence[int],
     residue_of_row: Dict[int, int],
     xyz: torch.Tensor,
+    altloc: Optional[Sequence[str]] = None,
 ) -> List[Tuple[int, int]]:
     """``SG`` atom pairs within :data:`DISULFIDE_MAX_DISTANCE` in different residues.
 
@@ -321,6 +322,11 @@ def find_disulfide_links(
     residue -- its own alternative conformers -- are within bonding distance of each
     other and are excluded by the differing-residue test.
 
+    A bond joins one state of the model, so an ``SG`` in conformer ``A`` pairs only
+    with an ``SG`` in conformer ``A`` or one without an altloc. Conformer ``A`` of one
+    cysteine and conformer ``B`` of its partner are often within bonding distance of
+    each other too, and restraining that pair would pull the two conformers together.
+
     Parameters
     ----------
     sg_rows : sequence of int
@@ -329,6 +335,9 @@ def find_disulfide_links(
         ``{atom row: residue index}`` for those rows.
     xyz : torch.Tensor
         Cartesian coordinates, shape ``(N, 3)``.
+    altloc : sequence of str, optional
+        Per-atom altloc labels indexed by row, ``' '`` (or empty) for an atom in no
+        alternative conformation. Omitted, every pair is taken to share a state.
 
     Returns
     -------
@@ -347,8 +356,13 @@ def find_disulfide_links(
     pairs = []
     for i, j in zip(a[hit].cpu().tolist(), b[hit].cpu().tolist()):
         row_i, row_j = rows[i], rows[j]
-        if residue_of_row[row_i] != residue_of_row[row_j]:
-            pairs.append((row_i, row_j))
+        if residue_of_row[row_i] == residue_of_row[row_j]:
+            continue
+        if altloc is not None:
+            alt_i, alt_j = str(altloc[row_i]).strip(), str(altloc[row_j]).strip()
+            if alt_i and alt_j and alt_i != alt_j:
+                continue
+        pairs.append((row_i, row_j))
     return pairs
 
 

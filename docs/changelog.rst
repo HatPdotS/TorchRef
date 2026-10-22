@@ -2,6 +2,14 @@ Changelog
 =========
 
 
+Unreleased
+----------
+
+Fixes that change results
+~~~~~~~~~~~~~~~~~~~~~~~~~
+- Disulfide detection no longer bonds conformer ``A`` of one cysteine to conformer ``B`` of its partner: an ``SG`` with an altloc pairs only with the same altloc or a blank one
+
+
 Version 0.7.0
 -------------
 

@@ -264,3 +264,59 @@ def test_split_sg_disulfide_restrains_each_conformer(pdb_dir):
     cb53b = _row(model, "A", 53, "CB", "B")
     vdw = restraints.restraints["vdw"]["indices"].tolist()
     assert not any({a, b} == {cb53b, sg21} for a, b in vdw)
+
+
+def _split_cys21(src, dst):
+    """Copy of 3A5V with CYS21's CB and SG split into altlocs A and B.
+
+    B is A shifted by 0.3 Å along x, so every SG of CYS21 lies within bonding distance
+    of every SG of CYS53.
+    """
+    lines = []
+    for line in src.read_text().splitlines():
+        split = (
+            line.startswith("ATOM")
+            and line[17:20] == "CYS"
+            and line[22:26] == "  21"
+            and line[12:16].strip() in ("CB", "SG")
+        )
+        if not split:
+            lines.append(line)
+            continue
+        shifted = f"{float(line[30:38]) + 0.3:8.3f}"
+        conformer_b = line[:16] + "B" + line[17:30] + shifted + line[38:54]
+        lines.append(line[:16] + "A" + line[17:54] + "  0.50" + line[60:])
+        lines.append(conformer_b + "  0.50" + line[60:])
+    dst.write_text("\n".join(lines) + "\n")
+    return dst
+
+
+@pytest.mark.unit
+def test_disulfide_bonds_stay_within_one_conformer(pdb_dir, tmp_path):
+    """Two split cysteines bond A to A and B to B, never A to B.
+
+    Each bond carries its own conformer's angles and torsion, as for one split
+    cysteine against an unsplit partner.
+    """
+    model = _load(_split_cys21(pdb_dir / "3A5V.pdb", tmp_path / "3A5V_split21.pdb"))
+    restraints = model.restraints.restraints
+    sg = {alt: _row(model, "A", 21, "SG", alt) for alt in ("A", "B")}
+    sg53 = {alt: _row(model, "A", 53, "SG", alt) for alt in ("A", "B")}
+    sg_rows = set(sg.values()) | set(sg53.values())
+
+    bonds = restraints["bond"]["disulfide"]["indices"].tolist()
+    found = {frozenset(row) for row in bonds if set(row) <= sg_rows}
+    assert found == {
+        frozenset((sg["A"], sg53["A"])),
+        frozenset((sg["B"], sg53["B"])),
+    }
+
+    for alt in ("A", "B"):
+        cb21, cb53 = _row(model, "A", 21, "CB", alt), _row(model, "A", 53, "CB", alt)
+        for edge_type, expected in (
+            ("angle", {(cb21, sg[alt], sg53[alt]), (sg[alt], sg53[alt], cb53)}),
+            ("torsion", {(cb21, sg[alt], sg53[alt], cb53)}),
+        ):
+            rows = restraints[edge_type]["disulfide"]["indices"].tolist()
+            found = [tuple(row) for row in rows if {sg[alt], sg53[alt]} <= set(row)]
+            assert sorted(found) == sorted(expected), (edge_type, alt)
