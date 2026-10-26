@@ -24,6 +24,10 @@ reference. These functions return ``density_map + splat`` and do not modify
 ``density_map`` (with no atoms the result is a view of it), so the isotropic and
 anisotropic passes chain through the return value; they are autograd-connected in
 xyz / adp / u / occ.
+
+Batched calls (a ``(B, nx, ny, nz)`` map plus ``batch_offsets``, see
+:mod:`~torchref.base.electron_density.batching`) run the same code: each atom's flat voxel
+index is shifted by its member's slab offset, so the members share one ``scatter_add``.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ import math
 
 import torch
 
+from torchref.base.electron_density.batching import check_batch, member_index
 from torchref.base.electron_density.radius_policy import _u6_to_u3
 from torchref.config import get_int_dtype
 
@@ -106,11 +111,23 @@ def _canonical_setup(xyz, inv_frac, frac, grid_dims, radius_per_atom, dtype):
     return order, spans, center_idx[order], w0[order]
 
 
+def _slab_base(density_map, n_atoms, batch_offsets, device):
+    """Grid dims and each atom's flat slab offset ``member * nvox`` (None unbatched)."""
+    grid_dims, offsets = check_batch(density_map, n_atoms, batch_offsets)
+    if offsets is None:
+        return grid_dims, None
+    nvox = grid_dims[0] * grid_dims[1] * grid_dims[2]
+    # dtype-ok: flat voxel offsets of a batched map overflow int32 above 2**31 voxels
+    return grid_dims, member_index(offsets, n_atoms, device).to(torch.int64) * nvox
+
+
 def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
-                            inv_frac_matrix, frac_matrix, radius_per_atom):
+                            inv_frac_matrix, frac_matrix, radius_per_atom,
+                            batch_offsets=None):
     """Portable canonical-sphere isotropic splat; returns ``density_map + splat``.
 
-    ``density_map`` is not modified.
+    ``density_map`` is not modified. It is ``(nx, ny, nz)``, or ``(B, nx, ny, nz)`` with
+    ``batch_offsets`` ``(B + 1,)`` assigning the flat atoms to members.
 
     Signature mirrors
     :func:`~torchref.base.electron_density.kernels.cpu.sphere_splat.add_isotropic_cpu_sphere_var`
@@ -119,14 +136,15 @@ def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
     ``inv_frac_matrix``.
     """
     device, dtype = xyz.device, density_map.dtype
-    nx, ny, nz = (int(s) for s in density_map.shape)
-    grid_dims = (nx, ny, nz)
+    grid_dims, slab = _slab_base(density_map, xyz.shape[0], batch_offsets, device)
+    nx, ny, nz = grid_dims
     # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
     strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
     grid_shape = torch.tensor(grid_dims, device=device, dtype=get_int_dtype())
 
     order, spans, center_idx, w0 = _canonical_setup(
         xyz, inv_frac_matrix, frac_matrix, grid_dims, radius_per_atom, dtype)
+    slab = None if slab is None else slab[order]
     B_total = ((B + adp[:, None]) * 0.25).clamp(min=0.1)[order]
     A_norm = (A * occ[:, None])[order] * _PI_1P5 / (B_total * torch.sqrt(B_total))
     r2cut = (radius_per_atom * radius_per_atom)[order]
@@ -143,13 +161,17 @@ def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
             dens = torch.einsum("ag,avg->av", A_norm[s:e], torch.exp(expo))
             dens = torch.where(r_sq <= r2cut[s:e, None], dens, dens.new_zeros(()))
             vi = (center_idx[s:e].unsqueeze(1) + offsets.unsqueeze(0)) % grid_shape
-            idx_flat = (vi * strides).sum(-1).reshape(-1)
+            idx_flat = (vi * strides).sum(-1)
+            if slab is not None:
+                idx_flat = idx_flat + slab[s:e, None]
+            idx_flat = idx_flat.reshape(-1)
             density_flat = density_flat.scatter_add(0, idx_flat, dens.reshape(-1))
-    return density_flat.view(nx, ny, nz)
+    return density_flat.view(density_map.shape)
 
 
 def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
-                              inv_frac_matrix, frac_matrix, radius_per_atom):
+                              inv_frac_matrix, frac_matrix, radius_per_atom,
+                              batch_offsets=None):
     """Portable canonical-sphere anisotropic splat; returns ``density_map + splat``.
 
     ``density_map`` is not modified.
@@ -162,14 +184,15 @@ def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
     Metal kernels.
     """
     device, dtype = xyz.device, density_map.dtype
-    nx, ny, nz = (int(s) for s in density_map.shape)
-    grid_dims = (nx, ny, nz)
+    grid_dims, slab = _slab_base(density_map, xyz.shape[0], batch_offsets, device)
+    nx, ny, nz = grid_dims
     # dtype-ok: int64 strides make the flat voxel index int64; scatter_add requires int64 on torch < 2.8
     strides = torch.tensor([ny * nz, nz, 1], device=device, dtype=torch.long)
     grid_shape = torch.tensor(grid_dims, device=device, dtype=get_int_dtype())
 
     order, spans, center_idx, w0 = _canonical_setup(
         xyz, inv_frac_matrix, frac_matrix, grid_dims, radius_per_atom, dtype)
+    slab = None if slab is None else slab[order]
     eye = torch.eye(3, dtype=dtype, device=device)
     M = (B[:, :, None, None] * eye + _EIGHT_PI_SQ * _u6_to_u3(u)[:, None, :, :]) / 4.0
     Minv = torch.linalg.inv(M)[order]                                   # (N,5,3,3)
@@ -190,6 +213,9 @@ def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
             dens = torch.einsum("ag,avg->av", A_norm[s:e], torch.exp(-_PI_SQ * q))
             dens = torch.where(r_sq <= r2cut[s:e, None], dens, dens.new_zeros(()))
             vi = (center_idx[s:e].unsqueeze(1) + offsets.unsqueeze(0)) % grid_shape
-            idx_flat = (vi * strides).sum(-1).reshape(-1)
+            idx_flat = (vi * strides).sum(-1)
+            if slab is not None:
+                idx_flat = idx_flat + slab[s:e, None]
+            idx_flat = idx_flat.reshape(-1)
             density_flat = density_flat.scatter_add(0, idx_flat, dens.reshape(-1))
-    return density_flat.view(nx, ny, nz)
+    return density_flat.view(density_map.shape)
