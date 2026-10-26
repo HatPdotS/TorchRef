@@ -655,7 +655,8 @@ class Symmetry(DeviceMixin):
         Parameters
         ----------
         density_map : torch.Tensor
-            Asymmetric-unit density, shape ``(nx, ny, nz)``.
+            Asymmetric-unit density, shape ``(nx, ny, nz)``, or ``(B, nx, ny, nz)`` for
+            a batch of maps on one grid.
         combine : {'sum', 'max'}, default 'sum'
             ``'sum'`` for electron density, ``'max'`` for masks and boolean data.
 
@@ -667,7 +668,9 @@ class Symmetry(DeviceMixin):
         """
         if self.n_ops == 1:
             return density_map
-        return self.map_operator(density_map.shape).symmetrize(density_map, combine)
+        return self.map_operator(density_map.shape[-3:]).symmetrize(
+            density_map, combine
+        )
 
     def expand_map_to_P1(self, density_map: torch.Tensor) -> torch.Tensor:
         """Every symmetry mate of a density map, stacked.
@@ -675,14 +678,14 @@ class Symmetry(DeviceMixin):
         Parameters
         ----------
         density_map : torch.Tensor
-            Asymmetric-unit density, shape ``(nx, ny, nz)``.
+            Asymmetric-unit density, shape ``(nx, ny, nz)`` or ``(B, nx, ny, nz)``.
 
         Returns
         -------
         torch.Tensor
-            Shape ``(n_ops, nx, ny, nz)``.
+            Shape ``(n_ops, nx, ny, nz)``, or ``(n_ops, B, nx, ny, nz)`` for a batch.
         """
-        return self.map_operator(density_map.shape).all_mates(density_map)
+        return self.map_operator(density_map.shape[-3:]).all_mates(density_map)
 
     # =========================================================================
     # Reciprocal-space extraction

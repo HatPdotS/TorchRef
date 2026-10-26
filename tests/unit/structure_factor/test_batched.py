@@ -233,3 +233,95 @@ def test_metal_refuses_a_batch_past_32_bit_indices():
     huge = torch.empty((2, 1024, 1024, 1024), device="meta")
     with pytest.raises(ValueError, match="32 bits"):
         _member(huge, torch.empty((0, 3), device="meta"), torch.tensor([0, 0, 0]))
+
+
+# ---------------------------------------------------------------------------
+# Base functions above the kernels
+# ---------------------------------------------------------------------------
+def _build_kw(scene, dims):
+    return dict(
+        grid_shape=dims, device=scene.xyz.device, inv_frac_matrix=scene.inv_frac_matrix,
+        frac_matrix=scene.frac_matrix, dtype=scene.xyz.dtype,
+    )
+
+
+def test_build_electron_density_batched_matches_loop():
+    """Dense isotropic atoms beside ragged anisotropic ones, one member empty of the
+    latter."""
+    from torchref.base.electron_density.main import build_electron_density
+
+    a, b = (H.synthetic_scene(n_atoms=6, seed=s) for s in (20, 21))
+    c = H.synthetic_scene(n_atoms=4, seed=22)
+    dims = H._grid_dims(a)
+    kw = _build_kw(a, dims)
+
+    got = build_electron_density(
+        xyz_iso=torch.stack([a.xyz, b.xyz]), adp_iso=torch.stack([a.adp, b.adp]),
+        occ_iso=torch.stack([a.occ, b.occ]), A_iso=a.A, B_iso=torch.stack([a.B, b.B]),
+        xyz_aniso=c.xyz, u_aniso=c.u6, occ_aniso=c.occ, A_aniso=c.A, B_aniso=c.B,
+        batch_offsets_aniso=torch.tensor([0, 4, 4]), **kw,
+    )
+    ref0 = build_electron_density(
+        xyz_iso=a.xyz, adp_iso=a.adp, occ_iso=a.occ, A_iso=a.A, B_iso=a.B,
+        xyz_aniso=c.xyz, u_aniso=c.u6, occ_aniso=c.occ, A_aniso=c.A, B_aniso=c.B, **kw,
+    )
+    # Member 1 shares member 0's A (passed once), but has its own B.
+    ref1 = build_electron_density(
+        xyz_iso=b.xyz, adp_iso=b.adp, occ_iso=b.occ, A_iso=a.A, B_iso=b.B, **kw,
+    )
+    assert got.shape == (2,) + tuple(dims)
+    assert torch.equal(got, torch.stack([ref0, ref1]))
+
+
+def test_build_electron_density_refuses_a_half_batched_call():
+    from torchref.base.electron_density.main import build_electron_density
+
+    a = H.synthetic_scene(n_atoms=3, seed=1)
+    kw = _build_kw(a, H._grid_dims(a))
+    with pytest.raises(ValueError, match="one atom set is batched"):
+        build_electron_density(
+            xyz_iso=a.xyz[None], adp_iso=a.adp[None], occ_iso=a.occ[None],
+            A_iso=a.A, B_iso=a.B,
+            xyz_aniso=a.xyz, u_aniso=a.u6, occ_aniso=a.occ, A_aniso=a.A, B_aniso=a.B,
+            **kw,
+        )
+    with pytest.raises(ValueError, match="different batch sizes"):
+        build_electron_density(
+            xyz_iso=a.xyz[None], adp_iso=a.adp[None], occ_iso=a.occ[None],
+            A_iso=a.A, B_iso=a.B,
+            xyz_aniso=a.xyz, u_aniso=a.u6, occ_aniso=a.occ, A_aniso=a.A, B_aniso=a.B,
+            batch_offsets_aniso=torch.tensor([0, 1, 3]), **kw,
+        )
+
+
+@pytest.mark.parametrize("shape", [(12, 16, 20), (11, 15, 21)], ids=["direct", "interp"])
+def test_symmetrize_map_batched_matches_loop(shape):
+    from torchref.symmetry import SpaceGroup
+
+    sg = SpaceGroup("P 21 21 21", dtype=torch.float64, device=torch.device("cpu"))
+    assert sg.can_index_directly(shape) == (shape == (12, 16, 20))
+    g = torch.Generator().manual_seed(0)
+    maps = torch.rand((3,) + shape, generator=g, dtype=torch.float64)
+    got = sg.symmetrize_map(maps)
+    ref = torch.stack([sg.symmetrize_map(m) for m in maps])
+    torch.testing.assert_close(got, ref, rtol=0, atol=1e-14)
+    mates = sg.expand_map_to_P1(maps)
+    assert mates.shape == (sg.n_ops, 3) + shape
+
+
+def test_reciprocal_extractor_batched_matches_loop():
+    from torchref.symmetry import SpaceGroup
+
+    sg = SpaceGroup("P 21 21 21", dtype=torch.float64, device=torch.device("cpu"))
+    shape = (12, 16, 20)
+    hkl = torch.tensor([[1, 2, 3], [0, 0, 2], [3, 1, 0], [-2, 4, 5]])
+    ex = sg.reciprocal_extractor(hkl, shape)
+    g = torch.Generator().manual_seed(1)
+    grids = torch.randn((3,) + shape, generator=g, dtype=torch.complex128)
+    grids.requires_grad_(True)
+    got = ex.extract_from_grid(grids)
+    ref = torch.stack([ex.extract_from_grid(m) for m in grids])
+    torch.testing.assert_close(got, ref, rtol=0, atol=1e-14)
+    (gb,) = torch.autograd.grad(got.abs().sum(), grids)
+    (gl,) = torch.autograd.grad(ref.abs().sum(), grids)
+    torch.testing.assert_close(gb, gl, rtol=0, atol=1e-14)
