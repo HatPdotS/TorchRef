@@ -109,9 +109,10 @@ def test_metal_kernel_is_actually_dispatched(scene_small, kind, monkeypatch):
 
 
 @pytest.mark.cuda
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
-def test_triton_kernel_is_actually_dispatched(scene_small, kind, monkeypatch):
-    """CUDA float32 equivalent of the Metal provenance test.
+def test_triton_kernel_is_actually_dispatched(scene_small, kind, dtype, monkeypatch):
+    """CUDA equivalent of the Metal provenance test, in both float dtypes.
 
     Same patch target rule as the Metal case -- the module that defines the kernel. The two
     used to differ, which is why they are separate tests rather than one parametrized
@@ -129,7 +130,7 @@ def test_triton_kernel_is_actually_dispatched(scene_small, kind, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(kernels_cuda, name, recording)
-    _build(scene_small, torch.device("cuda"), torch.float32, aniso=kind == "aniso")
+    _build(scene_small, torch.device("cuda"), dtype, aniso=kind == "aniso")
     assert calls, f"the default did not dispatch to {name}"
 
 
@@ -258,7 +259,7 @@ def test_radius_policy_is_the_same_on_every_device(scene_small):
 
 @pytest.mark.cuda
 def test_triton_density_gate_probes_every_tensor(scene_small, monkeypatch):
-    """A float64 ``density_map`` must not reach the float32 Triton kernel.
+    """A float64 ``density_map`` beside float32 atoms must not reach the Triton kernel.
 
     Written when the density Triton branch gated on ``should_use_triton(xyz)`` -- **only
     xyz** -- while its sibling gates probed six tensors. A float32 ``xyz`` with a float64
@@ -298,9 +299,9 @@ def test_triton_density_gate_probes_every_tensor(scene_small, monkeypatch):
     dm_f64 = torch.zeros(*dims, dtype=torch.float64, device=cuda)
     radius = per_atom_radius_iso(s.adp, s.B, n_sigma=get_sigma_cutoff_ed())
 
-    # Layer 1: the decision. Position 0 (the map) is probed, so float64 fails
-    # ``dtypes=(float32,)``; ``mps_metal``/``cpu_sphere`` are device-disjoint from CUDA, so
-    # the only row left is the base case.
+    # Layer 1: the decision. Position 0 (the map) is probed, so the float64 map beside
+    # float32 atoms fails ``require_uniform_dtype``; ``mps_metal``/``cpu_sphere`` are
+    # device-disjoint from CUDA, so the only row left is the base case.
     args = (dm_f64, s.xyz, s.adp, s.occ, s.A, s.B,
             s.inv_frac_matrix, s.frac_matrix, radius)
     chosen = select(DENSITY_BACKENDS, args)

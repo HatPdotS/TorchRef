@@ -37,7 +37,10 @@ DENSITY_BACKENDS = BackendTable(
             name="cuda_triton",
             kernel=(_CUDA, "add_isotropic_cuda_var", "add_anisotropic_cuda_var"),
             device="cuda",
-            dtypes=(torch.float32,),  # dtype-ok: backend capability declaration, not an allocation
+            dtypes=(torch.float32, torch.float64),  # dtype-ok: backend capability declaration, not an allocation
+            # The kernels compute in the dtype of the atoms and atomically add into the
+            # map, so a float32/float64 mix must go to the portable splat instead.
+            require_uniform_dtype=True,
             probes=_ATOM_ARGS,
             probe=(_CUDA, "why_unavailable"),
             expect_available="cuda",
