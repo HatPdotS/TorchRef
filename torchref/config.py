@@ -3,13 +3,15 @@
 Set at import time from the environment -- ``TORCHREF_DTYPE_FLOAT`` (float32 default /
 float64), ``TORCHREF_DTYPE_INT`` (int32 / int64), ``TORCHREF_DTYPE_COMPLEX``
 (complex64 / complex128), ``TORCHREF_DEVICE`` ('auto' default / 'cuda' / 'mps' / 'cpu'),
-``TORCHREF_SIGMA_CUTOFF_ED`` (3.0), ``TORCHREF_COMPILE_TARGETS`` and ``TORCHREF_CACHING``
-(on by default) -- or at runtime by attribute assignment::
+``TORCHREF_SIGMA_CUTOFF_ED`` (3.0), ``TORCHREF_COMPILE_TARGETS``, ``TORCHREF_CACHING``
+(on by default) and ``TORCHREF_DEBUG_CHECKS`` (off) -- or at runtime by attribute
+assignment::
 
     torchref.dtypes.float = torch.float64
     torchref.device.current = torch.device('cpu')
     torchref.sigma_cutoff_ed.value = 4.0   # density splat truncation, in sigmas
     torchref.config.caching.value = False  # recompute every cached forward()
+    torchref.config.debug_checks.value = True  # assert finite maps / fcalc
 
 The default device is auto-detected cuda -> mps -> cpu, and the current CUDA device is
 picked only if its compute capability is >= the minimum sm_* in this PyTorch build *and*
@@ -350,6 +352,53 @@ caching = CachingConfig()
 def get_caching_enabled() -> bool:
     """Whether ``CachedForwardMixin`` should serve cached ``forward()`` results."""
     return caching.value
+
+
+# ---------------------------------------------------------------------------
+# Debug checks
+# ---------------------------------------------------------------------------
+
+_DEFAULT_DEBUG_CHECKS = False
+
+
+class DebugChecksConfig:
+    """Whether to run the expensive numerical self-checks.
+
+    ``debug_checks.value`` reads or sets it; initialised from ``TORCHREF_DEBUG_CHECKS``
+    ("1"/"true"/"yes"/"on" vs "0"/"false"/"no"/"off"), off by default. When on,
+    ``ModelFT`` and the scalers assert that maps and structure factors are finite (each
+    assert is a host sync), and a failing ``Refinement`` setup dumps its module state
+    via ``debug_on_error`` before re-raising. Independent of the log level.
+    """
+
+    def __init__(self):
+        raw = os.environ.get("TORCHREF_DEBUG_CHECKS")
+        if raw is None:
+            self._value = _DEFAULT_DEBUG_CHECKS
+        else:
+            self._value = _parse_bool_env("TORCHREF_DEBUG_CHECKS", raw)
+
+    @property
+    def value(self) -> bool:
+        """Whether the numerical self-checks run."""
+        return self._value
+
+    @value.setter
+    def value(self, flag: bool) -> None:
+        if not isinstance(flag, bool):
+            raise TypeError(f"debug_checks must be a bool, got {type(flag).__name__}")
+        self._value = flag
+
+    def __repr__(self) -> str:
+        return f"DebugChecksConfig(value={self._value})"
+
+
+debug_checks = DebugChecksConfig()
+
+
+def get_debug_checks() -> bool:
+    """Whether the expensive numerical self-checks run."""
+    return debug_checks.value
 
 
 # ---------------------------------------------------------------------------

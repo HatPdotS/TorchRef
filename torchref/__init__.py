@@ -14,6 +14,9 @@ is the entry point and takes the MTZ and PDB paths directly::
 ``import torchref`` does not import torch: the names re-exported here and the
 subpackages load on first access, and :mod:`torchref.config` reads its environment then.
 
+As a library TorchRef logs only warnings; ``torchref.set_verbosity(1)`` shows progress,
+``2`` detail (see :mod:`torchref._logging`).
+
 Modules
 -------
 io
@@ -55,6 +58,7 @@ from pathlib import Path
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 from torchref._bootstrap import configure_threading, detect_available_cpus
+from torchref._logging import TRACE, quiet, set_verbosity, verbosity
 
 # Threading must be configured before torch is imported.
 if "TORCHREF_NUM_THREADS" in os.environ:
@@ -126,4 +130,14 @@ def __dir__():
     return sorted(set(globals()) | set(_LAZY_EXPORTS))
 
 
-__all__ = ["__version__", "ROOT_TORCHREF", "PATH_TORCHREF", "N_CPUS", *_LAZY_EXPORTS]
+__all__ = [
+    "__version__",
+    "ROOT_TORCHREF",
+    "PATH_TORCHREF",
+    "N_CPUS",
+    "TRACE",
+    "quiet",
+    "set_verbosity",
+    "verbosity",
+    *_LAZY_EXPORTS,
+]
