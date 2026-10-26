@@ -196,3 +196,31 @@ def test_dense_offsets_are_implied():
             sc.xyz[None], sc.adp[None], sc.occ[None], sc.A, sc.B,
             batch_offsets=torch.tensor([0, 2]),
         )
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("name", ["portable", "cpu_sphere"])
+def test_batched_second_order_matches_per_member(name, kind):
+    """Double backward re-derives through the portable splat with the same batch."""
+    aniso = kind == "aniso"
+    device, dtype = torch.device("cpu"), torch.float64
+    members = _members(device, dtype)
+    dims = H._grid_dims(members[0])
+    fn = H.splat_kernel(name, aniso)
+    g = torch.Generator().manual_seed(5)
+    weight = torch.randn((len(members),) + tuple(dims), generator=g, dtype=dtype)
+    probes = [torch.randn(sc.xyz.shape, generator=g, dtype=dtype) for sc in members]
+
+    hvps = {}
+    for batched in (False, True):
+        leaves = [sc.leaves(aniso=aniso) for sc in members]
+        xyz = [lv[0] for lv in leaves]
+        out = _splat(fn, members[0], dims, members, leaves, aniso, batched=batched)
+        grads = torch.autograd.grad(
+            ((out * weight) ** 2).sum(), xyz, create_graph=True, allow_unused=True
+        )
+        dot = sum((gr * p).sum() for gr, p in zip(grads, probes) if gr is not None)
+        hvps[batched] = torch.autograd.grad(dot, xyz, allow_unused=True)
+    for got, ref, sc in zip(hvps[True], hvps[False], members):
+        if sc.n_atoms:
+            _assert_close(got, ref, device, dtype, "portable", "hvp", grad=True)
