@@ -956,14 +956,15 @@ def build_topology_with_values(
     pp_cif = PreprocessedCIF(comp_dict)
     if verbose > 1:
         reported = set()
-        for key, ids in pp_cif.ring_strained.items():
+        for key, skipped in pp_cif.skipped_torsions.items():
             resname = key.split(":", 1)[0]
-            if resname not in reported:
-                reported.add(resname)
-                print(
-                    f"{resname}: not restraining {len(ids)} staggered torsion(s) "
-                    f"about small-ring bonds ({', '.join(ids)})"
-                )
+            if resname in reported:
+                continue
+            reported.add(resname)
+            reasons = "; ".join(
+                f"{why}: {', '.join(ids)}" for why, ids in skipped.items()
+            )
+            print(f"{resname}: dictionary torsions not restrained ({reasons})")
     match_cols["name"] = match_cols["name"].copy()
     # PDB terminal H1 is the monomer dictionary's H. Resolve the alias only
     # for matching, preserving the model's atom names and row identities.

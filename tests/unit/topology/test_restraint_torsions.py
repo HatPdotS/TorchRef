@@ -258,3 +258,29 @@ def test_proline_ring_takes_no_staggered_torsions(pdb_dir):
     owner = set(resname[rows[:, 1]].tolist())
     assert {"LYS", "PHE", "TYR"} <= owner
     assert ("CA", "CB") in middle
+
+
+def test_screen_torsions_names_each_skipped_torsion():
+    """Each dictionary torsion is kept or skipped under exactly one named reason."""
+    from torchref.topology.builders import (
+        SKIP_BACKBONE,
+        SKIP_SMALL_RING,
+        SKIP_ZERO_SIGMA,
+        screen_torsions,
+    )
+
+    proline = _library_component("PRO")
+    kept, skipped = screen_torsions(proline["torsions"], proline["bonds"])
+    assert kept.empty
+    assert skipped == {
+        SKIP_BACKBONE: ["sp2_sp3_1"],
+        SKIP_SMALL_RING: ["chi1", "chi2", "sp3_sp3_1", "sp3_sp3_28", "sp3_sp3_37"],
+    }
+
+    phenylalanine = _library_component("PHE")
+    kept, skipped = screen_torsions(phenylalanine["torsions"], phenylalanine["bonds"])
+    assert list(kept["id"]) == ["chi1", "chi2", "sp3_sp3_1"]
+    assert skipped == {
+        SKIP_BACKBONE: ["sp2_sp3_1"],
+        SKIP_ZERO_SIGMA: [f"CONST_{i}" for i in range(1, 6)] + ["const_21"],
+    }

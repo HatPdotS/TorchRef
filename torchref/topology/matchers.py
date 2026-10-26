@@ -146,9 +146,10 @@ def match_torsions(
     Match torsion restraints for a single residue.
 
     A CIF torsion is emitted only if all four named atoms appear in
-    ``residue_atom_names`` **and** its sigma is non-zero -- zero-sigma torsions
-    are dropped, not clamped. Indices come from ``residue_atom_indices``
-    (global); references and sigmas are in degrees.
+    ``residue_atom_names``. Indices come from ``residue_atom_indices`` (global);
+    references and sigmas are in degrees. Torsions that should not be restrained
+    at all, zero-sigma ones included, are removed beforehand by
+    :func:`~torchref.topology.builders.screen_torsions`.
 
     Returns
     -------
@@ -161,10 +162,6 @@ def match_torsions(
     n_atoms = len(residue_atom_names)
 
     for i in range(n_torsions):
-        # Skip if sigma is zero
-        if torsion_sigmas[i] == 0:
-            continue
-
         # Find all four atoms
         idx1, idx2, idx3, idx4 = -1, -1, -1, -1
         for j in range(n_atoms):

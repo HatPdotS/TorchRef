@@ -116,7 +116,10 @@ repulsion
 (:math:`E \sim \text{violation}^4`) applied to symmetry mates as well as to the
 asymmetric unit.
 
-Not every torsion a dictionary lists is restrained. Three kinds are skipped: those
+Not every torsion a dictionary lists is restrained. One screen,
+:func:`~torchref.topology.builders.screen_torsions`, decides, and at ``verbose=2``
+the restraint build prints what it skipped per residue type and why. Three kinds are
+skipped: those
 over backbone atoms only (N, CA, C, O, OXT), which would fight the Ramachandran term;
 those with a zero sigma (the ``CONST_*`` aromatic-ring torsions, which the planes
 already cover); and staggered (period-3) torsions about a bond in a ring of five or
