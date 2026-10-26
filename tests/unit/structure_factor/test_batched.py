@@ -325,3 +325,54 @@ def test_reciprocal_extractor_batched_matches_loop():
     (gb,) = torch.autograd.grad(got.abs().sum(), grids)
     (gl,) = torch.autograd.grad(ref.abs().sum(), grids)
     torch.testing.assert_close(gb, gl, rtol=0, atol=1e-14)
+
+
+@pytest.mark.parametrize("late", [True, False], ids=["late_symmetry", "early_symmetry"])
+@pytest.mark.parametrize("with_imaginary", [False, True], ids=["real", "imaginary"])
+def test_sf_fft_batched_matches_loop(late, with_imaginary):
+    """Dense isotropic atoms, ragged anisotropic ones and (optionally) a ragged
+    imaginary part, through both symmetry routes."""
+    a, b = (H.synthetic_scene(n_atoms=5, seed=s, max_refl=60) for s in (30, 31))
+    c = H.synthetic_scene(n_atoms=3, seed=32)
+    sf = H.sf_fft_for(a, spacegroup="P 21 21 21")
+    sf.use_late_symmetry = late
+    sf.ensure_grid()
+    assert sf.late_symmetry_compatible
+
+    def imag_of(scene, n):
+        """A small absorptive term on the scene's first ``n`` atoms, isotropic only."""
+        z = scene.xyz.new_zeros
+        return (scene.xyz[:n], scene.adp[:n], scene.occ[:n], 0.1 * scene.A[:n],
+                scene.B[:n], z(0, 3), z(0, 6), z(0), z(0, 5), z(0, 5))
+
+    def one(iso, aniso, imag):
+        return sf.compute_structure_factors(
+            a.hkl, *iso, *aniso, imaginary=imag if with_imaginary else None
+        )[0]
+
+    refs = [
+        one((s.xyz, s.adp, s.occ, s.A, s.B), aniso, imag_of(s, k))
+        for s, aniso, k in (
+            (a, (c.xyz, c.u6, c.occ, c.A, c.B), 2),
+            (b, (None,) * 5, 3),
+        )
+    ]
+    ab = lambda f: torch.stack([f(a), f(b)])  # noqa: E731
+    imag = None
+    imag_offsets = None
+    if with_imaginary:
+        ia, ib = imag_of(a, 2), imag_of(b, 3)
+        imag = tuple(torch.cat([x, y]) for x, y in zip(ia, ib))
+        imag_offsets = (torch.tensor([0, 2, 5]), torch.tensor([0, 0, 0]))
+    got, density = sf.compute_structure_factors(
+        a.hkl,
+        ab(lambda s: s.xyz), ab(lambda s: s.adp), ab(lambda s: s.occ),
+        ab(lambda s: s.A), ab(lambda s: s.B),
+        c.xyz, c.u6, c.occ, c.A, c.B,
+        imaginary=imag,
+        batch_offsets_aniso=torch.tensor([0, 3, 3]),
+        imaginary_batch_offsets=imag_offsets,
+    )
+    assert got.shape == (2, a.n_refl)
+    assert density.shape[0] == 2
+    torch.testing.assert_close(got, torch.stack(refs), rtol=1e-12, atol=1e-10)

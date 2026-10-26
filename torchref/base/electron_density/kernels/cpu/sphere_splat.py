@@ -171,7 +171,7 @@ def _prep(density_map, xyz, radius_per_atom, batch_offsets, *tensors):
     r2cut = (radius_per_atom * radius_per_atom).detach().contiguous()
     _, offsets = check_batch(density_map, xyz.shape[0], batch_offsets)
     if offsets is None:
-        offsets = dense_offsets(1, xyz.shape[0], density_map.device)
+        offsets = dense_offsets(1, xyz.shape[0])
     return r2cut, offsets.contiguous()
 
 

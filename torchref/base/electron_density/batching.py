@@ -14,6 +14,9 @@ No batch is the default and changes nothing: ``(N, 3)`` atoms into an ``(nx, ny,
 map is the unbatched path, and every kernel runs it as one member. The kernels decide
 which form they were given from the map's rank and ``batch_offsets`` alone, through
 :func:`check_batch`.
+
+Offsets are validated on the host. Implied offsets are built there, so they cost no
+device sync; offsets a caller passes on a GPU cost one per call.
 """
 
 from __future__ import annotations
@@ -25,10 +28,10 @@ import torch
 __all__ = ["normalize_atoms", "check_batch", "member_index", "dense_offsets"]
 
 
-def dense_offsets(n_members: int, n_atoms: int, device) -> torch.Tensor:
-    """Offsets of ``n_members`` members of ``n_atoms`` atoms each, shape ``(B + 1,)``."""
+def dense_offsets(n_members: int, n_atoms: int) -> torch.Tensor:
+    """Offsets of ``n_members`` members of ``n_atoms`` atoms each, ``(B + 1,)``, on CPU."""
     # dtype-ok: atom offsets index flat buffers; int64 so no atom count can overflow them
-    return torch.arange(n_members + 1, dtype=torch.int64, device=device) * n_atoms
+    return torch.arange(n_members + 1, dtype=torch.int64) * n_atoms
 
 
 def _check_offsets(offsets: torch.Tensor, n_atoms: int) -> torch.Tensor:
@@ -115,7 +118,7 @@ def normalize_atoms(
         flat(occ, "occ"),
         flat(A, "A", shareable=True),
         flat(B, "B", shareable=True),
-        dense_offsets(n_members, n_atoms, xyz.device),
+        dense_offsets(n_members, n_atoms),
     )
 
 

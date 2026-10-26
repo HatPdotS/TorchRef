@@ -156,7 +156,7 @@ def _common_batch(iso, aniso):
                 "one atom set is batched and the other is not; batch both, or pass the "
                 "unbatched one empty"
             )
-        return (*t[:5], dense_offsets(n_members, 0, t[0].device))
+        return (*t[:5], dense_offsets(n_members, 0))
 
     return align(iso), align(aniso), n_members
 
