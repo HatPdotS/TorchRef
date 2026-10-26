@@ -8,6 +8,7 @@ Unreleased
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 - Disulfide detection no longer bonds conformer ``A`` of one cysteine to conformer ``B`` of its partner: an ``SG`` with an altloc pairs only with the same altloc or a blank one
+- Staggered (period-3) dictionary torsions about bonds in rings of five or fewer atoms are no longer restrained: no ring pucker can reach them, so proline and hydroxyproline rings were strained toward impossible geometry
 
 
 Version 0.7.0

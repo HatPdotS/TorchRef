@@ -954,6 +954,16 @@ def build_topology_with_values(
     _, first_variant = np.unique(owners, return_index=True)
     template_key[:] = chemical_keys[first_variant]
     pp_cif = PreprocessedCIF(comp_dict)
+    if verbose > 1:
+        reported = set()
+        for key, ids in pp_cif.ring_strained.items():
+            resname = key.split(":", 1)[0]
+            if resname not in reported:
+                reported.add(resname)
+                print(
+                    f"{resname}: not restraining {len(ids)} staggered torsion(s) "
+                    f"about small-ring bonds ({', '.join(ids)})"
+                )
     match_cols["name"] = match_cols["name"].copy()
     # PDB terminal H1 is the monomer dictionary's H. Resolve the alias only
     # for matching, preserving the model's atom names and row identities.
