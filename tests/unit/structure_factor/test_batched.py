@@ -6,10 +6,10 @@ about the per-atom arithmetic changes, so the reference for a batched call is th
 kernel run once per member and stacked -- not an independent oracle. Accuracy of the
 unbatched kernels themselves is what ``test_forward.py`` / ``test_gradients.py`` cover.
 
-Kernels that accumulate in a fixed order must match bitwise: every CPU forward, and the
-fused CPU backward, which sums each atom's gradient on its own. The portable backward
-regroups atoms into different chunks when batched, and the GPU kernels accumulate with
-atomics, so those are held to a rounding tolerance.
+The fused CPU kernel accumulates in a fixed order, so it must match bitwise, forward and
+backward. The portable splat regroups atoms into different ``scatter_add`` chunks when
+batched, which changes its summation order on some hosts, and the GPU kernels accumulate
+with atomics, so those are held to a rounding tolerance.
 """
 
 from __future__ import annotations
@@ -40,9 +40,7 @@ _MEMBER_SIZES = (9, 0, 6)
 
 def _exact(device: torch.device, name: str, grad: bool) -> bool:
     """Whether batching leaves this kernel's summation order, and so its bits, unchanged."""
-    if grad:
-        return name == "cpu_sphere"
-    return device.type == "cpu"
+    return name == "cpu_sphere"
 
 
 def _tol(dtype: torch.dtype) -> float:
