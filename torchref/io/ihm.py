@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import gemmi
 import pandas as pd
 
+from torchref._logging import get_logger
 from torchref.io.ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMStateInfo
 
 if TYPE_CHECKING:
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
 
     from torchref.io.datasets.reflection_data import ReflectionData
     from torchref.model.model_collection import ModelCollection
+
+log = get_logger(__name__)
 
 
 def _check_ihm_available():
@@ -104,8 +107,6 @@ class IHMReader:
     ----------
     filepath : str
         Path to IHM mmCIF file.
-    verbose : int
-        Verbosity level (0=silent, 1=info, 2=debug).
 
     Raises
     ------
@@ -115,10 +116,9 @@ class IHMReader:
         If ``filepath`` does not exist.
     """
 
-    def __init__(self, filepath: str, verbose: int = 0):
+    def __init__(self, filepath: str):
         _check_ihm_available()
         self.filepath = Path(filepath)
-        self.verbose = verbose
         if not self.filepath.exists():
             raise FileNotFoundError(f"IHM file not found: {self.filepath}")
 
@@ -242,12 +242,11 @@ class IHMReader:
             spacegroup=spacegroup,
         )
 
-        if self.verbose > 0:
-            print(f"IHM mapping: {len(states)} states, {len(model_groups)} groups")
-            for s in states:
-                print(f"  State {s.state_id}: {s.name} (model_num={s.model_num})")
-            for g in model_groups:
-                print(f"  Group {g.group_id}: {g.name} fractions={g.state_fractions}")
+        log.info(f"IHM mapping: {len(states)} states, {len(model_groups)} groups")
+        for s in states:
+            log.info(f"  State {s.state_id}: {s.name} (model_num={s.model_num})")
+        for g in model_groups:
+            log.info(f"  Group {g.group_id}: {g.name} fractions={g.state_fractions}")
 
         return mapping
 
@@ -273,7 +272,7 @@ class IHMReader:
         """
         from torchref.io.cif_readers import ModelCIFReader
 
-        reader = ModelCIFReader(str(self.filepath), verbose=0)
+        reader = ModelCIFReader(str(self.filepath))
         by_model = reader.get_atom_data_by_model()
 
         result = {}
@@ -370,18 +369,11 @@ class IHMReader:
             reader = _DataFrameReader(df, cell, sg)
             model.load(reader)
 
-            if self.verbose > 0:
-                print(
-                    f"  Loaded state '{state.name}': "
-                    f"{len(df)} atoms"
-                )
+            log.info(f"  Loaded state '{state.name}': {len(df)} atoms")
             base_models.append(model)
 
         # Create ModelCollection
-        collection = ModelCollection(
-            base_models=base_models,
-            verbose=self.verbose,
-        )
+        collection = ModelCollection(base_models=base_models)
 
         # Add timepoints from model groups
         dark_name = mapping.identify_dark_group()
@@ -632,8 +624,6 @@ class IHMWriter:
         Per-timepoint reflection data keyed by timepoint name; when given,
         matching per-timepoint ``_refln`` blocks are appended by
         :meth:`write`. None (default) writes no reflection blocks.
-    verbose : int
-        Verbosity level.
     """
 
     def __init__(
@@ -641,13 +631,11 @@ class IHMWriter:
         model_collection: "ModelCollection",
         mapping: Optional[IHMEnsembleMapping] = None,
         datasets: Optional[Dict[str, "ReflectionData"]] = None,
-        verbose: int = 0,
     ):
         _check_ihm_available()
         self.model_collection = model_collection
         self.mapping = mapping or self._create_default_mapping()
         self.datasets = datasets
-        self.verbose = verbose
 
     def _create_default_mapping(self) -> IHMEnsembleMapping:
         """
@@ -820,18 +808,16 @@ class IHMWriter:
         if self.datasets:
             self._append_refln_blocks(filepath, mapping)
 
-        if self.verbose > 0:
-            print(f"Wrote IHM mmCIF: {filepath}")
-            print(f"  {len(mapping.states)} states, {len(mapping.model_groups)} groups")
-            if self.datasets:
-                print(f"  {len(self.datasets)} reflection dataset(s)")
+        log.info(f"Wrote IHM mmCIF: {filepath}")
+        log.info(f"  {len(mapping.states)} states, {len(mapping.model_groups)} groups")
+        if self.datasets:
+            log.info(f"  {len(self.datasets)} reflection dataset(s)")
 
     @classmethod
     def _from_mixed_model(
         cls,
         mixed_model,
         mapping: IHMEnsembleMapping,
-        verbose: int = 0,
     ) -> "IHMWriter":
         """
         Create an IHMWriter from a MixedModel instead of a ModelCollection,
@@ -843,8 +829,6 @@ class IHMWriter:
             The mixed model to write.
         mapping : IHMEnsembleMapping
             Mapping with state/group metadata.
-        verbose : int
-            Verbosity level.
 
         Returns
         -------
@@ -855,7 +839,6 @@ class IHMWriter:
         _check_ihm_available()
         writer.model_collection = adapter
         writer.mapping = mapping
-        writer.verbose = verbose
         return writer
 
     def _append_models(
@@ -1121,8 +1104,7 @@ class IHMWriter:
                     row.append({1: "o", 0: "f", -1: "x"}[int(rfree_np[i])])
                 loop.add_row(row)
 
-            if self.verbose > 0:
-                print(f"  Dataset '{name}': {n_refln} reflections")
+            log.info(f"  Dataset '{name}': {n_refln} reflections")
 
         doc.write_file(str(filepath))
 

@@ -15,9 +15,9 @@ therefore be supplied by the caller.
 
 Usage mirrors :class:`torchref.io.mtz.MTZReader`::
 
-    reader = HKLReader(verbose=1).read("td1.hkl",
-                                       cell=[a,b,c,al,be,ga],
-                                       spacegroup="P 1 21 1")
+    reader = HKLReader().read("td1.hkl",
+                              cell=[a,b,c,al,be,ga],
+                              spacegroup="P 1 21 1")
     data_dict, cell, spacegroup = reader()
 
 The returned ``data_dict`` conforms to the intensity-path contract of
@@ -30,12 +30,15 @@ from typing import Any, Optional, Tuple, Union
 
 import numpy as np
 
+from torchref._logging import get_logger
+
+log = get_logger(__name__)
+
 
 class HKLReader:
     """Reader for CrystFEL partialator `.hkl` reflection lists."""
 
-    def __init__(self, verbose: int = 0):
-        self.verbose = verbose
+    def __init__(self):
         self.data: Optional[dict] = None
         self.cell: Optional[np.ndarray] = None
         self.spacegroup: Optional[str] = None
@@ -60,8 +63,7 @@ class HKLReader:
             Space group. If a wrapper object is passed, its ``.hm`` or
             ``.short_name()`` is used.
         """
-        if self.verbose > 1:
-            print(f"Reading CrystFEL hkl file: {filepath}")
+        log.debug(f"Reading CrystFEL hkl file: {filepath}")
 
         if hasattr(cell, "data"):  # torchref.symmetry.Cell
             cell = cell.data
@@ -118,11 +120,10 @@ class HKLReader:
             "I_col": "I (CrystFEL)",
         }
 
-        if self.verbose > 0:
-            print(
-                f"Parsed {len(hkl)} reflections from {filepath} "
-                f"(cell={cell_arr.tolist()}, spacegroup='{self.spacegroup}')"
-            )
+        log.info(
+            f"Parsed {len(hkl)} reflections from {filepath} "
+            f"(cell={cell_arr.tolist()}, spacegroup='{self.spacegroup}')"
+        )
         return self
 
     def __call__(self) -> Tuple[dict, np.ndarray, str]:
@@ -136,7 +137,6 @@ def read(
     filepath: str,
     cell: Union[list, tuple, np.ndarray, Any],
     spacegroup: Union[str, Any],
-    verbose: int = 0,
 ) -> HKLReader:
-    """Shortcut: ``HKLReader(verbose=verbose).read(filepath, cell, spacegroup)``."""
-    return HKLReader(verbose=verbose).read(filepath, cell, spacegroup)
+    """Shortcut: ``HKLReader().read(filepath, cell, spacegroup)``."""
+    return HKLReader().read(filepath, cell, spacegroup)

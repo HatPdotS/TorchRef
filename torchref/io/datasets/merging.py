@@ -20,11 +20,14 @@ from typing import List, Optional, Tuple
 import gemmi
 import torch
 
+from torchref._logging import get_logger
 from torchref.base.reciprocal.hkl import get_d_spacing
 from torchref.io.datasets.french_wilson import french_wilson_auto
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
 from torchref.utils.utils import first_index_per_group
+
+log = get_logger(__name__)
 
 __all__ = ["merge_to_spacegroup", "MergeStats", "MergeShell"]
 
@@ -156,7 +159,7 @@ def merge_to_spacegroup(
         its observations was free, and Bijvoet mates share one flag. Phases and
         figures of merit are not carried.
     stats : MergeStats
-        Merging statistics; printed when ``data.verbose > 0``.
+        Merging statistics; logged at INFO.
 
     Raises
     ------
@@ -289,15 +292,13 @@ def merge_to_spacegroup(
         SpaceGroup(target, device=data.device),
         rfree_flags=rfree,
         device=data.device,
-        verbose=data.verbose,
         friedel_merged=not anomalous,
         I=I_m,
         I_sigma=s_m,
         validation_flags=validation,
     )
     merged.source = data
-    if data.verbose > 0:
-        print(stats)
+    log.info("%s", stats)
     return merged, stats
 
 
