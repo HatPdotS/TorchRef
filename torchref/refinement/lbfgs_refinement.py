@@ -12,9 +12,14 @@ transition (xyz -> adp), and scaler updates between body steps move parameters t
 xray target reads, so retained curvature would be stale.
 """
 
+import logging
+
 import torch
 
+from torchref._logging import enabled, get_logger
 from torchref.refinement.base_refinement import Refinement
+
+log = get_logger(__name__)
 
 
 class LBFGSRefinement(Refinement):
@@ -240,10 +245,9 @@ class LBFGSRefinement(Refinement):
                 "adp": {"before": {}, "after": {}, "weights": {}},
             }
 
-            if self.verbose > 0:
-                print(f"\n{'='*60}")
-                print(f"LBFGS Refinement - Cycle {cycle+1}/{macro_cycles}")
-                print(f"{'='*60}")
+            log.info(f"\n{'='*60}")
+            log.info(f"LBFGS Refinement - Cycle {cycle+1}/{macro_cycles}")
+            log.info(f"{'='*60}")
 
             with torch.no_grad():
                 before_scaling = self.collect_metrics()
@@ -256,11 +260,10 @@ class LBFGSRefinement(Refinement):
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
                 cycle_dict["after_scaling"] = after_scaling
-                if self.verbose > 0:
-                    print(
-                        f"After scaling: Rwork={after_scaling['rwork']:.4f}, "
-                        f"Rfree={after_scaling['rfree']:.4f}"
-                    )
+                log.info(
+                    f"After scaling: Rwork={after_scaling['rwork']:.4f}, "
+                    f"Rfree={after_scaling['rfree']:.4f}"
+                )
 
             self.logger.record(label="before_xyz")
             cycle_dict["xyz"]["before"] = self.collect_metrics()
@@ -269,7 +272,7 @@ class LBFGSRefinement(Refinement):
 
             self.logger.record(label="after_xyz")
             cycle_dict["xyz"]["after"] = self.collect_metrics()
-            if self.verbose > 0:
+            if enabled(log, logging.INFO):
                 self.logger.compare(
                     label_before="before_xyz",
                     label_after="after_xyz",
@@ -283,7 +286,7 @@ class LBFGSRefinement(Refinement):
 
             self.logger.record(label="after_adp")
             cycle_dict["adp"]["after"] = self.collect_metrics()
-            if self.verbose > 0:
+            if enabled(log, logging.INFO):
                 self.logger.compare(
                     label_before="before_adp",
                     label_after="after_adp",
@@ -322,10 +325,9 @@ class LBFGSRefinement(Refinement):
                 "after_scaling": {},
                 "after_refinement": {},
             }
-            if self.verbose > 0:
-                print(f"\n{'='*60}")
-                print(f"LBFGS Refinement Everything - Cycle {cycle+1}/{macro_cycles}")
-                print(f"{'='*60}")
+            log.info(f"\n{'='*60}")
+            log.info(f"LBFGS Refinement Everything - Cycle {cycle+1}/{macro_cycles}")
+            log.info(f"{'='*60}")
 
             self._refresh_scales()
 
@@ -333,11 +335,10 @@ class LBFGSRefinement(Refinement):
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
                 cycle_dict["after_scaling"] = after_scaling
-                if self.verbose > 0:
-                    print(
-                        f"After scaling: Rwork={after_scaling['rwork']:.4f}, "
-                        f"Rfree={after_scaling['rfree']:.4f}"
-                    )
+                log.info(
+                    f"After scaling: Rwork={after_scaling['rwork']:.4f}, "
+                    f"Rfree={after_scaling['rfree']:.4f}"
+                )
 
             self._refine_everything_lbfgs_single_cycle()
 
@@ -345,11 +346,11 @@ class LBFGSRefinement(Refinement):
             with torch.no_grad():
                 after_refinement = self.collect_metrics()
                 cycle_dict["after_refinement"] = after_refinement
-                if self.verbose > 0:
-                    print(
-                        f"After refinement: Rwork={after_refinement['rwork']:.4f}, "
-                        f"Rfree={after_refinement['rfree']:.4f}"
-                    )
+                log.info(
+                    f"After refinement: Rwork={after_refinement['rwork']:.4f}, "
+                    f"Rfree={after_refinement['rfree']:.4f}"
+                )
+                if enabled(log, logging.INFO):
                     self.logger.compare(
                         label_before="after_scaling",
                         label_after="after_refinement",

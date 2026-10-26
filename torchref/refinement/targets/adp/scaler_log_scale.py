@@ -47,9 +47,8 @@ class ScalerLogScaleTrendTarget(Target):
         self,
         scaler: "ScalerBase",
         n_reflections: int,
-        verbose: int = 0,
     ):
-        super().__init__(verbose=verbose)
+        super().__init__()
         object.__setattr__(self, "_scaler", scaler)
 
         with torch.no_grad():

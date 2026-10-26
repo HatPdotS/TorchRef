@@ -8,6 +8,7 @@ Per-atom coordinate uncertainty comes from the B-factors, ``sigma = sqrt(B/8π²
 import torch
 from typing import TYPE_CHECKING, Dict
 
+from torchref._logging import get_logger
 from .base import Target
 from torchref.config import get_int_dtype
 from torchref.utils.stats import (
@@ -20,6 +21,8 @@ from torchref.utils.stats import (
 
 if TYPE_CHECKING:
     from torchref.model.model import Model
+
+log = get_logger(__name__)
 
 
 class CoordinateSimilarityTarget(Target):
@@ -45,8 +48,6 @@ class CoordinateSimilarityTarget(Target):
     alpha : float, optional
         Log prior odds of the static hypothesis. Higher values mean
         stronger denoising. Default is 2.0 (crossover at ~2*sigma).
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     name: str = "similarity"
@@ -56,10 +57,9 @@ class CoordinateSimilarityTarget(Target):
         model_dark: "Model" = None,
         model_light: "Model" = None,
         alpha: float = 2.0,
-        verbose: int = 0,
         device=None,
     ):
-        super().__init__(verbose=verbose, device=device)
+        super().__init__(device=device)
         self.add_module("_model_dark", model_dark)
         self.add_module("_model_light", model_light)
         self._adopt_device(model_dark, model_light, device=device)
@@ -103,7 +103,6 @@ class CoordinateSimilarityTarget(Target):
         Warns when nothing matches or fewer than 90% of atoms do.
         """
         import pandas as pd
-        import warnings
 
         def identity(model):
             columns = model.ctx.topology.columns()
@@ -140,7 +139,7 @@ class CoordinateSimilarityTarget(Target):
         n_light = len(pdb_light)
 
         if n_matched == 0:
-            warnings.warn(
+            log.warning(
                 "CoordinateSimilarityTarget: no matching atoms between "
                 "dark and light models"
             )
@@ -154,16 +153,15 @@ class CoordinateSimilarityTarget(Target):
 
         match_rate = n_matched / min(n_dark, n_light)
         if match_rate < 0.9:
-            warnings.warn(
+            log.warning(
                 f"CoordinateSimilarityTarget: only {n_matched}/{min(n_dark, n_light)} "
                 f"atoms matched ({match_rate:.0%})"
             )
 
-        if self.verbose >= 1:
-            print(
-                f"  Similarity target: {n_matched} matched atoms "
-                f"(dark={n_dark}, light={n_light})"
-            )
+        log.info(
+            "  Similarity target: %d matched atoms (dark=%d, light=%d)",
+            n_matched, n_dark, n_light,
+        )
 
         # Must be on ``self.device``: as 1-D index tensors they get no
         # scalar-promotion, so a CPU-resident index against accelerator coordinates

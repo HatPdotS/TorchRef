@@ -50,8 +50,6 @@ class TorsionTarget(GeometryTarget):
     ----------
     model : Model, optional
         Reference to the Model object.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     w_cis_proline : float, optional
         Prior weight for cis conformation at pre-proline peptide bonds.
         Default 0.05 (~5% of X-Pro bonds are cis in the PDB).
@@ -65,11 +63,10 @@ class TorsionTarget(GeometryTarget):
     def __init__(
         self,
         model: "Model" = None,
-        verbose: int = 0,
         w_cis_proline: float = 0.05,
         w_cis_general: float = 0.0005,
     ):
-        super().__init__(model, verbose)
+        super().__init__(model)
         self.w_cis_proline = w_cis_proline
         self.w_cis_general = w_cis_general
 

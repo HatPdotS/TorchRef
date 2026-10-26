@@ -44,8 +44,8 @@ class PlanarityTarget(GeometryTarget):
 
     name: str = "geometry/planarity"
 
-    def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose)
+    def __init__(self, model: "Model" = None):
+        super().__init__(model)
 
     def forward(self) -> torch.Tensor:
         """Summed planarity NLL over plane-size buckets; 0.0 when there are no planes."""

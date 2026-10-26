@@ -31,8 +31,8 @@ class RamachandranTarget(GeometryTarget):
 
     name: str = "geometry/ramachandran"
 
-    def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose)
+    def __init__(self, model: "Model" = None):
+        super().__init__(model)
 
     def forward(self) -> torch.Tensor:
         """Summed Ramachandran NLL; 0.0 unless the restraints carry phi/psi indices."""

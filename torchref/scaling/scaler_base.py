@@ -6,11 +6,13 @@ structure factors takes ``F_calc`` as an argument, so any source will do (molecu
 replacement, precomputed factors, a custom model).
 """
 
+import logging
 from typing import TYPE_CHECKING, Optional
 
 import torch
 import torch.nn as nn
 
+from torchref._logging import TRACE, enabled, get_logger
 from torchref.base.targets.adp import U_to_matrix
 from torchref.scaling.basis import chebyshev_design
 from torchref.base.metrics import (
@@ -19,7 +21,7 @@ from torchref.base.metrics import (
     rfactor_work_free,
 )
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.config import get_float_dtype, get_int_dtype
+from torchref.config import get_debug_checks, get_float_dtype, get_int_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
     from torchref.io import ReflectionData
     from torchref.scaling.solvent import SolventModel
 
+log = get_logger(__name__)
 
 #: Selectable objectives for the scaler's own L-BFGS scale fit. **Each is a row of
 #: :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS`**, not a private enum: the
@@ -92,8 +95,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     n_iso_coeff : int, default 6
         Number of Chebyshev terms in the isotropic scale. ``1`` collapses it to a single
         global constant, since ``T_0 = 1``.
-    verbose : int, default 1
-        Verbosity level.
     device : torch.device, optional
         Computation device; defaults to ``data``'s, else the configured default. An
         explicit value moves ``data``.
@@ -118,14 +119,12 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         data: Optional["ReflectionData"] = None,
         nbins: int = 20,
         n_iso_coeff: int = 6,
-        verbose: int = 1,
         device: Optional[torch.device] = None,
     ):
         """See the class docstring. ``data=None`` builds a configuration-only shell for
         ``set_data``; an explicit ``device`` forces ``data`` onto it."""
         super(ScalerBase, self).__init__()
         self.device = resolve_device(data, device=device)
-        self.verbose = verbose
         self.nbins = nbins
         self.n_iso_coeff = n_iso_coeff
 
@@ -155,8 +154,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         self._f_sol_raw = None
         bins, self.nbins = self._data.get_bins(self.nbins)
         self.register_buffer("bins", bins)
-        if self.verbose > 0:
-            print(f"Initialized ScalerBase with {self.nbins} bins.")
+        log.info(f"Initialized ScalerBase with {self.nbins} bins.")
 
     def _build_iso_design(self) -> torch.Tensor:
         """``(N, n_iso_coeff)`` Chebyshev design matrix for the isotropic scale.
@@ -242,8 +240,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             The Chebyshev coefficient parameter ``c_iso``.
         """
         fobs = self._data.get_corrected_data()[0]
-        if self.verbose > 0:
-            print(f"Calculating initial scale factors using {self.nbins} bins.")
+        log.info(f"Calculating initial scale factors using {self.nbins} bins.")
         assert torch.all(
             torch.isfinite(fcalc)
         ), "Non-finite values found in fcalc during initial scale calculation."
@@ -253,9 +250,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         # Negative intensities carry French-Wilson-biased F values.
         if hasattr(self._data, "I") and self._data.I is not None:
             positive_mask = self._data.I > 0
-            if self.verbose > 1:
+            if enabled(log, logging.DEBUG):
                 n_excluded = (~positive_mask).sum().item()
-                print(
+                log.debug(
                     f"Excluding {n_excluded} negative intensity reflections from scale calculation"
                 )
         else:
@@ -271,9 +268,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             nbins=self.nbins,
         ).to(self.device)
         initial_log_scale = torch.log(c.clamp(min=1e-6))
-        if self.verbose > 1:
-            print(
-                "Initial scale factors per bin:",
+        if enabled(log, logging.DEBUG):
+            log.debug(
+                "Initial scale factors per bin: %s",
                 initial_log_scale.detach().cpu().numpy(),
             )
         with torch.no_grad():
@@ -373,7 +370,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         lr: float = 1.0,
         max_iter: int = 200,
         history_size: int = 10,
-        verbose: bool = True,
         scale_target: str = DEFAULT_SCALE_TARGET,
     ):
         """
@@ -394,8 +390,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Maximum L-BFGS iterations per step (``torch.optim.LBFGS`` ``max_iter``).
         history_size : int, default 10
             Number of previous gradients kept for the Hessian approximation.
-        verbose : bool, default True
-            Print progress; gated by ``self.verbose`` as well.
         scale_target : str, default :data:`~torchref.scaling.scaler_base.DEFAULT_SCALE_TARGET`
             Which :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS` row to
             minimise, restricted to :data:`~torchref.scaling.scaler_base.SCALE_TARGETS`.
@@ -446,7 +440,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             scaler=self,
             mode=scale_target,
             use_set="work",
-            verbose=0,
             device=self.device,
         )
 
@@ -507,10 +500,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             "rfree": [],
         }
 
-        if verbose and self.verbose > 0:
-            print("Refining scales with LBFGS...")
+        log.info("Refining scales with LBFGS...")
 
-        if self.verbose > 2:
+        if get_debug_checks():
             assert torch.all(
                 torch.isfinite(fcalc)
             ), "Non-finite values found in fcalc during scale optimization."
@@ -541,22 +533,23 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 metrics["rwork"].append(rwork)
                 metrics["rfree"].append(rfree_val)
 
-                if verbose and self.verbose > 2:
-                    print(
+                if enabled(log, TRACE):
+                    log.log(
+                        TRACE,
                         f"  Step {step+1}/{nsteps}: "
                         f"Rwork={rwork:.4f}, Rfree={rfree_val:.4f}, "
                         f"NLL_work={xray_work.item():.2f}, NLL_test={xray_test.item():.2f}"
                     )
 
-        if verbose and self.verbose > 0:
+        log.info(
+            f"Scale refinement complete. rwork: {rwork:.4f}, rfree: {rfree_val:.4f}\n"
+        )
+        if enabled(log, logging.DEBUG):
             with torch.no_grad():
-                print(
-                    f"Scale refinement complete. rwork: {rwork:.4f}, rfree: {rfree_val:.4f}\n"
-                )
-                print("Final Scale Parameters: ")
+                log.debug("Final Scale Parameters: ")
                 for name, param in self.named_parameters():
                     if param.requires_grad:
-                        print(f"  {name}: {param.data}")
+                        log.debug(f"  {name}: {param.data}")
 
         return metrics
 
@@ -664,7 +657,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         """
-        Buffers and parameters, plus ``nbins``/``n_iso_coeff``/``verbose`` and the solvent
+        Buffers and parameters, plus ``nbins``/``n_iso_coeff`` and the solvent
         sub-state.
 
         The **data reference is not saved**: load into a scaler built with the same data
@@ -685,7 +678,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
         state[prefix + "nbins"] = self.nbins
         state[prefix + "n_iso_coeff"] = self.n_iso_coeff
-        state[prefix + "verbose"] = self.verbose
 
         if hasattr(self, "solvent") and self.solvent is not None:
             state[prefix + "solvent"] = self.solvent.state_dict()
@@ -712,8 +704,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         """
         self.nbins = state_dict.pop("nbins", 20)
         self.n_iso_coeff = state_dict.pop("n_iso_coeff", 6)
-        self.verbose = state_dict.pop("verbose", 1)
-        # Not scaler state; dropped so a checkpoint that carries it loads strictly.
+        # Not scaler state; dropped so a checkpoint that carries them loads strictly.
+        state_dict.pop("verbose", None)
         state_dict.pop("frozen", None)
 
         solvent_state = state_dict.pop("solvent", None)
@@ -732,8 +724,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     def save_state(self, path: str):
         """``torch.save`` the state dict to ``path``."""
         torch.save(self.state_dict(), path)
-        if self.verbose > 0:
-            print(f"Saved scaler state to {path}")
+        log.info(f"Saved scaler state to {path}")
 
     def load_state(self, path: str, strict: bool = True):
         """Load a state dict from ``path`` onto this scaler's device.
@@ -743,5 +734,4 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         """
         state_dict = torch.load(path, map_location=self.device, weights_only=False)
         self.load_state_dict(state_dict, strict=strict)
-        if self.verbose > 0:
-            print(f"Loaded scaler state from {path}")
+        log.info(f"Loaded scaler state from {path}")
