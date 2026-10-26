@@ -28,10 +28,13 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 import torch
 from torch import nn
 
+from torchref._logging import get_logger
 from torchref.model.mixed_model import _check_fractions
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference
+
+log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
@@ -269,8 +272,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         The K shared structural models (e.g., ground state + intermediates).
     dark_key : str
         Key for the dark / reference entry. Default ``"dark"``.
-    verbose : int
-        Verbosity level.
 
     Examples
     --------
@@ -286,7 +287,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         self,
         base_models: List["ModelFT"],
         dark_key: str = "dark",
-        verbose: int = 0,
     ):
         super().__init__()
 
@@ -294,7 +294,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             raise ValueError("At least one base model is required.")
 
         self._dark_key = dark_key
-        self.verbose = verbose
 
         # Register base models as owned submodules (single source of truth)
         self._base_models = nn.ModuleList(base_models)
@@ -326,10 +325,7 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         )
         self._lambda_fixed: Optional[float] = 0.0
 
-        if self.verbose > 0:
-            print(
-                f"ModelCollection initialized with {len(base_models)} base models"
-            )
+        log.info(f"ModelCollection initialized with {len(base_models)} base models")
 
     def add_timepoint(
         self,
@@ -380,9 +376,8 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         if frozen_fractions:
             self.freeze_all_fractions()
 
-        if self.verbose > 0:
-            frac_str = ", ".join(f"{f:.3f}" for f in fractions)
-            print(f"  Added timepoint '{name}': fractions=[{frac_str}]")
+        frac_str = ", ".join(f"{f:.3f}" for f in fractions)
+        log.info(f"  Added timepoint '{name}': fractions=[{frac_str}]")
 
         return self
 
@@ -466,7 +461,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         filepath: str,
         max_res: float = 1.5,
         device=None,
-        verbose: int = 0,
     ) -> tuple:
         """
         Load a ModelCollection from an IHM mmCIF file.
@@ -481,8 +475,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             Maximum resolution for FFT grid setup.
         device : torch.device, optional
             Device for model tensors.
-        verbose : int
-            Verbosity level.
 
         Returns
         -------
@@ -490,7 +482,7 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         """
         from torchref.io.ihm import IHMReader
 
-        reader = IHMReader(filepath, verbose=verbose)
+        reader = IHMReader(filepath)
         return reader(
             max_res=max_res,
             device=device,
@@ -515,9 +507,7 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         """
         from torchref.io.ihm import IHMWriter
 
-        writer = IHMWriter(
-            self, mapping=mapping, datasets=datasets, verbose=self.verbose,
-        )
+        writer = IHMWriter(self, mapping=mapping, datasets=datasets)
         writer.write(filepath)
 
     def __getitem__(self, name: str) -> "_SharedMixedModel":
@@ -866,8 +856,7 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         for i, model in enumerate(self._base_models):
             path = os.path.join(outdir, f"base_model_{i}.pdb")
             model.write_pdb(path)
-            if self.verbose > 0:
-                print(f"  Wrote {path}")
+            log.info(f"  Wrote {path}")
 
     def __repr__(self):
         tp_names = ", ".join(self._order[:4])

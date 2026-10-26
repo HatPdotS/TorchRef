@@ -19,8 +19,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
+from torchref._logging import get_logger, quiet
 from torchref.config import get_int_dtype
 from torchref.utils.device_mixin import DeviceMixin
+
+log = get_logger(__name__)
 
 if TYPE_CHECKING:
     import pandas
@@ -70,7 +73,6 @@ HYDROGEN_MODES = ("atoms", "riding")
 #: Fields a derived context inherits from the one it was derived from.
 _SETTINGS = (
     "cif_path",
-    "verbose",
     "hydrogens",
     "hydrogen_mode",
     "hydrogens_in_xray",
@@ -227,8 +229,6 @@ class ModelContext(DeviceMixin):
     cif_path : str or list of str or None
         Restraint dictionary path(s). Change it with :meth:`set_cif_path`, which drops
         restraints built over the old dictionaries.
-    verbose : int, default 1
-        Verbosity level.
     hydrogens : {"keep", "add", "strip"}, default "keep"
         What :meth:`from_atoms` does with the input's hydrogens: keep what the file
         has, additionally generate the ones the monomer templates name and the file
@@ -273,7 +273,6 @@ class ModelContext(DeviceMixin):
     input_file: Optional[str] = None
     z_value: Optional[int] = None
     cif_path: Optional[Any] = None
-    verbose: int = 1
     hydrogens: str = "keep"
     hydrogen_mode: str = "atoms"
     hydrogens_in_xray: bool = True
@@ -294,8 +293,8 @@ class ModelContext(DeviceMixin):
         Returns
         -------
         dict
-            ``cif_path``, ``verbose``, ``hydrogens``, ``hydrogen_mode``,
-            ``hydrogens_in_xray`` and ``input_file``, ready to pass to
+            ``cif_path``, ``hydrogens``, ``hydrogen_mode``, ``hydrogens_in_xray``
+            and ``input_file``, ready to pass to
             :meth:`from_atoms`.
         """
         return {name: getattr(self, name) for name in _SETTINGS}
@@ -443,12 +442,11 @@ class ModelContext(DeviceMixin):
         from torchref.topology.hydrogens import optimise_free_torsions, plan_hydrogens
 
         xyz = torch.tensor(values.xyz, dtype=dtype)
-        restraints = self.build_restraints(xyz, nonbonded=False, verbose=0)
-        plan = plan_hydrogens(
-            restraints.topology, restraints.cif_dict, xyz, verbose=self.verbose
-        )
-        if self.verbose > 0 and restraints.missing_residues:
-            print(
+        with quiet():
+            restraints = self.build_restraints(xyz, nonbonded=False)
+        plan = plan_hydrogens(restraints.topology, restraints.cif_dict, xyz)
+        if restraints.missing_residues:
+            log.warning(
                 "No restraint dictionary for "
                 f"{sorted(restraints.missing_residues)}: not hydrogenated. Pass one "
                 "with cif_path / --cif."
@@ -461,8 +459,7 @@ class ModelContext(DeviceMixin):
         values.xyz[plan_rows] = np.asarray(plan.position, dtype=np.float64)
         values.u[plan_rows] = np.nan
         values.aniso[plan_rows] = False
-        if self.verbose > 0:
-            print(f"Generated {plan.n_hydrogens} hydrogens")
+        log.info(f"Generated {plan.n_hydrogens} hydrogens")
         return values
 
     @property
@@ -482,7 +479,7 @@ class ModelContext(DeviceMixin):
         self.restraints = None
 
     def build_restraints(
-        self, xyz: torch.Tensor, *, nonbonded: bool = True, verbose=None
+        self, xyz: torch.Tensor, *, nonbonded: bool = True
     ) -> "Restraints":
         """Build restraints over :attr:`topology` and store them on :attr:`restraints`.
 
@@ -494,8 +491,6 @@ class ModelContext(DeviceMixin):
         nonbonded : bool, default True
             Build the non-bonded pair list. False is for a throwaway build that needs
             only the topology, and is then **not** stored.
-        verbose : int, optional
-            Defaults to :attr:`verbose`.
 
         Returns
         -------
@@ -510,7 +505,6 @@ class ModelContext(DeviceMixin):
             cell=self.cell,
             spacegroup=self.spacegroup,
             links=self.links,
-            verbose=self.verbose if verbose is None else verbose,
             nonbonded=nonbonded,
         )
         if nonbonded:
@@ -654,12 +648,12 @@ class ModelContext(DeviceMixin):
                 )
                 n_groups += len(rows)
 
-        if self.verbose > 1:
-            print("\nOccupancy Setup:")
-            print(f"  Total atoms: {n_atoms}")
-            print(f"  Collapsed indices: {n_groups}")
-            print(f"  Alternative conformation groups: {len(altloc_groups)}")
-            print(f"  Compression ratio: {n_atoms / max(n_groups, 1):.2f}x")
+        log.debug("")
+        log.debug("Occupancy Setup:")
+        log.debug(f"  Total atoms: {n_atoms}")
+        log.debug(f"  Collapsed indices: {n_groups}")
+        log.debug(f"  Alternative conformation groups: {len(altloc_groups)}")
+        log.debug(f"  Compression ratio: {n_atoms / max(n_groups, 1):.2f}x")
 
         return sharing_groups, altloc_groups
 
@@ -760,13 +754,10 @@ class ModelContext(DeviceMixin):
         dict
             The cell as a CPU tensor, the space group as its extended Hermann-Mauguin
             symbol (``gemmi.SpaceGroup`` is not picklable), the altloc groups, a copy
-            of the link records, :attr:`hydrogens_generated` and the settings other
-            than ``verbose``. The atom
-            table itself is written by the model, which alone has the current values;
+            of the link records, :attr:`hydrogens_generated` and the settings. The
+            atom table itself is written by the model, which alone has the current values;
             restraints are not saved, they rebuild.
         """
-        settings = self.settings()
-        del settings["verbose"]
         return {
             "cell": self.cell.data.cpu() if self.cell is not None else None,
             "spacegroup": self.spacegroup.xhm if self.spacegroup else None,
@@ -774,12 +765,12 @@ class ModelContext(DeviceMixin):
             "hydrogens_generated": self.hydrogens_generated,
             "altloc_pairs": self.altloc_pairs,
             "links": _copy_links(self.links),
-            **settings,
+            **self.settings(),
         }
 
     @classmethod
     def from_state(
-        cls, state: Dict[str, Any], *, dtype: torch.dtype, device, verbose: int = 1
+        cls, state: Dict[str, Any], *, dtype: torch.dtype, device
     ) -> Tuple["ModelContext", Optional[AtomValues]]:
         """Rebuild a context, and the saved values, from a model state dict.
 
@@ -797,7 +788,6 @@ class ModelContext(DeviceMixin):
         dtype : torch.dtype
             Float dtype for the cell and space group.
         device : torch.device
-        verbose : int, default 1
 
         Returns
         -------
@@ -835,7 +825,6 @@ class ModelContext(DeviceMixin):
             hydrogen_mode=mode,
             hydrogens_in_xray=state.pop("hydrogens_in_xray", True),
             hydrogens_generated=state.pop("hydrogens_generated", False),
-            verbose=verbose,
             z_value=z_value,
         )
         return ctx, None if table is None else AtomValues.from_table(table)
