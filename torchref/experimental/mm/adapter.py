@@ -13,12 +13,13 @@ gradient is OpenMM's force, returned through the layout to the coordinates.
 from __future__ import annotations
 
 import io
-import warnings
+import logging
 from typing import TYPE_CHECKING, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 
+from torchref._logging import enabled, get_logger
 from torchref.config import get_default_device
 from torchref.experimental.mm.layout import CrystalLayout
 from torchref.experimental.mm.topology import (
@@ -31,6 +32,8 @@ from torchref.experimental.mm.topology import (
 
 if TYPE_CHECKING:
     from torchref.model.model import Model
+
+log = get_logger(__name__)
 
 #: Force fields the adapter loads by default: AMBER ff14SB for protein and nucleic
 #: acids, with TIP3P-FB water and its ion parameters.
@@ -114,7 +117,6 @@ class OpenMMAdapter:
         OpenMM platform name; by default the one matching the coordinates' device.
     max_force : float
         Per-particle force clip in kJ/mol/nm applied to the gradient (not the energy).
-    verbose : int
 
     Notes
     -----
@@ -133,7 +135,6 @@ class OpenMMAdapter:
         present: np.ndarray,
         platform: Optional[str] = None,
         max_force: float = 10000.0,
-        verbose: int = 0,
     ) -> None:
         self.system = system
         self.topology = topology
@@ -143,7 +144,6 @@ class OpenMMAdapter:
         self.present = present
         self.platform = platform
         self.max_force = float(max_force)
-        self.verbose = int(verbose)
         self.platform_name = "none"
         self._context = None
         self._device_type = get_default_device().type
@@ -181,7 +181,6 @@ class OpenMMAdapter:
         hydrogens_added: Optional[bool] = None,
         platform: Optional[str] = None,
         max_force: float = 10000.0,
-        verbose: int = 0,
     ) -> "OpenMMAdapter":
         """Parameterise a model with AMBER force fields and lay it out for OpenMM.
 
@@ -222,7 +221,6 @@ class OpenMMAdapter:
             OpenMM platform name.
         max_force : float
             Per-particle force clip in kJ/mol/nm.
-        verbose : int
 
         Returns
         -------
@@ -256,7 +254,6 @@ class OpenMMAdapter:
                 model.xyz().detach().cpu().numpy(),
                 charge_method=charge_method,
                 residue_charges=residue_charges,
-                verbose=verbose,
             )
             ff.loadFile(io.StringIO(xml))
             templates, _ = _match_templates(ff, asu, require_all=True)
@@ -283,12 +280,10 @@ class OpenMMAdapter:
                 f"{_molecule_label(asu, b)} (copy {cb})"
                 for ca, a, cb, b in clashes[:5]
             ]
-            warnings.warn(
+            log.warning(
                 f"{len(clashes)} pairs of different molecules overlap within "
                 f"{overlap_cutoff} Å in the crystal, e.g. {examples}; their copies "
-                "stack on each other. Check the model there.",
-                UserWarning,
-                stacklevel=2,
+                "stack on each other. Check the model there."
             )
         box_nm = None if layout.box is None else layout.box * _NM_PER_ANGSTROM
         topology, particles, origin = asu.to_openmm(present, box_nm)
@@ -315,11 +310,10 @@ class OpenMMAdapter:
             present,
             platform=platform,
             max_force=max_force,
-            verbose=verbose,
         )
-        if verbose > 0:
+        if enabled(log, logging.INFO):
             absent = int((~present).sum())
-            print(
+            log.info(
                 f"[OpenMMAdapter] {len(particles)} particles in {layout.n_copies} "
                 f"cop{'y' if layout.n_copies == 1 else 'ies'}, {len(unmatched)} "
                 f"GAFF2 residue(s), {absent} molecule copies absent as overlapping"
@@ -531,8 +525,7 @@ class OpenMMAdapter:
                 context = openmm.Context(
                     self.system, openmm.VerletIntegrator(0.001), platform, properties
                 )
-                if self.verbose > 0:
-                    print(f"[OpenMMAdapter] OpenMM platform: {name}")
+                log.info(f"[OpenMMAdapter] OpenMM platform: {name}")
                 return context, name
             except Exception as exc:  # noqa: BLE001 -- any failure means try the next
                 errors.append(f"{name}: {exc}")

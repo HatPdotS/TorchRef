@@ -30,12 +30,13 @@ Example
     ref.refine(macro_cycles=5)
 """
 
-import warnings
+import logging
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 import torch
 from torch import nn
 
+from torchref._logging import enabled, get_logger
 from torchref.refinement.loss_state import LossState, create_loss_state
 from torchref.experimental.kinetic.targets import (
     CollectionDifferenceTarget,
@@ -50,6 +51,8 @@ if TYPE_CHECKING:
     from torchref.io.datasets.collection import DatasetCollection
     from torchref.model.model_collection import ModelCollection
     from torchref.scaling import Scaler
+
+log = get_logger(__name__)
 
 
 class KineticRefinement(DeviceMixin, nn.Module):
@@ -79,8 +82,6 @@ class KineticRefinement(DeviceMixin, nn.Module):
         Weight for kinetic prior regularization (0 to disable).
     device : torch.device, optional
         Computation device.  If None, inferred from model collection.
-    verbose : int
-        Verbosity level.
     """
 
     def __init__(
@@ -93,13 +94,11 @@ class KineticRefinement(DeviceMixin, nn.Module):
         adp_weight: float = 3.0,
         kinetic_prior_weight: float = 0.0,
         device: Optional[torch.device] = None,
-        verbose: int = 1,
     ):
         super().__init__()
 
         self.dataset_collection = dataset_collection
         self.model_collection = model_collection
-        self.verbose = verbose
 
         if device is None:
             device = model_collection.device
@@ -163,18 +162,16 @@ class KineticRefinement(DeviceMixin, nn.Module):
         diff_target = CollectionDifferenceTarget(
             dc, mc,
             scaler=self.scaler,
-            verbose=self.verbose,
         )
         ml_target = CollectionMLTarget(
             dc, mc,
             scaler=self.scaler,
-            verbose=self.verbose,
         )
         # Store direct references for refine_kinetics()
         self._diff_target = diff_target
         self._ml_target = ml_target
-        geom_target = MultiModelGeometryTarget(mc, verbose=self.verbose)
-        adp_target = MultiModelADPTarget(mc, verbose=self.verbose)
+        geom_target = MultiModelGeometryTarget(mc)
+        adp_target = MultiModelADPTarget(mc)
 
         # ---- LossState ----
         self.loss_state = create_loss_state(device=device)
@@ -189,7 +186,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
             self._kinetic_model = kinetic_model
             self._timepoints_map = timepoints_map
             self.kinetic_prior_target = KineticPriorTarget(
-                mc, kinetic_model, timepoints_map, verbose=self.verbose
+                mc, kinetic_model, timepoints_map
             )
             self.loss_state.register_target(
                 "kinetic_prior", self.kinetic_prior_target
@@ -198,10 +195,9 @@ class KineticRefinement(DeviceMixin, nn.Module):
         # ---- Set weights ----
         self.loss_state.set_weights(self._weights)
 
-        if self.verbose > 0:
-            print("KineticRefinement setup complete.")
-            print(f"  Targets: {list(self.loss_state.targets.keys())}")
-            print(f"  Weights: {self._weights}")
+        log.info("KineticRefinement setup complete.")
+        log.info(f"  Targets: {list(self.loss_state.targets.keys())}")
+        log.info(f"  Weights: {self._weights}")
 
     def _setup_scalers(self):
         """Initialize a joint scaler for all datasets.
@@ -218,13 +214,11 @@ class KineticRefinement(DeviceMixin, nn.Module):
             dataset_collection=self.dataset_collection,
             model_collection=self.model_collection,
             device=self._device,
-            verbose=max(0, self.verbose - 1),
         )
         self.scaler.initialize()
         self.scaler.refine_lbfgs_joint()
 
-        if self.verbose > 0:
-            print("  Joint scaler initialized and refined (all datasets + component solvents).")
+        log.info("  Joint scaler initialized and refined (all datasets + component solvents).")
 
     # ------------------------------------------------------------------
     # Weight management
@@ -291,20 +285,20 @@ class KineticRefinement(DeviceMixin, nn.Module):
                 rf = target.get_rfactor()
                 out[name] = rf
                 pw, pf = rf["rwork_pct"], rf["rfree_pct"]
-                if not pw or self.verbose <= 0:
+                if not pw:
                     continue
-                print(f"  [{name}] R-factors (median [10-90%]):")
-                print(
+                log.info(f"  [{name}] R-factors (median [10-90%]):")
+                log.info(
                     f"    R_work = {pw['p50']:.4f} "
                     f"[{pw['p10']:.4f}-{pw['p90']:.4f}]"
                 )
-                print(
+                log.info(
                     f"    R_free = {pf['p50']:.4f} "
                     f"[{pf['p10']:.4f}-{pf['p90']:.4f}]"
                 )
-                if self.verbose > 1:
+                if enabled(log, logging.DEBUG):
                     for k, (rw, rfr) in rf["per_dataset"].items():
-                        print(f"      {k}: R_work={rw:.4f} R_free={rfr:.4f}")
+                        log.debug(f"      {k}: R_work={rw:.4f} R_free={rfr:.4f}")
         return out
 
     # ------------------------------------------------------------------
@@ -355,9 +349,9 @@ class KineticRefinement(DeviceMixin, nn.Module):
             context="kinetic.refinement._lbfgs_loop",
         )
 
-        if self.verbose > 0:
+        if enabled(log, logging.INFO):
             final_loss = self.get_loss(log_values=True)
-            print(f"  Optimization complete: loss = {final_loss.item():.6f}")
+            log.info(f"  Optimization complete: loss = {final_loss.item():.6f}")
 
     def refine(self, macro_cycles: int = 5, niter: int = 10, max_iter: int = 50):
         """
@@ -373,8 +367,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
             LBFGS inner iterations per step.
         """
         for cycle in range(macro_cycles):
-            if self.verbose > 0:
-                print(f"\n--- Macro-cycle {cycle+1}/{macro_cycles} ---")
+            log.info(f"\n--- Macro-cycle {cycle+1}/{macro_cycles} ---")
 
             params = self._collect_parameters(structures=True, fractions=True)
             self._lbfgs_loop(params, niter=niter, max_iter=max_iter)
@@ -383,7 +376,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
             self.scaler.update_solvent()
 
             # Report R-factors through the shared source of truth.
-            if self.verbose > 0:
+            if enabled(log, logging.INFO):
                 self.report_rfactors()
 
     def refine_structures(self, niter: int = 10, max_iter: int = 50):
@@ -395,8 +388,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         mc = self.model_collection
         mc.freeze_all_fractions()
 
-        if self.verbose > 0:
-            print("\n--- Refining structures (fractions frozen) ---")
+        log.info("\n--- Refining structures (fractions frozen) ---")
 
         params = self._collect_parameters(structures=True, fractions=False)
         self._lbfgs_loop(params, niter=niter, max_iter=max_iter)
@@ -412,8 +404,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         mc = self.model_collection
         mc.freeze_structures()
 
-        if self.verbose > 0:
-            print("\n--- Refining fractions (structures frozen) ---")
+        log.info("\n--- Refining fractions (structures frozen) ---")
 
         params = self._collect_parameters(structures=False, fractions=True)
         self._lbfgs_loop(params, niter=niter, max_iter=max_iter)
@@ -445,10 +436,9 @@ class KineticRefinement(DeviceMixin, nn.Module):
             LBFGS inner iterations per step.
         """
         for cycle in range(n_cycles):
-            if self.verbose > 0:
-                print(f"\n{'='*50}")
-                print(f"Alternating cycle {cycle+1}/{n_cycles}")
-                print(f"{'='*50}")
+            log.info(f"\n{'='*50}")
+            log.info(f"Alternating cycle {cycle+1}/{n_cycles}")
+            log.info(f"{'='*50}")
 
             # 1. Refine structures
             self.refine_structures(niter=niter_structures, max_iter=max_iter)
@@ -465,16 +455,15 @@ class KineticRefinement(DeviceMixin, nn.Module):
                 and self.kinetic_prior_target is not None
                 and (cycle + 1) % refit_prior_every == 0
             ):
-                if self.verbose > 0:
-                    print("\n--- Refitting kinetic prior ---")
+                log.info("\n--- Refitting kinetic prior ---")
                 self.refit_kinetic_prior()
 
             # Print fractions
-            if self.verbose > 0:
+            if enabled(log, logging.INFO):
                 fracs = self.model_collection.get_all_fractions()
                 for name, f in fracs.items():
                     frac_str = ", ".join(f"{v:.3f}" for v in f.detach().tolist())
-                    print(f"  {name}: [{frac_str}]")
+                    log.info(f"  {name}: [{frac_str}]")
 
                 # Report R-factors through the shared source of truth.
                 self.report_rfactors()
@@ -521,8 +510,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         # Collect only kinetic model parameters
         params = [p for p in kinetic_model.parameters() if p.requires_grad]
         if not params:
-            if self.verbose > 0:
-                print("  No refinable kinetic parameters found.")
+            log.warning("  No refinable kinetic parameters found.")
             mc.unfreeze_structures()
             return
 
@@ -558,8 +546,8 @@ class KineticRefinement(DeviceMixin, nn.Module):
 
             optimizer.step()
 
-            if self.verbose > 1 and (step + 1) % 10 == 0:
-                print(f"    Kinetic opt step {step+1}/{niter}: loss = {loss.item():.6f}")
+            if (step + 1) % 10 == 0 and enabled(log, logging.DEBUG):
+                log.debug(f"    Kinetic opt step {step+1}/{niter}: loss = {loss.item():.6f}")
 
         # Update the population parameters to match the final kinetic predictions.
         #
@@ -587,19 +575,17 @@ class KineticRefinement(DeviceMixin, nn.Module):
                 mean_alpha = sum(alphas) / len(alphas)
                 mc.set_activation(mean_alpha)
                 if spread > 1e-3:
-                    warnings.warn(
+                    log.warning(
                         f"Kinetic populations imply activations spanning {spread:.4f} "
                         f"across timepoints, but one activation is shared by all of "
                         f"them; using the mean {mean_alpha:.4f}. Drive the timepoints "
-                        f"with set_fraction_override() to keep them independent.",
-                        UserWarning,
-                        stacklevel=2,
+                        f"with set_fraction_override() to keep them independent."
                     )
 
         mc.unfreeze_structures()
 
-        if self.verbose > 0:
-            print(f"  Kinetic refinement: {niter} steps, final X-ray loss = {loss.item():.6f}")
+        if enabled(log, logging.INFO):
+            log.info(f"  Kinetic refinement: {niter} steps, final X-ray loss = {loss.item():.6f}")
 
     # ------------------------------------------------------------------
     # Output

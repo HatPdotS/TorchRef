@@ -84,7 +84,6 @@ class MonolithicRefinement(LBFGSRefinement):
             data=self.reflection_data,
             scaler=self.scaler,
             sigma_m_calib_bins=calib_bins,
-            verbose=self.verbose,
         )
         work = RiceSigmaMXrayTarget(use_work_set=True, **common)
         # Test target shares the work target's calibration so R-free statistics

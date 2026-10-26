@@ -16,11 +16,11 @@ Pipeline (mirrors Phaser ``run_FRF()``):
 from __future__ import annotations
 
 import math
-import warnings
 from typing import List, Optional, Tuple
 
 import torch
 
+from torchref._logging import get_logger
 from torchref.scaling.weighting import (
     DEFAULT_SNR_CAP, DEFAULT_TRUST_CAP, empirical_sigma_a,
     information_weight, inverse_variance_weight, normalise_weight,
@@ -39,6 +39,8 @@ from .sitelist_ang import evaluate_rotation_function
 from .types import AdaptiveRotationFunction, RotationPeak
 
 __all__ = ["FastRotationFunction", "phaser_lmax_resolution"]
+
+log = get_logger(__name__)
 
 #: Chebyshev order of the Wilson fit, both sides. Provisional -- inherited from
 #: :mod:`torchref.scaling.wilson`, and never screened against a metric sensitive
@@ -104,11 +106,10 @@ def phaser_lmax_resolution(
     else:
         d_min_eff = float(d_min_data)
     if lmax >= 256:
-        warnings.warn(
+        log.warning(
             f"phaser_lmax_resolution chose lmax={lmax} (>=256): the Wigner "
             f"contraction is numerically fine here, but its cost grows about as "
-            f"l^3 in time and l^2 in memory. Consider a tighter lmax_cap.",
-            RuntimeWarning, stacklevel=2,
+            f"l^3 in time and l^2 in memory. Consider a tighter lmax_cap."
         )
     return lmax + 1, d_min_eff           # L = lmax + 1 (our bandwidth convention)
 

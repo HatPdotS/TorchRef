@@ -70,7 +70,6 @@ class RiceSigmaMXrayTarget(XrayTarget):
         use_work_set: bool = True,
         sigma_m_calib_bins: int = 1,
         shared_log_sigma_m_scale: Optional[nn.Parameter] = None,
-        verbose: int = 0,
         **kwargs,
     ):
         super().__init__(
@@ -78,7 +77,6 @@ class RiceSigmaMXrayTarget(XrayTarget):
             model=model,
             scaler=scaler,
             use_work_set=use_work_set,
-            verbose=verbose,
             **kwargs,
         )
         # The estimator returns an UNSCALED variance: this target refines its own

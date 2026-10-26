@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import torch
 
+from torchref._logging import quiet
+
 if TYPE_CHECKING:
     from torchref.model.model import Model
     from torchref.topology.atom_graph import AtomGraph
@@ -225,7 +227,8 @@ def build_asu_topology(model: "Model", atoms: AtomSelection = None) -> AsuTopolo
         )
     restraints = ctx.restraints
     if restraints is None:
-        restraints = ctx.build_restraints(model.xyz(), nonbonded=False, verbose=0)
+        with quiet():
+            restraints = ctx.build_restraints(model.xyz(), nonbonded=False)
     graph = restraints.topology.atoms
     if graph.n_atoms != topology.n_atoms:
         raise ValueError(
