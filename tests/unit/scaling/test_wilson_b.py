@@ -92,13 +92,14 @@ def test_amplitudes_use_f_squared_plus_variance():
 
 
 @pytest.mark.unit
-def test_gives_up_with_a_warning_instead_of_guessing():
+def test_gives_up_with_a_warning_instead_of_guessing(caplog):
     I, d = _synthetic_intensities(30.0, 2.0)
-    with pytest.warns(UserWarning, match="No Wilson B"):
-        assert fit_wilson_b(I[:30], d[:30]) is None
+    assert fit_wilson_b(I[:30], d[:30]) is None
+    assert "No Wilson B" in caplog.text
+    caplog.clear()
     thin = (d > 3.0) & (d < 3.05)
-    with pytest.warns(UserWarning, match="too short"):
-        assert fit_wilson_b(I[thin], d[thin]) is None
+    assert fit_wilson_b(I[thin], d[thin]) is None
+    assert "too short" in caplog.text
 
 
 #: B measured with this model on the deposited test data. The deposited
@@ -116,7 +117,7 @@ MEASURED = {
 
 def _fit_deposited(name, mtz_dir, d_cut=None):
     with contextlib.redirect_stdout(io.StringIO()):
-        data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / f"{name}.mtz"))
+        data = ReflectionData().load_mtz(str(mtz_dir / f"{name}.mtz"))
     keep = data.masks()
     if d_cut is not None:
         keep = keep & (data.resolution >= d_cut)

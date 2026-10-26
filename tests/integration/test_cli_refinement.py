@@ -197,7 +197,6 @@ class TestWavelengthFlag:
             data_file=anomalous_mtz,
             pdb=small_pair["pdb"],
             device=torch.device("cpu"),
-            verbose=0,
             **kwargs,
         )
         assert ref.wavelength is None
@@ -215,7 +214,6 @@ class TestWavelengthFlag:
             data_file=anomalous_mtz,
             pdb=small_pair["pdb"],
             device=torch.device("cpu"),
-            verbose=0,
             wavelength=1.54,
         )
         assert bool(ref.reflection_data.friedel_merged) is False
@@ -232,6 +230,5 @@ class TestWavelengthFlag:
                 data_file=small_pair["mtz"],
                 pdb=small_pair["pdb"],
                 device=torch.device("cpu"),
-                verbose=0,
                 anomalous=True,
             )

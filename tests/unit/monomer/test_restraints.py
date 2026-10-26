@@ -32,15 +32,6 @@ class TestRestraintsInitialization:
         
         assert isinstance(restraints, nn.Module)
 
-    @pytest.mark.unit
-    def test_restraints_verbose_setting(self):
-        """Test verbosity setting."""
-        from torchref.topology.restraints import Restraints
-        
-        restraints = Restraints(verbose=2)
-        
-        assert restraints.verbose == 2
-
 
 class TestBondRestraintCalculations:
     """Tests for bond distance restraint calculations."""
@@ -242,7 +233,7 @@ def bond_free(tmp_path):
     path = tmp_path / "waters.pdb"
     path.write_text(_BOND_FREE)
     # On the CPU: the callers pass float64 coordinates, which MPS cannot hold.
-    model = Model(verbose=0, hydrogens="strip", device="cpu")
+    model = Model(hydrogens="strip", device="cpu")
     model.load_pdb(str(path))
     return model.restraints, model.xyz().detach().double()
 
@@ -277,7 +268,7 @@ def test_unreadable_user_cif_raises(pdb_dir, tmp_path, as_list):
     """A restraint dictionary the caller names but that cannot be read is an error."""
     from torchref.model.model import Model
 
-    model = Model(verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb"))
+    model = Model().load_pdb(str(pdb_dir / "1DAW.pdb"))
     missing = str(tmp_path / "missing.cif")
     model.ctx.set_cif_path([missing] if as_list else missing)
     with pytest.raises(FileNotFoundError):

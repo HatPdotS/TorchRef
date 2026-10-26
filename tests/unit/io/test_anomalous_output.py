@@ -31,7 +31,7 @@ def stacked_anomalous_mtz(mtz_dir, tmp_path):
 
 @pytest.fixture
 def anomalous_data(stacked_anomalous_mtz):
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(stacked_anomalous_mtz)
     return data
 
@@ -72,7 +72,7 @@ class TestDualHklRepresentation:
 
     def test_hkl_for_sf_fallback(self):
         """Without canonicalization bookkeeping, falls back to canonical hkl."""
-        d = ReflectionData(verbose=0)
+        d = ReflectionData()
         d.hkl = torch.tensor([[1, 0, 0]], dtype=torch.int32)
         assert torch.equal(d._hkl_for_sf(), d.hkl)
 
@@ -80,7 +80,7 @@ class TestDualHklRepresentation:
 class TestBijvoetStructureFactors:
     def _fcalc(self, data, pdb_dir, wavelength, apply_bijvoet=True):
         model = ModelFT(
-            verbose=0, max_res=2.0, wavelength=wavelength, apply_bijvoet=apply_bijvoet
+            max_res=2.0, wavelength=wavelength, apply_bijvoet=apply_bijvoet
         )
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
@@ -117,7 +117,7 @@ class TestBijvoetStructureFactors:
 class TestAnomalousMtzOutput:
     def _write(self, data, pdb_dir, tmp_path, wavelength=1.54):
         model = ModelFT(
-            verbose=0, max_res=2.0, wavelength=wavelength, apply_bijvoet=True
+            max_res=2.0, wavelength=wavelength, apply_bijvoet=True
         )
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
@@ -162,7 +162,7 @@ class TestAnomalousMtzOutput:
         anomalous_data.generate_validation_set(seed=0)
         out = tmp_path / "anom_val.mtz"
         anomalous_data.write_mtz(str(out), anomalous=True)
-        reloaded = ReflectionData(verbose=0)
+        reloaded = ReflectionData()
         reloaded.load_mtz(str(out))
         assert reloaded.validation_flags is not None
 

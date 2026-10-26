@@ -4,7 +4,7 @@ modules, and the top-level object-creation readers.
 The three layers, loosest to tightest::
 
     data = read_mtz('structure.mtz')          # -> ReflectionData
-    data = ReflectionData(verbose=1); data.load_mtz('structure.mtz')
+    data = ReflectionData(); data.load_mtz('structure.mtz')
     data_dict, cell, spacegroup = mtz.read('data.mtz')()
 
 :class:`~.datasets.collection.DatasetCollection` handles several datasets jointly.

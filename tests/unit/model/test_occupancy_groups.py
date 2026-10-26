@@ -61,7 +61,7 @@ def _write_pdb(path, residues):
 
 
 def _load(path):
-    return Model(verbose=0, device="cpu").load_pdb(str(path))
+    return Model(device="cpu").load_pdb(str(path))
 
 
 def _residues_per_group(model):
@@ -74,7 +74,7 @@ def _residues_per_group(model):
 
 def _deposited(path):
     """The reader's table with the rows a model drops removed, and its occupancies."""
-    table, _, _ = PDBReader(verbose=0).read(str(path))()
+    table, _, _ = PDBReader().read(str(path))()
     table = table.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"])
     table = table.reset_index(drop=True)
     return table, table["occupancy"].clip(0, 1).to_numpy()
@@ -149,10 +149,10 @@ def test_checkpoint_round_trip_keeps_grouping_and_values(pdb_dir, code, tmp_path
     model = _load(pdb_dir / f"{code}.pdb")
     path = tmp_path / "model.pt"
     model.save_state(str(path))
-    from_file = Model(verbose=0, device="cpu")
+    from_file = Model(device="cpu")
     from_file.load_state(str(path))
     from_dict = Model.create_from_state_dict(
-        model.state_dict(), device="cpu", verbose=0
+        model.state_dict(), device="cpu"
     )
 
     for restored in (from_dict, from_file):
@@ -174,7 +174,7 @@ def test_checkpoint_restores_the_saved_grouping_after_values_move(pdb_dir):
     model = _load(pdb_dir / "6G9X.pdb")
     model.occupancy[:] = 1.0
 
-    restored = Model.create_from_state_dict(model.state_dict(), device="cpu", verbose=0)
+    restored = Model.create_from_state_dict(model.state_dict(), device="cpu")
 
     assert torch.equal(
         restored.occupancy.expansion_mask, model.occupancy.expansion_mask

@@ -36,8 +36,6 @@ class NodeLoadTarget(ADPTarget):
         Softplus temperature ``s`` in log-load units. Smaller is a harder barrier.
         Default 0.5, which leaves a node at the mean load contributing about 0.35 and a
         node at a tenth of the mean about 2.3.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     #: Hierarchical key this target registers under. Required, not cosmetic:
@@ -51,11 +49,10 @@ class NodeLoadTarget(ADPTarget):
         self,
         model: "Model" = None,
         sharpness: float = 0.5,
-        verbose: int = 0,
         device=None,
         **kwargs,
     ):
-        super().__init__(model, verbose, device=device, **kwargs)
+        super().__init__(model, device=device, **kwargs)
         self.sharpness = float(sharpness)
 
     @property

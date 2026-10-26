@@ -56,7 +56,7 @@ def _extract(pdb_dir: Path, tmp_path: Path, select, device=None) -> Model:
     records = [line for line in lines if line.startswith("CRYST1")] + select(lines)
     path = tmp_path / f"{select.__name__.strip('_')}.pdb"
     path.write_text("\n".join(records + ["END"]) + "\n")
-    model = Model(verbose=0, device=device)
+    model = Model(device=device)
     model.load_pdb(str(path))
     return model
 

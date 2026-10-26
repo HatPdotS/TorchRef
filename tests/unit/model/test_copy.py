@@ -45,7 +45,7 @@ def mixed_adp_path(pdb_dir):
 
 
 def _load(cls, path):
-    return cls(verbose=0).load_pdb(path)
+    return cls().load_pdb(path)
 
 
 @pytest.mark.unit
@@ -122,7 +122,7 @@ def test_moving_the_copys_restraints_leaves_its_cell(pdb_dir):
     copy's cell or space group."""
     from torchref.model import Model
 
-    m = Model(verbose=0, device=torch.device("cpu")).load_pdb(str(pdb_dir / "1DAW.pdb"))
+    m = Model(device=torch.device("cpu")).load_pdb(str(pdb_dir / "1DAW.pdb"))
     assert m.restraints is not None
     c = m.copy()
     cell, spacegroup = c.ctx.cell, c.ctx.spacegroup

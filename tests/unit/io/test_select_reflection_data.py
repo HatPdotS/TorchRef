@@ -11,7 +11,7 @@ from torchref.utils.utils import TensorMasks
 
 def _make_reflection_data(n=20):
     """Build a minimal ReflectionData with all common fields populated."""
-    rd = ReflectionData(verbose=0, device="cpu")
+    rd = ReflectionData(device="cpu")
 
     # Core per-reflection tensors
     rd.hkl = torch.randint(-5, 6, (n, 3), dtype=torch.int32)

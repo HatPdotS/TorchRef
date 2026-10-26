@@ -62,7 +62,7 @@ def inserted(pdb_dir, tmp_path_factory):
     path = tmp_path_factory.mktemp("icode") / f"{BASE}_icode.pdb"
     expected = _rewrite_with_insertion_codes(pdb_dir / f"{BASE}.pdb", path)
 
-    model = Model(verbose=0, hydrogens="strip")
+    model = Model(hydrogens="strip")
     model.load_pdb(str(path))
     model.ctx.set_cif_path(None)
     restraints = model.restraints
@@ -74,7 +74,6 @@ def inserted(pdb_dir, tmp_path_factory):
         link_dict=restraints.link_dict,
         link_list=restraints.link_list,
         links=restraints.links,
-        verbose=0,
     )
     return topology, restraints, expected, model
 
@@ -243,7 +242,7 @@ def test_riding_contacts_between_the_inserted_residues_are_kept(inserted, pdb_di
     and 25 under the original numbering: the riding builder, like the topology, keeps
     residues apart by insertion code."""
     _, restraints, _, _ = inserted
-    original = Model(verbose=0, hydrogens="strip")
+    original = Model(hydrogens="strip")
     original.load_pdb(str(pdb_dir / f"{BASE}.pdb"))
 
     residues = original.restraints.topology.residues

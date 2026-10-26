@@ -106,7 +106,6 @@ def main():
         data,
         n_rotation_candidates=args.n_rotation_candidates,
         n_translation_candidates=args.n_translation_candidates,
-        verbose=0,
     )
     profiler.disable()
     total = time.time() - t0

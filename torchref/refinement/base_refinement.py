@@ -2,13 +2,15 @@
 Base class for crystallographic refinement.
 """
 
+import logging
 import os
 from typing import Any, Dict, Optional
 
 import torch
 from torch.nn import Module as nnModule
 
-from torchref.config import get_int_dtype
+from torchref._logging import TRACE, enabled, get_logger
+from torchref.config import get_debug_checks, get_int_dtype
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
@@ -31,7 +33,26 @@ from torchref.scaling.scaler_base import DEFAULT_SCALE_TARGET
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
+from torchref.utils.stats import (
+    VERBOSITY_DEBUG,
+    VERBOSITY_DETAILED,
+    VERBOSITY_ESSENTIAL,
+    VERBOSITY_STANDARD,
+)
 
+log = get_logger(__name__)
+
+
+def _stats_tier() -> int:
+    """The stats-table verbosity matching the ``torchref.refinement`` log level."""
+    refinement_log = logging.getLogger("torchref.refinement")
+    if enabled(refinement_log, TRACE):
+        return VERBOSITY_DEBUG
+    if enabled(refinement_log, logging.DEBUG):
+        return VERBOSITY_DETAILED
+    if enabled(refinement_log, logging.INFO):
+        return VERBOSITY_STANDARD
+    return VERBOSITY_ESSENTIAL
 
 #: Default LossState weights, balancing the data term against the priors with the
 #: x-ray data term as the reference (xray=1). Weights are hierarchical and
@@ -88,8 +109,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     ----------
     device : torch.device
         Computation device.
-    verbose : int
-        Verbosity level.
     reflection_data : ReflectionData
         Reflection data container.
     model : ModelFT
@@ -106,7 +125,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         data_file: str | os.PathLike | None = None,
         pdb: str | os.PathLike | None = None,
         cif=None,
-        verbose: int = 1,
         max_res: float = None,
         device: Optional[torch.device] = None,
         nbins: int = 10,
@@ -143,8 +161,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         cif : str or list of str, optional
             Restraint dictionary file(s) for residues the monomer library lacks. Given to
             the model at construction so hydrogen generation on load reads it too.
-        verbose : int, optional
-            Verbosity level. Default 1.
         max_res : float, optional
             High-resolution cutoff; defaults to the data's own limit.
         device : torch.device, optional
@@ -227,7 +243,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # there is nothing to reconcile yet — ``resolve_device`` with no
         # modules just normalises ``device`` (or returns the default).
         self.device = resolve_device(device=device)
-        self.verbose = verbose
         self.data_file = data_file
         self.pdb = pdb
         self.history = dict()
@@ -281,11 +296,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.weighting = ManualWeighting(DEFAULT_GROUP_WEIGHTS)
 
         if data_file is None and pdb is None:
-            self.reflection_data = ReflectionData(
-                verbose=self.verbose, device=self.device
-            )
+            self.reflection_data = ReflectionData(device=self.device)
             self.model = ModelFT(
-                verbose=self.verbose,
                 device=self.device,
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
@@ -295,7 +307,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 hydrogens_in_xray=hydrogens_in_xray,
             )
             self.scaler = Scaler(
-                verbose=self.verbose, device=self.device, nbins=self.nbins,
+                device=self.device, nbins=self.nbins,
                 n_iso_coeff=self.n_iso_coeff,
             )
             return
@@ -303,9 +315,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # Full initialization with file paths
         try:
             self.to(self.device)
-            self.reflection_data = ReflectionData(
-                verbose=self.verbose, device=self.device
-            )
+            self.reflection_data = ReflectionData(device=self.device)
             if data_file.endswith(".mtz"):
                 self.reflection_data.load_mtz(
                     data_file,
@@ -338,7 +348,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             else:
                 self.max_res = self.reflection_data.d_min
             self.model = ModelFT(
-                verbose=self.verbose,
                 max_res=self.max_res,
                 device=self.device,
                 wavelength=self.wavelength,
@@ -382,7 +391,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             self._init_targets()
 
         except Exception as e:
-            if self.verbose > 1:
+            if get_debug_checks():
                 self.debug_on_error(e)
             raise e
 
@@ -456,12 +465,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # 4. freeze xyz of those atoms (same path as freeze_selection)
         model.xyz_mask[torch.tensor(freeze_idx, dtype=get_int_dtype())] = False
         model.apply_mask_to_parameter("xyz")
-        if self.verbose > 0:
-            shown = frozen_res[:20] + (["..."] if len(frozen_res) > 20 else [])
-            print(
-                f"Froze xyz for {len(freeze_idx)} atom(s) in {len(frozen_res)} "
-                f"residue(s) with incomplete restraints: {shown}"
-            )
+        shown = frozen_res[:20] + (["..."] if len(frozen_res) > 20 else [])
+        log.warning(
+            f"Froze xyz for {len(freeze_idx)} atom(s) in {len(frozen_res)} "
+            f"residue(s) with incomplete restraints: {shown}"
+        )
 
     def _xray_target_kwargs(self) -> dict:
         """Every configuration value the x-ray targets are built from, in one place.
@@ -475,7 +483,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             model=self.model,
             data=self.reflection_data,
             scaler=self.scaler,
-            verbose=self.verbose,
             sigma_a_max=getattr(self, "sigma_a_max", SIGMA_A_MAX),
             shrink=getattr(self, "shrink", SHRINK_ENABLED),
         )
@@ -644,9 +651,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 float(self.data.work.n) / n_par if n_par else float("inf")
             ),
         )
-        if self.verbose > 0:
+        if enabled(log, logging.INFO):
             label = mode if mode_set is None else f"{mode}/{mode_set}"
-            print(
+            log.info(
                 f"ADP representation: {label}"
                 + (f", {n_nodes} nodes" if is_field else "")
                 + f", {n_par} parameters, "
@@ -663,16 +670,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             xray_mode = getattr(self, "xray_mode", "ml")
         self._build_xray_targets(xray_mode)
 
-        self.geometry_target = TotalGeometryTarget(self.model, verbose=self.verbose)
+        self.geometry_target = TotalGeometryTarget(self.model)
 
-        self.adp_target = TotalADPTarget(self.model, verbose=self.verbose)
+        self.adp_target = TotalADPTarget(self.model)
 
         # Initialize scaler scales (overall scale, anisotropic U, bulk solvent)
         # so the scaler-regularization targets have valid parameters to read.
         self.get_scales()
 
-        if self.verbose > 0:
-            print(f"Initialized targets with xray_mode='{xray_mode}'")
+        log.info(f"Initialized targets with xray_mode='{xray_mode}'")
 
     def set_xray_target_mode(self, mode: str):
         """
@@ -688,8 +694,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self._build_xray_targets(mode)
         # Reset loss state since targets changed
         self.reset_loss_state()
-        if self.verbose > 0:
-            print(f"Changed X-ray target mode to '{mode}'")
+        log.info(f"Changed X-ray target mode to '{mode}'")
 
     @property
     def data(self):
@@ -710,10 +715,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         """The :class:`~torchref.refinement.logger.Logger` bound to :attr:`loss_state`,
         created on first access."""
         if self._logger is None:
-            self._logger = Logger(
-                state=self.loss_state,
-                verbose=self.verbose,
-            )
+            self._logger = Logger(state=self.loss_state, verbose=_stats_tier())
+        else:
+            self._logger.verbose = _stats_tier()
         return self._logger
 
     def reset_loss_state(self) -> None:
@@ -801,7 +805,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             self.reflection_data,
             nbins=self.nbins,
             n_iso_coeff=self.n_iso_coeff,
-            verbose=self.verbose,
             device=self.device,
         )
 
@@ -838,8 +841,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             for gm, gd in zip(angles_m, angles_d)
         )
         if axis_off or angle_off:
-            import warnings
-            warnings.warn(
+            log.warning(
                 "PDB CRYST1 cell disagrees with reflection-data cell beyond "
                 f"tolerance (axes ≥ {axis_rtol * 100:g}% or angles ≥ "
                 f"{angle_atol_deg:g}°). Casting the data cell onto the model "
@@ -848,8 +850,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 "shift. Mirrors cctbx's "
                 "`xrs.customized_copy(crystal_symmetry=data_sym)`.\n"
                 f"  PDB  cell: {m}\n"
-                f"  data cell: {d}",
-                stacklevel=2,
+                f"  data cell: {d}"
             )
         self.model.cell = self.reflection_data.cell.clone()
         self.model.reset_cache()
@@ -1104,8 +1105,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     def save_state(self, path: str):
         """``torch.save`` the full refinement state dict to ``path``."""
         torch.save(self.state_dict(), path)
-        if self.verbose > 0:
-            print(f"Saved refinement state to {path}")
+        log.info(f"Saved refinement state to {path}")
 
     def load_state(self, path: str):
         """Load a :meth:`save_state` checkpoint into this instance.
@@ -1139,5 +1139,4 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             )
         # The cached F_sol was computed from the solvent mask the checkpoint replaced.
         self.scaler._f_sol_raw = None
-        if self.verbose > 0:
-            print(f"Loaded refinement state from {path}")
+        log.info(f"Loaded refinement state from {path}")

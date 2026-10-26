@@ -22,16 +22,16 @@ def test_a_table_of_several_models_is_refused(ensemble_path):
     """Every atom once per model is an ensemble, not one crystal's model; the error
     names the model numbers."""
     with pytest.raises(ValueError, match=r"model_num \[1, 2\]"):
-        Model(verbose=0).load_cif(ensemble_path)
+        Model().load_cif(ensemble_path)
 
 
 @pytest.mark.unit
 def test_each_model_of_the_file_loads_on_its_own(ensemble_path):
     """One model's rows, as the IHM reader splits them, load as a model."""
-    reader = ModelCIFReader(ensemble_path, verbose=0)
+    reader = ModelCIFReader(ensemble_path)
     _, cell, spacegroup = reader()
     for table in reader.get_atom_data_by_model().values():
-        model = Model(verbose=0).load(lambda: (table, cell, spacegroup))
+        model = Model().load(lambda: (table, cell, spacegroup))
         assert model.n_atoms == len(table) == 15
 
 
@@ -43,14 +43,14 @@ def test_chain_sequence_is_the_deposited_one_without_ligands(pdb_dir):
     structure.setup_entities()
     seqres = gemmi.one_letter_code(structure.entities[0].full_sequence)
 
-    assert Model(verbose=0).load_pdb(path).ctx.chain_sequences == [("A", seqres)]
+    assert Model().load_pdb(path).ctx.chain_sequences == [("A", seqres)]
 
 
 @pytest.mark.unit
 def test_hetatm_selenomethionines_read_as_methionine(pdb_dir):
     """3E98's selenomethionines 65 and 73, written as HETATM, are protein residues
     of both chains, not gaps."""
-    model = Model(verbose=0).load_pdb(str(pdb_dir / "3E98.pdb"))
+    model = Model().load_pdb(str(pdb_dir / "3E98.pdb"))
     sequences = dict(model.ctx.chain_sequences)
 
     for chain in "AB":

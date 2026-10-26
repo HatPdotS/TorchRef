@@ -88,7 +88,7 @@ def main(argv=None) -> int:
     else:
         from torchref.topology.monomer.library import MonomerLibraryManager
 
-        ener_lib = Path(MonomerLibraryManager(verbose=0).ensure_gemmi_base()) / "ener_lib.cif"
+        ener_lib = Path(MonomerLibraryManager().ensure_gemmi_base()) / "ener_lib.cif"
     extract(ener_lib, Path(PATH_TORCHREF_DATA) / "ener_lib_atoms.csv")
     return 0
 

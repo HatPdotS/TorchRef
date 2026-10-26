@@ -12,7 +12,7 @@ Basic Usage
 
    from torchref import Scaler
 
-   scaler = Scaler(model, reflection_data, verbose=1)
+   scaler = Scaler(model, reflection_data)
 
    scaler.initialize()      # initial scale + solvent + anisotropy
    scaler.refine_lbfgs()    # refine the scaling parameters

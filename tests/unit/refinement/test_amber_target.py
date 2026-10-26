@@ -19,7 +19,7 @@ TEST_PDB = os.path.join(
 @pytest.fixture(scope="module")
 def protein():
     """A deposited, hydrogenated protein with methyl orientation parameters."""
-    model = Model(verbose=0, device="cpu", hydrogens="add").load_pdb(TEST_PDB)
+    model = Model(device="cpu", hydrogens="add").load_pdb(TEST_PDB)
     model = model.strip_altlocs()
     model.set_hydrogen_mode("riding")
     return model
@@ -28,7 +28,7 @@ def protein():
 @pytest.fixture(scope="module")
 def target(protein):
     """Build the AMBER system once per module."""
-    return AmberTarget(model=protein, verbose=0)
+    return AmberTarget(model=protein)
 
 
 def test_build_preserves_model(protein):
@@ -82,7 +82,7 @@ def test_crystal_layout_is_per_asymmetric_unit(protein):
 def test_missing_hydrogens_are_not_added():
     """A heavy-atom model is rejected and left untouched."""
     model = (
-        Model(verbose=0, device="cpu", hydrogens="strip")
+        Model(device="cpu", hydrogens="strip")
         .load_pdb(TEST_PDB)
         .strip_altlocs()
     )
@@ -103,7 +103,7 @@ def test_deposited_hydrogens_are_used_with_a_warning():
     reported as lacking hydrogens rather than handed to GAFF2.
     """
     model = (
-        Model(verbose=0, device="cpu", hydrogens="keep")
+        Model(device="cpu", hydrogens="keep")
         .load_pdb(TEST_PDB)
         .strip_altlocs()
     )
@@ -115,7 +115,7 @@ def test_deposited_hydrogens_are_used_with_a_warning():
 @pytest.fixture(scope="module")
 def water_target(pdb_dir):
     """Two nearby deposited waters with TorchRef-generated rotating hydrogens."""
-    model = Model(verbose=0, device="cpu").load_pdb(str(pdb_dir / "1DAW.pdb"))
+    model = Model(device="cpu").load_pdb(str(pdb_dir / "1DAW.pdb"))
     table = model.to_dataframe()
     waters = table[table.resname.str.strip().eq("HOH")].copy()
     coords = waters[["x", "y", "z"]].to_numpy()
@@ -156,7 +156,7 @@ def test_water_rotation_changes_amber_energy(water_target):
 def test_torchref_hydrogenation_prepares_compatible_protein():
     """TorchRef can prepare all model hydrogens before AMBER construction."""
     model = (
-        Model(verbose=0, device="cpu", hydrogens="strip")
+        Model(device="cpu", hydrogens="strip")
         .load_pdb(TEST_PDB)
         .strip_altlocs()
         .hydrogenate()

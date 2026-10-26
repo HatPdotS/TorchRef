@@ -16,6 +16,7 @@ import sys
 import warnings
 from pathlib import Path
 
+from torchref._logging import get_logger
 from torchref.cli._choices import DEFAULT_SCALE_TARGET, SCALE_TARGETS, XRAY_TARGET_DOCS
 from torchref.cli._common import (
     add_adp_mode_arg,
@@ -29,6 +30,7 @@ from torchref.cli._common import (
     add_wavelength_arg,
     add_weights_arg,
     build_column_names,
+    configure_logging,
     configure_unbuffered_output,
     parse_device_str,
     parse_weights,
@@ -38,6 +40,10 @@ from torchref.cli._common import (
 )
 
 configure_unbuffered_output()
+
+# Named, not __name__: run as a script or with -m, this module is __main__, outside
+# the torchref logger the CLI configures.
+log = get_logger("torchref.cli.refine")
 
 
 def _sigma_a_kwargs(args) -> dict:
@@ -221,6 +227,7 @@ Loss weights:
     add_general_args(parser)
 
     args = parser.parse_args()
+    configure_logging(args)
 
     import torch
 
@@ -255,55 +262,51 @@ Loss weights:
         print("Please ensure torchref is properly installed.", file=sys.stderr)
         sys.exit(1)
 
-    if args.verbose > 0:
-        print("=" * 80)
-        print("TorchRef LBFGS Refinement")
-        print("=" * 80)
-        print(f"Model:             {model_path}")
-        print(f"Structure factor:  {sf_path}")
-        print(f"Output directory:  {outdir}")
-        print(f"Refinement mode:   {args.mode}")
-        print(f"X-ray target:      {args.xray_mode}")
-        print(f"Refinement cycles: {args.n_cycles}")
-        print(f"Hydrogens:         {args.hydrogens} ({args.hydrogen_mode})")
-        print(f"Hydrogens in Fcalc: {'on' if args.hydrogens_in_xray else 'off'}")
-        if args.with_rigid_body:
-            print(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
-        print(f"Device:            {args.device}")
-        if args.dmin:
-            print(f"Resolution cutoff: {args.dmin:.2f} A")
-        adp_line = f"ADP mode:          {args.adp_mode}"
-        if args.adp_mode == "field_aniso" and args.adp_mode_set:
-            adp_line += f" ({args.adp_mode_set})"
-        if args.adp_mode in ("field", "field_aniso"):
-            adp_line += (
-                f", {args.adp_nodes} nodes"
-                if args.adp_nodes
-                else f", sized at {args.reflections_per_adp_parameter:g} "
-                "work reflections per parameter"
-            )
-        if args.adp_mode == "anisotropic":
-            adp_line += (
-                "  (selection: "
-                f"{args.anisotropic_selection or 'not resname HOH and not element H'})"
-            )
-        print(adp_line)
-        if not args.wavelength:
-            print("Anomalous:         off (no --wavelength; Friedel-merged read)")
-        else:
-            print(f"Wavelength:        {args.wavelength:.4g} A")
-        if manual_weights:
-            print(f"Manual weights:    {json.dumps(manual_weights)}")
-        print("=" * 80)
-        print()
-        sys.stdout.flush()
+    log.info("=" * 80)
+    log.info("TorchRef LBFGS Refinement")
+    log.info("=" * 80)
+    log.info(f"Model:             {model_path}")
+    log.info(f"Structure factor:  {sf_path}")
+    log.info(f"Output directory:  {outdir}")
+    log.info(f"Refinement mode:   {args.mode}")
+    log.info(f"X-ray target:      {args.xray_mode}")
+    log.info(f"Refinement cycles: {args.n_cycles}")
+    log.info(f"Hydrogens:         {args.hydrogens} ({args.hydrogen_mode})")
+    log.info(f"Hydrogens in Fcalc: {'on' if args.hydrogens_in_xray else 'off'}")
+    if args.with_rigid_body:
+        log.info(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
+    log.info(f"Device:            {args.device}")
+    if args.dmin:
+        log.info(f"Resolution cutoff: {args.dmin:.2f} A")
+    adp_line = f"ADP mode:          {args.adp_mode}"
+    if args.adp_mode == "field_aniso" and args.adp_mode_set:
+        adp_line += f" ({args.adp_mode_set})"
+    if args.adp_mode in ("field", "field_aniso"):
+        adp_line += (
+            f", {args.adp_nodes} nodes"
+            if args.adp_nodes
+            else f", sized at {args.reflections_per_adp_parameter:g} "
+            "work reflections per parameter"
+        )
+    if args.adp_mode == "anisotropic":
+        adp_line += (
+            "  (selection: "
+            f"{args.anisotropic_selection or 'not resname HOH and not element H'})"
+        )
+    log.info(adp_line)
+    if not args.wavelength:
+        log.info("Anomalous:         off (no --wavelength; Friedel-merged read)")
+    else:
+        log.info(f"Wavelength:        {args.wavelength:.4g} A")
+    if manual_weights:
+        log.info(f"Manual weights:    {json.dumps(manual_weights)}")
+    log.info("=" * 80)
+    log.info("")
 
     device = parse_device_str(args.device)
     sigma_a_kwargs = _sigma_a_kwargs(args)
 
-    if args.verbose > 0:
-        print("Initializing refinement...")
-        sys.stdout.flush()
+    log.info("Initializing refinement...")
 
     column_names = build_column_names(
         str(sf_path), args.column_structure_factor, args.column_sigma
@@ -313,7 +316,6 @@ Loss weights:
         data_file=str(sf_path),
         pdb=str(model_path),
         cif=args.cif,
-        verbose=args.verbose,
         max_res=args.dmin,
         device=device,
         column_names=column_names,
@@ -340,23 +342,18 @@ Loss weights:
         merged = {**DEFAULT_GROUP_WEIGHTS, **manual_weights}
         refinement.weighting = ManualWeighting(merged)
         refinement.reset_loss_state()
-        if args.verbose > 0:
-            print(f"Applied manual group weights: {merged}")
+        log.info(f"Applied manual group weights: {merged}")
 
-    if args.verbose > 0:
-        print("Refinement initialized successfully.\n")
-        sys.stdout.flush()
+    log.info("Refinement initialized successfully.\n")
 
     # Run refinement
     try:
-        if args.verbose > 0:
-            print(f"Starting refinement with {args.n_cycles} macro cycles...\n")
-            if args.with_rigid_body:
-                print(
-                    "Rigid-body step enabled: one multi-resolution rigid-body "
-                    "pass will run once at the start of refinement.\n"
-                )
-            sys.stdout.flush()
+        log.info(f"Starting refinement with {args.n_cycles} macro cycles...\n")
+        if args.with_rigid_body:
+            log.info(
+                "Rigid-body step enabled: one multi-resolution rigid-body "
+                "pass will run once at the start of refinement.\n"
+            )
 
         if args.mode == "separate":
             cycle_fn = refinement.refine
@@ -366,9 +363,7 @@ Loss weights:
             raise ValueError(f"Invalid refinement mode: {args.mode}")
 
         if args.with_rigid_body:
-            if args.verbose > 0:
-                print("\n--- Rigid-body step (once, at start) ---")
-                sys.stdout.flush()
+            log.info("\n--- Rigid-body step (once, at start) ---")
             rb_cutoffs = None
             if args.rigid_body_cutoffs:
                 rb_cutoffs = [float(x) for x in args.rigid_body_cutoffs.split(",")]
@@ -383,20 +378,16 @@ Loss weights:
 
         refinement.get_scales()
 
-        if args.verbose > 0:
-            print("\nRefinement completed successfully.")
-            sys.stdout.flush()
+        log.info("\nRefinement completed successfully.")
 
     except Exception as e:
         refinement.debug_on_error(e)
         raise e
 
-    if args.verbose > 0:
-        print(f"\nSaving results to {outdir}...")
-        sys.stdout.flush()
+    log.info(f"\nSaving results to {outdir}...")
 
     # Save refined structure(s) with metadata
-    outputs = write_refinement_outputs(refinement, outdir, args, verbose=args.verbose)
+    outputs = write_refinement_outputs(refinement, outdir, args)
 
     # Save refined structure factors
     output_mtz = outdir / "refined.mtz"
@@ -470,8 +461,7 @@ Loss weights:
             "n_reflections_test": rd.free.n,
         }
     except Exception as e:
-        if args.verbose > 1:
-            print(f"  Warning: Could not compute final statistics: {e}")
+        log.warning(f"Could not compute final statistics: {e}")
 
     with open(output_json, "w") as f:
         json.dump(convert_to_serializable(history_data), f, indent=2)

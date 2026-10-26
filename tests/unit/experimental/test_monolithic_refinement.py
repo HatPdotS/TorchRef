@@ -89,7 +89,7 @@ class TestMonolithicOnRealData:
             pytest.skip("1DAW fixture not present")
         from torchref.experimental.monolithic_refinement import MonolithicRefinement
 
-        return MonolithicRefinement(data_file=str(mtz), pdb=str(pdb), verbose=0)
+        return MonolithicRefinement(data_file=str(mtz), pdb=str(pdb))
 
     def test_targets_are_rice_sigma_m(self, refinement):
         from torchref.experimental.monolithic_refinement import RiceSigmaMXrayTarget
@@ -153,7 +153,7 @@ class TestMonolithicCorefine:
             pytest.skip("1DAW fixture not present")
         from torchref.experimental.monolithic_refinement import MonolithicRefinement
 
-        ref = MonolithicRefinement(data_file=str(mtz), pdb=str(pdb), verbose=0)
+        ref = MonolithicRefinement(data_file=str(mtz), pdb=str(pdb))
         c0 = ref.xray_target_work.log_sigma_m_scale.detach().clone()
         rw0, _ = ref.get_rfactor()
         with torch.no_grad():

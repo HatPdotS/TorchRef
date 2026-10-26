@@ -89,7 +89,6 @@ class QuasiCrystalAmberTarget(ModelTarget):
         Per-atom gradient clip in kJ/mol/nm. Default 10000.
     platform : str, optional
         OpenMM platform name.
-    verbose : int
 
     Raises
     ------
@@ -117,7 +116,6 @@ class QuasiCrystalAmberTarget(ModelTarget):
         relax_max_iterations: int = 200,
         force_clamp: float = 10000.0,
         platform: Optional[str] = None,
-        verbose: int = 0,
     ) -> None:
         require_openmm()
         n_sym = int(spacegroup.n_ops)
@@ -127,13 +125,13 @@ class QuasiCrystalAmberTarget(ModelTarget):
                 f"n_members ({n_members}) must equal n_disorder ({n_disorder}) "
                 f"* spacegroup.n_ops ({n_sym}) = {int(n_disorder) * n_sym}"
             )
-        super().__init__(model=model, verbose=verbose)
+        super().__init__(model=model)
         self._n_disorder = int(n_disorder)
         self._n_sym = n_sym
         self._n_members = n_members
         self._normalize_per_asu = bool(normalize_per_asu)
 
-        chemistry = build_single_copy_model(model, verbose=verbose)
+        chemistry = build_single_copy_model(model)
         self.adapter = OpenMMAdapter.from_model(
             chemistry,
             layout=CrystalLayout.quasi_crystal(cell, spacegroup, self._n_disorder),
@@ -148,7 +146,6 @@ class QuasiCrystalAmberTarget(ModelTarget):
             hydrogens_added=getattr(model, "hydrogen_source", "keep") == "add",
             platform=platform,
             max_force=force_clamp,
-            verbose=verbose,
         )
         if relax_on_init:
             self._relax_against_amber(int(relax_max_iterations))

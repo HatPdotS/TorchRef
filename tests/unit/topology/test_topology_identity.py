@@ -18,7 +18,7 @@ STRUCTURES = ["1DAW", "7L84", "1AK5_with_H"]
 
 
 def _table(pdb_dir, code):
-    df, _, _ = PDBReader(verbose=0).read(str(pdb_dir / f"{code}.pdb"))()
+    df, _, _ = PDBReader().read(str(pdb_dir / f"{code}.pdb"))()
     return df.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"]).reset_index(
         drop=True
     )
@@ -28,7 +28,7 @@ def _table(pdb_dir, code):
 @pytest.mark.parametrize("code", STRUCTURES)
 def test_node_topology_matches_the_connected_one(pdb_dir, code):
     """Atoms and residues agree with the restraint build's topology, edges aside."""
-    model = Model(verbose=0).load_pdb(str(pdb_dir / f"{code}.pdb"))
+    model = Model().load_pdb(str(pdb_dir / f"{code}.pdb"))
     connected = model.restraints.topology
     nodes = Topology.from_table(model.pdb)
 
@@ -108,7 +108,7 @@ def test_water_and_polymer_masks(pdb_dir):
     np.testing.assert_array_equal(nodes.is_water, (df.resname == "HOH").to_numpy())
     # Polymer means peptide-linked, which only the connected topology knows.
     assert not nodes.is_polymer.any()
-    connected = Model(verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb")).restraints
+    connected = Model().load_pdb(str(pdb_dir / "1DAW.pdb")).restraints
     np.testing.assert_array_equal(
         connected.topology.is_polymer, (df.ATOM == "ATOM").to_numpy()
     )
@@ -122,8 +122,8 @@ def test_water_and_polymer_masks(pdb_dir):
 @pytest.mark.parametrize("code", ["1DAW", "7L84"])
 def test_hydrogen_insertion_places_each_hydrogen_in_its_residue(pdb_dir, code):
     """Row maps agree with the gather, and every hydrogen joins its parent's residue."""
-    model = Model(verbose=0, hydrogens="strip").load_pdb(str(pdb_dir / f"{code}.pdb"))
-    restraints = model.ctx.build_restraints(model.xyz(), nonbonded=False, verbose=0)
+    model = Model(hydrogens="strip").load_pdb(str(pdb_dir / f"{code}.pdb"))
+    restraints = model.ctx.build_restraints(model.xyz(), nonbonded=False)
     plan = plan_hydrogens(
         restraints.topology, restraints.cif_dict, model.xyz().detach()
     )
@@ -194,7 +194,7 @@ def test_generated_hydrogens_carry_no_charge(pdb_dir, tmp_path):
     path = tmp_path / "charged.pdb"
     path.write_text("\n".join(lines) + "\n")
 
-    df = Model(verbose=0, hydrogens="add").load_pdb(str(path)).to_dataframe()
+    df = Model(hydrogens="add").load_pdb(str(path)).to_dataframe()
     lys = df[(df["chainid"] == "A") & (df["resseq"] == 8)]
     charge = dict(zip(lys["name"], lys["charge"]))
     assert charge["NZ"] == 1

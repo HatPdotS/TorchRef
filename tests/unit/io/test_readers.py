@@ -10,7 +10,7 @@ class TestReadMtz:
         from torchref import read_mtz
         from torchref.io import ReflectionData
 
-        data = read_mtz(str(mtz_dir / "1DAW.mtz"), verbose=0)
+        data = read_mtz(str(mtz_dir / "1DAW.mtz"))
         assert isinstance(data, ReflectionData)
         assert data.hkl.shape[0] > 0
 
@@ -30,7 +30,7 @@ class TestReadMtz:
         path = tmp_path / "3E98_no_sigma.mtz"
         mtz.write_to_file(str(path))
 
-        data = read_mtz(str(path), verbose=0)
+        data = read_mtz(str(path))
         measured = torch.isfinite(data.F)
         assert torch.isfinite(data.F_sigma[measured]).all()
 
@@ -60,24 +60,23 @@ class TestReadCif:
         from torchref import read_cif
         from torchref.model import ModelFT
 
-        obj = read_cif(str(cif_dir / "1DAW.cif"), verbose=0)
+        obj = read_cif(str(cif_dir / "1DAW.cif"))
         assert isinstance(obj, ModelFT)
         assert len(obj.pdb) > 0
 
-    def test_read_cif_model_takes_verbose(self, cif_dir, capsys):
-        """``verbose`` reaches the model the structure branch builds."""
+    def test_read_cif_model_is_silent(self, cif_dir, capsys):
+        """The structure branch builds its model without printing."""
         from torchref import read_cif
         from torchref.model import Model
 
-        model = read_cif(str(cif_dir / "1DAW.cif"), model_class=Model, verbose=0)
-        assert model.ctx.verbose == 0
+        read_cif(str(cif_dir / "1DAW.cif"), model_class=Model)
         assert capsys.readouterr().out == ""
 
     def test_read_cif_reflections(self, cif_sf_dir):
         from torchref import read_cif
         from torchref.io import ReflectionData
 
-        obj = read_cif(str(cif_sf_dir / "1DAW-sf.cif"), verbose=0)
+        obj = read_cif(str(cif_sf_dir / "1DAW-sf.cif"))
         assert isinstance(obj, ReflectionData)
         assert obj.hkl.shape[0] > 0
 

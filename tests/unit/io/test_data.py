@@ -55,15 +55,6 @@ class TestReflectionDataInitialization:
 
         assert data.device.type == "cpu"
 
-    @pytest.mark.unit
-    def test_reflection_data_verbose(self):
-        """Test verbosity setting."""
-        from torchref.io import ReflectionData
-
-        data = ReflectionData(verbose=2)
-
-        assert data.verbose == 2
-
 
 class TestReflectionDataDeviceMovement:
     """Tests for device movement in ReflectionData."""
@@ -111,15 +102,6 @@ class TestReflectionDataAttributes:
 
         assert hasattr(data, "spacegroup")
 
-    @pytest.mark.unit
-    def test_has_verbose_attribute(self):
-        """Test verbose attribute is accessible."""
-        from torchref.io import ReflectionData
-
-        data = ReflectionData()
-
-        assert hasattr(data, "verbose")
-
 
 class TestReflectionDataProperties:
     """Tests for ReflectionData computed properties."""
@@ -147,8 +129,8 @@ class TestReflectionDataProperties:
         """The name, H-M symbol and number come from the stored SpaceGroup."""
         from torchref.io import DatasetCollection, FcalcDataset, ReflectionData
 
-        data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
-        collection = DatasetCollection(verbose=0).add_dataset("1DAW", data)
+        data = ReflectionData().load_mtz(str(mtz_dir / "1DAW.mtz"))
+        collection = DatasetCollection().add_dataset("1DAW", data)
         fcalc = FcalcDataset.from_cell_and_resolution(
             data.cell, data.spacegroup, d_min=4.0
         )
@@ -164,7 +146,7 @@ class TestReflectionDataProperties:
         from torchref.io import ReflectionData
         from torchref.symmetry import Cell
 
-        src = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+        src = ReflectionData().load_mtz(str(mtz_dir / "1DAW.mtz"))
         cell = src.cell.data.clone()
         data = ReflectionData.from_tensors(
             src.hkl,
@@ -173,7 +155,6 @@ class TestReflectionDataProperties:
             cell,
             src.spacegroup,
             rfree_flags=src.rfree_flags,
-            verbose=0,
         )
 
         assert isinstance(data.cell, Cell)
@@ -247,7 +228,7 @@ class TestFrenchWilsonToggle:
         """french_wilson=False uses the existing F/SIGF columns verbatim."""
         from torchref.io import ReflectionData
 
-        data = ReflectionData(verbose=0)
+        data = ReflectionData()
         data.load(self._reader_with_I_and_F(), french_wilson=False)
 
         # F should be exactly the sentinel amplitude column, untouched.
@@ -260,7 +241,7 @@ class TestFrenchWilsonToggle:
         """french_wilson=True (default) re-derives F from intensities."""
         from torchref.io import ReflectionData
 
-        data = ReflectionData(verbose=0)
+        data = ReflectionData()
         data.load(self._reader_with_I_and_F(), french_wilson=True)
 
         # F is computed from I, so it differs from the sentinel 7.0 column.
@@ -276,7 +257,7 @@ class TestFrenchWilsonToggle:
         data_dict, cell, spacegroup = reader()
         del data_dict["F"], data_dict["SIGF"]
 
-        data = ReflectionData(verbose=0)
+        data = ReflectionData()
         data.load(lambda: (data_dict, cell, spacegroup), french_wilson=False)
 
         # No amplitude columns => French-Wilson runs regardless of the flag.

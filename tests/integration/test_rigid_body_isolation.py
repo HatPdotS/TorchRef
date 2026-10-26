@@ -21,7 +21,6 @@ def refinement(mtz_dir, pdb_dir):
             data_file=str(mtz_dir / "3E98.mtz"),
             pdb=str(pdb_dir / "3E98.pdb"),
             device=torch.device("cpu"),
-            verbose=0,
         )
     return build
 

@@ -33,7 +33,6 @@ def test_gpu_5cycle_refinement_does_not_collapse_and_matches_cpu(pdb_dir, mtz_di
             data_file=str(mtz),
             pdb=str(pdb),
             target_mode="ml",
-            verbose=0,
             device=torch.device(device),
         )
         ref.refine(macro_cycles=5)

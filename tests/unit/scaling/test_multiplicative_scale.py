@@ -17,9 +17,9 @@ from torchref.scaling.scaler import Scaler
 def scaler(sample_structure_pair):
     model = ModelFT()
     model.load_cif(str(sample_structure_pair["model"]))
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(str(sample_structure_pair["reflections"]))
-    return Scaler(model=model, data=data, nbins=10, verbose=0)
+    return Scaler(model=model, data=data, nbins=10)
 
 
 @pytest.mark.unit

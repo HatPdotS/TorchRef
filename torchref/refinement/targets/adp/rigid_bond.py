@@ -51,8 +51,6 @@ class RigidBondTarget(ADPTarget):
     use_aniso : bool, optional
         Use the tensor calculation when the model has anisotropic ADPs. Default
         True; setting False forces the isotropic proxy.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     name: str = "adp/delu"
@@ -62,9 +60,8 @@ class RigidBondTarget(ADPTarget):
         model: "Model" = None,
         sigma: float = 0.004,
         use_aniso: bool = True,
-        verbose: int = 0,
     ):
-        super().__init__(model, verbose)
+        super().__init__(model)
         self.sigma = sigma
         self.use_aniso = use_aniso
 

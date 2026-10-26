@@ -24,21 +24,29 @@ Usage::
 """
 
 import argparse
+import logging
 import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
 
+from torchref._logging import enabled, get_logger, quiet
 from torchref.cli._common import (
     add_device_arg,
+    add_log_file_arg,
     add_outdir_arg,
     add_verbose_arg,
+    configure_logging,
     configure_unbuffered_output,
     parse_device_str,
 )
 
 configure_unbuffered_output()
+
+# Named, not __name__: run as a script or with -m, this module is __main__, outside
+# the torchref logger the CLI configures.
+log = get_logger("torchref.cli.uniform_rfree")
 
 
 def _parse_args(argv=None):
@@ -216,7 +224,9 @@ Examples:
         action="store_true",
         help="Keep existing flag columns renamed to <name>_orig instead of dropping them",
     )
-    add_verbose_arg(out)
+    gen = parser.add_argument_group("General")
+    add_verbose_arg(gen)
+    add_log_file_arg(gen)
     return parser.parse_args(argv)
 
 
@@ -259,10 +269,10 @@ def _existing_report(report):
             f"({100 * f['n_free'] / max(f['n'], 1):5.2f} %)  excluded {f['n_excluded']}"
         )
         if f["n_free"] == 0:
-            print("    Warning: no free reflections")
+            log.warning(f"{name}: no free reflections")
         if f["n_conflicting"]:
-            print(
-                f"    Warning: {f['n_conflicting']} reflections have symmetry "
+            log.warning(
+                f"{name}: {f['n_conflicting']} reflections have symmetry "
                 "equivalents with different flags in this file"
             )
     for (a, b), (n_common, n_bad) in report["pairs"].items():
@@ -309,30 +319,33 @@ def _new_report(datasets, flags, info, ref_label, args):
             info["n_gaps_in_reference"],
         )
         if n_beyond:
-            print(
-                f"  Warning: reference ends at {r['dmin']:.2f} A; {n_beyond} reflections "
+            log.warning(
+                f"reference ends at {r['dmin']:.2f} A; {n_beyond} reflections "
                 f"to {info['dmin']:.2f} A newly flagged ({pct} free, "
                 f"seed from {info['seed_source']})"
             )
         if n_gaps:
             frac = n_gaps / max(n_gaps + info["n_inherited"], 1)
-            print(
-                ("  Warning: " if frac > 0.05 else "  ")
-                + f"{n_gaps} reflections ({100 * frac:.1f} %) missing within the "
+            gaps = (
+                f"{n_gaps} reflections ({100 * frac:.1f} %) missing within the "
                 "reference's range, newly flagged"
             )
+            if frac > 0.05:
+                log.warning(gaps)
+            else:
+                print("  " + gaps)
         if r["n_inconsistent"]:
-            print(
-                f"  Warning: {r['n_inconsistent']} reference reflections have "
+            log.warning(
+                f"{r['n_inconsistent']} reference reflections have "
                 "conflicting equivalents (free wins)"
             )
     if info["n_off_asu"]:
-        print(
-            f"  Warning: {info['n_off_asu']} reflections outside the complete ASU "
+        log.warning(
+            f"{info['n_off_asu']} reflections outside the complete ASU "
             "(systematic absences?), flagged by hash"
         )
     for name, ds in datasets.items():
-        _flag_report(name, flags[name], ds, info, args.verbose)
+        _flag_report(name, flags[name], ds, info, args)
     if len(datasets) > 1 and args.verbose > 1:
         common = set.intersection(
             *(set(_rfree_keys(ds).tolist()) for ds in datasets.values())
@@ -347,7 +360,7 @@ def _rfree_keys(ds):
     return rfree.hkl_keys(rfree.asu_hkl(ds))
 
 
-def _flag_report(name, flags, ds, info, verbose):
+def _flag_report(name, flags, ds, info, args):
     from torchref.io import rfree
 
     n = len(flags)
@@ -360,8 +373,8 @@ def _flag_report(name, flags, ds, info, verbose):
         + (f"  excluded {n_excl} (kept as -1)" if n_excl else "")
     )
     if n_free < MIN_FREE_WARN:
-        print(f"    Warning: only {n_free} free reflections; R-free will be noisy")
-    if verbose > 1:
+        log.warning(f"{name}: only {n_free} free reflections; R-free will be noisy")
+    if args.verbose > 1:
         dstar2 = 1.0 / ds.compute_dHKL()["dHKL"].to_numpy() ** 2
         bins = rfree.resolution_bins(dstar2, 10)
         for b in range(bins.max() + 1):
@@ -381,12 +394,13 @@ def _scale_datasets(flagged, args, device):
     from torchref.io import rfree
     from torchref.io.datasets.collection import DatasetCollection
 
-    collection = DatasetCollection(verbose=args.verbose, device=device)
+    collection = DatasetCollection(device=device)
     with tempfile.TemporaryDirectory() as tmp:
         for name, ds in flagged.items():
             path = Path(tmp) / f"{name}.mtz"
             rfree.write_sf_file(ds, str(path))
-            data = load_reflection_data(str(path), device=device, verbose=0)
+            with quiet():
+                data = load_reflection_data(str(path), device=device)
             collection.add_dataset(name, data)
     collection.scale(nsteps=args.scale_nsteps, max_iter=args.scale_max_iter)
 
@@ -415,6 +429,7 @@ def _scale_datasets(flagged, args, device):
 def main(argv=None):
     """Entry point for ``torchref.uniform-rfree``; returns the process exit code."""
     args = _parse_args(argv)
+    configure_logging(args)
     from torchref.io import rfree
 
     names = _unique_names(args.files)
@@ -431,10 +446,10 @@ def main(argv=None):
         except Exception as exc:  # noqa: BLE001 - report and exit cleanly
             print(f"Error: cannot read {path}: {exc}", file=sys.stderr)
             return 1
-        if args.verbose:
+        if enabled(log, logging.INFO):
             ds = datasets[name]
             dmin = ds.compute_dHKL()["dHKL"].min()
-            print(
+            log.info(
                 f"Read {path}: {len(ds)} rows, {ds.spacegroup.xhm()}, "
                 f"cell {tuple(round(x, 3) for x in ds.cell.parameters)}, dmin {dmin:.2f} A"
             )
@@ -442,7 +457,10 @@ def main(argv=None):
     problems = rfree.check_compatible(datasets, args.length_tol, args.angle_tol)
     if problems:
         for p in problems:
-            print(("Warning: " if args.force else "Error: ") + p, file=sys.stderr)
+            if args.force:
+                log.warning(p)
+            else:
+                print("Error: " + p, file=sys.stderr)
         if not args.force:
             print("Use --force to proceed anyway.", file=sys.stderr)
             return 1
@@ -455,7 +473,7 @@ def main(argv=None):
     report = rfree.compare_free_sets(datasets, input_column)
     if args.check or args.verbose > 1 or (args.verbose and not report["consistent"]):
         _existing_report(report)
-    elif args.verbose:
+    elif args.verbose > 0:
         print(f"\nExisting free sets are consistent across all {len(datasets)} inputs.")
     if args.check:
         return 0 if report["consistent"] else 2
@@ -471,29 +489,27 @@ def main(argv=None):
         if report["files"][n]["n_free"] > 0 and report["files"][n]["n_conflicting"] == 0
     ]
     if args.fresh:
-        if with_flags and args.verbose:
-            print(
+        if with_flags:
+            log.info(
                 f"--fresh: replacing the free set(s) of {', '.join(with_flags)}; "
                 "R-free of models refined against them becomes biased."
             )
     elif args.reference == "auto":
         for name in [n for n in with_flags if n not in usable]:
-            print(
-                f"Warning: not inheriting from {name!r}: its free set is empty or "
-                "has conflicting symmetry equivalents",
-                file=sys.stderr,
+            log.warning(
+                f"not inheriting from {name!r}: its free set is empty or "
+                "has conflicting symmetry equivalents"
             )
         if usable:
             ref_label = usable[0]
             reference = datasets[ref_label]
             if not report["consistent"] and len(with_flags) > 1:
-                print(
-                    f"Warning: existing free sets disagree; inheriting from {ref_label!r} "
-                    "(the first input with flags). Pass --reference to choose another.",
-                    file=sys.stderr,
+                log.warning(
+                    f"existing free sets disagree; inheriting from {ref_label!r} "
+                    "(the first input with flags). Pass --reference to choose another."
                 )
-        elif args.verbose:
-            print("No input carries a usable free set; generating a new free set.")
+        else:
+            log.info("No input carries a usable free set; generating a new free set.")
     else:
         ref_label = _resolve_input(args.reference, names)
         try:
@@ -558,7 +574,7 @@ def main(argv=None):
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    if args.verbose:
+    if args.verbose > 0:
         _new_report(datasets, flags, info, ref_label, args)
 
     flagged = {
@@ -581,8 +597,7 @@ def main(argv=None):
                 return 1
             args.scale_reference = key
         device = parse_device_str(args.device)
-        if args.verbose:
-            print(f"\nScaling {len(flagged)} datasets jointly on {device} ...")
+        log.info(f"\nScaling {len(flagged)} datasets jointly on {device} ...")
         try:
             factors, metrics = _scale_datasets(flagged, args, device)
         except Exception as exc:  # noqa: BLE001
@@ -590,14 +605,14 @@ def main(argv=None):
             return 1
         for name in flagged:
             flagged[name], cols = rfree.scale_columns(flagged[name], factors[name])
-            if args.verbose:
+            if args.verbose > 0:
                 f = factors[name]
                 print(
                     f"  {name:<24s} factor median {np.median(f):.4f} "
                     f"[{f.min():.4f}, {f.max():.4f}]  columns: {', '.join(cols) or '-'}"
                 )
-        if args.verbose > 1 and metrics:
-            print(f"  metrics: {metrics}")
+        if metrics:
+            log.debug(f"  metrics: {metrics}")
 
     # ---- write ------------------------------------------------------------
     outdir = Path(args.outdir)
@@ -610,7 +625,7 @@ def main(argv=None):
             except Exception as exc:  # noqa: BLE001
                 print(f"Error: cannot write {path}: {exc}", file=sys.stderr)
                 return 1
-            if args.verbose:
+            if args.verbose > 0:
                 print(f"Wrote {path}")
     return 0
 

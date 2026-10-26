@@ -27,7 +27,7 @@ def fcalc_scene(loaded_reflection_data):
 
 class TestNegativesSurvive:
     def test_some_intensities_come_out_negative(self, fcalc_scene):
-        noisy = fcalc_scene.add_noise(sigma_mul=0.5, seed=3, verbose=False)
+        noisy = fcalc_scene.add_noise(sigma_mul=0.5, seed=3)
         assert noisy.I is not None, "add_noise did not retain intensities"
         assert bool((noisy.I < 0).any()), (
             "no negative intensities at 50% multiplicative noise -- either the scene has "
@@ -36,7 +36,7 @@ class TestNegativesSurvive:
 
     def test_the_amplitude_is_clamped_but_the_intensity_is_not(self, fcalc_scene):
         """The asymmetry is deliberate, so it is asserted rather than assumed."""
-        noisy = fcalc_scene.add_noise(sigma_mul=0.5, seed=3, verbose=False)
+        noisy = fcalc_scene.add_noise(sigma_mul=0.5, seed=3)
         assert bool((noisy.fcalc_amp >= 0).all())
         negative = noisy.I < 0
         assert bool(negative.any())
@@ -54,7 +54,7 @@ class TestNegativesSurvive:
     def test_the_intensity_is_unbiased_on_the_weak_reflections(self, fcalc_scene):
         """The property the clamp breaks, as a bound on the mean of the weak tail."""
         noisy = fcalc_scene.add_noise(
-            sigma_lin=200.0, sigma_mul=0.0, seed=5, verbose=False
+            sigma_lin=200.0, sigma_mul=0.0, seed=5
         )
         truth = fcalc_scene.fcalc_amp**2
         weak = self._weak(noisy, truth)
@@ -74,8 +74,8 @@ class TestSigmaAndHalves:
     def test_sigma_of_the_mean_is_the_single_draw_sigma_over_root_two(
         self, fcalc_scene
     ):
-        a = fcalc_scene.add_noise(sigma_mul=0.2, seed=11, verbose=False)
-        b = fcalc_scene.add_noise(sigma_mul=0.2, seed=12, verbose=False)
+        a = fcalc_scene.add_noise(sigma_mul=0.2, seed=11)
+        b = fcalc_scene.add_noise(sigma_mul=0.2, seed=12)
         # Same model, same noise scale: the reported sigma is a property of the model,
         # not of the draw, so it must be identical across seeds.
         assert torch.allclose(a.I_sigma, b.I_sigma)
@@ -89,23 +89,23 @@ class TestSigmaAndHalves:
     def test_amplitude_sigma_uses_the_true_amplitude(self, fcalc_scene):
         """Propagating against the noisy amplitude would warp sigma per draw and break
         inverse-variance weighting downstream."""
-        a = fcalc_scene.add_noise(sigma_mul=0.2, seed=11, verbose=False)
-        b = fcalc_scene.add_noise(sigma_mul=0.2, seed=99, verbose=False)
+        a = fcalc_scene.add_noise(sigma_mul=0.2, seed=11)
+        b = fcalc_scene.add_noise(sigma_mul=0.2, seed=99)
         assert torch.allclose(a.fobs_sigma, b.fobs_sigma)
 
     def test_different_seeds_give_different_draws(self, fcalc_scene):
-        a = fcalc_scene.add_noise(sigma_mul=0.2, seed=1, verbose=False)
-        b = fcalc_scene.add_noise(sigma_mul=0.2, seed=2, verbose=False)
+        a = fcalc_scene.add_noise(sigma_mul=0.2, seed=1)
+        b = fcalc_scene.add_noise(sigma_mul=0.2, seed=2)
         assert not torch.allclose(a.I, b.I)
 
     def test_the_same_seed_reproduces(self, fcalc_scene):
-        a = fcalc_scene.add_noise(sigma_mul=0.2, seed=7, verbose=False)
-        b = fcalc_scene.add_noise(sigma_mul=0.2, seed=7, verbose=False)
+        a = fcalc_scene.add_noise(sigma_mul=0.2, seed=7)
+        b = fcalc_scene.add_noise(sigma_mul=0.2, seed=7)
         assert torch.equal(a.I, b.I)
 
     def test_phases_are_untouched(self, fcalc_scene):
         """Only the amplitude is perturbed; the phase is the model's."""
-        noisy = fcalc_scene.add_noise(sigma_mul=0.2, seed=4, verbose=False)
+        noisy = fcalc_scene.add_noise(sigma_mul=0.2, seed=4)
         strong = fcalc_scene.fcalc_amp > 1.0
         assert torch.allclose(
             noisy.fcalc_phase[strong], fcalc_scene.fcalc_phase[strong], atol=1e-5
@@ -113,7 +113,7 @@ class TestSigmaAndHalves:
 
     def test_the_source_dataset_is_not_modified(self, fcalc_scene):
         before = fcalc_scene.fcalc_amp.clone()
-        fcalc_scene.add_noise(sigma_mul=0.3, seed=8, verbose=False)
+        fcalc_scene.add_noise(sigma_mul=0.3, seed=8)
         assert torch.equal(fcalc_scene.fcalc_amp, before)
         assert fcalc_scene.I is None
 
@@ -124,7 +124,7 @@ class TestReferenceDriven:
     ):
         """Use the reference's measured uncertainties for both independent draws."""
         noisy = fcalc_scene.add_noise(
-            reference=loaded_reflection_data, seed=1, verbose=False
+            reference=loaded_reflection_data, seed=1
         )
         torch.testing.assert_close(
             noisy.I_sigma, loaded_reflection_data.I_sigma / (2.0**0.5)
@@ -142,11 +142,11 @@ class TestReferenceDriven:
             )
         )
         with pytest.raises(ValueError, match="does not match"):
-            fcalc_scene.add_noise(reference=ref, verbose=False)
+            fcalc_scene.add_noise(reference=ref)
 
     def test_a_reference_without_sigmas_is_rejected(self, fcalc_scene):
         from types import SimpleNamespace
 
         bad = SimpleNamespace(I_sigma=None, hkl=fcalc_scene.hkl)
         with pytest.raises(ValueError, match="I_sigma is None"):
-            fcalc_scene.add_noise(reference=bad, verbose=False)
+            fcalc_scene.add_noise(reference=bad)

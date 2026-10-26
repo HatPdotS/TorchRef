@@ -30,7 +30,7 @@ def deposited_model(sample_cif_file):
     """The sample structure (1DAW) as deposited."""
     from torchref.model import Model
 
-    model = Model(verbose=0)
+    model = Model()
     model.load_cif(str(sample_cif_file))
     return model
 

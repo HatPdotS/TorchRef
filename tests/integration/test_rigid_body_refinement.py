@@ -20,7 +20,6 @@ def _build_refinement(pdb_dir, mtz_dir, name):
     return LBFGSRefinement(
         data_file=str(mtz_dir / f"{name}.mtz"),
         pdb=str(pdb_dir / f"{name}.pdb"),
-        verbose=0,
     )
 
 

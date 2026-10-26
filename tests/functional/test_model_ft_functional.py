@@ -32,7 +32,7 @@ class TestModelFTInitialization:
         """The grid resolves from the loaded cell and space group on first read."""
         from torchref.model.model_ft import ModelFT
 
-        model = ModelFT(max_res=2.0, verbose=0)
+        model = ModelFT(max_res=2.0)
         assert model.gridsize is None  # no crystal yet
         model.load_cif(str(sample_cif_file))
 

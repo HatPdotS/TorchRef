@@ -8,11 +8,13 @@ built per base model; a mixed model's solvent contribution is their linear
 combination at the same population fractions as the structural models.
 """
 
+import logging
 from typing import TYPE_CHECKING, Dict
 
 import torch
 import torch.nn as nn
 
+from torchref._logging import enabled, get_logger
 from torchref.base.metrics.rfactor import rfactor_work_free
 from torchref.config import get_int_dtype
 from torchref.scaling.scaler_base import (
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
     from torchref.io.datasets.collection import DatasetCollection
     from torchref.model.model_collection import ModelCollection
 
+log = get_logger(__name__)
 
 class _DatasetScalerView(nn.Module):
     """One dataset's view of a shared :class:`CollectionScaler`.
@@ -84,8 +87,6 @@ class CollectionScaler(ScalerBase):
         Collection of mixed models keyed by timepoint name.
     nbins : int
         Number of resolution bins.
-    verbose : int
-        Verbosity level.
     device : torch.device
         Computation device.
 
@@ -106,7 +107,6 @@ class CollectionScaler(ScalerBase):
         dataset_collection: "DatasetCollection",
         model_collection: "ModelCollection",
         nbins: int = 20,
-        verbose: int = 1,
         device: torch.device = None,
     ):
         # Bind to the dark/reference dataset for bins and scattering vectors
@@ -118,7 +118,6 @@ class CollectionScaler(ScalerBase):
         super().__init__(
             data=dark_data,
             nbins=nbins,
-            verbose=verbose,
             device=device,
         )
 
@@ -220,11 +219,10 @@ class CollectionScaler(ScalerBase):
             coeff = torch.linalg.lstsq(design, target.unsqueeze(1)).solution.squeeze(1)
         self.c_iso = nn.Parameter(coeff.detach())
 
-        if self.verbose > 0:
-            print(
-                f"Joint initial scale from {n_pairs} data-model pairs "
-                f"({self.nbins} bins)."
-            )
+        log.info(
+            f"Joint initial scale from {n_pairs} data-model pairs "
+            f"({self.nbins} bins)."
+        )
 
     # ------------------------------------------------------------------
     # Component solvent models
@@ -245,7 +243,6 @@ class CollectionScaler(ScalerBase):
                 device=self.device,
                 radius=1.1,
                 k_solvent=0.35,
-                verbose=max(0, self.verbose - 1),
             )
             sol.update_solvent()
             self._component_solvent_models.append(sol)
@@ -262,11 +259,10 @@ class CollectionScaler(ScalerBase):
         self._f_sol_raw = None
         self._f_sol_raw_components = {}
 
-        if self.verbose > 0:
-            print(
-                f"  Created {len(self._component_solvent_models)} component "
-                f"solvent models."
-            )
+        log.info(
+            f"  Created {len(self._component_solvent_models)} component "
+            f"solvent models."
+        )
 
     def _get_component_f_sol_raw(self, idx: int) -> torch.Tensor:
         """Raw (un-damped) complex solvent SFs for component *idx*, cached."""
@@ -398,7 +394,6 @@ class CollectionScaler(ScalerBase):
         lr: float = 1.0,
         max_iter: int = 200,
         history_size: int = 10,
-        verbose: bool = True,
         scale_target: str = DEFAULT_SCALE_TARGET,
     ) -> dict:
         """
@@ -422,8 +417,6 @@ class CollectionScaler(ScalerBase):
             Maximum L-BFGS iterations per step (``torch.optim.LBFGS`` ``max_iter``).
         history_size : int
             LBFGS history size.
-        verbose : bool
-            Print progress.
         scale_target : str, optional
             Objective, one of :data:`~torchref.scaling.scaler_base.SCALE_TARGETS`.
             Defaults to :data:`~torchref.scaling.scaler_base.DEFAULT_SCALE_TARGET`
@@ -480,7 +473,6 @@ class CollectionScaler(ScalerBase):
                         scaler=view,
                         mode=scale_target,
                         use_set="work",
-                        verbose=0,
                         device=self.device,
                     ),
                     fcalc_cache[name],
@@ -531,8 +523,7 @@ class CollectionScaler(ScalerBase):
             "rfree": [],
         }
 
-        if verbose and self.verbose > 0:
-            print("Refining scales jointly with LBFGS...")
+        log.info("Refining scales jointly with LBFGS...")
 
         state.run(
             optimizer,
@@ -561,13 +552,12 @@ class CollectionScaler(ScalerBase):
                 metrics["rwork"].append(rwork)
                 metrics["rfree"].append(rfree_val)
 
-        if verbose and self.verbose > 0:
-            if metrics["rwork"]:
-                print(
-                    f"Joint scale refinement complete. "
-                    f"rwork: {metrics['rwork'][-1]:.4f}, "
-                    f"rfree: {metrics['rfree'][-1]:.4f}"
-                )
+        if metrics["rwork"]:
+            log.info(
+                f"Joint scale refinement complete. "
+                f"rwork: {metrics['rwork'][-1]:.4f}, "
+                f"rfree: {metrics['rfree'][-1]:.4f}"
+            )
 
         return metrics
 
@@ -646,10 +636,10 @@ class CollectionScaler(ScalerBase):
         sol.log_k_solvent.data = best_log_k.to(dtype=sol.log_k_solvent.dtype)
         sol.log_ss_half.data = best_log_ss.to(dtype=sol.log_ss_half.dtype)
 
-        if self.verbose > 0:
+        if enabled(log, logging.INFO):
             k_val = torch.exp(best_log_k).item()
             d_half = 1.0 / (2.0 * torch.exp(best_log_ss).sqrt().item())
-            print(
+            log.info(
                 f"Joint solvent screening: k_sol={k_val:.4f}, "
                 f"d_half={d_half:.2f} A, NLL={best_loss:.4f}"
             )
@@ -673,8 +663,7 @@ class CollectionScaler(ScalerBase):
         for sol in self._component_solvent_models:
             sol.update_solvent()
 
-        if self.verbose > 0:
-            print("  Updated all component solvent masks.")
+        log.info("  Updated all component solvent masks.")
 
     # ------------------------------------------------------------------
     # Convenience

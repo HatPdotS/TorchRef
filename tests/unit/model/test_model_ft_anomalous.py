@@ -57,7 +57,7 @@ def _model(pdb_dir, code, d_min, **kwargs) -> ModelFT:
     if not path.exists():
         pytest.skip(f"{code}.pdb fixture not present")
     kwargs.setdefault("wavelength", WAVELENGTH)
-    return ModelFT(max_res=d_min, verbose=0, device="cpu", **kwargs).load_pdb(str(path))
+    return ModelFT(max_res=d_min, device="cpu", **kwargs).load_pdb(str(path))
 
 
 def _gemmi_structure(model: ModelFT) -> gemmi.Structure:

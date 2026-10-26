@@ -39,6 +39,7 @@ import json
 import sys
 from pathlib import Path
 
+from torchref._logging import get_logger
 from torchref.cli._common import (
     add_all_columns_arg,
     add_ded_weight_args,
@@ -47,6 +48,7 @@ from torchref.cli._common import (
     add_outdir_arg,
     add_resolution_args,
     build_dual_column_names,
+    configure_logging,
     configure_unbuffered_output,
     difference_config_from_args,
     load_model,
@@ -57,6 +59,10 @@ from torchref.cli._common import (
 )
 
 configure_unbuffered_output()
+
+# Named, not __name__: run as a script or with -m, this module is __main__, outside
+# the torchref logger the CLI configures.
+log = get_logger("torchref.cli.difference_map")
 
 
 def main():
@@ -96,6 +102,7 @@ Examples:
     add_general_args(parser)
 
     args = parser.parse_args()
+    configure_logging(args)
 
     has_light_model = args.light_model is not None
     if has_light_model != (args.fraction is not None):
@@ -135,28 +142,26 @@ Examples:
     device = parse_device_str(args.device)
     fractions = [1.0 - args.fraction, args.fraction] if has_light_model else None
 
-    if args.verbose > 0:
-        print("=" * 72)
-        print("TorchRef Difference Map")
-        print("=" * 72)
-        print(f"Dark model:        {args.dark_model}")
-        if has_light_model:
-            print(f"Light model:       {args.light_model}")
-            print(f"Fraction:          light={args.fraction} "
-                  f"(dark={1.0 - args.fraction})")
-        else:
-            print("Light model:       (none) -- difference map only")
-        print(f"Dark SF:           {args.dark_structure_factor}")
-        print(f"Light SF:          {args.light_structure_factor}")
-        print(f"Output:            {outdir}")
-        print(f"Device:            {device}")
-        if args.dmin or args.dmax:
-            print(f"Resolution:        {args.dmax or 'all'} - {args.dmin or 'all'} A")
-        if args.cif:
-            print(f"CIF restraints:    {', '.join(args.cif)}")
-        print("=" * 72)
-        print("Loading reflection data...")
-        sys.stdout.flush()
+    log.info("=" * 72)
+    log.info("TorchRef Difference Map")
+    log.info("=" * 72)
+    log.info(f"Dark model:        {args.dark_model}")
+    if has_light_model:
+        log.info(f"Light model:       {args.light_model}")
+        log.info(f"Fraction:          light={args.fraction} "
+                 f"(dark={1.0 - args.fraction})")
+    else:
+        log.info("Light model:       (none) -- difference map only")
+    log.info(f"Dark SF:           {args.dark_structure_factor}")
+    log.info(f"Light SF:          {args.light_structure_factor}")
+    log.info(f"Output:            {outdir}")
+    log.info(f"Device:            {device}")
+    if args.dmin or args.dmax:
+        log.info(f"Resolution:        {args.dmax or 'all'} - {args.dmin or 'all'} A")
+    if args.cif:
+        log.info(f"CIF restraints:    {', '.join(args.cif)}")
+    log.info("=" * 72)
+    log.info("Loading reflection data...")
 
     dc = setup_dataset_collection(
         args.dark_structure_factor, args.light_structure_factor, args.dmin, device,
@@ -165,25 +170,22 @@ Examples:
     # The models' FFT grid has to reach the data, so without --dmin it follows them.
     d_min = args.dmin or min(dc["dark"].d_min, dc["light"].d_min)
 
-    if args.verbose > 0:
-        print("Setting up models and scalers...")
-        sys.stdout.flush()
+    log.info("Setting up models and scalers...")
 
     mc = joint_scaler = None
     if has_light_model:
         mc = setup_model_collection(
             args.dark_model, args.light_model, fractions,
-            args.cif, d_min, device, args.verbose,
+            args.cif, d_min, device,
         )
         mc["light"].freeze_fractions()
-        joint_scaler = setup_scaler(dc, mc, device, args.verbose)
+        joint_scaler = setup_scaler(dc, mc, device)
         dark_model = mc.base_models[0]
     else:
         dark_model = load_model(
-            args.dark_model, max_res=d_min, device=device, verbose=args.verbose,
-            cif=args.cif,
+            args.dark_model, max_res=d_min, device=device, cif=args.cif,
         )
-    scaler = setup_dark_scaler(dark_model, dc["dark"], device, args.verbose)
+    scaler = setup_dark_scaler(dark_model, dc["dark"], device)
 
     fits = {"dark": (dark_model, dc["dark"], scaler)}
     if has_light_model:
@@ -192,12 +194,9 @@ Examples:
     for name, (model, data, fit) in fits.items():
         r_work, r_free = compute_rfactors(model, data, fit)
         r_factors[name] = {"r_work": r_work, "r_free": r_free}
-        if args.verbose > 0:
-            print(f"  R-factor ({name}): R_work={r_work:.4f}  R_free={r_free:.4f}")
+        log.info(f"  R-factor ({name}): R_work={r_work:.4f}  R_free={r_free:.4f}")
 
-    if args.verbose > 0:
-        print("Computing map coefficients...")
-        sys.stdout.flush()
+    log.info("Computing map coefficients...")
 
     with torch.no_grad():
         map_diagnostics = write_results_mtz(
@@ -208,7 +207,6 @@ Examples:
             mc=mc,
             joint_scaler=joint_scaler,
             all_columns=args.all_columns,
-            verbose=args.verbose,
             ded_weight=args.ded_weight,
             difference_config=difference_config_from_args(args),
             program="difference-map",
@@ -235,8 +233,8 @@ Examples:
 
     if args.verbose > 0:
         print(f"  Summary written to {summary_path}")
-        print("Done.")
         sys.stdout.flush()
+    log.info("Done.")
 
     return 0
 

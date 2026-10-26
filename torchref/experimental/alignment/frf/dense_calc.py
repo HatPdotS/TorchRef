@@ -21,10 +21,13 @@ from typing import TYPE_CHECKING, Tuple
 
 import torch
 
+from torchref._logging import get_logger
 from torchref.config import get_float_dtype, get_int_dtype
 
 if TYPE_CHECKING:
     from torchref.model import ModelFT
+
+log = get_logger(__name__)
 
 
 def dense_calc_via_box(
@@ -33,7 +36,6 @@ def dense_calc_via_box(
     d_min: float,
     *,
     pad: float = 2.0,
-    verbose: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Sample the model transform on a dense P1-box grid in ``[d_max, d_min]``.
 
@@ -47,8 +49,6 @@ def dense_calc_via_box(
     pad : float, optional
         P1-box edge as a multiple of the molecular diameter (default 2.0, the
         validated v19 value). A bigger box = finer reciprocal sampling.
-    verbose : bool, optional
-        If True, print a one-line ``[DENSE_FT]`` summary (box edge / grid size).
 
     Returns
     -------
@@ -91,11 +91,7 @@ def dense_calc_via_box(
         F = model_sf_abs(m, hkl)
         s_vec = hkl.to(real) / a
 
-    if verbose:
-        print(
-            f"[DENSE_FT] box={a:.0f}A n_grid={hkl.shape[0]} max_res={d_min:.2f}",
-            flush=True,
-        )
+    log.info(f"[DENSE_FT] box={a:.0f}A n_grid={hkl.shape[0]} max_res={d_min:.2f}")
     return s_vec, F
 
 

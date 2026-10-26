@@ -78,11 +78,10 @@ def flagged_pair(difference_models):
         spacegroup=src.spacegroup,
         rfree_flags=src.rfree_flags.clone(),
         device=get_default_device(),
-        verbose=0,
     )
 
     assert data.friedel_flags.any() and (~data.friedel_flags).any()
-    dc = DatasetCollection(verbose=0, device=get_default_device())
+    dc = DatasetCollection(device=get_default_device())
     dc.add_dataset("dark", data, set_as_reference=True)
     return dc, mc
 

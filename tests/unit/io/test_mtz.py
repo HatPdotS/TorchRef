@@ -18,7 +18,7 @@ def _rewrite(mtz_dir, tmp_path, edit):
 
 
 def _load(path, column_names=None):
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(path, column_names=column_names)
     return data
 
@@ -46,7 +46,7 @@ def test_free_value_is_the_minority_among_valid_rows(mtz_dir, tmp_path):
 
 
 @pytest.mark.unit
-def test_free_column_without_a_valid_flag_is_dropped_with_a_warning(mtz_dir, tmp_path):
+def test_free_column_without_a_valid_flag_is_dropped_with_a_warning(mtz_dir, tmp_path, caplog):
     """The dropped column is named in a warning, and load draws a new free set."""
 
     def edit(ds):
@@ -54,8 +54,8 @@ def test_free_column_without_a_valid_flag_is_dropped_with_a_warning(mtz_dir, tmp
         ds["FreeR_flag"] = rs.DataSeries(flags, index=ds.index).astype("I")
         return ds
 
-    with pytest.warns(UserWarning, match="'FreeR_flag'"):
-        data = _load(_rewrite(mtz_dir, tmp_path, edit))
+    data = _load(_rewrite(mtz_dir, tmp_path, edit))
+    assert "'FreeR_flag'" in caplog.text
     assert data.rfree_source.startswith("Generated")
     assert bool(data.masks["flagged_initial"].all())
 

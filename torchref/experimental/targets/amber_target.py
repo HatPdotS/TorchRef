@@ -77,7 +77,6 @@ class AmberTarget(ModelTarget):
         one site.
     platform : str, optional
         OpenMM platform name; by default the one matching the coordinates' device.
-    verbose : int
 
     Notes
     -----
@@ -101,12 +100,11 @@ class AmberTarget(ModelTarget):
         max_force: float = 10000.0,
         overlap_cutoff: float = 1.5,
         platform: Optional[str] = None,
-        verbose: int = 0,
     ) -> None:
         require_openmm()
         if layout not in LAYOUTS:
             raise ValueError(f"layout must be one of {LAYOUTS}, got {layout!r}")
-        super().__init__(model=model, verbose=verbose)
+        super().__init__(model=model)
         self._normalize = normalize_by_atoms
         self.layout_name = layout
         self.adapter: Optional[OpenMMAdapter] = None
@@ -128,7 +126,6 @@ class AmberTarget(ModelTarget):
             overlap_cutoff=overlap_cutoff,
             platform=platform,
             max_force=max_force,
-            verbose=verbose,
         )
 
     def forward(self) -> torch.Tensor:

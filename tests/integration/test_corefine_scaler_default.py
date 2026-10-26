@@ -18,7 +18,7 @@ def test_scaler_body_params_default_holds_scaler_fixed(pdb_dir, mtz_dir):
 
     from torchref import LBFGSRefinement
 
-    ref = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb), verbose=0)
+    ref = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb))
 
     # Constructor default is False -> scaler held fixed during body steps.
     assert ref.corefine_scaler is False

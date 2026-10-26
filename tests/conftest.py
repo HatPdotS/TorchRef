@@ -1,6 +1,7 @@
 """Register shared fixture plugins and gate tests on host capabilities."""
 
 import importlib.util
+import logging
 import shutil
 import warnings
 
@@ -17,6 +18,22 @@ pytest_plugins = (
     "tests.fixtures.objects",
     "tests.fixtures.collections",
 )
+
+@pytest.fixture(autouse=True)
+def _restore_torchref_logging():
+    """Undo logging configuration a test made, e.g. an in-process CLI ``main()``."""
+    saved = {}
+    for name in ("torchref", "py.warnings"):
+        log = logging.getLogger(name)
+        saved[name] = (log.level, list(log.handlers), log.propagate)
+    yield
+    for name, (level, handlers, propagate) in saved.items():
+        log = logging.getLogger(name)
+        log.setLevel(level)
+        log.handlers[:] = handlers
+        log.propagate = propagate
+    logging.captureWarnings(False)
+
 
 _HAS_OPENMM = importlib.util.find_spec("openmm") is not None
 _HAS_AMBERTOOLS = bool(shutil.which("antechamber") and shutil.which("parmchk2"))

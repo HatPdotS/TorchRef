@@ -23,7 +23,7 @@ pytestmark = pytest.mark.amber
 @pytest.fixture(scope="module")
 def sulfate(pdb_dir):
     model = (
-        Model(verbose=0, device="cpu", hydrogens="add")
+        Model(device="cpu", hydrogens="add")
         .load_pdb(str(pdb_dir / "3GR5.pdb"))
         .strip_altlocs()
     )
@@ -33,7 +33,7 @@ def sulfate(pdb_dir):
 @pytest.fixture(scope="module")
 def anp(pdb_dir):
     model = (
-        Model(verbose=0, device="cpu", hydrogens="add")
+        Model(device="cpu", hydrogens="add")
         .load_pdb(str(pdb_dir / "1DAW.pdb"))
         .strip_altlocs()
     )
@@ -112,7 +112,7 @@ def test_one_chemistry_is_parameterised_once(sulfate, monkeypatch):
 
 def test_residue_without_a_dictionary_is_refused(pdb_dir):
     model = (
-        Model(verbose=0, device="cpu", hydrogens="add")
+        Model(device="cpu", hydrogens="add")
         .load_pdb(str(pdb_dir / "3GR5.pdb"))
         .strip_altlocs()
     )

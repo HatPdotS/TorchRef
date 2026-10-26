@@ -99,13 +99,11 @@ class TestForceFieldTargetImport:
             model_path="/path/to/model.ckpt",
             cutoff=6.0,
             normalize_by_atoms=False,
-            verbose=1,
         )
 
         assert target._model_path == "/path/to/model.ckpt"
         assert target._cutoff.item() == 6.0
         assert target._normalize_by_atoms is False
-        assert target.verbose == 1
 
     @pytest.mark.unit
     def test_forcefield_target_is_nn_module(self):
@@ -379,10 +377,9 @@ class TestForceFieldTargetHydrogenValidation:
     """Tests for hydrogen atom validation."""
 
     @pytest.mark.unit
-    def test_warns_on_missing_hydrogens(self):
+    def test_warns_on_missing_hydrogens(self, caplog):
         """Should warn when model lacks hydrogen atoms."""
         from torchref.experimental.targets import ForceFieldTarget
-        import warnings
 
         # Mock model without hydrogens
         mock_model = MockAtomicModel(has_hydrogens=False)
@@ -392,24 +389,17 @@ class TestForceFieldTargetHydrogenValidation:
 
         target = ForceFieldTarget(
             model=mock_model,
-            model_path="/fake/path.ckpt",
-            verbose=1,  # Enable warnings
+            model_path="/fake/path.ckpt",  # Enable warnings
         )
         target._nn_potential = mock_nn_potential
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            target.forward()
-
-            # Check that warning was raised
-            hydrogen_warnings = [x for x in w if "hydrogen" in str(x.message).lower()]
-            assert len(hydrogen_warnings) > 0
+        target.forward()
+        assert "hydrogen" in caplog.text.lower()
 
     @pytest.mark.unit
-    def test_no_warning_with_hydrogens(self):
+    def test_no_warning_with_hydrogens(self, caplog):
         """Should not warn when model has hydrogen atoms."""
         from torchref.experimental.targets import ForceFieldTarget
-        import warnings
 
         # Mock model with hydrogens
         mock_model = MockAtomicModel(has_hydrogens=True)
@@ -420,13 +410,8 @@ class TestForceFieldTargetHydrogenValidation:
         target = ForceFieldTarget(
             model=mock_model,
             model_path="/fake/path.ckpt",
-            verbose=1,
         )
         target._nn_potential = mock_nn_potential
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            target.forward()
-
-            hydrogen_warnings = [x for x in w if "hydrogen" in str(x.message).lower()]
-            assert len(hydrogen_warnings) == 0
+        target.forward()
+        assert "hydrogen" not in caplog.text.lower()

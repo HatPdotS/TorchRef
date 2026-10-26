@@ -22,12 +22,12 @@ one's provenance is in its own comment.
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 
+from torchref._logging import get_logger
 from torchref.config import get_float_dtype
 from torchref.scaling.weighting import (DEFAULT_SNR_CAP,
                                         DEFAULT_TRUST_CAP)
@@ -42,6 +42,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ...io.datasets.reflection_data import ReflectionData
     from ...model.model_ft import ModelFT
     from .frf.types import RotationPeak
+
+log = get_logger(__name__)
 
 __all__ = ["RotationSolutions", "rotation_search"]
 
@@ -220,7 +222,6 @@ def search_peaks(
     *,
     U_aniso: torch.Tensor,
     n_peaks: int,
-    verbose: int = 0,
     device: Optional[torch.device] = None,
     obs_weight: str = "inverse_variance",
     sigma_a_source: str = "empirical",
@@ -298,12 +299,11 @@ def search_peaks(
         # unroll below would weight those reflections twice. Detectable, so say
         # so rather than quietly double-counting.
         if getattr(data, "friedel_merged", True) is False:
-            warnings.warn(
+            log.warning(
                 "data are Bijvoet-unmerged: both members of a pair share a "
                 "canonical index, so the symmetry unroll weights those "
                 "reflections twice in the Patterson. Merge first for a clean "
-                "rotation function.",
-                RuntimeWarning, stacklevel=2,
+                "rotation function."
             )
 
         # Expand the observations over the space group's rotations to fill
@@ -351,7 +351,7 @@ def search_peaks(
         # high-l harmonics for a large molecule. `L` / `d_min` came from the
         # bandwidth coupling above, which the obs mask also used.
         s_calc, F_calc = dense_calc_via_box(
-            model, d_max, d_min, pad=DENSE_CALC_PAD, verbose=verbose > 0,
+            model, d_max, d_min, pad=DENSE_CALC_PAD,
         )
         s_calc = s_calc.to(device)
         F_calc = F_calc.to(device)
@@ -424,7 +424,6 @@ def rotation_search(
     model_error_A: float,
     *,
     n_peaks: int = 500,
-    verbose: int = 0,
     device: Optional[torch.device] = None,
 ) -> RotationSolutions:
     """Find the orientations of ``model`` consistent with ``data``.
@@ -448,8 +447,6 @@ def rotation_search(
     n_peaks : int, optional
         How many candidate orientations to return, best first. Default 500. This
         bounds the answer, not the search.
-    verbose : int, optional
-        Progress reporting. Default 0, silent.
     device : torch.device, optional
         Where to run. Default ``None`` takes ``data``'s device, moving ``model``
         to match; an explicit value moves both. With neither carrying one, the
@@ -472,6 +469,6 @@ def rotation_search(
     U_aniso = fit_anisotropy(data, d_min=d_min_fit, d_max=d_max_fit)
     peaks, lmax, d_min = search_peaks(
         model, data, model_error_A,
-        U_aniso=U_aniso, n_peaks=n_peaks, verbose=verbose, device=device,
+        U_aniso=U_aniso, n_peaks=n_peaks, device=device,
     )
     return _solutions(peaks, lmax, d_min, model_error_A)

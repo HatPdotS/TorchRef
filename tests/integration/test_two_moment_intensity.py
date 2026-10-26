@@ -9,7 +9,7 @@ pytestmark = pytest.mark.integration
 def _target(dc, mc, scaler, **kw):
     from torchref.refinement.targets import CollectionTwoMomentIntensityTarget
 
-    return CollectionTwoMomentIntensityTarget(dc, mc, scaler=scaler, verbose=0, **kw)
+    return CollectionTwoMomentIntensityTarget(dc, mc, scaler=scaler, **kw)
 
 
 class TestCoherentLimit:
@@ -202,7 +202,7 @@ class TestIntensityRequirement:
         for data in dc.values():
             data.I = data.I_sigma = None
         with pytest.raises(ValueError, match="I/SIGI"):
-            CollectionTwoMomentIntensityTarget(dc, mc, verbose=0)
+            CollectionTwoMomentIntensityTarget(dc, mc)
 
 
 class TestNonFiniteObservations:
@@ -272,7 +272,7 @@ class TestWeightCalibration:
         from torchref.refinement.targets import CollectionDifferenceTarget
 
         params = [p for p in mc.base_models[1].parameters() if p.requires_grad]
-        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
+        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler)
         target = _target(dc, mc, scaler)
 
         target.calibrate_base_weight(diff, params)
@@ -288,7 +288,7 @@ class TestWeightCalibration:
         from torchref.refinement.targets import CollectionDifferenceTarget
 
         params = [p for p in mc.base_models[1].parameters() if p.requires_grad]
-        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
+        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler)
 
         a = _target(dc, mc, scaler)
         b = _target(dc, mc, scaler)
@@ -314,6 +314,6 @@ class TestWeightCalibration:
         dc, mc, scaler = difference_collection
         from torchref.refinement.targets import CollectionDifferenceTarget
 
-        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
+        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler)
         with pytest.raises(ValueError, match="No refinable parameters"):
             _target(dc, mc, scaler).calibrate_base_weight(diff, [])

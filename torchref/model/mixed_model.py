@@ -11,8 +11,11 @@ from typing import TYPE_CHECKING, List, Optional, Sequence
 import torch
 from torch import nn
 
+from torchref._logging import TRACE, enabled, get_logger
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.device_resolution import resolve_device
+
+log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
@@ -64,8 +67,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
     frozen_fractions : bool, optional
         If True, fractions are not updated during optimization.
         Default is False.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     device : torch.device, optional
         Device to place the model and parameters on. If None, infers from
         the first model's device.
@@ -89,7 +90,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         models: List["ModelFT"],
         initial_fractions: Optional[List[float]] = None,
         frozen_fractions: bool = False,
-        verbose: int = 0,
         device: Optional[torch.device] = None,
     ):
         """Initialize a MixedModel; see the class docstring for the arguments."""
@@ -97,8 +97,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
 
         if not models:
             raise ValueError("At least one model is required.")
-
-        self.verbose = verbose
 
         # First-wins reconciliation across the supplied models, and the move
         # itself; ``resolve_device`` warns when they disagree.
@@ -122,10 +120,9 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         theta = torch.log(fractions_tensor.clamp(min=1e-6))
         self.fraction_params = nn.Parameter(theta, requires_grad=not frozen_fractions)
 
-        if self.verbose > 0:
-            print(f"MixedModel initialized with {n_models} models")
-            print(f"  Initial fractions: {initial_fractions}")
-            print(f"  Fractions frozen: {frozen_fractions}")
+        log.info(f"MixedModel initialized with {n_models} models")
+        log.info(f"  Initial fractions: {initial_fractions}")
+        log.info(f"  Fractions frozen: {frozen_fractions}")
 
     def _validate_models(self):
         """Raise ``ValueError`` unless the models agree on unit cell and space group.
@@ -266,8 +263,7 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         training while still allowing the constituent models to be refined.
         """
         self.fraction_params.requires_grad = False
-        if self.verbose > 0:
-            print("Fractions frozen")
+        log.info("Fractions frozen")
 
     def unfreeze_fractions(self):
         """
@@ -276,8 +272,7 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         This allows the population fractions to be updated during training.
         """
         self.fraction_params.requires_grad = True
-        if self.verbose > 0:
-            print("Fractions unfrozen")
+        log.info("Fractions unfrozen")
 
     def forward(self, hkl: torch.Tensor, recalc: bool = False) -> torch.Tensor:
         """
@@ -310,8 +305,8 @@ class MixedModel(DeviceMovementMixin, nn.Module):
             else:
                 f_mixed = f_mixed + weighted_f
 
-        if self.verbose > 2:
-            print(f"MixedModel forward: fractions = {fractions.detach().tolist()}")
+        if enabled(log, TRACE):
+            log.log(TRACE, f"MixedModel forward: fractions = {fractions.detach().tolist()}")
 
         return f_mixed
 
@@ -333,7 +328,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
             models=copied_models,
             initial_fractions=current_fractions,
             frozen_fractions=not self.fraction_params.requires_grad,
-            verbose=self.verbose,
         )
 
         return copied

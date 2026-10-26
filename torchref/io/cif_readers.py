@@ -7,17 +7,19 @@ Space groups always come back as plain ``str`` Hermann-Mauguin names
 (``"P 1"``), validated against gemmi -- never as objects.
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gemmi
 import numpy as np
-import warnings
-
 import pandas as pd
 
+from torchref._logging import enabled, get_logger
 from torchref.io.pdb import _require_elements
+
+log = get_logger(__name__)
 
 #: Column holding the ``data_`` block a loop row was read from. Added only when
 #: ``parse_all_blocks`` is set, because that is the only mode in which rows from
@@ -543,7 +545,6 @@ class ReflectionCIFReader:
     def __init__(
         self,
         filepath: str,
-        verbose: int = 0,
         data_block: Optional[str] = None,
         anomalous: Optional[bool] = None,
     ):
@@ -554,8 +555,6 @@ class ReflectionCIFReader:
         ----------
         filepath : str
             Path to structure factor CIF file.
-        verbose : int, default 0
-            Verbosity level (0=silent, 1=info, 2=debug).
         data_block : str, optional
             Specific data block name to read (e.g., 'r1vlmsf').
             If None, reads the first data block. Useful for files with
@@ -567,7 +566,6 @@ class ReflectionCIFReader:
             False forces a merged load (Bijvoet mates averaged) even when present.
         """
         self.filepath = Path(filepath)
-        self.verbose = verbose
         self.anomalous = anomalous
         self.cif_reader = CIFReader(filepath, data_block=data_block)
         self._validate()
@@ -660,18 +658,17 @@ class ReflectionCIFReader:
 
         self.spacegroup = self.get_space_group()
 
-        if self.verbose > 1:
-            print(f"Loaded CIF file: {self.filepath}")
-            print(
-                f"  Data block: {self.cif_reader.data_block} "
-                f"of {self.cif_reader.available_blocks}"
-            )
-            print(f"  Reflections: {len(refln_df)}")
-            print(f"  Has F: {'F' in self.data}")
-            print(f"  Has I: {'I' in self.data}")
-            print(f"  Has R-free: {'R-free-flags' in self.data}")
-            print(f"  Cell: {self.cell}")
-            print(f"  Spacegroup: {self.spacegroup}")
+        log.debug(f"Loaded CIF file: {self.filepath}")
+        log.debug(
+            f"  Data block: {self.cif_reader.data_block} "
+            f"of {self.cif_reader.available_blocks}"
+        )
+        log.debug(f"  Reflections: {len(refln_df)}")
+        log.debug(f"  Has F: {'F' in self.data}")
+        log.debug(f"  Has I: {'I' in self.data}")
+        log.debug(f"  Has R-free: {'R-free-flags' in self.data}")
+        log.debug(f"  Cell: {self.cell}")
+        log.debug(f"  Spacegroup: {self.spacegroup}")
 
     def __call__(self) -> Tuple[Dict[str, np.ndarray], np.ndarray, str]:
         """
@@ -787,15 +784,15 @@ class ReflectionCIFReader:
                 result["sigma_F_obs"] = np.nan
                 self._source_tags["SIGF_col"] = sigma_F_obs_key
 
-            if self.verbose > 0:
+            if enabled(log, logging.INFO):
                 F_plus, F_minus = result["_F_plus"], result["_F_minus"]
                 n_both = ((pd.notna(F_plus)) & (pd.notna(F_minus))).sum()
                 n_plus_only = ((pd.notna(F_plus)) & (pd.isna(F_minus))).sum()
                 n_minus_only = ((pd.isna(F_plus)) & (pd.notna(F_minus))).sum()
-                print("Anomalous data detected: unstacking F+ and F- into pairs")
-                print(f"  Reflections with both F+/F-: {n_both}")
-                print(f"  Reflections with F+ only: {n_plus_only}")
-                print(f"  Reflections with F- only: {n_minus_only}")
+                log.info("Anomalous data detected: unstacking F+ and F- into pairs")
+                log.info(f"  Reflections with both F+/F-: {n_both}")
+                log.info(f"  Reflections with F+ only: {n_plus_only}")
+                log.info(f"  Reflections with F- only: {n_minus_only}")
         else:
             # Standard non-anomalous data
             # NOTE: do NOT include calculated columns (e.g. _refln.F_calc) here.
@@ -876,17 +873,17 @@ class ReflectionCIFReader:
                 result["sigma_I_obs"] = np.nan
                 self._source_tags["SIGI_col"] = sigIobskey
 
-            if self.verbose > 0:
+            if enabled(log, logging.INFO):
                 I_plus, I_minus = result["_I_plus"], result["_I_minus"]
                 n_both = ((pd.notna(I_plus)) & (pd.notna(I_minus))).sum()
                 n_plus_only = ((pd.notna(I_plus)) & (pd.isna(I_minus))).sum()
                 n_minus_only = ((pd.isna(I_plus)) & (pd.notna(I_minus))).sum()
-                print(
+                log.info(
                     "Anomalous intensity data detected: unstacking I+ and I- into pairs"
                 )
-                print(f"  Reflections with both I+/I-: {n_both}")
-                print(f"  Reflections with I+ only: {n_plus_only}")
-                print(f"  Reflections with I- only: {n_minus_only}")
+                log.info(f"  Reflections with both I+/I-: {n_both}")
+                log.info(f"  Reflections with I+ only: {n_plus_only}")
+                log.info(f"  Reflections with I- only: {n_minus_only}")
         else:
             # Standard non-anomalous intensities
             result["I_obs"], Iobskey = self._extract_numeric(
@@ -945,15 +942,13 @@ class ReflectionCIFReader:
                 try:
                     result = self._expand_friedel_pairs(result)
                 except Exception as e:  # fall back to merged on any failure
-                    if self.verbose > 0:
-                        print(
-                            f"Anomalous unstacking skipped ({e}); "
-                            "averaging F+/F- instead."
-                        )
+                    log.warning(
+                        f"Anomalous unstacking skipped ({e}); averaging F+/F- instead."
+                    )
                     result = self._merge_friedel_pairs(result)
                     self._friedel_merged = True
-        elif self.anomalous is True and self.verbose > 0:
-            print(
+        elif self.anomalous is True:
+            log.warning(
                 "anomalous=True requested but no F(+)/F(-) columns found; "
                 "loading merged."
             )
@@ -1088,7 +1083,7 @@ class ReflectionCIFReader:
                     elif target_type == "None":
                         return data.astype(str), col
                     else:
-                        print(f"Unknown target_type: {target_type}")
+                        log.warning(f"Unknown target_type: {target_type}")
                 except Exception:
                     continue
 
@@ -1130,10 +1125,9 @@ class ModelCIFReader:
     :meth:`get_atom_data_by_model` to keep them apart.
     """
 
-    def __init__(self, filepath: str, verbose: int = 0):
-        """Load ``filepath`` immediately; ``verbose`` is 0=silent, 1=info, 2=debug."""
+    def __init__(self, filepath: str):
+        """Load ``filepath`` immediately."""
         self.filepath = Path(filepath)
-        self.verbose = verbose
         self.cif = CIFReader(filepath)
         self._validate()
         self._extract_data()
@@ -1167,12 +1161,11 @@ class ModelCIFReader:
         self.dataframe.attrs["spacegroup"] = self.spacegroup
         self.dataframe.attrs["z"] = None  # CIF files typically don't have Z value
 
-        if self.verbose > 1:
-            print(f"Loaded CIF model file: {self.filepath}")
-            print(f"  Atoms: {len(self.dataframe)}")
-            print(f"  Cell: {self.cell}")
-            print(f"  Spacegroup: {self.spacegroup}")
-            print(f"  Links: {len(self.links)}")
+        log.debug(f"Loaded CIF model file: {self.filepath}")
+        log.debug(f"  Atoms: {len(self.dataframe)}")
+        log.debug(f"  Cell: {self.cell}")
+        log.debug(f"  Spacegroup: {self.spacegroup}")
+        log.debug(f"  Links: {len(self.links)}")
 
     #: ``_struct_conn.conn_type_id`` prefixes that describe a covalent bond the topology
     #: should carry. Disulfides are detected from SG-SG distance instead (the PDB reader
@@ -1244,8 +1237,7 @@ class ModelCIFReader:
             return empty
         out["resseq1"] = out["resseq1"].astype(int)
         out["resseq2"] = out["resseq2"].astype(int)
-        if self.verbose > 1:
-            print(f"_struct_conn: kept {len(out)} of {len(conn)} rows as links")
+        log.debug(f"_struct_conn: kept {len(out)} of {len(conn)} rows as links")
         return out[list(LINK_COLUMNS)].reset_index(drop=True)
 
     def __call__(self) -> Tuple[pd.DataFrame, List[float], str]:
@@ -1407,12 +1399,11 @@ class ModelCIFReader:
                 # cannot be trusted to have matched the right atoms. Drop the anisotropy
                 # rather than apply a possibly mis-paired subset: an isotropic model is
                 # merely less informative, a scrambled one still refines and is wrong.
-                warnings.warn(
+                log.warning(
                     f"{self.filepath}: matched only {n_hit} of {len(aniso_df)} "
                     "anisotropic records to atoms, so _atom_site.id and "
                     "_atom_site_anisotrop.id do not agree; discarding the anisotropy "
-                    "and loading isotropically.",
-                    RuntimeWarning,
+                    "and loading isotropically."
                 )
                 for name in ("u11", "u22", "u33", "u12", "u13", "u23"):
                     result[name] = np.nan
@@ -1563,23 +1554,22 @@ class RestraintCIFReader:
         bond_df = comp_data['ALA']['bonds']
     """
 
-    def __init__(self, filepath: str, verbose: int = 0):
+    def __init__(self, filepath: str):
         """Load the restraint dictionary at ``filepath`` immediately.
 
-        ``verbose`` above 0 reports a dictionary that defines more than one
-        compound, which is otherwise indistinguishable from a single-compound one
-        at the call site.
+        A dictionary that defines more than one compound, otherwise
+        indistinguishable from a single-compound one at the call site, is
+        reported at INFO.
         """
         self.filepath = Path(filepath)
-        self.verbose = verbose
         # Every data block is read, not just the first: a dictionary may define
         # several compounds, each in its own ``data_comp_<ID>`` block.
         self.cif = CIFReader(filepath, parse_all_blocks=True)
         self.compounds = self._extract_compounds()
         self._validate()
 
-        if self.verbose > 0 and len(self.compounds) > 1:
-            print(
+        if len(self.compounds) > 1:
+            log.info(
                 f"  {self.filepath.name}: {len(self.compounds)} compounds "
                 f"({', '.join(self.compounds)})"
             )

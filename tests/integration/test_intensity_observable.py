@@ -15,7 +15,6 @@ def refinement(sample_structure_pair):
         data_file=str(sample_structure_pair["reflections"]),
         pdb=str(sample_structure_pair["model"]),
         target_mode="ml",
-        verbose=0,
     )
     ref.get_scales()
     return ref

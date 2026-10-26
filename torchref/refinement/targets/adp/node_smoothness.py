@@ -37,8 +37,6 @@ class NodeSmoothnessTarget(ADPTarget):
     length_scale : float, optional
         ``lambda`` in Å. By default the median nearest-neighbour node distance,
         recomputed each call so it tracks the node layout.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     #: Hierarchical key this target registers under. Required, not cosmetic:
@@ -52,11 +50,10 @@ class NodeSmoothnessTarget(ADPTarget):
         self,
         model: "Model" = None,
         length_scale: float = None,
-        verbose: int = 0,
         device=None,
         **kwargs,
     ):
-        super().__init__(model, verbose, device=device, **kwargs)
+        super().__init__(model, device=device, **kwargs)
         self.length_scale = length_scale
 
     @property

@@ -13,7 +13,6 @@ def build(mtz_dir, pdb_dir):
             data_file=str(mtz_dir / "1DAW.mtz"),
             pdb=str(pdb_dir / "1DAW.pdb"),
             device=torch.device("cpu"),
-            verbose=0,
         )
 
     return _build
@@ -138,7 +137,7 @@ def test_one_input_file_alone_is_refused(given, mtz_dir, pdb_dir):
     the empty shell."""
     path = {"data_file": mtz_dir / "1DAW.mtz", "pdb": pdb_dir / "1DAW.pdb"}[given]
     with pytest.raises(ValueError, match="together"):
-        LBFGSRefinement(**{given: str(path)}, device=torch.device("cpu"), verbose=0)
+        LBFGSRefinement(**{given: str(path)}, device=torch.device("cpu"))
 
 
 @pytest.mark.integration
@@ -148,7 +147,6 @@ def test_path_objects_are_accepted_as_input_files(mtz_dir, pdb_dir):
         data_file=mtz_dir / "1DAW.mtz",
         pdb=pdb_dir / "1DAW.pdb",
         device=torch.device("cpu"),
-        verbose=0,
     )
 
     assert ref.data_file == str(mtz_dir / "1DAW.mtz")
@@ -166,5 +164,4 @@ def test_column_names_with_an_sf_mmcif_file_are_refused(cif_sf_dir, pdb_dir):
             pdb=str(pdb_dir / "1DAW.pdb"),
             column_names={"F": "FP", "SIGF": "SIGFP"},
             device=torch.device("cpu"),
-            verbose=0,
         )

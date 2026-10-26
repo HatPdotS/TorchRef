@@ -35,7 +35,7 @@ def anomalous_two_column_mtz(mtz_dir, tmp_path):
 
 def test_merged_mtz_default(mtz_dir):
     """A plain merged MTZ: friedel_merged=True, no signed-HKL expansion."""
-    d = ReflectionData(verbose=0)
+    d = ReflectionData()
     d.load_mtz(str(mtz_dir / "1DAW.mtz"))
     assert d.friedel_merged is True
     assert torch.equal(d._hkl_for_sf(), d.hkl)
@@ -44,7 +44,7 @@ def test_merged_mtz_default(mtz_dir):
 
 def test_anomalous_mtz_unstacked(anomalous_two_column_mtz):
     path, n_merged = anomalous_two_column_mtz
-    d = ReflectionData(verbose=0)
+    d = ReflectionData()
     d.load_mtz(path)
 
     # Stacked into Bijvoet pairs.
@@ -62,7 +62,7 @@ def test_anomalous_opt_out_forces_merged(anomalous_two_column_mtz, mtz_dir):
     """anomalous=False forces a merged load even when (+)/(-) columns are present."""
     path, n_merged = anomalous_two_column_mtz
 
-    merged = ReflectionData(verbose=0)
+    merged = ReflectionData()
     merged.load_mtz(path, anomalous=False)
     assert merged.friedel_merged is True
     assert len(merged.hkl) == n_merged  # back to one row per ASU reflection
@@ -70,7 +70,7 @@ def test_anomalous_opt_out_forces_merged(anomalous_two_column_mtz, mtz_dir):
     assert not bool(merged.friedel_flags.any())
 
     # anomalous=True keeps the Bijvoet pairs (same as the auto default here).
-    forced = ReflectionData(verbose=0)
+    forced = ReflectionData()
     forced.load_mtz(path, anomalous=True)
     assert forced.friedel_merged is False
     assert len(forced.hkl) > n_merged
@@ -83,12 +83,12 @@ def test_a_pinned_merged_column_loads_merged_data(mtz_dir, tmp_path):
     path = str(tmp_path / "fp_beside_anomalous_i.mtz")
     ds.unstack_anomalous(columns=["I", "SIGI"]).write_mtz(path)
     pins = {"F": "FP", "SIGF": "SIGFP"}
-    plain = ReflectionData(verbose=0)
+    plain = ReflectionData()
     plain.load_mtz(str(mtz_dir / "1DAW.mtz"), column_names=pins)
 
-    pinned = ReflectionData(verbose=0)
+    pinned = ReflectionData()
     pinned.load_mtz(path, column_names=pins)
-    unpinned = ReflectionData(verbose=0)
+    unpinned = ReflectionData()
     unpinned.load_mtz(path)
 
     assert pinned.friedel_merged is True
@@ -100,7 +100,7 @@ def test_a_pinned_merged_column_loads_merged_data(mtz_dir, tmp_path):
 
 def test_centrics_not_duplicated(anomalous_two_column_mtz):
     path, _ = anomalous_two_column_mtz
-    d = ReflectionData(verbose=0)
+    d = ReflectionData()
     d.load_mtz(path)
     centric = d.spacegroup.is_centric(d.hkl)
     # Centric reflections obey Friedel's law and must appear exactly once each.
@@ -114,7 +114,7 @@ def test_validate_hkl_matches_bijvoet_mates_by_signed_index(anomalous_two_column
     """Mates share a canonical HKL, so aligning on it alone is refused; aligning on
     the signed indices keeps each mate's own amplitude."""
     path, _ = anomalous_two_column_mtz
-    d = ReflectionData(verbose=0)
+    d = ReflectionData()
     d.load_mtz(path)
     d.F[d.friedel_flags] *= 0.5
     F, signed = d.F.clone(), d.hkl_anomalous.clone()
@@ -145,7 +145,7 @@ def _mixed_partition_groups(d, include_validation=False):
 def test_rfree_shared_across_mates(anomalous_two_column_mtz):
     """Flags read from the file keep Bijvoet mates in the same set."""
     path, _ = anomalous_two_column_mtz
-    d = ReflectionData(verbose=0)
+    d = ReflectionData()
     d.load_mtz(path)
     if d.rfree_flags is None:
         pytest.skip("no R-free flags in source")
@@ -159,7 +159,7 @@ def test_generated_rfree_shared_across_mates(anomalous_two_column_mtz):
     FreeR column; the generated path has to group by canonical ASU index itself.
     """
     path, _ = anomalous_two_column_mtz
-    d = ReflectionData(verbose=0)
+    d = ReflectionData()
     d.load_mtz(path)
     # Guard the premise: this fixture really does carry split Bijvoet pairs.
     assert d.friedel_merged is False
@@ -178,7 +178,7 @@ def test_generated_rfree_shared_across_mates(anomalous_two_column_mtz):
 def test_generated_validation_set_shared_across_mates(anomalous_two_column_mtz):
     """The free/validation carve-out must not re-split Bijvoet pairs."""
     path, _ = anomalous_two_column_mtz
-    d = ReflectionData(verbose=0)
+    d = ReflectionData()
     d.load_mtz(path)
     d.generate_rfree_flags(force=True, seed=0)
     d.generate_validation_set(val_fraction_of_free=0.5, seed=0)
@@ -194,10 +194,10 @@ def test_write_auto_anomalous_from_merge_state(
     path, _ = anomalous_two_column_mtz
 
     def written_columns(in_mtz, apply_bijvoet):
-        d = ReflectionData(verbose=0)
+        d = ReflectionData()
         d.load_mtz(in_mtz)
         model = ModelFT(
-            verbose=0, max_res=2.0, wavelength=1.54, apply_bijvoet=apply_bijvoet
+            max_res=2.0, wavelength=1.54, apply_bijvoet=apply_bijvoet
         )
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
@@ -238,21 +238,21 @@ def test_from_tensors_friedel_merged(mtz_dir):
 
     # Merged ASU input -> auto-detects merged.
     hkl, F, S, R = tensors(ds)
-    rd = ReflectionData.from_tensors(hkl, F, S, cell, sg, rfree_flags=R, verbose=0)
+    rd = ReflectionData.from_tensors(hkl, F, S, cell, sg, rfree_flags=R)
     assert rd.friedel_merged is True
 
     # Stacked (+h/-h) input -> auto-detects unmerged.
     st = ds[[amp, sig]].stack_anomalous()
     hkl_s, F_s, S_s, R_s = tensors(st)
     rd_s = ReflectionData.from_tensors(
-        hkl_s, F_s, S_s, cell, sg, rfree_flags=R_s, verbose=0
+        hkl_s, F_s, S_s, cell, sg, rfree_flags=R_s
     )
     assert rd_s.friedel_merged is False
     assert bool(rd_s.friedel_flags.any())
 
     # Explicit override wins over auto-detection.
     rd_o = ReflectionData.from_tensors(
-        hkl, F, S, cell, sg, rfree_flags=R, verbose=0, friedel_merged=False
+        hkl, F, S, cell, sg, rfree_flags=R, friedel_merged=False
     )
     assert rd_o.friedel_merged is False
 
@@ -260,9 +260,9 @@ def test_from_tensors_friedel_merged(mtz_dir):
 def test_apply_bijvoet_buffer_roundtrips(pdb_dir):
     # Defaults off (merged behavior); on when requested. The flag is a registered
     # buffer, so it appears in state_dict and is carried by copy().
-    assert bool(ModelFT(verbose=0).anomalous_bijvoet) is False
+    assert bool(ModelFT().anomalous_bijvoet) is False
 
-    model = ModelFT(verbose=0, max_res=2.0, wavelength=1.54, apply_bijvoet=True)
+    model = ModelFT(max_res=2.0, wavelength=1.54, apply_bijvoet=True)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     assert bool(model.anomalous_bijvoet) is True
     assert "anomalous_bijvoet" in model.state_dict()

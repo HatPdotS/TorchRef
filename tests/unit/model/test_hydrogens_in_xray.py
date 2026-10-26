@@ -17,7 +17,7 @@ from torchref.model.model_ft import ModelFT
 @pytest.fixture(scope="module")
 def with_hydrogens(pdb_dir):
     """7L84 keeps its deposited hydrogens."""
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
     return model
 
@@ -29,7 +29,7 @@ def _n_h(model):
 @pytest.mark.unit
 def test_default_is_on():
     assert ModelContext().hydrogens_in_xray is True
-    assert Model(verbose=0).hydrogens_in_xray is True
+    assert Model().hydrogens_in_xray is True
 
 
 @pytest.mark.unit
@@ -53,9 +53,9 @@ def test_partition_covers_hydrogens_only_when_on(with_hydrogens):
 @pytest.mark.unit
 def test_off_matches_a_stripped_model(pdb_dir):
     """Excluding hydrogens from Fcalc equals computing Fcalc without them."""
-    full = ModelFT(verbose=0, max_res=2.5, hydrogens_in_xray=False)
+    full = ModelFT(max_res=2.5, hydrogens_in_xray=False)
     full.load_pdb(str(pdb_dir / "7L84.pdb"))
-    heavy = ModelFT(verbose=0, max_res=2.5, hydrogens="strip")
+    heavy = ModelFT(max_res=2.5, hydrogens="strip")
     heavy.load_pdb(str(pdb_dir / "7L84.pdb"))
     grid = torch.arange(-3, 4)
     hkl = torch.cartesian_prod(grid, grid, grid)
@@ -70,7 +70,7 @@ def test_off_matches_a_stripped_model(pdb_dir):
 def test_toggling_the_flag_recomputes_fcalc(pdb_dir):
     """The cached F_calc is keyed on the flag, so switching it either way serves what
     a fresh computation gives, with no parameter having changed."""
-    model = ModelFT(verbose=0, max_res=3.0)
+    model = ModelFT(max_res=3.0)
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
     grid = torch.arange(-3, 4)
     hkl = torch.cartesian_prod(grid, grid, grid)
@@ -103,7 +103,7 @@ def test_setting_survives_copy_select_and_strip(with_hydrogens):
 @pytest.mark.parametrize("model_class", [Model, ModelFT])
 def test_setting_round_trips_through_state_dict(pdb_dir, model_class):
     kwargs = {"max_res": 3.0} if model_class is ModelFT else {}
-    model = model_class(verbose=0, hydrogens_in_xray=False, **kwargs)
+    model = model_class(hydrogens_in_xray=False, **kwargs)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     state = model.state_dict()
     restored = model_class.create_from_state_dict(state, device=model.device)
@@ -118,11 +118,11 @@ def test_solvent_mask_ignores_hydrogens(pdb_dir):
     """The bulk-solvent mask is the same with and without hydrogen rows."""
     from torchref.scaling.solvent import SolventModel
 
-    full = ModelFT(verbose=0, max_res=2.5)
+    full = ModelFT(max_res=2.5)
     full.load_pdb(str(pdb_dir / "7L84.pdb"))
-    heavy = ModelFT(verbose=0, max_res=2.5, hydrogens="strip")
+    heavy = ModelFT(max_res=2.5, hydrogens="strip")
     heavy.load_pdb(str(pdb_dir / "7L84.pdb"))
     assert _n_h(full) > 0 and _n_h(heavy) == 0
-    mask_full = SolventModel(full, verbose=0).get_solvent_mask()
-    mask_heavy = SolventModel(heavy, verbose=0).get_solvent_mask()
+    mask_full = SolventModel(full).get_solvent_mask()
+    mask_heavy = SolventModel(heavy).get_solvent_mask()
     assert torch.equal(mask_full, mask_heavy)

@@ -13,7 +13,7 @@ def collection(loaded_reflection_data):
 
     data = loaded_reflection_data
     return (
-        DatasetCollection(device=data.device, verbose=0)
+        DatasetCollection(device=data.device)
         .add_dataset("dark", data, set_as_reference=True)
         .add_dataset("light", data)
     )

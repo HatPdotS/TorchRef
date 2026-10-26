@@ -13,13 +13,19 @@ This module is part of the experimental ``torchref.experimental.kinetic``
 subpackage; its API is under active development and may change without notice.
 """
 
+import logging
+from contextlib import nullcontext
+
 from torch import nn
 import torch
 from typing import Dict, List, Optional, Union, Tuple
 import numpy as np
 
+from torchref._logging import enabled, get_logger, quiet
 from torchref.config import get_float_dtype
 from torchref.utils.device_mixin import DeviceMixin
+
+log = get_logger(__name__)
 
 
 class occupancy_unrestrained(DeviceMixin, nn.Module):
@@ -112,8 +118,6 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         'rate_prior_weight' (default 0, off), 'rate_prior_mean' (default
         log(3 / time range)) and 'rate_prior_std' (default 2.0) of the
         log-normal rate prior returned by :meth:`get_regularization_loss`.
-    verbose : int, optional
-        Verbosity level. Default: 1
     activation_level : float or None, optional
         Fraction of the initial state that takes part in the kinetics. The
         rest, ``1 - activation_level``, stays in the initial state as a
@@ -127,7 +131,6 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
     ...     time=torch.linspace(0, 100, 50),
     ...     rate_constants={"A->B": 1.0, "B->C": 0.1, "C->D": 0.01},
     ...     activation_level=1.0,
-    ...     verbose=0,
     ... )
     >>> occ().shape
     torch.Size([4, 50])
@@ -144,12 +147,9 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         light_activated: bool = False,
         state_mapping: Optional[Dict[str, int]] = None,
         regularization: Optional[Dict[str, float]] = None,
-        verbose: int = 1,
         activation_level: Optional[float] = 0.5,
     ):
         super(occupancies_kinetics, self).__init__()
-
-        self.verbose = verbose
 
         # Convert time to tensor if needed
         if not isinstance(time, torch.Tensor):
@@ -166,7 +166,6 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
             instrument_width=instrument_width,
             light_activated=light_activated,
             activation_level=activation_level,
-            verbose=verbose,
         )
         
         # Setup state mapping (kinetic states to structural model indices)
@@ -175,13 +174,13 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         # Setup regularization
         self._setup_regularization(regularization)
         
-        if self.verbose:
-            print(f"\nKinetic occupancy model initialized:")
-            print(f"  Flow chart: {flow_chart}")
-            print(f"  Time points: {len(time)} (range: {time.min():.2f} to {time.max():.2f})")
-            print(f"  Kinetic states: {self.kinetics.n_states}")
-            print(f"  Structural models: {self.nstates}")
-            print(f"  Mapping: {self.state_mapping}")
+        if enabled(log, logging.INFO):
+            log.info(f"\nKinetic occupancy model initialized:")
+            log.info(f"  Flow chart: {flow_chart}")
+            log.info(f"  Time points: {len(time)} (range: {time.min():.2f} to {time.max():.2f})")
+            log.info(f"  Kinetic states: {self.kinetics.n_states}")
+            log.info(f"  Structural models: {self.nstates}")
+            log.info(f"  Mapping: {self.state_mapping}")
     
     def _setup_state_mapping(self, state_mapping: Optional[Dict[str, int]]):
         """
@@ -460,8 +459,7 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         plt.savefig(path, dpi=150, bbox_inches='tight')
         plt.close()
         
-        if self.verbose:
-            print(f"Plot saved to: {path}")
+        log.info(f"Plot saved to: {path}")
     
     def plot_comparison(
         self,
@@ -539,7 +537,7 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         }
     
     @classmethod
-    def load_from_kinetics_state(cls, state: Dict, verbose: int = 1) -> 'occupancies_kinetics':
+    def load_from_kinetics_state(cls, state: Dict) -> 'occupancies_kinetics':
         """
         Load model from saved kinetic state.
         """
@@ -548,7 +546,6 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
             time=state['time'],
             state_mapping=state['state_mapping'],
             regularization=state['regularization'],
-            verbose=verbose
         )
         model.kinetics.load_state_dict(state['kinetics_state_dict'])
         return model
@@ -580,8 +577,6 @@ class occupancies_kinetics_multiexperiment(DeviceMixin, nn.Module):
            currently only prints which rates would be shared and does not
            actually link the parameters, so all rates remain
            experiment-specific regardless of this argument.
-    verbose : int
-        Verbosity level
     """
     
     def __init__(
@@ -589,25 +584,24 @@ class occupancies_kinetics_multiexperiment(DeviceMixin, nn.Module):
         flow_chart: str,
         experiments: List[Dict],
         shared_rates: Optional[List[str]] = None,
-        verbose: int = 1
     ):
         super(occupancies_kinetics_multiexperiment, self).__init__()
         
         self.flow_chart = flow_chart
         self.n_experiments = len(experiments)
         self.shared_rates = shared_rates or []
-        self.verbose = verbose
         
         # Create separate kinetic models for each experiment
         self.kinetic_models = nn.ModuleList()
         
         for i, exp in enumerate(experiments):
-            model = occupancies_kinetics(
-                flow_chart=flow_chart,
-                time=exp['time'],
-                rate_constants=exp.get('rate_constants'),
-                verbose=verbose if i == 0 else 0
-            )
+            # Only the first experiment reports its setup; the rest share the scheme.
+            with quiet() if i > 0 else nullcontext():
+                model = occupancies_kinetics(
+                    flow_chart=flow_chart,
+                    time=exp['time'],
+                    rate_constants=exp.get('rate_constants'),
+                )
             self.kinetic_models.append(model)
         
         # Setup shared parameters if requested
@@ -627,8 +621,7 @@ class occupancies_kinetics_multiexperiment(DeviceMixin, nn.Module):
                 if trans_key in self.shared_rates:
                     # Share this rate constant
                     # Note: This creates a shared reference, gradients will accumulate
-                    if self.verbose:
-                        print(f"Sharing rate {trans_key} across experiments")
+                    log.info(f"Sharing rate {trans_key} across experiments")
     
     def forward(self, experiment_idx: int) -> torch.Tensor:
         """

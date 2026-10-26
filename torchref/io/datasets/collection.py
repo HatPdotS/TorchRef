@@ -37,8 +37,6 @@ class DatasetCollection(CrystalDataset):
 
     Parameters
     ----------
-    verbose : int, optional
-        Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
     device : str, optional
         Device for tensors. Defaults to ``get_default_device()``.
 

@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
+from torchref._logging import get_logger
 from torchref.base.targets._common import torsions_from_xyz
 from torchref.config import get_float_dtype, get_int_dtype
 from torchref.topology.builders import (
@@ -41,6 +42,8 @@ from torchref.topology.residue_graph import (
 from torchref.topology.restraint_sets import to_tensor
 from torchref.topology.templates import resolve_template_keys
 from torchref.topology.topology import Topology
+
+log = get_logger(__name__)
 
 #: Initial size of the matcher work arrays, grown on demand.
 _WORK = 64
@@ -465,7 +468,6 @@ def _match_intra_planes(
 def _inter_residue_edges(
     residues: PeptideResidues,
     link_dict: Optional[Dict],
-    verbose: int,
 ) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, Dict], Dict[str, Dict]]:
     """Peptide edges, their values, and the Ramachandran pairing, from the builders.
 
@@ -539,13 +541,13 @@ def _inter_residue_edges(
         ("bond", InterResidueBondBuilder),
         ("angle", InterResidueAngleBuilder),
     ):
-        group = joined(per_link(builder(verbose=verbose)))
+        group = joined(per_link(builder()))
         if group is not None:
             indices[edge_type]["peptide"], values[edge_type]["peptide"] = group
 
     # One TRANS pass: the PTRANS torsions are the same, and the Ramachandran pairing
     # needs each residue's phi and psi from a single pass.
-    tors = InterResidueTorsionBuilder(verbose=verbose).build(residues, trans, cpu)
+    tors = InterResidueTorsionBuilder().build(residues, trans, cpu)
     if tors:
         for origin in ("phi", "psi", "omega"):
             if origin in tors:
@@ -555,7 +557,7 @@ def _inter_residue_edges(
         if "ramachandran" in tors:
             extras["ramachandran"] = tors["ramachandran"]
 
-    planes = [g for g in per_link(InterResiduePlaneBuilder(verbose=verbose)) if g]
+    planes = [g for g in per_link(InterResiduePlaneBuilder()) if g]
     for key in sorted({key for group in planes for key in group}):
         indices["plane"][key], values["plane"][key] = joined(
             [group.get(key) for group in planes]
@@ -585,7 +587,6 @@ def _disulfide_edges(
     residue_of_row: Dict[int, int],
     pairs: Sequence[Tuple[int, int]],
     link_dict: Optional[Dict],
-    verbose: int,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict[str, np.ndarray]]]:
     """Bond, angle and torsion edges for the detected disulfide links, with values.
 
@@ -617,9 +618,9 @@ def _disulfide_edges(
     sigma = float(sg_sg["sigma"].values[0])
 
     cpu = torch.device("cpu")
-    bond_builder = InterResidueBondBuilder(verbose=verbose)
-    angle_builder = InterResidueAngleBuilder(verbose=verbose)
-    torsion_builder = InterResidueTorsionBuilder(verbose=verbose)
+    bond_builder = InterResidueBondBuilder()
+    angle_builder = InterResidueAngleBuilder()
+    torsion_builder = InterResidueTorsionBuilder()
 
     for row_a, row_b in pairs:
         bond_builder.process_disulfide_bond(int(row_a), int(row_b), length, sigma)
@@ -696,7 +697,6 @@ def _link_record_edges(
     topology: Topology,
     links,
     linked_bonds: Sequence[np.ndarray],
-    verbose: int,
 ) -> Tuple[np.ndarray, List[Tuple[int, int]], Dict[str, np.ndarray]]:
     """Bond edges for the accepted ``LINK`` records, and the atom pairs they join.
 
@@ -765,8 +765,8 @@ def _link_record_edges(
         usable = isinstance(length, (int, float)) and length == length and length > 0
         lengths.append(float(length) if usable else 1.5)
 
-    if verbose > 1 and n_unresolved:
-        print(f"{n_unresolved} LINK records did not resolve to a pair of atoms")
+    if n_unresolved:
+        log.debug(f"{n_unresolved} LINK records did not resolve to a pair of atoms")
     if not rows:
         return np.zeros((0, 2), dtype=np.int64), [], {}
     values = {
@@ -861,7 +861,6 @@ def build_topology(
     link_list=None,
     links=None,
     device=None,
-    verbose: int = 0,
 ) -> Topology:
     """Build a topology, discarding the restraint values built along the way.
 
@@ -876,7 +875,6 @@ def build_topology(
         link_list=link_list,
         links=links,
         device=device,
-        verbose=verbose,
     )
     return topology
 
@@ -889,7 +887,6 @@ def build_topology_with_values(
     link_list=None,
     links=None,
     device=None,
-    verbose: int = 0,
 ) -> Tuple[Topology, Dict[str, Dict], Dict[str, Dict]]:
     """Connect a node-only topology against the restraint dictionaries.
 
@@ -914,8 +911,6 @@ def build_topology_with_values(
         bond edge.
     device : torch.device, optional
         Where to place the edge blocks.
-    verbose : int, default 0
-        Verbosity level.
 
     Returns
     -------
@@ -948,7 +943,7 @@ def build_topology_with_values(
         cols, nodes, peptide_pairs
     )
     comp_dict, chemical_keys = resolve_template_keys(
-        chemical_nodes["resname"], chemical_pairs, cif_dict, link_list, verbose=verbose
+        chemical_nodes["resname"], chemical_pairs, cif_dict, link_list
     )
     template_key = np.asarray(nodes["resname"], dtype=object).copy()
     _, first_variant = np.unique(owners, return_index=True)
@@ -993,7 +988,6 @@ def build_topology_with_values(
     inter, inter_values, extras = _inter_residue_edges(
         PeptideResidues(topology, peptide_pairs, xyz.detach().cpu().numpy()),
         link_dict,
-        verbose,
     )
 
     residue_of_row = {}
@@ -1004,7 +998,7 @@ def build_topology_with_values(
     sg_rows = [row for row in range(len(cols["name"])) if cols["name"][row] == "SG"]
     disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz, cols["altloc"])
     disulfide, disulfide_values = _disulfide_edges(
-        topology, residue_of_row, disulfide_pairs, link_dict, verbose
+        topology, residue_of_row, disulfide_pairs, link_dict
     )
 
     link_edges, link_atom_pairs, link_values = _link_record_edges(
@@ -1015,7 +1009,6 @@ def build_topology_with_values(
             for bonds in (inter["bond"].get("peptide"), disulfide.get("bond"))
             if bonds is not None
         ],
-        verbose,
     )
 
     # LINK edges carry ``index`` values, so lift them through that column.

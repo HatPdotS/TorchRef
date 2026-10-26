@@ -7,7 +7,6 @@ this actually happened to (removed with outlier rejection); the guard is generic
 next removal is not a second incident.
 """
 
-import warnings
 
 import pytest
 import torch
@@ -21,7 +20,6 @@ def _minimal_state(cls, n=8):
     obj = cls(
         hkl=torch.randint(-4, 5, (n, 3), dtype=torch.int32),
         device=torch.device("cpu"),
-        verbose=0,
     )
     if hasattr(obj, "F"):
         obj.F = torch.rand(n)
@@ -63,7 +61,7 @@ def test_fcalc_state_keeps_the_space_group_setting(cell, setting):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("cls", [ReflectionData, FcalcDataset])
-def test_state_with_a_removed_field_still_loads(cls):
+def test_state_with_a_removed_field_still_loads(cls, caplog):
     """A key that is no longer a dataclass field is dropped, loudly, not fatally.
 
     ``outlier_flags`` is the real case: checkpoints written before outlier rejection was
@@ -75,15 +73,13 @@ def test_state_with_a_removed_field_still_loads(cls):
     state["outlier_flags"] = torch.zeros(n, dtype=torch.bool)
     state["a_field_that_never_existed"] = 42
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        obj = cls._from_state(dict(state), device="cpu")
+    obj = cls._from_state(dict(state), device="cpu")
 
     assert isinstance(obj, cls)
     assert len(obj.hkl) == n
     assert not hasattr(obj, "outlier_flags")
 
-    msgs = [str(w.message) for w in caught if "no longer fields" in str(w.message)]
+    msgs = [r.getMessage() for r in caplog.records if "no longer fields" in r.getMessage()]
     assert msgs, "dropping a removed field must warn, not happen silently"
     assert "outlier_flags" in msgs[0] and "a_field_that_never_existed" in msgs[0]
 
@@ -99,9 +95,7 @@ def test_masks_survive_a_removed_field():
     state["masks"] = {"probe": keep}
     state["outlier_flags"] = torch.zeros(n, dtype=torch.bool)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        obj = ReflectionData._from_state(dict(state), device="cpu")
+    obj = ReflectionData._from_state(dict(state), device="cpu")
 
     assert "probe" in obj.masks
     assert bool(obj.masks()[0]) is False

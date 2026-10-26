@@ -19,7 +19,7 @@ def pdb_path(pdb_dir):
 
 
 def _model(pdb_path, **kwargs) -> ModelFT:
-    return ModelFT(max_res=2.5, verbose=0, device="cpu", **kwargs).load_pdb(pdb_path)
+    return ModelFT(max_res=2.5, device="cpu", **kwargs).load_pdb(pdb_path)
 
 
 def _hkl(model, n=64):
@@ -49,7 +49,7 @@ def test_one_engine_and_one_spacegroup_per_load(pdb_path, monkeypatch, strip_H):
     engines = _count_calls(monkeypatch, model_ft_module.SfFFT, "__init__")
     spacegroups = _count_calls(monkeypatch, SpaceGroup, "__init__")
 
-    model = ModelFT(max_res=2.5, verbose=0, device="cpu", hydrogens="strip" if strip_H else "keep")
+    model = ModelFT(max_res=2.5, device="cpu", hydrogens="strip" if strip_H else "keep")
     model.load_pdb(pdb_path)
     assert engines["n"] == 1
     assert spacegroups["n"] == 1
@@ -82,7 +82,7 @@ def test_engine_reads_the_model_context(pdb_path):
     selected = model.select("all")
     assert bound(selected)
 
-    restored = ModelFT.create_from_state_dict(model.state_dict(), device="cpu", verbose=0)
+    restored = ModelFT.create_from_state_dict(model.state_dict(), device="cpu")
     assert bound(restored)
     assert restored.grid_shape == model.grid_shape
 
@@ -118,7 +118,7 @@ def test_explicit_gridsize_survives_every_path(pdb_path):
     assert model.copy().grid_shape == explicit
     assert model.select("all").grid_shape == explicit
 
-    restored = ModelFT.create_from_state_dict(model.state_dict(), device="cpu", verbose=0)
+    restored = ModelFT.create_from_state_dict(model.state_dict(), device="cpu")
     assert restored.explicit_gridsize == explicit
     assert restored.grid_shape == explicit
 
@@ -220,12 +220,12 @@ def test_legacy_gridsize_is_adopted_only_when_it_differs(pdb_path):
 
     same = model.state_dict()
     same["_fft.gridsize"] = torch.tensor(model.grid_shape)
-    restored = ModelFT.create_from_state_dict(same, device="cpu", verbose=0)
+    restored = ModelFT.create_from_state_dict(same, device="cpu")
     assert restored.explicit_gridsize is None
     assert restored.grid_shape == model.grid_shape
 
     different = model.state_dict()
     different["_fft.gridsize"] = torch.tensor([64, 32, 24])
-    restored = ModelFT.create_from_state_dict(different, device="cpu", verbose=0)
+    restored = ModelFT.create_from_state_dict(different, device="cpu")
     assert restored.explicit_gridsize == (64, 32, 24)
     assert restored.grid_shape == (64, 32, 24)

@@ -25,7 +25,7 @@ def pdb_path(pdb_dir):
 
 
 def _field_model(pdb_path, mode_set=None, n_nodes=8):
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(pdb_path)
     model.set_adp_mode(
         "field_aniso", n_nodes=n_nodes, k_neighbors=n_nodes, mode_set=mode_set
@@ -118,7 +118,7 @@ def test_copy_round_trips_a_mode_field(pdb_path):
 @pytest.mark.unit
 def test_mode_set_is_rejected_on_the_isotropic_field(pdb_path):
     """There is no isotropic form of a displacement-mode covariance."""
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(pdb_path)
     with pytest.raises(ValueError, match="no isotropic form"):
         model.set_adp_mode("field", n_nodes=8, mode_set="rigid")

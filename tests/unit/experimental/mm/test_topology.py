@@ -26,7 +26,7 @@ pytestmark = pytest.mark.openmm
 def protein(pdb_dir):
     """7L84 with TorchRef's hydrogens: protein and waters, standard residues only."""
     return (
-        Model(verbose=0, device="cpu", hydrogens="add")
+        Model(device="cpu", hydrogens="add")
         .load_pdb(str(pdb_dir / "7L84.pdb"))
         .strip_altlocs()
     )
@@ -36,7 +36,7 @@ def protein(pdb_dir):
 def ligand_model(pdb_dir):
     """1DAW with hydrogens: ANP, two Mg ions and their LINK records."""
     return (
-        Model(verbose=0, device="cpu", hydrogens="add")
+        Model(device="cpu", hydrogens="add")
         .load_pdb(str(pdb_dir / "1DAW.pdb"))
         .strip_altlocs()
     )
@@ -118,7 +118,7 @@ def test_kept_hydrogens_always_warn(protein):
 
 def test_heavy_atom_model_is_rejected(pdb_dir):
     model = (
-        Model(verbose=0, device="cpu", hydrogens="strip")
+        Model(device="cpu", hydrogens="strip")
         .load_pdb(str(pdb_dir / "7L84.pdb"))
         .strip_altlocs()
     )
@@ -131,7 +131,7 @@ def test_heavy_atom_model_is_rejected(pdb_dir):
 def test_partially_deposited_hydrogens_are_rejected(pdb_dir):
     """1AK5 as deposited carries about a quarter of its hydrogens."""
     model = (
-        Model(verbose=0, device="cpu", hydrogens="keep")
+        Model(device="cpu", hydrogens="keep")
         .load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
         .strip_altlocs()
     )
@@ -143,7 +143,7 @@ def test_partially_deposited_hydrogens_are_rejected(pdb_dir):
 
 
 def test_alternate_conformations_are_rejected(pdb_dir):
-    model = Model(verbose=0, device="cpu").load_pdb(str(pdb_dir / "1DAW.pdb"))
+    model = Model(device="cpu").load_pdb(str(pdb_dir / "1DAW.pdb"))
     if not (model.ctx.topology.atoms.altloc != " ").any():
         pytest.skip("1DAW lost its alternate conformations")
     with pytest.raises(ValueError, match="strip_altlocs"):

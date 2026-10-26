@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Dict, Optional
 import torch
 from torch import nn
 
+from torchref._logging import get_logger
 from torchref.refinement.targets.base import ModelTarget
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
@@ -25,6 +26,8 @@ from torchref.utils.stats import (
 
 if TYPE_CHECKING:
     from torchref.model.model import Model
+
+log = get_logger(__name__)
 
 
 class ForceFieldTarget(ModelTarget):
@@ -45,7 +48,7 @@ class ForceFieldTarget(ModelTarget):
     model : Model, optional
         Reference to the Model object. Should include hydrogens for accurate
         energies (load with ``hydrogens="keep"`` or ``"add"``); a hydrogen-less model is
-        not rejected, only flagged via a warning when ``verbose > 0``.
+        not rejected, only flagged via a warning.
     model_path : str, optional
         Path to TorchMD-Net checkpoint file (.ckpt).
     cutoff : float, optional
@@ -54,8 +57,6 @@ class ForceFieldTarget(ModelTarget):
         potential, so it has no effect on the computed energy yet.
     normalize_by_atoms : bool, optional
         If True, return energy per atom. Default is True.
-    verbose : int, optional
-        Verbosity level. Default is 0.
 
     Examples
     --------
@@ -91,9 +92,8 @@ class ForceFieldTarget(ModelTarget):
         model_path: str = None,
         cutoff: float = 5.0,
         normalize_by_atoms: bool = True,
-        verbose: int = 0,
     ):
-        super().__init__(model=model, verbose=verbose)
+        super().__init__(model=model)
 
         # Store configuration
         self._model_path = model_path
@@ -147,13 +147,11 @@ class ForceFieldTarget(ModelTarget):
         Z = self.model.Z
         has_hydrogens = (Z == 1).any().item()
 
-        if not has_hydrogens and self.verbose > 0:
-            import warnings
-            warnings.warn(
+        if not has_hydrogens:
+            log.warning(
                 "Model appears to have no hydrogen atoms. "
                 "TorchMD-Net typically requires all-atom structures. "
-                "Load with Model(hydrogens='add') if hydrogens are needed.",
-                UserWarning
+                "Load with Model(hydrogens='add') if hydrogens are needed."
             )
 
     def forward(self) -> torch.Tensor:

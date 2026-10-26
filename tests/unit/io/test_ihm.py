@@ -176,7 +176,7 @@ class TestModelCIFReaderMultiModel:
         """Test that model_num column is extracted from multi-model CIF."""
         from torchref.io.cif_readers import ModelCIFReader
 
-        reader = ModelCIFReader(str(TEST_IHM_FILE), verbose=0)
+        reader = ModelCIFReader(str(TEST_IHM_FILE))
         df = reader.get_atom_data()
         assert "model_num" in df.columns
         assert set(df["model_num"].unique()) == {1, 2}
@@ -185,7 +185,7 @@ class TestModelCIFReaderMultiModel:
         """Test splitting atom data by model number."""
         from torchref.io.cif_readers import ModelCIFReader
 
-        reader = ModelCIFReader(str(TEST_IHM_FILE), verbose=0)
+        reader = ModelCIFReader(str(TEST_IHM_FILE))
         by_model = reader.get_atom_data_by_model()
         assert set(by_model.keys()) == {1, 2}
         # Each model should have 15 atoms
@@ -199,7 +199,7 @@ class TestModelCIFReaderMultiModel:
         # Use a standard single-model CIF
         single_model_cif = TEST_IHM_FILE.parent / "3E98.cif"
         if single_model_cif.exists():
-            reader = ModelCIFReader(str(single_model_cif), verbose=0)
+            reader = ModelCIFReader(str(single_model_cif))
             by_model = reader.get_atom_data_by_model()
             assert 1 in by_model
             assert len(by_model) == 1
@@ -291,7 +291,7 @@ class TestIHMReader:
         """Test reading IHM mapping from test file."""
         from torchref.io.ihm import IHMReader
 
-        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        reader = IHMReader(str(TEST_IHM_FILE))
         mapping = reader.read_mapping()
 
         assert len(mapping.states) >= 1
@@ -302,7 +302,7 @@ class TestIHMReader:
         """Each state group is a timepoint carrying its states' fractions."""
         from torchref.io.ihm import IHMReader
 
-        mapping = IHMReader(str(TEST_IHM_FILE), verbose=0).read_mapping()
+        mapping = IHMReader(str(TEST_IHM_FILE)).read_mapping()
         _assert_fixture_timepoints(mapping)
         assert [s.model_num for s in mapping.states] == [1, 2]
 
@@ -320,7 +320,7 @@ class TestIHMReader:
         path = tmp_path / "ddl2.cif"
         doc.write_file(str(path))
 
-        mapping = IHMReader(str(path), verbose=0).read_mapping()
+        mapping = IHMReader(str(path)).read_mapping()
         reader = ModelCIFReader(str(path))
         assert mapping.cell == reader.get_cell_parameters()
         assert mapping.cell == [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
@@ -338,7 +338,7 @@ class TestIHMReader:
         swapped = tmp_path / "swapped.cif"
         doc.write_file(str(swapped))
 
-        reader = IHMReader(str(swapped), verbose=0)
+        reader = IHMReader(str(swapped))
         mapping = reader.read_mapping()
         atoms = reader.read_atom_data(mapping)
         assert [s.name for s in mapping.states] == ["ground_state", "intermediate_1"]
@@ -351,7 +351,7 @@ class TestIHMReader:
         """Test reading per-state atom data."""
         from torchref.io.ihm import IHMReader
 
-        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        reader = IHMReader(str(TEST_IHM_FILE))
         mapping = reader.read_mapping()
         atom_data = reader.read_atom_data(mapping)
 
@@ -366,7 +366,7 @@ class TestIHMReader:
 
         from torchref.io.ihm import IHMReader
 
-        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        reader = IHMReader(str(TEST_IHM_FILE))
         mapping = reader.read_mapping()
         mapping.atom_data_per_state = reader.read_atom_data(mapping)
         mc = reader.build_model_collection(
@@ -382,7 +382,7 @@ class TestIHMReader:
 
         from torchref.io.ihm import IHMReader
 
-        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        reader = IHMReader(str(TEST_IHM_FILE))
         mapping = reader.read_mapping()
         atoms = reader.read_atom_data(mapping)
         assert mapping.atom_data_per_state is atoms
@@ -397,7 +397,7 @@ class TestIHMReader:
 
         from torchref.io.ihm import IHMReader
 
-        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        reader = IHMReader(str(TEST_IHM_FILE))
         mc, mapping = reader(max_res=3.0, device=torch.device("cpu"))
 
         assert mc is not None
@@ -423,7 +423,7 @@ class TestIHMWriter:
         from torchref.io.ihm import IHMReader, IHMWriter
 
         # Read first
-        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        reader = IHMReader(str(TEST_IHM_FILE))
         mc, mapping = reader(max_res=3.0, device=torch.device("cpu"))
 
         # Write
@@ -431,7 +431,7 @@ class TestIHMWriter:
             outpath = f.name
 
         try:
-            writer = IHMWriter(mc, mapping=mapping, verbose=0)
+            writer = IHMWriter(mc, mapping=mapping)
             writer.write(outpath)
 
             # Verify file exists and has content
@@ -452,16 +452,16 @@ class TestIHMWriter:
 
         from torchref.io.ihm import IHMReader, IHMWriter
 
-        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        reader = IHMReader(str(TEST_IHM_FILE))
         mapping = _kinetic_mapping()
         mapping.atom_data_per_state = reader.read_atom_data(mapping)
         mc = reader.build_model_collection(
             mapping, max_res=3.0, device=torch.device("cpu")
         )
         out = tmp_path / "round_trip.cif"
-        IHMWriter(mc, mapping=mapping, verbose=0).write(str(out))
+        IHMWriter(mc, mapping=mapping).write(str(out))
 
-        back = IHMReader(str(out), verbose=0).read_mapping()
+        back = IHMReader(str(out)).read_mapping()
         _assert_fixture_timepoints(back)
 
     def test_refln_status_marks_excluded_reflections(self, mtz_dir, tmp_path):
@@ -479,14 +479,14 @@ class TestIHMWriter:
         flags[:100] = -1
         ds["FreeR_flag"] = rs.DataSeries(flags, index=ds.index).astype("I")
         ds.write_mtz(str(tmp_path / "excluded.mtz"))
-        data = ReflectionData(verbose=0)
+        data = ReflectionData()
         data.load_mtz(str(tmp_path / "excluded.mtz"))
 
-        mc, mapping = IHMReader(str(TEST_IHM_FILE), verbose=0)(
+        mc, mapping = IHMReader(str(TEST_IHM_FILE))(
             max_res=3.0, device=torch.device("cpu")
         )
         out = tmp_path / "with_data.cif"
-        IHMWriter(mc, mapping=mapping, datasets={"dark": data}, verbose=0).write(
+        IHMWriter(mc, mapping=mapping, datasets={"dark": data}).write(
             str(out)
         )
         status = list(gemmi.cif.read(str(out))["dark"].find_values("_refln.status"))
@@ -530,7 +530,7 @@ class TestIHMWriter:
             ],
         )
         out = tmp_path / "nucleic.cif"
-        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+        IHMWriter(collection, mapping=mapping).write(str(out))
 
         block = gemmi.cif.read(str(out)).sole_block()
         entity_type = dict(block.find("_entity_poly.", ["entity_id", "type"]))
@@ -579,7 +579,7 @@ class TestIHMWriter:
             ],
         )
         out = tmp_path / "dimer.cif"
-        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+        IHMWriter(collection, mapping=mapping).write(str(out))
 
         block = gemmi.cif.read(str(out)).sole_block()
         entity_type = dict(block.find("_entity_poly.", ["entity_id", "type"]))
@@ -622,7 +622,7 @@ class TestIHMWriter:
             ],
         )
         out = tmp_path / "pair.cif"
-        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+        IHMWriter(collection, mapping=mapping).write(str(out))
 
         block = gemmi.cif.read(str(out)).sole_block()
         asym_entity = dict(block.find("_struct_asym.", ["id", "entity_id"]))
@@ -662,7 +662,7 @@ class TestIHMWriter:
             ],
         )
         collection = SimpleNamespace(n_base_models=1, base_models=[model])
-        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+        IHMWriter(collection, mapping=mapping).write(str(out))
         return gemmi.cif.read(str(out)).sole_block()
 
     def test_ligands_and_waters_get_entities_and_label_seq_id_counts_from_one(
@@ -832,7 +832,7 @@ class TestIHMWriter:
         collection = SimpleNamespace(n_base_models=2, base_models=models)
         out = tmp_path / "two.cif"
         with pytest.raises(ValueError, match="HOH A999"):
-            IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+            IHMWriter(collection, mapping=mapping).write(str(out))
         assert not out.exists()
 
     @pytest.mark.parametrize("n_states", [1, 2])
@@ -871,7 +871,7 @@ class TestIHMWriter:
             n_base_models=n_states, base_models=[model] * n_states
         )
         out = tmp_path / "1daw.cif"
-        IHMWriter(collection, mapping=mapping, verbose=0).write(str(out))
+        IHMWriter(collection, mapping=mapping).write(str(out))
 
         block = gemmi.cif.read(str(out)).sole_block()
         names = [
@@ -890,7 +890,7 @@ class TestIHMWriter:
 
         from torchref.io.ihm import IHMReader, IHMWriter
 
-        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        reader = IHMReader(str(TEST_IHM_FILE))
         mc, _ = reader(max_res=3.0, device=torch.device("cpu"))
 
         with tempfile.NamedTemporaryFile(suffix=".cif", delete=False) as f:
@@ -898,7 +898,7 @@ class TestIHMWriter:
 
         try:
             # Write without explicit mapping
-            writer = IHMWriter(mc, verbose=0)
+            writer = IHMWriter(mc)
             writer.write(outpath)
 
             assert os.path.exists(outpath)
@@ -921,7 +921,6 @@ class TestModelCollectionIHM:
             str(TEST_IHM_FILE),
             max_res=3.0,
             device=torch.device("cpu"),
-            verbose=0,
         )
         assert mc.n_base_models >= 1
         assert isinstance(mapping, IHMEnsembleMapping)
@@ -951,7 +950,7 @@ class TestModelCollectionIHM:
 
         with pytest.raises(ValueError, match="non-negative"):
             ModelCollection.from_ihm(
-                str(path), max_res=3.0, device=torch.device("cpu"), verbose=0
+                str(path), max_res=3.0, device=torch.device("cpu")
             )
 
     def test_write_ihm(self):
@@ -964,7 +963,6 @@ class TestModelCollectionIHM:
             str(TEST_IHM_FILE),
             max_res=3.0,
             device=torch.device("cpu"),
-            verbose=0,
         )
 
         with tempfile.NamedTemporaryFile(suffix=".cif", delete=False) as f:
@@ -990,7 +988,7 @@ class TestMixedModelIHM:
         from torchref.model.mixed_model import MixedModel
 
         # Load models from IHM file (via reader) to get ModelFT objects
-        reader = IHMReader(str(TEST_IHM_FILE), verbose=0)
+        reader = IHMReader(str(TEST_IHM_FILE))
         mc, mapping = reader(max_res=3.0, device=torch.device("cpu"))
 
         # Create a MixedModel from the base models

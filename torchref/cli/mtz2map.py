@@ -15,12 +15,18 @@ Examples
 import argparse
 import sys
 
+from torchref._logging import get_logger
 from torchref.cli._common import (
     add_general_args,
     add_resolution_args,
+    configure_logging,
     register_timing,
     parse_device_str,
 )
+
+# Named, not __name__: run as a script or with -m, this module is __main__, outside
+# the torchref logger the CLI configures.
+log = get_logger("torchref.cli.mtz2map")
 
 
 def main():
@@ -115,6 +121,7 @@ def main():
     add_general_args(parser)
 
     args = parser.parse_args()
+    configure_logging(args)
 
     import numpy as np
     import torch
@@ -129,8 +136,7 @@ def main():
     # --- Read MTZ ---
     import reciprocalspaceship as rs
 
-    if args.verbose >= 1:
-        print(f"Reading {args.structure_factor}")
+    log.info(f"Reading {args.structure_factor}")
 
     mtz = rs.read_mtz(args.structure_factor)
     available = list(mtz.columns)
@@ -184,11 +190,10 @@ def main():
     )
     spacegroup = mtz.spacegroup.hm
 
-    if args.verbose >= 1:
-        print(f"  Cell: {cell[0]:.2f} {cell[1]:.2f} {cell[2]:.2f}  "
-              f"{cell[3]:.1f} {cell[4]:.1f} {cell[5]:.1f}")
-        print(f"  Spacegroup: {spacegroup}")
-        print(f"  Columns: {args.column_structure_factor} (amplitude), {args.column_phase} (phase)")
+    log.info(f"  Cell: {cell[0]:.2f} {cell[1]:.2f} {cell[2]:.2f}  "
+             f"{cell[3]:.1f} {cell[4]:.1f} {cell[5]:.1f}")
+    log.info(f"  Spacegroup: {spacegroup}")
+    log.info(f"  Columns: {args.column_structure_factor} (amplitude), {args.column_phase} (phase)")
 
     # Extract HKL, amplitudes, phases
     df = mtz.reset_index()
@@ -200,22 +205,19 @@ def main():
         weights = df[args.column_weight].to_numpy().astype(np.float32)
         valid &= np.isfinite(weights)
         amplitudes = amplitudes * weights
-        if args.verbose >= 1:
-            print(f"  Weights: {args.column_weight} (mean {np.nanmean(weights):.3f})")
+        log.info(f"  Weights: {args.column_weight} (mean {np.nanmean(weights):.3f})")
     if units == "electrons":
         kscale = df[scale_column].to_numpy().astype(np.float32)
         valid &= np.isfinite(kscale) & (kscale > 0)
         # Observed amplitudes carry the scaler's overall scale, B and anisotropy;
         # dividing by that factor returns them to electrons.
         amplitudes = amplitudes / np.where(valid, kscale, 1.0)
-        if args.verbose >= 1:
-            print(f"  Absolute scale: dividing by {scale_column}")
+        log.info(f"  Absolute scale: dividing by {scale_column}")
 
     # Drop NaN reflections
     if not valid.all():
         n_drop = (~valid).sum()
-        if args.verbose >= 1:
-            print(f"  Dropping {n_drop} reflections with NaN values")
+        log.info(f"  Dropping {n_drop} reflections with NaN values")
         hkl = hkl[valid]
         amplitudes = amplitudes[valid]
         phases_deg = phases_deg[valid]
@@ -239,12 +241,10 @@ def main():
         amplitudes = amplitudes[res_mask]
         phases_deg = phases_deg[res_mask]
         d_spacings = d_spacings[res_mask]
-        if args.verbose >= 1:
-            print(f"  Resolution filter: {n_before} -> {len(hkl)} reflections")
+        log.info(f"  Resolution filter: {n_before} -> {len(hkl)} reflections")
 
-    if args.verbose >= 1:
-        print(f"  {len(hkl)} reflections, resolution range: "
-              f"{d_spacings.max():.2f} - {d_spacings.min():.2f} A")
+    log.info(f"  {len(hkl)} reflections, resolution range: "
+             f"{d_spacings.max():.2f} - {d_spacings.min():.2f} A")
 
     # --- Convert to torch ---
     hkl_t = torch.tensor(hkl, dtype=get_int_dtype(), device=device)
@@ -262,8 +262,7 @@ def main():
     amp_p1 = amp_t[orig_idx]
     phi_p1 = phi_t[orig_idx] + phase_shifts
 
-    if args.verbose >= 1:
-        print(f"  Expanded: {len(hkl_t)} -> {len(hkl_p1)} reflections (P1)")
+    log.info(f"  Expanded: {len(hkl_t)} -> {len(hkl_p1)} reflections (P1)")
 
     # Complex map coefficients: F * exp(i * phi)
     coefficients = amp_p1 * torch.exp(1j * phi_p1)
@@ -275,8 +274,7 @@ def main():
         max_res = float(d_spacings.min())
         gridsize = sg.optimal_grid_size(Cell(cell), max_res)
 
-    if args.verbose >= 1:
-        print(f"  Grid size: {gridsize[0]} x {gridsize[1]} x {gridsize[2]}")
+    log.info(f"  Grid size: {gridsize[0]} x {gridsize[1]} x {gridsize[2]}")
 
     # --- Place on grid and FFT ---
     from torchref.base.reciprocal.grid_operations import place_on_grid
