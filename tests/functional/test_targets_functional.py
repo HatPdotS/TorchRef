@@ -214,7 +214,7 @@ class TestScalingWithRealData:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
         
-        scaler = Scaler(model=model, data=data, nbins=20, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=20)
         
         # Scaler should have correct number of bins
         assert scaler.nbins == 20
@@ -236,7 +236,7 @@ class TestScalingWithRealData:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
         
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         scaler.setup_anisotropy_correction()
         
         correction = scaler.anisotropy_correction()

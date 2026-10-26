@@ -364,7 +364,7 @@ class TestModelGetSelectionMask:
         """Test selection mask for chain selection."""
         from torchref.model.model import Model
         
-        model = Model(verbose=0)
+        model = Model()
         model.load_cif(str(sample_cif_file))
         
         chains = model.pdb['chainid'].unique()
@@ -382,7 +382,7 @@ class TestModelGetSelectionMask:
         """Test selection mask for residue range selection."""
         from torchref.model.model import Model
         
-        model = Model(verbose=0)
+        model = Model()
         model.load_cif(str(sample_cif_file))
         
         mask = model.get_selection_mask("resseq 1:10")
@@ -397,7 +397,7 @@ class TestModelGetSelectionMask:
         """Test selection mask for atom name selection."""
         from torchref.model.model import Model
         
-        model = Model(verbose=0)
+        model = Model()
         model.load_cif(str(sample_cif_file))
         
         mask = model.get_selection_mask("name CA")
@@ -412,7 +412,7 @@ class TestModelGetSelectionMask:
         """Test selection mask with complex selection syntax."""
         from torchref.model.model import Model
         
-        model = Model(verbose=0)
+        model = Model()
         model.load_cif(str(sample_cif_file))
         
         # Backbone atoms in residues 1-10
@@ -428,7 +428,7 @@ class TestModelGetSelectionMask:
         """Test that invalid selection syntax raises ValueError."""
         from torchref.model.model import Model
         
-        model = Model(verbose=0)
+        model = Model()
         model.load_cif(str(sample_cif_file))
         
         with pytest.raises(ValueError):
@@ -443,7 +443,7 @@ class TestModelSetWithSelection:
         """Test setting coordinates using a selection mask."""
         from torchref.model.model import Model
         
-        model = Model(verbose=0)
+        model = Model()
         model.load_cif(str(sample_cif_file))
         
         # Get mask for first 5 residues
@@ -470,7 +470,7 @@ class TestModelSetWithSelection:
         """Test setting B-factors using a selection mask."""
         from torchref.model.model import Model
         
-        model = Model(verbose=0)
+        model = Model()
         model.load_cif(str(sample_cif_file))
         
         # Get mask for CA atoms

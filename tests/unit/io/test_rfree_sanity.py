@@ -5,7 +5,7 @@ reflections, whichever reader delivered it, and honoured whenever it can be
 used: only a column without a single work reflection is replaced.
 """
 
-import warnings
+import logging
 
 import numpy as np
 import pytest
@@ -18,7 +18,7 @@ from torchref.io.mtz import MTZReader
 @pytest.fixture(scope="module")
 def daw(mtz_dir):
     """1DAW as ``MTZReader`` delivers it: intensities, 5 % free, all measured."""
-    return MTZReader(verbose=0).read(str(mtz_dir / "1DAW.mtz"))()
+    return MTZReader().read(str(mtz_dir / "1DAW.mtz"))()
 
 
 class _Reader:
@@ -34,10 +34,17 @@ class _Reader:
 
 def _load(reader):
     """Load ``reader``, returning the dataset and the R-free warnings raised."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        data = ReflectionData(verbose=0, device="cpu").load(reader)
-    return data, [str(w.message) for w in caught if "R-free flags" in str(w.message)]
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    log = logging.getLogger("torchref")
+    log.addHandler(handler)
+    try:
+        data = ReflectionData(device="cpu").load(reader)
+    finally:
+        log.removeHandler(handler)
+    messages = [r.getMessage() for r in records if r.levelno >= logging.WARNING]
+    return data, [m for m in messages if "R-free flags" in m]
 
 
 @pytest.mark.unit

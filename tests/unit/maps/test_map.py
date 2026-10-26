@@ -29,9 +29,9 @@ def model_ft_and_data(sample_structure_pair):
 def scaler(model_ft_and_data):
     """One fitted Scaler for the shared pair, so each map need not fit its own."""
     model, data, _ = model_ft_and_data
-    fitted = Scaler(model, data, verbose=0)
+    fitted = Scaler(model, data)
     fitted.initialize()
-    fitted.refine_lbfgs(verbose=False)
+    fitted.refine_lbfgs()
     return fitted
 
 
@@ -171,7 +171,7 @@ class TestCentricReflections:
         # An unfitted scaler is the identity, so the coefficients keep the model's
         # exact centric phases; a fitted bulk-solvent phase offset would not, and
         # the real map would hold only their real part.
-        m = Map(data, model, map_type="Fcalc", scaler=Scaler(model, data, verbose=0))
+        m = Map(data, model, map_type="Fcalc", scaler=Scaler(model, data))
         got = _coefficients_at(m.calculate(), data.hkl[rows])
 
         centric = data.centric[rows]
@@ -189,7 +189,6 @@ class TestCentricReflections:
             data.F_sigma,
             cell=data.cell,
             spacegroup=data.spacegroup,
-            verbose=0,
         )
         dm = DifferenceMap(perturbed, data, model)
         ref, pert = dm.data_reference, dm.data_perturbed
@@ -255,7 +254,7 @@ def _merged_and_anomalous(data):
     outlier masks recomputed on construction cannot make them differ."""
     keep = data.masks() & ~data.centric
     hkl, F, sigF = data.hkl[keep], data.F[keep], data.F_sigma[keep]
-    common = dict(cell=data.cell, spacegroup=data.spacegroup, verbose=0)
+    common = dict(cell=data.cell, spacegroup=data.spacegroup)
     merged = ReflectionData.from_tensors(hkl, F, sigF, **common)
     anom = ReflectionData.from_tensors(
         torch.cat([hkl, -hkl]),
@@ -304,14 +303,14 @@ class TestAnomalousInput:
             model,
             gridsize=grid,
             map_type="2Fo-Fc",
-            scaler=Scaler(model, merged, verbose=0),
+            scaler=Scaler(model, merged),
         ).calculate()
         result = Map(
             anom,
             model,
             gridsize=grid,
             map_type="2Fo-Fc",
-            scaler=Scaler(model, anom, verbose=0),
+            scaler=Scaler(model, anom),
         ).calculate()
 
         torch.testing.assert_close(result, expected, rtol=1e-4, atol=1e-5)

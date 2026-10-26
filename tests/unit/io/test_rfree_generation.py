@@ -31,8 +31,7 @@ def _synthetic_data(h=12, k=12, lmax=30, seed=0, device="cpu"):
     F_sigma = F * 0.1
     data = ReflectionData.from_tensors(
         hkl, F, F_sigma, (50.0, 60.0, 70.0, 90.0, 90.0, 90.0), "P 1",
-        rfree_flags=torch.ones(n, dtype=torch.bool), device=device,
-        verbose=0, friedel_merged=True,
+        rfree_flags=torch.ones(n, dtype=torch.bool), device=device, friedel_merged=True,
     )
     data.generate_rfree_flags(force=True, seed=seed)
     return data
@@ -71,7 +70,7 @@ def test_from_tensors_autogenerates_flags():
     F = torch.rand(n, generator=gg) * 100.0 + 1.0
     data = ReflectionData.from_tensors(
         hkl, F, F * 0.1, (50.0, 60.0, 70.0, 90.0, 90.0, 90.0), "P 1",
-        rfree_flags=None, device="cpu", verbose=0, friedel_merged=True,
+        rfree_flags=None, device="cpu", friedel_merged=True,
     )
     assert data.rfree_flags is not None
     assert set(torch.unique(data.rfree_flags).tolist()).issubset({0, 1})
@@ -136,7 +135,7 @@ def _duplicated_asu_data(spacegroup, transform, seed=0, device="cpu"):
     F = torch.rand(n, generator=g) * 100.0 + 1.0
     return ReflectionData.from_tensors(
         hkl, F, F * 0.1, (50.0, 60.0, 70.0, 90.0, 90.0, 90.0), spacegroup,
-        rfree_flags=None, device=device, verbose=0,
+        rfree_flags=None, device=device,
     )
 
 
@@ -198,7 +197,7 @@ def test_free_set_excludes_masked_reflections():
 def test_asu_grouping_requires_canonicalized_data():
     """Grouping raw Miller indices would not unite +h with -h, so it must raise
     rather than silently return a useless grouping."""
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.hkl = torch.tensor([[1, 2, 3], [-1, -2, -3]], dtype=torch.int32)
     with pytest.raises(RuntimeError, match="canonicalized"):
         data.asu_group_indices()

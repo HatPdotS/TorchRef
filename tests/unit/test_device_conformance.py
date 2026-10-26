@@ -126,7 +126,7 @@ def test_dataset_space_group_follows_the_requested_device(mtz_dir, monkeypatch):
     from torchref.io import FcalcDataset, ReflectionData
     from torchref.symmetry import SpaceGroup
 
-    src = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    src = ReflectionData(device="cpu").load_mtz(str(mtz_dir / "1DAW.mtz"))
     monkeypatch.setattr(config.device, "_device", torch.device("meta"))
 
     fcalc = FcalcDataset.from_cell_and_resolution(
@@ -140,7 +140,6 @@ def test_dataset_space_group_follows_the_requested_device(mtz_dir, monkeypatch):
         SpaceGroup("C 1 2 1", device="meta"),
         rfree_flags=src.rfree_flags,
         device="cpu",
-        verbose=0,
     )
 
     assert fcalc.spacegroup.device.type == "cpu"
@@ -250,7 +249,7 @@ def test_target_scalar_buffers_follow_config_dtype(pdb_dir, monkeypatch):
     from torchref.refinement.targets.geometry.non_bonded import NonBondedTarget
 
     monkeypatch.setattr(dtypes, "_float", torch.float64)
-    model = ModelFT(device="cpu", dtype_float=torch.float64, verbose=0).load_pdb(str(pdb))
+    model = ModelFT(device="cpu", dtype_float=torch.float64).load_pdb(str(pdb))
     target = NonBondedTarget(model)
 
     assert target.dtype_float == torch.float64
@@ -273,7 +272,7 @@ def test_register_target_warns_on_device_mismatch(pdb_dir):
     from torchref.refinement.loss_state import LossState
     from torchref.refinement.targets.geometry.non_bonded import NonBondedTarget
 
-    model = ModelFT(device="cpu", verbose=0).load_pdb(str(pdb))
+    model = ModelFT(device="cpu").load_pdb(str(pdb))
     target = NonBondedTarget(model)
     assert target.device.type == "cpu"
 

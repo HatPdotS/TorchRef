@@ -146,7 +146,6 @@ def test_the_mode_reaches_the_constructed_target():
             self.model = None
             self.reflection_data = None
             self.scaler = None
-            self.verbose = 0
             for k, v in cfg.items():
                 setattr(self, k, v)
 
@@ -264,7 +263,7 @@ def test_sigma_a_estimator_knobs_reach_the_estimator():
     # 4. `_xray_target_kwargs` -- the SINGLE construction path -- carries them
     kw = Refinement._xray_target_kwargs(
         types.SimpleNamespace(
-            model=None, reflection_data=None, scaler=None, verbose=0,
+            model=None, reflection_data=None, scaler=None,
             sigma_a_max=0.999, shrink=False,
         )
     )

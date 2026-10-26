@@ -110,9 +110,9 @@ def _real_inputs(mtz_dir, pdb_dir, dtype=torch.float32):
     from torchref.model.model_ft import ModelFT
     from torchref.refinement.model_error_estimation.sigma_a import epsilon_from_hkl
 
-    d = ReflectionData(verbose=0)
+    d = ReflectionData()
     d.load_mtz(str(mtz_dir / "1DAW.mtz"))
-    m = ModelFT(verbose=0, max_res=2.0)
+    m = ModelFT(max_res=2.0)
     m.load_pdb(str(pdb_dir / "1DAW.pdb"))
     with torch.no_grad():
         fc = d.structure_factors(m)

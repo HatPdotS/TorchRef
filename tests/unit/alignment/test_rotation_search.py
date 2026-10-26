@@ -32,8 +32,8 @@ def case(pdb_dir, mtz_dir):
     pdb, mtz = pdb_dir / "1DAW.pdb", mtz_dir / "1DAW.mtz"
     if not (pdb.exists() and mtz.exists()):
         pytest.skip("1DAW not available")
-    model = ModelFT(verbose=0).load_pdb(str(pdb))
-    data = ReflectionData(verbose=0).load_mtz(str(mtz))
+    model = ModelFT().load_pdb(str(pdb))
+    data = ReflectionData().load_mtz(str(mtz))
     return model, data
 
 
@@ -206,4 +206,4 @@ def test_uninitialised_model_is_rejected():
     from torchref.model import ModelFT
 
     with pytest.raises(RuntimeError, match="no coordinates"):
-        rotation_search(ModelFT(verbose=0), None, 0.8)
+        rotation_search(ModelFT(), None, 0.8)

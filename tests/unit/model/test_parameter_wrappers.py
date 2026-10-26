@@ -430,7 +430,7 @@ def test_freezing_keeps_the_refined_values(pdb_dir):
     """Rows moving from refinable to fixed keep their refined values, not the load's."""
     from torchref.model.model import Model
 
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     start = model.xyz().detach().clone()
     with torch.no_grad():

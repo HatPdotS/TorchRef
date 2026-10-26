@@ -65,7 +65,7 @@ def two_model_collection():
     """A dark + one-timepoint collection over two distinguishable stub models."""
     from torchref.model.model_collection import ModelCollection
 
-    mc = ModelCollection([_StubModel(0), _StubModel(1)], dark_key="dark", verbose=0)
+    mc = ModelCollection([_StubModel(0), _StubModel(1)], dark_key="dark")
     mc.add_dark()
     mc.add_timepoint("light", [0.7, 0.3])
     return mc
@@ -96,7 +96,7 @@ class TestPopulationFactorisation:
         """What you pass to ``add_timepoint`` is what ``fractions`` reports back."""
         from torchref.model.model_collection import ModelCollection
 
-        mc = ModelCollection([_StubModel(0), _StubModel(1)], verbose=0)
+        mc = ModelCollection([_StubModel(0), _StubModel(1)])
         mc.add_timepoint("t", [1.0 - f, f])
         assert mc["t"].fractions[1].item() == pytest.approx(f, abs=1e-6)
         assert mc["t"].fractions.sum().item() == pytest.approx(1.0, abs=1e-6)
@@ -114,7 +114,7 @@ class TestPopulationFactorisation:
         from torchref.model.model_collection import ModelCollection
 
         models = [_StubModel(0).to(any_device), _StubModel(1).to(any_device)]
-        mc = ModelCollection(models, verbose=0)
+        mc = ModelCollection(models)
         mc.add_timepoint("t", [0.6, 0.4])
         assert mc._activation_logit.dtype == models[0].dtype_float
         assert mc._activation_logit.device == models[0].device
@@ -125,7 +125,7 @@ class TestValidation:
     def test_fractions_must_sum_to_one(self):
         from torchref.model.model_collection import ModelCollection
 
-        mc = ModelCollection([_StubModel(0), _StubModel(1)], verbose=0)
+        mc = ModelCollection([_StubModel(0), _StubModel(1)])
         with pytest.raises(ValueError, match="sum to 1"):
             mc.add_timepoint("t", [0.5, 0.2])
 
@@ -133,7 +133,7 @@ class TestValidation:
     def test_fraction_count_must_match_the_model_count(self):
         from torchref.model.model_collection import ModelCollection
 
-        mc = ModelCollection([_StubModel(0), _StubModel(1)], verbose=0)
+        mc = ModelCollection([_StubModel(0), _StubModel(1)])
         with pytest.raises(ValueError, match="must match"):
             mc.add_timepoint("t", [1.0])
 
@@ -147,7 +147,7 @@ class TestValidation:
         from torchref.model.model_collection import ModelCollection
 
         models = [_StubModel(i) for i in range(len(fractions))]
-        mc = ModelCollection(models, verbose=0)
+        mc = ModelCollection(models)
         with pytest.raises(ValueError, match="non-negative"):
             mc.add_timepoint("t", fractions)
 
@@ -198,8 +198,8 @@ class TestFreezing:
         re-applies each base model's refinable sets."""
         from torchref.model import ModelCollection, ModelFT
 
-        model = ModelFT(max_res=3.0, verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb"))
-        mc = ModelCollection([model, model.copy()], verbose=0)
+        model = ModelFT(max_res=3.0).load_pdb(str(pdb_dir / "1DAW.pdb"))
+        mc = ModelCollection([model, model.copy()])
 
         mc.freeze_structures()
         for base in mc.base_models:
@@ -359,7 +359,7 @@ class TestSharedActivation:
         between the two excited states."""
         from torchref.model.model_collection import ModelCollection
 
-        mc = ModelCollection([_StubModel(i) for i in range(3)], verbose=0)
+        mc = ModelCollection([_StubModel(i) for i in range(3)])
         mc.add_dark()
         mc.add_timepoint("early", [0.7, 0.3, 0.0])
         mc.add_timepoint("late", [0.7, 0.0, 0.3])
@@ -386,7 +386,7 @@ class TestSharedActivation:
         asked for, so this raises and names the escape hatch."""
         from torchref.model.model_collection import ModelCollection
 
-        mc = ModelCollection([_StubModel(0), _StubModel(1)], verbose=0)
+        mc = ModelCollection([_StubModel(0), _StubModel(1)])
         mc.add_dark()
         mc.add_timepoint("early", [0.7, 0.3])
 
@@ -398,7 +398,7 @@ class TestSharedActivation:
         """A pure-reference row carries no activation information."""
         from torchref.model.model_collection import ModelCollection
 
-        mc = ModelCollection([_StubModel(0), _StubModel(1)], verbose=0)
+        mc = ModelCollection([_StubModel(0), _StubModel(1)])
         mc.add_timepoint("light", [0.78, 0.22])
         mc.add_dark()
         assert float(mc.alpha_mean) == pytest.approx(0.22, abs=1e-5)
@@ -408,7 +408,7 @@ class TestSharedActivation:
         """Checking the shared activation reads the live parameter without warning."""
         from torchref.model.model_collection import ModelCollection
 
-        mc = ModelCollection([_StubModel(i) for i in range(3)], verbose=0)
+        mc = ModelCollection([_StubModel(i) for i in range(3)])
         mc.add_dark()
         mc.add_timepoint("early", [0.7, 0.3, 0.0])
         mc.unfreeze_all_fractions()

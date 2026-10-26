@@ -21,7 +21,7 @@ TEST_MTZ = os.path.join(
 
 @pytest.fixture
 def data() -> ReflectionData:
-    d = ReflectionData(verbose=0)
+    d = ReflectionData()
     d.load_mtz(TEST_MTZ)
     return d
 
@@ -101,7 +101,7 @@ def test_mtz_round_trip_preserves_three_classes(tmp_path, data):
     n_w, n_f, n_v = data.work.n, data.free.n, data.validation.n
     out = str(tmp_path / "rt.mtz")
     data.write_mtz(out)
-    d2 = ReflectionData(verbose=0)
+    d2 = ReflectionData()
     d2.load_mtz(out)
     assert d2.work.n == n_w
     assert d2.free.n == n_f

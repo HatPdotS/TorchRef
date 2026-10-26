@@ -33,7 +33,6 @@ def _rebuild(hkl, src):
         src.cell,
         src.spacegroup,
         rfree_flags=src.rfree_flags,
-        verbose=0,
         friedel_merged=True,
     )
 
@@ -41,7 +40,7 @@ def _rebuild(hkl, src):
 @pytest.fixture(scope="module")
 def canonical_and_negated(mtz_dir):
     """The same reflections indexed two ways: inside the CCP4 ASU, and negated."""
-    src = ReflectionData(verbose=0)
+    src = ReflectionData()
     src.load_mtz(str(mtz_dir / f"{CODE}.mtz"))
     return _rebuild(src.hkl, src), _rebuild(-src.hkl, src)
 
@@ -51,7 +50,7 @@ def anomalous_data(mtz_dir, tmp_path):
     """1DAW stacked into explicit (+/-) Bijvoet rows, so mates really are paired."""
     out = tmp_path / "anom_in.mtz"
     rs.read_mtz(str(mtz_dir / "1DAW.mtz")).stack_anomalous().write_mtz(str(out))
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(str(out))
     return data
 
@@ -61,7 +60,7 @@ def _model(pdb_dir, data):
     # check compares against a gemmi calculation that calls ``remove_hydrogens``.
     # Keeping or generating hydrogens would have torchref computing a different
     # structure.
-    m = ModelFT(verbose=0, max_res=2.0, hydrogens="strip")
+    m = ModelFT(max_res=2.0, hydrogens="strip")
     m.load_pdb(str(pdb_dir / f"{CODE}.pdb"))
     m.cell, m.spacegroup = data.cell, data.spacegroup
     return m
@@ -159,7 +158,7 @@ class TestFriedelMergedInference:
     """Needing conjugation to reach the ASU is not the same as carrying mates."""
 
     def test_already_canonical_is_merged(self, mtz_dir):
-        d = ReflectionData(verbose=0)
+        d = ReflectionData()
         d.load_mtz(str(mtz_dir / f"{CODE}.mtz"))
         assert not bool(d.friedel_flags.any())
         assert d.friedel_merged is True
@@ -167,12 +166,12 @@ class TestFriedelMergedInference:
     def test_reindexed_without_mates_stays_merged(self, mtz_dir):
         """A merged dataset indexed in another convention flags rows but has no
         mates, so f'' must stay off and the legacy layout must stay selected."""
-        src = ReflectionData(verbose=0)
+        src = ReflectionData()
         src.load_mtz(str(mtz_dir / f"{CODE}.mtz"))
         # No explicit friedel_merged: the inference is what is under test.
         neg = ReflectionData.from_tensors(
             -src.hkl, src.F, src.F_sigma, src.cell, src.spacegroup,
-            rfree_flags=src.rfree_flags, verbose=0,
+            rfree_flags=src.rfree_flags,
         )
         assert float(neg.friedel_flags.float().mean()) > 0.4
         assert neg.friedel_merged is True
@@ -186,7 +185,7 @@ class TestAnomalousLayoutUnaffected:
     """Canonicalising early must not flatten the Bijvoet difference."""
 
     def test_mates_keep_distinct_amplitudes(self, anomalous_data, pdb_dir):
-        model = ModelFT(verbose=0, max_res=2.0, wavelength=1.54, apply_bijvoet=True)
+        model = ModelFT(max_res=2.0, wavelength=1.54, apply_bijvoet=True)
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
             fcalc = anomalous_data.structure_factors(model)
@@ -208,10 +207,10 @@ class TestAnomalousLayoutUnaffected:
 
 
 def test_quiet_builds_write_nothing(mtz_dir, capsys):
-    """verbose=0 reindexing onto the CCP4 ASU, and generating an HKL set, are silent."""
+    """By default, reindexing onto the CCP4 ASU, and generating an HKL set, are silent."""
     from torchref.io import FcalcDataset
 
-    src = ReflectionData(verbose=0)
+    src = ReflectionData()
     src.load_mtz(str(mtz_dir / "1DAW.mtz"))
     capsys.readouterr()
 
@@ -222,7 +221,6 @@ def test_quiet_builds_write_nothing(mtz_dir, capsys):
         src.cell,
         src.spacegroup,
         rfree_flags=src.rfree_flags,
-        verbose=0,
     )
     FcalcDataset.from_cell_and_resolution(src.cell, src.spacegroup, d_min=3.0)
 

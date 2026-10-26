@@ -133,7 +133,7 @@ def test_dropped_rows_leave_a_positional_index(pdb_dir, tmp_path):
 
     from torchref.model.model import Model
 
-    src = Model(verbose=0)
+    src = Model()
     src.load_pdb(str(pdb_dir / "3GR5.pdb"))
     df = src.pdb.copy()
     n_before = len(df)
@@ -144,7 +144,7 @@ def test_dropped_rows_leave_a_positional_index(pdb_dir, tmp_path):
     cell = src.cell.data.cpu().numpy()
     sg = src.spacegroup
 
-    model = Model(verbose=0)
+    model = Model()
     model.load(lambda: (df, cell, sg))
 
     assert len(model.pdb) == n_before - len(victims)
@@ -164,7 +164,7 @@ def daw_model(pdb_dir):
     """1DAW, loaded per test: the selection methods mutate the model in place."""
     from torchref.model.model import Model
 
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     return model
 

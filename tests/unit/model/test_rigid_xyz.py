@@ -12,7 +12,7 @@ from torchref.model.parameter_wrappers import MixedTensor
 @pytest.fixture
 def fresh_modelft(pdb_dir):
     """Function-scoped: ``use_rigid_xyz`` mutates the model in place."""
-    m = ModelFT(verbose=0)
+    m = ModelFT()
     m.load_pdb(str(pdb_dir / "1DAW.pdb"))
     return m
 
@@ -290,7 +290,7 @@ class TestRigidXYZTensor:
 
     @pytest.mark.unit
     def test_multi_chain_grouping(self, pdb_dir):
-        m = ModelFT(verbose=0)
+        m = ModelFT()
         m.load_pdb(str(pdb_dir / "3E98.pdb"))
         chain_ids_pdb = list(m.pdb["chainid"].unique())
         m.use_rigid_xyz()

@@ -42,9 +42,9 @@ def test_solvent_mask_stays_in_float64(double_cpu, sample_structure_pair):
     from torchref.model.model_ft import ModelFT
     from torchref.scaling.solvent import SolventModel
 
-    model = ModelFT(verbose=0)
+    model = ModelFT()
     model.load_cif(str(sample_structure_pair["model"]))
-    solvent = SolventModel(model, verbose=0)
+    solvent = SolventModel(model)
 
     with _Float32Recorder() as recorder:
         mask = solvent.get_solvent_mask()
@@ -61,9 +61,9 @@ def test_solvent_mask_follows_the_model_dtype(sample_structure_pair):
     from torchref.model.model_ft import ModelFT
     from torchref.scaling.solvent import SolventModel
 
-    model = ModelFT(verbose=0, device=torch.device("cpu"))
+    model = ModelFT(device=torch.device("cpu"))
     model.load_cif(str(sample_structure_pair["model"]))
-    solvent = SolventModel(model, verbose=0)
+    solvent = SolventModel(model)
     expected = solvent.get_solvent_mask().clone()
 
     with cpu_double_precision():

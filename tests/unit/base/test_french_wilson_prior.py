@@ -288,7 +288,7 @@ def test_one_wild_reflection_does_not_drag_its_neighbours():
 @pytest.mark.unit
 def test_prior_matches_the_shell_mean_on_deposited_data(mtz_dir):
     """On well-measured data the fitted prior changes no amplitude materially."""
-    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    data = ReflectionData().load_mtz(str(mtz_dir / "1DAW.mtz"))
     assert data.I is not None, "1DAW should load via the intensity path"
     I, sigma_I, d = data.I, data.I_sigma, data.resolution
 
@@ -467,7 +467,7 @@ def test_reflections_on_symmetry_axes_get_epsilon_times_the_prior(mtz_dir):
     With epsilon in the fit their measured intensities match their expected
     ones; without it they are a multiple of it.
     """
-    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "4BX9.mtz"))
+    data = ReflectionData().load_mtz(str(mtz_dir / "4BX9.mtz"))
     I, sigma_I, d, hkl = data.I, data.I_sigma, data.resolution, data.hkl
     group = data.spacegroup
     multiplicity = group.epsilon(hkl, friedel=False)

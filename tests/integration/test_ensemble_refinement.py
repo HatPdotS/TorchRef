@@ -36,7 +36,6 @@ def refinement() -> EnsembleRefinement:
         val_fraction_of_free=0.5,
         xray_mode="ls",
         seed=42,
-        verbose=0,
         max_res=3.0,
     )
 
@@ -59,7 +58,6 @@ def _build_with_amber(data_file=TEST_MTZ, **kwargs):
         amber_weight=1.0,
         seed=42,
         **kwargs,
-        verbose=0,
         max_res=3.0,
     )
 
@@ -86,7 +84,6 @@ def low_rank_refinement() -> EnsembleRefinement:
         low_rank_modes=2,
         adam_steps_per_cycle=2,
         seed=42,
-        verbose=0,
         max_res=3.0,
     )
 
@@ -139,4 +136,4 @@ def test_refine_decreases_rwork_and_keeps_ensemble_spread(refinement):
 
 def test_refine_rejects_an_unknown_lr_schedule():
     with pytest.raises(ValueError, match="lr_schedule"):
-        EnsembleRefinement(verbose=0, lr_schedule="linear").refine(macro_cycles=1)
+        EnsembleRefinement(lr_schedule="linear").refine(macro_cycles=1)

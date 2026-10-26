@@ -49,7 +49,7 @@ def _row(model, chain, resseq, name, altloc=""):
 
 
 def _load(path):
-    model = Model(verbose=0, hydrogens="strip")
+    model = Model(hydrogens="strip")
     model.load_pdb(str(path)) if str(path).endswith(".pdb") else model.load_cif(str(path))
     model.ctx.set_cif_path(None)
     return model
@@ -225,7 +225,7 @@ def test_altloc_conformers_emit_shared_restraints_once(pdb_dir, code):
 
     Hydrogens are kept: 7L84's split residues share their backbone hydrogens.
     """
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / f"{code}.pdb"))
     restraints = model.restraints
     altloc = restraints.topology.atoms.altloc

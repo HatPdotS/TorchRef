@@ -172,7 +172,7 @@ def test_provenance_keys_are_tag_names(cif_sf_dir):
     assert data["F_col"] == "_refln.F_meas_au"
     assert data["SIGF_col"] == "_refln.F_meas_sigma_au"
     assert data["R-free-source"] == "_refln.status"
-    assert "F=_refln.F_meas_au" in repr(ReflectionData(verbose=0).load_cif(path))
+    assert "F=_refln.F_meas_au" in repr(ReflectionData().load_cif(path))
 
 
 @pytest.mark.unit
@@ -270,7 +270,7 @@ def test_a_quote_inside_a_value_does_not_open_a_string():
 
 @pytest.mark.unit
 def test_torsions_keep_their_id():
-    path = get_library_manager(verbose=0).get_cif_file("DA")
+    path = get_library_manager().get_cif_file("DA")
     torsions = RestraintCIFReader(str(path)).get_all_restraints()["DA"]["torsions"]
 
     puckers = {f"{form}-nyu{i}" for form in ("C2e", "C3e") for i in range(5)}
@@ -288,7 +288,7 @@ def test_plane_atoms_without_an_esd_get_the_link_plane_default(tmp_path):
             if line.strip() != "_chem_comp_plane_atom.dist_esd"
         ]
 
-    source = get_library_manager(verbose=0).get_cif_file("PHE")
+    source = get_library_manager().get_cif_file("PHE")
     path = _write_edited(source, tmp_path, drop_plane_esds)
     planes = RestraintCIFReader(path).get_all_restraints()["PHE"]["planes"]
 

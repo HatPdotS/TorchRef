@@ -189,7 +189,6 @@ def gpu_refinement(_1daw_pair):
         # targets, and xray is only one row of the comparison. `nll` is the successor of the
         # retired `gaussian` and keeps the fused Triton kernel.
         target_mode="nll",
-        verbose=0,
     )
     ref.scaler.initialize()
     ref.scaler.refine_lbfgs()
@@ -265,7 +264,7 @@ def gpu_glycoprotein(pdb_dir):
     pdb = pdb_dir / "3A5V.pdb"
     if not pdb.exists():
         pytest.skip("3A5V fixture not present")
-    model = Model(verbose=0, device=torch.device("cuda"))
+    model = Model(device=torch.device("cuda"))
     model.load_pdb(str(pdb))
     return model
 
@@ -346,7 +345,6 @@ def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
         pdb=str(pdb),
         device=device,
         target_mode=target_mode,
-        verbose=0,
     )
     ref.scaler.initialize()
     ref.scaler.refine_lbfgs()
@@ -555,7 +553,7 @@ def test_eager_gpu_hessian_iso(tmp_path):
             )
         lines.append("END")
         pdb.write_text("\n".join(lines) + "\n")
-        m = ModelFT(max_res=1.5, verbose=0, device=torch.device("cuda"))
+        m = ModelFT(max_res=1.5, device=torch.device("cuda"))
         m.load_pdb(str(pdb))
         hkl = torch.tensor(
             [h for h in itertools.product(range(-3, 4), repeat=3) if any(h)],
@@ -583,7 +581,7 @@ def test_eager_gpu_hessian_aniso(pdb_dir):
     f0, c0 = dtypes.float, dtypes.complex
     dtypes.float, dtypes.complex = torch.float64, torch.complex128
     try:
-        m = ModelFT(max_res=1.5, verbose=0, device=torch.device("cuda"))
+        m = ModelFT(max_res=1.5, device=torch.device("cuda"))
         m.load_pdb(str(pdb))
         assert m.get_aniso()[0].shape[0] > 0, "expected anisotropic atoms"
         hkl = torch.tensor(

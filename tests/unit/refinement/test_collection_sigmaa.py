@@ -25,7 +25,7 @@ class TestCollectionSigmaA:
         from torchref.scaling.collection_scaler import CollectionScaler
 
         # Reuse LBFGSRefinement to get a properly-loaded model + reflection data.
-        ref = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb), verbose=0)
+        ref = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb))
         data = ref.reflection_data
         model = ref.model
 
@@ -33,11 +33,11 @@ class TestCollectionSigmaA:
         dc.add_dataset("dark", data, set_as_reference=True)
         dc.add_dataset("t1", data)
 
-        mc = ModelCollection([model], dark_key="dark", verbose=0)
+        mc = ModelCollection([model], dark_key="dark")
         mc.add_dark()  # frozen [1.0]
         mc.add_timepoint("t1", [1.0])
 
-        scaler = CollectionScaler(dc, mc, verbose=0)
+        scaler = CollectionScaler(dc, mc)
         scaler.initialize()
         return dc, mc, scaler
 
@@ -47,7 +47,7 @@ class TestCollectionSigmaA:
         dc, mc, scaler = collection
         n = dc.hkl.shape[0]
 
-        target = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
+        target = CollectionMLTarget(dc, mc, scaler=scaler)
         target.forward()  # estimates + caches one shared beta on the common HKL
         _c = target._sigma_a._cache
         beta, eps = _c.beta, _c.epsilon
@@ -66,7 +66,7 @@ class TestCollectionSigmaA:
         from torchref.refinement.targets import CollectionMLTarget
 
         dc, mc, scaler = collection
-        target = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
+        target = CollectionMLTarget(dc, mc, scaler=scaler)
 
         loss = target.forward()
         assert torch.isfinite(loss)
@@ -79,7 +79,7 @@ class TestCollectionSigmaA:
         from torchref.refinement.targets import CollectionMLTarget
 
         dc, mc, scaler = collection
-        target = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
+        target = CollectionMLTarget(dc, mc, scaler=scaler)
         target.forward()
         assert target._sigma_a._cache is not None
         target.maintenance()

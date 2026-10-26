@@ -36,7 +36,7 @@ class TestScalerInitialization:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
         
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         
         assert scaler.model is not None
         assert scaler._data is not None
@@ -88,7 +88,7 @@ class TestScalerAnisotropy:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
         
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         scaler.setup_anisotropy_correction()
         
         assert hasattr(scaler, 'U')
@@ -107,7 +107,7 @@ class TestScalerAnisotropy:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
         
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         scaler.setup_anisotropy_correction()
         
         correction = scaler.anisotropy_correction()
@@ -133,7 +133,7 @@ class TestScalerBuffers:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
         
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         
         # s should be the scattering vectors
         assert scaler.s is not None
@@ -153,7 +153,7 @@ class TestScalerBuffers:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
         
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         
         assert scaler.bins is not None
         assert scaler.bins.shape[0] == data.hkl.shape[0]
@@ -179,7 +179,7 @@ class TestScalerDeviceHandling:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
 
         expected = get_default_device().type
         assert scaler.device.type == expected
@@ -199,11 +199,11 @@ class TestBulkSolventPhase:
         from torchref.model import ModelFT
         from torchref.scaling.scaler import Scaler
 
-        data = ReflectionData(verbose=0).load_mtz(
+        data = ReflectionData().load_mtz(
             str(sample_structure_pair["reflections"])
         )
-        model = ModelFT(verbose=0).load_cif(str(sample_structure_pair["model"]))
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        model = ModelFT().load_cif(str(sample_structure_pair["model"]))
+        scaler = Scaler(model=model, data=data, nbins=10)
         fcalc = scaler.compute_fcalc().detach()
         scaler.calc_initial_scale(fcalc)
         scaler.setup_solvent()

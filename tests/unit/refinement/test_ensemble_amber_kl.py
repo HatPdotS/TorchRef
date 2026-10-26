@@ -28,13 +28,13 @@ TEST_PDB = os.path.join(
 def ensemble() -> EnsembleModel:
     return EnsembleModel.from_single(
         TEST_PDB, n_members=8, perturb_sigma=0.5, b_const=5.0,
-        seed=42, verbose=0, hydrogens="add",
+        seed=42, hydrogens="add",
     )
 
 
 def test_entropy_only_mode_is_finite(ensemble):
     target = EnsembleAmberKLTarget(
-        model=ensemble, lam=1.0, kT=0.0, verbose=0
+        model=ensemble, lam=1.0, kT=0.0
     )
     loss = target.forward()
     assert torch.isfinite(loss)
@@ -42,7 +42,7 @@ def test_entropy_only_mode_is_finite(ensemble):
 
 def test_collapsed_ensemble_yields_higher_loss(ensemble):
     target = EnsembleAmberKLTarget(
-        model=ensemble, lam=1.0, kT=0.0, verbose=0
+        model=ensemble, lam=1.0, kT=0.0
     )
     loss_spread = target.forward().item()
 
@@ -65,7 +65,7 @@ def test_collapsed_ensemble_yields_higher_loss(ensemble):
 
 def test_gradient_flows_back_to_xyz(ensemble):
     target = EnsembleAmberKLTarget(
-        model=ensemble, lam=1.0, kT=0.0, verbose=0
+        model=ensemble, lam=1.0, kT=0.0
     )
     ensemble.xyz.refinable_params.grad = None
     loss = target.forward()

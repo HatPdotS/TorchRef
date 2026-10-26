@@ -53,7 +53,7 @@ def pair(mtz_dir, pdb_dir, tmp_path_factory):
     assert mtz.is_file() and pdb.is_file()
     out = tmp_path_factory.mktemp("ded_weights_cli")
 
-    data = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz))
+    data = ReflectionData(device="cpu").load_mtz(str(mtz))
     n = len(data)
     idx = torch.arange(n, dtype=get_int_dtype())
     dark = data.__select__(idx < int(n * 0.97))
@@ -72,7 +72,6 @@ def pair(mtz_dir, pdb_dir, tmp_path_factory):
         spacegroup=sel.spacegroup,
         rfree_flags=sel.rfree_flags,
         device="cpu",
-        verbose=0,
     )
     light.write_mtz(str(out / "light.mtz"))
 

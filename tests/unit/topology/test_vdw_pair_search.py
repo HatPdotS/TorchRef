@@ -29,7 +29,7 @@ def _image_table(path):
     Pinned to CPU, not ``TORCHREF_DEVICE``: the k-d tree is the CPU search, and the
     accelerator runners would otherwise put the cell on the GPU next to CPU tensors.
     """
-    model = Model(verbose=0, device=torch.device("cpu"))
+    model = Model(device=torch.device("cpu"))
     model.load_pdb(str(path))
     cell, sg = model.ctx.cell, model.ctx.spacegroup
     xyz = model.xyz().detach().to(dtypes.float)
@@ -153,7 +153,7 @@ def test_bonded_pairs_are_not_in_the_vdw_list(pdb_dir):
     """
     from torchref.base.coordinates import is_symmetry_image
 
-    model = Model(verbose=0, device=torch.device("cpu"))
+    model = Model(device=torch.device("cpu"))
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     restraints = model.restraints
     atoms = restraints.topology.atoms
@@ -191,7 +191,7 @@ def test_pair_deduplication_needs_no_int64_scatter_index(pdb_dir, monkeypatch):
         return scatter_reduce_(self, dim, index, *args, **kwargs)
 
     monkeypatch.setattr(torch.Tensor, "scatter_reduce_", int64_index_only)
-    model = Model(verbose=0, device=torch.device("cpu"))
+    model = Model(device=torch.device("cpu"))
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
 
     assert model.restraints.restraints["vdw"]["indices"].shape[0] > 0

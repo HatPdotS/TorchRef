@@ -30,7 +30,7 @@ MTZ_1DAW = TEST_FILES / "mtz" / "1DAW.mtz"
 
 
 def _scale_and_rwork(model: ModelFT, data) -> float:
-    scaler = Scaler(model=model, data=data, nbins=20, verbose=0)
+    scaler = Scaler(model=model, data=data, nbins=20)
     fcalc = model(data.hkl)
     scaler.initialize(fcalc)
     scaler.refine_lbfgs(fcalc=fcalc)
@@ -81,7 +81,6 @@ def test_fit_to_data_recovers_rotation_and_translation():
         n_shells=20,
         n_rotation_peaks=200,
         do_translation=True,
-        verbose=0,
     )
 
     # Recovered rotation (modulo C2). Compare canonical vs aligned via centroid.

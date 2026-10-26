@@ -34,7 +34,7 @@ def refinement(pdb_dir, mtz_dir):
     from torchref import LBFGSRefinement
 
     ref = LBFGSRefinement(
-        data_file=str(mtz), pdb=str(pdb), target_mode="ml", verbose=0
+        data_file=str(mtz), pdb=str(pdb), target_mode="ml"
     )
     ref.get_scales()
     return ref

@@ -33,7 +33,7 @@ MTZ_1DAW = TEST_FILES / "mtz" / "1DAW.mtz"
 @pytest.fixture(scope="module")
 def setup():
     data = ReflectionData().load_mtz(str(MTZ_1DAW))
-    model = ModelFT(verbose=0).load_pdb(str(PDB_1DAW))
+    model = ModelFT().load_pdb(str(PDB_1DAW))
     a, b, c, al, be, ga = model.cell.key
     model.cell = Cell(
         [a * 1.25, b * 1.1, c * 0.9, al, be, ga],

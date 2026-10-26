@@ -22,7 +22,7 @@ TEST_PDB = os.path.join(
 def small_ensemble() -> EnsembleModel:
     return EnsembleModel.from_single(
         TEST_PDB, n_members=5, perturb_sigma=0.2, b_const=5.0,
-        seed=42, verbose=0,
+        seed=42,
     )
 
 
@@ -82,7 +82,7 @@ def test_multimodel_pdb_round_trip(tmp_path, small_ensemble):
     out = str(tmp_path / "ens.pdb")
     ens.write_pdb(out)
     ens2 = EnsembleModel.from_multimodel_pdb(
-        out, perturb_sigma=0.0, b_const=5.0, verbose=0,
+        out, perturb_sigma=0.0, b_const=5.0,
     )
     assert ens2.n_members == ens.n_members
     assert ens2.n_atoms_per_member == ens.n_atoms_per_member
@@ -195,7 +195,6 @@ def test_copy_keeps_a_low_rank_xyz():
         perturb_sigma=0.2,
         b_const=5.0,
         seed=42,
-        verbose=0,
     )
     ens.enable_low_rank(2)
     dup = ens.copy()
@@ -209,7 +208,7 @@ def test_copy_keeps_a_low_rank_xyz():
 # Spare (dead) slots of a population pool
 # --------------------------------------------------------------------------
 
-_POOL_KW = dict(perturb_sigma=0.2, b_const=5.0, seed=42, verbose=0)
+_POOL_KW = dict(perturb_sigma=0.2, b_const=5.0, seed=42)
 
 
 def _member_occupancy(ens):
@@ -233,7 +232,7 @@ def test_dead_slots_do_not_contribute_to_fcalc():
 def test_multimodel_pool_occupancy_sums_to_one(tmp_path, small_ensemble):
     path = str(tmp_path / "ens.pdb")
     small_ensemble.write_pdb(path)
-    ens = EnsembleModel.from_multimodel_pdb(path, n_members=2, n_max=4, verbose=0)
+    ens = EnsembleModel.from_multimodel_pdb(path, n_members=2, n_max=4)
     occ = _member_occupancy(ens)
     assert torch.allclose(occ, torch.tensor([0.5, 0.5, 0.0, 0.0], dtype=occ.dtype))
 
@@ -276,7 +275,7 @@ def test_write_pdb_writes_alive_members_with_their_weights(tmp_path):
     expected = ens.member_weights()[:3].detach().cpu()
     written = torch.tensor(first_atoms, dtype=expected.dtype)
     assert torch.allclose(written, expected, atol=6e-3)
-    assert EnsembleModel.from_multimodel_pdb(str(path), verbose=0).n_members == 3
+    assert EnsembleModel.from_multimodel_pdb(str(path)).n_members == 3
 
 
 def test_bifurcate_refuses_a_low_rank_xyz():

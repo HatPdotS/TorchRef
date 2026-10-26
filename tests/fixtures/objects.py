@@ -25,7 +25,7 @@ def compatibility_model(compatibility_structure_pair: dict) -> Model:
 
     path = compatibility_structure_pair["model"]
     assert path.is_file()
-    return Model(verbose=0).load_cif(str(path))
+    return Model().load_cif(str(path))
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def compatibility_model_and_data(
     assert path.is_file()
     return {
         "model": compatibility_model,
-        "data": ReflectionData(verbose=0).load_mtz(str(path)),
+        "data": ReflectionData().load_mtz(str(path)),
     }
 
 
@@ -58,7 +58,7 @@ def loaded_model_ft(sample_cif_file: Path) -> ModelFT:
     """Load a fresh mutable Fourier model with a 2 Å resolution limit."""
     from torchref.model import ModelFT
 
-    return ModelFT(max_res=2.0, verbose=0).load_cif(str(sample_cif_file))
+    return ModelFT(max_res=2.0).load_cif(str(sample_cif_file))
 
 
 @pytest.fixture
@@ -103,7 +103,7 @@ def initialized_scaler(model_and_data: dict[str, Any]) -> Scaler:
     model = model_and_data["model"]
     data = model_and_data["data"]
 
-    scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+    scaler = Scaler(model=model, data=data, nbins=10)
     return scaler
 
 
@@ -115,7 +115,6 @@ def model_with_restraints(loaded_model: Model) -> dict[str, Any]:
     restraints = Restraints(
         topology=loaded_model.ctx.topology,
         xyz=loaded_model.xyz(),
-        verbose=0,
     )
     return {"model": loaded_model, "restraints": restraints}
 
@@ -144,7 +143,7 @@ def device_model_bundle(
             pytest.skip("1DAW.pdb fixture not present")
         from torchref.model import ModelFT
 
-        _device_model_cache[key] = ModelFT(device=any_device, verbose=0).load_pdb(
+        _device_model_cache[key] = ModelFT(device=any_device).load_pdb(
             str(pdb)
         )
     return {"model": _device_model_cache[key]}

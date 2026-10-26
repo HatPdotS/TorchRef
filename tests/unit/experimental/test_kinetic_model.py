@@ -23,7 +23,6 @@ pytestmark = pytest.mark.unit
 def _model(flow_chart, times, **kwargs):
     kwargs.setdefault("instrument_function", "none")
     kwargs.setdefault("activation_level", 1.0)
-    kwargs.setdefault("verbose", 0)
     return KineticModel(
         flow_chart, torch.tensor(times, dtype=get_float_dtype()), **kwargs
     )
@@ -94,7 +93,6 @@ class TestWrapper:
             flow_chart="A->B,B->C,C->D",
             time=torch.linspace(0, 100, 50),
             rate_constants={"A->B": 1.0, "B->C": 0.1, "C->D": 0.01},
-            verbose=0,
             **kwargs,
         )
 
@@ -120,7 +118,6 @@ class TestLightActivatedMapping:
             time=self.times,
             rate_constants={"A->B": 1.0, "B->A": 0.1, "B->C": 0.01},
             light_activated=True,
-            verbose=0,
             **kwargs,
         )
 

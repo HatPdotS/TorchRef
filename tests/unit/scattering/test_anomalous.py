@@ -259,7 +259,7 @@ END
         """Test that anomalous correction modifies structure factors."""
         from torchref.model import ModelFT
 
-        model = ModelFT(wavelength=1.0, anomalous_threshold=0.5, verbose=0)
+        model = ModelFT(wavelength=1.0, anomalous_threshold=0.5)
         model.load_pdb(test_pdb_file)
 
         hkl = torch.tensor(
@@ -291,7 +291,7 @@ END
         """Test that Friedel pairs are not conjugates due to f''."""
         from torchref.model import ModelFT
 
-        model = ModelFT(wavelength=1.0, anomalous_threshold=0.5, verbose=0)
+        model = ModelFT(wavelength=1.0, anomalous_threshold=0.5)
         model.load_pdb(test_pdb_file)
 
         hkl = torch.tensor(
@@ -344,7 +344,7 @@ END
 
         # --- apply_bijvoet=True: f'' included, Friedel's law broken -------------
         bij = ModelFT(
-            wavelength=1.0, anomalous_threshold=0.5, apply_bijvoet=True, verbose=0
+            wavelength=1.0, anomalous_threshold=0.5, apply_bijvoet=True
         )
         bij.load_pdb(test_pdb_file)
         bij_asym = asymmetry(
@@ -361,7 +361,7 @@ END
         """Test that gradients flow through anomalous correction."""
         from torchref.model import ModelFT
 
-        model = ModelFT(wavelength=1.0, anomalous_threshold=0.5, verbose=0)
+        model = ModelFT(wavelength=1.0, anomalous_threshold=0.5)
         model.load_pdb(test_pdb_file)
         # xyz.refinable_params should already have requires_grad=True by default
 
@@ -389,7 +389,7 @@ END
         """
         from torchref.model import ModelFT
 
-        model = ModelFT(wavelength=1.0, verbose=0)
+        model = ModelFT(wavelength=1.0)
         model.load_pdb(test_pdb_file)
         hkl = torch.tensor(
             [[1, 2, 3], [2, 1, 0]], dtype=torch.int32, device=model.device
@@ -404,7 +404,7 @@ END
             "changing the wavelength left F unchanged: a stale anomalous or forward "
             "cache served the old f'"
         )
-        fresh = ModelFT(wavelength=1.5418, verbose=0)
+        fresh = ModelFT(wavelength=1.5418)
         fresh.load_pdb(test_pdb_file)
         torch.testing.assert_close(second, fresh(hkl).detach())
 

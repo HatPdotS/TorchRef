@@ -43,7 +43,6 @@ def _data(hkl, I, sigma, sg=SG, **kw):
         sigma / (2.0 * I.clamp(min=1e-3).sqrt()),
         CELL,
         sg,
-        verbose=0,
         device="cpu",
         I=I,
         I_sigma=sigma,
@@ -65,7 +64,6 @@ def _by_hkl(data, values):
 def test_p1_round_trip_recovers_values():
     d = _synthetic()
     p1 = d.expand_to_p1()
-    p1.verbose = 0
     merged, stats = merge_to_spacegroup(p1, SG)
 
     merged._assert_per_reflection_consistent()
@@ -85,7 +83,6 @@ def test_noise_gives_the_expected_rmeas():
     I0, sigma = 100.0, 10.0
     p1 = _data(hkl, torch.full((len(hkl),), I0), torch.full((len(hkl),), sigma))
     p1 = p1.expand_to_p1()
-    p1.verbose = 0
     g = torch.Generator().manual_seed(0)
     p1.I = p1.I + sigma * torch.randn(len(p1.I), generator=g)
 
@@ -126,7 +123,6 @@ def test_incompatible_cell_is_refused():
 @pytest.mark.unit
 def test_row_order_does_not_matter():
     p1 = _synthetic().expand_to_p1()
-    p1.verbose = 0
     g = torch.Generator().manual_seed(1)
     p1.I = p1.I + torch.randn(len(p1.I), generator=g)
     shuffled = p1.__select__(torch.randperm(len(p1.hkl), generator=g))
@@ -142,7 +138,6 @@ def test_row_order_does_not_matter():
 @pytest.mark.unit
 def test_same_seed_gives_identical_statistics():
     p1 = _synthetic().expand_to_p1()
-    p1.verbose = 0
     p1.I = p1.I + torch.randn(len(p1.I), generator=torch.Generator().manual_seed(2))
     assert merge_to_spacegroup(p1, SG, seed=3)[1] == merge_to_spacegroup(p1, SG, seed=3)[1]
 
@@ -150,7 +145,6 @@ def test_same_seed_gives_identical_statistics():
 @pytest.mark.unit
 def test_masked_and_unusable_observations_do_not_contribute():
     p1 = _synthetic().expand_to_p1()
-    p1.verbose = 0
     canon, _, _, order = SpaceGroup(SG).canonicalize_hkl(p1.hkl, include_friedel=True)
     per_row = torch.empty_like(canon)
     per_row[order] = canon
@@ -202,10 +196,9 @@ def test_bijvoet_mates_stay_apart_and_share_rfree():
 
 @pytest.mark.unit
 def test_amplitude_only_data_merge_on_f_squared(mtz_dir):
-    d = ReflectionData(verbose=0, device="cpu").load_mtz(str(mtz_dir / "3E98.mtz"))
+    d = ReflectionData(device="cpu").load_mtz(str(mtz_dir / "3E98.mtz"))
     assert d.I is None
     p1 = d.expand_to_p1()
-    p1.verbose = 0
     _, stats = merge_to_spacegroup(p1, d.spacegroup)
     assert stats.on == "F^2"
     assert stats.overall.r_merge == pytest.approx(0.0, abs=1e-5)

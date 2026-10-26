@@ -63,7 +63,7 @@ def test_disulfide_values_keep_float64(double_cpu, pdb_dir):
     """Disulfide targets reach the float64 restraints unrounded."""
     from torchref.model.model import Model
 
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "3A5V.pdb"))
     entries = model.restraints.restraints
 
@@ -83,7 +83,7 @@ def test_torsion_wrap_keeps_float64(double_cpu, pdb_dir):
     """An n-fold torsion deviation folds by 2π/n in float64, not float32."""
     from torchref.model.model import Model
 
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "3A5V.pdb"))
     restraints = model.restraints
     xyz = model.xyz().detach()
