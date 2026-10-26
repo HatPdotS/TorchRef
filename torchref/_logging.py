@@ -63,21 +63,32 @@ class _Formatter(logging.Formatter):
         return fmt.format(record)
 
 
-class _DefaultHandler(logging.StreamHandler):
-    """stderr handler that stands down once the application configures root logging."""
+class _SysStreamHandler(logging.StreamHandler):
+    """Handler writing to ``sys.<name>`` as it is at each record, not at creation.
 
-    def __init__(self):
+    So redirect_stdout, pytest's capture and a reconfigured stream all see the output,
+    and a handler never holds on to a stream that has since been closed.
+    """
+
+    def __init__(self, name: str):
+        self._stream_name = name
         super().__init__()
         self.setFormatter(_Formatter())
 
     @property
     def stream(self):
-        # Resolved per record, so pytest's capsys and redirect_stderr see the output.
-        return sys.stderr
+        return getattr(sys, self._stream_name)
 
     @stream.setter
     def stream(self, value):
         pass
+
+
+class _DefaultHandler(_SysStreamHandler):
+    """stderr handler that stands down once the application configures root logging."""
+
+    def __init__(self):
+        super().__init__("stderr")
 
     def emit(self, record: logging.LogRecord) -> None:
         if not logging.getLogger().handlers:
@@ -181,7 +192,8 @@ def configure_cli(level: Union[int, str] = 1, log_file: Optional[str] = None) ->
     Records below WARNING go to stdout, interleaved with the command's results; warnings
     and errors go to stderr. ``log_file`` additionally receives every record at
     ``level`` and above. Only the ``torchref`` logger is configured, so other libraries'
-    logging is left alone. Python warnings are routed through logging too.
+    logging is left alone. Python warnings are routed through logging too. Calling it
+    again replaces the previous configuration.
     """
     root = _root_logger()
     for handler in list(root.handlers):
@@ -189,9 +201,9 @@ def configure_cli(level: Union[int, str] = 1, log_file: Optional[str] = None) ->
             root.removeHandler(handler)
             handler.close()
 
-    out = logging.StreamHandler(sys.stdout)
+    out = _SysStreamHandler("stdout")
     out.addFilter(_BelowWarning())
-    err = logging.StreamHandler(sys.stderr)
+    err = _SysStreamHandler("stderr")
     err.setLevel(logging.WARNING)
     handlers = [out, err]
     if log_file is not None:
@@ -202,15 +214,15 @@ def configure_cli(level: Union[int, str] = 1, log_file: Optional[str] = None) ->
         root.addHandler(handler)
 
     root.removeHandler(_DEFAULT_HANDLER)
-    root.propagate = False
     root.setLevel(resolve_level(level))
 
     logging.captureWarnings(True)
     warnings_log = logging.getLogger("py.warnings")
+    for handler in list(warnings_log.handlers):
+        if getattr(handler, "_torchref_cli", False):
+            warnings_log.removeHandler(handler)
     for handler in handlers[1:]:
-        if handler not in warnings_log.handlers:
-            warnings_log.addHandler(handler)
-    warnings_log.propagate = False
+        warnings_log.addHandler(handler)
 
 
 _env_level = os.environ.get("TORCHREF_LOG_LEVEL")
