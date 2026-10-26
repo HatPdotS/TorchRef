@@ -21,11 +21,14 @@ coordinates (or ADPs) it scores as an argument, and the pair list is rebuilt fro
 coordinates it is handed, so the same object serves any model that shares the atom set.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
 import torch
 from torch.nn import Module
 
+from torchref._logging import enabled, get_logger
 from torchref.base.targets._common import torsions_from_xyz
 from torchref.config import get_float_dtype
 from torchref.topology.monomer.cif import (
@@ -35,6 +38,8 @@ from torchref.topology.monomer.cif import (
 )
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
+
+log = get_logger(__name__)
 
 
 class Restraints(DeviceMixin, DebugMixin, Module):
@@ -64,8 +69,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
     links : pd.DataFrame, optional
         Parsed PDB LINK records; each accepted record adds one bond restraint
         between the two named atoms.
-    verbose : int, default 1
-        Verbosity level (0=silent, 1=normal, 2=detailed).
     nonbonded : bool, default True
         Build the non-bonded pair list. ``False`` gives connectivity and ideal values
         only, for a caller that needs the topology and nothing else, such as hydrogen
@@ -98,13 +101,11 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         cell=None,
         spacegroup=None,
         links: pd.DataFrame = None,
-        verbose: int = 1,
         nonbonded: bool = True,
     ):
         """Initialize the Restraints handler."""
         super().__init__()
         self.cif_path = cif_path
-        self.verbose = verbose
         self.links = links
         self._nonbonded = bool(nonbonded)
 
@@ -138,15 +139,15 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         self._load_cif_dictionaries(cif_path, single_atom)
 
         # Load link definitions for inter-residue restraints
-        if verbose > 1:
-            print("Loading link definitions from monomer library...")
+        log.debug("Loading link definitions from monomer library...")
         self.link_dict, self.link_list = read_link_definitions()
-        if verbose > 1:
-            print(f"Loaded {len(self.link_dict)} link types")
+        log.debug(f"Loaded {len(self.link_dict)} link types")
 
         self.build_restraints(xyz)
-        if self.verbose > 0:
-            self.summary()
+        if enabled(log, logging.INFO):
+            self._log_counts()
+        if enabled(log, logging.DEBUG):
+            log.debug(self.summary_text())
 
     @staticmethod
     def _dictionary_resnames(topology) -> tuple:
@@ -267,26 +268,26 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
         for res, cif_file in zip(lookups, additional_files):
             if cif_file is not None:
-                if self.verbose > 1:
-                    print(cif_file)
+                log.debug(cif_file)
                 try:
                     additional_cif_dict = read_cif(cif_file)
                     self.cif_dict.update(additional_cif_dict)
                 except Exception as e:
                     if res not in single_atom:
-                        print("Error reading CIF file:", e)
-                        print("This residue will have no restraints applied.")
+                        log.warning(
+                            f"Error reading CIF file: {e}\n"
+                            "This residue will have no restraints applied."
+                        )
 
         self.missing_residues = [
             res for res in self.unique_residues if res not in self.cif_dict
         ]
 
         if len(self.missing_residues) >= 1:
-            if self.verbose > 0:
-                print(
-                    f"Warning: The following residues are missing from the CIF dictionary "
-                    f"and will have no restraints applied: {self.missing_residues}"
-                )
+            log.warning(
+                f"The following residues are missing from the CIF dictionary "
+                f"and will have no restraints applied: {self.missing_residues}"
+            )
 
     def _load_rama_surfaces(self, device: torch.device):
         """Load pre-computed Ramachandran NLL surfaces as a buffer."""
@@ -319,7 +320,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                 link_list=self.link_list,
                 links=self.links,
                 device=device,
-                verbose=self.verbose,
             )
             self._rebuild_entries()
 
@@ -420,8 +420,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             inter_residue_only=inter_residue_only,
         )
 
-        if self.verbose > 0:
-            print("\nBuilding VDW (non-bonded) restraints...")
+        log.info("")
+        log.info("Building VDW (non-bonded) restraints...")
 
         # The build (neighbour search, H topology, exclusion hashing) runs on CPU;
         # everything it registers is migrated to target_device at the end, which
@@ -461,7 +461,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             exclusion_set=self.topology.atoms.exclusions_12_13_14(),
             cutoff=cutoff,
             inter_residue_only=inter_residue_only,
-            verbose=self.verbose,
         )
 
         # Publish the new pair list before anything reads it back below. Unlike the
@@ -490,7 +489,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             self._h_topo = build_hydrogen_topology(
                 pdb=riding_table,
                 device=cpu,
-                verbose=self.verbose,
                 cif_dict=self.cif_dict,
             )
         self._h_excl_hash = self._build_h_exclusion_hash(self._h_topo, cpu)
@@ -504,7 +502,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                 pdb=riding_table,
                 h_excl_hash=self._h_excl_hash,
                 device=cpu,
-                verbose=self.verbose,
             )
             if self._h_topo.has_candidates:
                 self._h_topo.cand_min_dist = candidate_contact_distances(
@@ -542,65 +539,67 @@ class Restraints(DeviceMixin, DebugMixin, Module):
     # Device movement goes through DeviceMixin: the topology and the value tensors are
     # walked and moved, and _apply re-slices the derived entry views afterwards.
 
-    def summary(self):
-        """Print a detailed summary of all restraints."""
-        print("=" * 80)
-        print("Restraints Summary")
-        print("=" * 80)
-        print(f"CIF file: {self.cif_path}")
-        print(f"Residue types in dictionary: {len(self.cif_dict)}")
-        print()
+    def summary_text(self) -> str:
+        """Return the detailed restraint summary printed by :meth:`summary`."""
+        lines = []
+        out = lines.append
+        out("=" * 80)
+        out("Restraints Summary")
+        out("=" * 80)
+        out(f"CIF file: {self.cif_path}")
+        out(f"Residue types in dictionary: {len(self.cif_dict)}")
+        out("")
 
         def get_count(rtype, origin):
             indices = self.restraints.get(rtype, {}).get(origin, {}).get("indices")
             return 0 if indices is None else indices.shape[0]
 
-        print("INTRA-RESIDUE RESTRAINTS:")
-        print("-" * 80)
-        print(f"  Bonds: {get_count('bond', 'intra')}")
-        print(f"  Angles: {get_count('angle', 'intra')}")
-        print(f"  Torsions: {get_count('torsion', 'intra')}")
+        out("INTRA-RESIDUE RESTRAINTS:")
+        out("-" * 80)
+        out(f"  Bonds: {get_count('bond', 'intra')}")
+        out(f"  Angles: {get_count('angle', 'intra')}")
+        out(f"  Torsions: {get_count('torsion', 'intra')}")
 
         # Count planes
         n_planes = 0
         for key in self.restraints.get("plane", {}).keys():
             n_planes += get_count("plane", key)
-        print(f"  Planes: {n_planes}")
+        out(f"  Planes: {n_planes}")
 
         # Chiral
         chiral_count = 0
         if "chiral" in self.restraints:
             indices = self.restraints["chiral"].get("indices")
             chiral_count = 0 if indices is None else indices.shape[0]
-        print(f"  Chirals: {chiral_count}")
+        out(f"  Chirals: {chiral_count}")
 
-        print()
-        print("INTER-RESIDUE RESTRAINTS:")
-        print("-" * 80)
-        print(f"  Peptide bonds: {get_count('bond', 'peptide')}")
-        print(f"  Peptide angles: {get_count('angle', 'peptide')}")
-        print(f"  Disulfide bonds: {get_count('bond', 'disulfide')}")
-        print(f"  Disulfide angles: {get_count('angle', 'disulfide')}")
-        print(f"  Disulfide torsions: {get_count('torsion', 'disulfide')}")
-        print(f"  LINK bonds: {get_count('bond', 'link')}")
+        out("")
+        out("INTER-RESIDUE RESTRAINTS:")
+        out("-" * 80)
+        out(f"  Peptide bonds: {get_count('bond', 'peptide')}")
+        out(f"  Peptide angles: {get_count('angle', 'peptide')}")
+        out(f"  Disulfide bonds: {get_count('bond', 'disulfide')}")
+        out(f"  Disulfide angles: {get_count('angle', 'disulfide')}")
+        out(f"  Disulfide torsions: {get_count('torsion', 'disulfide')}")
+        out(f"  LINK bonds: {get_count('bond', 'link')}")
 
-        print()
-        print("BACKBONE TORSIONS:")
-        print("-" * 80)
-        print(f"  Phi: {get_count('torsion', 'phi')}")
-        print(f"  Psi: {get_count('torsion', 'psi')}")
-        print(f"  Omega: {get_count('torsion', 'omega')}")
+        out("")
+        out("BACKBONE TORSIONS:")
+        out("-" * 80)
+        out(f"  Phi: {get_count('torsion', 'phi')}")
+        out(f"  Psi: {get_count('torsion', 'psi')}")
+        out(f"  Omega: {get_count('torsion', 'omega')}")
 
         # Ramachandran
         rama_count = 0
         if hasattr(self, "_rama_phi_indices") and self._rama_phi_indices is not None:
             rama_count = self._rama_phi_indices.shape[0]
         if rama_count > 0:
-            print(f"  Ramachandran: {rama_count}")
+            out(f"  Ramachandran: {rama_count}")
 
-        print()
-        print("VDW RESTRAINTS:")
-        print("-" * 80)
+        out("")
+        out("VDW RESTRAINTS:")
+        out("-" * 80)
         vdw_count = 0
         vdw_sym_count = 0
         if "vdw" in self.restraints:
@@ -617,11 +616,38 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                 vdw_sym_count = int(is_sym.sum().item())
         vdw_asu_count = vdw_count - vdw_sym_count
         if vdw_sym_count > 0:
-            print(f"  Non-bonded contacts: {vdw_count} ({vdw_asu_count} intra-ASU, {vdw_sym_count} symmetry)")
+            out(f"  Non-bonded contacts: {vdw_count} ({vdw_asu_count} intra-ASU, {vdw_sym_count} symmetry)")
         else:
-            print(f"  Non-bonded contacts: {vdw_count}")
+            out(f"  Non-bonded contacts: {vdw_count}")
 
-        print("=" * 80)
+        out("=" * 80)
+        return "\n".join(lines)
+
+    def summary(self):
+        """Print a detailed summary of all restraints."""
+        print(self.summary_text())
+
+    def _log_counts(self):
+        """Log one line of restraint counts at INFO."""
+
+        def total(rtype):
+            n = 0
+            for origin, entry in self.restraints.get(rtype, {}).items():
+                if origin == "all":
+                    continue
+                indices = entry.get("indices") if isinstance(entry, dict) else None
+                if indices is not None and hasattr(indices, "shape"):
+                    n += indices.shape[0]
+            return n
+
+        vdw = self.restraints.get("vdw", {}).get("indices")
+        chiral = self.restraints.get("chiral", {}).get("indices")
+        log.info(
+            f"Restraints: {total('bond')} bonds, {total('angle')} angles, "
+            f"{total('torsion')} torsions, {total('plane')} planes, "
+            f"{0 if chiral is None else chiral.shape[0]} chirals, "
+            f"{0 if vdw is None else vdw.shape[0]} non-bonded contacts"
+        )
 
     def __repr__(self):
         """Return a one-line string representation.

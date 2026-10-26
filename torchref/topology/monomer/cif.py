@@ -6,8 +6,11 @@ from functools import lru_cache
 
 import pandas as pd
 
+from torchref._logging import get_logger
 from torchref.io import cif
 from torchref.io.cif_readers import DEFAULT_PLANE_SIGMA
+
+log = get_logger(__name__)
 
 
 def validate_restraint_data(residue_data, cif_path):
@@ -58,8 +61,8 @@ def validate_restraint_data(residue_data, cif_path):
             )
 
     if empty:
-        print(
-            f"  Warning: {cif_path}: {len(empty)} of {len(residue_data)} compounds "
+        log.warning(
+            f"{cif_path}: {len(empty)} of {len(residue_data)} compounds "
             f"carry no bond restraints and will be unrestrained: {', '.join(empty)}"
         )
 

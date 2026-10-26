@@ -19,12 +19,14 @@ and the two must not run together: riding placement alongside real hydrogens put
 phantom atoms in the structure that push the real ones around.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 import numpy as np
 import torch
 
+from torchref._logging import enabled, get_logger
 from torchref.base.coordinates.local_frame import frame_is_degenerate
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import dtypes, get_int_dtype, normalize_device
@@ -33,6 +35,8 @@ from torchref.topology.residue_graph import build_residue_nodes
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import first_index_per_group
+
+log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Placement-type constants
@@ -257,7 +261,6 @@ def _classify_placement(n_h_on_parent: int, n_heavy_nb: int, slot: int) -> int:
 def build_hydrogen_topology(
     pdb,
     device: torch.device = None,
-    verbose: int = 0,
     cif_dict: Optional[Dict] = None,
 ) -> HydrogenTopology:
     """Build riding-hydrogen topology from the model's heavy-atom DataFrame.
@@ -268,8 +271,6 @@ def build_hydrogen_topology(
         Heavy-atom DataFrame (no hydrogen rows).
     device : torch.device
         Target device for tensors.
-    verbose : int
-        Verbosity level.
     cif_dict : dict, optional
         Restraint dictionary keyed by residue name, such as ``Restraints.cif_dict``;
         each residue's hydrogens are read from its template there. None looks every
@@ -481,8 +482,7 @@ def build_hydrogen_topology(
     )
     topo.type_bounds = type_bounds  # dict: type_code -> (start, end)
 
-    if verbose > 0:
-        print(f"  Hydrogen topology: {n_h_total} riding H atoms")
+    log.info(f"  Hydrogen topology: {n_h_total} riding H atoms")
 
     return topo
 
@@ -707,7 +707,6 @@ def build_h_candidate_pairs(
     pdb,
     h_excl_hash: torch.Tensor,
     device: torch.device = None,
-    verbose: int = 0,
 ) -> None:
     """Precompute candidate H-involving VDW pairs from the heavy-atom pair list.
 
@@ -734,7 +733,6 @@ def build_h_candidate_pairs(
     h_excl_hash : (E,) long
         Sorted exclusion hash tensor for H-specific 1-2/1-3 pairs.
     device : torch.device
-    verbose : int
     """
     # The candidate tensors are set on ``h_topo`` below, so they follow its device
     # rather than the global default.
@@ -893,10 +891,10 @@ def build_h_candidate_pairs(
         dtypes.float
     )
 
-    if verbose > 0:
+    if enabled(log, logging.INFO):
         n_hh = both_h.sum().item()
         n_sym = image.sum().item()
-        print(
+        log.info(
             f"  H candidate pairs: {len(cand_i)} "
             f"({n_hh} H-H, {len(cand_i)-n_hh} H-heavy, {n_sym} symmetry)"
         )

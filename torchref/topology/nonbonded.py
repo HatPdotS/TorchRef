@@ -16,18 +16,22 @@ an atom without a typed radius, :func:`vdw_radii_for_elements`), or a hydrogen-b
 distance where ``AtomGraph.hb_type`` makes the pair a hydrogen bond.
 """
 
+import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
 
+from torchref._logging import enabled, get_logger
 from torchref.base.coordinates.symmetry_images import (
     is_symmetry_image,
     symmetry_image_positions,
 )
 from torchref.config import dtypes, get_float_dtype, get_int_dtype
 from torchref.utils.utils import first_index_per_group
+
+log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from torchref.symmetry.cell import Cell
@@ -846,7 +850,6 @@ def build_vdw_restraints_gpu(
     exclusion_set: Set[Tuple[int, int]],
     cutoff: float = 5.0,
     inter_residue_only: bool = True,
-    verbose: int = 0,
 ) -> Dict[str, torch.Tensor]:
     """Build the VDW pair list: grid search on an accelerator, k-d tree on CPU.
 
@@ -865,7 +868,6 @@ def build_vdw_restraints_gpu(
     cutoff : float
         Contact distance cutoff in Angstrom.
     inter_residue_only : bool
-    verbose : int
 
     Returns
     -------
@@ -900,8 +902,7 @@ def build_vdw_restraints_gpu(
     op_indices, cell_offsets_valid = prefilter_symop_offsets(cell, sg, xyz_asu, cutoff)
     M = len(op_indices)
 
-    if verbose > 0:
-        print(f"  Symmetry expansion: {M} valid (symop, offset) combos")
+    log.info(f"  Symmetry expansion: {M} valid (symop, offset) combos")
 
     # Find the identity combo index
     is_identity = ~is_symmetry_image(op_indices, cell_offsets_valid)
@@ -938,8 +939,7 @@ def build_vdw_restraints_gpu(
     if device.type == "cpu":
         # Steps 3-4 on CPU: a k-d tree, whose cost follows the pairs found rather
         # than the padded cell tiles of the grid search below.
-        if verbose > 0:
-            print(f"  Pair search: k-d tree over {cart_pos.shape[0]} images")
+        log.info(f"  Pair search: k-d tree over {cart_pos.shape[0]} images")
         pair_atom_i, pair_atom_j, pair_combo_j = find_pairs_kdtree(
             cart_pos, atom_idx, combo_idx, cutoff, identity_combo
         )
@@ -954,12 +954,12 @@ def build_vdw_restraints_gpu(
         atom_idx_sorted = atom_idx[sort_order]
         combo_idx_sorted = combo_idx[sort_order]
 
-        if verbose > 0:
+        if enabled(log, logging.INFO):
             n_occupied = len(unique_cells)
             counts = starts[1:] - starts[:-1]
-            print(f"  Grid: {grid_dims.tolist()}, "
-                  f"{n_occupied}/{n_grid_total} cells occupied, "
-                  f"max {counts.max().item()} entries/cell")
+            log.info(f"  Grid: {grid_dims.tolist()}, "
+                     f"{n_occupied}/{n_grid_total} cells occupied, "
+                     f"max {counts.max().item()} entries/cell")
 
         # Step 4: find pairs via periodic grid + batched cdist. Nearly dedup-free by
         # construction, but the hash dedup below still catches intra-cell
@@ -971,8 +971,7 @@ def build_vdw_restraints_gpu(
         )
 
     if len(pair_atom_i) == 0:
-        if verbose > 0:
-            print("  Built 0 VDW restraints")
+        log.info("  Built 0 VDW restraints")
         return empty_result
 
     # Step 5: filter
@@ -998,8 +997,7 @@ def build_vdw_restraints_gpu(
     pair_combo_j = pair_combo_j[keep]
 
     if len(pair_atom_i) == 0:
-        if verbose > 0:
-            print("  Built 0 VDW restraints (all filtered)")
+        log.info("  Built 0 VDW restraints (all filtered)")
         return empty_result
 
     # Deduplicate: keep first occurrence of each (atom_i, atom_j, combo_j)
@@ -1031,8 +1029,8 @@ def build_vdw_restraints_gpu(
         "weights": torch.where(image, IMAGE_PAIR_WEIGHT, 1.0).to(get_float_dtype()),
     }
 
-    if verbose > 0:
+    if enabled(log, logging.INFO):
         n_sym = image.sum().item()
-        print(f"  Built {len(indices)} VDW restraints, {n_sym} symmetry contacts")
+        log.info(f"  Built {len(indices)} VDW restraints, {n_sym} symmetry contacts")
 
     return result

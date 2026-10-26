@@ -12,13 +12,17 @@ Core utility containers and atom-table sanitizing, re-exported from ``torchref.u
   re-exported, import it from this module.
 """
 
+import logging
 from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
 import torch
 
+from torchref._logging import enabled, get_logger
 from torchref.utils.device_mixin import DeviceMovementMixin
+
+log = get_logger(__name__)
 
 
 class ModuleReference:
@@ -367,7 +371,7 @@ def _residue_blocks(pdb: pd.DataFrame) -> np.ndarray:
     return blocks
 
 
-def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
+def sanitize_pdb_dataframe(pdb: pd.DataFrame) -> pd.DataFrame:
     """
     Prepare an atom table for writing: unique HETATM residues, 3-character names.
 
@@ -385,27 +389,24 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
     ----------
     pdb : pandas.DataFrame
         Atom table with columns ATOM, chainid, resseq, icode, resname, name and altloc.
-    verbose : int, default 0
-        Verbosity level (0=silent, 1=info, 2=debug).
 
     Returns
     -------
     pandas.DataFrame
         Sanitized copy. Duplicated identifiers among ATOM records are left as they are,
-        with a warning printed at ``verbose > 0``.
+        with a warning logged.
     """
     pdb = pdb.copy()
 
-    if verbose > 0:
-        print("Sanitizing PDB DataFrame...")
-        print(f"  Initial atoms: {len(pdb)}")
+    log.debug("Sanitizing PDB DataFrame...")
+    log.debug(f"  Initial atoms: {len(pdb)}")
 
     long_resnames = pdb["resname"].str.len() > 3
     if long_resnames.any():
         n_long = long_resnames.sum()
-        if verbose > 0:
+        if enabled(log, logging.INFO):
             unique_long = pdb.loc[long_resnames, "resname"].unique()
-            print(
+            log.info(
                 f"  Truncating {n_long} atoms with resname > 3 chars: {unique_long[:5]}"
             )
         pdb.loc[long_resnames, "resname"] = pdb.loc[long_resnames, "resname"].str[:3]
@@ -429,26 +430,26 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
         rows = np.isin(residue, moved)
         new_resseq = pd.Series(new, index=moved).loc[residue[rows]]
         pdb.loc[rows, "resseq"] = new_resseq.to_numpy()
-        if verbose > 0:
-            print(
-                f"  Renumbered {len(moved)} HETATM residues ({rows.sum()} atoms) "
-                "whose atom identifiers were already taken"
-            )
-        if verbose > 1:
+        log.info(
+            f"  Renumbered {len(moved)} HETATM residues ({rows.sum()} atoms) "
+            "whose atom identifiers were already taken"
+        )
+        if enabled(log, logging.DEBUG):
             for chainid, numbers in pd.Series(new).groupby(chain, dropna=False):
-                print(f"    chain {chainid}: resseq {numbers.min()}-{numbers.max()}")
-    elif verbose > 0:
-        print("  No HETATM residue needed renumbering")
+                log.debug(
+                    f"    chain {chainid}: resseq {numbers.min()}-{numbers.max()}"
+                )
+    else:
+        log.debug("  No HETATM residue needed renumbering")
 
-    if verbose > 0:
-        remaining = pdb.duplicated(subset=_ATOM_KEY, keep=False)
-        if remaining.any():
-            print(
-                f"  WARNING: {remaining.sum()} ATOM records share an atom identifier "
-                "and are left as they are"
-            )
-            print(pdb.loc[remaining, ["ATOM", "resname", *_ATOM_KEY]].head(10))
-        print(f"  Final atoms: {len(pdb)}")
+    remaining = pdb.duplicated(subset=_ATOM_KEY, keep=False)
+    if remaining.any():
+        log.warning(
+            f"{remaining.sum()} ATOM records share an atom identifier "
+            "and are left as they are\n"
+            f"{pdb.loc[remaining, ['ATOM', 'resname', *_ATOM_KEY]].head(10)}"
+        )
+    log.debug(f"  Final atoms: {len(pdb)}")
 
     return pdb
 

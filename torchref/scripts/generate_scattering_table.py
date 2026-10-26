@@ -74,7 +74,7 @@ def get_itc92_params(element: str):
         return None
 
 
-def generate_scattering_table(output_path: str, csv_path: str, verbose: bool = True):
+def generate_scattering_table(output_path: str, csv_path: str):
     """
     Generate the complete scattering factor table.
 
@@ -84,11 +84,8 @@ def generate_scattering_table(output_path: str, csv_path: str, verbose: bool = T
         Path to save the .pt file.
     csv_path : str
         Path to atomic_vdw_radii.csv for element-to-Z mapping.
-    verbose : bool, optional
-        Print progress information. Default is True.
     """
-    if verbose:
-        print("Generating ITC92 scattering factor table...")
+    print("Generating ITC92 scattering factor table...")
 
     # Build element-to-Z mapping from CSV
     element_to_z = get_element_to_z_from_csv(csv_path)
@@ -96,8 +93,7 @@ def generate_scattering_table(output_path: str, csv_path: str, verbose: bool = T
 
     # Find max Z (should be 103 for Lr)
     max_z = max(element_to_z.values())
-    if verbose:
-        print(f"  Found {len(element_to_z)} elements (Z=1 to {max_z})")
+    print(f"  Found {len(element_to_z)} elements (Z=1 to {max_z})")
 
     # Initialize tensors for neutral atoms: shape (max_z + 1, 5)
     # Index 0 is unused, indices 1-max_z correspond to elements
@@ -118,10 +114,9 @@ def generate_scattering_table(output_path: str, csv_path: str, verbose: bool = T
         else:
             elements_missing.append(elem)
 
-    if verbose:
-        print(f"  Neutral atoms: {len(elements_found)} found, {len(elements_missing)} missing")
-        if elements_missing:
-            print(f"    Missing: {elements_missing}")
+    print(f"  Neutral atoms: {len(elements_found)} found, {len(elements_missing)} missing")
+    if elements_missing:
+        print(f"    Missing: {elements_missing}")
 
     # Build the complete table dictionary
     table = {
@@ -140,10 +135,9 @@ def generate_scattering_table(output_path: str, csv_path: str, verbose: bool = T
     # Save the table
     torch.save(table, output_path)
 
-    if verbose:
-        file_size = os.path.getsize(output_path) / 1024
-        print(f"  Saved to: {output_path}")
-        print(f"  File size: {file_size:.1f} KB")
+    file_size = os.path.getsize(output_path) / 1024
+    print(f"  Saved to: {output_path}")
+    print(f"  File size: {file_size:.1f} KB")
 
     return table
 
@@ -161,7 +155,7 @@ def main():
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
 
-    generate_scattering_table(str(output_path), str(csv_path), verbose=True)
+    generate_scattering_table(str(output_path), str(csv_path))
     print("\nGeneration complete!")
 
 

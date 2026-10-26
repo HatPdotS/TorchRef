@@ -51,28 +51,27 @@ __version__ = "0.7.0"
 import importlib
 import os
 import sys
-import warnings
 from pathlib import Path
 
 # Must be set before torch is first imported, or it has no effect.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 from torchref._bootstrap import configure_threading, detect_available_cpus
-from torchref._logging import TRACE, quiet, set_verbosity, verbosity
+from torchref._logging import TRACE, get_logger, quiet, set_verbosity, verbosity
+
+_log = get_logger(__name__)
 
 # Threading must be configured before torch is imported.
 if "TORCHREF_NUM_THREADS" in os.environ:
     N_CPUS = int(os.environ["TORCHREF_NUM_THREADS"])
-    warnings.warn(
-        f"TorchRef using user-specified {N_CPUS} threads from TORCHREF_NUM_THREADS.",
-        stacklevel=2,
+    _log.info(
+        f"TorchRef using user-specified {N_CPUS} threads from TORCHREF_NUM_THREADS."
     )
 else:
     N_CPUS = detect_available_cpus()
     os.environ["TORCHREF_NUM_THREADS"] = str(N_CPUS)
-    warnings.warn(
-        f"TorchRef auto-configured {N_CPUS} threads. Set TORCHREF_NUM_THREADS to override.",
-        stacklevel=2,
+    _log.info(
+        f"TorchRef auto-configured {N_CPUS} threads. Set TORCHREF_NUM_THREADS to override."
     )
 
 configure_threading(N_CPUS)

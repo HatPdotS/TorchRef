@@ -31,12 +31,15 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
+from torchref._logging import get_logger
 from torchref.base.coordinates.local_frame import (
     frame_is_degenerate,
     local_frame_coordinates,
     place_local_frame,
 )
 from torchref.config import get_float_dtype
+
+log = get_logger(__name__)
 
 #: Standard heavy-atom valences, one of the two budgets that cap how many hydrogens a
 #: parent may take. Elements not listed fall back to 4 and are then bounded only by the
@@ -583,7 +586,7 @@ def _place_group(
     return None
 
 
-def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenPlan:
+def plan_hydrogens(topology, cif_dict: Dict, xyz) -> HydrogenPlan:
     """Decide which hydrogens to add and place them from the template.
 
     Parameters
@@ -596,8 +599,6 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
         with coordinates for a residue to be hydrogenated.
     xyz : torch.Tensor
         Current coordinates, shape ``(N, 3)``.
-    verbose : int, default 0
-        Verbosity level.
 
     Returns
     -------
@@ -771,12 +772,11 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
                     out["bond_length"].append(float(length))
                     out["group"].append(group_id)
 
-    if verbose > 1:
-        print(
-            f"Planned {len(out['name'])} hydrogens "
-            f"({n_no_template} residues with no usable template, "
-            f"{n_unplaceable} hydrogens whose direction was not determined)"
-        )
+    log.debug(
+        f"Planned {len(out['name'])} hydrogens "
+        f"({n_no_template} residues with no usable template, "
+        f"{n_unplaceable} hydrogens whose direction was not determined)"
+    )
 
     return HydrogenPlan(
         name=np.array(out["name"], dtype="<U8"),

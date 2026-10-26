@@ -8,7 +8,10 @@ using ITC92 Gaussian parameterization.
 import numpy as np
 import torch
 
+from torchref._logging import get_logger
 from torchref.base.coordinates.periodic_boundary import smallest_diff_aniso
+
+log = get_logger(__name__)
 
 
 def scatter_add_nd(source, index, map):
@@ -30,24 +33,14 @@ def scatter_add_nd(source, index, map):
     try:
         map_flat.scatter_add_(0, index_flat, source)
     except RuntimeError as e:
-        print("Error during scatter_add_: ", e)
-        print(
-            "Source shape: ",
-            source.shape,
-            "device: ",
-            source.device,
-            "dtype: ",
-            source.dtype,
+        log.error(
+            f"Error during scatter_add_: {e}\n"
+            f"Source shape: {tuple(source.shape)} device: {source.device} "
+            f"dtype: {source.dtype}\n"
+            f"Index shape: {tuple(index.shape)} device: {index.device} "
+            f"dtype: {index.dtype}\n"
+            f"Map shape: {tuple(map.shape)} device: {map.device} dtype: {map.dtype}"
         )
-        print(
-            "Index shape: ",
-            index.shape,
-            "device: ",
-            index.device,
-            "dtype: ",
-            index.dtype,
-        )
-        print("Map shape: ", map.shape, "device: ", map.device, "dtype: ", map.dtype)
         raise e
     return map
 
