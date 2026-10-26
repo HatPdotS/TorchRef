@@ -8,6 +8,10 @@ compare-exchange float atomic-add that works on every Metal GPU family (Apple7 /
 onward), not just Metal-3 native ``atomic_float``. Because each thread owns one atom, the
 backward kernels need no atomics.
 
+Batched calls set ``has_batch`` and pass each atom's member id; a thread then works in its
+member's slab of the grid, ``member * nx * ny * nz`` elements in. Indices are 32-bit, so
+the caller keeps the whole batch below 2**31 voxels.
+
 The math mirrors ``kernels/cuda/variable_radius.py`` and is validated against the
 portable CPU reference. Coordinates are Cartesian offsets: ``frac`` is
 fractional->Cartesian (columns are a, b, c), ``inv_frac`` its inverse, and for voxel
@@ -54,9 +58,12 @@ kernel void iso_splat_fwd(
     constant int&        nx         [[buffer(10)]],
     constant int&        ny         [[buffer(11)]],
     constant int&        nz         [[buffer(12)]],
+    device const int*    member     [[buffer(13)]],  // (n,) member ids, if has_batch
+    constant int&        has_batch  [[buffer(14)]],
     uint a [[thread_position_in_grid]])
 {
     if (a >= (uint)n_atoms) return;
+    device atomic_uint* slab = grid + (has_batch ? member[a] * nx * ny * nz : 0);
 
     // Cell geometry (frac columns are cell vectors a,b,c).
     float f0=frac[0],f1=frac[1],f2=frac[2],
@@ -117,7 +124,7 @@ kernel void iso_splat_fwd(
             int viy=ciy+oy; viy=((viy%ny)+ny)%ny;
             int viz=ciz+oz; viz=((viz%nz)+nz)%nz;
             int idx=(vix*ny+viy)*nz+viz;
-            atomic_add_f(&grid[idx], dens);
+            atomic_add_f(&slab[idx], dens);
         }
       }
     }
@@ -145,9 +152,12 @@ kernel void iso_splat_bwd(
     constant int&        nx         [[buffer(13)]],
     constant int&        ny         [[buffer(14)]],
     constant int&        nz         [[buffer(15)]],
+    device const int*    member     [[buffer(16)]],  // (n,) member ids, if has_batch
+    constant int&        has_batch  [[buffer(17)]],
     uint a [[thread_position_in_grid]])
 {
     if (a >= (uint)n_atoms) return;
+    device const float* slab = grad_out + (has_batch ? member[a] * nx * ny * nz : 0);
 
     float f0=frac[0],f1=frac[1],f2=frac[2],
           f3=frac[3],f4=frac[4],f5=frac[5],
@@ -202,7 +212,7 @@ kernel void iso_splat_bwd(
             int vix=cix+ox; vix=((vix%nx)+nx)%nx;
             int viy=ciy+oy; viy=((viy%ny)+ny)%ny;
             int viz=ciz+oz; viz=((viz%nz)+nz)%nz;
-            float g_out = grad_out[(vix*ny+viy)*nz+viz];
+            float g_out = slab[(vix*ny+viy)*nz+viz];
             float dens=0.0f, coeff_xyz=0.0f, db_sum=0.0f;
             for (int g=0; g<5; ++g) {
                 float e = fast::exp(-PI_SQ*r2/Bt[g]);
@@ -249,9 +259,12 @@ kernel void aniso_splat_fwd(
     constant int&        nx         [[buffer(10)]],
     constant int&        ny         [[buffer(11)]],
     constant int&        nz         [[buffer(12)]],
+    device const int*    member     [[buffer(13)]],  // (n,) member ids, if has_batch
+    constant int&        has_batch  [[buffer(14)]],
     uint a [[thread_position_in_grid]])
 {
     if (a >= (uint)n_atoms) return;
+    device atomic_uint* slab = grid + (has_batch ? member[a] * nx * ny * nz : 0);
 
     float f0=frac[0],f1=frac[1],f2=frac[2],
           f3=frac[3],f4=frac[4],f5=frac[5],
@@ -308,7 +321,7 @@ kernel void aniso_splat_fwd(
             int vix=cix+ox; vix=((vix%nx)+nx)%nx;
             int viy=ciy+oy; viy=((viy%ny)+ny)%ny;
             int viz=ciz+oz; viz=((viz%nz)+nz)%nz;
-            atomic_add_f(&grid[(vix*ny+viy)*nz+viz], dens);
+            atomic_add_f(&slab[(vix*ny+viy)*nz+viz], dens);
         }
       }
     }
@@ -338,9 +351,12 @@ kernel void aniso_splat_bwd(
     constant int&        nx         [[buffer(13)]],
     constant int&        ny         [[buffer(14)]],
     constant int&        nz         [[buffer(15)]],
+    device const int*    member     [[buffer(16)]],  // (n,) member ids, if has_batch
+    constant int&        has_batch  [[buffer(17)]],
     uint a [[thread_position_in_grid]])
 {
     if (a >= (uint)n_atoms) return;
+    device const float* slab = grad_out + (has_batch ? member[a] * nx * ny * nz : 0);
 
     float f0=frac[0],f1=frac[1],f2=frac[2],
           f3=frac[3],f4=frac[4],f5=frac[5],
@@ -392,7 +408,7 @@ kernel void aniso_splat_bwd(
             int vix=cix+ox; vix=((vix%nx)+nx)%nx;
             int viy=ciy+oy; viy=((viy%ny)+ny)%ny;
             int viz=ciz+oz; viz=((viz%nz)+nz)%nz;
-            float g_out=grad_out[(vix*ny+viy)*nz+viz];
+            float g_out=slab[(vix*ny+viy)*nz+viz];
             float sxx=0,syy=0,szz=0,dens=0;
             float su0=0,su1=0,su2=0,su3=0,su4=0,su5=0;
             for (int g=0; g<5; ++g) {

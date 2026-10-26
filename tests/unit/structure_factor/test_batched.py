@@ -224,3 +224,12 @@ def test_batched_second_order_matches_per_member(name, kind):
     for got, ref, sc in zip(hvps[True], hvps[False], members):
         if sc.n_atoms:
             _assert_close(got, ref, device, dtype, "portable", "hvp", grad=True)
+
+
+def test_metal_refuses_a_batch_past_32_bit_indices():
+    """The shaders index in ``int``, so a batch of 2**31 voxels must raise, not wrap."""
+    from torchref.base.electron_density.kernels.mps.variable_radius import _member
+
+    huge = torch.empty((2, 1024, 1024, 1024), device="meta")
+    with pytest.raises(ValueError, match="32 bits"):
+        _member(huge, torch.empty((0, 3), device="meta"), torch.tensor([0, 0, 0]))

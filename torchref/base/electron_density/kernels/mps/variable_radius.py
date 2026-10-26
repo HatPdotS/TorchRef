@@ -8,12 +8,18 @@ thread per atom) for forward and analytic backward.
 Gradients flow to ``xyz``, ``adp``/``u`` and ``occ``, with identity to the input
 ``density_map``; ``A``/``B`` and the cell matrices get none, as on CUDA. **Backward is
 first-order only** -- double backward must use ``force_portable``.
+
+A batched call (``(B, nx, ny, nz)`` map plus ``batch_offsets``, see
+:mod:`~torchref.base.electron_density.batching`) hands the shaders each atom's member id.
+Metal indexes in 32 bits, so a batch of ``2**31`` voxels or more is refused with a
+``ValueError`` rather than wrapped.
 """
 
 from __future__ import annotations
 
 import torch
 
+from torchref.base.electron_density.batching import check_batch, member_index
 from torchref.base.electron_density.kernels.mps.compile import _get_lib
 from torchref.base.targets._dispatch import first_order_only
 
@@ -29,15 +35,38 @@ def _r2cut(radius_per_atom):
     return radius_per_atom * radius_per_atom
 
 
+#: Largest voxel count, over the whole batch, that the shaders' ``int`` indices reach.
+_MAX_VOXELS = 2**31 - 1
+
+
+def _member(density_map, xyz, batch_offsets):
+    """``(member_ids, has_batch)`` for the shaders.
+
+    Unbatched calls pass a one-element placeholder the shader never reads, since a bound
+    buffer is required either way.
+    """
+    _, offsets = check_batch(density_map, xyz.shape[0], batch_offsets)
+    if density_map.numel() > _MAX_VOXELS:
+        raise ValueError(
+            f"the Metal splat indexes in 32 bits, and this map holds "
+            f"{density_map.numel()} voxels (limit {_MAX_VOXELS}); split the batch"
+        )
+    if offsets is None:
+        # dtype-ok: the shaders read member ids as int
+        return torch.zeros(1, dtype=torch.int32, device=density_map.device), 0
+    return member_index(offsets.to(density_map.device), xyz.shape[0]), 1
+
+
 class MetalGridDensity(torch.autograd.Function):
     """Isotropic per-atom Metal splat: returns ``density_map + splat``."""
 
     @staticmethod
-    def forward(ctx, density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac):
+    def forward(ctx, density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac,
+                member, has_batch):
         lib = _get_lib()
         if lib is None:
             raise RuntimeError("Metal splat kernels unavailable")
-        nx, ny, nz = (int(s) for s in density_map.shape)
+        nx, ny, nz = (int(s) for s in density_map.shape[-3:])
         out = density_map.contiguous().clone()
         n = xyz.shape[0]
         if n > 0:
@@ -51,17 +80,18 @@ class MetalGridDensity(torch.autograd.Function):
                 r2cut.contiguous(),
                 inv_frac.contiguous().view(-1),
                 frac.contiguous().view(-1),
-                n, nx, ny, nz,
+                n, nx, ny, nz, member, has_batch,
                 threads=[n],
             )
-        ctx.save_for_backward(xyz, adp, occ, A, B, r2cut, inv_frac, frac)
+        ctx.save_for_backward(xyz, adp, occ, A, B, r2cut, inv_frac, frac, member)
         ctx.grid_shape = (nx, ny, nz)
+        ctx.has_batch = has_batch
         return out
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out):
-        xyz, adp, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
+        xyz, adp, occ, A, B, r2cut, inv_frac, frac, member = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape
         n = xyz.shape[0]
         grad_xyz = torch.zeros_like(xyz)
@@ -82,21 +112,23 @@ class MetalGridDensity(torch.autograd.Function):
                 r2cut.contiguous(),
                 inv_frac.contiguous().view(-1),
                 frac.contiguous().view(-1),
-                n, nx, ny, nz,
+                n, nx, ny, nz, member, ctx.has_batch,
                 threads=[n],
             )
         # forward returned density_map + splat -> grad wrt density_map is identity.
-        # order: density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac
+        # order: density_map, xyz, adp, occ, A, B, r2cut, inv_frac, frac, member, has_batch
         return (grad_out, grad_xyz, grad_adp, grad_occ,
-                None, None, None, None, None)
+                None, None, None, None, None, None, None)
 
 
 def add_isotropic_mps_var(
-    density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
+    density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom,
+    batch_offsets=None,
 ):
     """Isotropic variable-radius Metal splat; returns ``density_map + splat``.
 
-    ``density_map`` is not modified.
+    ``density_map`` is not modified; it is ``(nx, ny, nz)``, or ``(B, nx, ny, nz)`` with
+    ``batch_offsets`` ``(B + 1,)``.
 
     The canonical splat signature, identical to ``add_isotropic_plain_var`` and
     ``add_isotropic_cpu_sphere_var``: the grid shape comes from ``density_map`` and the
@@ -104,8 +136,10 @@ def add_isotropic_mps_var(
     ``voxel_size`` is taken. The radius is the policy radius used raw; see :func:`_r2cut`.
     """
     r2cut = _r2cut(radius_per_atom)
+    member, has_batch = _member(density_map, xyz, batch_offsets)
     return MetalGridDensity.apply(
-        density_map, xyz, adp, occ, A, B, r2cut, inv_frac_matrix, frac_matrix
+        density_map, xyz, adp, occ, A, B, r2cut, inv_frac_matrix, frac_matrix,
+        member, has_batch,
     )
 
 
@@ -113,11 +147,12 @@ class MetalGridDensityAniso(torch.autograd.Function):
     """Anisotropic per-atom Metal splat: returns ``density_map + splat``."""
 
     @staticmethod
-    def forward(ctx, density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac):
+    def forward(ctx, density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac,
+                member, has_batch):
         lib = _get_lib()
         if lib is None:
             raise RuntimeError("Metal splat kernels unavailable")
-        nx, ny, nz = (int(s) for s in density_map.shape)
+        nx, ny, nz = (int(s) for s in density_map.shape[-3:])
         out = density_map.contiguous().clone()
         n = xyz.shape[0]
         if n > 0:
@@ -131,17 +166,18 @@ class MetalGridDensityAniso(torch.autograd.Function):
                 r2cut.contiguous(),
                 inv_frac.contiguous().view(-1),
                 frac.contiguous().view(-1),
-                n, nx, ny, nz,
+                n, nx, ny, nz, member, has_batch,
                 threads=[n],
             )
-        ctx.save_for_backward(xyz, u, occ, A, B, r2cut, inv_frac, frac)
+        ctx.save_for_backward(xyz, u, occ, A, B, r2cut, inv_frac, frac, member)
         ctx.grid_shape = (nx, ny, nz)
+        ctx.has_batch = has_batch
         return out
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out):
-        xyz, u, occ, A, B, r2cut, inv_frac, frac = ctx.saved_tensors
+        xyz, u, occ, A, B, r2cut, inv_frac, frac, member = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape
         n = xyz.shape[0]
         grad_xyz = torch.zeros_like(xyz)
@@ -162,16 +198,17 @@ class MetalGridDensityAniso(torch.autograd.Function):
                 r2cut.contiguous(),
                 inv_frac.contiguous().view(-1),
                 frac.contiguous().view(-1),
-                n, nx, ny, nz,
+                n, nx, ny, nz, member, ctx.has_batch,
                 threads=[n],
             )
-        # order: density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac
+        # order: density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac, member, has_batch
         return (grad_out, grad_xyz, grad_u, grad_occ,
-                None, None, None, None, None)
+                None, None, None, None, None, None, None)
 
 
 def add_anisotropic_mps_var(
-    density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
+    density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom,
+    batch_offsets=None,
 ):
     """Anisotropic variable-radius Metal splat; returns ``density_map + splat``.
 
@@ -183,6 +220,8 @@ def add_anisotropic_mps_var(
     fused-CPU kernels apply.
     """
     r2cut = _r2cut(radius_per_atom)
+    member, has_batch = _member(density_map, xyz, batch_offsets)
     return MetalGridDensityAniso.apply(
-        density_map, xyz, u, occ, A, B, r2cut, inv_frac_matrix, frac_matrix
+        density_map, xyz, u, occ, A, B, r2cut, inv_frac_matrix, frac_matrix,
+        member, has_batch,
     )
