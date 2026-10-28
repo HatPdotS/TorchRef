@@ -5,6 +5,10 @@ Changelog
 Unreleased
 ----------
 
+New features
+~~~~~~~~~~~~
+- Added ``torchref.refinement.optimizers.BlockLBFGS``, an L-BFGS with one initial-Hessian scale per parameter block (opt-in; not used by the refinement drivers)
+
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 - Disulfide detection no longer bonds conformer ``A`` of one cysteine to conformer ``B`` of its partner: an ``SG`` with an altloc pairs only with the same altloc or a blank one
