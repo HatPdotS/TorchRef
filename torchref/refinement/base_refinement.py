@@ -121,6 +121,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         n_nodes: int = None,
         reflections_per_adp_parameter: float = DEFAULT_REFLECTIONS_PER_ADP_PARAMETER,
         xray_mode: str = "ml",
+        adp_xray_mode: Optional[str] = None,
         sigma_a_max: float = SIGMA_A_MAX,
         shrink: bool = SHRINK_ENABLED,
         scale_target: str = DEFAULT_SCALE_TARGET,
@@ -191,6 +192,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             which is where a node field peaks and what PDB-REDO holds.
         xray_mode : str, optional
             X-ray target taxonomy row; see :meth:`set_xray_target_mode`.
+        adp_xray_mode : str, optional
+            X-ray target row for the steps that refine only ADPs and occupancies, which
+            then run on their own LossState (:attr:`adp_loss_state`). Default None uses
+            ``xray_mode`` and the one shared state. ``'ml_noalpha'`` keeps the model's
+            absolute resolution falloff visible to the ADPs, where ``'ml'`` lets the
+            per-shell ``alpha`` absorb a uniform B shift.
         sigma_a_max, shrink : optional
             ``sigma_A`` estimator knobs; see
             :mod:`torchref.refinement.model_error_estimation.sigma_a`.
@@ -255,6 +262,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # source of truth for target construction -- see the note there.
         self.scale_target = scale_target
         self.xray_mode = xray_mode
+        self.adp_xray_mode = adp_xray_mode
         self.sigma_a_max = sigma_a_max
         self.shrink = shrink
         # Without a wavelength there is no f'' to tell Friedel mates apart, so a
@@ -272,6 +280,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         # Persistent state and logger (created lazily)
         self._loss_state: Optional[LossState] = None
+        self._adp_loss_state: Optional[LossState] = None
         self._logger: Optional[Logger] = None
 
         # Static weighting scheme holding the default group base weights. This
@@ -481,11 +490,19 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         )
 
     def _build_xray_targets(self, mode: str) -> None:
-        """Build the work/test x-ray targets for ``mode`` with the full configuration."""
+        """Build the work/test x-ray targets for ``mode`` with the full configuration,
+        plus the ADP steps' work target when ``adp_xray_mode`` names another mode."""
         kw = self._xray_target_kwargs()
-        self.xray_target_work = create_xray_target(
-            mode=mode, use_work_set=True, **kw
-        )
+        adp_mode = getattr(self, "adp_xray_mode", None)
+        if adp_mode == mode:
+            adp_mode = None
+        work = {
+            m: create_xray_target(mode=m, use_work_set=True, **kw)
+            for m in (mode, adp_mode)
+            if m is not None
+        }
+        self.xray_target_work = work[mode]
+        self.xray_target_work_adp = work.get(adp_mode)
         self.xray_target_test = create_xray_target(
             mode=mode, use_work_set=False, **kw
         )
@@ -706,6 +723,23 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return self._loss_state
 
     @property
+    def adp_loss_state(self) -> LossState:
+        """The persistent LossState of the ADP/occupancy-only steps.
+
+        The same object as :attr:`loss_state` unless ``adp_xray_mode`` names a different
+        x-ray target than ``xray_mode``; then a second state, identical except that its
+        ``"xray"`` term is that target, created on first access. Its sigma_A estimate is
+        its own, refitted after each of its own step blocks.
+        """
+        if getattr(self, "xray_target_work_adp", None) is None:
+            return self.loss_state
+        if getattr(self, "_adp_loss_state", None) is None:
+            self._adp_loss_state = self._create_loss_state(
+                xray_target=self.xray_target_work_adp
+            )
+        return self._adp_loss_state
+
+    @property
     def logger(self) -> Logger:
         """The :class:`~torchref.refinement.logger.Logger` bound to :attr:`loss_state`,
         created on first access."""
@@ -723,6 +757,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         the stale state keeps serving the old targets and weights.
         """
         self._loss_state = None
+        self._adp_loss_state = None
         self._logger = None
 
     def set_hydrogen_mode(self, mode: str) -> "Refinement":
@@ -930,13 +965,19 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         """Total geometry NLL (all components of ``TotalGeometryTarget``)."""
         return self.geometry_target()
 
-    def _create_loss_state(self) -> LossState:
+    def _create_loss_state(self, xray_target=None) -> LossState:
         """Register every target under its hierarchical name and apply
-        :data:`DEFAULT_GROUP_WEIGHTS` via ``self.weighting``."""
+        :data:`DEFAULT_GROUP_WEIGHTS` via ``self.weighting``.
+
+        ``xray_target`` replaces :attr:`xray_target_work` as the ``"xray"`` term. The
+        geometry and ADP terms are the same objects in every state built here; the
+        scaler regularizers are rebuilt over the same scaler.
+        """
         state = LossState(device=self.device)
 
-        # Register X-ray target
-        state.register_target("xray", self.xray_target_work)
+        state.register_target(
+            "xray", self.xray_target_work if xray_target is None else xray_target
+        )
 
         # Register geometry targets
         state.register_targets(self.geometry_target)

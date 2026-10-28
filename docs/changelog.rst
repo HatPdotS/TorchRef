@@ -8,6 +8,7 @@ Unreleased
 New features
 ~~~~~~~~~~~~
 - Added ``torchref.refinement.optimizers.BlockLBFGS``, an L-BFGS with one initial-Hessian scale per parameter block (opt-in; not used by the refinement drivers)
+- Added ``adp_target_mode`` to ``LBFGSRefinement`` (``--adp-xray-mode`` in ``torchref.refine``): the ADP/occupancy steps run on their own loss state with their own X-ray target, e.g. ``ml_noalpha`` for ADPs with ``ml`` for coordinates
 
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~

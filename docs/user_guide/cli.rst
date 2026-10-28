@@ -49,6 +49,12 @@ and a ``refinement_history.json`` log.
   French–Wilson conversion), ``ls`` (unit-weight least squares) or ``ls_wunit_k1``
   (Phenix-style, own global scale). ``--help`` lists them from the taxonomy table
   itself, which is authoritative.
+* ``--adp-xray-mode`` X-ray target for the ADP/occupancy steps of ``--mode
+  separate``, which then run on their own loss state (default: same as
+  ``--xray-mode``). ``ml_noalpha`` keeps the model's absolute resolution falloff
+  visible to the B-factors, where ``ml``'s per-shell α absorbs a uniform B shift.
+  The split between atomic B and the scaler's overall B is still free, so mean B
+  can drift against the scaler across cycles. Ignored by ``--mode everything``
 * ``--sigma-a-max`` upper bound on the per-shell Luzzati σ_A (default 0.99)
 * ``--no-shrink`` disable the per-shell σ_A stability shrinkage
 * ``--adp-mode`` ``isotropic`` (default), ``anisotropic``, ``field``,

@@ -12,6 +12,8 @@ transition (xyz -> adp), and scaler updates between body steps move parameters t
 xray target reads, so retained curvature would be stale.
 """
 
+from typing import Optional
+
 import torch
 
 from torchref.refinement.base_refinement import Refinement
@@ -48,6 +50,7 @@ class LBFGSRefinement(Refinement):
         self,
         *args,
         target_mode: str = "ml",
+        adp_target_mode: Optional[str] = None,
         corefine_scaler: bool = False,
         **kwargs,
     ):
@@ -58,6 +61,12 @@ class LBFGSRefinement(Refinement):
         target_mode : str, optional
             X-ray target mode. Default ``'ml'`` (Read MLF with Luzzati σ_A, centred on
             ``alpha*|F_calc|``); see :mod:`torchref.refinement.targets.xray._specs`.
+        adp_target_mode : str, optional
+            X-ray target mode for :meth:`refine_adp` only, which then runs on its own
+            LossState; e.g. ``'ml_noalpha'`` for ADPs against coordinates refined with
+            ``'ml'``. Default None uses ``target_mode`` throughout. The joint steps
+            (:meth:`refine_joint`, :meth:`refine_everything`) always use
+            ``target_mode``.
         corefine_scaler : bool, optional
             Co-refine the scaler parameters in the same optimizer step as the body rather
             than in a separate scaler step. Default False.
@@ -68,6 +77,7 @@ class LBFGSRefinement(Refinement):
         # configuration -- a second build here reverts whatever it fails to forward
         # (see Refinement._xray_target_kwargs).
         kwargs.setdefault("xray_mode", target_mode)
+        kwargs.setdefault("adp_xray_mode", adp_target_mode)
         super().__init__(*args, **kwargs)
 
         # Default False: hold the scaler fixed during the xyz/adp body steps and only
@@ -141,11 +151,13 @@ class LBFGSRefinement(Refinement):
     def refine_adp(self):
         """LBFGS over ``adp``, ``u`` and ``occupancy``, xyz frozen; returns the LossState.
 
-        Scaler parameters join this call only when ``corefine_scaler`` is True; by default
+        Runs on :attr:`~torchref.refinement.base_refinement.Refinement.adp_loss_state`,
+        which carries the ``adp_target_mode`` x-ray target when one was set. Scaler
+        parameters join this call only when ``corefine_scaler`` is True; by default
         they are fixed here and updated by
         :meth:`~torchref.refinement.base_refinement.Refinement.refine_scaler`.
         """
-        state = self.complete_loss_state()
+        state = self.adp_loss_state
         body = self.model.parameters_of_types(("adp", "u", "occupancy"))
         params = body + self._scaler_body_params()
         optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)

@@ -149,6 +149,16 @@ Loss weights:
         + "  ".join(f"'{name}': {doc}" for name, doc in XRAY_TARGET_DOCS.items()),
     )
     refine_group.add_argument(
+        "--adp-xray-mode",
+        type=str,
+        default=None,
+        choices=list(XRAY_TARGET_DOCS),
+        help="X-ray target for the ADP/occupancy steps of --mode separate, which then "
+        "run on their own loss state (default: same as --xray-mode). 'ml_noalpha' keeps "
+        "the absolute resolution falloff visible to the B-factors, which 'ml' lets the "
+        "per-shell alpha absorb. Ignored by --mode everything.",
+    )
+    refine_group.add_argument(
         "--scale-target",
         type=str,
         default=DEFAULT_SCALE_TARGET,
@@ -264,6 +274,8 @@ Loss weights:
         print(f"Output directory:  {outdir}")
         print(f"Refinement mode:   {args.mode}")
         print(f"X-ray target:      {args.xray_mode}")
+        if args.adp_xray_mode is not None:
+            print(f"ADP X-ray target:  {args.adp_xray_mode}")
         print(f"Refinement cycles: {args.n_cycles}")
         print(f"Hydrogens:         {args.hydrogens} ({args.hydrogen_mode})")
         print(f"Hydrogens in Fcalc: {'on' if args.hydrogens_in_xray else 'off'}")
@@ -318,6 +330,7 @@ Loss weights:
         device=device,
         column_names=column_names,
         target_mode=args.xray_mode,
+        adp_target_mode=args.adp_xray_mode,
         scale_target=args.scale_target,
         **sigma_a_kwargs,
         adp_mode=args.adp_mode,
@@ -426,6 +439,7 @@ Loss weights:
             ),
             "wavelength": args.wavelength,
             "xray_mode": args.xray_mode,
+            "adp_xray_mode": args.adp_xray_mode,
             # Recorded because it changes the R-factors this file reports: without it an
             # archived run cannot be attributed to a scale target, and a change to the
             # default silently invalidates every cached score derived from these numbers.
