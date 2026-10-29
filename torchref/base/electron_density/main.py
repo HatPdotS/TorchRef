@@ -28,6 +28,7 @@ from torchref.config import get_float_dtype, get_sigma_cutoff_ed
 from torchref.utils.backends import run_or_degrade, select
 
 from torchref.base.electron_density._backends import DENSITY_BACKENDS
+from torchref.base.electron_density.batching import dense_offsets, normalize_atoms
 from torchref.base.electron_density.radius_policy import (
     per_atom_radius_aniso,
     per_atom_radius_iso,
@@ -51,11 +52,20 @@ def build_electron_density(
     B_aniso: Optional[torch.Tensor] = None,
     dtype: torch.dtype = None,
     force_portable: Optional[bool] = None,
+    batch_offsets_iso: Optional[torch.Tensor] = None,
+    batch_offsets_aniso: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Build an electron density map, shape ``(nx, ny, nz)``, from atomic parameters.
 
     Each atom is splatted at its own truncation radius by whichever kernel
     ``DENSITY_BACKENDS`` selects; see the module docstring.
+
+    Optionally batched over models that share the cell and grid (see
+    :mod:`~torchref.base.electron_density.batching`), returning ``(B, nx, ny, nz)``. Each
+    atom set is batched on its own: dense, with a leading ``B`` on every atom tensor
+    (``A``/``B`` may stay ``(n, 5)`` and be shared), or ragged, flat with
+    ``batch_offsets_*``. An empty unbatched set beside a batched one contributes to no
+    member; a non-empty one is refused as ambiguous.
 
     Parameters
     ----------
@@ -81,40 +91,74 @@ def build_electron_density(
         Pin the portable reference splat. ``None`` defers to the process-wide setting
         (``torchref.utils.use_portable``). Use it to check whether an accelerator kernel
         is producing wrong numbers -- the one failure automatic fallback cannot detect.
+    batch_offsets_iso, batch_offsets_aniso : torch.Tensor, optional
+        ``(B + 1,)`` integer offsets assigning flat (ragged) isotropic / anisotropic atoms
+        to members. Both sets must describe the same ``B``.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(nx, ny, nz)``, or ``(B, nx, ny, nz)`` for a batched call.
+
+    Raises
+    ------
+    ValueError
+        If the two atom sets disagree on the batch, or the offsets do not cover the
+        atoms.
     """
     if dtype is None:
         dtype = get_float_dtype()
-    density_map = torch.zeros(tuple(grid_shape), dtype=dtype, device=device)
+    iso = normalize_atoms(xyz_iso, adp_iso, occ_iso, A_iso, B_iso, batch_offsets_iso)
+    aniso = None
+    if xyz_aniso is not None:
+        aniso = normalize_atoms(
+            xyz_aniso, u_aniso, occ_aniso, A_aniso, B_aniso, batch_offsets_aniso
+        )
+    iso, aniso, n_members = _common_batch(iso, aniso)
+    shape = tuple(grid_shape) if n_members is None else (n_members, *grid_shape)
+    density_map = torch.zeros(shape, dtype=dtype, device=device)
 
-    # --- isotropic atoms ---
-    if len(xyz_iso) > 0:
+    if iso[0].shape[0] > 0:
         density_map = _add_isotropic(
-            density_map,
-            xyz_iso,
-            adp_iso,
-            occ_iso,
-            A_iso,
-            B_iso,
-            inv_frac_matrix,
-            frac_matrix,
-            force_portable=force_portable,
+            density_map, *iso[:5], inv_frac_matrix, frac_matrix,
+            force_portable=force_portable, batch_offsets=iso[5],
         )
-
-    # --- anisotropic atoms ---
-    if xyz_aniso is not None and len(xyz_aniso) > 0:
+    if aniso is not None and aniso[0].shape[0] > 0:
         density_map = _add_anisotropic(
-            density_map,
-            xyz_aniso,
-            u_aniso,
-            occ_aniso,
-            A_aniso,
-            B_aniso,
-            inv_frac_matrix,
-            frac_matrix,
-            force_portable=force_portable,
+            density_map, *aniso[:5], inv_frac_matrix, frac_matrix,
+            force_portable=force_portable, batch_offsets=aniso[5],
         )
-
     return density_map
+
+
+def _common_batch(iso, aniso):
+    """Reconcile the batch of the two normalized atom sets.
+
+    Returns both sets, with an empty unbatched set given all-empty offsets when the
+    other is batched, and the member count (None when unbatched).
+    """
+    sets = [t for t in (iso, aniso) if t is not None]
+    counts = {t[5].numel() - 1 for t in sets if t[5] is not None}
+    if not counts:
+        return iso, aniso, None
+    if len(counts) > 1:
+        raise ValueError(
+            f"the isotropic and anisotropic atoms describe different batch sizes "
+            f"{sorted(counts)}"
+        )
+    (n_members,) = counts
+
+    def align(t):
+        if t is None or t[5] is not None:
+            return t
+        if t[0].shape[0] > 0:
+            raise ValueError(
+                "one atom set is batched and the other is not; batch both, or pass the "
+                "unbatched one empty"
+            )
+        return (*t[:5], dense_offsets(n_members, 0))
+
+    return align(iso), align(aniso), n_members
 
 
 # =========================================================================
@@ -132,6 +176,7 @@ def _add_isotropic(
     inv_frac_matrix,
     frac_matrix,
     force_portable=None,
+    batch_offsets=None,
 ):
     """Add isotropic atoms at per-atom radius ``clamp(ceil(N_sigma * sigma_eff), [2,7])``.
 
@@ -142,7 +187,9 @@ def _add_isotropic(
     args = (density_map, xyz, adp, occ, A, B,
             inv_frac_matrix, frac_matrix, radius_per_atom)
     backend = select(DENSITY_BACKENDS, args, force_portable=force_portable)
-    return run_or_degrade(DENSITY_BACKENDS, backend, False, *args)
+    return run_or_degrade(
+        DENSITY_BACKENDS, backend, False, *args, batch_offsets=batch_offsets
+    )
 
 
 def _add_anisotropic(
@@ -155,6 +202,7 @@ def _add_anisotropic(
     inv_frac_matrix,
     frac_matrix,
     force_portable=None,
+    batch_offsets=None,
 ):
     """Add anisotropic atoms, radius = the ellipsoid's largest principal axis.
 
@@ -165,4 +213,6 @@ def _add_anisotropic(
     args = (density_map, xyz, u, occ, A, B,
             inv_frac_matrix, frac_matrix, radius_per_atom)
     backend = select(DENSITY_BACKENDS, args, force_portable=force_portable)
-    return run_or_degrade(DENSITY_BACKENDS, backend, True, *args)
+    return run_or_degrade(
+        DENSITY_BACKENDS, backend, True, *args, batch_offsets=batch_offsets
+    )

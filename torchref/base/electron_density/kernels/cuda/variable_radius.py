@@ -4,7 +4,15 @@ One program per atom (``grid=(n_atoms,)``); each iterates the cubic per-axis vox
 (sized in-kernel from ``r2cut`` and the inverse-cell metric), **decoding each voxel offset
 arithmetically** from the lane index, and truncates to the per-atom sphere
 (``r2 <= r2cut``). So every atom is splatted at its own ``N_sigma * sigma_eff`` radius
-with no host-built work plan or offset buffer. This is the production CUDA float32 path.
+with no host-built work plan or offset buffer. This is the production CUDA path, in float32
+and float64: every kernel computes in the dtype of its inputs (``DT``), except the voxel-index
+decode, which stays float32 because its exactness bound is a float32 one.
+
+A batched call (``(B, nx, ny, nz)`` map plus ``batch_offsets``, see
+:mod:`~torchref.base.electron_density.batching`) passes each atom's member id; the kernel
+then offsets its map pointer by ``member * nx * ny * nz`` (in int64), and nothing else
+changes. ``HAS_BATCH`` is a compile-time flag, so an unbatched launch compiles the load
+away.
 
 Every kernel follows the truncation contract stated in ``cpu/sphere_splat.py``, so results
 agree with the portable splat to float noise. Isotropic kernels carry the scalar ADP ``b``;
@@ -18,6 +26,7 @@ from __future__ import annotations
 
 import torch
 
+from torchref.base.electron_density.batching import check_batch, member_index
 from torchref.base.targets._dispatch import first_order_only
 
 try:
@@ -60,11 +69,12 @@ if _HAVE_TRITON:
     @triton.jit
     def _wq_grid_fwd_kernel(
         density_map_ptr,
+        member_ptr,
         xyz_ptr, b_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr,
         inv_frac_ptr, frac_ptr,
         nx: tl.constexpr, ny: tl.constexpr, nz: tl.constexpr,
-        BLOCK_V: tl.constexpr,
+        BLOCK_V: tl.constexpr, HAS_BATCH: tl.constexpr,
     ):
         """One program per atom. Iterates the cubic box [-bh,bh]^3, decoding each
         voxel offset from the lane index, and truncates to r2 <= r2cut. Voxel
@@ -85,6 +95,10 @@ if _HAVE_TRITON:
         v_lane = tl.arange(0, BLOCK_V)
 
         atom = tl.program_id(0)
+        DT = xyz_ptr.dtype.element_ty
+        dm_ptr = density_map_ptr
+        if HAS_BATCH:
+            dm_ptr += tl.load(member_ptr + atom).to(tl.int64) * (nx * ny * nz)
         r2cut = tl.load(r2cut_ptr + atom)
         r = tl.sqrt(r2cut)
         # per-axis bounding box of the cartesian r-sphere in index space (triclinic-correct:
@@ -134,9 +148,9 @@ if _HAVE_TRITON:
         ciy = tl.extra.cuda.libdevice.round(frac_y * ny).to(tl.int32)
         ciz = tl.extra.cuda.libdevice.round(frac_z * nz).to(tl.int32)
         # atom sub-voxel residual: w0 = frac @ (frac_wrapped - ci/n) (min-image displacement base)
-        rx = frac_x - cix.to(tl.float32) / nx
-        ry = frac_y - ciy.to(tl.float32) / ny
-        rz = frac_z - ciz.to(tl.float32) / nz
+        rx = frac_x - cix.to(DT) / nx
+        ry = frac_y - ciy.to(DT) / ny
+        rz = frac_z - ciz.to(DT) / nz
         w0x = f0 * rx + f1 * ry + f2 * rz
         w0y = f3 * rx + f4 * ry + f5 * rz
         w0z = f6 * rx + f7 * ry + f8 * rz
@@ -151,7 +165,7 @@ if _HAVE_TRITON:
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
-            ofxf = off_x.to(tl.float32); ofyf = off_y.to(tl.float32); ofzf = off_z.to(tl.float32)
+            ofxf = off_x.to(DT); ofyf = off_y.to(DT); ofzf = off_z.to(DT)
             # direct atom->voxel displacement: w = di*u_a + dj*u_b + dk*u_c - w0
             wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
@@ -171,18 +185,19 @@ if _HAVE_TRITON:
                 + An4 * tl.exp(-PI_SQ * r2 / Bt4)
             )
             dm_flat = ((vix * ny + viy) * nz + viz).to(tl.int64)
-            tl.atomic_add(density_map_ptr + dm_flat, density, mask=wmask)
+            tl.atomic_add(dm_ptr + dm_flat, density, mask=wmask)
             v_start += BLOCK_V
 
     @triton.jit
     def _wq_grid_bwd_kernel(
         grad_density_map_ptr,
+        member_ptr,
         xyz_ptr, b_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr,
         inv_frac_ptr, frac_ptr,
         grad_xyz_ptr, grad_b_ptr, grad_occ_ptr,
         nx: tl.constexpr, ny: tl.constexpr, nz: tl.constexpr,
-        BLOCK_V: tl.constexpr,
+        BLOCK_V: tl.constexpr, HAS_BATCH: tl.constexpr,
     ):
         """One program per atom backward; grads atomic_add into per-atom buffers.
         Out-of-sphere voxels (r2 > r2cut) are masked exactly as in the forward."""
@@ -202,6 +217,10 @@ if _HAVE_TRITON:
         v_lane = tl.arange(0, BLOCK_V)
 
         atom = tl.program_id(0)
+        DT = xyz_ptr.dtype.element_ty
+        dm_ptr = grad_density_map_ptr
+        if HAS_BATCH:
+            dm_ptr += tl.load(member_ptr + atom).to(tl.int64) * (nx * ny * nz)
         r2cut = tl.load(r2cut_ptr + atom)
         r = tl.sqrt(r2cut)
         # per-axis bounding box of the cartesian r-sphere in index space (triclinic-correct:
@@ -235,11 +254,11 @@ if _HAVE_TRITON:
         Bt2 = tl.maximum((B2 + b_iso) * 0.25, 0.1)
         Bt3 = tl.maximum((B3 + b_iso) * 0.25, 0.1)
         Bt4 = tl.maximum((B4 + b_iso) * 0.25, 0.1)
-        clamp0 = ((B0 + b_iso) * 0.25 > 0.1).to(tl.float32)
-        clamp1 = ((B1 + b_iso) * 0.25 > 0.1).to(tl.float32)
-        clamp2 = ((B2 + b_iso) * 0.25 > 0.1).to(tl.float32)
-        clamp3 = ((B3 + b_iso) * 0.25 > 0.1).to(tl.float32)
-        clamp4 = ((B4 + b_iso) * 0.25 > 0.1).to(tl.float32)
+        clamp0 = ((B0 + b_iso) * 0.25 > 0.1).to(DT)
+        clamp1 = ((B1 + b_iso) * 0.25 > 0.1).to(DT)
+        clamp2 = ((B2 + b_iso) * 0.25 > 0.1).to(DT)
+        clamp3 = ((B3 + b_iso) * 0.25 > 0.1).to(DT)
+        clamp4 = ((B4 + b_iso) * 0.25 > 0.1).to(DT)
         # Occupancy-free amplitudes: the density is linear in occ, so its gradient is
         # the occ = 1 density, and occ scales only the other gradients.
         An0 = A0 * PI_1P5 / (Bt0 * tl.sqrt(Bt0))
@@ -258,14 +277,18 @@ if _HAVE_TRITON:
         ciy = tl.extra.cuda.libdevice.round(frac_y * ny).to(tl.int32)
         ciz = tl.extra.cuda.libdevice.round(frac_z * nz).to(tl.int32)
         # atom sub-voxel residual: w0 = frac @ (frac_wrapped - ci/n) (min-image displacement base)
-        rx = frac_x - cix.to(tl.float32) / nx
-        ry = frac_y - ciy.to(tl.float32) / ny
-        rz = frac_z - ciz.to(tl.float32) / nz
+        rx = frac_x - cix.to(DT) / nx
+        ry = frac_y - ciy.to(DT) / ny
+        rz = frac_z - ciz.to(DT) / nz
         w0x = f0 * rx + f1 * ry + f2 * rz
         w0y = f3 * rx + f4 * ry + f5 * rz
         w0z = f6 * rx + f7 * ry + f8 * rz
 
-        g_ax = 0.0; g_ay = 0.0; g_az = 0.0; g_b = 0.0; g_occ = 0.0
+        # Per-lane partial sums, reduced once after the loop. A scalar 0.0 start would be
+        # a float32 loop-carried value, which a float64 sum cannot be assigned to.
+        g_ax = tl.zeros([BLOCK_V], dtype=DT); g_ay = tl.zeros([BLOCK_V], dtype=DT)
+        g_az = tl.zeros([BLOCK_V], dtype=DT); g_b = tl.zeros([BLOCK_V], dtype=DT)
+        g_occ = tl.zeros([BLOCK_V], dtype=DT)
         v_start = 0
         while v_start < n:
             v = v_start + v_lane
@@ -276,7 +299,7 @@ if _HAVE_TRITON:
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
-            ofxf = off_x.to(tl.float32); ofyf = off_y.to(tl.float32); ofzf = off_z.to(tl.float32)
+            ofxf = off_x.to(DT); ofyf = off_y.to(DT); ofzf = off_z.to(DT)
             # direct atom->voxel displacement: w = di*u_a + dj*u_b + dk*u_c - w0
             wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
@@ -290,7 +313,7 @@ if _HAVE_TRITON:
             wmask = vmask & (r2 <= r2cut)
 
             dm_flat = ((vix * ny + viy) * nz + viz).to(tl.int64)
-            grad_out = tl.load(grad_density_map_ptr + dm_flat, mask=vmask, other=0.0)
+            grad_out = tl.load(dm_ptr + dm_flat, mask=vmask, other=0.0)
             e0 = tl.exp(-PI_SQ * r2 / Bt0); e1 = tl.exp(-PI_SQ * r2 / Bt1)
             e2 = tl.exp(-PI_SQ * r2 / Bt2); e3 = tl.exp(-PI_SQ * r2 / Bt3)
             e4 = tl.exp(-PI_SQ * r2 / Bt4)
@@ -299,24 +322,24 @@ if _HAVE_TRITON:
                 + An3 * e3 / Bt3 + An4 * e4 / Bt4
             )
             scale_xyz = grad_out * 2.0 * PI_SQ * coeff_xyz
-            g_ax += tl.sum(tl.where(wmask, scale_xyz * wx, 0.0), axis=0)
-            g_ay += tl.sum(tl.where(wmask, scale_xyz * wy, 0.0), axis=0)
-            g_az += tl.sum(tl.where(wmask, scale_xyz * wz, 0.0), axis=0)
+            g_ax += tl.where(wmask, scale_xyz * wx, 0.0)
+            g_ay += tl.where(wmask, scale_xyz * wy, 0.0)
+            g_az += tl.where(wmask, scale_xyz * wz, 0.0)
             db0 = An0 * e0 * (-1.5 / Bt0 + PI_SQ * r2 / (Bt0 * Bt0)) * clamp0
             db1 = An1 * e1 * (-1.5 / Bt1 + PI_SQ * r2 / (Bt1 * Bt1)) * clamp1
             db2 = An2 * e2 * (-1.5 / Bt2 + PI_SQ * r2 / (Bt2 * Bt2)) * clamp2
             db3 = An3 * e3 * (-1.5 / Bt3 + PI_SQ * r2 / (Bt3 * Bt3)) * clamp3
             db4 = An4 * e4 * (-1.5 / Bt4 + PI_SQ * r2 / (Bt4 * Bt4)) * clamp4
-            g_b += tl.sum(tl.where(wmask, grad_out * 0.25 * (db0 + db1 + db2 + db3 + db4), 0.0), axis=0)
+            g_b += tl.where(wmask, grad_out * 0.25 * (db0 + db1 + db2 + db3 + db4), 0.0)
             dens = An0 * e0 + An1 * e1 + An2 * e2 + An3 * e3 + An4 * e4
-            g_occ += tl.sum(tl.where(wmask, grad_out * dens, 0.0), axis=0)
+            g_occ += tl.where(wmask, grad_out * dens, 0.0)
             v_start += BLOCK_V
 
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 0, occ * g_ax)
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 1, occ * g_ay)
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 2, occ * g_az)
-        tl.atomic_add(grad_b_ptr + atom, occ * g_b)
-        tl.atomic_add(grad_occ_ptr + atom, g_occ)
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 0, occ * tl.sum(g_ax, axis=0))
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 1, occ * tl.sum(g_ay, axis=0))
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 2, occ * tl.sum(g_az, axis=0))
+        tl.atomic_add(grad_b_ptr + atom, occ * tl.sum(g_b, axis=0))
+        tl.atomic_add(grad_occ_ptr + atom, tl.sum(g_occ, axis=0))
 
     # ====================================================================
     # ANISOTROPIC variable-radius kernels: same skeleton, scalar b replaced
@@ -326,11 +349,12 @@ if _HAVE_TRITON:
     @triton.jit
     def _wq_grid_aniso_fwd_kernel(
         density_map_ptr,
+        member_ptr,
         xyz_ptr, u_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr,
         inv_frac_ptr, frac_ptr,
         nx: tl.constexpr, ny: tl.constexpr, nz: tl.constexpr,
-        BLOCK_V: tl.constexpr,
+        BLOCK_V: tl.constexpr, HAS_BATCH: tl.constexpr,
     ):
         """Per-Gaussian M = (B_g*I + 8*pi^2*U)/4 is built + inverted ONCE per atom
         (manual 5-fold unroll: Triton @jit has no lists) before the voxel loop;
@@ -352,6 +376,10 @@ if _HAVE_TRITON:
         v_lane = tl.arange(0, BLOCK_V)
 
         atom = tl.program_id(0)
+        DT = xyz_ptr.dtype.element_ty
+        dm_ptr = density_map_ptr
+        if HAS_BATCH:
+            dm_ptr += tl.load(member_ptr + atom).to(tl.int64) * (nx * ny * nz)
         r2cut = tl.load(r2cut_ptr + atom)
         r = tl.sqrt(r2cut)
         # per-axis bounding box of the cartesian r-sphere in index space (triclinic-correct:
@@ -415,9 +443,9 @@ if _HAVE_TRITON:
         ciy = tl.extra.cuda.libdevice.round(frac_y * ny).to(tl.int32)
         ciz = tl.extra.cuda.libdevice.round(frac_z * nz).to(tl.int32)
         # atom sub-voxel residual: w0 = frac @ (frac_wrapped - ci/n) (min-image displacement base)
-        rx = frac_x - cix.to(tl.float32) / nx
-        ry = frac_y - ciy.to(tl.float32) / ny
-        rz = frac_z - ciz.to(tl.float32) / nz
+        rx = frac_x - cix.to(DT) / nx
+        ry = frac_y - ciy.to(DT) / ny
+        rz = frac_z - ciz.to(DT) / nz
         w0x = f0 * rx + f1 * ry + f2 * rz
         w0y = f3 * rx + f4 * ry + f5 * rz
         w0z = f6 * rx + f7 * ry + f8 * rz
@@ -432,7 +460,7 @@ if _HAVE_TRITON:
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
-            ofxf = off_x.to(tl.float32); ofyf = off_y.to(tl.float32); ofzf = off_z.to(tl.float32)
+            ofxf = off_x.to(DT); ofyf = off_y.to(DT); ofzf = off_z.to(DT)
             # direct atom->voxel displacement: w = di*u_a + dj*u_b + dk*u_c - w0
             wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
@@ -455,18 +483,19 @@ if _HAVE_TRITON:
                        + An2 * tl.exp(-PI_SQ * q2) + An3 * tl.exp(-PI_SQ * q3)
                        + An4 * tl.exp(-PI_SQ * q4))
             dm_flat = ((vix * ny + viy) * nz + viz).to(tl.int64)
-            tl.atomic_add(density_map_ptr + dm_flat, density, mask=wmask)
+            tl.atomic_add(dm_ptr + dm_flat, density, mask=wmask)
             v_start += BLOCK_V
 
     @triton.jit
     def _wq_grid_aniso_bwd_kernel(
         grad_density_map_ptr,
+        member_ptr,
         xyz_ptr, u_ptr, A_ptr, B_ptr, occ_ptr,
         r2cut_ptr,
         inv_frac_ptr, frac_ptr,
         grad_xyz_ptr, grad_u_ptr, grad_occ_ptr,
         nx: tl.constexpr, ny: tl.constexpr, nz: tl.constexpr,
-        BLOCK_V: tl.constexpr,
+        BLOCK_V: tl.constexpr, HAS_BATCH: tl.constexpr,
     ):
         """Anisotropic backward. v = Minv w; grad_xyz = sum_g 2*pi^2*dg*v_g;
         grad_U via S = -0.5*Minv + pi^2 v v^T (diag *2pi^2, offdiag *4pi^2);
@@ -487,6 +516,10 @@ if _HAVE_TRITON:
         v_lane = tl.arange(0, BLOCK_V)
 
         atom = tl.program_id(0)
+        DT = xyz_ptr.dtype.element_ty
+        dm_ptr = grad_density_map_ptr
+        if HAS_BATCH:
+            dm_ptr += tl.load(member_ptr + atom).to(tl.int64) * (nx * ny * nz)
         r2cut = tl.load(r2cut_ptr + atom)
         r = tl.sqrt(r2cut)
         # per-axis bounding box of the cartesian r-sphere in index space (triclinic-correct:
@@ -550,15 +583,19 @@ if _HAVE_TRITON:
         ciy = tl.extra.cuda.libdevice.round(frac_y * ny).to(tl.int32)
         ciz = tl.extra.cuda.libdevice.round(frac_z * nz).to(tl.int32)
         # atom sub-voxel residual: w0 = frac @ (frac_wrapped - ci/n) (min-image displacement base)
-        rx = frac_x - cix.to(tl.float32) / nx
-        ry = frac_y - ciy.to(tl.float32) / ny
-        rz = frac_z - ciz.to(tl.float32) / nz
+        rx = frac_x - cix.to(DT) / nx
+        ry = frac_y - ciy.to(DT) / ny
+        rz = frac_z - ciz.to(DT) / nz
         w0x = f0 * rx + f1 * ry + f2 * rz
         w0y = f3 * rx + f4 * ry + f5 * rz
         w0z = f6 * rx + f7 * ry + f8 * rz
 
-        g_ax = 0.0; g_ay = 0.0; g_az = 0.0; g_occ = 0.0
-        g_u0 = 0.0; g_u1 = 0.0; g_u2 = 0.0; g_u3 = 0.0; g_u4 = 0.0; g_u5 = 0.0
+        # Per-lane partial sums, as in _wq_grid_bwd_kernel.
+        g_ax = tl.zeros([BLOCK_V], dtype=DT); g_ay = tl.zeros([BLOCK_V], dtype=DT)
+        g_az = tl.zeros([BLOCK_V], dtype=DT); g_occ = tl.zeros([BLOCK_V], dtype=DT)
+        g_u0 = tl.zeros([BLOCK_V], dtype=DT); g_u1 = tl.zeros([BLOCK_V], dtype=DT)
+        g_u2 = tl.zeros([BLOCK_V], dtype=DT); g_u3 = tl.zeros([BLOCK_V], dtype=DT)
+        g_u4 = tl.zeros([BLOCK_V], dtype=DT); g_u5 = tl.zeros([BLOCK_V], dtype=DT)
         v_start = 0
         while v_start < n:
             v = v_start + v_lane
@@ -569,7 +606,7 @@ if _HAVE_TRITON:
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
-            ofxf = off_x.to(tl.float32); ofyf = off_y.to(tl.float32); ofzf = off_z.to(tl.float32)
+            ofxf = off_x.to(DT); ofyf = off_y.to(DT); ofzf = off_z.to(DT)
             # direct atom->voxel displacement: w = di*u_a + dj*u_b + dk*u_c - w0
             wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
@@ -583,7 +620,7 @@ if _HAVE_TRITON:
             wmask = vmask & (r2 <= r2cut)
 
             dm_flat = ((vix * ny + viy) * nz + viz).to(tl.int64)
-            grad_out = tl.load(grad_density_map_ptr + dm_flat, mask=vmask, other=0.0)
+            grad_out = tl.load(dm_ptr + dm_flat, mask=vmask, other=0.0)
 
             vx0 = p00_0 * wx + p01_0 * wy + p02_0 * wz
             vy0 = p01_0 * wx + p11_0 * wy + p12_0 * wz
@@ -640,58 +677,87 @@ if _HAVE_TRITON:
                      + dg3 * (-0.5 * p12_3 + PI_SQ * vy3 * vz3)
                      + dg4 * (-0.5 * p12_4 + PI_SQ * vy4 * vz4))
             sxyz = grad_out * 2.0 * PI_SQ
-            g_ax += tl.sum(tl.where(wmask, sxyz * sx_acc, 0.0), axis=0)
-            g_ay += tl.sum(tl.where(wmask, sxyz * sy_acc, 0.0), axis=0)
-            g_az += tl.sum(tl.where(wmask, sxyz * sz_acc, 0.0), axis=0)
-            g_u0 += tl.sum(tl.where(wmask, grad_out * 2.0 * PI_SQ * gu0_l, 0.0), axis=0)
-            g_u1 += tl.sum(tl.where(wmask, grad_out * 2.0 * PI_SQ * gu1_l, 0.0), axis=0)
-            g_u2 += tl.sum(tl.where(wmask, grad_out * 2.0 * PI_SQ * gu2_l, 0.0), axis=0)
-            g_u3 += tl.sum(tl.where(wmask, grad_out * 4.0 * PI_SQ * gu3_l, 0.0), axis=0)
-            g_u4 += tl.sum(tl.where(wmask, grad_out * 4.0 * PI_SQ * gu4_l, 0.0), axis=0)
-            g_u5 += tl.sum(tl.where(wmask, grad_out * 4.0 * PI_SQ * gu5_l, 0.0), axis=0)
-            g_occ += tl.sum(tl.where(wmask, grad_out * dens, 0.0), axis=0)
+            g_ax += tl.where(wmask, sxyz * sx_acc, 0.0)
+            g_ay += tl.where(wmask, sxyz * sy_acc, 0.0)
+            g_az += tl.where(wmask, sxyz * sz_acc, 0.0)
+            g_u0 += tl.where(wmask, grad_out * 2.0 * PI_SQ * gu0_l, 0.0)
+            g_u1 += tl.where(wmask, grad_out * 2.0 * PI_SQ * gu1_l, 0.0)
+            g_u2 += tl.where(wmask, grad_out * 2.0 * PI_SQ * gu2_l, 0.0)
+            g_u3 += tl.where(wmask, grad_out * 4.0 * PI_SQ * gu3_l, 0.0)
+            g_u4 += tl.where(wmask, grad_out * 4.0 * PI_SQ * gu4_l, 0.0)
+            g_u5 += tl.where(wmask, grad_out * 4.0 * PI_SQ * gu5_l, 0.0)
+            g_occ += tl.where(wmask, grad_out * dens, 0.0)
             v_start += BLOCK_V
 
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 0, occ * g_ax)
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 1, occ * g_ay)
-        tl.atomic_add(grad_xyz_ptr + atom * 3 + 2, occ * g_az)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 0, occ * g_u0)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 1, occ * g_u1)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 2, occ * g_u2)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 3, occ * g_u3)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 4, occ * g_u4)
-        tl.atomic_add(grad_u_ptr + atom * 6 + 5, occ * g_u5)
-        tl.atomic_add(grad_occ_ptr + atom, g_occ)
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 0, occ * tl.sum(g_ax, axis=0))
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 1, occ * tl.sum(g_ay, axis=0))
+        tl.atomic_add(grad_xyz_ptr + atom * 3 + 2, occ * tl.sum(g_az, axis=0))
+        tl.atomic_add(grad_u_ptr + atom * 6 + 0, occ * tl.sum(g_u0, axis=0))
+        tl.atomic_add(grad_u_ptr + atom * 6 + 1, occ * tl.sum(g_u1, axis=0))
+        tl.atomic_add(grad_u_ptr + atom * 6 + 2, occ * tl.sum(g_u2, axis=0))
+        tl.atomic_add(grad_u_ptr + atom * 6 + 3, occ * tl.sum(g_u3, axis=0))
+        tl.atomic_add(grad_u_ptr + atom * 6 + 4, occ * tl.sum(g_u4, axis=0))
+        tl.atomic_add(grad_u_ptr + atom * 6 + 5, occ * tl.sum(g_u5, axis=0))
+        tl.atomic_add(grad_occ_ptr + atom, tl.sum(g_occ, axis=0))
 
 
-def _launch_grid_fwd(out_flat, r2cut, scene_buffers, dims):
-    """Isotropic grid=(n_atoms,) forward (fixed FWD_BLOCK_V/FWD_NUM_WARPS)."""
-    (xyz, b, A, B, occ, inv_frac, frac) = scene_buffers
+def _launch(kernel, grid_ptr, member, r2cut, scene_buffers, extra, dims, block_v, warps):
+    """Launch one of the four kernels over ``grid=(n_atoms,)``.
+
+    ``member`` is the per-atom member id, or None for an unbatched call, in which case a
+    placeholder pointer is passed that the compiled-out ``HAS_BATCH`` branch never reads.
+    """
     nx, ny, nz = dims
-    n_atoms = r2cut.shape[0]
-    _wq_grid_fwd_kernel[(n_atoms,)](
-        out_flat,
-        xyz, b, A, B, occ,
+    kernel[(r2cut.shape[0],)](
+        grid_ptr,
+        r2cut if member is None else member,
+        *scene_buffers,
         r2cut,
-        inv_frac, frac,
-        nx=nx, ny=ny, nz=nz, BLOCK_V=FWD_BLOCK_V,
-        num_warps=FWD_NUM_WARPS,
+        *extra,
+        nx=nx, ny=ny, nz=nz, BLOCK_V=block_v, HAS_BATCH=member is not None,
+        num_warps=warps,
     )
 
 
-def _launch_grid_aniso_fwd(out_flat, r2cut, scene_buffers, dims):
-    """Anisotropic grid=(n_atoms,) forward (fixed FWD_BLOCK_V/FWD_NUM_WARPS)."""
-    (xyz, u, A, B, occ, inv_frac, frac) = scene_buffers
-    nx, ny, nz = dims
-    n_atoms = r2cut.shape[0]
-    _wq_grid_aniso_fwd_kernel[(n_atoms,)](
-        out_flat,
-        xyz, u, A, B, occ,
-        r2cut,
-        inv_frac, frac,
-        nx=nx, ny=ny, nz=nz, BLOCK_V=FWD_BLOCK_V,
-        num_warps=FWD_NUM_WARPS,
-    )
+def _scene(xyz, third, A, B, occ):
+    return tuple(t.contiguous() for t in (xyz, third, A, B, occ))
+
+
+def _cell(inv_frac, frac):
+    return inv_frac.contiguous().view(-1), frac.contiguous().view(-1)
+
+
+def _forward(ctx, fwd_kernel, density_map, xyz, third, occ, A, B, r2cut, inv_frac, frac,
+             member):
+    """Forward shared by both splats: ``third`` is the scalar ``b`` or the 6-component
+    ``u``. Returns ``density_map + splat``."""
+    # Accumulate the splat into a copy of the running density_map (out =
+    # density_map + splat) so the dispatch needs no separate zeros buffer + add.
+    # A clone (not in-place) keeps this autograd-trivial and safe for the row's
+    # on_failure="degrade": density_map is untouched if the kernel raises.
+    dims = tuple(int(n) for n in density_map.shape[-3:])
+    out = density_map.contiguous().clone()
+    _launch(fwd_kernel, out.view(-1), member, r2cut, _scene(xyz, third, A, B, occ),
+            _cell(inv_frac, frac), dims, FWD_BLOCK_V, FWD_NUM_WARPS)
+    ctx.dims = dims
+    ctx.save_for_backward(xyz, third, occ, A, B, r2cut, inv_frac, frac, member)
+    return out
+
+
+def _backward(ctx, bwd_kernel, grad_density_map):
+    """Backward shared by both splats; the gradient of ``third`` has its shape."""
+    xyz, third, occ, A, B, r2cut, inv_frac, frac, member = ctx.saved_tensors
+    grad_xyz = torch.zeros_like(xyz)
+    grad_third = torch.zeros_like(third)
+    grad_occ = torch.zeros_like(occ)
+    _launch(bwd_kernel, grad_density_map.contiguous().view(-1), member, r2cut,
+            _scene(xyz, third, A, B, occ),
+            (*_cell(inv_frac, frac), grad_xyz, grad_third, grad_occ),
+            ctx.dims, BWD_BLOCK_V, BWD_NUM_WARPS)
+    # out = density_map + splat -> grad wrt density_map is identity.
+    # grads for: density_map, xyz, third, occ, A, B, r2cut, inv_frac, frac, member
+    return (grad_density_map, grad_xyz, grad_third, grad_occ, None, None,
+            None, None, None, None)
 
 
 class WorkQueueGridDensity(torch.autograd.Function):
@@ -703,53 +769,14 @@ class WorkQueueGridDensity(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, density_map, xyz, b, occ, A, B,
-                r2cut, inv_frac, frac):
-        # Accumulate the splat into a copy of the running density_map (out =
-        # density_map + splat) so the dispatch needs no separate zeros buffer + add.
-        # A clone (not in-place) keeps this autograd-trivial and safe for the row's
-        # on_failure="degrade": density_map is untouched if the kernel raises.
-        nx, ny, nz = density_map.shape[:3]
-        xyz = xyz.contiguous(); b = b.contiguous(); occ = occ.contiguous()
-        A = A.contiguous(); B = B.contiguous()
-        inv_frac_flat = inv_frac.contiguous().view(-1)
-        frac_flat = frac.contiguous().view(-1)
-        out = density_map.contiguous().clone().view(-1)
-        _launch_grid_fwd(
-            out, r2cut,
-            (xyz, b, A, B, occ, inv_frac_flat, frac_flat),
-            (nx, ny, nz),
-        )
-        ctx.dims = (nx, ny, nz)
-        ctx.save_for_backward(xyz, b, occ, A, B,
-                              r2cut, inv_frac, frac)
-        return out.view(nx, ny, nz)
+    def forward(ctx, density_map, xyz, b, occ, A, B, r2cut, inv_frac, frac, member):
+        return _forward(ctx, _wq_grid_fwd_kernel, density_map, xyz, b, occ, A, B,
+                        r2cut, inv_frac, frac, member)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_density_map):
-        (xyz, b, occ, A, B,
-         r2cut, inv_frac, frac) = ctx.saved_tensors
-        nx, ny, nz = ctx.dims
-        grad_dm = grad_density_map.contiguous().view(-1)
-        inv_frac_flat = inv_frac.contiguous().view(-1)
-        frac_flat = frac.contiguous().view(-1)
-        grad_xyz = torch.zeros_like(xyz)
-        grad_b = torch.zeros_like(b)
-        grad_occ = torch.zeros_like(occ)
-        _wq_grid_bwd_kernel[(r2cut.shape[0],)](
-            grad_dm,
-            xyz.contiguous(), b.contiguous(), A.contiguous(), B.contiguous(), occ.contiguous(),
-            r2cut,
-            inv_frac_flat, frac_flat,
-            grad_xyz, grad_b, grad_occ,
-            nx=nx, ny=ny, nz=nz, BLOCK_V=BWD_BLOCK_V,
-            num_warps=BWD_NUM_WARPS,
-        )
-        # out = density_map + splat -> grad wrt density_map is identity.
-        # grads for: density_map, xyz, b, occ, A, B, r2cut, inv_frac, frac
-        return (grad_density_map, grad_xyz, grad_b, grad_occ, None, None,
-                None, None, None)
+        return _backward(ctx, _wq_grid_bwd_kernel, grad_density_map)
 
 
 class WorkQueueGridDensityAniso(torch.autograd.Function):
@@ -759,49 +786,14 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
     ``grad_u`` (6 components) in place of ``grad_b``."""
 
     @staticmethod
-    def forward(ctx, density_map, xyz, u, occ, A, B,
-                r2cut, inv_frac, frac):
-        # Accumulate into a copy of the running density_map (see the iso forward).
-        nx, ny, nz = density_map.shape[:3]
-        xyz = xyz.contiguous(); u = u.contiguous(); occ = occ.contiguous()
-        A = A.contiguous(); B = B.contiguous()
-        inv_frac_flat = inv_frac.contiguous().view(-1)
-        frac_flat = frac.contiguous().view(-1)
-        out = density_map.contiguous().clone().view(-1)
-        _launch_grid_aniso_fwd(
-            out, r2cut,
-            (xyz, u, A, B, occ, inv_frac_flat, frac_flat),
-            (nx, ny, nz),
-        )
-        ctx.dims = (nx, ny, nz)
-        ctx.save_for_backward(xyz, u, occ, A, B,
-                              r2cut, inv_frac, frac)
-        return out.view(nx, ny, nz)
+    def forward(ctx, density_map, xyz, u, occ, A, B, r2cut, inv_frac, frac, member):
+        return _forward(ctx, _wq_grid_aniso_fwd_kernel, density_map, xyz, u, occ, A, B,
+                        r2cut, inv_frac, frac, member)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_density_map):
-        (xyz, u, occ, A, B,
-         r2cut, inv_frac, frac) = ctx.saved_tensors
-        nx, ny, nz = ctx.dims
-        grad_dm = grad_density_map.contiguous().view(-1)
-        inv_frac_flat = inv_frac.contiguous().view(-1)
-        frac_flat = frac.contiguous().view(-1)
-        grad_xyz = torch.zeros_like(xyz)
-        grad_u = torch.zeros_like(u)
-        grad_occ = torch.zeros_like(occ)
-        _wq_grid_aniso_bwd_kernel[(r2cut.shape[0],)](
-            grad_dm,
-            xyz.contiguous(), u.contiguous(), A.contiguous(), B.contiguous(), occ.contiguous(),
-            r2cut,
-            inv_frac_flat, frac_flat,
-            grad_xyz, grad_u, grad_occ,
-            nx=nx, ny=ny, nz=nz, BLOCK_V=BWD_BLOCK_V,
-            num_warps=BWD_NUM_WARPS,
-        )
-        # out = density_map + splat -> grad wrt density_map is identity.
-        return (grad_density_map, grad_xyz, grad_u, grad_occ, None, None,
-                None, None, None)
+        return _backward(ctx, _wq_grid_aniso_bwd_kernel, grad_density_map)
 
 
 # ---------------------------------------------------------------------------
@@ -810,7 +802,7 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
 # Every production splat exposes the same signature:
 #
 #     (density_map, xyz, adp_or_u, occ, A, B, inv_frac_matrix, frac_matrix,
-#      radius_per_atom)
+#      radius_per_atom, batch_offsets=None)
 #
 # so ``electron_density/main.py`` dispatches with one ``select`` plus ``run_or_degrade``
 # over ``DENSITY_BACKENDS`` and a test can drive any backend through one code path. These
@@ -829,7 +821,7 @@ def why_unavailable():
     :mod:`torchref.utils.backends`). Not a restatement of ``triton_available()``: the
     ``@triton.jit`` bodies live under ``if _HAVE_TRITON:`` but the wrappers are defined
     unconditionally, so without Triton the module imports cleanly and the failure would
-    otherwise surface as a bare ``NameError`` from inside ``_launch_grid_fwd``.
+    otherwise surface as a bare ``NameError`` from inside ``_launch``.
     """
     if not _HAVE_TRITON:
         return (
@@ -839,15 +831,38 @@ def why_unavailable():
     return None
 
 
+def _member(density_map, xyz, batch_offsets):
+    """Per-atom member ids on the map's device, or None for an unbatched call.
+
+    Also refuses float64 on a GPU without float64 atomics (before sm_60), which the
+    availability probe cannot see because it takes no tensors. The row degrades on the
+    raise, so such a call runs on the portable splat with a warning.
+    """
+    if density_map.dtype is torch.float64:  # dtype-ok: capability check, not an allocation
+        major, _ = torch.cuda.get_device_capability(density_map.device)
+        if major < 6:
+            raise RuntimeError(
+                "float64 atomic_add needs compute capability 6.0 or newer; got "
+                f"{major}.x on {density_map.device}"
+            )
+    _, offsets = check_batch(density_map, xyz.shape[0], batch_offsets)
+    if offsets is None:
+        return None
+    return member_index(offsets.to(density_map.device), xyz.shape[0])
+
+
 def add_isotropic_cuda_var(
-    density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
+    density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom,
+    batch_offsets=None,
 ):
     """Isotropic variable-radius Triton splat; returns ``density_map + splat``.
 
     Canonical splat signature, identical to ``add_isotropic_plain_var``,
-    ``add_isotropic_cpu_sphere_var`` and ``add_isotropic_mps_var``. CUDA float32
-    only -- the gate is the ``cuda_triton`` row of ``DENSITY_BACKENDS``; this wrapper
-    does not re-check.
+    ``add_isotropic_cpu_sphere_var`` and ``add_isotropic_mps_var``. CUDA float32 and
+    float64 -- the gate is the ``cuda_triton`` row of ``DENSITY_BACKENDS``; this wrapper
+    does not re-check. ``density_map`` is ``(nx, ny, nz)``, or ``(B, nx, ny, nz)`` with
+    ``batch_offsets`` ``(B + 1,)``. Accumulation uses atomics, so results are not
+    bit-reproducible run to run.
     """
     return WorkQueueGridDensity.apply(
         density_map,
@@ -859,17 +874,20 @@ def add_isotropic_cuda_var(
         radius_per_atom * radius_per_atom,
         inv_frac_matrix,
         frac_matrix,
+        _member(density_map, xyz, batch_offsets),
     )
 
 
 def add_anisotropic_cuda_var(
-    density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
+    density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom,
+    batch_offsets=None,
 ):
     """Anisotropic variable-radius Triton splat; returns ``density_map + splat``.
 
     Canonical splat signature. ``u`` carries ``[U11, U22, U33, U12, U13, U23]``; the
     cutoff stays the Euclidean sphere at ``radius_per_atom`` while the density is the
-    full Mahalanobis form, matching the Metal and fused-CPU kernels.
+    full Mahalanobis form, matching the Metal and fused-CPU kernels. Batching and dtypes
+    as :func:`add_isotropic_cuda_var`.
     """
     return WorkQueueGridDensityAniso.apply(
         density_map,
@@ -881,4 +899,5 @@ def add_anisotropic_cuda_var(
         radius_per_atom * radius_per_atom,
         inv_frac_matrix,
         frac_matrix,
+        _member(density_map, xyz, batch_offsets),
     )

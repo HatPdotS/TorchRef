@@ -12,7 +12,7 @@
 
 //!
 //! Every entry point takes its arguments positionally, as `(outputs..., inputs...,
-//! nx, ny, nz, n_threads)` with `(data_ptr, numel)` pairs for the buffers:
+//! offsets, nx, ny, nz, n_threads)` with `(data_ptr, numel)` pairs for the buffers:
 //!
 //! - forward: `out`, then the [`INPUTS`]; accumulates the splat into `out` in place;
 //! - backward: `g_xyz`, `g_adp`, `g_occ`, `grad`, then the [`INPUTS`]; writes the per-atom
@@ -20,6 +20,11 @@
 //!
 //! `adp` is `(n,)` B-factors for `sphere_iso_*` and `(n, 6)` U components for
 //! `sphere_aniso_*`.
+//!
+//! `offsets` is an `i64` buffer of `B + 1` member offsets: member `b` owns atoms
+//! `[offsets[b], offsets[b + 1])` and grid slab `b` of `out` / `grad`, which hold `B` grids
+//! back to back. An unbatched call is one member, `[0, n]`. Members run the unchanged
+//! per-member kernels, so a batched result is bitwise the stack of single-member results.
 
 mod aniso;
 mod common;
@@ -40,7 +45,8 @@ const INPUTS: [&str; 8] = ["xyz", "adp", "occ", "A", "B", "r2cut", "inv_frac", "
 /// `N` buffers, the checked grid shape `(nx, ny, nz, voxels)`, and the thread count.
 type Args<const N: usize> = ([Buf; N], (i32, i32, i32, usize), usize);
 
-/// Split `(*bufs, nx, ny, nz, n_threads)` as passed from Python.
+/// Split `(*bufs, nx, ny, nz, n_threads)` as passed from Python; `offsets` is the last
+/// buffer.
 fn parse<const N: usize>(args: &Bound<'_, PyTuple>) -> PyResult<Args<N>> {
     if args.len() != N + 4 {
         return Err(PyTypeError::new_err(format!(
@@ -95,21 +101,49 @@ unsafe fn atoms<'a, T, const W: usize>(ins: &[Buf; 8]) -> PyResult<Atoms<'a, T>>
     })
 }
 
+/// Borrow and check the member `offsets` against `n_atoms`.
+///
+/// # Safety
+/// `buf` must satisfy [`crate::ffi::input`]'s contract.
+unsafe fn offsets<'a>(buf: Buf, n_atoms: usize) -> PyResult<&'a [i64]> {
+    let off = unsafe { input::<i64>(buf, "offsets")? };
+    let ok = off.len() >= 2
+        && off[0] == 0
+        && off[off.len() - 1] == n_atoms as i64
+        && off.windows(2).all(|w| w[0] <= w[1]);
+    if !ok {
+        return Err(PyValueError::new_err(format!(
+            "offsets must be B + 1 >= 2 non-decreasing values from 0 to {n_atoms}"
+        )));
+    }
+    Ok(off)
+}
+
+/// Each member's atoms, in member order.
+fn members<'a, T>(at: &Atoms<'a, T>, off: &[i64], w: usize) -> Vec<Atoms<'a, T>> {
+    off.windows(2)
+        .map(|m| at.member(m[0] as usize, m[1] as usize, w))
+        .collect()
+}
+
 type Planes<T> = fn(&mut [T], i32, i32, &Cell<T>, &Atoms<'_, T>);
 type AtomGrad<T, const W: usize> = fn(usize, &[T], &Cell<T>, &Atoms<'_, T>) -> ([T; 3], [T; W], T);
 
-/// Forward: run `planes` over x-plane blocks of `out`, one block per worker.
+/// Forward: run `planes` over x-plane blocks of each member's slab of `out`.
 fn fwd<T: Real, const W: usize>(
     py: Python<'_>,
     args: &Bound<'_, PyTuple>,
     planes: Planes<T>,
 ) -> PyResult<()> {
-    let ([out, ins @ ..], (nx, ny, nz, len), n_threads) = parse::<9>(args)?;
-    expect_len(out.1, len, "out")?;
+    let ([out, ins @ .., off], (nx, ny, nz, len), n_threads) = parse::<10>(args)?;
     no_aliasing(&[(out, "out")], &ins, size_of::<T>())?;
     let at = unsafe { atoms::<T, W>(&ins)? };
+    let off = unsafe { offsets(off, at.n_atoms)? };
+    let n_members = off.len() - 1;
+    expect_len(out.1, n_members * len, "out")?;
     let out = unsafe { output::<T>(out, "out")? };
     let c = Cell::new(at.frac, at.inv_frac, nx, ny, nz);
+    let members = members(&at, off, W);
     if at.n_atoms == 0 {
         return Ok(());
     }
@@ -118,12 +152,19 @@ fn fwd<T: Real, const W: usize>(
         let plane = c.ny as usize * c.nz as usize;
         let per = (c.nx as usize).div_ceil(pool.current_num_threads()).max(1);
         pool.install(|| {
-            out.par_chunks_mut(per * plane)
-                .enumerate()
-                .for_each(|(ci, chunk)| {
-                    let xlo = ci * per;
-                    let xhi = xlo + chunk.len() / plane;
-                    planes(chunk, xlo as i32, xhi as i32, &c, &at);
+            // Members and their x-plane blocks are one flat set of tasks, so a batch of
+            // small members still fills the pool. Every block writes only its own planes.
+            out.par_chunks_mut(len)
+                .zip(members.par_iter())
+                .filter(|(_, m)| m.n_atoms > 0)
+                .for_each(|(slab, m)| {
+                    slab.par_chunks_mut(per * plane)
+                        .enumerate()
+                        .for_each(|(ci, chunk)| {
+                            let xlo = ci * per;
+                            let xhi = xlo + chunk.len() / plane;
+                            planes(chunk, xlo as i32, xhi as i32, &c, m);
+                        });
                 });
         });
     });
@@ -136,8 +177,8 @@ fn bwd<T: Real, const W: usize>(
     args: &Bound<'_, PyTuple>,
     atom: AtomGrad<T, W>,
 ) -> PyResult<()> {
-    let ([g_xyz, g_adp, g_occ, grad, ins @ ..], (nx, ny, nz, len), n_threads) = parse::<12>(args)?;
-    expect_len(grad.1, len, "grad")?;
+    let ([g_xyz, g_adp, g_occ, grad, ins @ .., off], (nx, ny, nz, len), n_threads) =
+        parse::<13>(args)?;
     let n = ins[2].1;
     expect_len(g_xyz.1, 3 * n, "g_xyz")?;
     expect_len(g_adp.1, W * n, "g_adp")?;
@@ -148,11 +189,14 @@ fn bwd<T: Real, const W: usize>(
         size_of::<T>(),
     )?;
     let at = unsafe { atoms::<T, W>(&ins)? };
+    let off = unsafe { offsets(off, n)? };
+    expect_len(grad.1, (off.len() - 1) * len, "grad")?;
     let grad = unsafe { input::<T>(grad, "grad")? };
     let gx = unsafe { output::<T>(g_xyz, "g_xyz")? };
     let ga = unsafe { output::<T>(g_adp, "g_adp")? };
     let go = unsafe { output::<T>(g_occ, "g_occ")? };
     let c = Cell::new(at.frac, at.inv_frac, nx, ny, nz);
+    let members = members(&at, off, W);
     py.detach(|| {
         pool::get(n_threads).install(|| {
             gx.par_chunks_mut(3)
@@ -160,7 +204,12 @@ fn bwd<T: Real, const W: usize>(
                 .zip(go.par_iter_mut())
                 .enumerate()
                 .for_each(|(i, ((x, a), o))| {
-                    let (dx, da, dov) = atom(i, grad, &c, &at);
+                    // The last member starting at or before atom i; empty members share
+                    // their start with the next one, so they are skipped over.
+                    let b = off.partition_point(|&s| s <= i as i64) - 1;
+                    let lo = off[b] as usize;
+                    let slab = &grad[b * len..(b + 1) * len];
+                    let (dx, da, dov) = atom(i - lo, slab, &c, &members[b]);
                     x.copy_from_slice(&dx);
                     a.copy_from_slice(&da);
                     *o = dov;

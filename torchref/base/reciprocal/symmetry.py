@@ -108,20 +108,29 @@ class ReciprocalSymmetryExtractor(DeviceMixin):
         Parameters
         ----------
         reciprocal_grid : torch.Tensor
-            Complex grid from the FFT of the **P1** map, shape ``(Nx, Ny, Nz)``;
-            its shape must match the ``grid_shape`` this extractor was built for.
+            Complex grid from the FFT of the **P1** map, shape ``(Nx, Ny, Nz)``, or
+            ``(B, Nx, Ny, Nz)`` for a batch of maps; its trailing shape must match the
+            ``grid_shape`` this extractor was built for.
 
         Returns
         -------
         torch.Tensor
-            Complex structure factors, shape ``(N,)``.
+            Complex structure factors, shape ``(N,)``, or ``(B, N)`` for a batch.
         """
         # gather_with_index_add keeps the backward a single ``index_add_``
         # (atomic scatter, no radix sort + dedup).
+        if reciprocal_grid.ndim == 3:
+            f_all = gather_with_index_add(
+                reciprocal_grid.reshape(-1), self._flat_indices
+            )  # (n_ops * N,)
+            return (f_all.view(self.n_ops, self.N) * self.phases).sum(dim=0)
+        # Voxels first, so the gather and its index_add_ backward stay along dim 0.
+        n_maps = reciprocal_grid.shape[0]
         f_all = gather_with_index_add(
-            reciprocal_grid.reshape(-1), self._flat_indices
-        )  # (n_ops * N,)
-        return (f_all.view(self.n_ops, self.N) * self.phases).sum(dim=0)
+            reciprocal_grid.reshape(n_maps, -1).T, self._flat_indices
+        )  # (n_ops * N, B)
+        f_all = f_all.view(self.n_ops, self.N, n_maps)
+        return (f_all * self.phases.unsqueeze(-1)).sum(dim=0).T
 
 
 __all__ = ["ReciprocalSymmetryExtractor"]
