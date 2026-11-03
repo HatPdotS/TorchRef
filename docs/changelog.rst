@@ -8,6 +8,7 @@ Unreleased
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 - Disulfide detection no longer bonds conformer ``A`` of one cysteine to conformer ``B`` of its partner: an ``SG`` with an altloc pairs only with the same altloc or a blank one
+- Amino acids gain C-beta dihedral restraints (``N-C-CA-CB``, ``C-N-CA-CB``, σ 2.5°, as in Phenix), torsion origin ``cbeta``; refined models no longer show MolProbity C-beta outliers from the loose library CA angles
 
 
 Version 0.7.0
