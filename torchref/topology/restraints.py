@@ -581,6 +581,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         out(f"  Disulfide bonds: {get_count('bond', 'disulfide')}")
         out(f"  Disulfide angles: {get_count('angle', 'disulfide')}")
         out(f"  Disulfide torsions: {get_count('torsion', 'disulfide')}")
+        out(f"  C-beta torsions: {get_count('torsion', 'cbeta')}")
         out(f"  LINK bonds: {get_count('bond', 'link')}")
 
         out("")

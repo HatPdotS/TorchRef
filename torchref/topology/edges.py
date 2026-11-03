@@ -27,9 +27,9 @@ from torchref.utils.device_mixin import DeviceMixin
 ORIGIN_ORDER: Dict[str, Tuple[str, ...]] = {
     "bond": ("intra", "peptide", "disulfide", "link"),
     "angle": ("intra", "peptide", "disulfide"),
-    # intra and disulfide lead because together they are the ``all`` group the
+    # intra, disulfide and cbeta lead because together they are the ``all`` group the
     # torsion target reads; adjacent origins make that group a view rather than a copy.
-    "torsion": ("intra", "disulfide", "phi", "psi", "omega"),
+    "torsion": ("intra", "disulfide", "cbeta", "phi", "psi", "omega"),
     "chiral": ("intra",),
     "plane": ("intra", "peptide"),
 }
