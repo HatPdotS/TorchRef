@@ -22,11 +22,11 @@ from torchref.config import get_float_dtype, get_int_dtype
 #: Origins making up each edge type's ``all`` group -- what the geometry targets read.
 #: ``None`` means every origin present. ``phi`` and ``psi`` are conformationally free
 #: and carry no target, and ``omega`` has its own von Mises target, so the torsion group
-#: holds only the two origins that are ordinary restrained torsions.
+#: holds only the origins that are ordinary restrained torsions.
 ALL_MEMBERS: Dict[str, Optional[Tuple[str, ...]]] = {
     "bond": None,
     "angle": None,
-    "torsion": ("intra", "disulfide"),
+    "torsion": ("intra", "disulfide", "cbeta"),
 }
 
 #: Integer-valued edge properties, kept in the configured int dtype, not the float one.

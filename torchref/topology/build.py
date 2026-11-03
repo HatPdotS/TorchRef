@@ -653,6 +653,64 @@ def _disulfide_edges(
     return out, values
 
 
+#: C-beta dihedral targets in degrees, ``(N-C-CA-CB, C-N-CA-CB)``, for L residues. These
+#: are the ideal-CB constructions MolProbity's C-beta deviation is measured against, so
+#: restraining them restrains that deviation directly.
+_CBETA_TARGETS = {
+    "ALA": (122.9, -122.6),
+    "PRO": (115.1, -120.7),
+    "VAL": (123.4, -122.0),
+    "THR": (123.4, -122.0),
+    "ILE": (123.4, -122.0),
+}
+_CBETA_DEFAULT = (122.8, -122.6)
+#: Sigma of both C-beta dihedrals, in degrees.
+_CBETA_SIGMA = 2.5
+
+
+def _cbeta_edges(
+    cols: Dict[str, np.ndarray], nodes: Dict[str, np.ndarray], xyz: np.ndarray
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """C-beta dihedral restraints: ``N-C-CA-CB`` and ``C-N-CA-CB`` per conformer.
+
+    The library angles at CA leave CB free to tilt within the N-CA-C plane, which the
+    chiral volume cannot see; these two dihedrals fix that tilt. Emitted wherever a
+    conformer has N, CA, C and CB, CA-C is bonded (< 2 Å) and the CA volume is
+    L-handed in ``xyz`` (Cartesian, Å), so D residues and misbuilt centres are left to
+    the chiral restraint.
+    """
+    rows, refs = [], []
+    for r in range(len(nodes["atom_start"])):
+        start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
+        target = _CBETA_TARGETS.get(str(nodes["resname"][r]), _CBETA_DEFAULT)
+        for names, indices in _conformers(cols, start, end):
+            at = {}
+            for want in ("N", "CA", "C", "CB"):
+                hit = np.flatnonzero(names == want)
+                if len(hit) != 1:
+                    break
+                at[want] = int(indices[hit[0]])
+            else:
+                n, ca, c, cb = (xyz[at[k]] for k in ("N", "CA", "C", "CB"))
+                if np.linalg.norm(c - ca) > 2.0:
+                    continue
+                if np.dot(n - ca, np.cross(c - ca, cb - ca)) <= 0:
+                    continue
+                rows.append((at["N"], at["C"], at["CA"], at["CB"]))
+                rows.append((at["C"], at["N"], at["CA"], at["CB"]))
+                refs.extend(target)
+    if not rows:
+        return np.zeros((0, 4), dtype=np.int64), {}
+    rows = np.asarray(rows, dtype=np.int64)
+    rows, keep = np.unique(rows, axis=0, return_index=True)
+    references = np.asarray(refs, dtype=np.float64)[keep]
+    return rows, {
+        "references": references,
+        "sigmas": np.full(len(rows), _CBETA_SIGMA),
+        "periods": np.ones(len(rows), dtype=np.int64),
+    }
+
+
 def _lookup_link_atom(
     topology: Topology,
     residue_by_key: Dict[Tuple[str, int, str], List[int]],
@@ -1007,6 +1065,10 @@ def build_topology_with_values(
         topology, residue_of_row, disulfide_pairs, link_dict, verbose
     )
 
+    cbeta, cbeta_values = _cbeta_edges(
+        match_cols, chemical_nodes, xyz.detach().cpu().numpy()
+    )
+
     link_edges, link_atom_pairs, link_values = _link_record_edges(
         topology,
         links,
@@ -1115,10 +1177,15 @@ def build_topology_with_values(
         device,
     )
     torsion_block, torsion_values = _block_with_values(
-        _origins(intra["torsions"], inter["torsion"], disulfide.get("torsion")),
+        _origins(
+            intra["torsions"],
+            {**inter["torsion"], "cbeta": cbeta},
+            disulfide.get("torsion"),
+        ),
         {
             "intra": intra_values["torsions"],
             **inter_values["torsion"],
+            "cbeta": cbeta_values,
             "disulfide": disulfide_values.get("torsion", {}),
         },
         4,
