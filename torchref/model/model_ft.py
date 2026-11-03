@@ -7,17 +7,21 @@ same density as f0 rather than a separate sum, so every term of F_calc gets the 
 temperature factors and symmetry expansion (see :meth:`ModelFT.forward`).
 """
 
+import logging
 from typing import NamedTuple, Optional, Tuple
 
 import gemmi
 import numpy as np
 import torch
 
-from torchref.config import dtypes
+from torchref._logging import TRACE, enabled, get_logger
+from torchref.config import dtypes, get_debug_checks
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
 from torchref.utils.caching import CachedForwardMixin
+
+log = get_logger(__name__)
 
 
 class _AnomalousTerms(NamedTuple):
@@ -115,7 +119,6 @@ class ModelFT(CachedForwardMixin, Model):
             explicit_gridsize=gridsize,
             dtype_float=self.dtype_float,
             device=self.device,
-            verbose=self.ctx.verbose,
         )
 
         self.wavelength = wavelength
@@ -326,8 +329,9 @@ class ModelFT(CachedForwardMixin, Model):
         """
         self.map = self.build_initial_map(apply_symmetry=apply_symmetry)
 
-        if self.ctx.verbose > 2:
-            print(
+        if enabled(log, TRACE):
+            log.log(
+                TRACE,
                 f"Density map built. Sum: {self.map.sum():.2f}, Max: {self.map.max():.4f}"
             )
         return self.map
@@ -348,12 +352,11 @@ class ModelFT(CachedForwardMixin, Model):
         torch.Tensor
             Electron density map with shape (nx, ny, nz).
         """
-        if self.ctx.verbose > 2:
-            print("Building density map (per-atom variable radius)...")
+        log.log(TRACE, "Building density map (per-atom variable radius)...")
 
         xyz_iso, adp_iso, occ_iso, A_iso, B_iso = self.get_iso()
 
-        if self.ctx.verbose > 3:
+        if get_debug_checks():
             assert torch.all(
                 torch.isfinite(A_iso)
             ), "Non-finite values found in A_iso during map building."
@@ -386,7 +389,7 @@ class ModelFT(CachedForwardMixin, Model):
             apply_symmetry=apply_symmetry,
         )
 
-        if self.ctx.verbose > 3:
+        if get_debug_checks():
             assert torch.all(
                 torch.isfinite(self.map)
             ), "Non-finite values found in map."
@@ -415,11 +418,11 @@ class ModelFT(CachedForwardMixin, Model):
 
         np_map = self.map.detach().cpu().numpy().astype(np.float32)
         cell = self.cell.tolist()
-        if self.ctx.verbose > 0:
-            print(f"Saving map to {filename}")
-            print(f"  Map shape: {self.map.shape}")
-            print(f"  Map sum: {self.map.sum():.2f}")
-            print(f"  Map range: [{self.map.min():.4f}, {self.map.max():.4f}]")
+        if enabled(log, logging.INFO):
+            log.info(f"Saving map to {filename}")
+            log.info(f"  Map shape: {self.map.shape}")
+            log.info(f"  Map sum: {self.map.sum():.2f}")
+            log.info(f"  Map range: [{self.map.min():.4f}, {self.map.max():.4f}]")
 
         map_ccp = gemmi.Ccp4Map()
         map_ccp.grid = gemmi.FloatGrid(
@@ -428,8 +431,7 @@ class ModelFT(CachedForwardMixin, Model):
         map_ccp.setup(0.0)
         map_ccp.update_ccp4_header()
         map_ccp.write_ccp4_map(filename)
-        if self.ctx.verbose > 0:
-            print("Map saved successfully")
+        log.info("Map saved successfully")
 
     def get_map_statistics(self):
         """Get statistics about the current density map."""
@@ -494,11 +496,10 @@ class ModelFT(CachedForwardMixin, Model):
             sorted(set(elements)), self.wavelength, self.anomalous_threshold
         )
         if significant:
-            if self.ctx.verbose > 1:
-                print(
-                    f"Anomalous scatterers at {self.wavelength:.4f} Å: "
-                    f"{sorted(significant)}"
-                )
+            log.debug(
+                f"Anomalous scatterers at {self.wavelength:.4f} Å: "
+                f"{sorted(significant)}"
+            )
             mask, f_prime, f_double_prime = get_anomalous_corrections_by_indices(
                 elements, significant, self.device, self.dtype_float
             )
@@ -680,7 +681,7 @@ class ModelFT(CachedForwardMixin, Model):
             hkl, *iso, *aniso, apply_symmetry=True, imaginary=imaginary
         )
 
-        if self.ctx.verbose > 2:
+        if get_debug_checks():
             assert torch.all(
                 torch.isfinite(sf)
             ), "Non-finite values found while calculating fcalc."

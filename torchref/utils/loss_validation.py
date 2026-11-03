@@ -17,8 +17,13 @@ from typing import TYPE_CHECKING, Iterable, List, Optional
 
 import torch
 
+from torchref._logging import get_logger
+
 if TYPE_CHECKING:
     from torchref.refinement.loss_state import LossState
+
+
+log = get_logger(__name__)
 
 
 class NonFiniteLossError(RuntimeError):
@@ -190,18 +195,17 @@ def _emit_diagnostic(
     full: bool,
     count: int,
 ) -> None:
-    """Print a diagnostic block without raising; ``full=False`` emits one WARN line."""
+    """Log a diagnostic block without raising; ``full=False`` emits one warning line."""
     try:
         loss_val = loss.item()
     except Exception:
         loss_val = float("nan")
 
     if not full:
-        print(
-            f"WARN[{count:>4}] non-finite loss in '{context}' "
+        log.warning(
+            f"[{count:>4}] non-finite loss in '{context}' "
             f"(loss={loss_val!r}, loss_finite={loss_finite}, "
-            f"grads_finite={grads_finite})",
-            flush=True,
+            f"grads_finite={grads_finite})"
         )
         return
 
@@ -251,4 +255,4 @@ def _emit_diagnostic(
             lines.append(f"  {label}: non_finite={n_bad}{marker}")
 
     lines.append(sep)
-    print("\n".join(lines), flush=True)
+    log.warning("\n".join(lines))

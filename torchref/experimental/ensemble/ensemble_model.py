@@ -44,10 +44,13 @@ import numpy as np
 import pandas as pd
 import torch
 
+from torchref._logging import get_logger, quiet
 from torchref.config import get_default_device, get_float_dtype
 from torchref.io import pdb as pdb_io
 from torchref.model.model_ft import ModelFT
 from torchref.symmetry import Cell
+
+log = get_logger(__name__)
 
 
 def _strip_altlocs_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -280,8 +283,11 @@ def _add_hydrogens_df(
     with torch.random.fork_rng():
         if seed is not None:
             torch.manual_seed(seed)
-        single = Model(verbose=0, hydrogens="add", device=device)
-        single.load(_SyntheticPDBReader(df.reset_index(drop=True), cell, spacegroup))
+        with quiet():
+            single = Model(hydrogens="add", device=device)
+            single.load(
+                _SyntheticPDBReader(df.reset_index(drop=True), cell, spacegroup)
+            )
     return single.to_dataframe().reset_index(drop=True)
 
 
@@ -292,7 +298,7 @@ def _check_hydrogen_source(hydrogens: str) -> None:
         )
 
 
-def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
+def build_single_copy_model(ensemble, atom_idx=None):
     """Build a single-conformation :class:`~torchref.model.model.Model` from an
     ensemble's single-copy chemistry (``EnsembleModel._pdb_single``).
 
@@ -308,8 +314,6 @@ def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
         ``device``.
     atom_idx : array-like of int, optional
         Rows of ``_pdb_single`` to keep (``None`` ⇒ all atoms).
-    verbose : int
-        Forwarded to the :class:`Model` constructor.
 
     Returns
     -------
@@ -322,7 +326,7 @@ def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
     df = ensemble._pdb_single
     if atom_idx is not None:
         df = df.iloc[np.asarray(atom_idx)]
-    chem = Model(verbose=verbose, hydrogens="keep", device=ensemble.device)
+    chem = Model(hydrogens="keep", device=ensemble.device)
     chem.load(
         _SyntheticPDBReader(
             df.reset_index(drop=True).copy(),
@@ -349,8 +353,6 @@ class EnsembleModel(ModelFT):
     ----------
     dtype_float : torch.dtype
         Floating-point dtype.
-    verbose : int
-        Verbosity.
     device : torch.device
         Computation device.
     hydrogens : {"keep", "strip"}
@@ -370,7 +372,6 @@ class EnsembleModel(ModelFT):
     def __init__(
         self,
         dtype_float=None,
-        verbose: int = 1,
         device=None,
         hydrogens: str = "keep",
         max_res: float = 1.0,
@@ -392,7 +393,6 @@ class EnsembleModel(ModelFT):
             device = get_default_device()
         super().__init__(
             dtype_float=dtype_float,
-            verbose=verbose,
             device=device,
             hydrogens=hydrogens,
             max_res=max_res,
@@ -432,7 +432,6 @@ class EnsembleModel(ModelFT):
         perturb_sigma: float = 0.01,
         b_const: float = 5.0,
         seed: Optional[int] = None,
-        verbose: int = 1,
         device=None,
         hydrogens: str = "strip",
         max_res: float = 1.0,
@@ -463,8 +462,6 @@ class EnsembleModel(ModelFT):
             Small but non-zero to avoid FFT grid aliasing.
         seed : int, optional
             RNG seed for the perturbation.
-        verbose : int
-            Verbosity.
         device : torch.device, optional
             Computation device.
         hydrogens : {"strip", "keep", "add"}
@@ -483,7 +480,7 @@ class EnsembleModel(ModelFT):
             Extra keyword arguments forwarded to the ``ModelFT`` constructor.
         """
         _check_hydrogen_source(hydrogens)
-        reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
+        reader = pdb_io.PDBReader().read(pdb_path)
         df, cell, spacegroup = reader()
         if hydrogens == "strip":
             df = df.loc[df["element"].astype(str).str.strip() != "H"].reset_index(drop=True)
@@ -503,7 +500,6 @@ class EnsembleModel(ModelFT):
         )
 
         model = cls(
-            verbose=verbose,
             device=device,
             hydrogens="keep",  # already stripped, if asked
             max_res=max_res,
@@ -526,7 +522,6 @@ class EnsembleModel(ModelFT):
         perturb_sigma: float = 0.01,
         b_const: float = 5.0,
         seed: Optional[int] = None,
-        verbose: int = 1,
         device=None,
         hydrogens: str = "strip",
         max_res: float = 1.0,
@@ -570,7 +565,7 @@ class EnsembleModel(ModelFT):
                 )
 
         # Read cell / spacegroup via a separate reader on the unmodified file.
-        cell_reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
+        cell_reader = pdb_io.PDBReader().read(pdb_path)
         cell, spacegroup = cell_reader.cell, cell_reader.spacegroup
         if hydrogens == "add":
             models = [
@@ -608,7 +603,6 @@ class EnsembleModel(ModelFT):
         replicated = pd.concat(pieces, ignore_index=True)
 
         model = cls(
-            verbose=verbose,
             device=device,
             hydrogens="keep",  # already stripped, if asked
             max_res=max_res,
@@ -687,8 +681,7 @@ class EnsembleModel(ModelFT):
             try:
                 self.freeze(tgt)
             except Exception:
-                if self.ctx.verbose > 0:
-                    print(f"  EnsembleModel: freeze({tgt!r}) failed (ignored)")
+                log.warning(f"  EnsembleModel: freeze({tgt!r}) failed (ignored)")
 
     def copy(self) -> "EnsembleModel":
         """Create a deep copy of the ensemble, of the same class.
@@ -871,11 +864,10 @@ class EnsembleModel(ModelFT):
         K = int(K)
         max_rank = max(1, N - 1)
         if K > max_rank:
-            if self.ctx.verbose > 0:
-                print(
-                    f"  EnsembleModel.enable_low_rank: K={K} exceeds rank "
-                    f"N-1={max_rank}; clamping to {max_rank}."
-                )
+            log.info(
+                f"  EnsembleModel.enable_low_rank: K={K} exceeds rank "
+                f"N-1={max_rank}; clamping to {max_rank}."
+            )
             K = max_rank
 
         seed = PCAEnsembleParam.from_ensemble(
@@ -893,13 +885,12 @@ class EnsembleModel(ModelFT):
         self.xyz = lowrank
         self.reset_cache()
 
-        if self.ctx.verbose > 0:
-            print(
-                f"  EnsembleModel.enable_low_rank: K={K} modes, "
-                f"DOF {N * n_atoms * 3} -> {N * K} "
-                f"({N}x{K} amplitudes), "
-                f"explained variance = {explained * 100:.2f}%"
-            )
+        log.info(
+            f"  EnsembleModel.enable_low_rank: K={K} modes, "
+            f"DOF {N * n_atoms * 3} -> {N * K} "
+            f"({N}x{K} amplitudes), "
+            f"explained variance = {explained * 100:.2f}%"
+        )
         return explained
 
     def enable_pca(self, K: Optional[int] = None) -> float:
@@ -923,11 +914,10 @@ class EnsembleModel(ModelFT):
         )
         self.xyz = pca.to(self.device)
         self.reset_cache()
-        if self.ctx.verbose > 0:
-            print(
-                f"  EnsembleModel.enable_pca: K={self.xyz.K} modes (refine μ,A,V), "
-                f"explained variance = {self.xyz.explained_variance * 100:.2f}%"
-            )
+        log.info(
+            f"  EnsembleModel.enable_pca: K={self.xyz.K} modes (refine μ,A,V), "
+            f"explained variance = {self.xyz.explained_variance * 100:.2f}%"
+        )
         return self.xyz.explained_variance
 
     # ------------------------------------------------------------------

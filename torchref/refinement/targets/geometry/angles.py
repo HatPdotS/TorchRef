@@ -26,8 +26,8 @@ class AngleTarget(GeometryTarget):
 
     name: str = "geometry/angle"
 
-    def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose)
+    def __init__(self, model: "Model" = None):
+        super().__init__(model)
 
     def forward(self) -> torch.Tensor:
         """Summed angle NLL; 0.0 when the model has no angle restraints.

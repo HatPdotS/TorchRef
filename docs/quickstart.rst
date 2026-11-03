@@ -34,7 +34,6 @@ The simplest way to run a refinement:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    Initial Rwork: 0...
 
 Loading Data
@@ -57,7 +56,6 @@ TorchRef supports multiple file formats:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    Number of reflections: ...
 
 **PDB files** (atomic models):
@@ -73,7 +71,6 @@ TorchRef supports multiple file formats:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    Number of atoms: ...
 
 Parameter Freezing
@@ -108,7 +105,6 @@ Model parameters can be selectively frozen during refinement:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    Refinable xyz atoms after freezing selection: ...
    Refinable xyz atoms after unfreezing it: ...
 
@@ -148,7 +144,6 @@ Use the model to compute structure factors for given Miller indices:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    Rwork: 0..., Rfree: 0...
 
 Running Refinement
@@ -177,7 +172,6 @@ Run coordinate refinement with geometry restraints:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    After refinement - Rwork: 0...
 
 Writing Output Files
@@ -212,9 +206,7 @@ Save refined structures and structure factors:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    PDB written: True
-   ...
    MTZ written: True
 
 Geometry Restraints
@@ -247,7 +239,6 @@ Access and inspect geometry restraints:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    Bond restraints: ...
    Angle restraints: ...
    Bond loss: ...
@@ -297,7 +288,6 @@ Define custom refinement targets with automatic gradient computation:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    Registered targets: ...
    Custom target weight: 3.0
 
@@ -331,7 +321,6 @@ assembling one yourself:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    Total loss: ...
    Gradients computed for xyz: True
 
@@ -359,7 +348,6 @@ same input files:
 .. testoutput::
    :options: +ELLIPSIS
 
-   ...
    State dict keys: ... entries
 
 GPU Acceleration

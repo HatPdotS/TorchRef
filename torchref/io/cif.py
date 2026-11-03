@@ -23,7 +23,7 @@ from torchref.io.cif_readers import (  # noqa: F401
 )
 
 
-def read_model(filepath: str, verbose: int = 0) -> ModelCIFReader:
+def read_model(filepath: str) -> ModelCIFReader:
     """
     Read atomic coordinates from a CIF file.
 
@@ -31,15 +31,13 @@ def read_model(filepath: str, verbose: int = 0) -> ModelCIFReader:
     ----------
     filepath : str
         Path to the mmCIF coordinate file.
-    verbose : int, optional
-        Verbosity level. Default is 0.
 
     Returns
     -------
     ModelCIFReader
         Reader object; call it for ``(df, cell, spacegroup)``.
     """
-    return ModelCIFReader(filepath, verbose=verbose)
+    return ModelCIFReader(filepath)
 
 
 def write_map(data, cell, filepath: str, spacegroup: str = "P1") -> int:

@@ -36,11 +36,6 @@ class Target(DeviceMixin, nn.Module):
     reachable by state_dict path. ``Target()`` with no arguments is a valid empty
     shell for ``load_state_dict``.
 
-    Parameters
-    ----------
-    verbose : int, optional
-        Verbosity level. Default is 0.
-
     Attributes
     ----------
     name : str
@@ -52,7 +47,6 @@ class Target(DeviceMixin, nn.Module):
 
     def __init__(
         self,
-        verbose: int = 0,
         device=None,
         **kwargs,
     ):
@@ -61,15 +55,12 @@ class Target(DeviceMixin, nn.Module):
 
         Parameters
         ----------
-        verbose : int, optional
-            Verbosity level. Default is 0.
         device : torch.device, optional
             Where this target allocates. Defaults to the configured default;
             ``_adopt_device`` refines it from whatever model / data /
             scaler the subclass is given.
         """
         super().__init__()
-        self.verbose = verbose
         # Do not remove or defer these two assignments. Subclasses allocate
         # tunables in their own ``__init__``, so ``self.device`` /
         # ``self.dtype_float`` must already answer by then; and
@@ -151,8 +142,6 @@ class ModelTarget(Target):
     ----------
     model : Model, optional
         Reference to the Model object. Omit for an empty shell.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     name: str = "model_target"
@@ -160,7 +149,6 @@ class ModelTarget(Target):
     def __init__(
         self,
         model: "Model" = None,
-        verbose: int = 0,
         device=None,
         **kwargs,
     ):
@@ -171,12 +159,10 @@ class ModelTarget(Target):
         ----------
         model : Model, optional
             Reference to the Model object (optional for empty init).
-        verbose : int, optional
-            Verbosity level. Default is 0.
         device : torch.device, optional
             Explicit device. When omitted, follows ``model``.
         """
-        super().__init__(verbose=verbose, device=device)
+        super().__init__(device=device)
         # add_module, not an attribute assignment: it accepts None.
         self.add_module("_model", model)
         # Follow the model rather than the global default, so subclass buffers
@@ -217,8 +203,6 @@ class DataTarget(Target):
         Model used for F_calc. If None, F_calc must be passed to ``forward()``.
     scaler : Scaler, optional
         Scaler applied to F_calc.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     name: str = "data_target"
@@ -228,7 +212,6 @@ class DataTarget(Target):
         data: "ReflectionData" = None,
         model: "Model" = None,
         scaler: "Scaler" = None,
-        verbose: int = 0,
         device=None,
         **kwargs,
     ):
@@ -244,13 +227,11 @@ class DataTarget(Target):
             If None, F_calc must be provided when calling forward().
         scaler : Scaler, optional
             Reference to the Scaler object.
-        verbose : int, optional
-            Verbosity level. Default is 0.
         device : torch.device, optional
             Explicit device. When omitted, model / data / scaler are
             reconciled onto one device, the model winning on disagreement.
         """
-        super().__init__(verbose=verbose, device=device)
+        super().__init__(device=device)
         # ``_data`` is a plain attribute, not a submodule: ReflectionData is a
         # dataclass, so add_module would reject it. DeviceMixin still walks it.
         self.add_module("_model", model)

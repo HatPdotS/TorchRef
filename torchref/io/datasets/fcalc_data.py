@@ -6,12 +6,14 @@ Fcalc into amplitude and phase, and exports to MTZ either as model columns or
 as pseudo-observations.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional, Union
 
 import pandas as pd
 import torch
 
+from torchref._logging import enabled, get_logger
 from torchref.config import get_float_dtype, get_int_dtype, normalize_device
 from torchref.symmetry import Cell, SpaceGroup, SpaceGroupLike
 
@@ -19,6 +21,8 @@ from .base import CrystalDataset
 
 if TYPE_CHECKING:
     from .reflection_data import ReflectionData
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -175,7 +179,6 @@ class FcalcDataset(CrystalDataset):
         sigma_mul: float = 0.05,
         sigma_abs: float = 0.0,
         seed: Optional[int] = None,
-        verbose: bool = True,
     ) -> "FcalcDataset":
         """
         Return a copy with Gaussian **intensity** noise, as the mean of two half-datasets.
@@ -196,8 +199,8 @@ class FcalcDataset(CrystalDataset):
             I_mean       = (I_h1 + I_h2) / 2
             sigma_I_mean = sigma_I / sqrt(2)
 
-        R-split and Pearson CC between the halves are reported, which makes the two draws
-        a ready-made split-half pair rather than only a noise model.
+        R-split and Pearson CC between the halves are logged at INFO, which makes the two
+        draws a ready-made split-half pair rather than only a noise model.
 
         **Negative intensities are kept.** ``I_mean`` and ``sigma_I_mean`` are stored
         unclamped on the returned dataset, and only the *amplitude* is clamped, because an
@@ -216,8 +219,6 @@ class FcalcDataset(CrystalDataset):
             Parametric coefficients, ignored when ``reference`` is given.
         seed : int, optional
             Seed for reproducibility. ``None`` uses the global RNG.
-        verbose : bool, optional
-            Print the R-split and CC between halves. Default True.
 
         Returns
         -------
@@ -254,8 +255,8 @@ class FcalcDataset(CrystalDataset):
                     "from the reference's HKL list to guarantee 1:1 sigma grafting."
                 )
             sigma_I = reference.I_sigma.to(device=dev, dtype=dtype)
-            if verbose:
-                print(
+            if enabled(log, logging.INFO):
+                log.info(
                     f"add_noise: grafting sigmas from reference ({len(sigma_I)} "
                     f"reflections, <sigma_I>={sigma_I.mean().item():.3g})"
                 )
@@ -283,18 +284,18 @@ class FcalcDataset(CrystalDataset):
         I_h1 = intensity + randn1 * sigma_I
         I_h2 = intensity + randn2 * sigma_I
 
-        diff_sum = (I_h1 - I_h2).abs().sum()
-        pair_sum = (I_h1 + I_h2).sum()
-        r_split = ((1.0 / (2.0**0.5)) * diff_sum / (0.5 * pair_sum)).item()
+        if enabled(log, logging.INFO):
+            diff_sum = (I_h1 - I_h2).abs().sum()
+            pair_sum = (I_h1 + I_h2).sum()
+            r_split = ((1.0 / (2.0**0.5)) * diff_sum / (0.5 * pair_sum)).item()
 
-        x = I_h1 - I_h1.mean()
-        y = I_h2 - I_h2.mean()
-        cc = (
-            (x * y).sum()
-            / torch.sqrt((x * x).sum() * (y * y).sum()).clamp(min=1e-30)
-        ).item()
-        if verbose:
-            print(f"add_noise: R-split = {r_split:.4f}, CC(half1, half2) = {cc:.4f}")
+            x = I_h1 - I_h1.mean()
+            y = I_h2 - I_h2.mean()
+            cc = (
+                (x * y).sum()
+                / torch.sqrt((x * x).sum() * (y * y).sum()).clamp(min=1e-30)
+            ).item()
+            log.info(f"add_noise: R-split = {r_split:.4f}, CC(half1, half2) = {cc:.4f}")
 
         I_mean = 0.5 * (I_h1 + I_h2)
         sigma_I_mean = sigma_I / (2.0**0.5)

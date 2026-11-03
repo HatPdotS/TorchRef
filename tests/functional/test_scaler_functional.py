@@ -15,7 +15,7 @@ def test_scaler_crystal_compatibility(compatibility_model_and_data) -> None:
 
     model = compatibility_model_and_data["model"]
     data = compatibility_model_and_data["data"]
-    scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+    scaler = Scaler(model=model, data=data, nbins=10)
     scaler.setup_anisotropy_correction()
     assert scaler.s is not None
     assert scaler.bins is not None
@@ -41,7 +41,7 @@ class TestScalerCreationFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=20, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=20)
 
         # Check all components are initialized
         assert scaler.model is not None
@@ -65,7 +65,7 @@ class TestScalerCreationFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=nbins, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=nbins)
         assert scaler.nbins == nbins
         # Verify bin values are in valid range
         assert scaler.bins.min() >= 0
@@ -88,7 +88,7 @@ class TestScatteringVectorsFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
 
         # s should have shape (n_reflections, 3)
         n_refl = data.hkl.shape[0]
@@ -107,7 +107,7 @@ class TestScatteringVectorsFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
 
         # Calculate |s| = sin(theta)/lambda = 1/(2d)
         s_mag = torch.norm(scaler.s, dim=1)
@@ -135,7 +135,7 @@ class TestAnisotropyCorrectionFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         scaler.setup_anisotropy_correction()
 
         # U parameters should exist
@@ -163,7 +163,7 @@ class TestAnisotropyCorrectionFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         scaler.setup_anisotropy_correction()
 
         # U starts at zero, so the correction starts at 1
@@ -191,7 +191,7 @@ class TestScalerStateDictFunctional:
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
         # Create scaler with some setup
-        scaler1 = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler1 = Scaler(model=model, data=data, nbins=10)
         scaler1.setup_anisotropy_correction()
 
         # Modify parameters
@@ -202,7 +202,7 @@ class TestScalerStateDictFunctional:
         torch.save(scaler1.state_dict(), state_path)
 
         # Create new scaler and load state
-        scaler2 = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler2 = Scaler(model=model, data=data, nbins=10)
         scaler2.setup_anisotropy_correction()
         scaler2.load_state_dict(torch.load(state_path, weights_only=False))
 
@@ -226,7 +226,7 @@ class TestScalerHKLPropertyFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
 
         # HKL from scaler should match data
         hkl = scaler.hkl
@@ -252,7 +252,7 @@ class TestScalerDeviceOperationsFunctional:
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
         scaler = Scaler(
-            model=model, data=data, nbins=10, verbose=0, device=torch.device("cpu")
+            model=model, data=data, nbins=10, device=torch.device("cpu")
         )
         scaler.setup_anisotropy_correction()
 
@@ -273,7 +273,7 @@ class TestScalerDeviceOperationsFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         scaler.setup_anisotropy_correction()
         scaler.cpu()
 
@@ -299,7 +299,7 @@ class TestScalerUMatrixFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         scaler.setup_anisotropy_correction()
 
         # Convert U vector to matrix
@@ -327,7 +327,7 @@ class TestScalerGradientsFunctional:
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         scaler.setup_anisotropy_correction()
 
         # Compute correction and loss

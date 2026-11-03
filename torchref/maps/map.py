@@ -21,6 +21,7 @@ from typing import Optional, Tuple
 
 import torch
 
+from torchref._logging import quiet
 from torchref.base.fourier.coefficients import map_coefficients
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.cif import write_map
@@ -176,9 +177,10 @@ class Map(DeviceMixin):
         """
         scaler = self.scaler
         if scaler is None:
-            scaler = Scaler(self.model, self.data, verbose=0, device=self.device)
-            scaler.initialize()
-            scaler.refine_lbfgs(verbose=False)
+            with quiet():
+                scaler = Scaler(self.model, self.data, device=self.device)
+                scaler.initialize()
+                scaler.refine_lbfgs()
         with torch.no_grad():
             return scaler(self.data.structure_factors(self.model, cached=False))
 

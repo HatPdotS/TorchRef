@@ -91,8 +91,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         Legacy bool; superseded by ``use_set``. If True, loss on the work set.
     use_set : str, optional
         Canonical 3-way subset selector ``"work"``/``"free"``/``"val"``.
-    verbose : int
-        Verbosity level.
     """
 
     name: str = "difference_xray"
@@ -107,7 +105,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         scaler: "ScalerBase" = None,
         use_work_set: bool = True,
         use_set: str = None,
-        verbose: int = 0,
     ):
         super().__init__(
             dataset_collection,
@@ -115,7 +112,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
             scaler=scaler,
             use_work_set=use_work_set,
             use_set=use_set,
-            verbose=verbose,
         )
 
     def _loss_inputs(self, recalc: bool = False):
@@ -226,7 +222,6 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
         scaler: "ScalerBase" = None,
         use_work_set: bool = True,
         use_set: str = None,
-        verbose: int = 0,
         difference_config: DifferencePowerConfig = None,
     ):
         super().__init__(
@@ -235,7 +230,6 @@ class CollectionDifferenceSigmaDTarget(CollectionDifferenceTarget):
             scaler=scaler,
             use_work_set=use_work_set,
             use_set=use_set,
-            verbose=verbose,
         )
         # Constructed once; the cached fit lives until maintenance() resets it.
         self._estimator = DifferencePowerEstimator(difference_config)
@@ -376,8 +370,6 @@ class CollectionMLTarget(CollectionXrayTarget):
         Legacy bool; superseded by ``use_set``. If True, loss on the work set.
     use_set : str, optional
         Canonical 3-way subset selector ``"work"``/``"free"``/``"val"``.
-    verbose : int
-        Verbosity level.
     base_weight : float, optional
         Intrinsic X-ray up-weight applied to the summed work-set loss. Defaults
         to ``DEFAULT_BASE_WEIGHT`` (10.0) and is applied on the work set only.
@@ -399,7 +391,6 @@ class CollectionMLTarget(CollectionXrayTarget):
         scaler: "ScalerBase" = None,
         use_work_set: bool = True,
         use_set: str = None,
-        verbose: int = 0,
         base_weight: float = None,
     ):
         super().__init__(
@@ -408,7 +399,6 @@ class CollectionMLTarget(CollectionXrayTarget):
             scaler=scaler,
             use_work_set=use_work_set,
             use_set=use_set,
-            verbose=verbose,
         )
         self.base_weight = (
             self.DEFAULT_BASE_WEIGHT if base_weight is None else float(base_weight)

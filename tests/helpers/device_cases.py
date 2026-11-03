@@ -204,7 +204,7 @@ def _dataset_scaler(device):
     from torchref.io import ReflectionData
     from torchref.scaling import DatasetScaler
 
-    data = ReflectionData(device=device, verbose=0).load_mtz(
+    data = ReflectionData(device=device).load_mtz(
         str(Path(__file__).parents[1] / "files" / "mtz" / "1DAW.mtz")
     )
     return DatasetScaler({"a": data, "b": data}, device=device)

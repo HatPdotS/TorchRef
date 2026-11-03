@@ -44,7 +44,6 @@ def _synthetic(hkl, seed=0, device="cpu"):
         (60.0, 60.0, 60.0, 90.0, 90.0, 90.0),
         "P 21 21 21",
         device=device,
-        verbose=0,
     )
 
 
@@ -105,7 +104,6 @@ class TestP1RoundTripReindex:
         d = _synthetic(grid, seed=4)
         d.generate_validation_set(val_fraction_of_free=0.5, seed=0)
         p1 = d.expand_to_p1()
-        p1.verbose = 0
         back, _ = merge_to_spacegroup(p1, "P 21 21 21")
         assert back.validation_flags is not None
         back._assert_per_reflection_consistent()
@@ -119,11 +117,11 @@ class TestExpandToP1Phases:
     def test_phases_match_direct_fcalc(self, pdb_dir, mtz_dir):
         from torchref.model import ModelFT
 
-        data = ReflectionData(verbose=0, device="cpu").load_mtz(
+        data = ReflectionData(device="cpu").load_mtz(
             str(mtz_dir / "1DAW.mtz")
         )
         model = ModelFT(
-            max_res=float(data.resolution.min()), device="cpu", verbose=0
+            max_res=float(data.resolution.min()), device="cpu"
         ).load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
             data.phase = torch.angle(model.get_structure_factor(data.hkl))
@@ -158,7 +156,7 @@ class TestCollectionDifferenceMismatchedHKL:
         from torchref.scaling.collection_scaler import CollectionScaler
 
         dev = get_default_device()
-        full = ReflectionData(device=dev, verbose=0).load_mtz(str(mtz))
+        full = ReflectionData(device=dev).load_mtz(str(mtz))
         n = len(full.hkl)
         idx = torch.arange(n, device=full.hkl.device)
         # Two DIFFERENT reflection sets with DIFFERENT counts (drops the last
@@ -167,21 +165,21 @@ class TestCollectionDifferenceMismatchedHKL:
         light = full.__select__(idx >= int(n * 0.15))
         assert len(dark.hkl) != len(light.hkl)
 
-        dc = DatasetCollection(device=dev, verbose=0)
+        dc = DatasetCollection(device=dev)
         dc.add_dataset("dark", dark, set_as_reference=True)
         dc.add_dataset("light", light)  # -> validate_hkl aligns onto dark grid
 
         # High-resolution limit for the model FFT grid (covers the data).
         d_min = float(full.resolution.min())
-        model_dark = load_model(str(pdb), max_res=d_min, device=dev, verbose=0)
-        model_light = load_model(str(pdb), max_res=d_min, device=dev, verbose=0)
-        mc = ModelCollection([model_dark, model_light], dark_key="dark", verbose=0)
+        model_dark = load_model(str(pdb), max_res=d_min, device=dev)
+        model_light = load_model(str(pdb), max_res=d_min, device=dev)
+        mc = ModelCollection([model_dark, model_light], dark_key="dark")
         mc.add_dark()
         mc.add_timepoint("light", [0.7, 0.3])
 
-        scaler = CollectionScaler(dc, mc, verbose=0)
+        scaler = CollectionScaler(dc, mc)
         scaler.initialize()
 
-        target = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
+        target = CollectionDifferenceTarget(dc, mc, scaler=scaler)
         loss = target.forward()
         assert torch.isfinite(loss)

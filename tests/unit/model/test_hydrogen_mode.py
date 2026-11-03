@@ -18,7 +18,7 @@ from torchref.model.riding_xyz import RidingXYZTensor
 
 @pytest.fixture
 def free_model(pdb_dir):
-    model = Model(verbose=0, hydrogens="add")
+    model = Model(hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     return model
 
@@ -94,7 +94,7 @@ def test_mode_survives_copy_select_and_shake(free_model):
 @pytest.mark.parametrize("model_class", [Model, ModelFT])
 def test_riding_mode_round_trips_through_state_dict(pdb_dir, model_class):
     kwargs = {"max_res": 3.0} if model_class is ModelFT else {}
-    model = model_class(verbose=0, hydrogens="add", **kwargs)
+    model = model_class(hydrogens="add", **kwargs)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     model.set_hydrogen_mode("riding")
     with torch.no_grad():
@@ -121,12 +121,12 @@ def test_policy_matrix(pdb_dir, hydrogens, hydrogen_mode):
     """Each valid pair loads with the atom set and wrapper it names; strip+riding raises."""
     if hydrogens == "strip" and hydrogen_mode == "riding":
         with pytest.raises(ValueError, match="requires hydrogens=.keep. or .add."):
-            Model(verbose=0, hydrogens=hydrogens, hydrogen_mode=hydrogen_mode)
+            Model(hydrogens=hydrogens, hydrogen_mode=hydrogen_mode)
         return
 
-    model = Model(verbose=0, hydrogens=hydrogens, hydrogen_mode=hydrogen_mode)
+    model = Model(hydrogens=hydrogens, hydrogen_mode=hydrogen_mode)
     model.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
-    deposited = Model(verbose=0).load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
+    deposited = Model().load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
 
     n_h = _n_h(model)
     if hydrogens == "strip":
@@ -141,6 +141,6 @@ def test_policy_matrix(pdb_dir, hydrogens, hydrogen_mode):
 
 @pytest.mark.unit
 def test_riding_is_refused_on_a_stripped_model(pdb_dir):
-    model = Model(verbose=0, hydrogens="strip").load_pdb(str(pdb_dir / "1DAW.pdb"))
+    model = Model(hydrogens="strip").load_pdb(str(pdb_dir / "1DAW.pdb"))
     with pytest.raises(ValueError, match="requires hydrogens=.keep. or .add."):
         model.set_hydrogen_mode("riding")

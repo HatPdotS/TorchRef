@@ -124,8 +124,6 @@ class CollectionXrayTarget(Target):
     use_set : str, optional
         Canonical 3-way subset selector ``"work"``/``"free"``/``"val"``. Takes
         precedence over ``use_work_set``; derived from it if None.
-    verbose : int, optional
-        Verbosity level.
     """
 
     name: str = "collection_xray"
@@ -153,9 +151,8 @@ class CollectionXrayTarget(Target):
         scaler: "ScalerBase" = None,
         use_work_set: bool = True,
         use_set: str = None,
-        verbose: int = 0,
     ):
-        super().__init__(verbose=verbose)
+        super().__init__()
         self._dataset_collection = dataset_collection
         self._model_collection = model_collection
         self.add_module("_scaler", scaler)

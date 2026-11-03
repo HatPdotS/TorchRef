@@ -65,7 +65,7 @@ def test_missing_order_reads_blank():
 @pytest.mark.unit
 def test_bundled_phenylalanine_ring():
     """The bundled PHE dictionary gives a Kekulé ring with every ring bond aromatic."""
-    path = get_library_manager(verbose=0).get_cif_file("PHE")
+    path = get_library_manager().get_cif_file("PHE")
     bonds = RestraintCIFReader(path).get_compound_restraints("PHE")["bonds"]
     ring = {"CG", "CD1", "CD2", "CE1", "CE2", "CZ"}
     in_ring = bonds["atom1"].isin(ring) & bonds["atom2"].isin(ring)

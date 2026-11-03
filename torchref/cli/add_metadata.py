@@ -18,9 +18,19 @@ import json
 import sys
 from pathlib import Path
 
-from torchref.cli._common import configure_unbuffered_output
+from torchref._logging import get_logger
+from torchref.cli._common import (
+    add_log_file_arg,
+    add_verbose_arg,
+    configure_logging,
+    configure_unbuffered_output,
+)
 
 configure_unbuffered_output()
+
+# Named, not __name__: run as a script or with -m, this module is __main__, outside
+# the torchref logger the CLI configures.
+log = get_logger("torchref.cli.add_metadata")
 
 
 def main():
@@ -101,16 +111,12 @@ Examples:
         default=None,
         help="Low-resolution limit (d_max) in Angstroms",
     )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        type=int,
-        default=1,
-        choices=[0, 1, 2],
-        help="Verbosity level (default: 1)",
-    )
+    gen = parser.add_argument_group("General")
+    add_verbose_arg(gen)
+    add_log_file_arg(gen)
 
     args = parser.parse_args()
+    configure_logging(args)
 
     input_path = Path(args.input)
     output_path = Path(args.output)
@@ -167,16 +173,15 @@ Examples:
         metadata.resolution_low = args.resolution_low
 
     # --- Read input structure ---
-    if args.verbose > 0:
-        print(f"Reading: {input_path}")
+    log.info(f"Reading: {input_path}")
 
     if input_suffix == ".pdb":
-        reader = pdb.PDBReader(verbose=0).read(str(input_path))
+        reader = pdb.PDBReader().read(str(input_path))
         df, cell_list, spacegroup = reader()
         df.attrs["cell"] = cell_list
         df.attrs["spacegroup"] = spacegroup.hm if hasattr(spacegroup, "hm") else str(spacegroup)
     elif input_suffix in (".cif", ".mmcif"):
-        reader = cif.read_model(str(input_path), verbose=0)
+        reader = cif.read_model(str(input_path))
         df, cell_list, spacegroup = reader()
         df.attrs["cell"] = cell_list
         df.attrs["spacegroup"] = spacegroup.hm if hasattr(spacegroup, "hm") else str(spacegroup)

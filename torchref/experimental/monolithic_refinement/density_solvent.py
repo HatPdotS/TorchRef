@@ -99,8 +99,6 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         Resolution (A) sizing the coarse solvent grid. Lower = finer/slower.
         Defaults to 4.0 for ``"exp"``/``"sigmoid"`` and 2.0 for ``"shell"`` (the
         finer grid resolves the depletion shell). Pass an explicit value to override.
-    verbose : int, default 1
-        Verbosity level.
     float_type : torch.dtype, default: configured float dtype
         Floating point data type.
     device : torch.device, default: configured device
@@ -120,7 +118,6 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         shell_edge=0.5,
         residual_bsol=False,
         solvent_res=None,
-        verbose=1,
         float_type=get_float_dtype(),
         device=get_default_device(),
     ):
@@ -130,7 +127,6 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
                 f"occupancy must be 'exp', 'sigmoid' or 'shell', got {occupancy!r}"
             )
         self.device = device
-        self.verbose = verbose
         self.float_type = float_type
         self.occupancy = occupancy
         self.sigmoid_width = float(sigmoid_width)
@@ -207,7 +203,6 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
             max_res=self.solvent_res,
             dtype_float=float_type,
             device=device,
-            verbose=max(0, verbose - 1),
             use_late_symmetry=False,
         )
 

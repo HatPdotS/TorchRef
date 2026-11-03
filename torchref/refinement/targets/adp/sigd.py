@@ -50,8 +50,6 @@ class ADPSigdTarget(ADPTarget):
         sharpening/blurring of the Fourier coefficients, which the same authors
         recommend avoiding during refinement; it is also strongly degenerate with
         ``alpha``, so pinning it at zero keeps the two parameters identifiable.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     name: str = "adp/sigd"
@@ -61,10 +59,9 @@ class ADPSigdTarget(ADPTarget):
         model: "Model" = None,
         alpha: float = 3.5,
         b_shift: float = 0.0,
-        verbose: int = 0,
         device=None,
     ):
-        super().__init__(model, verbose, device=device)
+        super().__init__(model, device=device)
         # Buffers, not floats: both are consumed by adp_sigd_math as tensors, and
         # they must follow the target across devices and through state_dict.
         self._register_scalar("_alpha", float(alpha))

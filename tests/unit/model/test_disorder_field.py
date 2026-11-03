@@ -467,7 +467,7 @@ def test_ragged_anchor_neighbourhoods_average_their_atoms(coords, target_b):
 
 
 def _daw_field(pdb_dir, mode):
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     model.set_adp_mode(mode)
     return model.adp_field

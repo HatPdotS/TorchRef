@@ -50,7 +50,6 @@ def _synthetic(F, F_sigma, hkl=None, device="cpu"):
         "P 1",
         rfree_flags=torch.ones(n, dtype=torch.bool),
         device=device,
-        verbose=0,
         friedel_merged=True,
     )
 
@@ -138,7 +137,7 @@ def test_planted_zingers_are_rejected():
 def test_absent_measurements_are_sanity_not_outliers(mtz_dir):
     """A row with no measurement is not an improbable observation, and counting
     it as one is what made the old report meaningless."""
-    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "6G9X.mtz"))
+    data = ReflectionData().load_mtz(str(mtz_dir / "6G9X.mtz"))
 
     absent = ~data.masks["sanity_F"]
     assert int(absent.sum()) > 20000, "6G9X carries a large absent population"
@@ -150,7 +149,7 @@ def test_absent_measurements_are_sanity_not_outliers(mtz_dir):
 
 @pytest.mark.unit
 def test_intensity_path_keeps_french_wilsons_guard_under_its_own_key(mtz_dir):
-    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "4BX9.mtz"))
+    data = ReflectionData().load_mtz(str(mtz_dir / "4BX9.mtz"))
 
     assert data.I is not None, "4BX9 should load via the intensity path"
     assert ReflectionData.FRENCH_WILSON_MASK_KEY in data.masks
@@ -175,7 +174,7 @@ def test_french_wilson_is_row_aligned_after_canonicalization(mtz_dir):
     6G9X is stored off the CCP4 ASU order, so ``load`` reorders its rows after
     French-Wilson has run; F, sigma_F and the guard mask must move with them.
     """
-    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "6G9X.mtz"))
+    data = ReflectionData().load_mtz(str(mtz_dir / "6G9X.mtz"))
     assert data.I is not None, "6G9X should load via the intensity path"
 
     F, sigma_F, keep = french_wilson_auto(
@@ -199,7 +198,7 @@ def test_french_wilson_prior_leaves_out_a_generated_test_set(mtz_dir):
     Generated flags only exist once the rows are canonical, after the first
     conversion; the amplitudes must be the ones converted without them.
     """
-    source = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    source = ReflectionData().load_mtz(str(mtz_dir / "1DAW.mtz"))
     data_dict = {
         "HKL": source.hkl.cpu().numpy(),
         "I": source.I.cpu().numpy(),
@@ -207,7 +206,7 @@ def test_french_wilson_prior_leaves_out_a_generated_test_set(mtz_dir):
         "I_col": "I",
     }
     cell = source.cell.data.tolist()
-    data = ReflectionData(verbose=0).load(lambda: (data_dict, cell, source.spacegroup))
+    data = ReflectionData().load(lambda: (data_dict, cell, source.spacegroup))
     assert data.rfree_source.startswith("Generated")
 
     args = (data.I, data.I_sigma, data.hkl, data.resolution, data.spacegroup)
@@ -233,7 +232,7 @@ def test_deposited_structures_lose_almost_nothing(name, mtz_dir):
     """Deposited data has already been through processing and merging; a
     criterion that rejects percent-level populations of it is mis-calibrated,
     not perceptive."""
-    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / f"{name}.mtz"))
+    data = ReflectionData().load_mtz(str(mtz_dir / f"{name}.mtz"))
 
     measured = int(data.masks["sanity_F"].sum())
     rejected = int((~data.masks[ReflectionData.WILSON_MASK_KEY]).sum())
@@ -250,7 +249,7 @@ def test_flagged_reflections_show_no_directional_bias(mtz_dir):
     the strong one, so the flagged set piles up along ``h*`` -- 52 of 56 with
     mean ``|h|`` nearly twice the dataset's, before the correction existed.
     """
-    data = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    data = ReflectionData().load_mtz(str(mtz_dir / "1DAW.mtz"))
 
     _, flagged = _plant_zingers(data, n=400, seed=13)
     assert len(flagged) > 100, "the planted population must be found first"

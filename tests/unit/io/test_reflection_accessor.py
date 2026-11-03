@@ -1,6 +1,8 @@
 """
 Tests for the ReflectionData work/free/validation subset accessor.
 """
+import logging
+
 import pytest
 import torch
 
@@ -9,7 +11,7 @@ import torch
 def data_1daw(mtz_dir):
     from torchref.io import ReflectionData
 
-    d = ReflectionData(verbose=0, device=torch.device("cpu"))
+    d = ReflectionData(device=torch.device("cpu"))
     d.load_mtz(str(mtz_dir / "1DAW.mtz"))
     return d
 
@@ -92,8 +94,8 @@ class TestReflectionSubset:
 
 
 @pytest.mark.unit
-def test_resolution_filter_reports_the_range_it_applies(data_1daw, capsys):
+def test_resolution_filter_reports_the_range_it_applies(data_1daw, caplog):
     """Without d_min the filter keeps everything up to d_max: the range is [d_max - 0]."""
-    data_1daw.verbose = 1
+    caplog.set_level(logging.INFO, logger="torchref")
     data_1daw.filter_by_resolution(d_max=10.0)
-    assert "[10.0 - 0] Å" in capsys.readouterr().out
+    assert "[10.0 - 0] Å" in caplog.text

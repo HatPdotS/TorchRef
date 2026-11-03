@@ -18,9 +18,12 @@ from torch.nn import Module as nnModule
 from torch.nn import Parameter
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.config import get_float_dtype
+from torchref._logging import get_logger
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Optional, Union
 import numpy as np
+
+log = get_logger(__name__)
 
 
 def _zero_column_sums(E: torch.Tensor) -> torch.Tensor:
@@ -98,8 +101,6 @@ class KineticModel(DeviceMixin, nnModule):
         remainder (1 - activation_level) is set as a constant baseline
         occupancy on the initial state. Default: 0.5. None means 1.0 (no
         baseline).
-    verbose : int, optional
-        Verbosity level. Default: 1
     """
     
     def __init__(
@@ -113,7 +114,6 @@ class KineticModel(DeviceMixin, nnModule):
         initial_state: Optional[str] = None,
         light_activated: bool = False,
         activation_level: Optional[float] = 0.5,
-        verbose: int = 1,
 
     ):
         super(KineticModel, self).__init__()
@@ -121,7 +121,6 @@ class KineticModel(DeviceMixin, nnModule):
             activation_level = 1.0
 
         self.flow_chart = flow_chart
-        self.verbose = verbose
         
         # Convert timepoints to tensor
         if not isinstance(timepoints, torch.Tensor):
@@ -166,14 +165,12 @@ class KineticModel(DeviceMixin, nnModule):
             self.transitions = modified_transitions
             self.n_transitions = len(self.transitions)
             
-            if self.verbose:
-                print(f"Light-activated mode: {initial_state} products → {inactive_state} (cannot re-photoactivate)")
+            log.info(f"Light-activated mode: {initial_state} products → {inactive_state} (cannot re-photoactivate)")
         else:
             self._light_activated_remapping = {}
         
-        if self.verbose:
-            print(f"Identified {self.n_states} states: {self.states}")
-            print(f"Identified {self.n_transitions} transitions: {self.transitions}")
+        log.info(f"Identified {self.n_states} states: {self.states}")
+        log.info(f"Identified {self.n_transitions} transitions: {self.transitions}")
         
         # Store instrument width for smart initialization
         self._instrument_width = instrument_width
@@ -216,8 +213,7 @@ class KineticModel(DeviceMixin, nnModule):
         self.register_buffer('_baseline_occupancies', self.baseline_occupancies)
         self._baseline_refinable = {}  # Track which baselines are refinable
         
-        if self.verbose:
-            print(f"Baseline initialization: State {initial_state} = {1-activation_level} ({activation_level*100}% reactive)")
+        log.info(f"Baseline initialization: State {initial_state} = {1-activation_level} ({activation_level*100}% reactive)")
     
     def _initialize_parameter(
         self, 
@@ -334,9 +330,8 @@ class KineticModel(DeviceMixin, nnModule):
         
         for idx in first_transition_indices:
             init_k[idx] = k_first
-            if self.verbose > 1:
-                from_s, to_s = self.transitions[idx]
-                print(f"  First transition {from_s}->{to_s}: k = {k_first:.3f} (τ = {1/k_first:.3f})")
+            from_s, to_s = self.transitions[idx]
+            log.debug(f"  First transition {from_s}->{to_s}: k = {k_first:.3f} (τ = {1/k_first:.3f})")
         
         # For remaining transitions: apply observability constraint
         # Work through the chain, setting k_out = k_in / 3
@@ -380,9 +375,8 @@ class KineticModel(DeviceMixin, nnModule):
                         processed.add(idx)
                         made_progress = True
                         
-                        if self.verbose > 1:
-                            from_s, to_s = self.transitions[idx]
-                            print(f"  Transition {from_s}->{to_s}: k = {k_out:.3f} (τ = {1/k_out:.3f})")
+                        from_s, to_s = self.transitions[idx]
+                        log.debug(f"  Transition {from_s}->{to_s}: k = {k_out:.3f} (τ = {1/k_out:.3f})")
             
             if not made_progress:
                 break
@@ -394,15 +388,13 @@ class KineticModel(DeviceMixin, nnModule):
                 k_default = 1.0 / (time_range / 3.0)  # Observable in middle third of range
                 init_k[idx] = k_default
                 
-                if self.verbose > 1:
-                    from_s, to_s = self.transitions[idx]
-                    print(f"  Transition {from_s}->{to_s}: k = {k_default:.3f} (τ = {1/k_default:.3f}) [default]")
+                from_s, to_s = self.transitions[idx]
+                log.debug(f"  Transition {from_s}->{to_s}: k = {k_default:.3f} (τ = {1/k_default:.3f}) [default]")
         
-        if self.verbose:
-            print(f"Smart initialization:")
-            print(f"  Time range: {t_min:.3f} to {t_max:.3f} (Δt = {time_range:.3f})")
-            print(f"  Instrument width σ = {instrument_width:.3f}")
-            print(f"  First transition k = {k_first:.3f} (τ = {1/k_first:.3f})")
+        log.info(f"Smart initialization:")
+        log.info(f"  Time range: {t_min:.3f} to {t_max:.3f} (Δt = {time_range:.3f})")
+        log.info(f"  Instrument width σ = {instrument_width:.3f}")
+        log.info(f"  First transition k = {k_first:.3f} (τ = {1/k_first:.3f})")
         
         return torch.log(init_k)
     
@@ -1001,7 +993,8 @@ class KineticModel(DeviceMixin, nnModule):
         
         # Save figure
         plt.savefig(outpath, dpi=dpi, bbox_inches='tight')
-        print(f"Plot saved to: {outpath}")
+        # ``log`` is the x-axis flag here, shadowing the module logger.
+        get_logger(__name__).info(f"Plot saved to: {outpath}")
         plt.close()
     
     def visualize(self, outpath: str, **kwargs):

@@ -74,7 +74,9 @@ and a ``refinement_history.json`` log.
 * ``--output-format`` ``pdb`` / ``cif`` / ``both`` (default both)
 * ``--device`` ``auto`` (default) / ``cpu`` / ``cuda``. ``auto`` picks CUDA only
   when a visible GPU passes the capability and VRAM checks
-* ``-v`` ``0`` quiet / ``1`` normal / ``2`` detailed
+* ``-v`` ``0`` quiet / ``1`` normal / ``2`` detailed / ``3`` trace; ``-q`` is ``-v 0``.
+  Progress goes to stdout with the results, warnings to stderr; ``--log-file``
+  also writes the log to a file (see :doc:`logging`)
 
 :API: :mod:`torchref.cli.refine`
 

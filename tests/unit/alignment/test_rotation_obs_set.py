@@ -61,7 +61,7 @@ def test_anisotropy_fit_skips_invalid_reflections(data, monkeypatch):
 
 
 def test_rotation_function_sees_valid_rows_and_corrected_sigmas(data, monkeypatch):
-    model = ModelFT(verbose=0).load_pdb(str(PDB_1DAW))
+    model = ModelFT().load_pdb(str(PDB_1DAW))
     U = rs.fit_anisotropy(data, d_min=4.0, d_max=15.0)
     assert float(U.abs().max()) > 0.0, "1DAW should carry some anisotropy"
     seen = {}

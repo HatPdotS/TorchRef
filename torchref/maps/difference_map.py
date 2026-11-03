@@ -11,6 +11,7 @@ from typing import Optional
 
 import torch
 
+from torchref._logging import quiet
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.datasets.collection import DatasetCollection
 from torchref.maps.map import Map
@@ -87,12 +88,13 @@ class DifferenceMap(Map):
         self.data_perturbed = data
 
         # Build collection and scale
-        self._collection = DatasetCollection(verbose=0, device=str(resolved))
-        self._collection.add_dataset(
-            "reference", data_reference, set_as_reference=True
-        )
-        self._collection.add_dataset("perturbed", data)
-        self._collection.scale()
+        with quiet():
+            self._collection = DatasetCollection(device=str(resolved))
+            self._collection.add_dataset(
+                "reference", data_reference, set_as_reference=True
+            )
+            self._collection.add_dataset("perturbed", data)
+            self._collection.scale()
         self.data_reference = self._collection["reference"]
         self.data_perturbed = self._collection["perturbed"]
         n_union = len(self.data_reference.hkl)

@@ -109,7 +109,7 @@ def test_runtime_dtype_switch_forward_complex128(double_cpu, tmp_path):
     lines.append("END")
     pdb.write_text("\n".join(lines) + "\n")
 
-    model = ModelFT(max_res=1.5, verbose=0)
+    model = ModelFT(max_res=1.5)
     model.load_pdb(str(pdb))
     assert model.xyz.refinable_params.dtype == torch.float64
     hkl = torch.tensor(
@@ -138,7 +138,7 @@ def _tiny_p1_model(tmp_path, max_res=1.5):
         )
     lines.append("END")
     pdb.write_text("\n".join(lines) + "\n")
-    model = ModelFT(max_res=max_res, verbose=0)
+    model = ModelFT(max_res=max_res)
     model.load_pdb(str(pdb))
     hkl_int = torch.tensor(
         [h for h in itertools.product(range(-2, 3), repeat=3) if any(h)]

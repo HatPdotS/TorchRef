@@ -48,7 +48,7 @@ def mismatched_mtz_pair(test_files_dir, tmp_path):
 
     from torchref.io.datasets.reflection_data import ReflectionData
 
-    full = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz_file))
+    full = ReflectionData(device="cpu").load_mtz(str(mtz_file))
     n = len(full.hkl)
     idx = torch.arange(n)
     dark = full.__select__(idx < int(n * 0.90))

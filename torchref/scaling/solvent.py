@@ -2,11 +2,13 @@
 A class for modelling solvent contribution to structure factors.
 """
 
+import logging
 import warnings
 
 import torch
 import torch.nn as nn
 
+from torchref._logging import TRACE, enabled, get_logger
 from torchref.base import extract_structure_factor_from_grid, ifft
 from torchref.base.electron_density.voxel_utils import (
     half_voxel_diagonal,
@@ -17,6 +19,8 @@ from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference
+
+log = get_logger(__name__)
 
 #: ``ln 2``, so ``s_half_sq = ss_half`` halves the solvent term by construction.
 _LN2 = 0.6931471805599453
@@ -95,8 +99,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         The atomic model the solvent mask is built from.
     device : torch.device
         Device for tensor operations.
-    verbose : int
-        Verbosity level.
     float_type : torch.dtype
         Float dtype; defaults to the configured ``get_float_dtype()``, not a
         hard-wired ``torch.float32``.
@@ -123,7 +125,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         erosion_radius=0.9,
         optimize_phase=False,
         initial_phase_offset=0.0,
-        verbose=1,
         float_type=None,
         device=None,
         ignore_hydrogens=True,
@@ -161,8 +162,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             .. deprecated:: 0.7.0
                 The bulk-solvent phase offset is not refined or applied. This keyword
                 will be removed.
-        verbose : int, default 1
-            Verbosity level.
         ignore_hydrogens : bool, default True
             Build the mask from heavy atoms only, whatever the model carries.
         float_type : torch.dtype, optional
@@ -179,7 +178,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         # computed from (``realspace.py`` passes only a model).
         device = resolve_device(model, device=device)
         self.device = device
-        self.verbose = verbose
         self.float_type = float_type
         self.solvent_radius = radius
         self.erosion_radius = erosion_radius
@@ -325,10 +323,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         """
         import torch.nn.functional as F
 
-        if self.verbose > 1:
-            print("\n=== Phenix-Style Bulk Solvent Mask Calculation ===")
-            print(f"Solvent radius (dilation): {self.solvent_radius:.2f} Å")
-            print(f"Shrink truncation radius (erosion): {self.erosion_radius:.2f} Å")
+        log.debug("\n=== Phenix-Style Bulk Solvent Mask Calculation ===")
+        log.debug(f"Solvent radius (dilation): {self.solvent_radius:.2f} Å")
+        log.debug(f"Shrink truncation radius (erosion): {self.erosion_radius:.2f} Å")
 
         xyz = self.model.xyz()  # (N_atoms, 3)
         vdw_radii = self.model.get_vdw_radii()  # (N_atoms,)
@@ -471,9 +468,10 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             boundary_mask = boundary_mask & (~protein_mask)
             definitely_solvent = ~(protein_mask | boundary_mask)
 
-            if self.verbose > 2:
+            if enabled(log, TRACE):
                 total_voxels = protein_mask.numel()
-                print(
+                log.log(
+                    TRACE,
                     f"After symmetry: protein={protein_mask.sum().item()} "
                     f"boundary={boundary_mask.sum().item()} "
                     f"solvent={definitely_solvent.sum().item()} / {total_voxels}"
@@ -522,10 +520,10 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
 
             self.register_buffer("solvent_mask", solvent_mask)
 
-            if self.verbose > 1:
+            if enabled(log, logging.DEBUG):
                 total_voxels = self.solvent_mask.numel()
                 n_solv = self.solvent_mask.sum().item()
-                print(
+                log.debug(
                     f"Total solvent voxels: {n_solv} / {total_voxels} "
                     f"({100.0 * n_solv / total_voxels:.2f}%)"
                 )

@@ -275,7 +275,7 @@ def test_in_run_rfactor_matches_a_fresh_score(pdb_dir, mtz_dir, scale_target):
         pytest.skip("1DAW fixture not present")
 
     ref = LBFGSRefinement(
-        data_file=str(mtz), pdb=str(pdb), verbose=0,
+        data_file=str(mtz), pdb=str(pdb),
         target_mode="ml", scale_target=scale_target,
     )
     history = ref.refine(macro_cycles=2)
@@ -333,7 +333,7 @@ def test_scale_fit_leaves_the_body_parameters_alone(pdb_dir, mtz_dir):
     if not (pdb.exists() and mtz.exists()):
         pytest.skip("1DAW fixture not present")
 
-    ref = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb), verbose=0, target_mode="ml")
+    ref = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb), target_mode="ml")
     before = {n: p.detach().clone() for n, p in ref.model.named_parameters()}
     ref.refine_scaler()
     for name, param in ref.model.named_parameters():

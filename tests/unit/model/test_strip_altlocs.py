@@ -15,12 +15,12 @@ from torchref.model.model import Model
 
 @pytest.fixture(scope="module")
 def table(pdb_dir):
-    df, cell, sg = PDBReader(verbose=0).read(str(pdb_dir / "1DAW.pdb"))()
+    df, cell, sg = PDBReader().read(str(pdb_dir / "1DAW.pdb"))()
     return df, np.asarray(cell), sg
 
 
 def _model(df, cell, sg):
-    return Model(verbose=0, device="cpu").load(lambda: (df, cell, sg))
+    return Model(device="cpu").load(lambda: (df, cell, sg))
 
 
 @pytest.fixture(scope="module")
@@ -150,7 +150,7 @@ def test_microheterogeneity_identity_and_current_occupancy(microheterogeneous_mo
     )
     for derived in (
         model.copy(),
-        Model.create_from_state_dict(model.state_dict(), device="cpu", verbose=0),
+        Model.create_from_state_dict(model.state_dict(), device="cpu"),
     ):
         assert derived.get_selection_mask(query).sum().item() == 5
     selected = model.select(query)

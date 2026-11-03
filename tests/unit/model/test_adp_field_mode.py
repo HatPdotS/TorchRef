@@ -22,7 +22,7 @@ def pdb_path(pdb_dir):
 
 
 def _model(pdb_path):
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(pdb_path)
     return model
 
@@ -225,7 +225,7 @@ def test_state_dict_round_trip_in_field_mode(pdb_path):
     # Restored onto the model's own device: a restore builds on CPU and moves only
     # when asked, and comparing a CPU-evaluated field against a device-evaluated one
     # would be measuring backend arithmetic, not the round trip.
-    restored = Model.create_from_state_dict(sd, device=model.device, verbose=0)
+    restored = Model.create_from_state_dict(sd, device=model.device)
 
     assert restored.adp_is_field
     assert restored.adp.n_nodes == 24
@@ -237,7 +237,7 @@ def test_state_dict_round_trip_in_field_mode(pdb_path):
 @pytest.mark.parametrize("round_trip", ["freeze_all", "rigid_body"])
 def test_freeze_round_trip_leaves_the_field_refining(pdb_dir, mode, round_trip):
     """Freezing repartitions a field over its nodes, and undoing it refines them again."""
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     model.set_adp_mode(mode)
     n_nodes = model.adp_field.get_refinable_count()

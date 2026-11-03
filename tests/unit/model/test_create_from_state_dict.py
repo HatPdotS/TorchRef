@@ -18,7 +18,7 @@ def test_modelft_create_from_state_dict_round_trip(pdb_dir):
     model.to(cpu)
     sd = model.state_dict()
 
-    restored = ModelFT.create_from_state_dict(sd, device=cpu, verbose=0)
+    restored = ModelFT.create_from_state_dict(sd, device=cpu)
 
     # Correct attribute name (adp, not the stale b) and same atom count.
     assert hasattr(restored, "adp")
@@ -59,7 +59,7 @@ def test_create_from_state_dict_aniso_u_roundtrip(pdb_dir, cls_name):
     model.to(cpu)
     sd = model.state_dict()
 
-    restored = cls.create_from_state_dict(sd, device=cpu, verbose=0)
+    restored = cls.create_from_state_dict(sd, device=cpu)
 
     assert isinstance(model.u, M.CholeskyMixedTensor)
     assert isinstance(restored.u, M.CholeskyMixedTensor)
@@ -92,7 +92,7 @@ def test_altloc_pairs_survive_state_dict_round_trip(pdb_dir):
     sd = model.state_dict()
     assert sd["altloc_pairs"], "altloc groups must reach the state dict"
 
-    restored = ModelFT.create_from_state_dict(sd, device=cpu, verbose=0)
+    restored = ModelFT.create_from_state_dict(sd, device=cpu)
 
     assert len(restored.ctx.altloc_pairs) == len(model.ctx.altloc_pairs)
     for got, want in zip(restored.ctx.altloc_pairs, model.ctx.altloc_pairs):
@@ -117,15 +117,15 @@ def test_links_survive_state_dict_round_trip(pdb_dir, tmp_path):
     from torchref.model import ModelFT
 
     cpu = torch.device("cpu")
-    model = ModelFT(max_res=3.0, verbose=0, device=cpu)
+    model = ModelFT(max_res=3.0, device=cpu)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     expected = _bond_counts(model)
     assert expected["link"] == 14
 
-    restored = ModelFT.create_from_state_dict(model.state_dict(), device=cpu, verbose=0)
+    restored = ModelFT.create_from_state_dict(model.state_dict(), device=cpu)
     checkpoint = str(tmp_path / "1DAW.pt")
     model.save_state(checkpoint)
-    reloaded = ModelFT(verbose=0, device=cpu)
+    reloaded = ModelFT(device=cpu)
     reloaded.load_state(checkpoint)
 
     for other in (restored, reloaded):

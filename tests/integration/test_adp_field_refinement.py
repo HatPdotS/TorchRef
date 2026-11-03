@@ -32,7 +32,7 @@ def files(mtz_dir, pdb_dir):
 
 def _refinement(files, **kw):
     mtz, pdb = files
-    return LBFGSRefinement(data_file=mtz, pdb=pdb, verbose=0, **kw)
+    return LBFGSRefinement(data_file=mtz, pdb=pdb, **kw)
 
 
 @pytest.fixture(scope="module")
@@ -289,7 +289,7 @@ def test_model_state_dict_round_trip_rebuilds_the_same_field(field_refinement):
     src = field_refinement.model
     # create_from_state_dict restores the values itself; a further load_state_dict
     # would be strict against restraint and metadata keys it never builds.
-    restored = Model.create_from_state_dict(src.state_dict(), verbose=0)
+    restored = Model.create_from_state_dict(src.state_dict())
     field = restored.adp_field
     assert field is not None, "restored model has no field at all"
     assert isinstance(field.payload, ModeCovariancePayload)
@@ -312,7 +312,7 @@ def test_model_copy_round_trip_on_a_bare_model():
     import os
 
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    src = Model(verbose=0)
+    src = Model()
     src.load_pdb(os.path.join(here, "files", "pdb", "1DAW.pdb"))
     src.set_adp_mode("field_aniso", n_nodes=8, k_neighbors=8, mode_set=MODE_SET)
     clone = src.copy()
@@ -373,7 +373,7 @@ def test_cli_field_mode_end_to_end(files, tmp_path):
     """The parsed flags, through the real constructor, produce a real field."""
     mtz, pdb = files
     ref = LBFGSRefinement(
-        data_file=mtz, pdb=pdb, verbose=0,
+        data_file=mtz, pdb=pdb,
         adp_mode="field_aniso", adp_mode_set="affine", n_nodes=9,
     )
     assert ref.model.adp_field.payload.mode_set == "affine"

@@ -293,7 +293,7 @@ def run(pdb_key: str, seed: int, *, work_root: Path,
         # to apples for the post-MR placement quality).
         try:
             placed = ModelFT(device=device).load_pdb(str(placed_pdb))
-            scaler = Scaler(model=placed, data=data, nbins=20, verbose=0,
+            scaler = Scaler(model=placed, data=data, nbins=20,
                             device=device)
             with torch.no_grad():
                 fcalc = placed(data.hkl).detach()

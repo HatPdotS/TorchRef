@@ -39,7 +39,7 @@ EXPECTED_PROPERTIES = {
 @pytest.fixture(scope="module")
 def restraints(pdb_dir):
     """Restraints for a structure with altlocs, disulfides and peptide links."""
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
     model.ctx.set_cif_path(None)
     return model.restraints
@@ -196,7 +196,7 @@ def test_copy_aliases_its_own_blocks(restraints):
 @pytest.mark.unit
 def test_moving_restraints_leaves_the_model_cell(pdb_dir):
     """The restraints move their own copy of the crystal, never the model's."""
-    model = Model(verbose=0, device=torch.device("cpu"))
+    model = Model(device=torch.device("cpu"))
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     cell, spacegroup = model.ctx.cell, model.ctx.spacegroup
     dtype = cell.dtype

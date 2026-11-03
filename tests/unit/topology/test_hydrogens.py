@@ -36,7 +36,7 @@ def built(pdb_dir):
         if code not in cache:
             # hydrogens="strip": these tests exercise generation itself, so the model
             # has to arrive without hydrogens.
-            model = Model(verbose=0, hydrogens="strip")
+            model = Model(hydrogens="strip")
             model.load_pdb(str(pdb_dir / f"{code}.pdb"))
             model.ctx.set_cif_path(None)
             restraints = model.restraints
@@ -278,12 +278,12 @@ def test_waters_receive_two_hydrogens_with_initial_orientations(built):
 @pytest.mark.unit
 def test_hydrogenate_returns_a_consistent_model(pdb_dir):
     """The end-to-end path yields a model whose tensors, table and restraints agree."""
-    model = Model(verbose=0, hydrogens="strip")
+    model = Model(hydrogens="strip")
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
     model.ctx.set_cif_path(None)
     n_heavy = len(model.pdb)
 
-    hydrogenated = model.hydrogenate(verbose=0)
+    hydrogenated = model.hydrogenate()
 
     assert hydrogenated.ctx.hydrogens == "add"
     assert len(hydrogenated.pdb) > n_heavy
@@ -312,7 +312,7 @@ def test_hydrogenate_returns_a_consistent_model(pdb_dir):
 @pytest.mark.unit
 def test_strip_H_removes_deposited_hydrogens(pdb_dir):
     """The opt-out drops the hydrogens the file carries, as it always did."""
-    model = Model(verbose=0, hydrogens="strip")
+    model = Model(hydrogens="strip")
     model.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
     elements = model.pdb["element"].astype(str).str.strip().values
     assert not (elements == "H").any()
@@ -389,7 +389,7 @@ def test_acetyl_cap_carbon_gets_no_hydrogen(tmp_path):
         pytest.skip("ACE not in the monomer library")
     path = tmp_path / "ace_met.pdb"
     path.write_text(_ACE_MET)
-    model = Model(verbose=0, hydrogens="strip")
+    model = Model(hydrogens="strip")
     model.load_pdb(str(path))
     model.ctx.set_cif_path(None)
     restraints = model.restraints
@@ -432,7 +432,7 @@ def _plane_distances(names, residue_of, resnames, xyz, h_rows):
 @pytest.mark.unit
 def test_generated_nh2_hydrogens_lie_in_their_plane(pdb_dir):
     """ASN, GLN and ARG NH2 hydrogens keep the template torsion: in the group plane."""
-    model = Model(verbose=0, hydrogens="add")
+    model = Model(hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     columns = model.ctx.topology.columns()
     names = np.char.strip(columns["name"].astype(str))

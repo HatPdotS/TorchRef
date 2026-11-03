@@ -72,7 +72,7 @@ B1 B2 1.470 0.015
 
 def _library_cif(code):
     """Path to ``code``'s bundled single-compound dictionary."""
-    path = get_library_manager(verbose=0).get_cif_file(code)
+    path = get_library_manager().get_cif_file(code)
     assert path is not None, f"{code} is not in the bundled monomer library"
     return path
 
@@ -263,7 +263,7 @@ class TestEmptyCompoundIsReported:
         path.write_text(text)
         return path
 
-    def test_warns_without_raising(self, dictionary_with_undefined_compound, capsys):
+    def test_warns_without_raising(self, dictionary_with_undefined_compound, caplog):
         restraints = RestraintCIFReader(
             str(dictionary_with_undefined_compound)
         ).get_all_restraints()
@@ -272,6 +272,6 @@ class TestEmptyCompoundIsReported:
 
         validate_restraint_data(restraints, str(dictionary_with_undefined_compound))
 
-        out = capsys.readouterr().out
+        out = caplog.text
         assert "GHOST" in out and "no bond restraints" in out
         assert "ALA," not in out  # only the empty one is named

@@ -24,7 +24,7 @@ coordinates (or B-factors) it scores, and the non-bonded pair list is rebuilt
 from the coordinates the non-bonded target passes in. ``Restraints.__init__``
 takes a node-only topology (``model.ctx.topology``, or
 ``Topology.from_table(table)``) and the coordinates to build over
-(``topology, cif_path, xyz, cell, spacegroup, links, verbose, nonbonded``).
+(``topology, cif_path, xyz, cell, spacegroup, links, nonbonded``).
 
 Residues for which no restraints could be built are frozen in ``xyz`` rather
 than refined unrestrained, so a missing ligand definition shows up as an

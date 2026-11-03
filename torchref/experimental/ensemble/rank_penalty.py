@@ -59,8 +59,6 @@ class RankPenaltyTarget(ModelTarget):
         If True (default), divide the ``"nuclear"`` and ``"subspace"``
         penalties by the alive member count ``N`` (a per-member scale, as in
         ``EnsembleRefinement._create_loss_state``); the other modes ignore it.
-    verbose : int
-        Verbosity.
     """
 
     name: str = "rank_penalty"
@@ -74,7 +72,6 @@ class RankPenaltyTarget(ModelTarget):
         maxent_shrink: float = 1.0,
         maxent_div: float = 1.0,
         normalize: bool = True,
-        verbose: int = 0,
     ) -> None:
         """
         Parameters
@@ -101,7 +98,7 @@ class RankPenaltyTarget(ModelTarget):
         maxent_shrink, maxent_div : float
             Coefficients of the two terms of ``"maxent"`` and ``"diverse"``.
         """
-        super().__init__(model=model, verbose=verbose)
+        super().__init__(model=model)
         self._mode = str(mode)
         self._target_rank = int(target_rank)
         self._freeze_disp = float(freeze_disp)

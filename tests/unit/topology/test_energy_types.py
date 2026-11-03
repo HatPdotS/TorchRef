@@ -27,14 +27,14 @@ from torchref.topology.nonbonded import (
 
 @pytest.fixture(scope="module")
 def heavy_1daw(pdb_dir):
-    model = Model(verbose=0, hydrogens="strip")
+    model = Model(hydrogens="strip")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     return model
 
 
 @pytest.fixture(scope="module")
 def hydrogenated_1daw(pdb_dir):
-    model = Model(verbose=0, hydrogens="add")
+    model = Model(hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     return model
 

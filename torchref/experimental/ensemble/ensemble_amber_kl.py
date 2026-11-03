@@ -84,8 +84,6 @@ class EnsembleAmberTarget(ModelTarget):
         OpenMM force-field XML files.
     charge_method : str
         antechamber charge method for GAFF2 residues ('gas' default, or 'bcc').
-    verbose : int
-        Verbosity.
     """
 
     name: str = "ensemble_amber"
@@ -99,16 +97,15 @@ class EnsembleAmberTarget(ModelTarget):
         restrict_to_standard: bool = False,
         forcefield: Sequence[str] = DEFAULT_FORCEFIELD,
         charge_method: str = "gas",
-        verbose: int = 0,
     ):
         require_openmm()
-        super().__init__(model=model, verbose=verbose)
+        super().__init__(model=model)
         self.restrict_to_standard = bool(restrict_to_standard)
         self._normalize = normalize_by_atoms
         self.adapter: Optional[OpenMMAdapter] = None
         if model is None:
             return
-        chemistry = build_single_copy_model(model, verbose=verbose)
+        chemistry = build_single_copy_model(model)
         atoms = (
             template_coverage(chemistry, forcefield) if restrict_to_standard else None
         )
@@ -120,7 +117,6 @@ class EnsembleAmberTarget(ModelTarget):
             residue_charges=residue_charges,
             cutoff=cutoff,
             hydrogens_added=getattr(model, "hydrogen_source", "keep") == "add",
-            verbose=verbose,
         )
 
     def _member_energy(self, xyz: torch.Tensor) -> torch.Tensor:
@@ -180,8 +176,6 @@ class EnsembleAmberKLTarget(EnsembleAmberTarget):
         OpenMM force-field XML files.
     charge_method : str
         antechamber charge method ('gas' default).
-    verbose : int
-        Verbosity.
     """
 
     name: str = "ensemble_amber_kl"
@@ -198,7 +192,6 @@ class EnsembleAmberKLTarget(EnsembleAmberTarget):
         restrict_to_standard: bool = False,
         forcefield: Sequence[str] = DEFAULT_FORCEFIELD,
         charge_method: str = "gas",
-        verbose: int = 0,
     ):
         super().__init__(
             model=model,
@@ -208,7 +201,6 @@ class EnsembleAmberKLTarget(EnsembleAmberTarget):
             restrict_to_standard=restrict_to_standard,
             forcefield=forcefield,
             charge_method=charge_method,
-            verbose=verbose,
         )
         self.kT = float(kT)
         self.lam = float(lam)

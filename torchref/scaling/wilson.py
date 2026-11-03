@@ -11,16 +11,18 @@ is the one-number summary, an overall Wilson B for priors and reports.
 from __future__ import annotations
 
 import math
-import warnings
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import torch
 
+from torchref._logging import get_logger
 from torchref.config import get_float_dtype, get_int_dtype
 from torchref.scaling._protein_gamma import protein_gamma as _protein_gamma
 from torchref.scaling.basis import chebyshev_design
 from torchref.utils.matmul import matmul
+
+log = get_logger(__name__)
 
 __all__ = [
     "WilsonNormaliser",
@@ -537,7 +539,6 @@ def fit_wilson_b(
     protein_gamma: bool = True,
     n_shells: int = 20,
     min_per_shell: int = 20,
-    verbose: int = 0,
 ) -> Optional[WilsonFit]:
     """Fit the overall Wilson B, as xtriage does, by a line through shell means.
 
@@ -576,8 +577,6 @@ def fit_wilson_b(
         least ``min_per_shell`` reflections.
     min_per_shell : int, optional
         Default 20.
-    verbose : int, optional
-        Print the result when > 0.
 
     Returns
     -------
@@ -606,7 +605,7 @@ def fit_wilson_b(
     y, d_star_sq = y[keep], d_star_sq[keep]
 
     def _give_up(reason: str) -> None:
-        warnings.warn(f"No Wilson B: {reason}.", stacklevel=3)
+        log.warning(f"No Wilson B: {reason}.")
         return None
 
     n_shells = min(n_shells, len(y) // min_per_shell)
@@ -645,9 +644,8 @@ def fit_wilson_b(
         composition=dict(PROTEIN_RESIDUE if composition is None else composition),
         protein_gamma=protein_gamma,
     )
-    if verbose > 0:
-        print(
-            f"  Wilson B: {fit.B:.1f} ± {fit.sigma_B:.1f} Å² "
-            f"({fit.d_max:.2f}-{fit.d_min:.2f} Å, {fit.n_reflections} reflections)"
-        )
+    log.info(
+        f"  Wilson B: {fit.B:.1f} ± {fit.sigma_B:.1f} Å² "
+        f"({fit.d_max:.2f}-{fit.d_min:.2f} Å, {fit.n_reflections} reflections)"
+    )
     return fit

@@ -11,12 +11,15 @@ from typing import TYPE_CHECKING, Optional, Tuple
 import torch
 import torch.nn as nn
 
+from torchref._logging import TRACE, enabled, get_logger
 from torchref.base.fourier import ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
 from torchref.config import dtypes
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.device_resolution import require_cell_dtype, resolve_device
+
+log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from torchref.model.context import ModelContext
@@ -47,8 +50,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     device : torch.device, optional
         Computation device. Defaults to the cell's device when the context has one,
         else the configured default device.
-    verbose : int, optional
-        Verbosity level for logging. Default is 0.
     use_late_symmetry : bool, optional
         Apply symmetry in reciprocal space after the FFT when the grid permits
         exact indexing (default); otherwise symmetrise the density map first.
@@ -74,7 +75,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         explicit_gridsize: Optional[Tuple[int, int, int]] = None,
         dtype_float: torch.dtype = None,
         device: Optional[torch.device] = None,
-        verbose: int = 0,
         use_late_symmetry: bool = True,
     ):
         super().__init__()
@@ -91,7 +91,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             ctx.to(device)
         self.device = resolve_device(ctx.cell, device=device)
 
-        self.verbose = verbose
         self.use_late_symmetry = use_late_symmetry
 
         # Derived from the crystal on first use. Non-persistent: rebuilt from the
@@ -220,8 +219,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             )
         shape = tuple(int(n) for n in gridsize)
 
-        if self.verbose > 1:
-            print(f"Setting up grids with max_res={self.max_res} Å")
+        log.debug(f"Setting up grids with max_res={self.max_res} Å")
 
         previous = self._gridsize
         self._gridsize = torch.tensor(shape, dtype=dtypes.int, device=self.device)
@@ -238,11 +236,11 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         # the grid admits direct indexing, which the space group answers without
         # building an operator.
         self._late_symmetry_compatible = spacegroup.can_index_directly(shape)
-        if self.verbose > 0 and self.use_late_symmetry:
+        if self.use_late_symmetry:
             if self._late_symmetry_compatible:
-                print("SfFFT: Using late symmetry (reciprocal space)")
+                log.info("SfFFT: Using late symmetry (reciprocal space)")
             else:
-                print(
+                log.info(
                     "SfFFT: Late symmetry disabled - grid not compatible "
                     "(falling back to early symmetry)"
                 )
@@ -254,9 +252,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         if previous is not None and tuple(int(n) for n in previous.tolist()) != shape:
             spacegroup.reset_cache()
 
-        if self.verbose > 2:
-            print(f"Grid shape: {shape}")
-            print(f"Voxel size: {self._voxel_size}")
+        if enabled(log, TRACE):
+            log.log(TRACE, f"Grid shape: {shape}")
+            log.log(TRACE, f"Voxel size: {self._voxel_size}")
 
         # Last, so a failure above leaves the old key in place and the next call
         # tries again.
@@ -333,15 +331,14 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         # Use Cell's method for base grid size calculation
         gridsize_initial = cell.compute_grid_size(resolution)
 
-        if self.verbose > 1:
-            print(f"Initial grid size from cell: {gridsize_initial}")
+        log.debug(f"Initial grid size from cell: {gridsize_initial}")
 
         # Optimize for symmetry and FFT-friendliness
         gridsize_optimized = spacegroup.suggest_grid_size(
             gridsize_initial, make_fft_friendly=True
         )
-        if self.verbose > 1 and gridsize_optimized != gridsize_initial:
-            print(
+        if gridsize_optimized != gridsize_initial:
+            log.debug(
                 f"Optimized grid size from {gridsize_initial} to {gridsize_optimized} "
                 f"(symmetry + FFT friendly)"
             )

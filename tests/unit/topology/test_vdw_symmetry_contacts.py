@@ -151,7 +151,7 @@ def test_every_image_contact_is_listed_from_both_ends(deposited):
 
 @pytest.fixture(scope="module")
 def model_1daw(pdb_dir):
-    model = Model(verbose=0, device=torch.device("cpu"))
+    model = Model(device=torch.device("cpu"))
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     return model
 
@@ -241,7 +241,7 @@ def test_alternates_do_not_meet_across_a_crystal_contact(pdb_dir):
     """3K7M models waters as alternates across crystal contacts (HOH 969 A against
     HOH 1049 B 1.86 A away). As inside the asymmetric unit, two different altlocs are
     never a contact, image pairs included."""
-    model = Model(verbose=0, device=torch.device("cpu"))
+    model = Model(device=torch.device("cpu"))
     model.load_pdb(str(pdb_dir / "3K7M.pdb"))
     vdw = model.restraints.restraints["vdw"]
     altloc = np.char.strip(model.restraints.topology.atoms.altloc.astype(str))

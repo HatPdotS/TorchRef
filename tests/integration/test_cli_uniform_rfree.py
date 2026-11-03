@@ -96,7 +96,7 @@ def test_torchref_reads_flags(inputs, tmp_path):
     _, paths = inputs
     out = tmp_path / "out"
     assert _run(paths[0], "-o", out, "--fresh").returncode == 0
-    data = ReflectionData(device="cpu", verbose=0).load_mtz(str(out / "dark_rfree.mtz"))
+    data = ReflectionData(device="cpu").load_mtz(str(out / "dark_rfree.mtz"))
     assert not str(data.rfree_source).startswith("Generated")
     free_fraction = 1 - data.rfree_flags.float().mean().item()
     assert abs(free_fraction - 0.05) < 0.01
@@ -190,8 +190,8 @@ def test_mixed_resolution_and_max_free(inputs, tmp_path):
     tables = _free_tables([out / "dark_rfree.mtz", out / "light_rfree.mtz"])
     assert sum(tables[1].values()) <= 500
     res = _run(*paths[:2], "-o", tmp_path / "inh")
-    assert "reference ends at" in res.stdout
-    assert "seed from reference free set" in res.stdout
+    assert "reference ends at" in res.stderr
+    assert "seed from reference free set" in res.stderr
     light = rs.read_mtz(str(tmp_path / "inh" / "light_rfree.mtz"))
     d = light.compute_dHKL()["dHKL"].to_numpy()
     free = light["FreeR_flag"].to_numpy() == 0
@@ -231,7 +231,7 @@ def test_excluded_flags_survive(inputs, tmp_path):
         rs.read_mtz(str(out / "light_rfree.mtz"))["FreeR_flag"].to_numpy() >= 0
     ).all()
     for f in ("excl_rfree.mtz", "excl_rfree.cif"):
-        data = ReflectionData(device="cpu", verbose=0)
+        data = ReflectionData(device="cpu")
         (
             data.load_mtz(str(out / f))
             if f.endswith("mtz")
