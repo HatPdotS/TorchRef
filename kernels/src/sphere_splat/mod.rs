@@ -9,6 +9,10 @@
 //! Forward partitions the **output** by x-plane and backward partitions over **atoms**, so
 //! neither needs atomics; both are deterministic and independent of the thread count.
 //! Gradients cover `xyz`, `adp`/`U` and `occ`; `A`, `B` and the cell matrices get none.
+//!
+//! The second order is two more passes, split the same way. Given cotangents `t` on the
+//! backward's outputs, the tangent pass accumulates the map `T = sum_p t_p d(splat)/dp` by
+//! x-plane, and the Hessian-vector pass writes each atom's gradient of `sum(grad * T)`.
 
 //!
 //! Every entry point takes its arguments positionally, as `(outputs..., inputs...,
@@ -16,7 +20,11 @@
 //!
 //! - forward: `out`, then the [`INPUTS`]; accumulates the splat into `out` in place;
 //! - backward: `g_xyz`, `g_adp`, `g_occ`, `grad`, then the [`INPUTS`]; writes the per-atom
-//!   gradients of `sum(grad * splat)`.
+//!   gradients of `sum(grad * splat)`;
+//! - tangent: `out`, `t_xyz`, `t_adp`, `t_occ`, then the [`INPUTS`]; accumulates `T` into
+//!   `out` in place;
+//! - Hessian-vector: `h_xyz`, `h_adp`, `h_occ`, `grad`, `t_xyz`, `t_adp`, `t_occ`, then the
+//!   [`INPUTS`]; writes the per-atom gradients of `sum(grad * T)`.
 //!
 //! `adp` is `(n,)` B-factors for `sphere_iso_*` and `(n, 6)` U components for
 //! `sphere_aniso_*`.
@@ -33,7 +41,7 @@ mod iso;
 use crate::ffi::{Buf, expect_len, input, no_aliasing, output};
 use crate::pool;
 use crate::real::Real;
-use common::{Atoms, Cell};
+use common::{Atoms, Cell, Tangent};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -119,6 +127,23 @@ unsafe fn offsets<'a>(buf: Buf, n_atoms: usize) -> PyResult<&'a [i64]> {
     Ok(off)
 }
 
+/// Borrow and shape-check the cotangents `t_xyz`, `t_adp`, `t_occ` of `n` atoms.
+///
+/// # Safety
+/// Every `Buf` must satisfy [`crate::ffi::input`]'s contract.
+unsafe fn tangent<'a, T, const W: usize>(bufs: [Buf; 3], n: usize) -> PyResult<Tangent<'a, T>> {
+    let names = ["t_xyz", "t_adp", "t_occ"];
+    for (buf, (name, len)) in bufs.iter().zip(names.iter().zip([3 * n, W * n, n])) {
+        expect_len(buf.1, len, name)?;
+    }
+    let s = |i: usize| unsafe { input::<T>(bufs[i], names[i]) };
+    Ok(Tangent {
+        xyz: s(0)?,
+        adp: s(1)?,
+        occ: s(2)?,
+    })
+}
+
 /// Each member's atoms, in member order.
 fn members<'a, T>(at: &Atoms<'a, T>, off: &[i64], w: usize) -> Vec<Atoms<'a, T>> {
     off.windows(2)
@@ -126,8 +151,84 @@ fn members<'a, T>(at: &Atoms<'a, T>, off: &[i64], w: usize) -> Vec<Atoms<'a, T>>
         .collect()
 }
 
+/// Each member's cotangents, in member order.
+fn member_tangents<'a, T>(t: &Tangent<'a, T>, off: &[i64], w: usize) -> Vec<Tangent<'a, T>> {
+    off.windows(2)
+        .map(|m| t.member(m[0] as usize, m[1] as usize, w))
+        .collect()
+}
+
 type Planes<T> = fn(&mut [T], i32, i32, &Cell<T>, &Atoms<'_, T>);
+type TanPlanes<T> = fn(&mut [T], i32, i32, &Cell<T>, &Atoms<'_, T>, &Tangent<'_, T>);
 type AtomGrad<T, const W: usize> = fn(usize, &[T], &Cell<T>, &Atoms<'_, T>) -> ([T; 3], [T; W], T);
+type AtomHvp<T, const W: usize> =
+    fn(usize, &[T], &Cell<T>, &Atoms<'_, T>, &Tangent<'_, T>) -> ([T; 3], [T; W], T);
+
+/// Run `planes(chunk, xlo, xhi, b)` over the x-plane blocks of member `b`'s slab of `out`,
+/// for every member with atoms.
+fn over_planes<T: Real>(
+    py: Python<'_>,
+    out: &mut [T],
+    len: usize,
+    c: &Cell<T>,
+    sizes: &[usize],
+    n_threads: usize,
+    planes: impl Fn(&mut [T], i32, i32, usize) + Sync,
+) {
+    py.detach(|| {
+        let pool = pool::get(n_threads);
+        let plane = c.ny as usize * c.nz as usize;
+        let per = (c.nx as usize).div_ceil(pool.current_num_threads()).max(1);
+        pool.install(|| {
+            // Members and their x-plane blocks are one flat set of tasks, so a batch of
+            // small members still fills the pool. Every block writes only its own planes.
+            out.par_chunks_mut(len)
+                .zip(sizes.par_iter())
+                .enumerate()
+                .filter(|(_, (_, n))| **n > 0)
+                .for_each(|(b, (slab, _))| {
+                    slab.par_chunks_mut(per * plane)
+                        .enumerate()
+                        .for_each(|(ci, chunk)| {
+                            let xlo = ci * per;
+                            let xhi = xlo + chunk.len() / plane;
+                            planes(chunk, xlo as i32, xhi as i32, b);
+                        });
+                });
+        });
+    });
+}
+
+/// One `atom(i, b, slab)` call per atom, with `i` its index within member `b` and `slab`
+/// that member's grid of `grad`; each call writes only its atom's slots of the outputs.
+fn over_atoms<T: Real, const W: usize>(
+    py: Python<'_>,
+    (gx, ga, go): (&mut [T], &mut [T], &mut [T]),
+    grad: &[T],
+    len: usize,
+    off: &[i64],
+    n_threads: usize,
+    atom: impl Fn(usize, usize, &[T]) -> ([T; 3], [T; W], T) + Sync,
+) {
+    py.detach(|| {
+        pool::get(n_threads).install(|| {
+            gx.par_chunks_mut(3)
+                .zip(ga.par_chunks_mut(W))
+                .zip(go.par_iter_mut())
+                .enumerate()
+                .for_each(|(i, ((x, a), o))| {
+                    // The last member starting at or before atom i; empty members share
+                    // their start with the next one, so they are skipped over.
+                    let b = off.partition_point(|&s| s <= i as i64) - 1;
+                    let slab = &grad[b * len..(b + 1) * len];
+                    let (dx, da, dov) = atom(i - off[b] as usize, b, slab);
+                    x.copy_from_slice(&dx);
+                    a.copy_from_slice(&da);
+                    *o = dov;
+                });
+        })
+    });
+}
 
 /// Forward: run `planes` over x-plane blocks of each member's slab of `out`.
 fn fwd<T: Real, const W: usize>(
@@ -139,34 +240,47 @@ fn fwd<T: Real, const W: usize>(
     no_aliasing(&[(out, "out")], &ins, size_of::<T>())?;
     let at = unsafe { atoms::<T, W>(&ins)? };
     let off = unsafe { offsets(off, at.n_atoms)? };
-    let n_members = off.len() - 1;
-    expect_len(out.1, n_members * len, "out")?;
+    expect_len(out.1, (off.len() - 1) * len, "out")?;
     let out = unsafe { output::<T>(out, "out")? };
     let c = Cell::new(at.frac, at.inv_frac, nx, ny, nz);
-    let members = members(&at, off, W);
     if at.n_atoms == 0 {
         return Ok(());
     }
-    py.detach(|| {
-        let pool = pool::get(n_threads);
-        let plane = c.ny as usize * c.nz as usize;
-        let per = (c.nx as usize).div_ceil(pool.current_num_threads()).max(1);
-        pool.install(|| {
-            // Members and their x-plane blocks are one flat set of tasks, so a batch of
-            // small members still fills the pool. Every block writes only its own planes.
-            out.par_chunks_mut(len)
-                .zip(members.par_iter())
-                .filter(|(_, m)| m.n_atoms > 0)
-                .for_each(|(slab, m)| {
-                    slab.par_chunks_mut(per * plane)
-                        .enumerate()
-                        .for_each(|(ci, chunk)| {
-                            let xlo = ci * per;
-                            let xhi = xlo + chunk.len() / plane;
-                            planes(chunk, xlo as i32, xhi as i32, &c, m);
-                        });
-                });
-        });
+    let members = members(&at, off, W);
+    let sizes: Vec<usize> = members.iter().map(|m| m.n_atoms).collect();
+    over_planes(py, out, len, &c, &sizes, n_threads, |chunk, xlo, xhi, b| {
+        planes(chunk, xlo, xhi, &c, &members[b])
+    });
+    Ok(())
+}
+
+/// Tangent: run `planes` over x-plane blocks of each member's slab of `out`, as [`fwd`].
+fn tan<T: Real, const W: usize>(
+    py: Python<'_>,
+    args: &Bound<'_, PyTuple>,
+    planes: TanPlanes<T>,
+) -> PyResult<()> {
+    let ([out, tx, ta, to, ins @ .., off], (nx, ny, nz, len), n_threads) = parse::<13>(args)?;
+    let n = ins[2].1;
+    no_aliasing(
+        &[(out, "out")],
+        &[&[tx, ta, to][..], &ins[..]].concat(),
+        size_of::<T>(),
+    )?;
+    let at = unsafe { atoms::<T, W>(&ins)? };
+    let tg = unsafe { tangent::<T, W>([tx, ta, to], n)? };
+    let off = unsafe { offsets(off, n)? };
+    expect_len(out.1, (off.len() - 1) * len, "out")?;
+    let out = unsafe { output::<T>(out, "out")? };
+    let c = Cell::new(at.frac, at.inv_frac, nx, ny, nz);
+    if n == 0 {
+        return Ok(());
+    }
+    let members = members(&at, off, W);
+    let tangents = member_tangents(&tg, off, W);
+    let sizes: Vec<usize> = members.iter().map(|m| m.n_atoms).collect();
+    over_planes(py, out, len, &c, &sizes, n_threads, |chunk, xlo, xhi, b| {
+        planes(chunk, xlo, xhi, &c, &members[b], &tangents[b])
     });
     Ok(())
 }
@@ -197,24 +311,42 @@ fn bwd<T: Real, const W: usize>(
     let go = unsafe { output::<T>(g_occ, "g_occ")? };
     let c = Cell::new(at.frac, at.inv_frac, nx, ny, nz);
     let members = members(&at, off, W);
-    py.detach(|| {
-        pool::get(n_threads).install(|| {
-            gx.par_chunks_mut(3)
-                .zip(ga.par_chunks_mut(W))
-                .zip(go.par_iter_mut())
-                .enumerate()
-                .for_each(|(i, ((x, a), o))| {
-                    // The last member starting at or before atom i; empty members share
-                    // their start with the next one, so they are skipped over.
-                    let b = off.partition_point(|&s| s <= i as i64) - 1;
-                    let lo = off[b] as usize;
-                    let slab = &grad[b * len..(b + 1) * len];
-                    let (dx, da, dov) = atom(i - lo, slab, &c, &members[b]);
-                    x.copy_from_slice(&dx);
-                    a.copy_from_slice(&da);
-                    *o = dov;
-                });
-        })
+    over_atoms(py, (gx, ga, go), grad, len, off, n_threads, |i, b, slab| {
+        atom(i, slab, &c, &members[b])
+    });
+    Ok(())
+}
+
+/// Hessian-vector: one `atom` call per atom, as [`bwd`].
+fn hvp<T: Real, const W: usize>(
+    py: Python<'_>,
+    args: &Bound<'_, PyTuple>,
+    atom: AtomHvp<T, W>,
+) -> PyResult<()> {
+    let ([h_xyz, h_adp, h_occ, grad, tx, ta, to, ins @ .., off], (nx, ny, nz, len), n_threads) =
+        parse::<16>(args)?;
+    let n = ins[2].1;
+    expect_len(h_xyz.1, 3 * n, "h_xyz")?;
+    expect_len(h_adp.1, W * n, "h_adp")?;
+    expect_len(h_occ.1, n, "h_occ")?;
+    no_aliasing(
+        &[(h_xyz, "h_xyz"), (h_adp, "h_adp"), (h_occ, "h_occ")],
+        &[&[grad, tx, ta, to][..], &ins[..]].concat(),
+        size_of::<T>(),
+    )?;
+    let at = unsafe { atoms::<T, W>(&ins)? };
+    let tg = unsafe { tangent::<T, W>([tx, ta, to], n)? };
+    let off = unsafe { offsets(off, n)? };
+    expect_len(grad.1, (off.len() - 1) * len, "grad")?;
+    let grad = unsafe { input::<T>(grad, "grad")? };
+    let hx = unsafe { output::<T>(h_xyz, "h_xyz")? };
+    let ha = unsafe { output::<T>(h_adp, "h_adp")? };
+    let ho = unsafe { output::<T>(h_occ, "h_occ")? };
+    let c = Cell::new(at.frac, at.inv_frac, nx, ny, nz);
+    let members = members(&at, off, W);
+    let tangents = member_tangents(&tg, off, W);
+    over_atoms(py, (hx, ha, ho), grad, len, off, n_threads, |i, b, slab| {
+        atom(i, slab, &c, &members[b], &tangents[b])
     });
     Ok(())
 }
@@ -239,10 +371,18 @@ macro_rules! entry_points {
 entry_points! {
     sphere_iso_fwd_f32 => fwd::<f32, 1>(iso::fwd_planes::<f32>);
     sphere_iso_bwd_f32 => bwd::<f32, 1>(iso::bwd_atom::<f32>);
+    sphere_iso_tan_f32 => tan::<f32, 1>(iso::tan_planes::<f32>);
+    sphere_iso_hvp_f32 => hvp::<f32, 1>(iso::hvp_atom::<f32>);
     sphere_aniso_fwd_f32 => fwd::<f32, 6>(aniso::fwd_planes::<f32>);
     sphere_aniso_bwd_f32 => bwd::<f32, 6>(aniso::bwd_atom::<f32>);
+    sphere_aniso_tan_f32 => tan::<f32, 6>(aniso::tan_planes::<f32>);
+    sphere_aniso_hvp_f32 => hvp::<f32, 6>(aniso::hvp_atom::<f32>);
     sphere_iso_fwd_f64 => fwd::<f64, 1>(iso::fwd_planes::<f64>);
     sphere_iso_bwd_f64 => bwd::<f64, 1>(iso::bwd_atom::<f64>);
+    sphere_iso_tan_f64 => tan::<f64, 1>(iso::tan_planes::<f64>);
+    sphere_iso_hvp_f64 => hvp::<f64, 1>(iso::hvp_atom::<f64>);
     sphere_aniso_fwd_f64 => fwd::<f64, 6>(aniso::fwd_planes::<f64>);
     sphere_aniso_bwd_f64 => bwd::<f64, 6>(aniso::bwd_atom::<f64>);
+    sphere_aniso_tan_f64 => tan::<f64, 6>(aniso::tan_planes::<f64>);
+    sphere_aniso_hvp_f64 => hvp::<f64, 6>(aniso::hvp_atom::<f64>);
 }

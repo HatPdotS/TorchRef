@@ -16,7 +16,7 @@ New features
 - CLI ``-q`` and ``--log-file``; warnings go to stderr, progress and results to stdout
 - Batched structure factors: the density splats, ``build_electron_density``, map symmetry, the reciprocal extractor and ``SfFFT`` take a batch of models sharing one crystal, as dense ``(B, N, ...)`` atoms or flat atoms with ``batch_offsets``, and return ``(B, ...)`` maps and ``(B, n_reflections)`` structure factors
 - The CUDA (Triton) density splat runs in float64 instead of falling back to the portable splat
-- The CUDA (Triton) and Metal density splats have analytic second derivatives, so a Hessian-vector product through them (``create_graph=True``) runs on the GPU instead of raising
+- The CUDA (Triton), Metal and fused CPU (Rust) density splats have analytic second derivatives: a Hessian-vector product through them (``create_graph=True``) runs in the native kernels, where CUDA and Metal raised and the CPU recomputed through the portable splat
 - ``torchref-kernels`` 0.2.0 (ABI 2) is required: the CPU splat entry points take member offsets
 
 Fixes that change results

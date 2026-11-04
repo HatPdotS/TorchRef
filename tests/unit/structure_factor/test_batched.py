@@ -221,9 +221,7 @@ def test_batched_second_order_matches_per_member(device, dtype, name, kind):
         hvps[batched] = torch.autograd.grad(dot, flat, allow_unused=True)
     for got, ref in zip(hvps[True], hvps[False]):
         if ref is not None and ref.numel():
-            # cpu_sphere takes its second derivative through the portable splat, so it is
-            # not bitwise here.
-            _assert_close(got, ref, device, dtype, "portable", "hvp", grad=True)
+            _assert_close(got, ref, device, dtype, name, "hvp", grad=True)
 
 
 def test_metal_refuses_a_batch_past_32_bit_indices():

@@ -211,34 +211,35 @@ def test_fft_hvp_matches_ds(scene_fine, oracle_fine, kind, dtype, pin):
 
 
 @pytest.mark.parametrize("dtype", _DTYPES, ids=["f32", "f64"])
-def test_fused_cpu_kernel_uses_the_double_backward_fallback(
+def test_fused_cpu_kernel_takes_its_native_second_order_path(
     scene_fine, oracle_fine, dtype, monkeypatch
 ):
     """Non-vacuity guard for the AUTO second-order path.
 
-    The fused CPU sphere splat has a hand-written first-order backward with no graph, so
-    under ``create_graph=True`` it routes through ``_double_backward_vjp``, which re-runs
-    the forward through the portable torch splat on the *saved* leaves and differentiates
-    that. Without this guard, ``test_fft_hvp_matches_ds[auto]`` would still pass if AUTO
-    silently fell back to the eager path for the whole forward -- and would then be
-    testing EAGER twice under two names.
-
-    Asserts the fallback is entered, which is only meaningful alongside a separate
-    assertion that the fused kernel was used in the first place.
+    The fused CPU sphere splat has native tangent and Hessian-vector passes. Without this
+    guard, ``test_fft_hvp_matches_ds[default]`` would still pass if AUTO silently fell back
+    to the portable splat for the whole forward -- and would then be testing the portable
+    splat twice under two names.
     """
     from torchref.base.electron_density.kernels.cpu import sphere_splat
 
     if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU sphere splat unavailable: {sphere_splat.last_error()}")
 
-    calls = {"fallback": 0}
-    original = sphere_splat._double_backward_vjp
+    calls = []
+    mod = sphere_splat._get_module()
 
-    def counting(*args, **kwargs):
-        calls["fallback"] += 1
-        return original(*args, **kwargs)
+    def counting(name):
+        original = getattr(mod, name)
 
-    monkeypatch.setattr(sphere_splat, "_double_backward_vjp", counting)
+        def entry(*args):
+            calls.append(name)
+            return original(*args)
+
+        return entry
+
+    for name in ("iso_fwd", "iso_bwd", "iso_tan", "iso_hvp"):
+        monkeypatch.setattr(mod, name, counting(name))
 
     sf = H.sf_fft_for(scene_fine, dtype)
     v = torch.ones_like(scene_fine.xyz)
@@ -251,9 +252,10 @@ def test_fused_cpu_kernel_uses_the_double_backward_fallback(
     with H.maybe_portable(False):
         out = hvp(loss, scene_fine.xyz, v)
 
-    assert calls["fallback"] > 0, (
-        "AUTO produced an HVP without entering _double_backward_vjp, so the fused "
-        "kernel was not on the path and this dtype's second-order coverage is vacuous"
+    assert {"iso_hvp", "iso_tan"} <= set(calls), (
+        f"AUTO produced an HVP through the entry points {sorted(set(calls))}, so the fused "
+        "kernel's second-order passes were not on the path and this dtype's second-order "
+        "coverage is vacuous"
     )
     assert torch.isfinite(out).all() and out.abs().sum() > 0
 
@@ -361,11 +363,10 @@ def test_fft_hvp_matches_ds_real_structure(gemmi_aniso_grad, oracle_aniso_grad):
 # gradient section with another derivative. Each family gets its second derivative its own
 # way:
 #
-#   add_*_cpu_sphere_var   via ``_double_backward_vjp``, which re-derives the VJP through
-#                          the portable splat on the saved leaves
 #   add_*_plain_var        pure autograd over ``scatter_add``
-#   add_*_mps_var          analytic: the backward is a ``_MetalSplatGrad`` whose own
-#   WorkQueueGridDensity*  backward (``_SplatGrad`` on CUDA) runs a second-order kernel
+#   add_*_cpu_sphere_var   analytic: the backward is a Function (``_SphereSplatGrad``,
+#   add_*_mps_var          ``_MetalSplatGrad``, ``_SplatGrad`` on CUDA) whose own backward
+#   WorkQueueGridDensity*  runs native second-order kernels
 #
 # A kernel that declares no second order must **raise** rather than return a silently wrong
 # (or zero) second derivative -- the failure mode this repo already fixed once for the C++
