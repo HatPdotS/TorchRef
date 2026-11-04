@@ -30,6 +30,7 @@ optional rank penalty and, with ``amber_weight > 0``, the Amber supercell.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import tempfile
@@ -45,6 +46,9 @@ from .rank_penalty import RankPenaltyTarget
 from .wilson_prior import WilsonPriorTarget
 from torchref.refinement.targets.xray import create_xray_target
 from torchref.scaling import Scaler
+from torchref._logging import enabled, get_logger, quiet
+
+log = get_logger(__name__)
 
 
 def _extract_first_model_pdb(pdb_path: str):
@@ -222,7 +226,6 @@ class EnsembleRefinement(LBFGSRefinement):
         bifurcation_sigma: float = 0.1,
         birth_death_every: int = 1,
         seed: Optional[int] = None,
-        verbose: int = 1,
         device=None,
         max_res: float = None,
         nbins: int = 10,
@@ -230,7 +233,7 @@ class EnsembleRefinement(LBFGSRefinement):
     ):
         # Empty-shell construction for state_dict loading.
         if data_file is None and pdb is None:
-            super().__init__(verbose=verbose, device=device, nbins=nbins)
+            super().__init__(device=device, nbins=nbins)
             self.n_members = n_members
             self.wilson_weight = wilson_weight
             self.wilson_mode = wilson_mode
@@ -313,7 +316,6 @@ class EnsembleRefinement(LBFGSRefinement):
                 data_file=data_file,
                 pdb=base_pdb,
                 target_mode=xray_mode,
-                verbose=verbose,
                 device=device,
                 max_res=max_res,
                 nbins=nbins,
@@ -405,14 +407,13 @@ class EnsembleRefinement(LBFGSRefinement):
             if new_N < n_sym:
                 # Would round to 0 — bump up to one full sym expansion.
                 new_N = n_sym
-            if verbose > 0:
-                print(
-                    f"EnsembleRefinement: spacegroup "
-                    f"'{self.reflection_data.spacegroup.short_name}' has "
-                    f"N_sym={n_sym}; requested n_members={self.n_members} "
-                    f"is not a multiple — rounding to {new_N} "
-                    f"(n_disorder={new_N // n_sym} per crystallographic site)."
-                )
+            log.warning(
+                f"EnsembleRefinement: spacegroup "
+                f"'{self.reflection_data.spacegroup.short_name}' has "
+                f"N_sym={n_sym}; requested n_members={self.n_members} "
+                f"is not a multiple — rounding to {new_N} "
+                f"(n_disorder={new_N // n_sym} per crystallographic site)."
+            )
             self.n_members = new_N
         # Birth/death dynamics use a FIXED pool of member slots: the requested
         # ``n_members`` is the initial ALIVE count, ``n_max`` (>= it) the pool
@@ -431,8 +432,7 @@ class EnsembleRefinement(LBFGSRefinement):
         # Ensure the reflection data has a validation set.
         if self.reflection_data.validation.n == 0:
             if self.reflection_data.free.n >= 4:
-                if verbose > 0:
-                    print("EnsembleRefinement: generating validation set from R-free")
+                log.info("EnsembleRefinement: generating validation set from R-free")
                 self.reflection_data.generate_validation_set(
                     val_fraction_of_free=val_fraction_of_free, seed=seed,
                 )
@@ -446,7 +446,6 @@ class EnsembleRefinement(LBFGSRefinement):
             perturb_sigma=perturb_sigma,
             b_const=b_const,
             seed=seed,
-            verbose=verbose,
             device=self.device,
             hydrogens=self.hydrogens,
             max_res=self.max_res,
@@ -455,15 +454,14 @@ class EnsembleRefinement(LBFGSRefinement):
             self.model.enable_population_refinement(
                 True, refine_b=self.refine_member_b
             )
-            if verbose > 0:
-                b_msg = "free B_m" if self.refine_member_b else "B frozen@b_const"
-                print(
-                    f"EnsembleRefinement: population refinement ON — "
-                    f"per-member occupancy(softmax), {b_msg}, pool={self.model.n_members} "
-                    f"slots, {self.model.n_alive} alive, death_rate={self.death_rate}, "
-                    f"birth_rate={self.birth_rate}, σ_bif={self.bifurcation_sigma}, "
-                    f"every {self.birth_death_every} cyc."
-                )
+            b_msg = "free B_m" if self.refine_member_b else "B frozen@b_const"
+            log.info(
+                f"EnsembleRefinement: population refinement ON — "
+                f"per-member occupancy(softmax), {b_msg}, pool={self.model.n_members} "
+                f"slots, {self.model.n_alive} alive, death_rate={self.death_rate}, "
+                f"birth_rate={self.birth_rate}, σ_bif={self.bifurcation_sigma}, "
+                f"every {self.birth_death_every} cyc."
+            )
         self.model.cell = self.reflection_data.cell
         self.model.spacegroup = self.reflection_data.spacegroup
         self.model.max_res = self.max_res
@@ -471,7 +469,7 @@ class EnsembleRefinement(LBFGSRefinement):
         # Rebuild the scaler against the ensemble model.
         self.scaler = Scaler(
             self.model, self.reflection_data,
-            verbose=self.verbose, device=self.device, nbins=self.nbins,
+            device=self.device, nbins=self.nbins,
         )
         with torch.no_grad():
             fcalc0 = self.model(self.reflection_data.hkl)
@@ -499,15 +497,15 @@ class EnsembleRefinement(LBFGSRefinement):
 
         self.xray_target_work = create_xray_target(
             data=self.reflection_data, model=self.model, scaler=self.scaler,
-            mode=xray_mode, use_set="work", verbose=self.verbose,
+            mode=xray_mode, use_set="work",
         )
         self.xray_target_test = create_xray_target(
             data=self.reflection_data, model=self.model, scaler=self.scaler,
-            mode=xray_mode, use_set="free", verbose=self.verbose,
+            mode=xray_mode, use_set="free",
         )
         self.xray_target_validation = create_xray_target(
             data=self.reflection_data, model=self.model, scaler=self.scaler,
-            mode=xray_mode, use_set="val", verbose=self.verbose,
+            mode=xray_mode, use_set="val",
         )
         self.wilson_target = WilsonPriorTarget(
             data=self.reflection_data, model=self.model, scaler=self.scaler,
@@ -525,7 +523,6 @@ class EnsembleRefinement(LBFGSRefinement):
                 charge_method=self.amber_charge_method,
                 relax_on_init=self.amber_relax_on_init,
                 force_clamp=self.amber_force_clamp,
-                verbose=self.verbose,
             )
         else:
             self.amber_target = None
@@ -549,7 +546,6 @@ class EnsembleRefinement(LBFGSRefinement):
                 freeze_disp=self.rank_freeze_disp,
                 maxent_shrink=self.maxent_shrink_weight,
                 maxent_div=self.maxent_div_weight,
-                verbose=self.verbose,
             )
         else:
             self.rank_target = None
@@ -569,19 +565,18 @@ class EnsembleRefinement(LBFGSRefinement):
         branched-in scaler. Returns the explained-variance fraction.
         """
         explained = self.model.enable_low_rank(K)
-        with torch.no_grad():
-            self.model.reset_cache()
-            rw, rf = self.get_rfactor()
-            amb = None
-            if getattr(self, "amber_target", None) is not None:
-                amb = float(self.amber_target.forward())
-        if self.verbose > 0:
-            print(
+        self.model.reset_cache()
+        if enabled(log, logging.INFO):
+            with torch.no_grad():
+                rw, rf = self.get_rfactor()
+                amb = None
+                if getattr(self, "amber_target", None) is not None:
+                    amb = float(self.amber_target.forward())
+            log.info(
                 f"[low-rank] K={int(K)} enabled "
                 f"(explained var {explained * 100:.2f}%); "
                 f"post-swap R_work={float(rw):.4f} R_free={float(rf):.4f} "
-                f"amber/ASU={amb}",
-                flush=True,
+                f"amber/ASU={amb}"
             )
         return explained
 
@@ -593,19 +588,18 @@ class EnsembleRefinement(LBFGSRefinement):
         ``K=None`` → full rank N-1. Prints a post-swap verification line.
         """
         explained = self.model.enable_pca(K)
-        with torch.no_grad():
-            self.model.reset_cache()
-            rw, rf = self.get_rfactor()
-            amb = None
-            if getattr(self, "amber_target", None) is not None:
-                amb = float(self.amber_target.forward())
-        if self.verbose > 0:
-            print(
+        self.model.reset_cache()
+        if enabled(log, logging.INFO):
+            with torch.no_grad():
+                rw, rf = self.get_rfactor()
+                amb = None
+                if getattr(self, "amber_target", None) is not None:
+                    amb = float(self.amber_target.forward())
+            log.info(
                 f"[pca] K={self.model.xyz.K} enabled (refine μ,A,V; "
                 f"explained var {explained * 100:.2f}%); "
                 f"post-swap R_work={float(rw):.4f} R_free={float(rf):.4f} "
-                f"amber/ASU={amb}",
-                flush=True,
+                f"amber/ASU={amb}"
             )
         return explained
 
@@ -864,16 +858,14 @@ class EnsembleRefinement(LBFGSRefinement):
             )
             masses = self._physical_masses_for_xyz()
             optimizer.set_physical_masses(masses or {}, T=self.md_temperature)
-            if self.verbose > 0:
-                src = "physical atomic" if masses else "unit (no element map)"
-                print(
-                    f"[ensemble] guided-MD: BAOAB Langevin on xyz "
-                    f"(dt={self.md_dt}, friction={self.md_friction}, "
-                    f"T={self.md_temperature} kJ/mol, max_step={self.md_max_step} Å); "
-                    f"{src} masses; Amber every step; scaler refit per cycle; "
-                    f"post-hoc noise disabled.",
-                    flush=True,
-                )
+            src = "physical atomic" if masses else "unit (no element map)"
+            log.info(
+                f"[ensemble] guided-MD: BAOAB Langevin on xyz "
+                f"(dt={self.md_dt}, friction={self.md_friction}, "
+                f"T={self.md_temperature} kJ/mol, max_step={self.md_max_step} Å); "
+                f"{src} masses; Amber every step; scaler refit per cycle; "
+                f"post-hoc noise disabled."
+            )
         elif self.optimizer_name == "sgd":
             # Plain SGD (no momentum) + the post-step Langevin/floor noise =
             # proper overdamped SGLD: x ← x − lr·∇L + √(2·lr·T)·ε samples the
@@ -1077,12 +1069,11 @@ class EnsembleRefinement(LBFGSRefinement):
         self.model.configure_dropout(
             self.use_dropout, self.dropout_min, self.dropout_max
         )
-        if self.use_dropout and self.verbose > 0:
-            print(
+        if self.use_dropout:
+            log.info(
                 f"[ensemble] dropout ON: each step uses a random "
                 f"{self.dropout_min}-{self.dropout_max} of {self.n_members} "
-                f"members for the structure factor",
-                flush=True,
+                f"members for the structure factor"
             )
         do_langevin = self.langevin_T > 0.0
         # Decoupled (lr-independent) noise floor with a DC-offset cosine:
@@ -1101,23 +1092,21 @@ class EnsembleRefinement(LBFGSRefinement):
             # O-step); the post-hoc lr-coupled SGLD kick would double-count it.
             do_noise = False
             do_noise_floor = False
-        if do_langevin and self.verbose > 0:
-            print(
+        if do_langevin:
+            log.info(
                 f"[ensemble] Langevin ON: T={self.langevin_T} — "
                 f"injecting N(0, 2·lr·T·I) noise on xyz after each Adam step "
                 f"(Adam-preconditioned SGLD; samples p(x) ∝ exp(-L/T) at the "
-                f"global LR scale).",
-                flush=True,
+                f"global LR scale)."
             )
-        if do_noise_floor and self.verbose > 0:
-            print(
+        if do_noise_floor:
+            log.info(
                 f"[ensemble] noise floor ON (lr-independent): "
                 f"σ_floor = {self.noise_floor_sigma:.2e} + "
                 f"{self.noise_floor_amp:.2e}·(1-cos)/2 Å/step over "
                 f"{self.noise_floor_cycles:g} cosine cycle(s); added in "
                 f"quadrature with the Langevin term. Sustains exploration "
-                f"after lr anneals.",
-                flush=True,
+                f"after lr anneals."
             )
         # --- Adaptive xray weight schedule ---------------------------------
         # w_xray(step) = self.xray_weight · max(floor, EMA(nll_gap)^(-log2 F))
@@ -1146,8 +1135,8 @@ class EnsembleRefinement(LBFGSRefinement):
         frozen_xray_mul: Optional[float] = None
         frozen_rank_w: Optional[float] = None
         last_rank_w: float = self.rank_adaptive_base
-        if two_phase and self.verbose > 0:
-            print(
+        if two_phase:
+            log.info(
                 f"[ensemble] two-phase sampler: burn-in for "
                 f"{burnin_steps}/{total_steps} steps "
                 f"({(1.0 - self.sampling_fraction) * 100:.0f}% of run), then "
@@ -1155,26 +1144,23 @@ class EnsembleRefinement(LBFGSRefinement):
                 f"adam_lr) sampling phase with constant noise "
                 f"√(2·lr·T)={math.sqrt(2.0 * sampling_lr * self.langevin_T):.2e} "
                 f"Å/step. Weights freeze at the burn-in boundary so the chain "
-                f"samples a fixed p(x) ∝ exp(-L/T).",
-                flush=True,
+                f"samples a fixed p(x) ∝ exp(-L/T)."
             )
-        if self.xray_adaptive and self.verbose > 0:
+        if self.xray_adaptive:
             F = self.xray_adaptive_doubling_factor
-            print(
+            log.info(
                 f"[ensemble] xray_adaptive ON: w_xray_step = "
                 f"{self.xray_weight:.4g} · max({self.xray_adaptive_floor:.1e}, "
                 f"EMA_{self.xray_adaptive_ema_halflife_steps}(NLL_free/NLL_work) "
                 f"^ -log2({F:g})). Each doubling of gap cuts the xray pull by "
-                f"{F:g}×; floor at {self.xray_adaptive_floor:.1e} of base.",
-                flush=True,
+                f"{F:g}×; floor at {self.xray_adaptive_floor:.1e} of base."
             )
-        if self.amber_every > 1 and self.verbose > 0:
-            print(
+        if self.amber_every > 1:
+            log.info(
                 f"[ensemble] Amber every {self.amber_every} steps "
                 f"(skipped on the other steps; aggregate() drops zero-weight "
                 f"targets). Amber backward also skipped on those steps — "
-                f"this is the dominant per-step cost.",
-                flush=True,
+                f"this is the dominant per-step cost."
             )
         global_step = 0
         start_cycle = 0
@@ -1204,15 +1190,13 @@ class EnsembleRefinement(LBFGSRefinement):
             )
             optimizer.load_state_dict(resume_state["optimizer"])
             self.model.reset_cache()
-            if self.verbose > 0:
-                print(
-                    f"[ensemble] resume load: "
-                    f"model(missing={len(mk_m.missing_keys)}, "
-                    f"unexpected={len(mk_m.unexpected_keys)}) "
-                    f"scaler(missing={len(mk_s.missing_keys)}, "
-                    f"unexpected={len(mk_s.unexpected_keys)})",
-                    flush=True,
-                )
+            log.info(
+                f"[ensemble] resume load: "
+                f"model(missing={len(mk_m.missing_keys)}, "
+                f"unexpected={len(mk_m.unexpected_keys)}) "
+                f"scaler(missing={len(mk_s.missing_keys)}, "
+                f"unexpected={len(mk_s.unexpected_keys)})"
+            )
             global_step = int(resume_state["global_step"])
             start_cycle = int(resume_state["next_cycle"])
             ema_gap = resume_state.get("ema_gap")
@@ -1243,13 +1227,11 @@ class EnsembleRefinement(LBFGSRefinement):
                 (nll_gap_history, "nll_gap"),
             ):
                 lst.extend(ckh.get(key) or [])
-            if self.verbose > 0:
-                print(
-                    f"[ensemble] RESUMED from checkpoint at cycle {start_cycle}"
-                    f"/{macro_cycles} (global_step={global_step}); "
-                    f"{len(rfree_history)} cycles of history restored.",
-                    flush=True,
-                )
+            log.info(
+                f"[ensemble] RESUMED from checkpoint at cycle {start_cycle}"
+                f"/{macro_cycles} (global_step={global_step}); "
+                f"{len(rfree_history)} cycles of history restored."
+            )
 
         def _save_checkpoint(next_cycle: int) -> None:
             """Atomically write the full resume state to ``checkpoint_path``."""
@@ -1285,9 +1267,8 @@ class EnsembleRefinement(LBFGSRefinement):
             if guided_md:
                 with torch.no_grad():
                     fcalc_now = self.model(self.reflection_data.hkl)
-                self.scaler.refine_lbfgs(
-                    fcalc_now, nsteps=2, max_iter=100, verbose=False
-                )
+                with quiet():
+                    self.scaler.refine_lbfgs(fcalc_now, nsteps=2, max_iter=100)
                 self.model.reset_cache()
 
             state = self.complete_loss_state()
@@ -1336,14 +1317,12 @@ class EnsembleRefinement(LBFGSRefinement):
                                 )
                             else:
                                 frozen_xray_mul = 1.0
-                            if self.verbose > 0:
-                                print(
-                                    f"[ensemble] entering sampling phase at "
-                                    f"step {global_step}: freezing xray "
-                                    f"multiplier at {frozen_xray_mul:.4g} "
-                                    f"(w_xray={self.xray_weight * frozen_xray_mul:.4g})",
-                                    flush=True,
-                                )
+                            log.info(
+                                f"[ensemble] entering sampling phase at "
+                                f"step {global_step}: freezing xray "
+                                f"multiplier at {frozen_xray_mul:.4g} "
+                                f"(w_xray={self.xray_weight * frozen_xray_mul:.4g})"
+                            )
                         mul = frozen_xray_mul
                     elif ema_gap is not None and ema_gap > 0.0:
                         mul = max(
@@ -1492,17 +1471,18 @@ class EnsembleRefinement(LBFGSRefinement):
                 and global_step >= self.warmup_steps
             ):
                 pop = self._birth_death_step(optimizer)
-                with torch.no_grad():
-                    w_now = self.model.member_weights()
-                    w_al = w_now[self.model._alive]
-                    b_al = self.model.member_b()[self.model._alive]
-                pop_msg = (
-                    f"  pop: n_alive={pop['n_alive']} (-{pop['died']}/+{pop['born']}) "
-                    f"w[min/med/max]={float(w_al.min()):.4f}/"
-                    f"{float(w_al.median()):.4f}/{float(w_al.max()):.4f} "
-                    f"B[med/max]={float(b_al.median()):.1f}/{float(b_al.max()):.1f}"
-                )
-            if self.verbose > 0:
+                if enabled(log, logging.INFO):
+                    with torch.no_grad():
+                        w_now = self.model.member_weights()
+                        w_al = w_now[self.model._alive]
+                        b_al = self.model.member_b()[self.model._alive]
+                    pop_msg = (
+                        f"  pop: n_alive={pop['n_alive']} (-{pop['died']}/+{pop['born']}) "
+                        f"w[min/med/max]={float(w_al.min()):.4f}/"
+                        f"{float(w_al.median()):.4f}/{float(w_al.max()):.4f} "
+                        f"B[med/max]={float(b_al.median()):.1f}/{float(b_al.max()):.1f}"
+                    )
+            if enabled(log, logging.INFO):
                 rank_msg = ""
                 if rank_spectrum_history:
                     sp = rank_spectrum_history[-1]
@@ -1513,19 +1493,17 @@ class EnsembleRefinement(LBFGSRefinement):
                         f"var={sp.get('total_variance', float('nan')):.1f} "
                         f"S={sp.get('conf_entropy_nats', float('nan')):.1f}nats"
                     )
-                print(
+                log.info(
                     f"[ensemble] cycle {cycle + 1}/{macro_cycles}: "
                     f"R_work={rwork:.4f}  R_free={rfree:.4f}  R_val={rval:.4f}  "
                     f"loss={loss_history[-1]:.4e}  lr={lr_history[-1]:.2e}  "
-                    f"w_wilson={wilson_history[-1]:.2f}{rank_msg}{pop_msg}",
-                    flush=True,
+                    f"w_wilson={wilson_history[-1]:.2f}{rank_msg}{pop_msg}"
                 )
-                print(
+                log.info(
                     f"           NLL/refl  work={nll_work:.3f}  "
-                    f"free={nll_free:.3f}  gap(free-work)={nll_gap:.3f} nats",
-                    flush=True,
+                    f"free={nll_free:.3f}  gap(free-work)={nll_gap:.3f} nats"
                 )
-                print(state.format_breakdown(), flush=True)
+                log.info(state.format_breakdown())
             # Persist intermediate state on long runs: the human snapshot
             # (caller-owned PDB/JSON) and the resume checkpoint (full state).
             # Both are best-effort — a failed write must never kill the run.
@@ -1534,22 +1512,18 @@ class EnsembleRefinement(LBFGSRefinement):
                     try:
                         on_snapshot(cycle + 1, _histories())
                     except Exception as exc:
-                        if self.verbose > 0:
-                            print(
-                                f"[ensemble] snapshot at cycle {cycle + 1} "
-                                f"failed: {exc!r} (continuing)",
-                                flush=True,
-                            )
+                        log.warning(
+                            f"[ensemble] snapshot at cycle {cycle + 1} "
+                            f"failed: {exc!r} (continuing)"
+                        )
                 if checkpoint_path is not None:
                     try:
                         _save_checkpoint(next_cycle=cycle + 1)
                     except Exception as exc:
-                        if self.verbose > 0:
-                            print(
-                                f"[ensemble] checkpoint at cycle {cycle + 1} "
-                                f"failed: {exc!r} (continuing)",
-                                flush=True,
-                            )
+                        log.warning(
+                            f"[ensemble] checkpoint at cycle {cycle + 1} "
+                            f"failed: {exc!r} (continuing)"
+                        )
         # Sampling-phase summary: in two-phase mode, the meaningful result is
         # the statistics over the constant-T sampling cycles, not the last
         # snapshot. burnin_cycles = first cycle index that is in the sampling
@@ -1574,14 +1548,12 @@ class EnsembleRefinement(LBFGSRefinement):
                 "rfree_sampling_min": min(samp_rf),
                 "rwork_sampling_mean": sum(samp_rw) / n,
             }
-            if self.verbose > 0:
-                print(
-                    f"[ensemble] sampling phase ({n} cycles): "
-                    f"R_free mean={mean_rf:.4f} ± {var_rf ** 0.5:.4f}  "
-                    f"min={min(samp_rf):.4f}  "
-                    f"R_work mean={sum(samp_rw) / n:.4f}",
-                    flush=True,
-                )
+            log.info(
+                f"[ensemble] sampling phase ({n} cycles): "
+                f"R_free mean={mean_rf:.4f} ± {var_rf ** 0.5:.4f}  "
+                f"min={min(samp_rf):.4f}  "
+                f"R_work mean={sum(samp_rw) / n:.4f}"
+            )
         return _histories(burnin=burnin_cycles, sampling=sampling_summary)
 
     def _inloss_count(self, idx) -> int:

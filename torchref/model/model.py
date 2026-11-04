@@ -7,6 +7,7 @@ cell, space group, atom identity and restraints.
 :class:`~torchref.model.model_ft.ModelFT` adds the structure factors.
 """
 
+import logging
 import math
 import warnings
 from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple, Union
@@ -15,6 +16,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from torchref._logging import enabled, get_logger, quiet
 from torchref.base.coordinates import cartesian_to_fractional_torch
 from torchref.config import (
     canonical_device,
@@ -39,6 +41,8 @@ from torchref.utils.utils import sanitize_pdb_dataframe
 if TYPE_CHECKING:
     import pandas
 
+log = get_logger(__name__)
+
 
 class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     """
@@ -55,8 +59,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     ----------
     dtype_float : torch.dtype, optional
         Data type for floating point tensors. Defaults to the configured dtypes.float.
-    verbose : int, optional
-        Verbosity level for logging. Default is 1.
     device : torch.device, optional
         Computation device. Defaults to the configured device.current.
     hydrogens : {"keep", "add", "strip"}, optional
@@ -101,7 +103,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def __init__(
         self,
         dtype_float=None,
-        verbose=1,
         device=None,
         hydrogens: str = "keep",
         hydrogen_mode: str = "atoms",
@@ -128,7 +129,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # Settings only until a structure is loaded, which replaces the context with
         # one built by ``ModelContext.from_atoms``.
         self.ctx = ModelContext(
-            verbose=verbose,
             hydrogens=hydrogens,
             hydrogen_mode=hydrogen_mode,
             cif_path=cif_path,
@@ -370,8 +370,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 "Load data first with load_pdb() or load_cif()."
             )
 
-        if self.ctx.verbose > 1:
-            print("Building ITC92 parametrization via table lookup...")
+        log.debug("Building ITC92 parametrization via table lookup...")
 
         from torchref.base.scattering.scattering_table import get_scattering_params_by_z
 
@@ -383,11 +382,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.register_buffer("_A", A)
         self.register_buffer("_B", B)
 
-        if self.ctx.verbose > 0:
+        if enabled(log, logging.INFO):
             elements = sorted(set(self.ctx.topology.atoms.element))
-            print(f"Parametrization built for {len(elements)} unique atom types")
-            if self.ctx.verbose > 1:
-                print("Elements with parametrization:", elements)
+            log.info(f"Parametrization built for {len(elements)} unique atom types")
+            log.debug(f"Elements with parametrization: {elements}")
 
     @property
     def parametrization(self) -> dict:
@@ -462,8 +460,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                     "Cannot build restraints: model not initialized. "
                     "Load data first with load_pdb() or load_cif()."
                 )
-            if self.ctx.verbose > 0:
-                print("Building restraints...")
+            log.info("Building restraints...")
             self.ctx.build_restraints(self.xyz())
         return self.ctx.restraints
 
@@ -657,7 +654,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Self, for method chaining.
         """
         self.ctx.input_file = str(file)
-        reader = pdb.PDBReader(verbose=self.ctx.verbose).read(file)
+        reader = pdb.PDBReader().read(file)
         return self.load(reader)
 
     def load_cif(self, file):
@@ -675,8 +672,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Self, for method chaining.
         """
         self.ctx.input_file = str(file)
-        if self.ctx.verbose > 0:
-            print(f"Loading CIF file: {file}")
+        log.info(f"Loading CIF file: {file}")
 
         # Read CIF file
         cif_reader = cif.ModelCIFReader(file)
@@ -791,9 +787,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self, old_device, new_device, old_dtype, new_dtype, *,
         device_changed, dtype_changed,
     ):
-        """Report the move when verbose."""
-        if self.ctx.verbose > 0:
-            print(f"Model moved to device: {self.device}")
+        """Report the move."""
+        log.info(f"Model moved to device: {self.device}")
 
     def copy(self):
         """
@@ -833,8 +828,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if hasattr(duplicate, "reset_cache"):
             duplicate.reset_cache()
 
-        if self.ctx.verbose > 0:
-            print(f"Copied {type(self).__name__} ({duplicate.n_atoms} atoms)")
+        log.info(f"Copied {type(self).__name__} ({duplicate.n_atoms} atoms)")
         return duplicate
 
     def _spawn(self, ctx: ModelContext) -> "Model":
@@ -845,7 +839,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         model = type(self)(
             dtype_float=self.dtype_float,
-            verbose=ctx.verbose,
             device=self.device,
             **self._subclass_kwargs(),
         )
@@ -892,11 +885,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             A coordinate wrapper to install instead of one built from ``values``; only
             valid when the hydrogen policy leaves the atom set unchanged.
         **overrides
-            Context settings to change; ``verbose`` defaults to 0.
+            Context settings to change.
         """
-        ctx, values = self.ctx.derive(topology, values, **{"verbose": 0, **overrides})
-        model = self._spawn(ctx)
-        model._install_parameters(values, xyz=xyz)
+        with quiet():
+            ctx, values = self.ctx.derive(topology, values, **overrides)
+            model = self._spawn(ctx)
+            model._install_parameters(values, xyz=xyz)
         return model
 
     def _kept_hydrogens(self) -> str:
@@ -1312,10 +1306,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.adp = field
             self.adp.update_refinable_mask(self.adp_mask)
 
-        if self.ctx.verbose > 0:
+        if enabled(log, logging.INFO):
             kind = mode_set if mode_set else ("aniso U" if anisotropic else "iso B")
             was = self.n_atoms * (6 if anisotropic else 1)
-            print(
+            log.info(
                 f"ADP field ({kind}): {field.n_nodes} nodes, k={k_neighbors}, "
                 f"{int(field.get_refinable_count())} refinable nodes, "
                 f"{int(field.refinable_params.numel())} parameters "
@@ -1419,14 +1413,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         setattr(self, mask_name, updated_mask)
 
-        if self.ctx.verbose > 0:
+        if enabled(log, logging.INFO):
             n_selected = selected.sum().item()
             n_refinable = updated_mask.sum().item()
             action = "frozen" if freeze else "unfrozen"
-            print(
+            log.info(
                 f"Selection '{selection_string}' ({n_selected} atoms) {action} for {target}"
             )
-            print(
+            log.info(
                 f"  Total refinable atoms for {target}: {n_refinable}/{self.n_atoms}"
             )
 
@@ -1450,9 +1444,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         self.unfreeze(target)
 
-        if self.ctx.verbose > 0:
+        if enabled(log, logging.INFO):
             n_refinable = getattr(self, f"{target}_mask").sum().item()
-            print(f"  Applied mask to {target}: {n_refinable} atoms refinable")
+            log.info(f"  Applied mask to {target}: {n_refinable} atoms refinable")
 
     def freeze_selection(
         self, selection_string: str, targets: Union[str, list] = "all"
@@ -1742,7 +1736,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             hydrogen_mode="atoms",
         )
 
-    def hydrogenate(self, verbose: int = 0) -> "Model":
+    def hydrogenate(self) -> "Model":
         """Return a new model with missing hydrogens added from the monomer templates.
 
         Built from the current parameter values with ``hydrogens="add"``: each residue's
@@ -1752,17 +1746,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         random orientation drawn from ``torch.manual_seed``. Existing hydrogens are
         retained. The original model is not modified.
 
-        Parameters
-        ----------
-        verbose : int, default 0
-            Verbosity level.
-
         Returns
         -------
         Model
         """
         return self._derive_from(
-            self.ctx.topology, self._current_values(), hydrogens="add", verbose=verbose
+            self.ctx.topology, self._current_values(), hydrogens="add"
         )
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
@@ -1814,8 +1803,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Path to save the state dictionary to.
         """
         torch.save(self.state_dict(), path)
-        if self.ctx.verbose > 0:
-            print(f"Saved model state to {path}")
+        log.info(f"Saved model state to {path}")
 
     def load_state(self, path: str, strict: bool = True, device=None):
         """
@@ -1834,15 +1822,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         target_device = self.device if device is None else device
         state_dict = torch.load(path, map_location=target_device, weights_only=False)
-        loaded = type(self).create_from_state_dict(
-            state_dict, device=target_device, verbose=self.ctx.verbose
-        )
+        loaded = type(self).create_from_state_dict(state_dict, device=target_device)
         # Replace rather than merge: an empty model's ``None`` wrapper placeholders are
         # plain attributes, and left in place they would shadow the restored modules.
         self.__dict__.clear()
         self.__dict__.update(loaded.__dict__)
-        if self.ctx.verbose > 0:
-            print(f"Loaded model state from {path}")
+        log.info(f"Loaded model state from {path}")
 
     @staticmethod
     def _restore_adp_slot(prefix, state_dict, values, saved_dtype, xyz_wrapper, device):
@@ -1939,7 +1924,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         cls,
         state_dict: dict,
         device: torch.device = None,
-        verbose: int = 1,
         dtype_float: torch.dtype = None,
     ) -> "Model":
         """
@@ -1954,8 +1938,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             runs on CPU; ``None`` then moves it to the configured default device
             (``get_default_device()``), so a round-trip lands beside a same-config
             model rather than stranding itself on CPU.
-        verbose : int, optional
-            Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional
             Float dtype for tensors when the state does not record one. Defaults to
             the configured dtypes.float.
@@ -1985,12 +1967,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         instance = cls(
             dtype_float=saved_dtype,
-            verbose=verbose,
             device=cpu,
             **cls._pop_subclass_state(state_dict),
         )
         instance.ctx, values = ModelContext.from_state(
-            state_dict, dtype=saved_dtype, device=cpu, verbose=verbose
+            state_dict, dtype=saved_dtype, device=cpu
         )
         if values is not None:
             instance._install_parameters(values, state=state_dict)
@@ -1999,8 +1980,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if hasattr(instance, "reset_cache"):
             instance.reset_cache()
 
-        if verbose > 0:
-            print(f"Created {cls.__name__} from state_dict: {instance.n_atoms} atoms")
+        log.info(f"Created {cls.__name__} from state_dict: {instance.n_atoms} atoms")
         return instance
 
     @classmethod
@@ -2102,11 +2082,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self._current_values().gather(rows),
             xyz=riding_xyz,
             hydrogens=self._kept_hydrogens(),
-            verbose=self.ctx.verbose,
         )
 
-        if self.ctx.verbose > 0:
-            print(f"Selected {n_selected}/{self.n_atoms} atoms with '{selection}'")
+        log.info(f"Selected {n_selected}/{self.n_atoms} atoms with '{selection}'")
         return selected
 
     def xyz_fractional(self) -> torch.Tensor:
@@ -2321,8 +2299,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.ctx.hydrogen_mode = mode
         if hasattr(self, "reset_cache"):
             self.reset_cache()
-        if self.ctx.verbose > 0:
-            print(f"Hydrogen mode: {mode} ({self.xyz})")
+        if enabled(log, logging.INFO):
+            log.info(f"Hydrogen mode: {mode} ({self.xyz})")
         return self
 
     def use_rigid_xyz(self) -> "Model":
@@ -2381,10 +2359,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 "Polymer filter removed every atom — cannot build rigid bodies."
             )
         mobile_mask = torch.from_numpy(mobile_arr).to(device=self.device)
-        if self.ctx.verbose > 0 and int(drop.sum()) > 0:
+        if enabled(log, logging.INFO) and int(drop.sum()) > 0:
             n_water = int(is_water.sum())
             n_ion = int((is_single_atom & ~is_std & ~is_water).sum())
-            print(
+            log.info(
                 f"Rigid-body filter: {n_water} water + {n_ion} ion atoms "
                 f"held fixed ({int(drop.sum())} total of {len(drop)})."
             )
@@ -2426,11 +2404,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if hasattr(self, "reset_cache"):
             self.reset_cache()
 
-        if self.ctx.verbose > 0:
-            print(
-                f"Switched to rigid-body parametrization: {rigid_xyz} "
-                f"({rigid_xyz.n_chains} chain(s))"
-            )
+        log.info(
+            f"Switched to rigid-body parametrization: {rigid_xyz} "
+            f"({rigid_xyz.n_chains} chain(s))"
+        )
         return self
 
     def restore_xyz_from_rigid(self, commit: bool = True) -> "Model":

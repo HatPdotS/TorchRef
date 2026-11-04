@@ -86,7 +86,6 @@ def trajectory(pdb_path, mtz_path, cycles=CYCLES):
     refinement = LBFGSRefinement(
         data_file=str(mtz_path),
         pdb=str(pdb_path),
-        verbose=0,
         device=torch.device("cpu"),
     )
     history = refinement.refine_everything(macro_cycles=cycles)

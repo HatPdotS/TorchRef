@@ -158,11 +158,16 @@ class _MapSymmetryDirect(DeviceMixin):
         return indices.reshape(nx, ny, nz, 3)
 
     def _check_shape(self, density_map: torch.Tensor) -> None:
-        """Reject a map whose shape this operator was not built for."""
-        if tuple(density_map.shape) != self.map_shape:
+        """Reject a map whose grid this operator was not built for.
+
+        One leading batch axis is allowed: ``(B, nx, ny, nz)`` maps are treated map by
+        map.
+        """
+        grid = tuple(density_map.shape[-3:])
+        if density_map.ndim not in (3, 4) or grid != self.map_shape:
             raise ValueError(
                 f"Map shape {tuple(density_map.shape)} does not match the operator's "
-                f"{self.map_shape}"
+                f"{self.map_shape} (optionally with one leading batch axis)"
             )
 
     def mate(self, density_map: torch.Tensor, op_index: int) -> torch.Tensor:
@@ -171,14 +176,14 @@ class _MapSymmetryDirect(DeviceMixin):
         Parameters
         ----------
         density_map : torch.Tensor
-            Density, shape ``(nx, ny, nz)``.
+            Density, shape ``(nx, ny, nz)`` or ``(B, nx, ny, nz)``.
         op_index : int
             Operation index in ``[0, n_ops)``.
 
         Returns
         -------
         torch.Tensor
-            Shape ``(nx, ny, nz)``.
+            The input's shape.
         """
         if op_index < 0 or op_index >= self.n_ops:
             raise ValueError(
@@ -186,7 +191,7 @@ class _MapSymmetryDirect(DeviceMixin):
             )
         self._check_shape(density_map)
         ig = self._index_grid(op_index)
-        return density_map[ig[..., 0], ig[..., 1], ig[..., 2]]
+        return density_map[..., ig[..., 0], ig[..., 1], ig[..., 2]]
 
     def all_mates(self, density_map: torch.Tensor) -> torch.Tensor:
         """Every symmetry mate, stacked.
@@ -194,12 +199,12 @@ class _MapSymmetryDirect(DeviceMixin):
         Parameters
         ----------
         density_map : torch.Tensor
-            Density, shape ``(nx, ny, nz)``.
+            Density, shape ``(nx, ny, nz)`` or ``(B, nx, ny, nz)``.
 
         Returns
         -------
         torch.Tensor
-            Shape ``(n_ops, nx, ny, nz)``.
+            Shape ``(n_ops, nx, ny, nz)``, or ``(n_ops, B, nx, ny, nz)`` for a batch.
         """
         self._check_shape(density_map)
         return torch.stack(
@@ -214,14 +219,14 @@ class _MapSymmetryDirect(DeviceMixin):
         Parameters
         ----------
         density_map : torch.Tensor
-            Density, shape ``(nx, ny, nz)``.
+            Density, shape ``(nx, ny, nz)`` or ``(B, nx, ny, nz)``.
         combine : {'sum', 'max'}, default 'sum'
             Reduction across mates.
 
         Returns
         -------
         torch.Tensor
-            Shape ``(nx, ny, nz)``.
+            The input's shape.
 
         Notes
         -----

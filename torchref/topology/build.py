@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
+from torchref._logging import get_logger
 from torchref.base.targets._common import torsions_from_xyz
 from torchref.config import get_float_dtype, get_int_dtype
 from torchref.topology.builders import (
@@ -41,6 +42,8 @@ from torchref.topology.residue_graph import (
 from torchref.topology.restraint_sets import to_tensor
 from torchref.topology.templates import resolve_template_keys
 from torchref.topology.topology import Topology
+
+log = get_logger(__name__)
 
 #: Initial size of the matcher work arrays, grown on demand.
 _WORK = 64
@@ -465,7 +468,6 @@ def _match_intra_planes(
 def _inter_residue_edges(
     residues: PeptideResidues,
     link_dict: Optional[Dict],
-    verbose: int,
 ) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, Dict], Dict[str, Dict]]:
     """Peptide edges, their values, and the Ramachandran pairing, from the builders.
 
@@ -539,13 +541,13 @@ def _inter_residue_edges(
         ("bond", InterResidueBondBuilder),
         ("angle", InterResidueAngleBuilder),
     ):
-        group = joined(per_link(builder(verbose=verbose)))
+        group = joined(per_link(builder()))
         if group is not None:
             indices[edge_type]["peptide"], values[edge_type]["peptide"] = group
 
     # One TRANS pass: the PTRANS torsions are the same, and the Ramachandran pairing
     # needs each residue's phi and psi from a single pass.
-    tors = InterResidueTorsionBuilder(verbose=verbose).build(residues, trans, cpu)
+    tors = InterResidueTorsionBuilder().build(residues, trans, cpu)
     if tors:
         for origin in ("phi", "psi", "omega"):
             if origin in tors:
@@ -555,7 +557,7 @@ def _inter_residue_edges(
         if "ramachandran" in tors:
             extras["ramachandran"] = tors["ramachandran"]
 
-    planes = [g for g in per_link(InterResiduePlaneBuilder(verbose=verbose)) if g]
+    planes = [g for g in per_link(InterResiduePlaneBuilder()) if g]
     for key in sorted({key for group in planes for key in group}):
         indices["plane"][key], values["plane"][key] = joined(
             [group.get(key) for group in planes]
@@ -585,7 +587,6 @@ def _disulfide_edges(
     residue_of_row: Dict[int, int],
     pairs: Sequence[Tuple[int, int]],
     link_dict: Optional[Dict],
-    verbose: int,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict[str, np.ndarray]]]:
     """Bond, angle and torsion edges for the detected disulfide links, with values.
 
@@ -617,9 +618,9 @@ def _disulfide_edges(
     sigma = float(sg_sg["sigma"].values[0])
 
     cpu = torch.device("cpu")
-    bond_builder = InterResidueBondBuilder(verbose=verbose)
-    angle_builder = InterResidueAngleBuilder(verbose=verbose)
-    torsion_builder = InterResidueTorsionBuilder(verbose=verbose)
+    bond_builder = InterResidueBondBuilder()
+    angle_builder = InterResidueAngleBuilder()
+    torsion_builder = InterResidueTorsionBuilder()
 
     for row_a, row_b in pairs:
         bond_builder.process_disulfide_bond(int(row_a), int(row_b), length, sigma)
@@ -651,6 +652,64 @@ def _disulfide_edges(
             if prop != "indices" and tensor is not None
         }
     return out, values
+
+
+#: C-beta dihedral targets in degrees, ``(N-C-CA-CB, C-N-CA-CB)``, for L residues. These
+#: are the ideal-CB constructions MolProbity's C-beta deviation is measured against, so
+#: restraining them restrains that deviation directly.
+_CBETA_TARGETS = {
+    "ALA": (122.9, -122.6),
+    "PRO": (115.1, -120.7),
+    "VAL": (123.4, -122.0),
+    "THR": (123.4, -122.0),
+    "ILE": (123.4, -122.0),
+}
+_CBETA_DEFAULT = (122.8, -122.6)
+#: Sigma of both C-beta dihedrals, in degrees.
+_CBETA_SIGMA = 2.5
+
+
+def _cbeta_edges(
+    cols: Dict[str, np.ndarray], nodes: Dict[str, np.ndarray], xyz: np.ndarray
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """C-beta dihedral restraints: ``N-C-CA-CB`` and ``C-N-CA-CB`` per conformer.
+
+    The library angles at CA leave CB free to tilt within the N-CA-C plane, which the
+    chiral volume cannot see; these two dihedrals fix that tilt. Emitted wherever a
+    conformer has N, CA, C and CB, CA-C is bonded (< 2 Å) and the CA volume is
+    L-handed in ``xyz`` (Cartesian, Å), so D residues and misbuilt centres are left to
+    the chiral restraint.
+    """
+    rows, refs = [], []
+    for r in range(len(nodes["atom_start"])):
+        start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
+        target = _CBETA_TARGETS.get(str(nodes["resname"][r]), _CBETA_DEFAULT)
+        for names, indices in _conformers(cols, start, end):
+            at = {}
+            for want in ("N", "CA", "C", "CB"):
+                hit = np.flatnonzero(names == want)
+                if len(hit) != 1:
+                    break
+                at[want] = int(indices[hit[0]])
+            else:
+                n, ca, c, cb = (xyz[at[k]] for k in ("N", "CA", "C", "CB"))
+                if np.linalg.norm(c - ca) > 2.0:
+                    continue
+                if np.dot(n - ca, np.cross(c - ca, cb - ca)) <= 0:
+                    continue
+                rows.append((at["N"], at["C"], at["CA"], at["CB"]))
+                rows.append((at["C"], at["N"], at["CA"], at["CB"]))
+                refs.extend(target)
+    if not rows:
+        return np.zeros((0, 4), dtype=np.int64), {}
+    rows = np.asarray(rows, dtype=np.int64)
+    rows, keep = np.unique(rows, axis=0, return_index=True)
+    references = np.asarray(refs, dtype=np.float64)[keep]
+    return rows, {
+        "references": references,
+        "sigmas": np.full(len(rows), _CBETA_SIGMA),
+        "periods": np.ones(len(rows), dtype=np.int64),
+    }
 
 
 def _lookup_link_atom(
@@ -696,7 +755,6 @@ def _link_record_edges(
     topology: Topology,
     links,
     linked_bonds: Sequence[np.ndarray],
-    verbose: int,
 ) -> Tuple[np.ndarray, List[Tuple[int, int]], Dict[str, np.ndarray]]:
     """Bond edges for the accepted ``LINK`` records, and the atom pairs they join.
 
@@ -765,8 +823,8 @@ def _link_record_edges(
         usable = isinstance(length, (int, float)) and length == length and length > 0
         lengths.append(float(length) if usable else 1.5)
 
-    if verbose > 1 and n_unresolved:
-        print(f"{n_unresolved} LINK records did not resolve to a pair of atoms")
+    if n_unresolved:
+        log.debug(f"{n_unresolved} LINK records did not resolve to a pair of atoms")
     if not rows:
         return np.zeros((0, 2), dtype=np.int64), [], {}
     values = {
@@ -861,7 +919,6 @@ def build_topology(
     link_list=None,
     links=None,
     device=None,
-    verbose: int = 0,
 ) -> Topology:
     """Build a topology, discarding the restraint values built along the way.
 
@@ -876,7 +933,6 @@ def build_topology(
         link_list=link_list,
         links=links,
         device=device,
-        verbose=verbose,
     )
     return topology
 
@@ -889,7 +945,6 @@ def build_topology_with_values(
     link_list=None,
     links=None,
     device=None,
-    verbose: int = 0,
 ) -> Tuple[Topology, Dict[str, Dict], Dict[str, Dict]]:
     """Connect a node-only topology against the restraint dictionaries.
 
@@ -914,8 +969,6 @@ def build_topology_with_values(
         bond edge.
     device : torch.device, optional
         Where to place the edge blocks.
-    verbose : int, default 0
-        Verbosity level.
 
     Returns
     -------
@@ -948,23 +1001,20 @@ def build_topology_with_values(
         cols, nodes, peptide_pairs
     )
     comp_dict, chemical_keys = resolve_template_keys(
-        chemical_nodes["resname"], chemical_pairs, cif_dict, link_list, verbose=verbose
+        chemical_nodes["resname"], chemical_pairs, cif_dict, link_list
     )
     template_key = np.asarray(nodes["resname"], dtype=object).copy()
     _, first_variant = np.unique(owners, return_index=True)
     template_key[:] = chemical_keys[first_variant]
     pp_cif = PreprocessedCIF(comp_dict)
-    if verbose > 1:
-        reported = set()
-        for key, skipped in pp_cif.skipped_torsions.items():
-            resname = key.split(":", 1)[0]
-            if resname in reported:
-                continue
-            reported.add(resname)
-            reasons = "; ".join(
-                f"{why}: {', '.join(ids)}" for why, ids in skipped.items()
-            )
-            print(f"{resname}: dictionary torsions not restrained ({reasons})")
+    reported = set()
+    for key, skipped in pp_cif.skipped_torsions.items():
+        resname = key.split(":", 1)[0]
+        if resname in reported:
+            continue
+        reported.add(resname)
+        reasons = "; ".join(f"{why}: {', '.join(ids)}" for why, ids in skipped.items())
+        log.debug(f"{resname}: dictionary torsions not restrained ({reasons})")
     match_cols["name"] = match_cols["name"].copy()
     # PDB terminal H1 is the monomer dictionary's H. Resolve the alias only
     # for matching, preserving the model's atom names and row identities.
@@ -1004,7 +1054,6 @@ def build_topology_with_values(
     inter, inter_values, extras = _inter_residue_edges(
         PeptideResidues(topology, peptide_pairs, xyz.detach().cpu().numpy()),
         link_dict,
-        verbose,
     )
 
     residue_of_row = {}
@@ -1015,7 +1064,11 @@ def build_topology_with_values(
     sg_rows = [row for row in range(len(cols["name"])) if cols["name"][row] == "SG"]
     disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz, cols["altloc"])
     disulfide, disulfide_values = _disulfide_edges(
-        topology, residue_of_row, disulfide_pairs, link_dict, verbose
+        topology, residue_of_row, disulfide_pairs, link_dict
+    )
+
+    cbeta, cbeta_values = _cbeta_edges(
+        match_cols, chemical_nodes, xyz.detach().cpu().numpy()
     )
 
     link_edges, link_atom_pairs, link_values = _link_record_edges(
@@ -1026,7 +1079,6 @@ def build_topology_with_values(
             for bonds in (inter["bond"].get("peptide"), disulfide.get("bond"))
             if bonds is not None
         ],
-        verbose,
     )
 
     # LINK edges carry ``index`` values, so lift them through that column.
@@ -1126,10 +1178,15 @@ def build_topology_with_values(
         device,
     )
     torsion_block, torsion_values = _block_with_values(
-        _origins(intra["torsions"], inter["torsion"], disulfide.get("torsion")),
+        _origins(
+            intra["torsions"],
+            {**inter["torsion"], "cbeta": cbeta},
+            disulfide.get("torsion"),
+        ),
         {
             "intra": intra_values["torsions"],
             **inter_values["torsion"],
+            "cbeta": cbeta_values,
             "disulfide": disulfide_values.get("torsion", {}),
         },
         4,

@@ -27,11 +27,11 @@ def _targets(dc, mc, scaler):
     )
 
     return {
-        "difference": CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0),
+        "difference": CollectionDifferenceTarget(dc, mc, scaler=scaler),
         "difference_i": CollectionDifferenceIntensityTarget(
-            dc, mc, scaler=scaler, verbose=0
+            dc, mc, scaler=scaler
         ),
-        "ml": CollectionMLTarget(dc, mc, scaler=scaler, verbose=0),
+        "ml": CollectionMLTarget(dc, mc, scaler=scaler),
     }
 
 
@@ -67,7 +67,7 @@ class TestSubsetSelectionIsThreeWay:
 
         dc, mc, scaler = collection
         target = CollectionDifferenceTarget(
-            dc, mc, scaler=scaler, use_set=use_set, verbose=0
+            dc, mc, scaler=scaler, use_set=use_set
         )
         assert target.use_set == use_set
         n = target._n_reflections()
@@ -87,13 +87,13 @@ class TestLossesAreSummedNotAveraged:
         from torchref.refinement.targets import CollectionMLTarget
 
         dc, mc, scaler = collection
-        target_before = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
+        target_before = CollectionMLTarget(dc, mc, scaler=scaler)
         n_before = len(target_before._keys())
         one = target_before.forward().item()
 
         dc.add_dataset("light2", loaded_reflection_data)
         mc.add_timepoint("light2", mc["light"].fractions.detach().tolist())
-        target_after = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
+        target_after = CollectionMLTarget(dc, mc, scaler=scaler)
         n_after = len(target_after._keys())
         two = target_after.forward().item()
 

@@ -14,7 +14,7 @@ from torchref.refinement.targets.adp import ADPLocalityTarget
 
 @pytest.mark.unit
 def test_maintenance_rebuilds_the_neighbour_list_after_a_step(pdb_dir):
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     target = ADPLocalityTarget(model)
     target()
@@ -42,7 +42,7 @@ def test_maintenance_rebuilds_the_neighbour_list_after_a_step(pdb_dir):
 
 @pytest.mark.unit
 def test_k_neighbors_setter_rebuilds_the_neighbour_list(pdb_dir):
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     target = ADPLocalityTarget(model)
     target.stats()

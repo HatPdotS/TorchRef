@@ -19,7 +19,7 @@ pytestmark = pytest.mark.openmm
 @pytest.fixture(scope="module")
 def protein(pdb_dir):
     model = (
-        Model(verbose=0, device="cpu", hydrogens="add")
+        Model(device="cpu", hydrogens="add")
         .load_pdb(str(pdb_dir / "7L84.pdb"))
         .strip_altlocs()
     )
@@ -36,7 +36,7 @@ def adapter(protein):
 @pytest.fixture(scope="module")
 def waters(pdb_dir):
     """Two nearby deposited waters with TorchRef-generated rotating hydrogens."""
-    model = Model(verbose=0, device="cpu").load_pdb(str(pdb_dir / "1DAW.pdb"))
+    model = Model(device="cpu").load_pdb(str(pdb_dir / "1DAW.pdb"))
     table = model.to_dataframe()
     water = table[table.resname.str.strip().eq("HOH")]
     coords = water[["x", "y", "z"]].to_numpy()
@@ -174,7 +174,7 @@ def test_minimize_lowers_the_energy_and_keeps_shape(waters):
 
 def test_heavy_atom_model_is_rejected_before_openmm(pdb_dir):
     model = (
-        Model(verbose=0, device="cpu", hydrogens="strip")
+        Model(device="cpu", hydrogens="strip")
         .load_pdb(str(pdb_dir / "7L84.pdb"))
         .strip_altlocs()
     )
@@ -213,7 +213,7 @@ def test_float64_configuration_is_kept(pdb_dir, double_cpu):
     from torchref.config import get_default_device, get_float_dtype
     from torchref.experimental.targets.amber_target import AmberTarget
 
-    model = Model(verbose=0, hydrogens="add").load_pdb(str(pdb_dir / "7L84.pdb"))
+    model = Model(hydrogens="add").load_pdb(str(pdb_dir / "7L84.pdb"))
     model = model.strip_altlocs()
     assert model.xyz().dtype == get_float_dtype() == torch.float64
     for layout, nonbonded in (

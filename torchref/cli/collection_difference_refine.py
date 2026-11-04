@@ -27,11 +27,13 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import logging
 import sys
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from torchref._logging import enabled, get_logger, quiet
 from torchref.cli._choices import DEFAULT_DED_WEIGHT_SCHEME
 from torchref.cli._common import (
     add_all_columns_arg,
@@ -45,6 +47,7 @@ from torchref.cli._common import (
     add_weights_arg,
     apply_metadata_args,
     build_dual_column_names,
+    configure_logging,
     configure_unbuffered_output,
     difference_config_from_args,
     intensity_difference,
@@ -61,6 +64,10 @@ if TYPE_CHECKING:
     import torch
 
 configure_unbuffered_output()
+
+# Named, not __name__: run as a script or with -m, this module is __main__, outside
+# the torchref logger the CLI configures.
+log = get_logger("torchref.cli.collection_difference_refine")
 
 # ---------------------------------------------------------------------------
 # Default target weights
@@ -94,16 +101,12 @@ DEFAULT_TARGET_WEIGHTS = {
 # ---------------------------------------------------------------------------
 
 
-def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min, device, verbose):
+def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min, device):
     """Load models and create a ModelCollection."""
     from torchref.model.model_collection import ModelCollection
 
-    model_dark = load_model(
-        pdb_dark, max_res=d_min, device=device, verbose=verbose, cif=cif,
-    )
-    model_light = load_model(
-        pdb_light, max_res=d_min, device=device, verbose=verbose, cif=cif,
-    )
+    model_dark = load_model(pdb_dark, max_res=d_min, device=device, cif=cif)
+    model_light = load_model(pdb_light, max_res=d_min, device=device, cif=cif)
 
     mc = ModelCollection([model_dark, model_light], dark_key="dark")
     mc.add_dark()
@@ -133,7 +136,7 @@ def setup_dataset_collection(sf_dark, sf_light, d_min, device, column_names_dark
     return dc
 
 
-def setup_scaler(dataset_collection, model_collection, device, verbose=1):
+def setup_scaler(dataset_collection, model_collection, device):
     """Create a CollectionScaler with per-component solvent models."""
     from torchref.scaling import CollectionScaler
 
@@ -141,7 +144,6 @@ def setup_scaler(dataset_collection, model_collection, device, verbose=1):
         dataset_collection=dataset_collection,
         model_collection=model_collection,
         device=device,
-        verbose=verbose,
     )
     scaler.initialize()
     scaler.screen_solvent_params_joint()
@@ -149,7 +151,7 @@ def setup_scaler(dataset_collection, model_collection, device, verbose=1):
     return scaler
 
 
-def setup_dark_scaler(model_dark, data_dark, device, verbose):
+def setup_dark_scaler(model_dark, data_dark, device):
     """Scale the dark model alone against the dark data; the difference map's phases.
 
     The difference amplitude ``|Fo_light| - |Fo_dark|`` is already on one scale
@@ -161,7 +163,7 @@ def setup_dark_scaler(model_dark, data_dark, device, verbose):
     """
     from torchref import Scaler
 
-    scaler = Scaler(model_dark, data_dark, device=device, verbose=max(-1, verbose - 1))
+    scaler = Scaler(model_dark, data_dark, device=device)
     scaler.initialize().refine_lbfgs()
     return scaler
 
@@ -267,7 +269,7 @@ def setup_loss_state(
         from torchref.refinement.targets import CollectionTwoMomentIntensityTarget
 
         two_moment_target = CollectionTwoMomentIntensityTarget(
-            dataset_collection, model_collection, scaler=scaler, verbose=1,
+            dataset_collection, model_collection, scaler=scaler,
         )
         # Match intensity and amplitude gradient norms to balance the targets
         # against the geometry restraints despite their different units.
@@ -622,7 +624,6 @@ def _extrapolation_columns(
     ctx,
     rfree_flags_masked,
     snr_est,
-    verbose=1,
 ):
     """Extrapolated light-state amplitudes and the maps to view them in.
 
@@ -657,13 +658,14 @@ def _extrapolation_columns(
 
     def _fit(amp, sig):
         """Rescale the light model against one set of extrapolated amplitudes."""
-        data = ReflectionData.from_tensors(
-            hkl=hkl, F=amp, F_sigma=sig,
-            cell=data_light.cell, spacegroup=data_light.spacegroup,
-            rfree_flags=rfree_flags_masked, device=str(hkl.device), verbose=0,
-        )
-        sc = Scaler(mc.base_models[1], data, device=hkl.device, verbose=-1)
-        sc.initialize().refine_lbfgs()
+        with quiet():
+            data = ReflectionData.from_tensors(
+                hkl=hkl, F=amp, F_sigma=sig,
+                cell=data_light.cell, spacegroup=data_light.spacegroup,
+                rfree_flags=rfree_flags_masked, device=str(hkl.device),
+            )
+            sc = Scaler(mc.base_models[1], data, device=hkl.device)
+            sc.initialize().refine_lbfgs()
         return data, sc(mc.base_models[1](hkl))
 
     # The propagated sigma of the unshrunk extrapolations.
@@ -713,20 +715,19 @@ def _extrapolation_columns(
             map_label: (_np(2 * amp - amp_calc), "F"),
             phase_label: (_np(torch.angle(F_calc).rad2deg()), "P"),
         })
-        if verbose > 0:
-            print(f"  {name} extrapolation R:", rfactor_work_free(data, amp_calc))
-    if verbose > 0:
-        print(
-            f"  Shrinkage: SNR from {source} differences, "
-            f"mean w(h) = {w_shrinkage.mean().item():.3f}, "
-            f"min w(h) = {w_shrinkage.min().item():.3g}"
-        )
+        if enabled(log, logging.INFO):
+            log.info(f"  {name} extrapolation R: {rfactor_work_free(data, amp_calc)}")
 
     diagnostics = {
         "shrinkage_source": source,
         "w_shrinkage_mean": float(w_shrinkage.mean().item()),
         "w_shrinkage_min": float(w_shrinkage.min().item()),
     }
+    log.info(
+        f"  Shrinkage: SNR from {source} differences, "
+        f"mean w(h) = {diagnostics['w_shrinkage_mean']:.3f}, "
+        f"min w(h) = {diagnostics['w_shrinkage_min']:.3g}"
+    )
     return columns, diagnostics
 
 
@@ -802,7 +803,6 @@ def write_results_mtz(
     mc=None,
     joint_scaler=None,
     all_columns=False,
-    verbose=1,
     ded_weight=DEFAULT_DED_WEIGHT_SCHEME,
     difference_config=None,
     program="difference-refine",
@@ -834,8 +834,6 @@ def write_results_mtz(
         Scales ``mc`` against both datasets; required with ``mc``.
     all_columns : bool
         Also write the alternatives within each layer.
-    verbose : int
-        Verbosity level.
     ded_weight : str, optional
         Weight scheme ``DELFWT`` and the model-phased and two-moment difference columns
         carry; one of :data:`torchref.maps.ded_weights.SCHEMES`.
@@ -943,22 +941,21 @@ def write_results_mtz(
             "q": q_diag,
         }
     }
-    if verbose > 0:
-        print(f"  Difference weights: {ded_weight} (applied: {selected.applied})")
-        if "fallback_reason" in q_diag:
-            print(f"  q-weight fallback: {q_diag['fallback_reason']}")
-        else:
-            if "sigma_scale_fallback" in q_diag:
-                print(f"  q-weight sigma scale: {q_diag['sigma_scale_fallback']}")
-            k_how = "fitted" if q_diag["sigma_scale_fitted"] else "fixed"
-            print(
-                f"  q-weight fit on {q_diag['source']} differences: "
-                f"gamma = {q_diag['gamma']:.3f}, "
-                f"sigma scale k = {q_diag['sigma_scale']:.3f} ({k_how}), "
-                f"centric factor = {q_diag['centric_factor']:.3f}, "
-                f"weights {q_diag['weight_min']:.3f}-{q_diag['weight_max']:.3f} "
-                f"before normalisation"
-            )
+    log.info(f"  Difference weights: {ded_weight} (applied: {selected.applied})")
+    if "fallback_reason" in q_diag:
+        log.info(f"  q-weight fallback: {q_diag['fallback_reason']}")
+    else:
+        if "sigma_scale_fallback" in q_diag:
+            log.info(f"  q-weight sigma scale: {q_diag['sigma_scale_fallback']}")
+        k_how = "fitted" if q_diag["sigma_scale_fitted"] else "fixed"
+        log.info(
+            f"  q-weight fit on {q_diag['source']} differences: "
+            f"gamma = {q_diag['gamma']:.3f}, "
+            f"sigma scale k = {q_diag['sigma_scale']:.3f} ({k_how}), "
+            f"centric factor = {q_diag['centric_factor']:.3f}, "
+            f"weights {q_diag['weight_min']:.3f}-{q_diag['weight_max']:.3f} "
+            f"before normalisation"
+        )
 
     columns = _difference_columns(
         data_dark,
@@ -1001,7 +998,6 @@ def write_results_mtz(
             ctx=ctx,
             rfree_flags_masked=rfree_flags_masked,
             snr_est=None if isinstance(snr_est, ValueError) else snr_est,
-            verbose=verbose,
         )
         diagnostics.update(ext_diagnostics)
         columns.update(ext_cols)
@@ -1028,7 +1024,7 @@ def write_results_mtz(
     df.write_mtz(filename)
     _annotate_mtz(filename, datasets, program=program)
 
-    if verbose > 0:
+    if enabled(log, logging.INFO):
         print(f"  Results MTZ written to {filename} ({len(columns)} columns)")
         for name in dict.fromkeys(["observed", *datasets.values()]):
             print(f"    {_MTZ_DATASET_HISTORY[name]}")
@@ -1040,7 +1036,7 @@ def write_results_mtz(
     return diagnostics
 
 
-def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
+def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean):
     """Run a block of LBFGS optimisation steps via :meth:`LossState.step`.
 
     ``state.step`` handles the closure, NaN validation, and automatically
@@ -1067,10 +1063,10 @@ def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
         state.step(
             optimizer, context="collection_difference_refine.optimize_lbfgs"
         )
-        if verbose > 0:
+        if enabled(log, logging.INFO):
             with torch.no_grad():
                 loss = state.aggregate()
-                print(f"    LBFGS step {i + 1}/{nsteps}, loss: {loss.item():.4f}")
+                log.info(f"    LBFGS step {i + 1}/{nsteps}, loss: {loss.item():.4f}")
 
 
 # ---------------------------------------------------------------------------
@@ -1179,6 +1175,7 @@ Examples:
     add_general_args(parser)
 
     args = parser.parse_args()
+    configure_logging(args)
 
     import torch
 
@@ -1261,41 +1258,35 @@ Examples:
 
     device = parse_device_str(args.device)
     # --- Header ---
-    if args.verbose > 0:
-        print("=" * 72)
-        print("TorchRef Collection Difference Refinement")
-        print("=" * 72)
-        print(f"Dark model:        {args.dark_model}")
-        print(f"Light model:       {args.light_model}")
-        print(f"Dark data:         {args.dark_structure_factor}")
-        print(f"Light data:        {args.light_structure_factor}")
-        frac_mode = "refinable" if args.refine_fractions else "frozen"
-        print(f"Fractions:         dark={fractions[0]}, light={fractions[1]} ({frac_mode})")
-        if args.two_moment:
-            lam_mode = "refinable" if args.refine_lambda_twin else "fixed"
-            print(
-                f"Activation spread: lambda_twin={args.lambda_twin} ({lam_mode})"
-            )
-        print(f"Output:            {outdir}")
-        print(f"Device:            {device}")
-        if args.dmin:
-            print(f"Resolution cutoff: {args.dmin:.2f} A")
-        if args.cif:
-            print(f"CIF restraints:    {', '.join(args.cif)}")
-        print(f"Weight schedule:   {weight_schedule} x {args.n_cycles} cycles")
-        print(f"LBFGS steps/weight: {args.n_steps}  (max_iter={args.max_iter})")
-        print()
-        print("Target weights:")
-        for wk, wv in sorted(target_weights.items()):
-            print(f"  {wk}: {wv}")
-        print("=" * 72)
-        print()
-        sys.stdout.flush()
+    log.info("=" * 72)
+    log.info("TorchRef Collection Difference Refinement")
+    log.info("=" * 72)
+    log.info(f"Dark model:        {args.dark_model}")
+    log.info(f"Light model:       {args.light_model}")
+    log.info(f"Dark data:         {args.dark_structure_factor}")
+    log.info(f"Light data:        {args.light_structure_factor}")
+    frac_mode = "refinable" if args.refine_fractions else "frozen"
+    log.info(f"Fractions:         dark={fractions[0]}, light={fractions[1]} ({frac_mode})")
+    if args.two_moment:
+        lam_mode = "refinable" if args.refine_lambda_twin else "fixed"
+        log.info(f"Activation spread: lambda_twin={args.lambda_twin} ({lam_mode})")
+    log.info(f"Output:            {outdir}")
+    log.info(f"Device:            {device}")
+    if args.dmin:
+        log.info(f"Resolution cutoff: {args.dmin:.2f} A")
+    if args.cif:
+        log.info(f"CIF restraints:    {', '.join(args.cif)}")
+    log.info(f"Weight schedule:   {weight_schedule} x {args.n_cycles} cycles")
+    log.info(f"LBFGS steps/weight: {args.n_steps}  (max_iter={args.max_iter})")
+    log.info("")
+    log.info("Target weights:")
+    for wk, wv in sorted(target_weights.items()):
+        log.info(f"  {wk}: {wv}")
+    log.info("=" * 72)
+    log.info("")
 
     # --- Setup data ---
-    if args.verbose > 0:
-        print("Loading reflection data...")
-        sys.stdout.flush()
+    log.info("Loading reflection data...")
 
     col_dark, col_light = build_dual_column_names(args)
 
@@ -1310,13 +1301,10 @@ Examples:
     d_min = args.dmin or min(data_dark.d_min, data_light.d_min)
 
     # --- Setup models ---
-    if args.verbose > 0:
-        print("Setting up models...")
-        sys.stdout.flush()
+    log.info("Setting up models...")
 
     mc = setup_model_collection(
-        args.dark_model, args.light_model, fractions,
-        args.cif, d_min, device, args.verbose,
+        args.dark_model, args.light_model, fractions, args.cif, d_min, device,
     )
     dark = mc.dark_model            # _SharedMixedModel (fractions=[1, 0])
     mixed = mc["light"]             # _SharedMixedModel (fractions=[1-f, f] from --fraction)
@@ -1328,7 +1316,7 @@ Examples:
     else:
         mixed.freeze_fractions()
 
-    if args.verbose > 0:
+    if enabled(log, logging.INFO):
         # Compare R-free flags between datasets
         if data_dark.rfree_flags is not None and data_light.rfree_flags is not None:
             rfree_d = data_dark.rfree_flags.bool()
@@ -1337,26 +1325,22 @@ Examples:
             n_total = len(rfree_d)
             n_free_d = (~rfree_d).sum().item()
             n_free_l = (~rfree_l).sum().item()
-            print(f"  R-free flags: dark={n_free_d} free, light={n_free_l} free, "
-                  f"agreement={n_agree}/{n_total} ({100*n_agree/n_total:.1f}%)")
-        sys.stdout.flush()
+            log.info(f"  R-free flags: dark={n_free_d} free, light={n_free_l} free, "
+                     f"agreement={n_agree}/{n_total} ({100*n_agree/n_total:.1f}%)")
 
     # --- Setup scaler ---
-    if args.verbose > 0:
-        print("Setting up joint scaler...")
-        sys.stdout.flush()
+    log.info("Setting up joint scaler...")
 
-    scaler = setup_scaler(dc, mc, device, args.verbose)
+    scaler = setup_scaler(dc, mc, device)
 
-    if args.verbose > 0:
+    if enabled(log, logging.INFO):
         r_work_d, r_free_d = compute_rfactors(dark, data_dark, scaler)
         r_work_l, r_free_l = compute_rfactors(mixed, data_light, scaler)
         r_work_dl, r_free_dl = compute_rfactors(dark, data_light, scaler)
-        print(f"  Initial R-factor (dark  vs dark data):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
-        print(f"  Initial R-factor (mixed vs light data): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
-        print(f"  Initial R-factor (dark  vs light data): R_work={r_work_dl:.4f}  R_free={r_free_dl:.4f}")
-        print()
-        sys.stdout.flush()
+        log.info(f"  Initial R-factor (dark  vs dark data):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
+        log.info(f"  Initial R-factor (mixed vs light data): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
+        log.info(f"  Initial R-factor (dark  vs light data): R_work={r_work_dl:.4f}  R_free={r_free_dl:.4f}")
+        log.info("")
 
     # --- Setup targets ---
     if args.two_moment:
@@ -1386,11 +1370,10 @@ Examples:
         difference_config=difference_config_from_args(args),
     )
 
-    if args.verbose > 0:
-        print("Initial loss breakdown:")
+    if enabled(log, logging.INFO):
+        log.info("Initial loss breakdown:")
         state.summary()
-        print()
-        sys.stdout.flush()
+        log.info("")
 
     total_rounds = args.n_cycles * len(weight_schedule)
     round_idx = 0
@@ -1413,16 +1396,15 @@ Examples:
     for cycle in range(args.n_cycles):
         for t_weight in weight_schedule:
             round_idx += 1
-            if args.verbose > 0:
+            if enabled(log, logging.INFO):
                 frac_str = (
                     f", fractions={mixed.fractions.detach().cpu().tolist()}"
                     if args.refine_fractions else ""
                 )
-                print(
+                log.info(
                     f"[{round_idx}/{total_rounds}] cycle {cycle + 1}/"
                     f"{args.n_cycles}, diff_weight={t_weight}{frac_str}"
                 )
-                sys.stdout.flush()
 
             state.set_weights({difference_key: t_weight})
             optimize_lbfgs(
@@ -1430,18 +1412,17 @@ Examples:
                 max_iter=args.max_iter,
                 nsteps=args.n_steps,
                 n_clean=args.n_clean,
-                verbose=args.verbose,
             )
 
             # Update solvent masks and re-refine scaler jointly
             scaler.update_solvent()
-            scaler.refine_lbfgs_joint(verbose=(args.verbose > 1))
+            scaler.refine_lbfgs_joint()
 
-            if args.verbose > 0:
+            if enabled(log, logging.INFO):
                 rw_d, rf_d = compute_rfactors(dark, data_dark, scaler)
                 rw_l, rf_l = compute_rfactors(mixed, data_light, scaler)
-                print(f"  R-factor (dark):  Rwork={rw_d:.4f}, Rfree={rf_d:.4f}")
-                print(f"  R-factor (light): Rwork={rw_l:.4f}, Rfree={rf_l:.4f}")
+                log.info(f"  R-factor (dark):  Rwork={rw_d:.4f}, Rfree={rf_d:.4f}")
+                log.info(f"  R-factor (light): Rwork={rw_l:.4f}, Rfree={rf_l:.4f}")
 
             # Reset model caches after no_grad rfactor computation
             # to ensure gradients flow in the next optimisation round.
@@ -1451,7 +1432,7 @@ Examples:
             if args.refine_fractions:
                 fraction_history.append(mixed.fractions[1].detach().cpu().item())
 
-            if args.verbose > 1:
+            if enabled(log, logging.DEBUG):
                 state.summary()
                 sys.stdout.flush()
 
@@ -1606,8 +1587,7 @@ Examples:
         if args.verbose > 0:
             print(f"  Merged deposition CIF written to {merged_cif_out}")
     else:
-        if args.verbose > 0:
-            print("  Skipping merged CIF: input models contain altlocs")
+        log.warning("Skipping merged CIF: input models contain altlocs")
         merged_cif_out = None
 
     # --- Write per-dataset structure factor files (MTZ + CIF) ---
@@ -1645,12 +1625,11 @@ Examples:
     map_diagnostics = write_results_mtz(
         dc,
         model_dark,
-        setup_dark_scaler(model_dark, data_dark, device, args.verbose),
+        setup_dark_scaler(model_dark, data_dark, device),
         diff_mtz_out,
         mc=mc,
         joint_scaler=scaler,
         all_columns=args.all_columns,
-        verbose=args.verbose,
         ded_weight=args.ded_weight,
         difference_config=difference_config_from_args(args),
     )
@@ -1721,7 +1700,7 @@ Examples:
         print(f"  - {diff_mtz_out}")
         print(f"  - {summary_path}")
         print()
-        print("Done.")
+    log.info("Done.")
 
     return 0
 

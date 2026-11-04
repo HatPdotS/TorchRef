@@ -95,8 +95,7 @@ def test_field_components_are_registered_and_weighted(pdb_dir, mtz_dir, mode_set
     from torchref.refinement.lbfgs_refinement import LBFGSRefinement
 
     ref = LBFGSRefinement(
-        data_file=str(mtz_dir / "1DAW.mtz"), pdb=str(pdb_dir / "1DAW.pdb"),
-        verbose=0, adp_mode="field_aniso", adp_mode_set=mode_set,
+        data_file=str(mtz_dir / "1DAW.mtz"), pdb=str(pdb_dir / "1DAW.pdb"), adp_mode="field_aniso", adp_mode_set=mode_set,
     )
     components = set(ref.adp_target.target_losses())
     state = ref.complete_loss_state()

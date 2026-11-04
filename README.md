@@ -101,8 +101,9 @@ Questions, feature ideas and usage discussion are welcome on the [TorchRef categ
 
 If you use TorchRef in published work, please cite
 
-> Seidel, H.-P., Standfuss, J. & Weinert, T. (2026). *TorchRef: An open-source PyTorch
-> Framework for Crystallographic Refinement.* Journal of Applied Crystallography, accepted.
+> Seidel, H.-P., Standfuss, J. & Weinert, T. (2026). TorchRef: an open-source PyTorch
+> framework for crystallographic refinement. *J. Appl. Cryst.* **59**(6).
+> [https://doi.org/10.1107/S1600576726009258](https://doi.org/10.1107/S1600576726009258)
 
 The figure scripts, per-panel source data and the author accepted manuscript are in
 [HatPdotS/TorchRef-paper](https://github.com/HatPdotS/TorchRef-paper).

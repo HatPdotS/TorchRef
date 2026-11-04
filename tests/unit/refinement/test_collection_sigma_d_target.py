@@ -58,24 +58,22 @@ def target(request, loaded_reflection_data, sample_structure_pair):
         spacegroup=data.spacegroup,
         rfree_flags=data.rfree_flags,
         device=str(data.device),
-        verbose=0,
     )
     models = [
         load_model(
             str(sample_structure_pair["model"]),
             max_res=2.05,
             device=data.device,
-            verbose=0,
         )
         for _ in range(2)
     ]
     with torch.no_grad():
         models[1].xyz.refinable_params += 0.2
-    dc = DatasetCollection(device=data.device, verbose=0)
+    dc = DatasetCollection(device=data.device)
     dc.add_dataset("dark", dark, set_as_reference=True).add_dataset("light", light)
-    mc = ModelCollection(models, dark_key="dark", verbose=0)
+    mc = ModelCollection(models, dark_key="dark")
     mc.add_dark().add_timepoint("light", [0.78, 0.22])
-    scaler = CollectionScaler(dc, mc, verbose=0).initialize()
+    scaler = CollectionScaler(dc, mc).initialize()
     return dc, mc, CollectionDifferenceSigmaDTarget(dc, mc, scaler=scaler)
 
 

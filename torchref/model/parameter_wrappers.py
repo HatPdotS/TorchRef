@@ -8,16 +8,18 @@ log-space), :class:`CholeskyMixedTensor` (anisotropic U, positive-definite) and
 into one *replaces* its ``refinable_params``, which invalidates optimizer state.
 """
 
-import warnings
 from typing import Iterable, List, Mapping, Optional, Union
 
 import torch
 from torch import nn
 
+from torchref._logging import get_logger
 from torchref.base.targets.adp import U_to_matrix
 from torchref.config import get_float_dtype, get_int_dtype, normalize_device
 from torchref.utils.caching import CachedForwardMixin
 from torchref.utils.device_mixin import DeviceMixin
+
+log = get_logger(__name__)
 
 
 class _AssembleMixedTensor(torch.autograd.Function):
@@ -1171,9 +1173,8 @@ class OccupancyTensor(MixedTensor):
                 n_out = int(
                     (torch.sum(initial_values < 0) + torch.sum(initial_values > 1)).item()
                 )
-                warnings.warn(
-                    f"{n_out} occupancy value(s) outside [0, 1]; clamping to range.",
-                    stacklevel=2,
+                log.warning(
+                    f"{n_out} occupancy value(s) outside [0, 1]; clamping to range."
                 )
                 initial_values = torch.clamp(initial_values, min=0.0, max=1.0)
 

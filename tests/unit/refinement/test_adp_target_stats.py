@@ -22,7 +22,7 @@ from torchref.refinement.targets.adp import (
 @pytest.fixture(scope="module")
 def aniso_model(pdb_dir):
     """1DAW made anisotropic, with the U tensors stepped away from the initial B."""
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     model.set_adp_mode("anisotropic")
     params = model.u.refinable_params

@@ -50,8 +50,6 @@ class XrayTarget(DataTarget):
     use_set : str, optional
         Canonical 3-way subset selector, ``"work"``/``"free"``/``"val"``. Takes
         precedence over ``use_work_set``; if None, derived from it.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     sigma_a : SigmaAConfig, optional
         Model-error estimator configuration. Carried by every x-ray target so the
         factory has one construction call for all taxonomy rows, but read only by
@@ -66,14 +64,13 @@ class XrayTarget(DataTarget):
         model: "Model" = None,
         scaler: "Scaler" = None,
         use_work_set: bool = True,
-        verbose: int = 0,
         use_set: str = None,
         device=None,
         sigma_a=None,
     ):
         """Initialize X-ray target; see the class docstring for parameters."""
         super().__init__(
-            data=data, model=model, scaler=scaler, verbose=verbose, device=device
+            data=data, model=model, scaler=scaler, device=device
         )
         # ``use_set`` is canonical and the legacy ``use_work_set`` bool maps onto
         # it. Keep BOTH consistent below: ``get_data`` reads ``use_set`` while some

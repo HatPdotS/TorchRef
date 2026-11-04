@@ -29,7 +29,7 @@ def scaler(model_and_data):
     from torchref.scaling.scaler import Scaler
 
     return Scaler(
-        model_and_data["model"], model_and_data["data"], nbins=10, verbose=0
+        model_and_data["model"], model_and_data["data"], nbins=10
     )
 
 
@@ -49,7 +49,7 @@ def test_single_coefficient_is_one_global_scale(model_and_data):
 
     sc = Scaler(
         model_and_data["model"], model_and_data["data"], nbins=10,
-        n_iso_coeff=1, verbose=0,
+        n_iso_coeff=1,
     )
     sc.calc_initial_scale(_fake_fcalc(sc))
     assert sc.c_iso.shape == (1,)
@@ -148,7 +148,7 @@ def test_n_iso_coeff_survives_a_state_dict_round_trip(scaler):
     state = scaler.state_dict()
     assert state["n_iso_coeff"] == scaler.n_iso_coeff
 
-    fresh = Scaler(verbose=0)
+    fresh = Scaler()
     fresh.set_data(scaler._data)
     fresh.c_iso = torch.nn.Parameter(torch.zeros_like(scaler.c_iso))
     fresh.load_state_dict(state, strict=False)

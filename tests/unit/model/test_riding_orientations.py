@@ -15,7 +15,7 @@ def oriented_model(pdb_dir):
     """A deposited protein with explicitly generated protein and water hydrogens."""
     with torch.random.fork_rng():
         torch.manual_seed(19)
-        model = Model(verbose=0, device="cpu", hydrogens="add")
+        model = Model(device="cpu", hydrogens="add")
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     model.set_hydrogen_mode("riding")
     return model
@@ -153,7 +153,7 @@ def test_xyz_optimizer_receives_and_updates_orientations(two_groups):
     w = two_groups
     w.fix_all()
     w.refine(w.h_row)
-    model = Model(device="cpu", verbose=0)
+    model = Model(device="cpu")
     model.xyz = w
     leaves = model.parameters_of_types(("xyz",))
     assert {id(p) for p in leaves} == {id(p) for p in w.optimization_parameters()}

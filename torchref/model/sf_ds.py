@@ -46,8 +46,6 @@ class SfDS(DeviceMovementMixin, nn.Module):
     device : torch.device, optional
         Computation device. Defaults to the cell's device when the context has one,
         else the configured default device.
-    verbose : int, optional
-        Verbosity level for logging. Default is 0.
     max_memory_gb : float, optional
         Maximum memory to use for intermediate tensors in GB. Default is 2.0.
         Set to None to disable batching.
@@ -82,7 +80,6 @@ class SfDS(DeviceMovementMixin, nn.Module):
         *,
         dtype_float: torch.dtype = None,
         device: torch.device = None,
-        verbose: int = 0,
         max_memory_gb: float = 2.0,
         force_portable: Optional[bool] = None,
     ):
@@ -96,7 +93,6 @@ class SfDS(DeviceMovementMixin, nn.Module):
         if device is not None:
             ctx.to(device)
         self.device = resolve_device(ctx.cell, device=device)
-        self.verbose = verbose
         self.max_memory_gb = max_memory_gb
         self.force_portable = force_portable
 

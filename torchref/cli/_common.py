@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
+from torchref._logging import get_logger
+
 if TYPE_CHECKING:
     # Annotation-only: importing torch and the models here would slow every --help.
     import torch
@@ -19,6 +21,8 @@ if TYPE_CHECKING:
     from torchref.io.datasets.reflection_data import ReflectionData
     from torchref.io.metadata import RefinementMetadata
     from torchref.model.model_ft import ModelFT
+
+log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -67,15 +71,47 @@ def add_device_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_verbose_arg(parser: argparse.ArgumentParser) -> None:
-    """Add ``-v`` / ``--verbose`` argument."""
-    parser.add_argument(
+    """Add ``-v`` / ``--verbose`` and ``-q`` / ``--quiet``, both setting ``verbose``."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "-v",
         "--verbose",
         type=int,
         default=1,
-        choices=[0, 1, 2],
-        help="Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)",
+        choices=[0, 1, 2, 3],
+        help="Verbosity level: 0=warnings only, 1=progress, 2=detailed, 3=trace "
+        "(default: 1)",
     )
+    group.add_argument(
+        "-q",
+        "--quiet",
+        dest="verbose",
+        action="store_const",
+        const=0,
+        help="Quiet: same as -v 0",
+    )
+
+
+def add_log_file_arg(parser: argparse.ArgumentParser) -> None:
+    """Add ``--log-file``."""
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Also write every log message at the chosen verbosity to PATH",
+    )
+
+
+def configure_logging(args: argparse.Namespace) -> None:
+    """Route TorchRef logging for this run from ``-v``/``-q`` and ``--log-file``.
+
+    Call right after ``parse_args()``: progress goes to stdout, warnings and errors to
+    stderr (:func:`torchref._logging.configure_cli`).
+    """
+    from torchref._logging import configure_cli
+
+    configure_cli(args.verbose, log_file=getattr(args, "log_file", None))
 
 
 def add_outdir_arg(
@@ -562,10 +598,11 @@ def apply_metadata_args(
 
 
 def add_general_args(parser: argparse.ArgumentParser) -> None:
-    """Add a *General* argument group with ``--device`` and ``-v``/``--verbose``."""
+    """Add a *General* group: ``--device``, ``-v``/``-q`` and ``--log-file``."""
     gen = parser.add_argument_group("General")
     add_device_arg(gen)
     add_verbose_arg(gen)
+    add_log_file_arg(gen)
 
 
 def add_n_cycles_arg(
@@ -627,10 +664,7 @@ def parse_device_str(device_str: str) -> "torch.device":
     try:
         device_config.current = device_str
     except (RuntimeError, ValueError) as exc:
-        print(
-            f"Warning: {exc} Falling back to CPU.",
-            file=sys.stderr,
-        )
+        log.warning(f"{exc} Falling back to CPU.")
         device_config.current = "cpu"
     return device_config.current
 
@@ -813,7 +847,6 @@ def load_model(
     path: str,
     max_res: Optional[float] = None,
     device: Union[str, "torch.device", None] = None,
-    verbose: int = 0,
     cif: Optional[Union[str, List[str]]] = None,
     hydrogens: str = "keep",
     hydrogen_mode: str = "atoms",
@@ -829,8 +862,6 @@ def load_model(
         Resolution limit for FFT grid setup.
     device : str or torch.device
         Target device.
-    verbose : int
-        Verbosity passed to ModelFT.
     cif : str or list of str, optional
         CIF restraint file(s), registered on the model before it loads so that hydrogen
         generation and the restraints read the same dictionary.
@@ -852,7 +883,6 @@ def load_model(
     model = ModelFT(
         max_res=max_res,
         device=device,
-        verbose=verbose,
         cif_path=cif,
         hydrogens=hydrogens,
         hydrogen_mode=hydrogen_mode,
@@ -870,7 +900,6 @@ def load_reflection_data(
     path: str,
     device: Union[str, "torch.device", None] = None,
     column_names: Optional[Dict[str, str]] = None,
-    verbose: int = 0,
 ) -> "ReflectionData":
     """Load reflection data from MTZ or CIF, auto-detected by extension.
 
@@ -882,8 +911,6 @@ def load_reflection_data(
         Target device.
     column_names : dict, optional
         Column name overrides (``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``); MTZ only.
-    verbose : int
-        Verbosity passed to ReflectionData.
 
     Returns
     -------
@@ -893,7 +920,7 @@ def load_reflection_data(
     from torchref.config import normalize_device
 
     device = normalize_device(device)
-    data = ReflectionData(device=str(device), verbose=verbose)
+    data = ReflectionData(device=str(device))
     suffix = Path(path).suffix.lower()
     if suffix in (".cif",):
         data.load_cif(path)
@@ -921,7 +948,6 @@ def write_refinement_outputs(
     refinement,
     outdir: Path,
     args,
-    verbose: int = 1,
 ) -> dict:
     """Write refined structure in the requested format(s) with metadata.
 
@@ -933,9 +959,7 @@ def write_refinement_outputs(
         Output directory.
     args : argparse.Namespace
         Parsed CLI arguments (expects ``output_format``, ``title``,
-        ``authors``, ``no_header``).
-    verbose : int
-        Verbosity level.
+        ``authors``, ``no_header``, ``verbose``).
 
     Returns
     -------
@@ -996,7 +1020,7 @@ def write_refinement_outputs(
         # header when given None, and None here is --no-header.
         refinement.model.write_pdb(str(output_pdb), metadata=metadata)
         outputs["pdb"] = output_pdb
-        if verbose > 0:
+        if getattr(args, "verbose", 1) > 0:
             print(f"  Refined structure (PDB): {output_pdb}")
             sys.stdout.flush()
 
@@ -1004,7 +1028,7 @@ def write_refinement_outputs(
         output_cif = outdir / "refined.cif"
         refinement.model.write_cif(str(output_cif), metadata=metadata)
         outputs["cif"] = output_cif
-        if verbose > 0:
+        if getattr(args, "verbose", 1) > 0:
             print(f"  Refined structure (mmCIF): {output_cif}")
             sys.stdout.flush()
 

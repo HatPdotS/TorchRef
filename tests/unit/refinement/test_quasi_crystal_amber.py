@@ -45,7 +45,7 @@ def small_setup():
     3GR5 carries SO4 (net charge -2 from its dictionary) that antechamber
     parameterises with Gasteiger charges.
     """
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(TEST_MTZ_AMBER)
     ens = EnsembleModel.from_single(
         TEST_PDB_AMBER,
@@ -53,7 +53,6 @@ def small_setup():
         perturb_sigma=0.01,
         b_const=5.0,
         seed=0,
-        verbose=0,
         hydrogens="add",
     )
     ens.cell = data.cell
@@ -70,7 +69,6 @@ def test_construction_succeeds_n_disorder_1(small_setup):
         spacegroup=data.spacegroup,
         n_disorder=1,
         charge_method="gas",
-        verbose=0,
     )
     assert target._n_members == 12
     assert target._n_sym == 12
@@ -93,7 +91,6 @@ def test_n_members_must_match_layout(small_setup):
             spacegroup=data.spacegroup,
             n_disorder=2,  # would need n_members=24; ens has 12
                 charge_method="gas",
-            verbose=0,
         )
 
 
@@ -106,7 +103,6 @@ def test_construction_pme_box_matches_supercell(small_setup):
         spacegroup=data.spacegroup,
         n_disorder=1,
         charge_method="gas",
-        verbose=0,
     )
     import openmm.unit as u_omm
 
@@ -136,7 +132,6 @@ def test_forward_returns_finite_energy_with_gradient(small_setup):
         spacegroup=data.spacegroup,
         n_disorder=1,
         charge_method="gas",
-        verbose=0,
     )
     ens.xyz.refinable_params.grad = None
     energy = target.forward()
@@ -167,12 +162,12 @@ def test_forward_per_asu_normalization(small_setup):
     target_per_asu = QuasiCrystalAmberTarget(
         model=ens, cell=data.cell, spacegroup=data.spacegroup,
         n_disorder=1, charge_method="gas",
-        normalize_per_asu=True, verbose=0,
+        normalize_per_asu=True,
     )
     target_total = QuasiCrystalAmberTarget(
         model=ens, cell=data.cell, spacegroup=data.spacegroup,
         n_disorder=1, charge_method="gas",
-        normalize_per_asu=False, verbose=0,
+        normalize_per_asu=False,
     )
     with torch.no_grad():
         e_per_asu = float(target_per_asu.forward())
@@ -197,7 +192,6 @@ def test_altloc_stripping_at_ensemble_creation():
         perturb_sigma=0.0,
         b_const=5.0,
         seed=0,
-        verbose=0,
     )
     altloc = ens._pdb_single["altloc"].astype(str).str.strip()
     # No row should carry a non-blank altloc after stripping.

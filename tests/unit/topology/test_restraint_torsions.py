@@ -19,7 +19,7 @@ _SUGARS = ("NAG", "MAN", "BMA")
 
 
 def _deposited(path):
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(path))
     return model.xyz().detach(), model.restraints
 
@@ -219,7 +219,7 @@ def _library_component(code):
     from torchref.topology.monomer.cif import read_cif
     from torchref.topology.monomer.library import get_library_manager
 
-    path = get_library_manager(verbose=0).get_cif_file(code)
+    path = get_library_manager().get_cif_file(code)
     return read_cif(str(path))[code]
 
 

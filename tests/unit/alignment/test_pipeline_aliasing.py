@@ -32,7 +32,7 @@ def small_model(pdb_dir):
     p = pdb_dir / "1DAW.pdb"
     if not p.exists():
         pytest.skip("1DAW.pdb not available")
-    return ModelFT(verbose=0).load_pdb(str(p))
+    return ModelFT().load_pdb(str(p))
 
 
 @pytest.fixture(scope="module")

@@ -127,7 +127,7 @@ def test_write_multi_model_round_trips_insertion_codes(inserted, table, tmp_path
 @pytest.fixture(scope="module")
 def model(inserted):
     """The renumbered file loaded as a Model, every atom kept."""
-    model = Model(verbose=0, hydrogens="keep")
+    model = Model(hydrogens="keep")
     model.load_pdb(str(inserted))
     return model
 

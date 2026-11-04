@@ -9,7 +9,7 @@ from torchref.symmetry import Cell
 @pytest.fixture(scope="module")
 def model(pdb_dir):
     path = str(pdb_dir / "1DAW.pdb")
-    return ModelFT(max_res=3.0, verbose=0, device="cpu").load_pdb(path)
+    return ModelFT(max_res=3.0, device="cpu").load_pdb(path)
 
 
 @pytest.mark.unit

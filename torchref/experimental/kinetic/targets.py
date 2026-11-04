@@ -20,10 +20,12 @@ KineticPriorTarget
     Regularizes per-timepoint fractions towards a kinetic model.
 """
 
+import logging
 from typing import TYPE_CHECKING, Dict
 
 import torch
 
+from torchref._logging import enabled, get_logger
 from torchref.refinement.targets.base import Target
 
 # Back-compat re-exports of the relocated generic collection targets.
@@ -41,6 +43,8 @@ from torchref.refinement.targets.collection._util import (  # noqa: F401
 
 if TYPE_CHECKING:
     from torchref.model.model_collection import ModelCollection
+
+log = get_logger(__name__)
 
 
 # =========================================================================
@@ -68,8 +72,6 @@ class KineticPriorTarget(Target):
     timepoints_map : Dict[str, int]
         Maps timepoint names to indices into the kinetic model's time axis.
         E.g. ``{"1ps": 0, "5ps": 1, "10ps": 2}``.
-    verbose : int
-        Verbosity level.
     """
 
     name: str = "kinetic_prior"
@@ -79,9 +81,8 @@ class KineticPriorTarget(Target):
         model_collection: "ModelCollection",
         kinetic_model,
         timepoints_map: Dict[str, int],
-        verbose: int = 0,
     ):
-        super().__init__(verbose=verbose)
+        super().__init__()
         self._model_collection = model_collection
         self.add_module("_kinetic_model", kinetic_model)
         self.timepoints_map = timepoints_map
@@ -168,8 +169,8 @@ class KineticPriorTarget(Target):
             loss.backward()
             optimizer.step()
 
-        if self.verbose > 0:
-            print(
+        if enabled(log, logging.INFO):
+            log.info(
                 f"  Kinetic prior refit: {niter} steps, "
                 f"final loss = {loss.item():.6f}"
             )

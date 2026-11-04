@@ -33,7 +33,10 @@ def fft(reciprocal_grid, volume: float = None) -> torch.Tensor:
     torch.Tensor
         Real-valued electron density, same shape as the input.
     """
-    if reciprocal_grid.ndim == 4:
+    if reciprocal_grid.numel() == 0:
+        # A batch of no maps: MKL refuses the empty transform, and the answer is empty.
+        rs = reciprocal_grid.real if reciprocal_grid.is_complex() else reciprocal_grid
+    elif reciprocal_grid.ndim == 4:
         rs = torch.fft.fftn(reciprocal_grid, dim=(1, 2, 3), norm="forward").real
     else:
         rs = torch.fft.fftn(reciprocal_grid, dim=(0, 1, 2), norm="forward").real
@@ -67,7 +70,11 @@ def ifft(real_space_map, volume: float = None) -> torch.Tensor:
     torch.Tensor
         Complex structure factors, same shape as the input.
     """
-    if real_space_map.ndim == 4:
+    if real_space_map.numel() == 0:
+        # A batch of no maps: MKL refuses the empty transform, and the answer is empty.
+        # dtype-ok: complex64 is only the floor; the promotion keeps the input's precision
+        rg = real_space_map.to(torch.promote_types(real_space_map.dtype, torch.complex64))
+    elif real_space_map.ndim == 4:
         rg = torch.fft.ifftn(real_space_map, dim=(1, 2, 3), norm="forward")
     else:
         rg = torch.fft.ifftn(real_space_map, dim=(0, 1, 2), norm="forward")

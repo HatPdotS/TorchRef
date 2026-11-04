@@ -24,7 +24,7 @@ pytestmark = pytest.mark.openmm
 def protein(pdb_dir):
     """7L84 (P 43 21 2, eight operations) with TorchRef's hydrogens."""
     return (
-        Model(verbose=0, device="cpu", hydrogens="add")
+        Model(device="cpu", hydrogens="add")
         .load_pdb(str(pdb_dir / "7L84.pdb"))
         .strip_altlocs()
     )
@@ -143,7 +143,7 @@ def test_quasi_crystal_of_identical_members_is_the_unit_cell(protein):
 def test_special_position_water_is_held_once_per_site(pdb_dir):
     """3GR5's HOH 224 sits on a two-fold: six of its twelve copies are kept."""
     model = (
-        Model(verbose=0, device="cpu", hydrogens="add")
+        Model(device="cpu", hydrogens="add")
         .load_pdb(str(pdb_dir / "3GR5.pdb"))
         .strip_altlocs()
     )

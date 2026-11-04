@@ -72,7 +72,7 @@ def _detect_cif_type(filepath: str) -> str:
     )
 
 
-def read_mtz(filepath: Union[str, Path], verbose: int = 1, **load_kwargs):
+def read_mtz(filepath: Union[str, Path], **load_kwargs):
     """
     Load an MTZ file as a :class:`~torchref.io.datasets.reflection_data.ReflectionData`.
 
@@ -80,8 +80,6 @@ def read_mtz(filepath: Union[str, Path], verbose: int = 1, **load_kwargs):
     ----------
     filepath : str or Path
         Path to the MTZ file.
-    verbose : int, optional
-        Verbosity level. Default is 1.
     **load_kwargs
         Passed to :meth:`~torchref.io.datasets.reflection_data.ReflectionData.load_mtz`.
 
@@ -91,7 +89,7 @@ def read_mtz(filepath: Union[str, Path], verbose: int = 1, **load_kwargs):
     """
     from torchref.io.datasets import ReflectionData
 
-    data = ReflectionData(verbose=verbose)
+    data = ReflectionData()
     data.load_mtz(str(filepath), **load_kwargs)
     return data
 
@@ -121,7 +119,7 @@ def read_pdb(filepath: Union[str, Path], model_class=None, **model_kwargs):
     return model
 
 
-def read_cif(filepath: Union[str, Path], model_class=None, verbose: int = 1, **kwargs) -> Any:
+def read_cif(filepath: Union[str, Path], model_class=None, **kwargs) -> Any:
     """
     Load a CIF file, dispatching on its content.
 
@@ -140,8 +138,6 @@ def read_cif(filepath: Union[str, Path], model_class=None, verbose: int = 1, **k
         Path to the CIF/mmCIF file.
     model_class : type, optional
         Class of the atomic model; default :class:`~torchref.model.model_ft.ModelFT`.
-    verbose : int, optional
-        Verbosity level. Default is 1.
     **kwargs
         Forwarded to the underlying loader/constructor.
 
@@ -156,25 +152,25 @@ def read_cif(filepath: Union[str, Path], model_class=None, verbose: int = 1, **k
     if kind == "reflections":
         from torchref.io.datasets import ReflectionData
 
-        data = ReflectionData(verbose=verbose)
+        data = ReflectionData()
         data.load_cif(path, **kwargs)
         return data
 
     if kind == "ihm_ensemble":
         from torchref.model.model_collection import ModelCollection
 
-        return ModelCollection.from_ihm(path, verbose=verbose, **kwargs)
+        return ModelCollection.from_ihm(path, **kwargs)
 
     if kind == "structure":
         if model_class is None:
             from torchref.model import ModelFT as model_class
-        model = model_class(verbose=verbose, **kwargs)
+        model = model_class(**kwargs)
         model.load_cif(path)
         return model
 
     if kind == "restraints":
         from torchref.io.cif import RestraintCIFReader
 
-        return RestraintCIFReader(path, verbose=verbose)
+        return RestraintCIFReader(path)
 
     raise ValueError(f"Unrecognized CIF content in {path!r}")  # pragma: no cover

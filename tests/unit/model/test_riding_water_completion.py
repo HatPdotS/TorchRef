@@ -19,7 +19,7 @@ def _n_waters(model):
 @pytest.fixture(scope="module")
 def heavy_model(pdb_dir):
     """Deposited 1DAW with every hydrogen stripped."""
-    return Model(device="cpu", verbose=0, hydrogens="strip").load_pdb(
+    return Model(device="cpu", hydrogens="strip").load_pdb(
         str(pdb_dir / "1DAW.pdb")
     )
 
@@ -29,7 +29,7 @@ def heavy_model(pdb_dir):
 def test_add_with_riding_completes_every_water(heavy_model, model_class):
     """Each water gets two riding hydrogens and one rotation, and the model round-trips."""
     table = heavy_model.pdb[heavy_model.pdb.resname.str.strip().eq("HOH")].copy()
-    model = model_class(device="cpu", verbose=0, hydrogens="add", hydrogen_mode="riding")
+    model = model_class(device="cpu", hydrogens="add", hydrogen_mode="riding")
     model.load(lambda: (table, heavy_model.cell.data, heavy_model.spacegroup))
 
     is_h = model.pdb.element.str.strip().eq("H").to_numpy()
@@ -83,7 +83,7 @@ def test_switching_to_riding_never_changes_the_atom_table(
     heavy_model, model_class, explicit_frames
 ):
     """With ``hydrogens="keep"``, oxygen-only waters stay oxygen-only under riding."""
-    model = model_class(device="cpu", verbose=0)
+    model = model_class(device="cpu")
     model.load(
         lambda: (heavy_model.pdb.copy(), heavy_model.cell.data, heavy_model.spacegroup)
     )
@@ -109,7 +109,6 @@ def test_refinement_targets_see_the_riding_waters(pdb_dir, mtz_dir, hydrogens):
         pdb=str(pdb_dir / "1DAW.pdb"),
         data_file=str(mtz_dir / "1DAW.mtz"),
         device="cpu",
-        verbose=0,
         max_res=3.0,
         hydrogens=hydrogens,
     )

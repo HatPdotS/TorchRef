@@ -15,6 +15,10 @@ import os
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
+from torchref._logging import get_logger
+
+log = get_logger(__name__)
+
 #: Input records that describe the crystal, the sample and its chemistry.
 #: Refinement moves atoms; it does not invalidate any of these, so they are
 #: carried through. Listed in the order the PDB format mandates --
@@ -278,8 +282,7 @@ class RefinementMetadata:
                 meta.solvent_model_ksol = float(sm.k_solvent().detach())
                 meta.solvent_model_bsol = sm.b_solvent_equivalent(scaler._s_half_sq)
             except (AttributeError, RuntimeError, ValueError) as exc:
-                if getattr(refinement, "verbose", 0) > 0:
-                    print(f"Could not record solvent parameters: {exc}")
+                log.warning(f"Could not record solvent parameters: {exc}")
 
         # --- Provenance ---
         # Both are recorded on the objects already; the header just had no way

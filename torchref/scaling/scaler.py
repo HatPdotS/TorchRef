@@ -40,8 +40,6 @@ class Scaler(ScalerBase):
         Number of resolution bins used to seed the scale.
     n_iso_coeff : int, default 6
         Number of Chebyshev terms in the isotropic scale.
-    verbose : int, default 1
-        Verbosity level.
     device : torch.device, optional
         Computation device. If ``None``, derived from ``model`` then ``data`` (model
         wins on mismatch); an explicit device moves both. See
@@ -71,7 +69,6 @@ class Scaler(ScalerBase):
         data: Optional[ReflectionData] = None,
         nbins: int = 20,
         n_iso_coeff: int = 6,
-        verbose: int = 1,
         device: Optional[torch.device] = None,
     ):
         """See the class docstring."""
@@ -83,7 +80,6 @@ class Scaler(ScalerBase):
             data=data,
             nbins=nbins,
             n_iso_coeff=n_iso_coeff,
-            verbose=verbose,
             device=resolved_device,
         )
 
@@ -201,7 +197,6 @@ class Scaler(ScalerBase):
             device=self.device,
             radius=1.1,
             k_solvent=0.35,
-            verbose=self.verbose,
         )
         self.solvent.update_solvent()
         self._f_sol_raw = None  # Invalidate cached raw solvent SFs
@@ -213,7 +208,6 @@ class Scaler(ScalerBase):
         lr: float = 1.0,
         max_iter: int = 200,
         history_size: int = 10,
-        verbose: bool = True,
         scale_target: str = DEFAULT_SCALE_TARGET,
     ):
         """
@@ -236,7 +230,6 @@ class Scaler(ScalerBase):
             lr=lr,
             max_iter=max_iter,
             history_size=history_size,
-            verbose=verbose,
             scale_target=scale_target,
         )
 
@@ -260,7 +253,7 @@ class Scaler(ScalerBase):
         if solvent_state is not None and not hasattr(self, "solvent"):
             if hasattr(self, "model") and self.model is not None:
                 self.solvent = SolventModel(
-                    model=self.model, device=self.device, verbose=self.verbose
+                    model=self.model, device=self.device
                 )
 
         # Parent removes 'solvent' from state_dict before the strict key check.

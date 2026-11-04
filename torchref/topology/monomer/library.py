@@ -17,6 +17,9 @@ from urllib.request import urlopen
 from urllib.error import URLError
 
 from torchref import ROOT_TORCHREF
+from torchref._logging import get_logger
+
+log = get_logger(__name__)
 
 # Pinned commit for reproducibility
 _MONOMER_LIB_COMMIT = "713a04911"
@@ -54,15 +57,9 @@ class MonomerLibraryManager:
     Note that this 5-step chain applies to per-residue CIF resolution via
     :meth:`get_cif_file`. :meth:`ensure_gemmi_base` uses a reduced chain (see its
     docstring).
-
-    Parameters
-    ----------
-    verbose : int, optional
-        Verbosity level. 0 = silent, 1 = warnings, 2 = info. Default 1.
     """
 
-    def __init__(self, verbose=1):
-        self.verbose = verbose
+    def __init__(self):
         self._env_path = self._resolve_env_path()
 
     @staticmethod
@@ -210,15 +207,13 @@ class MonomerLibraryManager:
         """
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            if self.verbose >= 2:
-                print(f"Downloading restraint dictionary: {url}")
+            log.info(f"Downloading restraint dictionary: {url}")
             with urlopen(url, timeout=30) as response:
                 data = response.read()
             if response.status != 200:
                 raise URLError(f"HTTP {response.status}")
             dest.write_bytes(data)
-            if self.verbose >= 2:
-                print(f"  Cached to: {dest}")
+            log.info(f"  Cached to: {dest}")
             return dest
         except Exception as e:
             if required:
@@ -227,11 +222,10 @@ class MonomerLibraryManager:
                     f"You can set TORCHREF_MONOMER_LIB to point to a local "
                     f"CCP4 monomer library installation."
                 ) from e
-            if self.verbose >= 1:
-                warnings.warn(
-                    f"Could not download restraint dictionary for residue "
-                    f"from {url}: {e}"
-                )
+            log.warning(
+                f"Could not download restraint dictionary for residue "
+                f"from {url}: {e}"
+            )
             return None
 
 
@@ -239,12 +233,9 @@ class MonomerLibraryManager:
 _manager = None
 
 
-def get_library_manager(verbose=1):
-    """Get the global MonomerLibraryManager singleton.
-
-    ``verbose`` takes effect only on the first call, which creates the instance.
-    """
+def get_library_manager():
+    """Get the global MonomerLibraryManager singleton."""
     global _manager
     if _manager is None:
-        _manager = MonomerLibraryManager(verbose=verbose)
+        _manager = MonomerLibraryManager()
     return _manager

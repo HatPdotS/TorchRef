@@ -16,6 +16,7 @@ by ``rank_by`` (the translation likelihood by default). The result is a
 
 from __future__ import annotations
 
+import logging
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from typing import List, Optional, TYPE_CHECKING
 import numpy as np
 import torch
 
+from torchref._logging import TRACE, enabled, get_logger
 from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -42,6 +44,8 @@ if TYPE_CHECKING:
     from torchref.io.datasets import ReflectionData
     from torchref.model import ModelFT
 
+log = get_logger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Stage timing
@@ -49,7 +53,7 @@ if TYPE_CHECKING:
 
 
 class _StageTimer:
-    """Lightweight wall-clock accumulator. Gated by ``verbose >= 2``.
+    """Lightweight wall-clock accumulator. Enabled when DEBUG logging is.
 
     Two interleavable usages:
       * ``with t.stage(name):`` block — records the block's wall time.
@@ -170,24 +174,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         every model the pipeline returns is in the data's cell and space group.
     device : torch.device, optional
         Compute device (defaults to torchref's configured default device).
-    verbose : int
-        How much the run says about itself. Each level is a superset of the one
-        below, and the boundaries are chosen so that a level is useful on its
-        own rather than being "a bit more of the same":
-
-        0
-            Silent.
-        1
-            What happened: the search settings, one line per stage, and the
-            winner. Enough to see that a run did the expected work.
-        2
-            **Why it chose what it chose.** One ``CAND`` line per rotation
-            candidate carrying every score the selection could have used, plus
-            the per-stage wall-clock table. This is the level that makes the
-            pipeline diagnosable without a second implementation of its own
-            scoring -- see :meth:`_log_candidate`.
-        3
-            Per-translation-peak detail inside each candidate.
     d_min, d_max : float
         High- and low-resolution limits in Å of the overall-anisotropy fit, and
         the default translation window. The rotation search sets its own window
@@ -222,6 +208,24 @@ class MolecularReplacementPipeline(DeviceMixin):
     ValueError
         If ``rank_by`` is not one of the three scores.
 
+    Notes
+    -----
+    The run reports through the module logger. Each level is a superset of the
+    one below, and the boundaries are chosen so that a level is useful on its
+    own rather than being "a bit more of the same":
+
+    INFO
+        What happened: the search settings, one line per stage, and the
+        winner. Enough to see that a run did the expected work.
+    DEBUG
+        **Why it chose what it chose.** One ``CAND`` line per rotation
+        candidate carrying every score the selection could have used, plus
+        the per-stage wall-clock table. This is the level that makes the
+        pipeline diagnosable without a second implementation of its own
+        scoring -- see :meth:`_log_candidate`.
+    TRACE
+        Per-translation-peak detail inside each candidate.
+
     Examples
     --------
     ::
@@ -239,7 +243,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         model: "ModelFT",
         *,
         device: Optional[torch.device] = None,
-        verbose: int = 0,
         d_min: float = 4.0,
         d_max: float = 15.0,
         n_shells: int = 20,
@@ -254,7 +257,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.data = data
         self.model = model
         self.device = device or get_default_device()
-        self.verbose = verbose
 
         self.d_min = d_min
         self.d_max = d_max
@@ -276,7 +278,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.tf_d_min = float(d_min if tf_d_min is None else tf_d_min)
         self.tf_d_max = float(d_max if tf_d_max is None else tf_d_max)
 
-        self._timer = _StageTimer(enabled=verbose >= 2)
+        self._timer = _StageTimer(enabled=False)
         # Filled in by run().
         self._obs = None
         self._tmask = None
@@ -286,26 +288,23 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._p1_xyz0 = None
         self._p1_center = None
 
-    def _log(self, level: int, msg: str) -> None:
-        """Print ``msg`` if ``verbose >= level`` (levels as on the class)."""
-        if self.verbose >= level:
-            print(msg, flush=True)
-
     def _log_candidate(self, k: int, peak, r_analytic, t_frac,
                        tf_score=None, llg_score=None) -> None:
-        """Log one machine-readable ``CAND`` line per rotation candidate (level 2).
+        """Log one machine-readable ``CAND`` line per rotation candidate (DEBUG).
 
         ``key=value`` fields: ``k`` index in rotation-function order, ``rf``/``rfz``
         its score and z, ``tf`` the fast translation score, ``llg`` the translation
         likelihood, ``r`` the analytic R, ``t`` the fractional translation. All
         three placement scores are logged whichever one ranks.
         """
+        if not enabled(log, logging.DEBUG):
+            return
         tf = "nan" if tf_score is None else f"{float(tf_score):.5f}"
         llg = "nan" if llg_score is None else f"{float(llg_score):.1f}"
         t = ",".join(f"{float(x):.4f}" for x in t_frac)
-        self._log(2, f"CAND k={k} rf={float(peak.score):.4f} "
-                     f"rfz={float(peak.sigma):.3f} tf={tf} llg={llg} "
-                     f"r={float(r_analytic):.5f} t={t}")
+        log.debug(f"CAND k={k} rf={float(peak.score):.4f} "
+                  f"rfz={float(peak.sigma):.3f} tf={tf} llg={llg} "
+                  f"r={float(r_analytic):.5f} t={t}")
 
 
     # ------------------------------------------------------------------
@@ -335,6 +334,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             )
 
         timer = self._timer
+        timer.enabled = enabled(log, logging.DEBUG)
         timer.start("0_data_prep")
         U_aniso = fit_anisotropy(
             self.data, d_min=self.d_min, d_max=self.d_max,
@@ -350,9 +350,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         if not do_translation:
             rotated, R_rec = self._make_rotated(candidates[0])
             top = candidates[0]
-            self._log(1, f"mr: top peak RF = {top.score:.2f} "
-                         f"(σ_Z = {top.sigma:.2f}); applying R⁻¹ to coords.")
-            self._log(2, "\n" + timer.summary())
+            log.info(f"mr: top peak RF = {top.score:.2f} "
+                     f"(σ_Z = {top.sigma:.2f}); applying R⁻¹ to coords.")
+            log.debug("\n" + timer.summary())
             return [
                 MRSolution(
                     rotation=R_rec.detach().cpu().numpy(),
@@ -368,7 +368,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._prepare_translation_arrays()
         n_rot = min(self.n_rotation_candidates, len(candidates))
         if n_rot > 1:
-            self._log(1, f"mr: placing all {n_rot} rotation candidates…")
+            log.info(f"mr: placing all {n_rot} rotation candidates…")
 
         solutions: List[MRSolution] = []
         for k in range(n_rot):
@@ -376,13 +376,15 @@ class MolecularReplacementPipeline(DeviceMixin):
             R_rec_k = rotation_matrix_from_edmonds_euler(
                 peak_k.alpha, peak_k.beta, peak_k.gamma)
             self._orient_template(R_rec_k)
-            self._log(3, f"\nfit_to_data: rot{k} "
-                         f"(RF={peak_k.score:.2f}, σ_Z={peak_k.sigma:.2f})")
+            if enabled(log, TRACE):
+                log.log(TRACE, f"\nfit_to_data: rot{k} "
+                               f"(RF={peak_k.score:.2f}, σ_Z={peak_k.sigma:.2f})")
             placement = self._placement_for_candidate()
             if placement is None:
-                self._log(2, f"CAND k={k} rf={float(peak_k.score):.4f} "
-                             f"rfz={float(peak_k.sigma):.3f} tf=nan r=nan "
-                             f"t=none  # no translation peaks")
+                if enabled(log, logging.DEBUG):
+                    log.debug(f"CAND k={k} rf={float(peak_k.score):.4f} "
+                              f"rfz={float(peak_k.sigma):.3f} tf=nan r=nan "
+                              f"t=none  # no translation peaks")
                 continue
             r_analytic, t_refined, tf_score, llg_score = placement
             self._log_candidate(k, peak_k, r_analytic, t_refined, tf_score,
@@ -417,11 +419,11 @@ class MolecularReplacementPipeline(DeviceMixin):
         # No Scaler refit for an R-work: it changes nothing about which placement
         # is returned. A caller that wants one builds a `Scaler` on the model.
         winner.model = self.place(winner)
-        self._log(1, f"mr: winner ({self.rank_by}) "
-                     f"LLG={winner.llg_score:.1f} "
-                     f"TF={winner.translation_score:.5f} "
-                     f"analytic R={winner.r_factor:.4f}")
-        self._log(2, "\n" + timer.summary())
+        log.info(f"mr: winner ({self.rank_by}) "
+                 f"LLG={winner.llg_score:.1f} "
+                 f"TF={winner.translation_score:.5f} "
+                 f"analytic R={winner.r_factor:.4f}")
+        log.debug("\n" + timer.summary())
         return solutions
 
     # ------------------------------------------------------------------
@@ -432,12 +434,11 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer = self._timer
 
         timer.start("3_rotation_search")
-        self._log(1, f"mr: rotation search (n_peaks={self.n_rotation_peaks}, "
-                     f"model error {self.model_error_A:.2f} A)…")
+        log.info(f"mr: rotation search (n_peaks={self.n_rotation_peaks}, "
+                 f"model error {self.model_error_A:.2f} A)…")
         peaks, _lmax, _d_min = search_peaks(
             self.model, self.data, self.model_error_A,
             U_aniso=U_aniso, n_peaks=self.n_rotation_peaks,
-            verbose=self.verbose,
         )
         timer.stop("3_rotation_search")
 
@@ -536,13 +537,13 @@ class MolecularReplacementPipeline(DeviceMixin):
             delta_vrms_A=self.model_error_A,
             device=device,
         )
-        if self.verbose >= 1:
+        if enabled(log, logging.INFO):
             d_hi = 1.0 / float(self._obs.s_mag.max())
             d_lo = 1.0 / float(self._obs.s_mag.min().clamp(min=1e-9))
-            self._log(1, f"mr: translation set {self._obs.F_obs.numel()} "
-                         f"reflections, {d_lo:.1f}-{d_hi:.2f} A"
-                         + ("" if sig_F_full is not None
-                            else " (no sigmas: unit weight)"))
+            log.info(f"mr: translation set {self._obs.F_obs.numel()} "
+                     f"reflections, {d_lo:.1f}-{d_hi:.2f} A"
+                     + ("" if sig_F_full is not None
+                        else " (no sigmas: unit weight)"))
 
         # One P1 copy of the search model for the whole run, re-oriented in
         # place per candidate rather than copied per candidate.
@@ -601,10 +602,11 @@ class MolecularReplacementPipeline(DeviceMixin):
         t_best = t_cands[k_best]
         r_analytic = analytic_r_at(obs, cand, t_best)
         timer.stop("7_translation_llg")
-        for k_t, tp in enumerate(t_peaks):
-            self._log(3, f"    trans{k_t}: tf={tp.score:.4f} z={tp.sigma:.2f} "
-                         f"llg={float(llg[k_t]):.1f} "
-                         f"t={[round(float(x), 3) for x in tp.translation]}")
+        if enabled(log, TRACE):
+            for k_t, tp in enumerate(t_peaks):
+                log.log(TRACE, f"    trans{k_t}: tf={tp.score:.4f} z={tp.sigma:.2f} "
+                               f"llg={float(llg[k_t]):.1f} "
+                               f"t={[round(float(x), 3) for x in tp.translation]}")
         return (r_analytic, t_best, float(t_peaks[k_best].score), float(llg[k_best]))
 
 
@@ -621,7 +623,6 @@ def align_model_to_data(
     d_max: float = 15.0,
     n_shells: int = 20,
     n_rotation_peaks: int = 500,
-    verbose: int = 0,
     do_translation: bool = True,
     n_translation_candidates: int = 3,
     n_rotation_candidates: int = 10,
@@ -647,7 +648,6 @@ def align_model_to_data(
 
     pipeline = MolecularReplacementPipeline(
         data, model,
-        verbose=verbose,
         d_min=d_min, d_max=d_max, n_shells=n_shells,
         n_rotation_peaks=n_rotation_peaks,
         model_error_A=model_error_A,

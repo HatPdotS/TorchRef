@@ -15,7 +15,7 @@ from torchref.experimental.ensemble import EnsembleModel, RankPenaltyTarget
 TEST_PDB = os.path.join(
     os.path.dirname(__file__), "..", "..", "files", "pdb", "1DAW.pdb"
 )
-_KW = dict(perturb_sigma=0.2, b_const=5.0, seed=42, verbose=0)
+_KW = dict(perturb_sigma=0.2, b_const=5.0, seed=42)
 MODES = ["nuclear", "subspace", "entropy", "maxent", "diverse"]
 
 

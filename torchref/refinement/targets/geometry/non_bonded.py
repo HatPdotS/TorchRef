@@ -5,10 +5,12 @@ with symmetry mates. Violation counts reported by ``stats`` / ``get_violations``
 deliberately exclude the ``buffer`` onset that ``forward`` penalizes.
 """
 
+import logging
 from typing import TYPE_CHECKING, Dict, Tuple
 
 import torch
 
+from torchref._logging import enabled, get_logger
 from torchref.base.coordinates.symmetry_images import is_symmetry_image
 from torchref.config import get_int_dtype
 from torchref.utils.stats import (
@@ -22,6 +24,8 @@ from .base import GeometryTarget
 
 if TYPE_CHECKING:
     from torchref.model.model import Model
+
+log = get_logger(__name__)
 
 
 class NonBondedTarget(GeometryTarget):
@@ -70,8 +74,6 @@ class NonBondedTarget(GeometryTarget):
     rebuild_threshold : float, optional
         Max ASU atom drift (Å) before :meth:`maintenance` rebuilds the pair
         list. Default 1.0; that method gives the bound this must respect.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     name: str = "geometry/nonbonded"
@@ -84,11 +86,10 @@ class NonBondedTarget(GeometryTarget):
         c_rep: "float | None" = None,
         buffer: float = 0.0,
         rebuild_threshold: float = 1.0,
-        verbose: int = 0,
         device=None,
     ):
         """Initialize non-bonded target; see the class docstring for parameters."""
-        super().__init__(model, verbose, device=device)
+        super().__init__(model, device=device)
         # Tunables that reach the kernel must be buffers on the target's device
         # and float dtype: forward hands these straight to a Triton kernel,
         # where a CPU tensor is a host pointer, not a promotable scalar.
@@ -195,10 +196,10 @@ class NonBondedTarget(GeometryTarget):
         if max_disp_sq.item() <= thresh_sq:
             return  # within slack — nothing to do
 
-        if self.verbose > 0:
+        if enabled(log, logging.INFO):
             max_disp = float(max_disp_sq.item()) ** 0.5
             thresh = self._rebuild_threshold
-            print(
+            log.info(
                 f"  VDW rebuild: max drift {max_disp:.2f} Å > "
                 f"threshold {thresh:.2f} Å"
             )

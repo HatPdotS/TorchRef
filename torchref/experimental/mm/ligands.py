@@ -26,8 +26,12 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from torchref._logging import get_logger
+
 if TYPE_CHECKING:
     from torchref.experimental.mm.topology import AsuTopology
+
+log = get_logger(__name__)
 
 #: antechamber charge methods offered: Gasteiger (empirical, always succeeds) and
 #: AM1-BCC (semi-empirical QM through sqm, slower and can fail to converge).
@@ -119,7 +123,6 @@ def gaff2_forcefield(
     *,
     charge_method: str = "gas",
     residue_charges: Optional[Dict[str, int]] = None,
-    verbose: int = 0,
 ) -> str:
     """OpenMM force-field XML with GAFF2 templates for the listed residues.
 
@@ -134,7 +137,6 @@ def gaff2_forcefield(
     charge_method : {"gas", "bcc"}
     residue_charges : dict, optional
         Net charge per residue name, replacing the dictionary's formal charges.
-    verbose : int
 
     Returns
     -------
@@ -160,7 +162,7 @@ def gaff2_forcefield(
         chemistries.setdefault(key, (chemistry, key))
 
     files = [
-        _parameterise(chemistry, key, charge_method, verbose)
+        _parameterise(chemistry, key, charge_method)
         for chemistry, key in chemistries.values()
     ]
     params = parmed.amber.AmberParameterSet(
@@ -297,7 +299,7 @@ def _hydrogens_per_parent(pairs, is_hydrogen) -> Dict[str, int]:
 
 
 def _parameterise(
-    chemistry: LigandChemistry, key: str, charge_method: str, verbose: int
+    chemistry: LigandChemistry, key: str, charge_method: str
 ) -> Tuple[Path, Path]:
     """antechamber + parmchk2 output for one chemistry, from the cache when present."""
     from torchref import PATH_TORCHREF_DATA
@@ -306,11 +308,10 @@ def _parameterise(
     mol2, frcmod = cache / f"{key}.mol2", cache / f"{key}.frcmod"
     if mol2.exists() and frcmod.exists():
         return mol2, frcmod
-    if verbose > 0:
-        print(
-            f"[OpenMMAdapter] antechamber: {chemistry.resname} "
-            f"(net charge {chemistry.net_charge:+d}, {charge_method})"
-        )
+    log.info(
+        f"[OpenMMAdapter] antechamber: {chemistry.resname} "
+        f"(net charge {chemistry.net_charge:+d}, {charge_method})"
+    )
     work = Path(tempfile.mkdtemp(prefix=f"torchref_gaff2_{chemistry.resname}_"))
     try:
         (work / "in.mol2").write_text(chemistry.mol2())

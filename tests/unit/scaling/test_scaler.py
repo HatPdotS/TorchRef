@@ -38,7 +38,7 @@ class TestScalerInitialization:
         """``scaler.model = m`` binds m without adding it as a submodule."""
         from torchref.scaling.scaler import Scaler
 
-        scaler = Scaler(verbose=0)
+        scaler = Scaler()
         model = nn.Linear(2, 2)
         scaler.model = model
 
@@ -219,10 +219,10 @@ class TestAnisotropyStart:
         from torchref.io import ReflectionData
         from torchref.scaling.scaler_base import ScalerBase
 
-        data = ReflectionData(verbose=0, device="cpu").load_mtz(
+        data = ReflectionData(device="cpu").load_mtz(
             str(mtz_dir / "1DAW.mtz")
         )
-        scaler = ScalerBase(data=data, nbins=10, verbose=0)
+        scaler = ScalerBase(data=data, nbins=10)
 
         scaler.setup_anisotropy_correction()
         first = scaler.U.detach().clone()

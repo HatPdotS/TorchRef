@@ -250,7 +250,7 @@ COS_MIN_DS = 0.9999
 #   cpu    float64  cpu_sphere    4.37e-03    6.98e-02   3.63e-02   8.09e-02   1.62e-02
 #   cpu    float64  portable      4.37e-03    6.98e-02   3.63e-02   8.09e-02   1.62e-02
 #   mps    float32  portable      4.37e-03    6.98e-02   3.63e-02   8.09e-02   1.62e-02
-#   mps    float32  mps_metal     4.37e-03    6.98e-02   3.63e-02   8.09e-02   raises
+#   mps    float32  mps_metal     4.37e-03    6.98e-02   3.63e-02   8.09e-02   --
 #
 # Every row agrees to the printed digits. That is the truncation-contract standardization
 # showing up as a measurement: with all four kernels applying the same atom-centred
@@ -259,20 +259,14 @@ COS_MIN_DS = 0.9999
 # accelerators, and adding ``RTOL_*_MPS`` / ``RTOL_*_CUDA`` would have created numbers with
 # nothing behind them.
 #
-# ``mps_metal`` raising on the HVP is the documented contract, not a gap -- see
-# ``mps/variable_radius.py:12``. ``test_second_order.py`` asserts both halves: which
-# kernels give a correct second derivative, and which raise rather than returning a wrong
-# one.
+# The ``mps_metal`` HVP is unmeasured here. ``test_second_order.py`` gates every kernel's
+# HVP against the oracle and, tightly, against the portable splat's along every leaf.
 #
-# **CUDA is unmeasured.** This host has no CUDA, so the Triton legs are written and marked
-# but have never run. They share the parametrization and the tolerances with MPS, which is
-# defensible given every other backend landed on the same numbers -- but it is a prediction
-# until someone runs:
-#
-#     pytest tests/unit/structure_factor -v -s -k cuda
-#
-# on a CUDA host. If a Triton leg misses a gate there, establish whether it is kernel
-# arithmetic or a real geometry difference before touching a constant.
+# CUDA (A100, Triton) passes the same gates. Its HVP against the oracle is 1.87e-02 iso and
+# 2.23e-02 aniso, identical to the portable splat on the same device in both dtypes, and
+# its HVP against the portable splat's is 1.7e-06 (float32) and 3.8e-15 (float64). If a
+# Triton leg misses a gate, establish whether it is kernel arithmetic or a real geometry
+# difference before touching a constant.
 
 __all__ = [
     "RTOL_VS_GEMMI",

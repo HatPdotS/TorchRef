@@ -42,9 +42,12 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from torchref._logging import get_logger
 from torchref.cli._common import (
     add_device_arg,
+    add_log_file_arg,
     add_verbose_arg,
+    configure_logging,
     configure_unbuffered_output,
     load_model,
     parse_device_str,
@@ -52,6 +55,10 @@ from torchref.cli._common import (
 
 if TYPE_CHECKING:
     from torchref.io.datasets import FcalcDataset
+
+# Named, not __name__: run as a script or with -m, this module is __main__, outside
+# the torchref logger the CLI configures.
+log = get_logger("torchref.cli.simulate_noisy_data")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -121,12 +128,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_device_arg(parser)
     add_verbose_arg(parser)
+    add_log_file_arg(parser)
     return parser
 
 
 def main():
     configure_unbuffered_output()
     args = _build_parser().parse_args()
+    configure_logging(args)
 
     input_path = Path(args.input)
     if not input_path.is_file():
@@ -144,11 +153,8 @@ def main():
 
     device = parse_device_str(args.device)
 
-    if args.verbose:
-        print(f"Loading structure: {args.input}")
-    model = load_model(
-        args.input, max_res=args.d_min, device=device, verbose=args.verbose
-    )
+    log.info(f"Loading structure: {args.input}")
+    model = load_model(args.input, max_res=args.d_min, device=device)
 
     if args.reference_hkl is not None:
         return _run_reference_mode(args, model, device)
@@ -164,9 +170,8 @@ def _run_reference_mode(args, model, device) -> int:
     from torchref.io.datasets import FcalcDataset
     from torchref.scaling import Scaler
 
-    if args.verbose:
-        print(f"Loading CrystFEL reference: {args.reference_hkl}")
-    ref = ReflectionData(device=str(device), verbose=args.verbose).load_crystfel_hkl(
+    log.info(f"Loading CrystFEL reference: {args.reference_hkl}")
+    ref = ReflectionData(device=str(device)).load_crystfel_hkl(
         args.reference_hkl, cell=model.cell, spacegroup=model.spacegroup,
     )
     # Prune reference tensors by resolution so the simulation output only
@@ -192,16 +197,13 @@ def _run_reference_mode(args, model, device) -> int:
         ref.masks["flagged_initial"] = torch.ones(
             len(ref.hkl), dtype=torch.bool, device=ref.device
         )
-    if args.verbose:
-        print(f"Reference: {len(ref.hkl)} reflections after resolution cuts")
+    log.info(f"Reference: {len(ref.hkl)} reflections after resolution cuts")
 
-    if args.verbose:
-        print("Scaling model to reference...")
-    scaler = Scaler(model, ref, device=device, verbose=args.verbose)
+    log.info("Scaling model to reference...")
+    scaler = Scaler(model, ref, device=device)
     scaler.initialize().refine_lbfgs()
 
-    if args.verbose:
-        print(f"Computing scaled Fcalc on {len(ref.hkl)} reference HKLs")
+    log.info(f"Computing scaled Fcalc on {len(ref.hkl)} reference HKLs")
     with torch.no_grad():
         fcalc_scaled = scaler(model(ref.hkl))
 
@@ -214,7 +216,7 @@ def _run_reference_mode(args, model, device) -> int:
     )
     sim.set_fcalc(fcalc_scaled)
 
-    noisy = sim.add_noise(reference=ref, seed=args.seed, verbose=bool(args.verbose))
+    noisy = sim.add_noise(reference=ref, seed=args.seed)
     _write_output(args, noisy)
     return 0
 
@@ -223,11 +225,10 @@ def _run_parametric_mode(args, model, device) -> int:
     """No reference: build HKL from cell+resolution, use three-term model."""
     from torchref.io.datasets import FcalcDataset
 
-    if args.verbose:
-        print(
-            f"Generating HKL to d_min={args.d_min} A"
-            + (f", d_max={args.d_max} A" if args.d_max is not None else "")
-        )
+    log.info(
+        f"Generating HKL to d_min={args.d_min} A"
+        + (f", d_max={args.d_max} A" if args.d_max is not None else "")
+    )
     dataset = FcalcDataset.from_cell_and_resolution(
         cell=model.cell,
         spacegroup=model.spacegroup,
@@ -235,8 +236,7 @@ def _run_parametric_mode(args, model, device) -> int:
         d_max=args.d_max,
         device=device,
     )
-    if args.verbose:
-        print(f"Computing Fcalc for {len(dataset)} reflections")
+    log.info(f"Computing Fcalc for {len(dataset)} reflections")
     hkl = dataset.hkl.to(device)
     fcalc = model(hkl, recalc=True)
     dataset.set_fcalc(fcalc)
@@ -246,7 +246,6 @@ def _run_parametric_mode(args, model, device) -> int:
         sigma_mul=args.sigma_mul,
         sigma_abs=args.sigma_abs,
         seed=args.seed,
-        verbose=bool(args.verbose),
     )
     _write_output(args, noisy)
     return 0
@@ -279,7 +278,7 @@ def _write_output(args, noisy: "FcalcDataset") -> None:
     df = pd.DataFrame(columns)
     mtz.write(df, noisy.cell.data, noisy.spacegroup, args.output)
 
-    if args.verbose:
+    if args.verbose > 0:
         print(
             f"Wrote {args.output} "
             f"({args.output_type}, n={len(noisy)})"

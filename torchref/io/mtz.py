@@ -20,12 +20,15 @@ import pandas as pd
 import reciprocalspaceship as rs
 import torch
 
+from torchref._logging import get_logger
 from torchref.base.fourier.coefficients import map_coefficients
 from torchref.config import get_int_dtype
 from torchref.utils.utils import first_index_per_group
 
 if TYPE_CHECKING:
     from torchref.io.datasets.reflection_data import ReflectionData
+
+log = get_logger(__name__)
 
 
 class MTZReader:
@@ -113,7 +116,6 @@ class MTZReader:
 
     def __init__(
         self,
-        verbose: int = 0,
         column_names: Optional[dict] = None,
         anomalous: Optional[bool] = None,
     ):
@@ -122,8 +124,6 @@ class MTZReader:
 
         Parameters
         ----------
-        verbose : int, optional
-            Verbosity level (0=silent, 1=normal, 2=debug). Default is 0.
         column_names : dict, optional
             Explicit column name mapping to override automatic detection.
             Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
@@ -137,9 +137,8 @@ class MTZReader:
         anomalous : bool, optional
             None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into Friedel pairs
             when such columns exist and no merged F or I is pinned; True forces
-            stacking (notice at verbose > 0 if none exist); False averages pairs.
+            stacking (warns if none exist); False averages pairs.
         """
-        self.verbose = verbose
         # A copy: pins are re-keyed by MTZ type when a file is read.
         self.column_names = dict(column_names or {})
         # The data column anomalous stacking chose, consulted after the pins.
@@ -169,8 +168,7 @@ class MTZReader:
             Self, for method chaining.
         """
         self.data = dict()
-        if self.verbose > 1:
-            print(f"Reading MTZ file: {filepath}")
+        log.debug(f"Reading MTZ file: {filepath}")
 
         self.mtz_data = rs.read_mtz(filepath)
         self._key_pins_by_type()
@@ -247,9 +245,9 @@ class MTZReader:
         plus_cols = [c for c in cols if c.endswith("(+)")]
         minus_cols = [c for c in cols if c.endswith("(-)")]
         if not plus_cols or not minus_cols:
-            if self.anomalous is True and self.verbose > 0:
-                print(
-                    "   anomalous=True requested but no F(+)/F(-) columns found; "
+            if self.anomalous is True:
+                log.warning(
+                    "anomalous=True requested but no F(+)/F(-) columns found; "
                     "loading merged."
                 )
             return  # no anomalous columns
@@ -280,8 +278,7 @@ class MTZReader:
                 plus_labels=plus_labels, minus_labels=minus_labels
             )
         except Exception as e:  # keep merged data on any failure
-            if self.verbose > 0:
-                print(f"   Anomalous stacking skipped ({e}); using merged data.")
+            log.warning(f"Anomalous stacking skipped ({e}); using merged data.")
             return
 
         self.mtz_data = stacked
@@ -298,9 +295,8 @@ class MTZReader:
         elif amplitude_bases:
             self._stacked_columns["F"] = amplitude_bases[0]
 
-        if self.verbose > 0:
-            print(
-                f"   Detected anomalous data; stacked Bijvoet pairs "
+        log.info(
+            f"   Detected anomalous data; stacked Bijvoet pairs "
                 f"({len(self.mtz_data)} reflections, friedel_merged=False)."
             )
 
@@ -340,8 +336,7 @@ class MTZReader:
             ds[b] = ds[b].astype(target_dtype)
 
         self.mtz_data = ds.drop(columns=list(dict.fromkeys(dropped)))
-        if self.verbose > 0:
-            print("   anomalous=False: averaged F(+)/F(-) into merged columns.")
+        log.info("   anomalous=False: averaged F(+)/F(-) into merged columns.")
 
     def __call__(self) -> Tuple[dict, np.ndarray, str]:
         """
@@ -481,12 +476,11 @@ class MTZReader:
                     try:
                         free_set = read_free_set(self.mtz_data, col)
                         rfree_flags = work_free_flags(free_set)
-                        if self.verbose > 0:
-                            print(
-                                f"   R-free flags from '{col}': "
-                                f"{free_set['convention']}, "
-                                f"free={int(free_set['free'].sum())}"
-                            )
+                        log.info(
+                            f"   R-free flags from '{col}': "
+                            f"{free_set['convention']}, "
+                            f"free={int(free_set['free'].sum())}"
+                        )
 
                         # keep int: -1 (excluded) is masked by ReflectionData.load
                         self.data["R-free-flags"] = rfree_flags
@@ -494,9 +488,7 @@ class MTZReader:
                         return
 
                     except Exception as e:
-                        warnings.warn(
-                            f"Ignoring MTZ column {col!r} as R-free flags: {e}"
-                        )
+                        log.warning(f"Ignoring MTZ column {col!r} as R-free flags: {e}")
 
     def _extract_validation_flags(self) -> None:
         """Extract the optional third-class validation flags (1 = validation).
@@ -516,16 +508,14 @@ class MTZReader:
                         flags = flags.astype(np.int32)
                     self.data["Validation-flags"] = (flags == 1).astype(bool)
                     self.data["Validation-source"] = col
-                    if self.verbose > 0:
-                        n_val = int((flags == 1).sum())
-                        print(
-                            f"   Loaded validation flags from '{col}': "
-                            f"{n_val} reflections ({100.0 * n_val / max(len(flags), 1):.1f}%)"
-                        )
+                    n_val = int((flags == 1).sum())
+                    log.info(
+                        f"   Loaded validation flags from '{col}': "
+                        f"{n_val} reflections ({100.0 * n_val / max(len(flags), 1):.1f}%)"
+                    )
                     return
                 except Exception as e:
-                    if self.verbose > 0:
-                        print(f"Warning: Could not load validation flags from {col}: {e}")
+                    log.warning(f"Could not load validation flags from {col}: {e}")
 
     def _find_sigma_column(self, data_col: str, is_intensity: bool) -> Optional[str]:
         """Find the sigma column for a data column."""
@@ -569,7 +559,7 @@ class MTZReader:
         return None
 
 
-def read(filepath: str, verbose: int = 0) -> MTZReader:
+def read(filepath: str) -> MTZReader:
     """
     Read an MTZ file.
 
@@ -577,17 +567,15 @@ def read(filepath: str, verbose: int = 0) -> MTZReader:
     ----------
     filepath : str
         Path to the MTZ file.
-    verbose : int, optional
-        Verbosity level. Default is 0.
 
     Returns
     -------
     MTZReader
         Reader object; call it for ``(data, cell, spacegroup)``. This wrapper
-        forwards only ``verbose`` -- for ``column_names`` or ``anomalous``,
-        build an :class:`MTZReader` yourself.
+        takes no options -- for ``column_names`` or ``anomalous``, build an
+        :class:`MTZReader` yourself.
     """
-    return MTZReader(verbose=verbose).read(filepath)
+    return MTZReader().read(filepath)
 
 
 def write(
@@ -955,7 +943,6 @@ def write_reflections(
     filepath: str,
     fcalc: Optional[torch.Tensor] = None,
     anomalous: Optional[bool] = None,
-    verbose: int = 0,
 ) -> None:
     """Write a :class:`~torchref.io.datasets.reflection_data.ReflectionData` to MTZ.
 
@@ -985,15 +972,12 @@ def write_reflections(
     anomalous : bool, optional
         See :func:`reflection_table`. Default: anomalous exactly when the data
         hold Bijvoet pairs (``friedel_merged`` False).
-    verbose : int, optional
-        Print a summary when > 0.
     """
     if anomalous is None:
         anomalous = not data.friedel_merged
     df = reflection_table(data, fcalc, anomalous=anomalous)
     write(df, data.cell.data, data.spacegroup, filepath)
-    if verbose > 0:
-        layout = "anomalous (phenix-style)" if anomalous else "merged"
-        print(f"✓ Wrote {layout} MTZ: {filepath}")
-        print(f"  Reflections: {len(df)}")
-        print(f"  Columns: {', '.join(df.columns)}")
+    layout = "anomalous (phenix-style)" if anomalous else "merged"
+    log.info(f"✓ Wrote {layout} MTZ: {filepath}")
+    log.info(f"  Reflections: {len(df)}")
+    log.info(f"  Columns: {', '.join(df.columns)}")

@@ -105,7 +105,6 @@ def test_fit_to_data_real_1daw(real_setup, trial):
         n_shells=20,
         n_rotation_peaks=200,
         do_translation=False,  # this test only checks rotation accuracy
-        verbose=0,
     )
 
     # The effective rotation between aligned.xyz() and xyz_canonical should

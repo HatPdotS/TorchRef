@@ -28,7 +28,7 @@ def model_ft_and_data(sample_structure_pair):
 def test_electrons_is_the_volume_normalised_synthesis(model_ft_and_data):
     model, data = model_ft_and_data
     # One scaler for both maps (unfitted, the identity): the units are compared.
-    scaler = Scaler(model, data, verbose=0)
+    scaler = Scaler(model, data)
     normalized = Map(data, model, map_type="Fcalc", scaler=scaler).calculate()
     electrons = Map(
         data, model, map_type="Fcalc", units="electrons", scaler=scaler

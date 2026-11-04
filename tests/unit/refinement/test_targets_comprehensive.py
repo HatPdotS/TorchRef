@@ -23,15 +23,7 @@ class TestBaseTarget:
         from torchref.refinement.targets import Target
 
         target = Target()
-        assert target.verbose == 0
         assert isinstance(target, torch.nn.Module)
-
-    def test_target_initialization_with_verbose(self):
-        """Test initialization with verbose setting."""
-        from torchref.refinement.targets import Target
-
-        target = Target(verbose=2)
-        assert target.verbose == 2
 
     def test_target_forward_not_implemented(self):
         """Test that forward raises NotImplementedError."""
@@ -177,7 +169,7 @@ class TestNonBondedTarget:
             "           O\n"
             "END\n"
         )
-        model = Model(verbose=0).load_pdb(str(path))
+        model = Model().load_pdb(str(path))
         assert len(model.restraints.restraints["vdw"]["indices"]) == 0
         target = NonBondedHTarget(model)
         assert target.forward().dtype == torch.float64
@@ -191,7 +183,7 @@ class TestNonBondedTarget:
         from torchref.model.model import Model
         from torchref.refinement.targets import NonBondedTarget
 
-        model = Model(verbose=0).load_pdb(str(pdb_dir / "1DAW.pdb"))
+        model = Model().load_pdb(str(pdb_dir / "1DAW.pdb"))
         target = NonBondedTarget(model, sigma=0.25)
         assert target.stats()["mean_sigma"].value == pytest.approx(0.25)
 
@@ -207,7 +199,7 @@ class TestTotalGeometryTarget:
         target = TotalGeometryTarget()
         assert target._model is None
 
-    def test_silent_at_verbose_zero(self, capsys):
+    def test_silent_by_default(self, capsys):
         """Construction prints nothing at the default verbosity."""
         from torchref.refinement.targets import TotalGeometryTarget
 

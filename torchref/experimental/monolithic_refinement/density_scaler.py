@@ -80,7 +80,6 @@ class DensityDerivedSolvent(nn.Module):
         n_exp=5.0,
         device=None,
         dtype=None,
-        verbose=0,
     ):
         super().__init__()
         device = device or get_default_device()
@@ -93,7 +92,6 @@ class DensityDerivedSolvent(nn.Module):
             rho0=rho0,
             occupancy=occupancy,
             solvent_res=solvent_res,
-            verbose=verbose,
             device=device,
             float_type=dtype,
         )
@@ -147,7 +145,6 @@ class DensitySolventScaler(Scaler):
         data=None,
         nbins: int = 20,
         n_iso_coeff: int = 6,
-        verbose: int = 1,
         device=None,
         *,
         rho0: float = 0.016,
@@ -165,7 +162,7 @@ class DensitySolventScaler(Scaler):
         )
         super().__init__(
             model=model, data=data, nbins=nbins, n_iso_coeff=n_iso_coeff,
-            verbose=verbose, device=device
+            device=device
         )
 
     def setup_solvent(self):
@@ -174,7 +171,6 @@ class DensitySolventScaler(Scaler):
         self.solvent = DensityDerivedSolvent(
             self.model,
             device=self.device,
-            verbose=self.verbose,
             **self._density_solvent_kwargs,
         )
         self._f_sol_raw = None  # Invalidate; rebuilt live each forward.

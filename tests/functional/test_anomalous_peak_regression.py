@@ -71,7 +71,6 @@ def _build_anomalous_mtz(data_file, pdb_path, out_mtz):
         data_file=str(data_file),
         pdb=str(pdb_path),
         wavelength=WAVELENGTH,
-        verbose=0,
     )
     ref.get_scales()
     ref.write_out_mtz(str(out_mtz), anomalous=True)

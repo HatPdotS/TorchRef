@@ -261,13 +261,13 @@ class TestRealSpaceTargetsIntegration:
         from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
 
-        model = ModelFT(max_res=2.5, verbose=0)
+        model = ModelFT(max_res=2.5)
         model.load_cif(str(sample_structure_pair["model"]))
 
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
 
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
+        scaler = Scaler(model=model, data=data, nbins=10)
         scaler.initialize(model(data.hkl))
 
         return model, data, scaler
@@ -278,7 +278,7 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=True
         )
 
         loss = target.forward()
@@ -304,7 +304,7 @@ class TestRealSpaceTargetsIntegration:
 
         model, data, _ = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, mask_solvent=False, verbose=0
+            data=data, model=model, mask_solvent=False
         )
         with torch.no_grad():
             synthesised = target._compute_model_density().flatten()
@@ -330,7 +330,7 @@ class TestRealSpaceTargetsIntegration:
         def losses():
             return [
                 cls(
-                    data=data, model=model, scaler=scaler, mask_solvent=False, verbose=0
+                    data=data, model=model, scaler=scaler, mask_solvent=False
                 )
                 .forward()
                 .item()
@@ -350,7 +350,7 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceDifferenceTarget
         model, data, scaler = model_data_pair
         target = RealSpaceDifferenceTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=True
         )
 
         loss = target.forward()
@@ -363,7 +363,7 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=True
         )
 
         # Zero existing gradients
@@ -388,7 +388,7 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceDifferenceTarget
         model, data, scaler = model_data_pair
         target = RealSpaceDifferenceTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=True
         )
 
         # Zero existing gradients
@@ -413,7 +413,7 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=True
         )
 
         stats = target.stats()
@@ -427,7 +427,7 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceDifferenceTarget
         model, data, scaler = model_data_pair
         target = RealSpaceDifferenceTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=True
         )
 
         stats = target.stats()
@@ -444,7 +444,7 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=True
         )
 
         # Trigger mask build
@@ -460,7 +460,7 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=True
         )
 
         # Build initial mask
@@ -480,7 +480,7 @@ class TestRealSpaceTargetsIntegration:
         from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=False, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=False
         )
 
         loss = target.forward()
@@ -494,7 +494,7 @@ class TestRealSpaceTargetsIntegration:
 
         model, data, scaler = model_data_pair
         target = RealSpaceCorrelationTarget(
-            data=data, model=model, scaler=scaler, mask_solvent=True, verbose=0
+            data=data, model=model, scaler=scaler, mask_solvent=True
         )
 
         state = LossState()

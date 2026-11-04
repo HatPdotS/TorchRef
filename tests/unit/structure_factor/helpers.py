@@ -558,9 +558,8 @@ def maybe_portable(pin: bool):
 
     Those parametrizations are all still two *distinct* kernels, which is worth stating
     because it is easy to assume otherwise: on CPU the default selects the fused CPU sphere
-    splat and the pin selects the portable ``scatter_add`` one. Even at second order they
-    differ -- only the double-backward *re-derivation* borrows the portable splat, while the
-    forward and first derivative stay in the fused kernel.
+    splat and the pin selects the portable ``scatter_add`` one, at every derivative order:
+    the fused kernel has its own second-order passes.
     """
     return use_portable() if pin else contextlib.nullcontext()
 

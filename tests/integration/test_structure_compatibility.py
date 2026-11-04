@@ -55,7 +55,7 @@ def test_model_cif_compatibility(cif_dir, filename) -> None:
         assert collection.n_base_models == 2
         model = collection.base_models[-1]
     else:
-        model = Model(verbose=0).load_cif(str(path))
+        model = Model().load_cif(str(path))
     xyz = model.xyz()
     assert xyz.shape == (len(model.pdb), 3)
     assert len(xyz) > 0
@@ -75,7 +75,7 @@ def test_modelft_cif_compatibility(cif_dir, code) -> None:
 
     path = cif_dir / f"{code}.cif"
     assert path.is_file()
-    model = ModelFT(max_res=3.0, verbose=0).load_cif(str(path))
+    model = ModelFT(max_res=3.0).load_cif(str(path))
     assert len(model.xyz()) > 0
     assert model.parametrization
     assert all(size > 0 for size in model.grid_shape)
@@ -101,7 +101,7 @@ def test_reflection_file_compatibility(
 
     path = test_files_dir / directory / filename
     assert path.is_file()
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     getattr(data, loader)(str(path))
     assert data.hkl.shape == (len(data.hkl), 3)
     assert len(data.hkl) > 0

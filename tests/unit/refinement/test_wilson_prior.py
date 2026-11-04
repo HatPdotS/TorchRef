@@ -23,17 +23,17 @@ TEST_PDB = os.path.join(
 
 @pytest.fixture
 def setup_target():
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(TEST_MTZ)
     ens = EnsembleModel.from_single(
         TEST_PDB, n_members=4, perturb_sigma=0.0, b_const=5.0,
-        seed=42, verbose=0, max_res=data.d_min,
+        seed=42, max_res=data.d_min,
     )
     ens.cell = data.cell
     ens.spacegroup = data.spacegroup
     ens.max_res = data.d_min
 
-    scaler = Scaler(model=ens, data=data, nbins=10, verbose=0)
+    scaler = Scaler(model=ens, data=data, nbins=10)
     fcalc0 = ens(data.hkl)
     scaler.initialize(fcalc0)
 
