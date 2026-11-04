@@ -182,13 +182,152 @@ class PeptideResidues:
                 yield res_i, res_next, map_i, map_next
 
 
+#: Backbone heavy atoms. A dictionary torsion over these alone is phi/psi-equivalent
+#: (``sp2_sp3_1  O C CA N`` restrains psi) and would fight the Ramachandran term.
+_BACKBONE_ATOMS = frozenset({"N", "CA", "C", "O", "OXT"})
+
+#: Largest ring whose bonds cannot take a staggered torsion. Closing a ring of five or
+#: fewer atoms holds every endocyclic torsion within about 45 deg of eclipsed and puts
+#: the exocyclic ones about 120 deg from those, so a period-3 target at 60/180 deg is
+#: never reached; six-membered chairs sit near 55 deg, which a staggered target fits.
+_MAX_STRAINED_RING = 5
+
+#: Reasons :func:`screen_torsions` gives for not restraining a dictionary torsion.
+SKIP_BACKBONE = "backbone only"
+SKIP_ZERO_SIGMA = "zero sigma"
+SKIP_SMALL_RING = "staggered in a small ring"
+
+
+def _small_ring_bonds(
+    bonds: Optional[pd.DataFrame], max_size: int = _MAX_STRAINED_RING
+) -> frozenset:
+    """Bonds of one template that close a ring of at most ``max_size`` atoms.
+
+    Parameters
+    ----------
+    bonds : pandas.DataFrame or None
+        The template's bonds, with ``atom1``/``atom2`` atom-name columns.
+    max_size : int, default :data:`_MAX_STRAINED_RING`
+        Largest ring size, in atoms, that counts.
+
+    Returns
+    -------
+    frozenset of frozenset of str
+        Each bond as the unordered pair of its atom names; empty without bonds.
+    """
+    if bonds is None or len(bonds) == 0:
+        return frozenset()
+    pairs = list(zip(bonds["atom1"].astype(str), bonds["atom2"].astype(str)))
+    neighbours: Dict[str, set] = {}
+    for a, b in pairs:
+        neighbours.setdefault(a, set()).add(b)
+        neighbours.setdefault(b, set()).add(a)
+
+    in_ring = set()
+    for a, b in pairs:
+        bond = frozenset((a, b))
+        # b reachable from a in at most max_size - 1 steps without this bond means
+        # the bond closes a ring of at most max_size atoms.
+        seen, frontier = {a}, {a}
+        for _ in range(max_size - 1):
+            frontier = {
+                n
+                for f in frontier
+                for n in neighbours[f]
+                if n not in seen and frozenset((f, n)) != bond
+            }
+            if b in frontier:
+                in_ring.add(bond)
+                break
+            seen |= frontier
+    return frozenset(in_ring)
+
+
+def _torsion_periods(torsions: pd.DataFrame) -> np.ndarray:
+    """Periodicity per torsion row, from ``periodicity`` or ``period``; 1 if absent."""
+    for column in ("periodicity", "period"):
+        if column in torsions.columns:
+            return torsions[column].values.astype(np.int64)
+    return np.ones(len(torsions), dtype=np.int64)
+
+
+def screen_torsions(
+    torsions: pd.DataFrame, bonds: Optional[pd.DataFrame] = None
+) -> Tuple[pd.DataFrame, Dict[str, List[str]]]:
+    """Split one template's dictionary torsions into those to restrain and the rest.
+
+    The single place a dictionary torsion is turned down. Three kinds are, and each
+    is removed rather than downweighted:
+
+    * :data:`SKIP_BACKBONE` -- all four atoms backbone heavy atoms (N, CA, C, O,
+      OXT): phi/psi-equivalent, so it would fight the Ramachandran term.
+    * :data:`SKIP_ZERO_SIGMA` -- a zero esd, which the library writes for the
+      ``CONST_*`` torsions of aromatic rings; the planes already hold those flat.
+    * :data:`SKIP_SMALL_RING` -- period 3 about a bond closing a ring of at most
+      :data:`_MAX_STRAINED_RING` atoms (by the template's own ``bonds``). AceDRG
+      writes its generic staggered sp3-sp3 target for ring bonds too, and no pucker
+      of such a ring reaches it: proline's five ring torsions would strain every
+      proline.
+
+    A torsion matching several kinds is reported under the first listed.
+
+    Parameters
+    ----------
+    torsions : pandas.DataFrame
+        The template's torsions, as :func:`~torchref.topology.monomer.cif.read_cif`
+        returns them (``atom1`` ... ``atom4``, ``value``, ``sigma``, ``period`` or
+        ``periodicity``, optionally ``id``).
+    bonds : pandas.DataFrame, optional
+        The template's bonds; without them no ring is found.
+
+    Returns
+    -------
+    kept : pandas.DataFrame
+        The torsions to restrain, re-indexed from 0.
+    skipped : dict
+        ``{reason: [torsion id, ...]}`` for each reason with at least one torsion; a
+        torsion without an ``id`` is named by its four atoms.
+    """
+    periods = _torsion_periods(torsions)
+    quads = list(
+        zip(torsions["atom1"], torsions["atom2"], torsions["atom3"], torsions["atom4"])
+    )
+    ring_bonds = _small_ring_bonds(bonds)
+    sigmas = pd.to_numeric(torsions["sigma"], errors="coerce").to_numpy()
+    checks = (
+        (SKIP_BACKBONE, np.array([set(q) <= _BACKBONE_ATOMS for q in quads], bool)),
+        (SKIP_ZERO_SIGMA, sigmas == 0),
+        (
+            SKIP_SMALL_RING,
+            (periods == 3)
+            & np.array([frozenset(q[1:3]) in ring_bonds for q in quads], bool),
+        ),
+    )
+
+    labels = (
+        torsions["id"].astype(str).to_numpy()
+        if "id" in torsions.columns
+        else np.array(["-".join(map(str, q)) for q in quads], dtype=object)
+    )
+    taken = np.zeros(len(torsions), dtype=bool)
+    skipped: Dict[str, List[str]] = {}
+    for reason, hit in checks:
+        hit = hit & ~taken
+        if hit.any():
+            skipped[reason] = labels[hit].tolist()
+        taken |= hit
+    return torsions[~taken].reset_index(drop=True), skipped
+
+
 class PreprocessedCIF:
     """
     Pre-processed CIF restraints as NumPy arrays per residue type.
 
-    ``torsions`` holds every torsion except a template's alternative sugar-pucker
-    sets, which ``puckers`` keeps as ``{residue type: {id prefix: arrays}}`` so that a
-    residue can be matched against one of them.
+    ``torsions`` holds the torsions :func:`screen_torsions` keeps, less a template's
+    alternative sugar-pucker sets, which ``puckers`` keeps as
+    ``{residue type: {id prefix: arrays}}`` so that a residue can be matched against
+    one of them. ``skipped_torsions`` records what the screen turned down, as
+    ``{residue type: {reason: torsion ids}}``.
     """
 
     def __init__(self, cif_dict: Dict):
@@ -207,6 +346,7 @@ class PreprocessedCIF:
         self.puckers = {}
         self.planes = {}
         self.chirals = {}
+        self.skipped_torsions = {}
 
         for restype, data in cif_dict.items():
             if "bonds" in data and len(data["bonds"]) > 0:
@@ -214,9 +354,13 @@ class PreprocessedCIF:
             if "angles" in data and len(data["angles"]) > 0:
                 self.angles[restype] = self._preprocess_angles(data["angles"])
             if "torsions" in data and len(data["torsions"]) > 0:
-                result = self._preprocess_torsions(data["torsions"])
-                if result is not None:
-                    common, puckers = self._split_puckers(result)
+                kept, skipped = screen_torsions(data["torsions"], data.get("bonds"))
+                if skipped:
+                    self.skipped_torsions[restype] = skipped
+                if len(kept):
+                    common, puckers = self._split_puckers(
+                        self._preprocess_torsions(kept)
+                    )
                     if len(common["atom1"]):
                         self.torsions[restype] = common
                     if puckers:
@@ -245,42 +389,8 @@ class PreprocessedCIF:
             "sigma": angles_df["sigma"].values.astype(np.float64),
         }
 
-    # Backbone heavy atoms — torsions where ALL four atoms fall in this set
-    # are phi/psi-equivalent and must NOT be restrained as intra-residue
-    # torsions (they conflict with Ramachandran-favored angles).
-    # Example: CIF "sp2_sp3_1  O C CA N  0.0 10.0 6" directly restrains psi.
-    _BACKBONE_ATOMS = frozenset({"N", "CA", "C", "O", "OXT"})
-
     def _preprocess_torsions(self, torsions_df: pd.DataFrame) -> Dict[str, np.ndarray]:
-        """Convert torsions to NumPy arrays, dropping backbone-only torsions.
-
-        A torsion over four backbone heavy atoms (N, CA, C, O, OXT) is
-        phi/psi-equivalent and would fight the Ramachandran term, so it is removed
-        here rather than downweighted.
-        """
-        bb = self._BACKBONE_ATOMS
-        keep = np.array([
-            not ({a1, a2, a3, a4} <= bb)
-            for a1, a2, a3, a4 in zip(
-                torsions_df["atom1"].values,
-                torsions_df["atom2"].values,
-                torsions_df["atom3"].values,
-                torsions_df["atom4"].values,
-            )
-        ], dtype=bool)
-        torsions_df = torsions_df[keep].reset_index(drop=True)
-
-        if len(torsions_df) == 0:
-            return None
-
-        # Handle both 'period' and 'periodicity' column names
-        if "periodicity" in torsions_df.columns:
-            periods = torsions_df["periodicity"].values.astype(np.int64)
-        elif "period" in torsions_df.columns:
-            periods = torsions_df["period"].values.astype(np.int64)
-        else:
-            periods = np.ones(len(torsions_df), dtype=np.int64)
-
+        """Convert already-screened torsions to NumPy arrays."""
         return {
             "atom1": torsions_df["atom1"].values.astype(str),
             "atom2": torsions_df["atom2"].values.astype(str),
@@ -293,7 +403,7 @@ class PreprocessedCIF:
             ),
             "value": torsions_df["value"].values.astype(np.float64),
             "sigma": torsions_df["sigma"].values.astype(np.float64),
-            "period": periods,
+            "period": _torsion_periods(torsions_df),
         }
 
     #: ``_chem_comp_tor.id`` prefixes of the C2'-endo and C3'-endo sugar torsion sets

@@ -1007,6 +1007,14 @@ def build_topology_with_values(
     _, first_variant = np.unique(owners, return_index=True)
     template_key[:] = chemical_keys[first_variant]
     pp_cif = PreprocessedCIF(comp_dict)
+    reported = set()
+    for key, skipped in pp_cif.skipped_torsions.items():
+        resname = key.split(":", 1)[0]
+        if resname in reported:
+            continue
+        reported.add(resname)
+        reasons = "; ".join(f"{why}: {', '.join(ids)}" for why, ids in skipped.items())
+        log.debug(f"{resname}: dictionary torsions not restrained ({reasons})")
     match_cols["name"] = match_cols["name"].copy()
     # PDB terminal H1 is the monomer dictionary's H. Resolve the alias only
     # for matching, preserving the model's atom names and row identities.

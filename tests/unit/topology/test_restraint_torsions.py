@@ -213,3 +213,74 @@ def test_each_nucleotide_keeps_one_sugar_pucker(code, pucker):
         atoms, value = torsions[tid]
         assert references[atoms] == pytest.approx([value], abs=1e-3), tid
     assert all(len(found) == 1 for found in references.values())
+
+
+def _library_component(code):
+    from torchref.topology.monomer.cif import read_cif
+    from torchref.topology.monomer.library import get_library_manager
+
+    path = get_library_manager().get_cif_file(code)
+    return read_cif(str(path))[code]
+
+
+@pytest.mark.parametrize(
+    "code, ring",
+    [
+        ("PRO", {("CA", "CB"), ("CA", "N"), ("CB", "CG"), ("CD", "CG"), ("CD", "N")}),
+        ("PHE", set()),
+    ],
+)
+def test_small_ring_bonds(code, ring):
+    """Proline's five ring bonds count as a small ring; phenylalanine's six do not."""
+    from torchref.topology.builders import _small_ring_bonds
+
+    found = _small_ring_bonds(_library_component(code)["bonds"])
+    assert found == {frozenset(pair) for pair in ring}
+
+
+def test_proline_ring_takes_no_staggered_torsions(pdb_dir):
+    """No torsion about a proline ring bond is restrained; other chi torsions are.
+
+    The dictionary gives all five ring torsions the generic period-3 sp3-sp3 target,
+    which a five-membered ring cannot reach in either pucker.
+    """
+    _, restraints = _deposited(pdb_dir / "1DAW.pdb")
+    columns = restraints.topology.columns()
+    resname = np.asarray(columns["resname"]).astype(str)
+    name = np.asarray(columns["name"]).astype(str)
+    rows = restraints.restraints["torsion"]["intra"]["indices"].cpu().numpy()
+
+    proline = resname[rows[:, 1]] == "PRO"
+    assert (resname == "PRO").any()
+    assert not proline.any()
+
+    middle = {tuple(pair) for pair in name[rows[:, 1:3]].tolist()}
+    owner = set(resname[rows[:, 1]].tolist())
+    assert {"LYS", "PHE", "TYR"} <= owner
+    assert ("CA", "CB") in middle
+
+
+def test_screen_torsions_names_each_skipped_torsion():
+    """Each dictionary torsion is kept or skipped under exactly one named reason."""
+    from torchref.topology.builders import (
+        SKIP_BACKBONE,
+        SKIP_SMALL_RING,
+        SKIP_ZERO_SIGMA,
+        screen_torsions,
+    )
+
+    proline = _library_component("PRO")
+    kept, skipped = screen_torsions(proline["torsions"], proline["bonds"])
+    assert kept.empty
+    assert skipped == {
+        SKIP_BACKBONE: ["sp2_sp3_1"],
+        SKIP_SMALL_RING: ["chi1", "chi2", "sp3_sp3_1", "sp3_sp3_28", "sp3_sp3_37"],
+    }
+
+    phenylalanine = _library_component("PHE")
+    kept, skipped = screen_torsions(phenylalanine["torsions"], phenylalanine["bonds"])
+    assert list(kept["id"]) == ["chi1", "chi2", "sp3_sp3_1"]
+    assert skipped == {
+        SKIP_BACKBONE: ["sp2_sp3_1"],
+        SKIP_ZERO_SIGMA: [f"CONST_{i}" for i in range(1, 6)] + ["const_21"],
+    }
