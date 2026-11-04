@@ -2,13 +2,21 @@ name: Publish torchref-kernels
 
 # Builds the prebuilt CPU kernels (kernels/) for every platform TorchRef depends on them
 # for, tests each wheel against TorchRef's kernel tests, and publishes on request.
-# Publish torchref-kernels BEFORE a torchref release that requires the new version.
+# A torchref release (publish.yml) calls this to build and test the wheels and then
+# uploads them itself, before torchref; dispatch it by hand only to publish kernels alone.
 
 on:
   pull_request:
     paths:
       - "kernels/**"
       - ".github/workflows/publish-kernels.yml"
+  workflow_call:
+    inputs:
+      # The caller's event name leaks into a called workflow, so without this default a
+      # call from a dispatched publish.yml would run the publish job below as well.
+      target:
+        type: string
+        default: "none"
   workflow_dispatch:
     inputs:
       target:

@@ -2,14 +2,16 @@ Changelog
 =========
 
 
-Unreleased
-----------
+Version 0.8.0
+-------------
 
 Breaking changes
 ~~~~~~~~~~~~~~~~
 - Output goes through the standard ``logging`` module (one logger per module under ``torchref``) and the ``verbose`` argument is gone from every class, function and method. As a library TorchRef now shows only warnings; use ``torchref.set_verbosity(1)`` (or ``TORCHREF_LOG_LEVEL``) for progress, ``torchref.verbosity(...)``/``torchref.quiet()`` for a block. The CLI ``-v`` levels are unchanged
 - Warnings about runtime and data conditions (CPU fallback, thread count, R-free flag balance, Wilson B, CRYST1 mismatch, occupancy clamping, stale checkpoint keys) are log records, not Python warnings; deprecations and API misuse still raise ``warnings.warn``
 - The finite-value asserts and the setup-failure state dump that ran at ``verbose`` 2-3 are controlled by ``TORCHREF_DEBUG_CHECKS``
+- ``import torchref`` no longer imports torch: the top-level names (``Model``, ``ReflectionData``, ``dtypes``, ...) load on first access, and ``TORCHREF_DTYPE_*``/``TORCHREF_DEVICE`` are read then
+- ``torchref.difference-map`` takes ``-o`` as a directory (``difference_map.mtz``, ``summary.json``) and gains ``--dmax``; the difference MTZ adds ``DELFWT`` (``dF`` times the ``--ded-weight`` weight), writes the phase-aware and scalar extrapolations by default, and renames ``FC``/``PHIC``/``PHIC_diff`` to ``Fc_light``/``PHFc_light``/``PHdFc``
 
 New features
 ~~~~~~~~~~~~
@@ -17,10 +19,14 @@ New features
 - Batched structure factors: the density splats, ``build_electron_density``, map symmetry, the reciprocal extractor and ``SfFFT`` take a batch of models sharing one crystal, as dense ``(B, N, ...)`` atoms or flat atoms with ``batch_offsets``, and return ``(B, ...)`` maps and ``(B, n_reflections)`` structure factors
 - The CUDA (Triton) density splat runs in float64 instead of falling back to the portable splat
 - The CUDA (Triton), Metal and fused CPU (Rust) density splats have analytic second derivatives: a Hessian-vector product through them (``create_graph=True``) runs in the native kernels, where CUDA and Metal raised and the CPU recomputed through the portable splat
-- ``torchref-kernels`` 0.2.0 (ABI 2) is required: the CPU splat entry points take member offsets
+
+Performance
+~~~~~~~~~~~
+- Every command-line tool answers ``--help`` and argument errors without importing torch
 
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
+- Difference maps take their phases from a fit of the dark model alone, so they no longer change with ``-lm``; without ``--dmin`` the models' FFT grid follows the data instead of a fixed 1.0 Å
 - Disulfide detection no longer bonds conformer ``A`` of one cysteine to conformer ``B`` of its partner: an ``SG`` with an altloc pairs only with the same altloc or a blank one
 - Amino acids gain C-beta dihedral restraints (``N-C-CA-CB``, ``C-N-CA-CB``, σ 2.5°, as in Phenix), torsion origin ``cbeta``; refined models no longer show MolProbity C-beta outliers from the loose library CA angles
 - Staggered (period-3) dictionary torsions about bonds in rings of five or fewer atoms are no longer restrained: no ring pucker can reach them, so proline and hydroxyproline rings were strained toward impossible geometry
@@ -28,6 +34,11 @@ Fixes that change results
 Other fixes
 ~~~~~~~~~~~
 - The CPU and Metal density splats no longer raise in backward on non-contiguous ``xyz`` or ADPs (e.g. a transposed view)
+
+Dependencies
+~~~~~~~~~~~~
+- Requires ``torchref-kernels`` 0.2.0 (ABI 2), whose CPU splat entry points take batch offsets; in a source checkout, rebuild with ``pip install ./kernels``
+- ``tqdm`` accepted up to 4.70
 
 
 Version 0.7.0
@@ -41,8 +52,6 @@ Breaking changes
 - Anomalous scattering is off unless ``--wavelength`` is given (it defaulted to 1.0 Å)
 - Bulk-solvent phase offset removed; ``optimize_phase`` is deprecated
 - ``phased-difference-map`` is now ``difference-map``: fewer default columns (``--all-columns``), renamed (``dF``, ``W_InVa``)
-- ``import torchref`` no longer imports torch: the top-level names (``Model``, ``ReflectionData``, ``dtypes``, ...) load on first access, and ``TORCHREF_DTYPE_*``/``TORCHREF_DEVICE`` are read then
-- ``torchref.difference-map`` takes ``-o`` as a directory (``difference_map.mtz``, ``summary.json``) and gains ``--dmax``; the difference MTZ adds ``DELFWT`` (``dF`` times the ``--ded-weight`` weight), writes the phase-aware and scalar extrapolations by default, and renames ``FC``/``PHIC``/``PHIC_diff`` to ``Fc_light``/``PHFc_light``/``PHdFc``
 - Refinement checkpoints restore only through ``load_state``; ``Refinement.create_from_state_dict`` is removed
 - ``french_wilson_auto`` moved to ``torchref.io.datasets``; ``CollectionRiceTarget`` is now ``CollectionMLTarget``
 - Refinement writes its own PDB/mmCIF header instead of copying the input's
@@ -63,7 +72,6 @@ Performance
 ~~~~~~~~~~~
 - CPU density kernels ship prebuilt in the new ``torchref-kernels`` package (Rust): nothing is compiled at runtime, ``ninja`` is no longer a dependency, and the CPU splat is multithreaded on macOS. Wheels cover Linux x86_64/aarch64, macOS arm64 and Windows x86_64; other platforms run the portable CPU kernels unless ``torchref-kernels`` is built from source
 - Faster CPU VDW pair search, hydrogen-mode switching and ADP-locality neighbours; ``SfFFT`` stores no real-space grid
-- Every command-line tool answers ``--help`` and argument errors without importing torch
 - The command-line tools set ``OMP_WAIT_POLICY=PASSIVE``, so idle OpenMP workers no longer spin on the cores the CPU kernels need: multithreaded CPU refinement is faster. Library use is unchanged; see the CLI guide to opt in
 
 Fixes that change results
@@ -76,7 +84,6 @@ Fixes that change results
 - Refinement: frozen parameters stay frozen, rigid-body translations refine, the scaler is refit warm each cycle
 - Density kernels on CPU, CUDA and MPS; long matrix products on MPS; REMARK 3 angle RMSD reported in degrees
 - CUDA ``ls``/``nll`` X-ray kernels score a signed ``F_calc`` as ``|F_calc|``, as the eager path does
-- Difference maps take their phases from a fit of the dark model alone, so they no longer change with ``-lm``; without ``--dmin`` the models' FFT grid follows the data instead of a fixed 1.0 Å
 - ``WilsonNormaliser`` with ``s_lo``/``s_hi`` wider than the data: stable in float32 and no longer truncated by its log clamp
 
 Other fixes
@@ -117,14 +124,14 @@ Version 0.6.3
 - Fixed peptide-linked residues keeping their free-amino-acid restraint angles
 - Added switch to turn off caching mixin
 - Switched the ADP distribution restraint from a Gaussian in log(B) to the shifted inverse-gamma distribution of Masmaliyeva & Murshudov (2019)
-- Reworked outlier rejection to follow wilson criteria
+- Reworked outlier rejection to follow Wilson criteria
 - Reworked free flag generation so Friedel pairs get matching flags
-- Fixed breaking bug were sigma_A estimation did not work on mps 
+- Fixed a bug where σ_A estimation did not work on MPS
 
 
 Version 0.6.2
 -------------
-- Deprecated outlier flagging strategy 
+- Deprecated outlier flagging strategy
 - Rewrote X‑ray targets into five independent classes (nll, nll_beta, ml, ml_noalpha, ml_full) and XRAY_TARGETS.by_name.
 - Consolidated X‑ray loss math into Gaussian, Rice, marginalised Rice primitives; NLLXrayTarget replaces GaussianXrayTarget.
 - Fixed crash in difference refinement with mismatched reflection files: HKL reindexing (``validate_hkl``/``remap``/``reduce_to_spacegroup``) now carries all per-reflection fields (including the anomalous bookkeeping read by ``hkl_for_sf()``) instead of a hardcoded subset.
@@ -139,7 +146,7 @@ Version 0.6.2
 Version 0.6.1
 -------------
 - Fixed bug in beta estimation that caused instability in GPU refinement
-- Fixed reporting bug in collection scaler were rfactor reporting would ignore masks
+- Fixed reporting bug in the collection scaler where R-factor reporting ignored masks
 
 
 Version 0.6.0
@@ -153,7 +160,7 @@ Version 0.6.0
 - Renamed Maximum likelihood target to Rice target, Sigma A target to Maximum likelihood target.
 - Moved alignment into experimental
 - Fixed Fast rotation function, current blocker on alignment is the rescoring function
-- Moved kinetic to experimental 
+- Moved kinetic to experimental
 - Added monolithic refinement under experimental
 - Moved ensemble refinement to experimental
 - Fixed antechamber handling of non-standard residues
@@ -163,32 +170,38 @@ Version 0.6.0
 - Added isotropic / anisotropic switch and selection to refinement cli
 - Updated many docstrings, and fixed some bugs
 
+
 Version 0.5.3.3
 ---------------
 - Fixed U_aniso parametrization and line search instability during refinement with anisotropic b-factor
-- Fixed kinetic module import 
+- Fixed kinetic module import
 - Set default similarity weight in difference refinement to 0
+
 
 Version 0.5.3.2
 ---------------
-- Added 10GB Gram requirement for default gpu device selection
-- Slaved cli device detection to the default device selection
+- Added 10 GB VRAM requirement for default GPU device selection
+- Slaved CLI device detection to the default device selection
 - Fixed device mismatch crash on CUDA/MPS when the VDW pair list was refreshed mid-refinement: the maintenance-triggered rebuild now migrates the fresh VDW pair list, hydrogen topology, and exclusion hash to the model device (PR #19)
+
 
 Version 0.5.3.1
 ---------------
 - Fixed problem where TorchRef defaults to old gpus and crashes, now checking if gpu is actually usable, before setting default device to cuda, if not it will default to cpu and print a warning.
 
+
 Version 0.5.3
 -------------
 - Fixed dtype inconsistencies and centralized dtype handling
 - Centralized default device handling
-- Added compatability with Metal performance shaders
+- Added compatibility with Metal Performance Shaders
+
 
 Version 0.5.2
 -------------
 - Cleaned up build solvent mask calculation
-- Added DeviceMixin for centralizing device handling accross all classes
+- Added DeviceMixin for centralizing device handling across all classes
+
 
 Version 0.5.1
 -------------
@@ -200,46 +213,51 @@ Version 0.5.1
 - Cached XrayTarget.get_data constants across closures
 - Replaced slow tensor[indices] backwards (sort + dedup scatter) with ``index_add_`` in the symmetry extractor, scaler bin gathers, and MixedTensor; skip the indexing in get_iso / get_aniso when it covers all atoms
 
+
 Version 0.5.0
 -------------
 - Fixed two bugs in restraints related to peptide bonds
-- Centralized closure infrastructure in Lossstate, added systematic parameter freezing and cache management to the optimization functions as well as step pruning
+- Centralized closure infrastructure in LossState, added systematic parameter freezing and cache management to the optimization functions as well as step pruning
 - Switched main xray target to bhattacharyya distance between observed and calculated structure factor distributions.
-- Added model error estimation based on bfactor distribution and fischer information
-- Fixed weighting necessity by moving to unscaled log likelihoods for all targetes, overfitting weights remain
+- Added model error estimation based on bfactor distribution and Fisher information
+- Fixed weighting necessity by moving to unscaled log likelihoods for all targets, overfitting weights remain
 - Fixed missing angle in Proline geometry
-- Fixed restraint issues where peptide bonds were not being recognized accross altlocs
-- Fixed OOM errors in refinement caused by solvent map creation by explicitely handling symmetry
+- Fixed restraint issues where peptide bonds were not being recognized across altlocs
+- Fixed OOM errors in refinement caused by solvent map creation by explicitly handling symmetry
 - Implemented VDW restraints between symmetry mates, and vectorized spatial hashing for gpu friendly neighbor search
 - Migrated difference-refine script to the collection infrastructure, similarly migrated validate_ded and phased difference map
 - Added free CC calculation to validation_ded in reciprocal space
 - Deprecated scaler cli args as they are now always scaled together
 - Merged collection and basic kinetic infrastructure
 - Renamed column names in difference-refine output to be more concise and accurate
-- Fixed some bugs in collection architecture and 
+- Fixed some bugs in collection architecture and
 - Added PDB deposition headers (REMARK 3 with refinement statistics) and mmCIF coordinate writing
 - Added unified RefinementMetadata that renders to both PDB and mmCIF using PDBx/wwPDB field names
 - All refinement CLI scripts now write both PDB and mmCIF by default
 - Added torchref.add-metadata CLI tool for adding metadata to existing files
 - Added input file header pass-through for PDB and mmCIF
 
+
 Version 0.4.3
 -------------
 
 - Refactored and standardised cli args
 - Unified validation-ded and difference-refine scaler logic and added flags for separate vs shared scalers
-- Added option for other difference targets mainly rice, Does not seem to make a difference 
+- Added option for other difference targets mainly rice, Does not seem to make a difference
+
 
 Version 0.4.2
 -------------
 
-- Fixed bug where reflection data object in the refinement was not created on cuda when specified. 
+- Fixed bug where reflection data object in the refinement was not created on cuda when specified.
 - Fixed macos crash, not catching compilation error in c++ extension for scatter add
+
 
 Version 0.4.1
 -------------
 
-- fixed weird pytorch numpy compatability issues
+- fixed weird pytorch numpy compatibility issues
+
 
 Version 0.4.0
 -------------
@@ -268,18 +286,19 @@ Version 0.3.2
 
 - Hotfix for imports, bundled data and a minor bug in LBFGSRefinement
 
+
 Version 0.3.0
 -------------
 
 - Initial public release
 
-Major changes: 
+Major changes:
 
-- Separated ED building and SF calculations out of the ModelFT module 
+- Separated ED building and SF calculations out of the ModelFT module
 - Resolved scaler model dependency
 - Restraints are now tracked by the base model object instead of refinement
 - Targets are no longer dependent on the refinement object, only reference the respective model and if required ReflectionData object
-- Restructured math functions and renamed to base 
+- Restructured math functions and renamed to base
 - Introduced centralized dtype handling for all functions to avoid conflicts, default dtypes are torch.float32, torch.int32, and torch.complex64
 - Unified base Symmetry and SpaceGroup object into the SpaceGroup object
 
@@ -290,6 +309,7 @@ Additions
 - Implemented and validated scaffold for full stack alignement (does not work reliably)
 - Added E factor conversion to the reflection_data class
 
+
 Version 0.2.0
 -------------
 
@@ -299,6 +319,7 @@ Version 0.2.0
 - Bulk solvent model
 - GPU acceleration via CUDA
 - Full state_dict support for checkpointing
+
 
 Version 0.1.0
 -------------
