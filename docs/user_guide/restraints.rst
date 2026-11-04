@@ -118,6 +118,17 @@ repulsion
 (:math:`E \sim \text{violation}^4`) applied to symmetry mates as well as to the
 asymmetric unit.
 
+Not every torsion a dictionary lists is restrained. One screen,
+:func:`~torchref.topology.builders.screen_torsions`, decides, and the restraint build logs at
+DEBUG (``torchref.set_verbosity(2)``, CLI ``-v 2``) what it skipped per residue type and
+why. Three kinds are skipped: those over backbone atoms only (N, CA, C, O, OXT), which would fight the Ramachandran term;
+those with a zero sigma (the ``CONST_*`` aromatic-ring torsions, which the planes
+already cover); and staggered (period-3) torsions about a bond in a ring of five or
+fewer atoms. AceDRG writes its generic sp3–sp3 target (60°/180°) for ring bonds too,
+and no pucker of a five-membered ring reaches it, so restraining proline's ring
+torsions would strain every proline. Six-membered rings keep theirs: a chair's
+torsions sit near the staggered values.
+
 Restraint Statistics
 --------------------
 
