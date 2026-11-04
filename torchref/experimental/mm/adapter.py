@@ -13,7 +13,9 @@ gradient is OpenMM's force, returned through the layout to the coordinates.
 from __future__ import annotations
 
 import io
+import itertools
 import logging
+import weakref
 from typing import TYPE_CHECKING, Dict, Optional, Sequence, Tuple
 
 import numpy as np
@@ -45,30 +47,54 @@ _PLATFORM_FALLBACK = ("OpenCL", "CPU", "Reference")
 _NM_PER_ANGSTROM = 0.1
 
 
-class _OpenMMEnergy(torch.autograd.Function):
-    """OpenMM energy of particle positions in nm, with OpenMM's forces as gradient.
+#: Live adapters by :attr:`OpenMMAdapter._handle`. The energy op takes this integer, not
+#: the adapter, because a ``torch.library`` op accepts only tensors and scalars.
+_ADAPTERS: "weakref.WeakValueDictionary[int, OpenMMAdapter]" = (
+    weakref.WeakValueDictionary()
+)
+_HANDLES = itertools.count()
 
-    Forward returns the potential energy in kJ/mol; backward returns minus the force in
-    kJ/mol/nm, clipped per particle at ``adapter.max_force``. OpenMM hands its forces
-    over as float64; they are cast once to the positions' dtype and device and clipped
-    there.
+
+@torch.library.custom_op("torchref::openmm_energy", mutates_args=())
+def _openmm_energy(
+    positions_nm: torch.Tensor, handle: int, max_force: float
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """OpenMM energy and per-particle-clipped forces at positions in nm.
+
+    A registered op rather than an ``autograd.Function`` so that ``torch.compile``
+    keeps it as one opaque node instead of breaking the graph at the host copy and the
+    OpenMM call. Returns the energy in kJ/mol, shape ``()``, and the forces in
+    kJ/mol/nm, shape ``(n_particles, 3)``, both on ``positions_nm``'s device and dtype.
+    OpenMM hands its forces over as float64; they are cast once and clipped there.
     """
+    energy, forces = _ADAPTERS[handle]._evaluate(positions_nm.detach().cpu().numpy())
+    forces = torch.from_numpy(forces).to(
+        device=positions_nm.device, dtype=positions_nm.dtype
+    )
+    norms = forces.norm(dim=1, keepdim=True).clamp_min(1e-10)
+    forces = forces * (max_force / norms).clamp(max=1.0)
+    return positions_nm.new_tensor(energy), forces
 
-    @staticmethod
-    def forward(ctx, positions_nm: torch.Tensor, adapter: "OpenMMAdapter"):
-        energy, forces = adapter._evaluate(positions_nm.detach().cpu().numpy())
-        forces = torch.from_numpy(forces).to(
-            device=positions_nm.device, dtype=positions_nm.dtype
-        )
-        norms = forces.norm(dim=1, keepdim=True).clamp_min(1e-10)
-        forces = forces * (adapter.max_force / norms).clamp(max=1.0)
-        ctx.save_for_backward(forces)
-        return positions_nm.new_tensor(energy)
 
-    @staticmethod
-    def backward(ctx, grad_output):
-        (forces,) = ctx.saved_tensors
-        return -forces * grad_output, None
+@_openmm_energy.register_fake
+def _openmm_energy_fake(positions_nm, handle, max_force):
+    return positions_nm.new_empty(()), torch.empty_like(positions_nm)
+
+
+def _openmm_energy_setup(ctx, inputs, output) -> None:
+    ctx.save_for_backward(output[1])
+
+
+def _openmm_energy_backward(ctx, grad_energy, grad_forces):
+    # The forces output is the gradient itself, not a function to differentiate:
+    # only first derivatives exist, so grad_forces is ignored.
+    (forces,) = ctx.saved_tensors
+    return -forces * grad_energy, None, None
+
+
+_openmm_energy.register_autograd(
+    _openmm_energy_backward, setup_context=_openmm_energy_setup
+)
 
 
 class _TakeRows(torch.autograd.Function):
@@ -121,8 +147,12 @@ class OpenMMAdapter:
     Notes
     -----
     Every evaluation copies the positions to host memory and the forces back, a
-    GPU-to-CPU synchronisation when the coordinates live on an accelerator. The
-    ``Context`` is created on first evaluation. Only first derivatives exist.
+    GPU-to-CPU synchronisation when the coordinates live on an accelerator: OpenMM's
+    Python API exposes positions and forces only as host arrays. :meth:`energy` is the
+    registered op ``torch.ops.torchref.openmm_energy``, so ``torch.compile`` traces
+    through it without a graph break; the synchronisation still rules out CUDA graphs
+    (``mode="reduce-overhead"``). The ``Context`` is created on first evaluation. Only
+    first derivatives exist.
     """
 
     def __init__(
@@ -148,6 +178,8 @@ class OpenMMAdapter:
         self._context = None
         self._device_type = get_default_device().type
         self._index: Dict[torch.device, torch.Tensor] = {}
+        self._handle = next(_HANDLES)
+        _ADAPTERS[self._handle] = self
         self._identity = np.array_equal(
             self.particles, np.arange(layout.n_copies * self.n_model_atoms)
         )
@@ -377,7 +409,8 @@ class OpenMMAdapter:
             OpenMM's force clipped at :attr:`max_force` per particle, so it is the exact
             derivative only below the clip.
         """
-        return _OpenMMEnergy.apply(self.positions(xyz), self)
+        energy, _ = _openmm_energy(self.positions(xyz), self._handle, self.max_force)
+        return energy
 
     def energy_and_forces(self, xyz: torch.Tensor) -> Tuple[float, torch.Tensor]:
         """Energy and unclipped forces on the coordinate sets, without autograd.

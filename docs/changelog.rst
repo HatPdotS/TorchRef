@@ -14,6 +14,7 @@ Breaking changes
 New features
 ~~~~~~~~~~~~
 - CLI ``-q`` and ``--log-file``; warnings go to stderr, progress and results to stdout
+- ``OpenMMAdapter.energy`` (and so the AMBER targets) is the registered op ``torch.ops.torchref.openmm_energy``: ``torch.compile`` traces through it without a graph break
 
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~

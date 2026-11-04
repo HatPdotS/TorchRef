@@ -164,6 +164,36 @@ def test_bridge_follows_coordinate_device(waters, any_device):
     assert torch.isfinite(gradient).all()
 
 
+@pytest.mark.parametrize("crystal", [False, True], ids=["isolated", "crystal"])
+def test_energy_compiles_as_one_graph(waters, crystal):
+    """``torch.compile(fullgraph=True)`` traces the energy and its gradient whole.
+
+    The OpenMM call is one opaque op, so neither the host copy nor the OpenMM context
+    breaks the graph, and the compiled energy and gradient equal the eager ones.
+    """
+    layout = (
+        CrystalLayout.unit_cell(waters.cell, waters.spacegroup, 5.0)
+        if crystal
+        else None
+    )
+    adapter = OpenMMAdapter.from_model(
+        waters,
+        layout=layout,
+        nonbonded="pme" if crystal else "cutoff",
+        platform="Reference",
+    )
+    xyz = waters.xyz().detach().clone().requires_grad_()
+    expected = adapter.energy(xyz)
+    expected_gradient = torch.autograd.grad(expected, xyz)[0]
+
+    torch._dynamo.reset()
+    compiled = torch.compile(adapter.energy, fullgraph=True, backend="aot_eager")
+    energy = compiled(xyz)
+    gradient = torch.autograd.grad(energy, xyz)[0]
+    assert energy.item() == pytest.approx(expected.item(), rel=1e-6)
+    torch.testing.assert_close(gradient, expected_gradient)
+
+
 def test_minimize_lowers_the_energy_and_keeps_shape(waters):
     adapter = OpenMMAdapter.from_model(waters, platform="Reference")
     xyz = waters.xyz().detach()

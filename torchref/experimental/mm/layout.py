@@ -46,7 +46,10 @@ class CrystalLayout:
     Notes
     -----
     Holds NumPy float64 constants and converts them to the coordinates' device and
-    dtype on use, caching one copy per (device, dtype).
+    dtype on use, caching one copy per (device, dtype). The fields are fixed after
+    construction: the copy count, source count and whether the layout is the identity
+    are settled there as plain Python values, which ``torch.compile`` reads as constants
+    instead of tracing NumPy reductions it cannot branch on.
     """
 
     rotation: np.ndarray
@@ -69,6 +72,15 @@ class CrystalLayout:
             )
         if self.box is not None:
             self.box = np.asarray(self.box, dtype=np.float64)
+        self._n_sources = int(self.source.max()) + 1
+        self._is_identity = bool(
+            n == 1
+            and np.array_equal(self.rotation[0], np.eye(3))
+            and not self.translation.any()
+        )
+        self._one_copy_per_source = bool(
+            self._n_sources == n and np.array_equal(self.source, np.arange(n))
+        )
 
     # ------------------------------------------------------------------
     # Constructors
@@ -176,7 +188,7 @@ class CrystalLayout:
     @property
     def n_sources(self) -> int:
         """Number of coordinate sets the copies are built from."""
-        return int(self.source.max()) + 1
+        return self._n_sources
 
     @property
     def periodic(self) -> bool:
@@ -186,11 +198,7 @@ class CrystalLayout:
     @property
     def is_identity(self) -> bool:
         """One copy of one coordinate set, untransformed."""
-        return (
-            self.n_copies == 1
-            and np.array_equal(self.rotation[0], np.eye(3))
-            and not self.translation.any()
-        )
+        return self._is_identity
 
     def positions(self, xyz: torch.Tensor) -> torch.Tensor:
         """Place every copy, differentiably in ``xyz``.
@@ -217,9 +225,7 @@ class CrystalLayout:
         if self.is_identity:
             return xyz
         rotation, translation, source = self._on(xyz)
-        if self.n_sources == self.n_copies and not np.any(
-            self.source - np.arange(self.n_copies)
-        ):
+        if self._one_copy_per_source:
             picked = xyz
         elif self.n_sources == 1:
             picked = xyz.expand(self.n_copies, -1, -1)
