@@ -68,7 +68,7 @@ def built(request, pdb_dir):
             path = pdb_dir / f"{code}.pdb"
             if not path.exists():
                 pytest.skip(f"{code}.pdb not bundled")
-            model = Model(verbose=0)
+            model = Model()
             model.load_pdb(str(path))
             model.ctx.set_cif_path(None)
             restraints = model.restraints
@@ -79,7 +79,6 @@ def built(request, pdb_dir):
                 link_dict=getattr(restraints, "link_dict", None),
                 link_list=getattr(restraints, "link_list", None),
                 links=restraints.links,
-                verbose=0,
             )
             cache[code] = (topology, _current_edges(restraints))
         return cache[code]
@@ -186,7 +185,7 @@ def test_layout_is_reproducible(built, pdb_dir):
     """
     topology_a, _ = built("7L84")
 
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
     model.ctx.set_cif_path(None)
     restraints = model.restraints
@@ -197,7 +196,6 @@ def test_layout_is_reproducible(built, pdb_dir):
         link_dict=getattr(restraints, "link_dict", None),
         link_list=getattr(restraints, "link_list", None),
         links=restraints.links,
-        verbose=0,
     )
 
     for edge_type in ("bond", "angle", "torsion", "chiral"):

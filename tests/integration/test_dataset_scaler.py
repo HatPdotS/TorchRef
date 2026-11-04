@@ -21,7 +21,7 @@ def clone(data):
 
 
 def collection(data, factors):
-    dc = DatasetCollection(device=data.device, verbose=0)
+    dc = DatasetCollection(device=data.device)
     for i, factor in enumerate(factors):
         raw = clone(data)
         raw.F *= factor
@@ -223,7 +223,7 @@ def test_permutation_and_partial_overlap_chain(loaded_reflection_data):
     sources["c"].F_sigma *= 4
     results = []
     for order in [("a", "b", "c"), ("c", "a", "b")]:
-        dc = DatasetCollection(device=get_default_device(), verbose=0)
+        dc = DatasetCollection(device=get_default_device())
         for key in order:
             dc.add_dataset(key, sources[key])
         dc.scale(nsteps=2)

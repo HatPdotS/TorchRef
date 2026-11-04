@@ -5,8 +5,15 @@ Changelog
 Unreleased
 ----------
 
+Breaking changes
+~~~~~~~~~~~~~~~~
+- Output goes through the standard ``logging`` module (one logger per module under ``torchref``) and the ``verbose`` argument is gone from every class, function and method. As a library TorchRef now shows only warnings; use ``torchref.set_verbosity(1)`` (or ``TORCHREF_LOG_LEVEL``) for progress, ``torchref.verbosity(...)``/``torchref.quiet()`` for a block. The CLI ``-v`` levels are unchanged
+- Warnings about runtime and data conditions (CPU fallback, thread count, R-free flag balance, Wilson B, CRYST1 mismatch, occupancy clamping, stale checkpoint keys) are log records, not Python warnings; deprecations and API misuse still raise ``warnings.warn``
+- The finite-value asserts and the setup-failure state dump that ran at ``verbose`` 2-3 are controlled by ``TORCHREF_DEBUG_CHECKS``
+
 New features
 ~~~~~~~~~~~~
+- CLI ``-q`` and ``--log-file``; warnings go to stderr, progress and results to stdout
 - Batched structure factors: the density splats, ``build_electron_density``, map symmetry, the reciprocal extractor and ``SfFFT`` take a batch of models sharing one crystal, as dense ``(B, N, ...)`` atoms or flat atoms with ``batch_offsets``, and return ``(B, ...)`` maps and ``(B, n_reflections)`` structure factors
 - The CUDA (Triton) density splat runs in float64 instead of falling back to the portable splat
 - The CUDA (Triton) and Metal density splats have analytic second derivatives, so a Hessian-vector product through them (``create_graph=True``) runs on the GPU instead of raising
@@ -15,6 +22,7 @@ New features
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 - Disulfide detection no longer bonds conformer ``A`` of one cysteine to conformer ``B`` of its partner: an ``SG`` with an altloc pairs only with the same altloc or a blank one
+- Amino acids gain C-beta dihedral restraints (``N-C-CA-CB``, ``C-N-CA-CB``, σ 2.5°, as in Phenix), torsion origin ``cbeta``; refined models no longer show MolProbity C-beta outliers from the loose library CA angles
 
 Other fixes
 ~~~~~~~~~~~

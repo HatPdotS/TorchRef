@@ -38,8 +38,6 @@ class ADPSimilarityTarget(ADPTarget):
     simu_sigma_aniso : float, optional
         Sigma on deviatoric B-tensor differences (Å²), used only when anisotropic atoms
         are present. Default 1.0.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     device : torch.device, optional
         Explicit device. When omitted, follows ``model``.
     """
@@ -48,9 +46,9 @@ class ADPSimilarityTarget(ADPTarget):
 
     def __init__(
         self, model: "Model" = None, simu_sigma: float = 2.0,
-        simu_sigma_aniso: float = 1.0, verbose: int = 0, device=None
+        simu_sigma_aniso: float = 1.0, device=None
     ):
-        super().__init__(model, verbose, device=device)
+        super().__init__(model, device=device)
         # Buffers, not floats: both reach adp_simu_math / adp_simu_aniso_math, which
         # dispatch to Triton on CUDA float32 and need them already on the right device.
         self._register_scalar("_simu_sigma", float(simu_sigma))

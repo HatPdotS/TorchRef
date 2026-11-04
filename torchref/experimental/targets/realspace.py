@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Dict, Tuple
 
 import torch
 
+from torchref._logging import quiet
 from torchref.base.fourier.fft import fft
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.symmetry import SpaceGroup
@@ -72,8 +73,6 @@ class RealSpaceTarget(DataTarget):
         Probe radius for mask dilation in Angstroms. Default 1.1.
     erosion_radius : float
         Radius for mask erosion in Angstroms. Default 0.9.
-    verbose : int
-        Verbosity level. Default 0.
     """
 
     VALID_MAP_TYPES = ("2mFo-DFc", "Fo-Fc")
@@ -87,9 +86,8 @@ class RealSpaceTarget(DataTarget):
         mask_solvent: bool = True,
         solvent_radius: float = 1.1,
         erosion_radius: float = 0.9,
-        verbose: int = 0,
     ):
-        super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
+        super().__init__(data=data, model=model, scaler=scaler)
         if map_type not in self.VALID_MAP_TYPES:
             raise ValueError(
                 f"map_type must be one of {self.VALID_MAP_TYPES}, got '{map_type}'"
@@ -228,12 +226,11 @@ class RealSpaceTarget(DataTarget):
         from torchref.scaling.solvent import SolventModel
 
 
-        with torch.no_grad():
+        with torch.no_grad(), quiet():
             solvent = SolventModel(
                 model=self._model,
                 radius=self._solvent_radius,
                 erosion_radius=self._erosion_radius,
-                verbose=0,
             )
             solvent_mask = solvent.get_solvent_mask()  # True = solvent
             self._molecular_mask = ~solvent_mask  # True = protein
@@ -275,8 +272,6 @@ class RealSpaceCorrelationTarget(RealSpaceTarget):
         Probe radius for mask in Angstroms. Default 1.1.
     erosion_radius : float
         Radius for mask erosion in Angstroms. Default 0.9.
-    verbose : int
-        Verbosity level. Default 0.
     """
 
     name: str = "realspace/correlation"
@@ -289,7 +284,6 @@ class RealSpaceCorrelationTarget(RealSpaceTarget):
         mask_solvent: bool = True,
         solvent_radius: float = 1.1,
         erosion_radius: float = 0.9,
-        verbose: int = 0,
     ):
         super().__init__(
             data=data,
@@ -299,7 +293,6 @@ class RealSpaceCorrelationTarget(RealSpaceTarget):
             mask_solvent=mask_solvent,
             solvent_radius=solvent_radius,
             erosion_radius=erosion_radius,
-            verbose=verbose,
         )
 
     def forward(self) -> torch.Tensor:
@@ -386,8 +379,6 @@ class RealSpaceDifferenceTarget(RealSpaceTarget):
         Probe radius for mask in Angstroms. Default 1.1.
     erosion_radius : float
         Radius for mask erosion in Angstroms. Default 0.9.
-    verbose : int
-        Verbosity level. Default 0.
     """
 
     name: str = "realspace/difference"
@@ -400,7 +391,6 @@ class RealSpaceDifferenceTarget(RealSpaceTarget):
         mask_solvent: bool = True,
         solvent_radius: float = 1.1,
         erosion_radius: float = 0.9,
-        verbose: int = 0,
     ):
         super().__init__(
             data=data,
@@ -410,7 +400,6 @@ class RealSpaceDifferenceTarget(RealSpaceTarget):
             mask_solvent=mask_solvent,
             solvent_radius=solvent_radius,
             erosion_radius=erosion_radius,
-            verbose=verbose,
         )
 
     def forward(self) -> torch.Tensor:

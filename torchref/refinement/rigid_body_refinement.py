@@ -9,12 +9,16 @@ anisotropy and bulk solvent; at 6 Å and below it is ``ml`` with a full Scaler.
 """
 
 import copy
+import logging
 from typing import List, Optional
 
 import torch
 
+from torchref._logging import enabled, get_logger
 from torchref.refinement.loss_state import LossState
 from torchref.scaling.scaler import Scaler
+
+log = get_logger(__name__)
 
 
 class RigidBodyRefinementStep:
@@ -196,7 +200,6 @@ class RigidBodyRefinementStep:
             # against it -- silently, since both fits succeed.
             n_iso_coeff=1 if xray_mode == "ls_wunit_k1" else getattr(
                 ref, "n_iso_coeff", 6),
-            verbose=ref.verbose,
             device=ref.device,
         )
         # Only the x-ray half of _init_targets: the step optimizes against x-ray data
@@ -252,14 +255,16 @@ class RigidBodyRefinementStep:
             opt,
             context=f"rigid_body[d_min={d_min:.2f}]",
         )
-        if ref.verbose > 0:
+        if enabled(log, logging.INFO):
+            # Progress report only: a failure here must not abort the refinement.
             try:
                 rwork, rfree = ref.get_rfactor()
-                print(
+            except Exception as e:
+                log.debug(f"  rigid-body d_min={d_min:.2f}: R-factors unavailable ({e!r})")
+            else:
+                log.info(
                     f"  rigid-body d_min={d_min:.2f} "
                     f"(lbfgs, iters={self.iterations_per_step}): "
                     f"Rwork={rwork:.4f} Rfree={rfree:.4f}"
                 )
-            except Exception:
-                pass
         return state

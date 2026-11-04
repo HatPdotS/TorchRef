@@ -104,7 +104,7 @@ def test_cli_generates_from_the_user_cif(
 @pytest.mark.parametrize("hydrogens", ["keep", "add", "strip"])
 def test_empty_refinement_preserves_hydrogen_setting(hydrogens: str) -> None:
     """An empty refinement shell forwards the policy to its model too."""
-    refinement = LBFGSRefinement(verbose=0, hydrogens=hydrogens, hydrogen_mode="atoms")
+    refinement = LBFGSRefinement(hydrogens=hydrogens, hydrogen_mode="atoms")
     assert refinement.model.ctx.hydrogens == hydrogens
 
 

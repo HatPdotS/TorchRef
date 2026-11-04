@@ -25,8 +25,8 @@ class BondTarget(GeometryTarget):
 
     name: str = "geometry/bond"
 
-    def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose)
+    def __init__(self, model: "Model" = None):
+        super().__init__(model)
 
     def forward(self) -> torch.Tensor:
         """Summed bond NLL; 0.0 when the model has no bond restraints.

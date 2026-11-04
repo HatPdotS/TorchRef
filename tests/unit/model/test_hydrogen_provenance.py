@@ -13,7 +13,7 @@ from torchref.model.model import Model
 
 @pytest.fixture(scope="module")
 def added(pdb_dir):
-    return Model(verbose=0, device="cpu", hydrogens="add").load_pdb(
+    return Model(device="cpu", hydrogens="add").load_pdb(
         str(pdb_dir / "1DAW.pdb")
     )
 
@@ -29,7 +29,7 @@ def test_add_sets_and_derivation_keeps_it(added):
 
 @pytest.mark.unit
 def test_keep_and_strip_do_not_claim_it(pdb_dir, added):
-    kept = Model(verbose=0, device="cpu", hydrogens="keep").load_pdb(
+    kept = Model(device="cpu", hydrogens="keep").load_pdb(
         str(pdb_dir / "1DAW.pdb")
     )
     assert not kept.ctx.hydrogens_generated
@@ -40,6 +40,6 @@ def test_keep_and_strip_do_not_claim_it(pdb_dir, added):
 @pytest.mark.unit
 def test_checkpoint_round_trip(added):
     restored = Model.create_from_state_dict(
-        added.state_dict(), device=added.device, verbose=0
+        added.state_dict(), device=added.device
     )
     assert restored.ctx.hydrogens_generated

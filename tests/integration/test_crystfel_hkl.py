@@ -14,7 +14,7 @@ CELL = [14.97, 18.85, 18.89, 89.4, 84.9, 67.8]
 @pytest.fixture
 def halves(test_files_dir):
     return [
-        ReflectionData(device=get_default_device(), verbose=0).load_crystfel_hkl(
+        ReflectionData(device=get_default_device()).load_crystfel_hkl(
             str(test_files_dir / "hkl" / f"dark_half{i}.hkl"),
             cell=CELL,
             spacegroup="P 1",
@@ -44,7 +44,7 @@ def test_partial_overlap_alignment_preserves_sources(halves):
     original = [data.hkl.clone() for data in halves]
     sets = [{tuple(row) for row in data.hkl.tolist()} for data in halves]
     assert sets[0] != sets[1] and sets[0] & sets[1]
-    dc = DatasetCollection(verbose=0, device=get_default_device())
+    dc = DatasetCollection(device=get_default_device())
     dc.add_dataset("a", a).add_dataset("b", b)
     assert len(dc) == len(sets[0] | sets[1])
     assert dc.stack_I_obs().shape == (2, len(dc))

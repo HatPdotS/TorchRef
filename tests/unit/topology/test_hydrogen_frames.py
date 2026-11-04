@@ -21,7 +21,7 @@ from torchref.topology.hydrogens import HydrogenFrames, hydrogen_frames
 @pytest.fixture(scope="module")
 def hydrogenated(pdb_dir):
     """1DAW with every missing hydrogen generated as a real atom."""
-    model = Model(verbose=0, hydrogens="add")
+    model = Model(hydrogens="add")
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     return model
 

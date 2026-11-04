@@ -491,9 +491,8 @@ class InterResidueBondBuilder:
         result = builder.finalize(device)
     """
 
-    def __init__(self, verbose: int = 0):
+    def __init__(self):
         """Initialize builder with accumulators for disulfide bonds."""
-        self.verbose = verbose
         # Accumulators for incremental disulfide building
         self._indices: List[np.ndarray] = []
         self._references: List[np.ndarray] = []
@@ -669,9 +668,8 @@ class InterResidueAngleBuilder:
         result = builder.finalize(device)
     """
 
-    def __init__(self, verbose: int = 0):
+    def __init__(self):
         """Initialize builder with accumulators for disulfide angles."""
-        self.verbose = verbose
         # Accumulators for incremental disulfide building
         self._indices: List[np.ndarray] = []
         self._references: List[np.ndarray] = []
@@ -846,9 +844,8 @@ class InterResidueTorsionBuilder:
         result = builder.finalize_disulfide(device)
     """
 
-    def __init__(self, verbose: int = 0):
+    def __init__(self):
         """Initialize builder with accumulators for disulfide torsions."""
-        self.verbose = verbose
         # Accumulators for disulfide torsions
         self._disulfide_indices: List[np.ndarray] = []
         self._disulfide_references: List[np.ndarray] = []
@@ -1164,10 +1161,6 @@ class InterResiduePlaneBuilder:
         builder = InterResiduePlaneBuilder()
         result = builder.build(residues, link_dict, device)
     """
-
-    def __init__(self, verbose: int = 0):
-        """Initialize builder."""
-        self.verbose = verbose
 
     def build(
         self,

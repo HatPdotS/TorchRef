@@ -18,6 +18,8 @@ Usage
 import argparse
 import sys
 
+from torchref.cli._common import add_log_file_arg, add_verbose_arg, configure_logging
+
 
 def main():
     """Entry point for ``torchref.strip-altlocs``; returns the exit code."""
@@ -28,12 +30,15 @@ def main():
     )
     parser.add_argument("input", help="Input PDB file")
     parser.add_argument("output", help="Output PDB file")
+    add_verbose_arg(parser)
+    add_log_file_arg(parser)
     args = parser.parse_args()
+    configure_logging(args)
 
     from torchref import Model
 
     # Pure bookkeeping on the atom table: no reason to start an accelerator.
-    model = Model(device="cpu", verbose=0).load_pdb(args.input)
+    model = Model(device="cpu").load_pdb(args.input)
     result = model.strip_altlocs()
     n_before, n_after = model.n_atoms, result.n_atoms
     n_residues_with_alt = len(model.ctx.altloc_residues())

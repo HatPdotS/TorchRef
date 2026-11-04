@@ -18,15 +18,14 @@ def difference_models(loaded_reflection_data, sample_structure_pair):
             str(sample_structure_pair["model"]),
             max_res=2.05,
             device=data.device,
-            verbose=0,
         )
         for _ in range(2)
     ]
     with torch.no_grad():
         models[1].xyz.refinable_params += 0.2
-    dc = DatasetCollection(device=data.device, verbose=0)
+    dc = DatasetCollection(device=data.device)
     dc.add_dataset("dark", data, set_as_reference=True).add_dataset("light", data)
-    mc = ModelCollection(models, dark_key="dark", verbose=0)
+    mc = ModelCollection(models, dark_key="dark")
     mc.add_dark().add_timepoint("light", [0.78, 0.22])
     return dc, mc
 
@@ -37,4 +36,4 @@ def difference_collection(difference_models):
     from torchref.scaling import CollectionScaler
 
     dc, mc = difference_models
-    return dc, mc, CollectionScaler(dc, mc, verbose=0).initialize()
+    return dc, mc, CollectionScaler(dc, mc).initialize()

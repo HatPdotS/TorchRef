@@ -22,4 +22,4 @@ def shared_model_ft(sample_cif_file: Path) -> ModelFT:
     """Load a read-only Fourier model with a 2 Å resolution limit per module."""
     from torchref.model import ModelFT
 
-    return ModelFT(max_res=2.0, verbose=0).load_cif(str(sample_cif_file))
+    return ModelFT(max_res=2.0).load_cif(str(sample_cif_file))

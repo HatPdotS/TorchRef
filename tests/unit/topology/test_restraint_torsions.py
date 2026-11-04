@@ -19,7 +19,7 @@ _SUGARS = ("NAG", "MAN", "BMA")
 
 
 def _deposited(path):
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(path))
     return model.xyz().detach(), model.restraints
 

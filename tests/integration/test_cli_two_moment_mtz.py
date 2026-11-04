@@ -98,7 +98,7 @@ def intensity_pair(mtz_dir, pdb_dir, tmp_path_factory):
     pdb = pdb_dir / "1DAW.pdb"
     assert mtz.is_file() and pdb.is_file()
 
-    data = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz))
+    data = ReflectionData(device="cpu").load_mtz(str(mtz))
     assert data.I is not None
 
     out = tmp_path_factory.mktemp("two_moment_cli")

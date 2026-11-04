@@ -15,11 +15,14 @@ from typing import Dict, Sequence, Tuple
 
 import numpy as np
 
+from torchref._logging import get_logger
 from torchref.topology.monomer.modifications import (
     apply_modifications,
     link_modifications,
     read_mod_definitions,
 )
+
+log = get_logger(__name__)
 
 
 def resolve_template_keys(
@@ -27,7 +30,6 @@ def resolve_template_keys(
     peptide_pairs: Sequence[Tuple[int, int]],
     cif_dict: Dict,
     link_list,
-    verbose: int = 0,
 ) -> Tuple[Dict, np.ndarray]:
     """Assign each residue the template it should draw restraints from.
 
@@ -43,8 +45,6 @@ def resolve_template_keys(
         Link-type definitions, as
         :func:`~torchref.topology.monomer.cif.read_link_definitions` returns
         them. None disables patching.
-    verbose : int, default 0
-        Verbosity level.
 
     Returns
     -------
@@ -94,11 +94,10 @@ def resolve_template_keys(
         keys[res_idx] = variant
         n_patched += 1
 
-    if verbose > 1:
-        print(
-            f"Patched {n_patched} residues "
-            f"({len(comp_dict) - len(cif_dict)} template variants)"
-        )
+    log.debug(
+        f"Patched {n_patched} residues "
+        f"({len(comp_dict) - len(cif_dict)} template variants)"
+    )
     return comp_dict, keys
 
 

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Dict, List
 
 import torch
 
+from torchref._logging import get_logger
 from torchref.base.metrics.rfactor import rfactor_work_free
 from torchref.base.targets.xray_likelihoods import (
     gaussian_per_refl,
@@ -41,6 +42,8 @@ if TYPE_CHECKING:
     from torchref.io.datasets.collection import DatasetCollection
     from torchref.model.model_collection import ModelCollection
     from torchref.scaling.scaler_base import ScalerBase
+
+log = get_logger(__name__)
 
 
 class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
@@ -75,8 +78,6 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
         Legacy bool; superseded by ``use_set``.
     use_set : str, optional
         Canonical 3-way subset selector ``"work"``/``"free"``/``"val"``.
-    verbose : int, optional
-        Verbosity level.
     base_weight : float, optional
         Multiplies the summed loss on the work set. Intensities are squared amplitudes,
         so this target's loss and gradient are on a completely different scale from the
@@ -104,7 +105,6 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
         scaler: "ScalerBase" = None,
         use_work_set: bool = True,
         use_set: str = None,
-        verbose: int = 0,
         base_weight: float = 1.0,
     ):
         super().__init__(
@@ -113,7 +113,6 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
             scaler=scaler,
             use_work_set=use_work_set,
             use_set=use_set,
-            verbose=verbose,
         )
         self.base_weight = float(base_weight)
         # Fail here rather than inside the first loss evaluation: LossState probes a
@@ -271,19 +270,17 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
 
         ref = _grad_norm(reference)
         if own <= floor:
-            if self.verbose:
-                print(
-                    "  two-moment calibration: own gradient is ~0, leaving "
-                    f"base_weight at {self.base_weight:.4g}"
-                )
+            log.info(
+                "  two-moment calibration: own gradient is ~0, leaving "
+                f"base_weight at {self.base_weight:.4g}"
+            )
             return self.base_weight
 
         self.base_weight = float(ratio * max(ref, floor) / own)
-        if self.verbose:
-            print(
-                f"  two-moment weight calibration: |grad_ref|={ref:.4g}, "
-                f"|grad_self|={own:.4g}  ->  base_weight={self.base_weight:.4g}"
-            )
+        log.info(
+            f"  two-moment weight calibration: |grad_ref|={ref:.4g}, "
+            f"|grad_self|={own:.4g}  ->  base_weight={self.base_weight:.4g}"
+        )
         return self.base_weight
 
 

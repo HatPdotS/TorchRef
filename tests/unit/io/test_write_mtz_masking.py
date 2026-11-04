@@ -21,7 +21,7 @@ MAP_COLS = ["FWT", "PHWT", "DELFWT", "PHDELWT", "F-model", "PH-model"]
 
 
 def _fcalc(data, pdb_dir):
-    model = ModelFT(verbose=0, max_res=CUT)
+    model = ModelFT(max_res=CUT)
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     with torch.no_grad():
         return data.structure_factors(model, cached=False)
@@ -33,7 +33,7 @@ def _d_spacing(out):
 
 @pytest.fixture
 def cut_data(mtz_dir):
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(str(mtz_dir / "1DAW.mtz"))
     assert data.resolution.min().item() < CUT - 0.5, "data must extend past the cut"
     data.filter_by_resolution(d_min=CUT)
@@ -53,7 +53,7 @@ def excluded_mtz(mtz_dir, tmp_path):
 
 
 def _load(path):
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(str(path))
     return data
 
@@ -62,7 +62,7 @@ def _load(path):
 def cut_anomalous_data(mtz_dir, tmp_path):
     stacked = tmp_path / "anom_in.mtz"
     rs.read_mtz(str(mtz_dir / "1DAW.mtz")).stack_anomalous().write_mtz(str(stacked))
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(str(stacked))
     data.filter_by_resolution(d_min=CUT)
     return data

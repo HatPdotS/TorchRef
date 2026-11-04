@@ -315,7 +315,7 @@ def test_reflection_statistics_cover_the_reflections_refined(mtz_dir):
     """A resolution cut shows in the reported range and counts."""
     from torchref.io.datasets.reflection_data import ReflectionData
 
-    data = ReflectionData(verbose=0)
+    data = ReflectionData()
     data.load_mtz(str(mtz_dir / "1DAW.mtz"))
     data.filter_by_resolution(d_min=2.5)
     meta = RefinementMetadata.from_refinement(SimpleNamespace(reflection_data=data))
@@ -336,7 +336,7 @@ def test_atom_counts_match_the_deposited_refine_hist(pdb_dir):
     """
     from torchref.model.model import Model
 
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
 
@@ -356,7 +356,7 @@ def test_hetatm_selenomethionines_count_as_protein(pdb_dir):
     besides protein and water is its deposited 12 ligand (ethylene glycol) atoms."""
     from torchref.model.model import Model
 
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "3E98.pdb"))
     meta = RefinementMetadata.from_refinement(SimpleNamespace(model=model))
 
@@ -427,7 +427,7 @@ def test_bond_angle_rmsd_is_reported_in_degrees(pdb_dir):
 
     from torchref.model.model import Model
 
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(str(pdb_dir / "1DAW.pdb"))
     with torch.no_grad():
         radians, _ = model.restraints.angle_deviations(model.xyz())

@@ -17,6 +17,10 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from torchref._logging import get_logger
+
+log = get_logger(__name__)
+
 
 def _format_pdb_atom_name(name, element="") -> str:
     """Format an atom name into the 4-character PDB atom-name field (cols 13-16).
@@ -384,7 +388,7 @@ def load_as_dataframe(
 
     try:
         cell, spacegroup, z = read_crystallographic_info(filepath)
-    except:
+    except Exception:
         cell, spacegroup, z = None, None, None
 
     pdb.attrs["cell"] = cell
@@ -401,11 +405,6 @@ class PDBReader:
     Populated by :meth:`read`; calling the instance returns
     ``(dataframe, cell, spacegroup)`` and raises if ``read`` has not run.
 
-    Parameters
-    ----------
-    verbose : int, optional
-        Verbosity level (0=silent, 1=normal, 2=debug). Default is 0.
-
     Attributes
     ----------
     dataframe : pd.DataFrame
@@ -418,8 +417,7 @@ class PDBReader:
         Molecules per cell, and the parsed LINK records.
     """
 
-    def __init__(self, verbose: int = 0):
-        self.verbose = verbose
+    def __init__(self):
         self.dataframe = None
         self.cell = None
         self.spacegroup = None
@@ -440,15 +438,13 @@ class PDBReader:
         PDBReader
             Self, for method chaining.
         """
-        if self.verbose > 1:
-            print(f"Reading PDB file: {filepath}")
+        log.debug(f"Reading PDB file: {filepath}")
 
         self.dataframe = load_as_dataframe(filepath)
         self.cell, self.spacegroup, self.z = read_crystallographic_info(filepath)
-        self.links = extract_link_records(filepath, verbose=self.verbose)
+        self.links = extract_link_records(filepath)
 
-        if self.verbose > 0:
-            print(f"Loaded {len(self.dataframe)} atoms")
+        log.info(f"Loaded {len(self.dataframe)} atoms")
 
         return self
 
@@ -471,7 +467,7 @@ class PDBReader:
         return self.dataframe, self.cell, self.spacegroup
 
 
-def read(filepath: str, verbose: int = 0) -> PDBReader:
+def read(filepath: str) -> PDBReader:
     """
     Read a PDB file.
 
@@ -479,15 +475,13 @@ def read(filepath: str, verbose: int = 0) -> PDBReader:
     ----------
     filepath : str
         Path to the PDB file.
-    verbose : int, optional
-        Verbosity level. Default is 0.
 
     Returns
     -------
     PDBReader
         Reader object; call it for ``(df, cell, spacegroup)``.
     """
-    return PDBReader(verbose=verbose).read(filepath)
+    return PDBReader().read(filepath)
 
 
 #: Columns of the LINK-record table that ``Model.load`` reads off a reader's ``.links``.
@@ -499,20 +493,17 @@ LINK_COLUMNS = (
 )
 
 
-def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
+def extract_link_records(filepath: str) -> pd.DataFrame:
     """Parse LINK records from a PDB file (PDB v3.3 format).
 
-    Symmetry-mate links (sym1 or sym2 not blank/``1555``) are skipped with a
-    warning, since the asymmetric unit holds no copy of the symmetry mate
-    that the bond can attach to.
+    Symmetry-mate links (sym1 or sym2 not blank/``1555``) are skipped (logged at
+    DEBUG, like malformed records), since the asymmetric unit holds no copy of the
+    symmetry mate that the bond can attach to.
 
     Parameters
     ----------
     filepath : str
-        Path to the PDB file.
-    verbose : int, optional
-        If ``> 0``, prints a one-line summary; if ``> 1``, also warns about
-        skipped symmetry-mate or malformed records.
+        Path to the PDB file. A one-line summary is logged at INFO.
 
     Returns
     -------
@@ -533,11 +524,10 @@ def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
                 sym2 = line[66:72].strip() if len(line) >= 72 else ""
                 if sym1 not in ("", "1555") or sym2 not in ("", "1555"):
                     skipped_sym += 1
-                    if verbose > 1:
-                        print(
-                            f"Warning: skipping symmetry-mate LINK "
-                            f"(sym1={sym1!r}, sym2={sym2!r}): {line.rstrip()}"
-                        )
+                    log.debug(
+                        f"skipping symmetry-mate LINK "
+                        f"(sym1={sym1!r}, sym2={sym2!r}): {line.rstrip()}"
+                    )
                     continue
 
                 length_str = line[73:78].strip() if len(line) >= 74 else ""
@@ -562,12 +552,11 @@ def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
                 )
             except (ValueError, IndexError):
                 skipped_bad += 1
-                if verbose > 1:
-                    print(f"Warning: skipping malformed LINK: {line.rstrip()}")
+                log.debug(f"skipping malformed LINK: {line.rstrip()}")
 
     df = pd.DataFrame(rows, columns=list(LINK_COLUMNS))
-    if verbose > 0 and (len(df) or skipped_sym or skipped_bad):
-        print(
+    if len(df) or skipped_sym or skipped_bad:
+        log.info(
             f"LINK records: parsed {len(df)}, "
             f"skipped {skipped_sym} symmetry-mate, {skipped_bad} malformed"
         )
@@ -760,7 +749,7 @@ def _write_atom_records(handle, df: pd.DataFrame, anisou: bool) -> None:
         try:
             records = _format_atom_records(row, anisou and bool(row["anisou_flag"]))
         except (TypeError, ValueError) as error:
-            print(f"Skipping atom row {i}, which cannot be formatted: {error}")
+            log.warning(f"Skipping atom row {i}, which cannot be formatted: {error}")
             continue
         handle.write(records)
 
@@ -819,7 +808,7 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     the file is written without a CRYST1 record and a warning is printed.
 
     Serials above 99999 and residue numbers above 9999 are written as
-    hybrid-36. Rows that fail to format are skipped with a printed warning; the
+    hybrid-36. Rows that fail to format are skipped with a logged warning; the
     remaining rows are still written. Nothing is renumbered: duplicated atom
     identifiers are written as they are (see
     :func:`torchref.utils.utils.sanitize_pdb_dataframe`).
@@ -832,8 +821,10 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
         # Write CRYST1 record if cell info available (directly before atoms)
         try:
             n.write(_cryst1_record(df.attrs))
-        except:
-            print("No cell information found, writing without cell and spacegroup")
+        except Exception:
+            log.warning(
+                "No cell information found, writing without cell and spacegroup"
+            )
 
         _write_atom_records(n, df, anisou=True)
         n.write("END")

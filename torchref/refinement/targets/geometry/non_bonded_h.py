@@ -44,8 +44,6 @@ class NonBondedHTarget(NonBondedTarget):
         Legacy coefficient override; derived from ``sigma`` when None.
     buffer : float, optional
         Distance buffer (Å). Default 0.0.
-    verbose : int, optional
-        Verbosity level. Default 0.
     """
 
     name: str = "geometry/nonbonded"
@@ -58,7 +56,6 @@ class NonBondedHTarget(NonBondedTarget):
         c_rep: "float | None" = None,
         buffer: float = 0.0,
         rebuild_threshold: float = 1.0,
-        verbose: int = 0,
     ):
         super().__init__(
             model=model,
@@ -67,7 +64,6 @@ class NonBondedHTarget(NonBondedTarget):
             c_rep=c_rep,
             buffer=buffer,
             rebuild_threshold=rebuild_threshold,
-            verbose=verbose,
         )
 
     # ------------------------------------------------------------------

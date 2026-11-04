@@ -1,10 +1,12 @@
 """K-nearest-neighbour spatial smoothness restraint on the ADPs."""
 
+import logging
 import numpy as np
 import torch
 from scipy.spatial import cKDTree
 from typing import TYPE_CHECKING, Dict
 
+from torchref._logging import enabled, get_logger
 from torchref.base.targets.adp import adp_locality_aniso_math
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
@@ -17,6 +19,8 @@ from .base import ADPTarget
 
 if TYPE_CHECKING:
     from torchref.model.model import Model
+
+log = get_logger(__name__)
 
 
 class ADPLocalityTarget(ADPTarget):
@@ -42,8 +46,6 @@ class ADPLocalityTarget(ADPTarget):
         Sigma for the deviatoric (anisotropy) channel, used only when anisotropic
         atoms are present. Default 0.5, dimensionless and on the same scale as the
         magnitude channel's fixed 0.5 log-sigma.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     name: str = "adp/locality"
@@ -54,10 +56,9 @@ class ADPLocalityTarget(ADPTarget):
         k_neighbors: int = 50,
         correlation_length: float = 5.0,
         sigma_aniso: float = 0.5,
-        verbose: int = 0,
         device=None,
     ):
-        super().__init__(model, verbose, device=device)
+        super().__init__(model, device=device)
         # Host-side, deliberately not buffers: every consumer (k-NN sizing, the
         # exp() falloff, stats) is host-side, so a device tensor would only add a
         # sync per access.
@@ -152,8 +153,8 @@ class ADPLocalityTarget(ADPTarget):
         self._neighbor_distances = torch.from_numpy(all_neighbor_dist).to(device)
         self._neighbor_xyz = xyz.detach().clone()
 
-        if self.verbose > 1 and all_neighbor_dist.size:
-            print(
+        if all_neighbor_dist.size and enabled(log, logging.DEBUG):
+            log.debug(
                 f"    Built K-NN list (k-d tree): k={k}, "
                 f"mean dist={float(all_neighbor_dist.mean()):.2f}A"
             )

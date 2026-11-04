@@ -24,7 +24,7 @@ coordinates (or B-factors) it scores, and the non-bonded pair list is rebuilt
 from the coordinates the non-bonded target passes in. ``Restraints.__init__``
 takes a node-only topology (``model.ctx.topology``, or
 ``Topology.from_table(table)``) and the coordinates to build over
-(``topology, cif_path, xyz, cell, spacegroup, links, verbose, nonbonded``).
+(``topology, cif_path, xyz, cell, spacegroup, links, nonbonded``).
 
 Residues for which no restraints could be built are frozen in ``xyz`` rather
 than refined unrestrained, so a missing ligand definition shows up as an
@@ -73,14 +73,16 @@ Restraints are reached through a nested-dict interface, ``[type][origin][field]`
   ``indices`` and ``sigmas``, no ``"all"``). Note ``"plane"`` in *storage* — the
   matching *target* and its ``stats()`` entry are called ``"planarity"``.
 - **Origins** are where the restraint came from: ``"intra"``, ``"link"``,
-  ``"peptide"``, ``"disulfide"``, and for torsions ``"phi"`` / ``"psi"`` /
-  ``"omega"``.
+  ``"peptide"``, ``"disulfide"``, and for torsions ``"cbeta"`` / ``"phi"`` /
+  ``"psi"`` / ``"omega"``. ``"cbeta"`` holds the two C-beta dihedrals per
+  amino acid (``N-C-CA-CB`` and ``C-N-CA-CB``, σ 2.5°, Phenix's targets), which
+  fix the in-plane CB tilt that the CA angles and the chiral volume leave loose.
 - ``"all"`` is the merged origin the targets actually read. It is built with the
   rest when the restraints are built; a type with nothing to merge (the torsions
   of a glycine-only model without hydrogens) has none, so probe with ``in``.
   Bond and angle ``"all"`` merge every origin; torsion ``"all"`` merges only
-  ``"intra"`` and ``"disulfide"``, because phi/psi carry no reference values
-  and omega has its own target.
+  ``"intra"``, ``"disulfide"`` and ``"cbeta"``, because phi/psi carry no
+  reference values and omega has its own target.
 - **Flat types** with no origin level: ``"vdw"`` and ``"chiral"`` are indexed
   straight by field, ``restraints.restraints["vdw"]["indices"]``.
 - **Fields** beyond the three above, where the restraint type has them:

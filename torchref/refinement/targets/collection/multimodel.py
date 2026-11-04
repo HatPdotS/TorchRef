@@ -26,21 +26,19 @@ class MultiModelGeometryTarget(Target):
     Parameters
     ----------
     model_collection : ModelCollection
-    verbose : int
-        Verbosity level.
     """
 
     name: str = "multi_model_geometry"
 
-    def __init__(self, model_collection: "ModelCollection", verbose: int = 0):
-        super().__init__(verbose=verbose)
+    def __init__(self, model_collection: "ModelCollection"):
+        super().__init__()
         self._model_collection = model_collection
 
         from torchref.refinement.targets.combined import TotalGeometryTarget
 
         self._targets = nn.ModuleList(
             [
-                TotalGeometryTarget(model=m, verbose=verbose)
+                TotalGeometryTarget(model=m)
                 for m in model_collection.base_models
             ]
         )
@@ -72,21 +70,19 @@ class MultiModelADPTarget(Target):
     Parameters
     ----------
     model_collection : ModelCollection
-    verbose : int
-        Verbosity level.
     """
 
     name: str = "multi_model_adp"
 
-    def __init__(self, model_collection: "ModelCollection", verbose: int = 0):
-        super().__init__(verbose=verbose)
+    def __init__(self, model_collection: "ModelCollection"):
+        super().__init__()
         self._model_collection = model_collection
 
         from torchref.refinement.targets.combined import TotalADPTarget
 
         self._targets = nn.ModuleList(
             [
-                TotalADPTarget(model=m, verbose=verbose)
+                TotalADPTarget(model=m)
                 for m in model_collection.base_models
             ]
         )

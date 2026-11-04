@@ -23,10 +23,12 @@ Or programmatically::
 
 import argparse
 import json
+import logging
 import sys
 import warnings
 from pathlib import Path
 
+from torchref._logging import enabled, get_logger, quiet
 from torchref.cli._choices import DEFAULT_DED_WEIGHT_SCHEME
 from torchref.cli._common import (
     add_ded_weight_args,
@@ -35,6 +37,7 @@ from torchref.cli._common import (
     add_general_args,
     add_outdir_arg,
     build_dual_column_names,
+    configure_logging,
     configure_unbuffered_output,
     difference_config_from_args,
     intensity_difference,
@@ -45,7 +48,12 @@ from torchref.cli._common import (
     validate_cif_files,
     validate_files,
 )
+
 configure_unbuffered_output()
+
+# Named, not __name__: run as a script or with -m, this module is __main__, outside
+# the torchref logger the CLI configures.
+log = get_logger("torchref.cli.validate_ded")
 
 
 # ---------------------------------------------------------------------------
@@ -124,11 +132,11 @@ def compute_map_from_coefficients(amplitudes, phases_rad, hkl_p1, gridsize):
     return torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
 
 
-def generate_plots(results, map_dfo, map_dfc, mask_dict, outdir, verbose):
+def generate_plots(results, map_dfo, map_dfc, mask_dict, outdir):
     """Write the 2-panel validation figure for ``results`` into ``outdir``.
 
     ``map_dfo``/``map_dfc`` are the real-space maps and ``mask_dict`` maps region name to a
-    boolean mask.
+    boolean mask. Returns the path of the PNG; a PDF is written beside it.
     """
     import matplotlib
 
@@ -185,8 +193,7 @@ def generate_plots(results, map_dfo, map_dfc, mask_dict, outdir, verbose):
     plt.savefig(str(png_path), dpi=200)
     plt.savefig(str(pdf_path))
     plt.close(fig)
-    if verbose >= 1:
-        print(f"  Plots saved to {png_path}")
+    return png_path
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +209,6 @@ def setup_ded_context(
     col_dark=None,
     col_light=None,
     n_bins=20,
-    verbose=0,
     ded_weight=DEFAULT_DED_WEIGHT_SCHEME,
     difference_config=None,
 ):
@@ -220,8 +226,6 @@ def setup_ded_context(
         Column name overrides for data loading.
     n_bins : int
         Number of resolution bins for reciprocal-space CC (default 20).
-    verbose : int
-        Verbosity level.
     ded_weight : str
         Scheme in :data:`torchref.maps.ded_weights.SCHEMES` behind ``weights``.
     difference_config : DifferencePowerConfig, optional
@@ -247,12 +251,13 @@ def setup_ded_context(
     device = normalize_device(device)
 
     # Load and scale
-    data_dark = load_reflection_data(
-        str(dark_sf), device=device, column_names=col_dark, verbose=0
-    )
-    data_light = load_reflection_data(
-        str(light_sf), device=device, column_names=col_light, verbose=0
-    )
+    with quiet():
+        data_dark = load_reflection_data(
+            str(dark_sf), device=device, column_names=col_dark
+        )
+        data_light = load_reflection_data(
+            str(light_sf), device=device, column_names=col_light
+        )
     if dmin is not None:
         data_dark.filter_by_resolution(d_min=dmin)
         data_light.filter_by_resolution(d_min=dmin)
@@ -263,8 +268,7 @@ def setup_ded_context(
     collection.scale()
     data_dark, data_light = collection["dark"], collection["light"]
 
-    if verbose >= 1:
-        print("Inter-dataset scaling:", collection.scaling_metrics)
+    log.info(f"Inter-dataset scaling: {collection.scaling_metrics}")
 
     # Extract matched reflections
     hkl_all = data_dark.hkl
@@ -341,11 +345,10 @@ def setup_ded_context(
         name: (w.weights, w.weights[orig_idx]) for name, w in all_w.items()
     }
 
-    if verbose >= 1:
-        print(f"Matched reflections: {len(hkl)}")
-        print(f"Cell: {cell_np}, Spacegroup: {sg_name}")
-        print(f"Resolution: {dmin:.2f} A, Grid: {gridsize}")
-        print(f"ASU: {len(hkl)}, P1: {len(hkl_p1)}")
+    log.info(f"Matched reflections: {len(hkl)}")
+    log.info(f"Cell: {cell_np}, Spacegroup: {sg_name}")
+    log.info(f"Resolution: {dmin:.2f} A, Grid: {gridsize}")
+    log.info(f"ASU: {len(hkl)}, P1: {len(hkl_p1)}")
 
     return {
         "device": device,
@@ -389,7 +392,6 @@ def compute_ded_maps(
     mask_source="both",
     mask_radius=2.5,
     n_bins=None,
-    verbose=0,
 ):
     """Compute DED maps and correlations for one (dark, light) model pair.
 
@@ -409,8 +411,6 @@ def compute_ded_maps(
         Mask sphere radius in Angstroms.
     n_bins : int, optional
         Number of resolution bins. Falls back to ``ctx["n_bins"]``.
-    verbose : int
-        Verbosity level.
 
     Returns
     -------
@@ -436,7 +436,8 @@ def compute_ded_maps(
     dark_mm = mc.dark_model
     mixed_mm = mc["light"]
 
-    scaler = setup_collection_scaler(ctx["collection"], mc, device, verbose=0)
+    with quiet():
+        scaler = setup_collection_scaler(ctx["collection"], mc, device)
 
     # Fcalc at ASU level
     with torch.no_grad():
@@ -462,9 +463,9 @@ def compute_ded_maps(
     delta_fcalc_asu = fcalc_mixed_asu.abs() - fcalc_dark_asu.abs()
     w_delta_fcalc_asu = delta_fcalc_asu * ctx["weights"]
 
-    if verbose >= 1:
-        print(f"  |dFcalc| mean: {delta_fcalc.abs().mean():.3f}")
-        print(f"  |WDFcalc| mean: {w_delta_fcalc.abs().mean():.3f}")
+    if enabled(log, logging.INFO):
+        log.info(f"  |dFcalc| mean: {delta_fcalc.abs().mean():.3f}")
+        log.info(f"  |WDFcalc| mean: {w_delta_fcalc.abs().mean():.3f}")
 
     # Compute maps
     with torch.no_grad():
@@ -506,8 +507,7 @@ def compute_ded_maps(
     for name, m in mask_dict.items():
         cc = compute_correlation(map_dfo, map_dfc, m)
         rs_corr[name] = {"cc": cc, "n_voxels": m.sum().item()}
-        if verbose >= 1:
-            print(f"  {name:>15s}: CC = {cc:.4f}  (n_vox = {m.sum().item()})")
+        log.info(f"  {name:>15s}: CC = {cc:.4f}  (n_vox = {rs_corr[name]['n_voxels']})")
 
     # Resolution-binned CC
     if n_bins is None:
@@ -535,10 +535,10 @@ def compute_ded_maps(
             "n_refl": len(idx),
             "cc": round(cc_amp.item(), 4),
         })
-        if verbose >= 1:
+        if enabled(log, logging.INFO):
             d_lo = ctx["d_spacing"][idx].max().item()
             d_hi = ctx["d_spacing"][idx].min().item()
-            print(
+            log.info(
                 f"  Bin {i:2d}: {d_lo:5.2f}-{d_hi:5.2f} A  "
                 f"n={len(idx):5d}  CC={cc_amp.item():.4f}"
             )
@@ -559,10 +559,9 @@ def compute_ded_maps(
             torch.stack([ctx["w_dfo"][work_mask], w_delta_fcalc_asu[work_mask]])
         )[0, 1].item()
 
-    if verbose >= 1:
-        print(f"  Overall CC = {cc_overall:.4f}")
-        if cc_work is not None:
-            print(f"  Work CC = {cc_work:.4f}, Free CC = {cc_free:.4f}")
+    log.info(f"  Overall CC = {cc_overall:.4f}")
+    if cc_work is not None:
+        log.info(f"  Work CC = {cc_work:.4f}, Free CC = {cc_free:.4f}")
 
     # Every registered scheme on the same coefficients, for side-by-side reporting.
     by_weight = {}
@@ -636,13 +635,12 @@ def run_validation(args):
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    if args.verbose >= 1:
-        print("=" * 70)
-        print("DED Validation: WDFo vs WDFcalc")
-        print("=" * 70)
-        print(f"\n--- Loading reflection data ---")
-        print(f"  Dark SF:   {args.dark_structure_factor}")
-        print(f"  Light SF:  {args.light_structure_factor}")
+    log.info("=" * 70)
+    log.info("DED Validation: WDFo vs WDFcalc")
+    log.info("=" * 70)
+    log.info("\n--- Loading reflection data ---")
+    log.info(f"  Dark SF:   {args.dark_structure_factor}")
+    log.info(f"  Light SF:  {args.light_structure_factor}")
 
     col_dark, col_light = build_dual_column_names(args)
     with warnings.catch_warnings(record=True) as caught:
@@ -655,7 +653,6 @@ def run_validation(args):
             col_dark=col_dark,
             col_light=col_light,
             n_bins=args.n_bins,
-            verbose=args.verbose,
             ded_weight=args.ded_weight,
             difference_config=difference_config_from_args(args),
         )
@@ -665,43 +662,39 @@ def run_validation(args):
         if issubclass(w.category, DedWeightFallbackWarning)
     ]
     for message in fallback_messages:
-        print(f"WARNING: {message}")
+        log.warning(message)
     d_min = ctx["d_min"]
 
     # Load models
-    if args.verbose >= 1:
-        print(f"\n--- Loading models ---")
+    log.info("\n--- Loading models ---")
 
-    model_dark = load_model(
-        args.dark_model, max_res=d_min, device=device, verbose=0, cif=args.cif
-    )
-    model_light = load_model(
-        args.light_model, max_res=d_min, device=device, verbose=0, cif=args.cif
-    )
+    with quiet():
+        model_dark = load_model(
+            args.dark_model, max_res=d_min, device=device, cif=args.cif
+        )
+        model_light = load_model(
+            args.light_model, max_res=d_min, device=device, cif=args.cif
+        )
 
-    if args.verbose >= 1:
-        print(f"  Dark model: {model_dark.n_atoms} atoms")
-        print(f"  Light model: {model_light.n_atoms} atoms")
-        print(f"  Fraction: {args.fraction}")
+    log.info(f"  Dark model: {model_dark.n_atoms} atoms")
+    log.info(f"  Light model: {model_light.n_atoms} atoms")
+    log.info(f"  Fraction: {args.fraction}")
 
-    # R-factors (verbose only, before DED computation)
-    if args.verbose >= 1:
-        print(f"\n--- Setting up joint scaler ---")
+    # R-factors (reported only, before DED computation)
+    if enabled(log, logging.INFO):
+        log.info("\n--- Setting up joint scaler ---")
         f = args.fraction
         mc = ModelCollection([model_dark, model_light], dark_key="dark")
         mc.add_dark()
         mc.add_timepoint("light", fractions=[1.0 - f, f])
-        scaler = setup_collection_scaler(
-            ctx["collection"], mc, device, verbose=args.verbose
-        )
+        scaler = setup_collection_scaler(ctx["collection"], mc, device)
         r_work_d, r_free_d = compute_rfactors(mc.dark_model, ctx["data_dark"], scaler)
         r_work_m, r_free_m = compute_rfactors(mc["light"], ctx["data_light"], scaler)
-        print(f"  R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
-        print(f"  R-factor (mixed): R_work={r_work_m:.4f}  R_free={r_free_m:.4f}")
+        log.info(f"  R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
+        log.info(f"  R-factor (mixed): R_work={r_work_m:.4f}  R_free={r_free_m:.4f}")
 
     # Core computation
-    if args.verbose >= 1:
-        print(f"\n--- Computing DED maps and correlations ---")
+    log.info("\n--- Computing DED maps and correlations ---")
 
     result = compute_ded_maps(
         ctx,
@@ -712,7 +705,6 @@ def run_validation(args):
         mask_source=args.mask_source,
         mask_radius=args.mask_radius,
         n_bins=args.n_bins,
-        verbose=args.verbose,
     )
 
     # Assemble output JSON
@@ -789,10 +781,12 @@ def run_validation(args):
 
     # Optional: plots
     if args.plot:
-        generate_plots(
+        png_path = generate_plots(
             results, result["map_dfo"], result["map_dfc"],
-            result["mask_dict"], outdir, args.verbose,
+            result["mask_dict"], outdir,
         )
+        if args.verbose >= 1:
+            print(f"  Plots saved to {png_path}")
 
     # Summary
     if args.verbose >= 1:
@@ -814,9 +808,9 @@ def run_validation(args):
                 f"{entry['realspace_correlation'][m]:13.4f}" for m in masks
             )
             print(row + f"{entry['reciprocal_cc_overall']:13.4f}")
-        for message in fallback_messages:
-            print(f"  WARNING: {message}")
         print(f"{'=' * 70}")
+    for message in fallback_messages:
+        log.warning(message)
 
     return 0
 
@@ -915,6 +909,7 @@ Examples:
     add_general_args(parser)
 
     args = parser.parse_args()
+    configure_logging(args)
 
     register_timing()
 

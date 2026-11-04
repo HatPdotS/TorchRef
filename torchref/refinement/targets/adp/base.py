@@ -25,8 +25,6 @@ class ADPTarget(ModelTarget):
     ----------
     model : Model, optional
         Reference to the Model object.
-    verbose : int, optional
-        Verbosity level. Default is 0.
 
     Notes
     -----
@@ -38,11 +36,10 @@ class ADPTarget(ModelTarget):
     def __init__(
         self,
         model: "Model" = None,
-        verbose: int = 0,
         device=None,
         **kwargs,
     ):
-        super().__init__(model, verbose, device=device)
+        super().__init__(model, device=device)
 
     def _b_values(self) -> torch.Tensor:
         """Return per-atom B_eq in Å², shape ``(n_atoms,)``, from ``Model._b_eq``.

@@ -31,7 +31,7 @@ def _prepare(code: str, output: Path, seed: int) -> dict:
 
     source = FILES / "pdb" / f"{code}_af.pdb"
     original = (
-        Model(device="cpu", verbose=0, hydrogens="strip")
+        Model(device="cpu", hydrogens="strip")
         .load_pdb(str(source))
         .strip_altlocs()
     )
@@ -43,7 +43,7 @@ def _prepare(code: str, output: Path, seed: int) -> dict:
     fixed_path = output / f"{code}_heavy_completed.pdb"
     with fixed_path.open("w") as handle:
         app.PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
-    fixed = Model(device="cpu", verbose=0).load_pdb(
+    fixed = Model(device="cpu").load_pdb(
         str(fixed_path)
     )
     original_rows = {
@@ -219,12 +219,11 @@ def _run(
         pdb=str(prepared),
         data_file=str(FILES / "mtz" / f"{code}.mtz"),
         device=torch.device("cpu"),
-        verbose=0,
         hydrogens_in_xray=True,
         target_mode="ml",
     )
     ref.set_hydrogen_mode("riding")
-    amber = AmberTarget(model=ref.model, normalize_by_atoms=True, verbose=0)
+    amber = AmberTarget(model=ref.model, normalize_by_atoms=True)
     state = ref.loss_state
     initial_gradients, raw = _gradient_snapshot(ref, amber)
     calibration = (

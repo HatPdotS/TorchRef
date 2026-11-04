@@ -3,15 +3,20 @@ Base dataclass for crystallographic datasets: every optional tensor field,
 device management and save/load.
 """
 
-import warnings
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, Optional
 
 import torch
 
+from torchref._logging import get_logger
 from torchref.config import get_default_device, get_float_dtype, normalize_device
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.device_mixin import DeviceMovementMixin
+
+log = get_logger(__name__)
+
+#: Keys older checkpoints carry that are dropped without a warning.
+_LEGACY_KEYS = frozenset({"verbose"})
 
 
 @dataclass
@@ -27,8 +32,6 @@ class CrystalDataset(DeviceMovementMixin):
     ----------
     device : torch.device
         Device for tensors. Defaults to ``get_default_device()``.
-    verbose : int
-        Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
     """
 
     # === Core reflection tensors ===
@@ -64,7 +67,6 @@ class CrystalDataset(DeviceMovementMixin):
 
     # === Metadata ===
     device: torch.device = field(default_factory=get_default_device)
-    verbose: int = 1
 
     # === Source tracking ===
     rfree_source: Optional[str] = None
@@ -123,19 +125,22 @@ class CrystalDataset(DeviceMovementMixin):
     def _drop_stale_state_keys(cls, state: Dict[str, Any]) -> Dict[str, Any]:
         """Drop state keys that are no longer dataclass fields, warning about each.
 
+        Keys in ``_LEGACY_KEYS`` are dropped silently.
+
         :meth:`_from_state` splats the state straight into the constructor, so a field
         removed after a checkpoint was written would otherwise make that checkpoint
         permanently unloadable with a bare ``TypeError``. Returns a filtered copy; the
         caller's dict is left alone.
         """
         known = {f.name for f in fields(cls)}
-        stale = sorted(set(state) - known)
+        dropped = set(state) - known
+        stale = sorted(dropped - _LEGACY_KEYS)
         if stale:
-            warnings.warn(
+            log.warning(
                 f"{cls.__name__}: dropping state keys that are no longer fields: "
-                f"{stale}. Written by an older TorchRef version.",
-                stacklevel=3,
+                f"{stale}. Written by an older TorchRef version."
             )
+        if dropped:
             state = {k: v for k, v in state.items() if k in known}
         return state
 
@@ -185,8 +190,7 @@ class CrystalDataset(DeviceMovementMixin):
         state = self._get_state()
         state["__class__"] = self.__class__.__name__
         torch.save(state, path)
-        if self.verbose > 0:
-            print(f"Saved {self.__class__.__name__} to {path}")
+        log.info(f"Saved {self.__class__.__name__} to {path}")
 
     @classmethod
     def load_state(cls, path: str, device=None) -> "CrystalDataset":
@@ -209,8 +213,7 @@ class CrystalDataset(DeviceMovementMixin):
         state = torch.load(path, map_location="cpu")
         state.pop("__class__", None)
         obj = cls._from_state(state, device)
-        if obj.verbose > 0:
-            print(f"Loaded {cls.__name__} from {path}")
+        log.info(f"Loaded {cls.__name__} from {path}")
         return obj
 
     # ========== UTILITY METHODS ==========

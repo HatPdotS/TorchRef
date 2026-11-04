@@ -23,7 +23,6 @@ def create_xray_target(
     use_work_set: bool = True,
     sigma_a_max: float = SIGMA_A_MAX,
     shrink: bool = None,
-    verbose: int = 0,
     device: Optional[torch.device] = None,
     use_set: str = None,
 ) -> XrayTarget:
@@ -50,8 +49,6 @@ def create_xray_target(
         :class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAConfig` handed to
         **every** row; rows that do not use it store it and ignore it. ``shrink=None``
         means the module default.
-    verbose : int, optional
-        Verbosity. Default 0.
     device : torch.device, optional
         Pins model/data/scaler before construction.
     use_set : str, optional
@@ -68,7 +65,6 @@ def create_xray_target(
         model=model,
         scaler=scaler,
         use_work_set=use_work_set,
-        verbose=verbose,
         use_set=use_set,
         device=device,
         sigma_a=SigmaAConfig(sigma_a_max=sigma_a_max, shrink=shrink),

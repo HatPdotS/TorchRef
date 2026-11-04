@@ -39,6 +39,7 @@ Key Features
    user_guide/scaling
    user_guide/naming_conventions
    user_guide/cli
+   user_guide/logging
    user_guide/testing
 
 .. toctree::

@@ -15,9 +15,9 @@ def collection(loaded_model_ft, loaded_reflection_data):
     from torchref.model import ModelCollection
 
     data = loaded_reflection_data
-    dc = DatasetCollection(device=data.device, verbose=0)
+    dc = DatasetCollection(device=data.device)
     dc.add_dataset("dark", data, set_as_reference=True).add_dataset("t1", data)
-    mc = ModelCollection([loaded_model_ft], dark_key="dark", verbose=0)
+    mc = ModelCollection([loaded_model_ft], dark_key="dark")
     mc.add_dark().add_timepoint("t1", [1.0])
     return dc, mc
 
@@ -26,7 +26,7 @@ def _fresh_scaler(collection):
     from torchref.scaling.collection_scaler import CollectionScaler
 
     dc, mc = collection
-    return CollectionScaler(dc, mc, verbose=0).initialize()
+    return CollectionScaler(dc, mc).initialize()
 
 
 def test_it_offers_exactly_the_selectable_objectives():
@@ -52,7 +52,7 @@ def test_every_objective_fits_finite_parameters(collection, scale_target):
     """Every selectable row must drive the joint fit to finite parameters."""
     scaler = _fresh_scaler(collection)
     m = scaler.refine_lbfgs_joint(
-        nsteps=2, max_iter=20, verbose=False, scale_target=scale_target
+        nsteps=2, max_iter=20, scale_target=scale_target
     )
     for p in scaler.parameters():
         assert torch.isfinite(p).all(), f"{scale_target}: non-finite scale parameter"
@@ -110,7 +110,7 @@ def test_a_non_finite_dataset_term_rejects_the_step(collection, monkeypatch):
     scaler = _fresh_scaler(collection)
     before = {name: p.detach().clone() for name, p in scaler.named_parameters()}
 
-    scaler.refine_lbfgs_joint(nsteps=1, max_iter=20, verbose=False)
+    scaler.refine_lbfgs_joint(nsteps=1, max_iter=20)
 
     assert len(poisoned) == 1
     for name, p in scaler.named_parameters():
@@ -136,7 +136,7 @@ def test_initial_scale_follows_the_data_dtype(collection):
     from torchref.scaling.collection_scaler import CollectionScaler
 
     dc, mc = collection
-    scaler = CollectionScaler(dc, mc, verbose=0)
+    scaler = CollectionScaler(dc, mc)
     data_dtype = dc[mc.dark_key].get_corrected_data()[0].dtype
 
     with cpu_double_precision():

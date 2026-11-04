@@ -20,7 +20,7 @@ class TestRestraintsBuildingFunctional:
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # Should have built some restraints
         assert restraints.restraints is not None
@@ -35,7 +35,7 @@ class TestRestraintsBuildingFunctional:
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # Check bond restraints exist
         assert "bond" in restraints.restraints
@@ -70,7 +70,7 @@ class TestRestraintsBuildingFunctional:
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # Check angle restraints exist
         assert "angle" in restraints.restraints
@@ -98,7 +98,7 @@ class TestRestraintsBuildingFunctional:
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # Check torsion restraints exist
         assert "torsion" in restraints.restraints
@@ -124,7 +124,7 @@ class TestRestraintsBuildingFunctional:
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # Check plane restraints exist
         assert "plane" in restraints.restraints
@@ -153,7 +153,7 @@ class TestRestraintsDeviationsFunctional:
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # Compute bond deviations
         if hasattr(restraints, "bond_deviations"):
@@ -174,7 +174,7 @@ class TestRestraintsDeviationsFunctional:
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # Compute angle deviations
         if hasattr(restraints, "angle_deviations"):
@@ -197,7 +197,6 @@ class TestRestraintsMultipleStructures:
         restraints = Restraints(
             topology=model.ctx.topology,
             xyz=model.xyz(),
-            verbose=0,
         )
         assert "bond" in restraints.restraints
         assert "angle" in restraints.restraints
@@ -215,7 +214,7 @@ class TestRestraintsDeviceHandling:
         model = Model(device=cpu_device)
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # Check that tensors are on the correct device
         if "bond" in restraints.restraints and "intra" in restraints.restraints["bond"]:
@@ -235,7 +234,7 @@ class TestRestraintsCIFParsing:
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # CIF dict should be populated with residue restraints
         assert restraints.cif_dict is not None
@@ -259,7 +258,7 @@ class TestRestraintsCIFParsing:
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz(), verbose=0)
+        restraints = Restraints(topology=model.ctx.topology, xyz=model.xyz())
 
         # Should have detected unique residues
         assert restraints.unique_residues is not None

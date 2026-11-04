@@ -11,7 +11,7 @@ def test_density_peaks_at_atom_sites(sample_structure_pair):
     from torchref.io import ReflectionData
     from torchref.model.model_ft import ModelFT
 
-    model = ModelFT(max_res=2.5, verbose=0)
+    model = ModelFT(max_res=2.5)
     model.load_cif(str(sample_structure_pair["model"]))
     data = ReflectionData()
     data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -38,7 +38,7 @@ def test_identical_models_have_no_negative_sites(sample_structure_pair):
     from torchref.io import ReflectionData
     from torchref.model.model_ft import ModelFT
 
-    model = ModelFT(max_res=2.5, verbose=0)
+    model = ModelFT(max_res=2.5)
     model.load_cif(str(sample_structure_pair["model"]))
     data = ReflectionData()
     data.load_mtz(str(sample_structure_pair["reflections"]))

@@ -259,7 +259,7 @@ def test_plain_dtype_move_keeps_integer_and_bool_tensors(mtz_dir):
     from torchref.io import ReflectionData
     from torchref.utils.utils import TensorMasks
 
-    rd = ReflectionData(verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    rd = ReflectionData().load_mtz(str(mtz_dir / "1DAW.mtz"))
     # The cast below is to float64, which MPS cannot hold.
     rd.to(torch.device("cpu"))
     exact = {

@@ -21,7 +21,7 @@ def pdb_path(pdb_dir):
 
 
 def _field_model(pdb_path, n_nodes=32, **kw):
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(pdb_path)
     model.set_adp_mode("field", n_nodes=n_nodes, k_neighbors=8, **kw)
     return model
@@ -30,7 +30,7 @@ def _field_model(pdb_path, n_nodes=32, **kw):
 @pytest.mark.unit
 def test_inert_outside_field_mode(pdb_path):
     """Registered unconditionally, so it must cost nothing on the per-atom path."""
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(pdb_path)
     model.set_adp_mode("isotropic")
     target = NodeLoadTarget(model)
@@ -129,7 +129,7 @@ def test_registered_in_the_total_adp_target(pdb_path):
     from torchref.refinement.targets.combined import TotalADPTarget
 
     model = _field_model(pdb_path)
-    total = TotalADPTarget(model, verbose=0)
+    total = TotalADPTarget(model)
     assert "node_load" in total.target_losses()
     assert torch.isfinite(torch.as_tensor(float(total["node_load"]())))
 
@@ -163,7 +163,7 @@ def test_barrier_prices_geometry_not_values_for_every_payload(pdb_path, mode_set
     to place an extreme ADP rather than penalising the ADP. A payload-width bug would
     show up here as gradient leaking into the payload columns.
     """
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(pdb_path)
     model.set_adp_mode(
         "field_aniso", n_nodes=24, k_neighbors=12, mode_set=mode_set
@@ -187,7 +187,7 @@ def test_barrier_prices_geometry_not_values_for_every_payload(pdb_path, mode_set
 @pytest.mark.unit
 @pytest.mark.parametrize("mode_set", ["rigid", "rigid_dilation", "affine"])
 def test_barrier_still_catches_a_starved_node_on_a_mode_field(pdb_path, mode_set):
-    model = Model(verbose=0)
+    model = Model()
     model.load_pdb(pdb_path)
     model.set_adp_mode("field_aniso", n_nodes=24, k_neighbors=12, mode_set=mode_set)
     field = model.adp_field

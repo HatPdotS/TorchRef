@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Dict
 import torch
 from torch import nn
 
+from torchref._logging import get_logger
 from torchref.refinement.targets.base import Target, ModelTarget
 from torchref.refinement.targets.geometry import (
     BondTarget, AngleTarget, TorsionTarget, PlanarityTarget,
@@ -27,6 +28,8 @@ from torchref.refinement.targets.adp import (
 if TYPE_CHECKING:
     from torchref.model.model import Model
 
+log = get_logger(__name__)
+
 
 class CombinedModelTargets(ModelTarget):
     """Combined-target base for components that need only a Model.
@@ -40,11 +43,9 @@ class CombinedModelTargets(ModelTarget):
     ----------
     model : Model, optional
         Reference to the Model object.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
-    def __init__(self, model: "Model" = None, verbose: int = 0):
+    def __init__(self, model: "Model" = None):
         """
         Initialize CombinedModelTargets.
 
@@ -52,10 +53,8 @@ class CombinedModelTargets(ModelTarget):
         ----------
         model : Model, optional
             Reference to Model object.
-        verbose : int, optional
-            Verbosity level. Default is 0.
         """
-        super().__init__(model, verbose)
+        super().__init__(model)
         self._targets = nn.ModuleDict(self._create_targets())
 
     def _create_targets(self) -> Dict[str, "Target"]:
@@ -120,22 +119,19 @@ class TotalGeometryTarget(CombinedModelTargets):
     ----------
     model : Model, optional
         Reference to the Model object.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     def _create_targets(self) -> Dict[str, Target]:
         """Build the seven geometry component targets."""
-        if self.verbose > 0:
-            print("Initializing TotalGeometryTarget with component targets...")
+        log.info("Initializing TotalGeometryTarget with component targets...")
         return {
-            "bond": BondTarget(self.model, self.verbose),
-            "angle": AngleTarget(self.model, self.verbose),
-            "torsion": TorsionTarget(self.model, self.verbose),
-            "planarity": PlanarityTarget(self.model, self.verbose),
-            "chiral": ChiralTarget(self.model, self.verbose),
-            "nonbonded": NonBondedHTarget(self.model, verbose=self.verbose),
-            "ramachandran": RamachandranTarget(self.model, self.verbose),
+            "bond": BondTarget(self.model),
+            "angle": AngleTarget(self.model),
+            "torsion": TorsionTarget(self.model),
+            "planarity": PlanarityTarget(self.model),
+            "chiral": ChiralTarget(self.model),
+            "nonbonded": NonBondedHTarget(self.model),
+            "ramachandran": RamachandranTarget(self.model),
         }
 
 
@@ -171,8 +167,6 @@ class TotalADPTarget(CombinedModelTargets):
     ----------
     model : Model
         Reference to the Model object.
-    verbose : int, optional
-        Verbosity level. Default is 0.
     """
 
     def _create_targets(self) -> Dict[str, Target]:
@@ -195,21 +189,17 @@ class TotalADPTarget(CombinedModelTargets):
         """
         if self.model.adp_is_field:
             targets = {
-                "sigd": ADPSigdTarget(self.model, verbose=self.verbose),
-                "node_load": NodeLoadTarget(self.model, verbose=self.verbose),
-                "node_smoothness": NodeSmoothnessTarget(
-                    self.model, verbose=self.verbose
-                ),
+                "sigd": ADPSigdTarget(self.model),
+                "node_load": NodeLoadTarget(self.model),
+                "node_smoothness": NodeSmoothnessTarget(self.model),
             }
         else:
             targets = {
-                "simu": ADPSimilarityTarget(self.model, verbose=self.verbose),
-                "locality": ADPLocalityTarget(self.model, verbose=self.verbose),
-                "sigd": ADPSigdTarget(self.model, verbose=self.verbose),
+                "simu": ADPSimilarityTarget(self.model),
+                "locality": ADPLocalityTarget(self.model),
+                "sigd": ADPSigdTarget(self.model),
             }
-        if self.verbose > 0:
-            print(
-                "Initializing TotalADPTarget with component targets: "
-                + ", ".join(targets)
-            )
+        log.info(
+            "Initializing TotalADPTarget with component targets: %s", ", ".join(targets)
+        )
         return targets

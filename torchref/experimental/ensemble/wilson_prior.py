@@ -120,9 +120,8 @@ class WilsonPriorTarget(DataTarget):
         nbins: int = 20,
         mode: str = "bin_mean",
         eps: float = 1e-8,
-        verbose: int = 0,
     ):
-        super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
+        super().__init__(data=data, model=model, scaler=scaler)
         if mode not in ("bin_mean", "per_reflection", "rice"):
             raise ValueError(
                 "mode must be 'bin_mean', 'per_reflection', or 'rice'; "

@@ -351,7 +351,7 @@ def test_extrapolation_phase_derivatives_on_deposited_amplitudes(mtz_dir):
         compute_bayes_extrapolated_amplitudes,
     )
 
-    data = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
+    data = ReflectionData(device="cpu").load_mtz(str(mtz_dir / "1DAW.mtz"))
     dark, sd = data.get_corrected_data()
     dark, sd = dark[:64].detach().clone().requires_grad_(), sd[:64].detach()
     light = (dark.detach() * 1.2).requires_grad_()

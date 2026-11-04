@@ -29,7 +29,7 @@ TIP3P = ("amber14-all.xml", "amber14/tip3p.xml")
 
 def _load(pdb_dir, code):
     return (
-        Model(verbose=0, device="cpu", hydrogens="add")
+        Model(device="cpu", hydrogens="add")
         .load_pdb(str(pdb_dir / f"{code}.pdb"))
         .strip_altlocs()
     )

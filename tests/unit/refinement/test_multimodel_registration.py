@@ -69,11 +69,11 @@ def test_multimodel_geometry_registration_keeps_all_base_models(pdb_dir, mtz_dir
         MultiModelGeometryTarget,
     )
 
-    ref_a = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb), verbose=0)
-    ref_b = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb), verbose=0)
-    mc = ModelCollection([ref_a.model, ref_b.model], dark_key="dark", verbose=0)
+    ref_a = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb))
+    ref_b = LBFGSRefinement(data_file=str(mtz), pdb=str(pdb))
+    mc = ModelCollection([ref_a.model, ref_b.model], dark_key="dark")
 
-    geom = MultiModelGeometryTarget(mc, verbose=0)
+    geom = MultiModelGeometryTarget(mc)
 
     # items() carries the per-model index.
     item_keys = [k for k, _ in geom.items()]
