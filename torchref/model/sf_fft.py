@@ -4,6 +4,12 @@ An nn.Module that reads the crystal off a :class:`~torchref.model.context.ModelC
 sizes its real-space grid lazily from that crystal and the resolution, builds the
 electron density from atomic parameters, and transforms it to structure factors.
 Usable standalone or as ``ModelFT``'s submodule.
+
+Every entry point optionally takes a batch of models that share the crystal, grid and
+reflections -- ensemble members, timepoints, conformers -- as in
+:mod:`~torchref.base.electron_density.batching`: dense atoms with a leading ``B``, or flat
+atoms with ``batch_offsets_*``. Maps then carry a leading ``B`` and structure factors are
+``(B, n_reflections)``; unbatched calls are unchanged.
 """
 
 from typing import TYPE_CHECKING, Optional, Tuple
@@ -385,6 +391,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         B_aniso: Optional[torch.Tensor] = None,
         apply_symmetry: bool = True,
         imaginary: Optional[Tuple[Optional[torch.Tensor], ...]] = None,
+        batch_offsets_iso: Optional[torch.Tensor] = None,
+        batch_offsets_aniso: Optional[torch.Tensor] = None,
+        imaginary_batch_offsets: Optional[Tuple[Optional[torch.Tensor], ...]] = None,
     ) -> torch.Tensor:
         """
         Build electron density map from atomic parameters.
@@ -409,12 +418,24 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             shapes and units of ``xyz_iso`` ... ``B_aniso`` above. They are splatted
             like the atoms above, into a second map that becomes the imaginary part.
             This is how an absorptive f'' term enters the structure factors.
+        batch_offsets_iso, batch_offsets_aniso : torch.Tensor, optional
+            ``(B + 1,)`` offsets for flat (ragged) batched atoms; dense batched atoms
+            carry a leading ``B`` instead. See
+            :func:`~torchref.base.electron_density.main.build_electron_density`.
+        imaginary_batch_offsets : tuple of torch.Tensor, optional
+            ``(iso, aniso)`` offsets for ragged ``imaginary`` atoms. The imaginary
+            atoms are batched like the real ones (same ``B``), or unbatched and empty.
 
         Returns
         -------
         torch.Tensor
-            Electron density map with shape (nx, ny, nz); complex when
-            ``imaginary`` is given, real otherwise.
+            Electron density map with shape (nx, ny, nz), or (B, nx, ny, nz) for a
+            batch; complex when ``imaginary`` is given, real otherwise.
+
+        Raises
+        ------
+        ValueError
+            If the real and imaginary atoms describe different batches.
         """
         self._require_grid()
 
@@ -429,8 +450,13 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             occ_aniso,
             A_aniso,
             B_aniso,
+            batch_offsets=(batch_offsets_iso, batch_offsets_aniso),
         )
-        density_imag = None if imaginary is None else self._splat(*imaginary)
+        density_imag = None
+        if imaginary is not None:
+            density_imag = self._splat(
+                *imaginary, batch_offsets=imaginary_batch_offsets or (None, None)
+            )
 
         if apply_symmetry:
             symmetrize = self.ctx.spacegroup.symmetrize_map
@@ -439,6 +465,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
                 density_imag = symmetrize(density_imag)
 
         if density_imag is not None:
+            density_map, density_imag = _common_batch(
+                (density_map, _has_atoms(xyz_iso, xyz_aniso)),
+                (density_imag, _has_atoms(imaginary[0], imaginary[5])),
+            )
             density_map = torch.complex(density_map, density_imag)
         return density_map
 
@@ -454,8 +484,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         occ_aniso=None,
         A_aniso=None,
         B_aniso=None,
+        batch_offsets=(None, None),
     ) -> torch.Tensor:
-        """Real P1 density of one set of atoms on this grid, ``(nx, ny, nz)``."""
+        """Real P1 density of one set of atoms on this grid, ``(nx, ny, nz)``, or
+        ``(B, nx, ny, nz)`` for batched atoms; ``batch_offsets`` is ``(iso, aniso)``."""
         from torchref.base.electron_density.main import build_electron_density
 
         return build_electron_density(
@@ -474,6 +506,8 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             A_aniso=A_aniso,
             B_aniso=B_aniso,
             dtype=self.dtype_float,
+            batch_offsets_iso=batch_offsets[0],
+            batch_offsets_aniso=batch_offsets[1],
         )
 
     # =========================================================================
@@ -492,8 +526,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         Parameters
         ----------
         density_map : torch.Tensor
-            Electron density map with shape (nx, ny, nz), real or complex.
-            If apply_symmetry=True, this should be a P1 density map.
+            Electron density map with shape (nx, ny, nz), or (B, nx, ny, nz) for a
+            batch of maps, real or complex. If apply_symmetry=True, this should be a P1
+            density map.
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
         apply_symmetry : bool, optional
@@ -504,7 +539,8 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         Returns
         -------
         torch.Tensor
-            Complex structure factors with shape (n_reflections,).
+            Complex structure factors with shape (n_reflections,), or
+            (B, n_reflections) for a batch of maps.
         """
         self._require_grid()
         reciprocal_space_grid = ifft(density_map, self.ctx.cell.volume)
@@ -530,6 +566,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         B_aniso: Optional[torch.Tensor] = None,
         apply_symmetry: bool = True,
         imaginary: Optional[Tuple[Optional[torch.Tensor], ...]] = None,
+        batch_offsets_iso: Optional[torch.Tensor] = None,
+        batch_offsets_aniso: Optional[torch.Tensor] = None,
+        imaginary_batch_offsets: Optional[Tuple[Optional[torch.Tensor], ...]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute structure factors from atomic parameters (end-to-end).
@@ -560,14 +599,17 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             :meth:`build_density_map`. The complex density is transformed in one
             FFT, so ``F = FT(ρ') + i FT(ρ'')`` -- which no longer obeys
             ``F(-h) = F(h)*`` -- with symmetry applied to both parts alike.
+        batch_offsets_iso, batch_offsets_aniso, imaginary_batch_offsets : optional
+            Offsets for ragged batched atoms, as in :meth:`build_density_map`.
 
         Returns
         -------
         sf : torch.Tensor
-            Complex structure factors with shape (n_reflections,).
+            Complex structure factors with shape (n_reflections,), or
+            (B, n_reflections) for a batch.
         density_map : torch.Tensor
-            Electron density map with shape (nx, ny, nz), complex when
-            ``imaginary`` is given.
+            Electron density map with shape (nx, ny, nz) or (B, nx, ny, nz), complex
+            when ``imaginary`` is given.
             Note: When using late symmetry, this is the P1 map (without symmetry).
         """
         # Resolve the grid first: the late-symmetry flag belongs to the grid the
@@ -590,6 +632,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             B_aniso=B_aniso,
             apply_symmetry=not use_late and apply_symmetry,  # Early symmetry
             imaginary=imaginary,
+            batch_offsets_iso=batch_offsets_iso,
+            batch_offsets_aniso=batch_offsets_aniso,
+            imaginary_batch_offsets=imaginary_batch_offsets,
         )
         sf = self.map_to_structure_factors(
             density_map,
@@ -597,3 +642,34 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             apply_symmetry=use_late,  # Late symmetry
         )
         return sf, density_map
+
+
+def _has_atoms(xyz_iso, xyz_aniso) -> bool:
+    return any(x is not None and x.numel() > 0 for x in (xyz_iso, xyz_aniso))
+
+
+def _common_batch(real, imag):
+    """Bring the real and imaginary densities, each ``(map, has_atoms)``, to one batch.
+
+    The rule between the iso and aniso sets of
+    :func:`~torchref.base.electron_density.main.build_electron_density`: batched parts
+    must agree on ``B``, and an unbatched part beside a batched one must have no atoms,
+    so that its zero map stands for every member. ``torch.complex`` would otherwise
+    broadcast one member's (or every member's) imaginary density over the whole batch.
+    """
+    (rho_r, atoms_r), (rho_i, atoms_i) = real, imag
+    if rho_r.shape == rho_i.shape:
+        return rho_r, rho_i
+    if rho_r.ndim == rho_i.ndim:
+        raise ValueError(
+            f"the real and imaginary atoms describe different batch sizes "
+            f"{sorted({rho_r.shape[0], rho_i.shape[0]})}"
+        )
+    if atoms_r if rho_r.ndim == 3 else atoms_i:
+        raise ValueError(
+            "one of the real and imaginary atom sets is batched and the other is not; "
+            "batch both, or pass the unbatched one empty"
+        )
+    if rho_r.ndim == 3:
+        return rho_r.expand_as(rho_i), rho_i
+    return rho_r, rho_i.expand_as(rho_r)

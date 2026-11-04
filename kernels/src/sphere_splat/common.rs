@@ -1,5 +1,5 @@
 //! Cell geometry, per-atom anchors and the in-sphere run solver shared by the iso and
-//! aniso kernels.
+//! aniso kernels, and the cotangent inputs of their second-order passes.
 
 use crate::real::{Real, madd};
 
@@ -19,6 +19,43 @@ pub struct Atoms<'a, T> {
     pub inv_frac: &'a [T],
     pub frac: &'a [T],
     pub n_atoms: usize,
+}
+
+impl<'a, T> Atoms<'a, T> {
+    /// Atoms `[lo, hi)` alone, as one batch member sees them; `w` is the per-atom `adp`
+    /// width. The cell matrices are shared.
+    pub fn member(&self, lo: usize, hi: usize, w: usize) -> Atoms<'a, T> {
+        Atoms {
+            xyz: &self.xyz[3 * lo..3 * hi],
+            adp: &self.adp[w * lo..w * hi],
+            occ: &self.occ[lo..hi],
+            a: &self.a[5 * lo..5 * hi],
+            b: &self.b[5 * lo..5 * hi],
+            r2cut: &self.r2cut[lo..hi],
+            inv_frac: self.inv_frac,
+            frac: self.frac,
+            n_atoms: hi - lo,
+        }
+    }
+}
+
+/// Per-atom cotangents of the backward's outputs, `(n, 3)`, `(n, W)` and `(n,)`: the
+/// direction the second-order entry points differentiate along.
+pub struct Tangent<'a, T> {
+    pub xyz: &'a [T],
+    pub adp: &'a [T],
+    pub occ: &'a [T],
+}
+
+impl<'a, T> Tangent<'a, T> {
+    /// Atoms `[lo, hi)` alone, as [`Atoms::member`].
+    pub fn member(&self, lo: usize, hi: usize, w: usize) -> Tangent<'a, T> {
+        Tangent {
+            xyz: &self.xyz[3 * lo..3 * hi],
+            adp: &self.adp[w * lo..w * hi],
+            occ: &self.occ[lo..hi],
+        }
+    }
 }
 
 /// Voxel steps and index-space scale factors of one grid.

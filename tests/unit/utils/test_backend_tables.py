@@ -229,8 +229,8 @@ def test_second_order_capability_is_declared_not_guessed():
     """
     density = {b.name: b.second_order for b in DENSITY_BACKENDS.backends}
     assert density == {
-        "cuda_triton": False,
-        "mps_metal": False,
+        "cuda_triton": True,
+        "mps_metal": True,
         "cpu_sphere": True,
         "portable": True,
     }

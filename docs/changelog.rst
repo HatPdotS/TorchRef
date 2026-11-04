@@ -14,11 +14,19 @@ Breaking changes
 New features
 ~~~~~~~~~~~~
 - CLI ``-q`` and ``--log-file``; warnings go to stderr, progress and results to stdout
+- Batched structure factors: the density splats, ``build_electron_density``, map symmetry, the reciprocal extractor and ``SfFFT`` take a batch of models sharing one crystal, as dense ``(B, N, ...)`` atoms or flat atoms with ``batch_offsets``, and return ``(B, ...)`` maps and ``(B, n_reflections)`` structure factors
+- The CUDA (Triton) density splat runs in float64 instead of falling back to the portable splat
+- The CUDA (Triton), Metal and fused CPU (Rust) density splats have analytic second derivatives: a Hessian-vector product through them (``create_graph=True``) runs in the native kernels, where CUDA and Metal raised and the CPU recomputed through the portable splat
+- ``torchref-kernels`` 0.2.0 (ABI 2) is required: the CPU splat entry points take member offsets
 
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 - Disulfide detection no longer bonds conformer ``A`` of one cysteine to conformer ``B`` of its partner: an ``SG`` with an altloc pairs only with the same altloc or a blank one
 - Amino acids gain C-beta dihedral restraints (``N-C-CA-CB``, ``C-N-CA-CB``, σ 2.5°, as in Phenix), torsion origin ``cbeta``; refined models no longer show MolProbity C-beta outliers from the loose library CA angles
+
+Other fixes
+~~~~~~~~~~~
+- The CPU and Metal density splats no longer raise in backward on non-contiguous ``xyz`` or ADPs (e.g. a transposed view)
 
 
 Version 0.7.0
