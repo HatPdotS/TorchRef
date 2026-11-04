@@ -325,6 +325,13 @@ def test_reciprocal_extractor_batched_matches_loop():
     torch.testing.assert_close(gb, gl, rtol=0, atol=1e-14)
 
 
+def _absorptive(scene, n):
+    """A small imaginary (f'') term on the scene's first ``n`` atoms, isotropic only."""
+    z = scene.xyz.new_zeros
+    return (scene.xyz[:n], scene.adp[:n], scene.occ[:n], 0.1 * scene.A[:n],
+            scene.B[:n], z(0, 3), z(0, 6), z(0), z(0, 5), z(0, 5))
+
+
 @pytest.mark.parametrize("late", [True, False], ids=["late_symmetry", "early_symmetry"])
 @pytest.mark.parametrize("with_imaginary", [False, True], ids=["real", "imaginary"])
 def test_sf_fft_batched_matches_loop(late, with_imaginary):
@@ -337,19 +344,13 @@ def test_sf_fft_batched_matches_loop(late, with_imaginary):
     sf.ensure_grid()
     assert sf.late_symmetry_compatible
 
-    def imag_of(scene, n):
-        """A small absorptive term on the scene's first ``n`` atoms, isotropic only."""
-        z = scene.xyz.new_zeros
-        return (scene.xyz[:n], scene.adp[:n], scene.occ[:n], 0.1 * scene.A[:n],
-                scene.B[:n], z(0, 3), z(0, 6), z(0), z(0, 5), z(0, 5))
-
     def one(iso, aniso, imag):
         return sf.compute_structure_factors(
             a.hkl, *iso, *aniso, imaginary=imag if with_imaginary else None
         )[0]
 
     refs = [
-        one((s.xyz, s.adp, s.occ, s.A, s.B), aniso, imag_of(s, k))
+        one((s.xyz, s.adp, s.occ, s.A, s.B), aniso, _absorptive(s, k))
         for s, aniso, k in (
             (a, (c.xyz, c.u6, c.occ, c.A, c.B), 2),
             (b, (None,) * 5, 3),
@@ -359,7 +360,7 @@ def test_sf_fft_batched_matches_loop(late, with_imaginary):
     imag = None
     imag_offsets = None
     if with_imaginary:
-        ia, ib = imag_of(a, 2), imag_of(b, 3)
+        ia, ib = _absorptive(a, 2), _absorptive(b, 3)
         imag = tuple(torch.cat([x, y]) for x, y in zip(ia, ib))
         imag_offsets = (torch.tensor([0, 2, 5]), torch.tensor([0, 0, 0]))
     got, density = sf.compute_structure_factors(
@@ -374,3 +375,70 @@ def test_sf_fft_batched_matches_loop(late, with_imaginary):
     assert got.shape == (2, a.n_refl)
     assert density.shape[0] == 2
     torch.testing.assert_close(got, torch.stack(refs), rtol=1e-12, atol=1e-10)
+
+
+def _sf_fft_pair():
+    """Two 5-atom members sharing a P212121 cell, and an SfFFT on their grid."""
+    a, b = (H.synthetic_scene(n_atoms=5, seed=s, max_refl=60) for s in (30, 31))
+    sf = H.sf_fft_for(a, spacegroup="P 21 21 21")
+    sf.ensure_grid()
+    return a, b, sf
+
+
+def _iso(*scenes, dense):
+    """The scenes' isotropic atoms, stacked (dense) or concatenated (ragged)."""
+    join = torch.stack if dense else torch.cat
+    return [join([getattr(s, k) for s in scenes]) for k in ("xyz", "adp", "occ", "A", "B")]
+
+
+@pytest.mark.parametrize("ragged", [False, True], ids=["dense", "ragged"])
+@pytest.mark.parametrize("late", [True, False], ids=["late_symmetry", "early_symmetry"])
+def test_sf_fft_empty_batch(late, ragged):
+    """A batch of no members gives no structure factors, not an FFT error."""
+    a, _, sf = _sf_fft_pair()
+    sf.use_late_symmetry = late
+    atoms = [t[:0] if ragged else t[None][:0] for t in _iso(a, dense=False)]
+    F, density = sf.compute_structure_factors(
+        a.hkl, *atoms, batch_offsets_iso=torch.tensor([0]) if ragged else None
+    )
+    assert F.shape == (0, a.n_refl)
+    assert density.shape == (0, *sf.grid_shape)
+
+
+def test_sf_fft_empty_unbatched_imaginary_spans_the_batch():
+    a, b, sf = _sf_fft_pair()
+    real, _ = sf.compute_structure_factors(a.hkl, *_iso(a, b, dense=True))
+    got, _ = sf.compute_structure_factors(
+        a.hkl, *_iso(a, b, dense=True), imaginary=_absorptive(a, 0)
+    )
+    assert got.shape == (2, a.n_refl)
+    torch.testing.assert_close(got, real, rtol=1e-12, atol=1e-10)
+
+
+@pytest.mark.parametrize(
+    "case,match",
+    [
+        ("unbatched_imaginary", "batched and the other is not"),
+        ("unbatched_real", "batched and the other is not"),
+        ("one_member_imaginary", r"different batch sizes \[1, 2\]"),
+    ],
+)
+def test_sf_fft_refuses_mismatched_imaginary_batch(case, match):
+    """The imaginary atoms must describe the real atoms' batch; ``torch.complex``
+    would otherwise broadcast one imaginary map over every member."""
+    a, b, sf = _sf_fft_pair()
+    ia, ib = _absorptive(a, 2), _absorptive(b, 3)
+    pair = torch.tensor([0, 5, 10])
+    kw = {}
+    if case == "unbatched_imaginary":
+        real, kw["batch_offsets_iso"] = _iso(a, b, dense=False), pair
+        imag = tuple(torch.cat([x, y]) for x, y in zip(ia, ib))
+    elif case == "unbatched_real":
+        real = _iso(a, dense=False)
+        imag = tuple(torch.cat([x, y]) for x, y in zip(ia, ib))
+        kw["imaginary_batch_offsets"] = (torch.tensor([0, 2, 5]), None)
+    else:
+        real = _iso(a, b, dense=True)
+        imag = tuple(t[None] if i < 5 else t for i, t in enumerate(ia))
+    with pytest.raises(ValueError, match=match):
+        sf.compute_structure_factors(a.hkl, *real, imaginary=imag, **kw)

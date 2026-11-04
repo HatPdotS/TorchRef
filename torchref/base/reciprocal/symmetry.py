@@ -127,7 +127,7 @@ class ReciprocalSymmetryExtractor(DeviceMixin):
         # Voxels first, so the gather and its index_add_ backward stay along dim 0.
         n_maps = reciprocal_grid.shape[0]
         f_all = gather_with_index_add(
-            reciprocal_grid.reshape(n_maps, -1).T, self._flat_indices
+            reciprocal_grid.flatten(1).T, self._flat_indices
         )  # (n_ops * N, B)
         f_all = f_all.view(self.n_ops, self.N, n_maps)
         return (f_all * self.phases.unsqueeze(-1)).sum(dim=0).T

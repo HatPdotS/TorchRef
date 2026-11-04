@@ -426,13 +426,19 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             carry a leading ``B`` instead. See
             :func:`~torchref.base.electron_density.main.build_electron_density`.
         imaginary_batch_offsets : tuple of torch.Tensor, optional
-            ``(iso, aniso)`` offsets for ragged ``imaginary`` atoms.
+            ``(iso, aniso)`` offsets for ragged ``imaginary`` atoms. The imaginary
+            atoms are batched like the real ones (same ``B``), or unbatched and empty.
 
         Returns
         -------
         torch.Tensor
             Electron density map with shape (nx, ny, nz), or (B, nx, ny, nz) for a
             batch; complex when ``imaginary`` is given, real otherwise.
+
+        Raises
+        ------
+        ValueError
+            If the real and imaginary atoms describe different batches.
         """
         self._require_grid()
 
@@ -462,6 +468,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
                 density_imag = symmetrize(density_imag)
 
         if density_imag is not None:
+            density_map, density_imag = _common_batch(
+                (density_map, _has_atoms(xyz_iso, xyz_aniso)),
+                (density_imag, _has_atoms(imaginary[0], imaginary[5])),
+            )
             density_map = torch.complex(density_map, density_imag)
         return density_map
 
@@ -635,3 +645,34 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             apply_symmetry=use_late,  # Late symmetry
         )
         return sf, density_map
+
+
+def _has_atoms(xyz_iso, xyz_aniso) -> bool:
+    return any(x is not None and x.numel() > 0 for x in (xyz_iso, xyz_aniso))
+
+
+def _common_batch(real, imag):
+    """Bring the real and imaginary densities, each ``(map, has_atoms)``, to one batch.
+
+    The rule between the iso and aniso sets of
+    :func:`~torchref.base.electron_density.main.build_electron_density`: batched parts
+    must agree on ``B``, and an unbatched part beside a batched one must have no atoms,
+    so that its zero map stands for every member. ``torch.complex`` would otherwise
+    broadcast one member's (or every member's) imaginary density over the whole batch.
+    """
+    (rho_r, atoms_r), (rho_i, atoms_i) = real, imag
+    if rho_r.shape == rho_i.shape:
+        return rho_r, rho_i
+    if rho_r.ndim == rho_i.ndim:
+        raise ValueError(
+            f"the real and imaginary atoms describe different batch sizes "
+            f"{sorted({rho_r.shape[0], rho_i.shape[0]})}"
+        )
+    if atoms_r if rho_r.ndim == 3 else atoms_i:
+        raise ValueError(
+            "one of the real and imaginary atom sets is batched and the other is not; "
+            "batch both, or pass the unbatched one empty"
+        )
+    if rho_r.ndim == 3:
+        return rho_r.expand_as(rho_i), rho_i
+    return rho_r, rho_i.expand_as(rho_r)

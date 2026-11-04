@@ -36,9 +36,9 @@ def dense_offsets(n_members: int, n_atoms: int) -> torch.Tensor:
 
 def _check_offsets(offsets: torch.Tensor, n_atoms: int) -> torch.Tensor:
     """Validate ragged ``batch_offsets`` against ``n_atoms`` and return them as int64."""
-    if offsets.ndim != 1 or offsets.numel() < 2:
+    if offsets.ndim != 1 or offsets.numel() < 1:
         raise ValueError(
-            f"batch_offsets must be 1-D with at least two entries (B + 1), got shape "
+            f"batch_offsets must be 1-D with B + 1 entries, got shape "
             f"{tuple(offsets.shape)}"
         )
     if offsets.is_floating_point() or offsets.is_complex():
