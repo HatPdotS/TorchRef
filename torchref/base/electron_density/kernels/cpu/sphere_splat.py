@@ -213,9 +213,10 @@ class _FusedIsoSplat(torch.autograd.Function):
                 add_isotropic_plain_var, ctx, grad_out,
                 (xyz, adp, occ), (A, B, inv_frac, frac), r2cut, offsets,
             )
-        g_xyz = torch.zeros_like(xyz)
-        g_adp = torch.zeros_like(adp)
-        g_occ = torch.zeros_like(occ)
+        # Contiguous whatever the input strides: the kernel writes these as flat arrays.
+        g_xyz = torch.zeros_like(xyz, memory_format=torch.contiguous_format)
+        g_adp = torch.zeros_like(adp, memory_format=torch.contiguous_format)
+        g_occ = torch.zeros_like(occ, memory_format=torch.contiguous_format)
         if xyz.shape[0] > 0:
             _require_module().iso_bwd(
                 g_xyz.view(-1), g_adp, g_occ,
@@ -265,9 +266,9 @@ class _FusedAnisoSplat(torch.autograd.Function):
                 add_anisotropic_plain_var, ctx, grad_out,
                 (xyz, u, occ), (A, B, inv_frac, frac), r2cut, offsets,
             )
-        g_xyz = torch.zeros_like(xyz)
-        g_u = torch.zeros_like(u)
-        g_occ = torch.zeros_like(occ)
+        g_xyz = torch.zeros_like(xyz, memory_format=torch.contiguous_format)
+        g_u = torch.zeros_like(u, memory_format=torch.contiguous_format)
+        g_occ = torch.zeros_like(occ, memory_format=torch.contiguous_format)
         if xyz.shape[0] > 0:
             _require_module().aniso_bwd(
                 g_xyz.view(-1), g_u.view(-1), g_occ,

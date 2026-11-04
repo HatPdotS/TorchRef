@@ -94,9 +94,10 @@ class MetalGridDensity(torch.autograd.Function):
         xyz, adp, occ, A, B, r2cut, inv_frac, frac, member = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape
         n = xyz.shape[0]
-        grad_xyz = torch.zeros_like(xyz)
-        grad_adp = torch.zeros_like(adp)
-        grad_occ = torch.zeros_like(occ)
+        # Contiguous whatever the input strides: the kernel writes these as flat arrays.
+        grad_xyz = torch.zeros_like(xyz, memory_format=torch.contiguous_format)
+        grad_adp = torch.zeros_like(adp, memory_format=torch.contiguous_format)
+        grad_occ = torch.zeros_like(occ, memory_format=torch.contiguous_format)
         if n > 0:
             lib = _get_lib()
             lib.iso_splat_bwd(
@@ -180,9 +181,9 @@ class MetalGridDensityAniso(torch.autograd.Function):
         xyz, u, occ, A, B, r2cut, inv_frac, frac, member = ctx.saved_tensors
         nx, ny, nz = ctx.grid_shape
         n = xyz.shape[0]
-        grad_xyz = torch.zeros_like(xyz)
-        grad_u = torch.zeros_like(u)
-        grad_occ = torch.zeros_like(occ)
+        grad_xyz = torch.zeros_like(xyz, memory_format=torch.contiguous_format)
+        grad_u = torch.zeros_like(u, memory_format=torch.contiguous_format)
+        grad_occ = torch.zeros_like(occ, memory_format=torch.contiguous_format)
         if n > 0:
             lib = _get_lib()
             lib.aniso_splat_bwd(

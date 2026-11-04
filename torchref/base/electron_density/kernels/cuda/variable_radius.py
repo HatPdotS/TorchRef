@@ -747,9 +747,11 @@ def _forward(ctx, fwd_kernel, density_map, xyz, third, occ, A, B, r2cut, inv_fra
 def _backward(ctx, bwd_kernel, grad_density_map):
     """Backward shared by both splats; the gradient of ``third`` has its shape."""
     xyz, third, occ, A, B, r2cut, inv_frac, frac, member = ctx.saved_tensors
-    grad_xyz = torch.zeros_like(xyz)
-    grad_third = torch.zeros_like(third)
-    grad_occ = torch.zeros_like(occ)
+    # The kernel writes the gradients as flat row-major arrays; zeros_like alone would keep
+    # a strided input's layout and the gradient of a transposed xyz would come back permuted.
+    grad_xyz, grad_third, grad_occ = (
+        torch.zeros_like(t, memory_format=torch.contiguous_format) for t in (xyz, third, occ)
+    )
     _launch(bwd_kernel, grad_density_map.contiguous().view(-1), member, r2cut,
             _scene(xyz, third, A, B, occ),
             (*_cell(inv_frac, frac), grad_xyz, grad_third, grad_occ),
