@@ -402,6 +402,42 @@ def test_kernel_occupancy_gradient_at_zero_occupancy(
         assert rel < tol, f"{device.type}/{dtype}/{kernel}/{kind} {name}: rel {rel:.3e}"
 
 
+def _strided(t: torch.Tensor) -> torch.Tensor:
+    """A non-contiguous leaf equal to ``t``: transposed storage for ``(n, k)``, every
+    other element of a wider buffer for ``(n,)``."""
+    t = t.detach()
+    out = t.T.contiguous().T if t.ndim == 2 else torch.stack([t, t], -1)[:, 0]
+    assert not out.is_contiguous() and torch.equal(out, t)
+    return out.requires_grad_()
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernel_gradients_ignore_input_strides(
+    scene_fine, oracle_fine, device, dtype, kernel, kind
+):
+    """Non-contiguous leaves get the gradients of their contiguous copies.
+
+    The native kernels read contiguous copies of the leaves and write the gradients as
+    flat row-major arrays, so a gradient buffer that inherited a transposed input's
+    strides would come back permuted (or fail to flatten).
+    """
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    obs = oracle_fine[f"{kind}_obs"].to(device=device, dtype=dtype)
+
+    def grads(leaves):
+        F = H.density_to_F(scene, H.splat_direct(scene, kernel, *leaves, aniso=aniso))
+        return torch.autograd.grad(H.ls_target(F, obs), leaves)
+
+    ref = grads(scene.leaves(aniso=aniso))
+    got = grads(tuple(_strided(t) for t in scene.leaves(aniso=aniso)))
+    tol = RTOL_BACKEND_GRAD_F32 if dtype is torch.float32 else RTOL_BACKEND_GRAD_F64
+    for name, g, r in zip(_LEAF_NAMES, got, ref):
+        rel = rel_error(g, r)
+        assert rel < tol, f"{device.type}/{dtype}/{kernel}/{kind} {name}: rel {rel:.3e}"
+
+
 # ---------------------------------------------------------------------------
 # 6. Direct-summation kernels vs the eager oracle
 # ---------------------------------------------------------------------------

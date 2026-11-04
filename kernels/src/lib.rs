@@ -19,7 +19,7 @@ use pyo3::types::PyDict;
 
 /// Version of the Python-facing calling convention. TorchRef refuses a build whose value
 /// differs from the one it was written against.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// How this binary was built, and which CPU variant its kernels will run.
 #[pyfunction]

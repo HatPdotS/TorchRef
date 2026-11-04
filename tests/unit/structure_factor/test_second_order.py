@@ -43,6 +43,8 @@ from . import (
     ATOL_GRADCHECK,
     COS_MIN,
     EPS_GRADCHECK,
+    RTOL_BACKEND_GRAD_F32,
+    RTOL_BACKEND_GRAD_F64,
     RTOL_DS_HVP_VS_FD,
     RTOL_GRADCHECK,
     RTOL_HVP,
@@ -209,34 +211,35 @@ def test_fft_hvp_matches_ds(scene_fine, oracle_fine, kind, dtype, pin):
 
 
 @pytest.mark.parametrize("dtype", _DTYPES, ids=["f32", "f64"])
-def test_fused_cpu_kernel_uses_the_double_backward_fallback(
+def test_fused_cpu_kernel_takes_its_native_second_order_path(
     scene_fine, oracle_fine, dtype, monkeypatch
 ):
     """Non-vacuity guard for the AUTO second-order path.
 
-    The fused CPU sphere splat has a hand-written first-order backward with no graph, so
-    under ``create_graph=True`` it routes through ``_double_backward_vjp``, which re-runs
-    the forward through the portable torch splat on the *saved* leaves and differentiates
-    that. Without this guard, ``test_fft_hvp_matches_ds[auto]`` would still pass if AUTO
-    silently fell back to the eager path for the whole forward -- and would then be
-    testing EAGER twice under two names.
-
-    Asserts the fallback is entered, which is only meaningful alongside a separate
-    assertion that the fused kernel was used in the first place.
+    The fused CPU sphere splat has native tangent and Hessian-vector passes. Without this
+    guard, ``test_fft_hvp_matches_ds[default]`` would still pass if AUTO silently fell back
+    to the portable splat for the whole forward -- and would then be testing the portable
+    splat twice under two names.
     """
     from torchref.base.electron_density.kernels.cpu import sphere_splat
 
     if sphere_splat.why_unavailable() is not None:
         pytest.skip(f"fused CPU sphere splat unavailable: {sphere_splat.last_error()}")
 
-    calls = {"fallback": 0}
-    original = sphere_splat._double_backward_vjp
+    calls = []
+    mod = sphere_splat._get_module()
 
-    def counting(*args, **kwargs):
-        calls["fallback"] += 1
-        return original(*args, **kwargs)
+    def counting(name):
+        original = getattr(mod, name)
 
-    monkeypatch.setattr(sphere_splat, "_double_backward_vjp", counting)
+        def entry(*args):
+            calls.append(name)
+            return original(*args)
+
+        return entry
+
+    for name in ("iso_fwd", "iso_bwd", "iso_tan", "iso_hvp"):
+        monkeypatch.setattr(mod, name, counting(name))
 
     sf = H.sf_fft_for(scene_fine, dtype)
     v = torch.ones_like(scene_fine.xyz)
@@ -249,9 +252,10 @@ def test_fused_cpu_kernel_uses_the_double_backward_fallback(
     with H.maybe_portable(False):
         out = hvp(loss, scene_fine.xyz, v)
 
-    assert calls["fallback"] > 0, (
-        "AUTO produced an HVP without entering _double_backward_vjp, so the fused "
-        "kernel was not on the path and this dtype's second-order coverage is vacuous"
+    assert {"iso_hvp", "iso_tan"} <= set(calls), (
+        f"AUTO produced an HVP through the entry points {sorted(set(calls))}, so the fused "
+        "kernel's second-order passes were not on the path and this dtype's second-order "
+        "coverage is vacuous"
     )
     assert torch.isfinite(out).all() and out.abs().sum() > 0
 
@@ -356,21 +360,18 @@ def test_fft_hvp_matches_ds_real_structure(gemmi_aniso_grad, oracle_aniso_grad):
 # 5. Every production kernel, on every device it ships on
 # ---------------------------------------------------------------------------
 # Second order is where the kernels genuinely differ, so this section is not simply the
-# gradient section with another derivative. Only two of the four families are
-# double-differentiable:
+# gradient section with another derivative. Each family gets its second derivative its own
+# way:
 #
-#   add_*_cpu_sphere_var   yes -- via ``_double_backward_vjp``, which re-derives the VJP
-#                          through the portable splat on the saved leaves
-#   add_*_plain_var        yes -- pure autograd over ``scatter_add``
-#   add_*_mps_var          no  -- ``mps/variable_radius.py:12``: "Backward is first-order
-#                          only (like CUDA); double backward needs the portable splat"
-#   WorkQueueGridDensity*  no  -- same, no ``create_graph`` path in the Triton backward
+#   add_*_plain_var        pure autograd over ``scatter_add``
+#   add_*_cpu_sphere_var   analytic: the backward is a Function (``_SphereSplatGrad``,
+#   add_*_mps_var          ``_MetalSplatGrad``, ``_SplatGrad`` on CUDA) whose own backward
+#   WorkQueueGridDensity*  runs native second-order kernels
 #
-# So an accelerator HVP cannot be compared against the oracle: there is no HVP to compare.
-# What is testable, and tested below, is that those kernels **raise** rather than returning
-# a silently wrong (or zero) second derivative -- the same failure mode this repo already
-# fixed once for the C++ scatter, where a graph-less backward gave cosine 0.57 while first
-# derivatives stayed correct.
+# A kernel that declares no second order must **raise** rather than return a silently wrong
+# (or zero) second derivative -- the failure mode this repo already fixed once for the C++
+# scatter, where a graph-less backward gave cosine 0.57 while first derivatives stayed
+# correct. :func:`test_kernel_rejects_double_backward` holds every such row to that.
 
 #: Read from the production table rather than restated. This was a hand-written set, i.e. a
 #: third copy of the same fact (the other two being the kernel docstrings and the table),
@@ -386,9 +387,8 @@ _DOUBLE_DIFFERENTIABLE = {
 def test_kernel_hvp_matches_ds(scene_fine, oracle_fine, device, dtype, kernel, kind):
     """HVP of a double-differentiable kernel against the oracle's, on every device.
 
-    Covers the portable splat running *on an accelerator*, which nothing tested before:
-    it is what ``force_portable`` and the CUDA/MPS float64 fallthrough actually execute, and
-    it is the path a Hessian-based optimizer lands on there.
+    Covers each accelerator kernel's second-order pass, and the portable splat running on
+    an accelerator, which is what ``force_portable`` executes there.
     """
     if kernel not in _DOUBLE_DIFFERENTIABLE:
         pytest.skip(f"{kernel} is first-order only; see test_kernel_rejects_double_backward")
@@ -410,6 +410,50 @@ def test_kernel_hvp_matches_ds(scene_fine, oracle_fine, device, dtype, kernel, k
     print(f"\n  {device.type}/{dtype}/{kernel}/{kind}: HVP rel {rel:.3e}  cos {cos:.8f}")
     assert cos > COS_MIN, f"{device.type}/{dtype}/{kernel}/{kind}: HVP cos {cos:.6f}"
     assert rel < RTOL_HVP, f"{device.type}/{dtype}/{kernel}/{kind}: HVP rel {rel:.3e}"
+
+
+_LEAF_NAMES = ("xyz", "occ", "adp_or_u")
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernel_second_derivatives_agree_with_portable(
+    scene_fine, oracle_fine, device, dtype, kernel, kind
+):
+    """The HVP along every leaf at once against the portable splat's, gated tightly.
+
+    The DS gate above moves ``xyz`` alone. Here the direction moves ``xyz``, occupancy and
+    the ADP together, so every cross term of a kernel's second derivative is on the path,
+    and the loss is nonlinear in the density, so its tangent map is too. Two kernels on one
+    truncation contract differ only in accumulation order, hence the first-order parity
+    gates of ``test_gradients.py``.
+    """
+    if kernel == "portable":
+        pytest.skip("portable is the reference for this comparison")
+    if kernel not in _DOUBLE_DIFFERENTIABLE:
+        pytest.skip(f"{kernel} is first-order only; see test_kernel_rejects_double_backward")
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    obs = oracle_fine[f"{kind}_obs"].to(device=device, dtype=dtype)
+    g = torch.Generator().manual_seed(11)
+    probes = [
+        torch.randn(t.shape, generator=g, dtype=t.dtype).to(device=device, dtype=dtype)
+        for t in scene_fine.leaves(aniso=aniso, requires_grad=False)
+    ]
+
+    def hvps(name):
+        leaves = scene.leaves(aniso=aniso)
+        F = H.density_to_F(scene, H.splat_direct(scene, name, *leaves, aniso=aniso))
+        grads = torch.autograd.grad(H.ls_target(F, obs), leaves, create_graph=True)
+        dot = sum((gr * p).sum() for gr, p in zip(grads, probes))
+        return torch.autograd.grad(dot, leaves)
+
+    got, ref = hvps(kernel), hvps("portable")
+    tol = RTOL_BACKEND_GRAD_F32 if dtype is torch.float32 else RTOL_BACKEND_GRAD_F64
+    for name, h, r in zip(_LEAF_NAMES, got, ref):
+        rel = rel_error(h, r)
+        print(f"  {device.type}/{dtype}/{kernel}/{kind} {name:10s} HVP vs portable rel {rel:.3e}")
+        assert rel < tol, f"{device.type}/{dtype}/{kernel}/{kind} {name}: HVP rel {rel:.3e}"
 
 
 @_OWN_TERM

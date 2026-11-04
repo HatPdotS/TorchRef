@@ -23,7 +23,7 @@ import torch
 
 #: Calling-convention version this TorchRef is written against; must equal the
 #: extension's ``ABI_VERSION``.
-ABI_VERSION = 1
+ABI_VERSION = 2
 
 # Below this, a Rust build is an unoptimised debug build and runs 10-100x slower.
 _MIN_OPT_LEVEL = 2

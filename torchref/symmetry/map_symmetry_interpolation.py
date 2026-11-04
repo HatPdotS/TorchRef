@@ -86,11 +86,16 @@ class _MapSymmetryInterpolation(DeviceMixin):
         return sampling[..., [2, 1, 0]].contiguous()
 
     def _check_shape(self, density_map: torch.Tensor) -> None:
-        """Reject a map whose shape this operator was not built for."""
-        if tuple(density_map.shape) != self.map_shape:
+        """Reject a map whose grid this operator was not built for.
+
+        One leading batch axis is allowed: ``(B, nx, ny, nz)`` maps are treated map by
+        map.
+        """
+        grid = tuple(density_map.shape[-3:])
+        if density_map.ndim not in (3, 4) or grid != self.map_shape:
             raise ValueError(
                 f"Map shape {tuple(density_map.shape)} does not match the operator's "
-                f"{self.map_shape}"
+                f"{self.map_shape} (optionally with one leading batch axis)"
             )
 
     def mate(self, density_map: torch.Tensor, op_index: int) -> torch.Tensor:
@@ -99,36 +104,37 @@ class _MapSymmetryInterpolation(DeviceMixin):
         Parameters
         ----------
         density_map : torch.Tensor
-            Density, shape ``(nx, ny, nz)``.
+            Density, shape ``(nx, ny, nz)`` or ``(B, nx, ny, nz)``.
         op_index : int
             Operation index in ``[0, n_ops)``.
 
         Returns
         -------
         torch.Tensor
-            Shape ``(nx, ny, nz)``.
+            The input's shape.
         """
         if op_index < 0 or op_index >= self.n_ops:
             raise ValueError(
                 f"Operation index {op_index} out of range [0, {self.n_ops - 1}]"
             )
         self._check_shape(density_map)
-        return self._resample(_pad_periodic(density_map), op_index)
+        return self._resample(_pad_periodic(density_map), op_index, density_map.shape)
 
-    def _resample(self, padded: torch.Tensor, op_index: int) -> torch.Tensor:
-        """Sample one operation's mate off a map from :func:`_pad_periodic`."""
+    def _resample(self, padded: torch.Tensor, op_index: int, shape) -> torch.Tensor:
+        """Sample one operation's mate off a map from :func:`_pad_periodic`, as ``shape``."""
         # align_corners=True maps -1 and +1 to the first and last voxel of the padded
         # map, fractions 0 and 1. The padding repeats index 0 at the end, so a mate
         # in the last interval interpolates toward index 0 rather than clamping to
         # N-1; 'border' only absorbs rounding at the edge.
+        grid = self.sampling_grids[op_index].unsqueeze(0)
         transformed = F.grid_sample(
             padded,
-            self.sampling_grids[op_index].unsqueeze(0),
+            grid.expand(padded.shape[0], *grid.shape[1:]),
             mode="bilinear",
             padding_mode="border",
             align_corners=True,
         )
-        return transformed.squeeze(0).squeeze(0)
+        return transformed.reshape(shape)
 
     def all_mates(self, density_map: torch.Tensor) -> torch.Tensor:
         """Every symmetry mate, stacked.
@@ -136,17 +142,18 @@ class _MapSymmetryInterpolation(DeviceMixin):
         Parameters
         ----------
         density_map : torch.Tensor
-            Density, shape ``(nx, ny, nz)``.
+            Density, shape ``(nx, ny, nz)`` or ``(B, nx, ny, nz)``.
 
         Returns
         -------
         torch.Tensor
-            Shape ``(n_ops, nx, ny, nz)``.
+            Shape ``(n_ops, nx, ny, nz)``, or ``(n_ops, B, nx, ny, nz)`` for a batch.
         """
         self._check_shape(density_map)
         padded = _pad_periodic(density_map)
         return torch.stack(
-            [self._resample(padded, i) for i in range(self.n_ops)], dim=0
+            [self._resample(padded, i, density_map.shape) for i in range(self.n_ops)],
+            dim=0,
         )
 
     def symmetrize(
@@ -157,14 +164,14 @@ class _MapSymmetryInterpolation(DeviceMixin):
         Parameters
         ----------
         density_map : torch.Tensor
-            Density, shape ``(nx, ny, nz)``.
+            Density, shape ``(nx, ny, nz)`` or ``(B, nx, ny, nz)``.
         combine : {'sum', 'max'}, default 'sum'
             Reduction across mates.
 
         Returns
         -------
         torch.Tensor
-            Shape ``(nx, ny, nz)``.
+            The input's shape.
         """
         return _combine(self.all_mates(density_map), combine)
 
@@ -176,8 +183,12 @@ class _MapSymmetryInterpolation(DeviceMixin):
 
 
 def _pad_periodic(density_map: torch.Tensor) -> torch.Tensor:
-    """``density_map`` as ``(1, 1, nx + 1, ny + 1, nz + 1)``, index 0 repeated last."""
-    return F.pad(density_map[None, None], (0, 1, 0, 1, 0, 1), mode="circular")
+    """``density_map`` as ``(B, 1, nx + 1, ny + 1, nz + 1)``, index 0 repeated last.
+
+    ``B`` is 1 for a single map: maps go in ``grid_sample``'s batch axis.
+    """
+    batched = density_map.reshape(-1, 1, *density_map.shape[-3:])
+    return F.pad(batched, (0, 1, 0, 1, 0, 1), mode="circular")
 
 
 __all__ = ["_MapSymmetryInterpolation"]
