@@ -20,6 +20,11 @@ anisotropic ones carry the 6-component ``U`` and evaluate ``q = w^T Minv w`` wit
 ``M = (B_g*I + 8*pi^2*U)/4`` inverted in-kernel. Backward accumulates per-atom grads with
 ``atomic_add``, masking out-of-sphere voxels exactly as the forward does so they
 contribute neither density nor gradient.
+
+The backward is differentiable once more: under ``create_graph=True`` it is recorded as
+``_SplatGrad``, whose backward runs a second-order kernel per splat. That kernel scatters
+the tangent map and gathers each atom's Hessian-vector product in one pass over the same
+box, so a second derivative stays on the GPU. A third derivative raises.
 """
 
 from __future__ import annotations
@@ -65,6 +70,28 @@ if _HAVE_TRITON:
         mi02 = (d * f - e * b) * inv_det
         mi12 = (d * e - a * f) * inv_det
         return mi00, mi11, mi22, mi01, mi02, mi12, det
+
+    @triton.jit
+    def _sym3_sandwich(p00, p11, p22, p01, p02, p12, m00, m11, m22, m01, m02, m12):
+        """``tr(P M)`` and the 6 unique comps of ``P M P``, both P and M symmetric."""
+        c00 = p00 * m00 + p01 * m01 + p02 * m02
+        c01 = p00 * m01 + p01 * m11 + p02 * m12
+        c02 = p00 * m02 + p01 * m12 + p02 * m22
+        c10 = p01 * m00 + p11 * m01 + p12 * m02
+        c11 = p01 * m01 + p11 * m11 + p12 * m12
+        c12 = p01 * m02 + p11 * m12 + p12 * m22
+        c20 = p02 * m00 + p12 * m01 + p22 * m02
+        c21 = p02 * m01 + p12 * m11 + p22 * m12
+        c22 = p02 * m02 + p12 * m12 + p22 * m22
+        return (
+            c00 + c11 + c22,
+            c00 * p00 + c01 * p01 + c02 * p02,
+            c10 * p01 + c11 * p11 + c12 * p12,
+            c20 * p02 + c21 * p12 + c22 * p22,
+            c00 * p01 + c01 * p11 + c02 * p12,
+            c00 * p02 + c01 * p12 + c02 * p22,
+            c10 * p02 + c11 * p12 + c12 * p22,
+        )
 
     @triton.jit
     def _wq_grid_fwd_kernel(
@@ -700,12 +727,343 @@ if _HAVE_TRITON:
         tl.atomic_add(grad_u_ptr + atom * 6 + 5, occ * tl.sum(g_u5, axis=0))
         tl.atomic_add(grad_occ_ptr + atom, tl.sum(g_occ, axis=0))
 
+    # ====================================================================
+    # SECOND-ORDER kernels: the backward of the backward. The backward maps
+    # the incoming map gradient G to the atom gradients g_p = sum_v G dρ/dp;
+    # given a cotangent t on those, these kernels return its two partials:
+    #   tangent map  T(v) = sum_p t_p dρ(v)/dp          (scattered, atomics)
+    #   per atom     h_p  = sum_v G(v) d/dp [T(v)]       (gathered, H·t)
+    # in one pass over the same truncated box. The per-Gaussian constants are
+    # recomputed inside the voxel loop under tl.static_range: they are scalar
+    # work per block, negligible against the BLOCK_V-wide voxel math, and it
+    # keeps the 5-Gaussian sums as one loop rather than five unrolled copies.
+    # ====================================================================
+    @triton.jit
+    def _wq_grid_hvp_kernel(
+        grad_density_map_ptr,
+        member_ptr,
+        xyz_ptr, b_ptr, A_ptr, B_ptr, occ_ptr,
+        r2cut_ptr,
+        inv_frac_ptr, frac_ptr,
+        tangent_map_ptr, t_xyz_ptr, t_b_ptr, t_occ_ptr,
+        h_xyz_ptr, h_b_ptr, h_occ_ptr,
+        nx: tl.constexpr, ny: tl.constexpr, nz: tl.constexpr,
+        BLOCK_V: tl.constexpr, HAS_BATCH: tl.constexpr, WRITE_TANGENT: tl.constexpr,
+    ):
+        """Isotropic second order. Per Gaussian, with s = 1/Bt, kap = dBt/db and
+        L = d ln(ρ_g)/dBt, the occupancy-free sums D, X1 = Σ s ρ_g, X2 = Σ s² ρ_g,
+        Bb1 = dρ/db, XB and BB (the xyz-b and b-b curvatures) give T and H·t in
+        closed form. Out-of-sphere voxels masked as in the forward."""
+        if0 = tl.load(inv_frac_ptr + 0); if1 = tl.load(inv_frac_ptr + 1); if2 = tl.load(inv_frac_ptr + 2)
+        if3 = tl.load(inv_frac_ptr + 3); if4 = tl.load(inv_frac_ptr + 4); if5 = tl.load(inv_frac_ptr + 5)
+        if6 = tl.load(inv_frac_ptr + 6); if7 = tl.load(inv_frac_ptr + 7); if8 = tl.load(inv_frac_ptr + 8)
+        f0 = tl.load(frac_ptr + 0); f1 = tl.load(frac_ptr + 1); f2 = tl.load(frac_ptr + 2)
+        f3 = tl.load(frac_ptr + 3); f4 = tl.load(frac_ptr + 4); f5 = tl.load(frac_ptr + 5)
+        f6 = tl.load(frac_ptr + 6); f7 = tl.load(frac_ptr + 7); f8 = tl.load(frac_ptr + 8)
+        uax = f0 / nx; uay = f3 / nx; uaz = f6 / nx
+        ubx = f1 / ny; uby = f4 / ny; ubz = f7 / ny
+        ucx = f2 / nz; ucy = f5 / nz; ucz = f8 / nz
+        inva = tl.sqrt(if0 * if0 + if1 * if1 + if2 * if2)
+        invb = tl.sqrt(if3 * if3 + if4 * if4 + if5 * if5)
+        invc = tl.sqrt(if6 * if6 + if7 * if7 + if8 * if8)
+        v_lane = tl.arange(0, BLOCK_V)
 
-def _launch(kernel, grid_ptr, member, r2cut, scene_buffers, extra, dims, block_v, warps):
-    """Launch one of the four kernels over ``grid=(n_atoms,)``.
+        atom = tl.program_id(0)
+        DT = xyz_ptr.dtype.element_ty
+        dm_ptr = grad_density_map_ptr
+        tm_ptr = tangent_map_ptr
+        if HAS_BATCH:
+            slab = tl.load(member_ptr + atom).to(tl.int64) * (nx * ny * nz)
+            dm_ptr += slab
+            tm_ptr += slab
+        r2cut = tl.load(r2cut_ptr + atom)
+        r = tl.sqrt(r2cut)
+        bhx = tl.extra.cuda.libdevice.ceil(r * nx * inva).to(tl.int32)
+        bhy = tl.extra.cuda.libdevice.ceil(r * ny * invb).to(tl.int32)
+        bhz = tl.extra.cuda.libdevice.ceil(r * nz * invc).to(tl.int32)
+        sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
+        syz = sy_ * sz_
+        n = sx_ * syz
+        inv_syz = 1.0 / syz.to(tl.float32)
+        inv_sz = 1.0 / sz_.to(tl.float32)
+
+        b_iso = tl.load(b_ptr + atom)
+        occ = tl.load(occ_ptr + atom)
+        ax = tl.load(xyz_ptr + atom * 3 + 0)
+        ay = tl.load(xyz_ptr + atom * 3 + 1)
+        az = tl.load(xyz_ptr + atom * 3 + 2)
+        tx = tl.load(t_xyz_ptr + atom * 3 + 0)
+        ty = tl.load(t_xyz_ptr + atom * 3 + 1)
+        tz = tl.load(t_xyz_ptr + atom * 3 + 2)
+        tb = tl.load(t_b_ptr + atom)
+        to = tl.load(t_occ_ptr + atom)
+
+        frac_x = ax * if0 + ay * if1 + az * if2
+        frac_y = ax * if3 + ay * if4 + az * if5
+        frac_z = ax * if6 + ay * if7 + az * if8
+        frac_x = frac_x - tl.extra.cuda.libdevice.floor(frac_x)
+        frac_y = frac_y - tl.extra.cuda.libdevice.floor(frac_y)
+        frac_z = frac_z - tl.extra.cuda.libdevice.floor(frac_z)
+        cix = tl.extra.cuda.libdevice.round(frac_x * nx).to(tl.int32)
+        ciy = tl.extra.cuda.libdevice.round(frac_y * ny).to(tl.int32)
+        ciz = tl.extra.cuda.libdevice.round(frac_z * nz).to(tl.int32)
+        rx = frac_x - cix.to(DT) / nx
+        ry = frac_y - ciy.to(DT) / ny
+        rz = frac_z - ciz.to(DT) / nz
+        w0x = f0 * rx + f1 * ry + f2 * rz
+        w0y = f3 * rx + f4 * ry + f5 * rz
+        w0z = f6 * rx + f7 * ry + f8 * rz
+
+        h_wx = tl.zeros([BLOCK_V], dtype=DT); h_wy = tl.zeros([BLOCK_V], dtype=DT)
+        h_wz = tl.zeros([BLOCK_V], dtype=DT); h_x1 = tl.zeros([BLOCK_V], dtype=DT)
+        h_b = tl.zeros([BLOCK_V], dtype=DT); h_o = tl.zeros([BLOCK_V], dtype=DT)
+        v_start = 0
+        while v_start < n:
+            v = v_start + v_lane
+            vmask = v < n
+            ix = ((v.to(tl.float32) + 0.5) * inv_syz).to(tl.int32)  # floor via trunc
+            rem = v - ix * syz
+            iy = ((rem.to(tl.float32) + 0.5) * inv_sz).to(tl.int32)
+            off_x = ix - bhx
+            off_y = iy - bhy
+            off_z = (rem - iy * sz_) - bhz
+            ofxf = off_x.to(DT); ofyf = off_y.to(DT); ofzf = off_z.to(DT)
+            wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
+            wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
+            wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
+            vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
+            viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
+            viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)
+            r2 = wx * wx + wy * wy + wz * wz
+            wmask = vmask & (r2 <= r2cut)
+            dm_flat = ((vix * ny + viy) * nz + viz).to(tl.int64)
+            grad_out = tl.load(dm_ptr + dm_flat, mask=vmask, other=0.0)
+
+            D = tl.zeros([BLOCK_V], dtype=DT); X1 = tl.zeros([BLOCK_V], dtype=DT)
+            X2 = tl.zeros([BLOCK_V], dtype=DT); Bb1 = tl.zeros([BLOCK_V], dtype=DT)
+            XB = tl.zeros([BLOCK_V], dtype=DT); BB = tl.zeros([BLOCK_V], dtype=DT)
+            for g in tl.static_range(5):
+                raw = (tl.load(B_ptr + atom * 5 + g) + b_iso) * 0.25
+                Bt = tl.maximum(raw, 0.1)
+                kap = 0.25 * (raw > 0.1).to(DT)  # dBt/db, zero where the clamp holds
+                s = 1.0 / Bt
+                d = tl.load(A_ptr + atom * 5 + g) * PI_1P5 / (Bt * tl.sqrt(Bt)) * tl.exp(-PI_SQ * r2 * s)
+                L = s * (PI_SQ * r2 * s - 1.5)
+                sd = s * d
+                kd = kap * d
+                D += d; X1 += sd; X2 += s * sd; Bb1 += kd * L
+                XB += kd * s * (L - s)
+                BB += kap * kd * (L * L + s * s * (1.5 - TWO_PI_SQ * r2 * s))
+            wt = wx * tx + wy * ty + wz * tz
+            J = TWO_PI_SQ * X1 * wt + Bb1 * tb  # dρ/d(xyz, b) . t at occ = 1
+            if WRITE_TANGENT:
+                tl.atomic_add(tm_ptr + dm_flat, occ * J + to * D, mask=wmask)
+            alpha = occ * (TWO_PI_SQ * TWO_PI_SQ * X2 * wt + TWO_PI_SQ * XB * tb) + to * TWO_PI_SQ * X1
+            h_wx += tl.where(wmask, grad_out * alpha * wx, 0.0)
+            h_wy += tl.where(wmask, grad_out * alpha * wy, 0.0)
+            h_wz += tl.where(wmask, grad_out * alpha * wz, 0.0)
+            h_x1 += tl.where(wmask, grad_out * X1, 0.0)
+            h_b += tl.where(wmask, grad_out * (occ * (TWO_PI_SQ * XB * wt + BB * tb) + to * Bb1), 0.0)
+            h_o += tl.where(wmask, grad_out * J, 0.0)
+            v_start += BLOCK_V
+
+        # d²ρ/dxyz² carries -2π² X1 I besides the w w^T term; its t-contraction is an
+        # atom constant times t_xyz, so it is applied once here.
+        diag = occ * TWO_PI_SQ * tl.sum(h_x1, axis=0)
+        tl.store(h_xyz_ptr + atom * 3 + 0, tl.sum(h_wx, axis=0) - diag * tx)
+        tl.store(h_xyz_ptr + atom * 3 + 1, tl.sum(h_wy, axis=0) - diag * ty)
+        tl.store(h_xyz_ptr + atom * 3 + 2, tl.sum(h_wz, axis=0) - diag * tz)
+        tl.store(h_b_ptr + atom, tl.sum(h_b, axis=0))
+        tl.store(h_occ_ptr + atom, tl.sum(h_o, axis=0))
+
+    @triton.jit
+    def _wq_grid_aniso_hvp_kernel(
+        grad_density_map_ptr,
+        member_ptr,
+        xyz_ptr, u_ptr, A_ptr, B_ptr, occ_ptr,
+        r2cut_ptr,
+        inv_frac_ptr, frac_ptr,
+        tangent_map_ptr, t_xyz_ptr, t_u_ptr, t_occ_ptr,
+        h_xyz_ptr, h_u_ptr, h_occ_ptr,
+        nx: tl.constexpr, ny: tl.constexpr, nz: tl.constexpr,
+        BLOCK_V: tl.constexpr, HAS_BATCH: tl.constexpr, WRITE_TANGENT: tl.constexpr,
+    ):
+        """Anisotropic second order. The cotangent of U enters as tM = 2*pi^2*t_U,
+        the matching step of M. Per Gaussian, with v = Minv w and m = Minv (t_xyz +
+        tM v), lam = d ln(ρ_g) . t gives T = Σ ρ_g (occ*lam + t_occ) and
+            dT/dxyz = 2π² Σ ρ_g ((occ*lam + t_occ) v - occ m)
+            dT/dM   = Σ ρ_g ((occ*lam + t_occ) S - 2π² occ sym(m v^T)
+                             + occ/2 Minv tM Minv),  S = -Minv/2 + π² v v^T,
+        mapped to U as the backward maps S (diag *2π², offdiag *4π²)."""
+        if0 = tl.load(inv_frac_ptr + 0); if1 = tl.load(inv_frac_ptr + 1); if2 = tl.load(inv_frac_ptr + 2)
+        if3 = tl.load(inv_frac_ptr + 3); if4 = tl.load(inv_frac_ptr + 4); if5 = tl.load(inv_frac_ptr + 5)
+        if6 = tl.load(inv_frac_ptr + 6); if7 = tl.load(inv_frac_ptr + 7); if8 = tl.load(inv_frac_ptr + 8)
+        f0 = tl.load(frac_ptr + 0); f1 = tl.load(frac_ptr + 1); f2 = tl.load(frac_ptr + 2)
+        f3 = tl.load(frac_ptr + 3); f4 = tl.load(frac_ptr + 4); f5 = tl.load(frac_ptr + 5)
+        f6 = tl.load(frac_ptr + 6); f7 = tl.load(frac_ptr + 7); f8 = tl.load(frac_ptr + 8)
+        uax = f0 / nx; uay = f3 / nx; uaz = f6 / nx
+        ubx = f1 / ny; uby = f4 / ny; ubz = f7 / ny
+        ucx = f2 / nz; ucy = f5 / nz; ucz = f8 / nz
+        inva = tl.sqrt(if0 * if0 + if1 * if1 + if2 * if2)
+        invb = tl.sqrt(if3 * if3 + if4 * if4 + if5 * if5)
+        invc = tl.sqrt(if6 * if6 + if7 * if7 + if8 * if8)
+        v_lane = tl.arange(0, BLOCK_V)
+
+        atom = tl.program_id(0)
+        DT = xyz_ptr.dtype.element_ty
+        dm_ptr = grad_density_map_ptr
+        tm_ptr = tangent_map_ptr
+        if HAS_BATCH:
+            slab = tl.load(member_ptr + atom).to(tl.int64) * (nx * ny * nz)
+            dm_ptr += slab
+            tm_ptr += slab
+        r2cut = tl.load(r2cut_ptr + atom)
+        r = tl.sqrt(r2cut)
+        bhx = tl.extra.cuda.libdevice.ceil(r * nx * inva).to(tl.int32)
+        bhy = tl.extra.cuda.libdevice.ceil(r * ny * invb).to(tl.int32)
+        bhz = tl.extra.cuda.libdevice.ceil(r * nz * invc).to(tl.int32)
+        sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
+        syz = sy_ * sz_
+        n = sx_ * syz
+        inv_syz = 1.0 / syz.to(tl.float32)
+        inv_sz = 1.0 / sz_.to(tl.float32)
+
+        occ = tl.load(occ_ptr + atom)
+        ax = tl.load(xyz_ptr + atom * 3 + 0)
+        ay = tl.load(xyz_ptr + atom * 3 + 1)
+        az = tl.load(xyz_ptr + atom * 3 + 2)
+        dd = TWO_PI_SQ * tl.load(u_ptr + atom * 6 + 3)
+        ee = TWO_PI_SQ * tl.load(u_ptr + atom * 6 + 4)
+        ff = TWO_PI_SQ * tl.load(u_ptr + atom * 6 + 5)
+        du = TWO_PI_SQ * tl.load(u_ptr + atom * 6 + 0)
+        dv = TWO_PI_SQ * tl.load(u_ptr + atom * 6 + 1)
+        dw = TWO_PI_SQ * tl.load(u_ptr + atom * 6 + 2)
+        tx = tl.load(t_xyz_ptr + atom * 3 + 0)
+        ty = tl.load(t_xyz_ptr + atom * 3 + 1)
+        tz = tl.load(t_xyz_ptr + atom * 3 + 2)
+        to = tl.load(t_occ_ptr + atom)
+        m00 = TWO_PI_SQ * tl.load(t_u_ptr + atom * 6 + 0)
+        m11 = TWO_PI_SQ * tl.load(t_u_ptr + atom * 6 + 1)
+        m22 = TWO_PI_SQ * tl.load(t_u_ptr + atom * 6 + 2)
+        m01 = TWO_PI_SQ * tl.load(t_u_ptr + atom * 6 + 3)
+        m02 = TWO_PI_SQ * tl.load(t_u_ptr + atom * 6 + 4)
+        m12 = TWO_PI_SQ * tl.load(t_u_ptr + atom * 6 + 5)
+
+        frac_x = ax * if0 + ay * if1 + az * if2
+        frac_y = ax * if3 + ay * if4 + az * if5
+        frac_z = ax * if6 + ay * if7 + az * if8
+        frac_x = frac_x - tl.extra.cuda.libdevice.floor(frac_x)
+        frac_y = frac_y - tl.extra.cuda.libdevice.floor(frac_y)
+        frac_z = frac_z - tl.extra.cuda.libdevice.floor(frac_z)
+        cix = tl.extra.cuda.libdevice.round(frac_x * nx).to(tl.int32)
+        ciy = tl.extra.cuda.libdevice.round(frac_y * ny).to(tl.int32)
+        ciz = tl.extra.cuda.libdevice.round(frac_z * nz).to(tl.int32)
+        rx = frac_x - cix.to(DT) / nx
+        ry = frac_y - ciy.to(DT) / ny
+        rz = frac_z - ciz.to(DT) / nz
+        w0x = f0 * rx + f1 * ry + f2 * rz
+        w0y = f3 * rx + f4 * ry + f5 * rz
+        w0z = f6 * rx + f7 * ry + f8 * rz
+
+        h_x = tl.zeros([BLOCK_V], dtype=DT); h_y = tl.zeros([BLOCK_V], dtype=DT)
+        h_z = tl.zeros([BLOCK_V], dtype=DT); h_o = tl.zeros([BLOCK_V], dtype=DT)
+        h00 = tl.zeros([BLOCK_V], dtype=DT); h11 = tl.zeros([BLOCK_V], dtype=DT)
+        h22 = tl.zeros([BLOCK_V], dtype=DT); h01 = tl.zeros([BLOCK_V], dtype=DT)
+        h02 = tl.zeros([BLOCK_V], dtype=DT); h12 = tl.zeros([BLOCK_V], dtype=DT)
+        v_start = 0
+        while v_start < n:
+            v = v_start + v_lane
+            vmask = v < n
+            ix = ((v.to(tl.float32) + 0.5) * inv_syz).to(tl.int32)  # floor via trunc
+            rem = v - ix * syz
+            iy = ((rem.to(tl.float32) + 0.5) * inv_sz).to(tl.int32)
+            off_x = ix - bhx
+            off_y = iy - bhy
+            off_z = (rem - iy * sz_) - bhz
+            ofxf = off_x.to(DT); ofyf = off_y.to(DT); ofzf = off_z.to(DT)
+            wx = ofxf * uax + ofyf * ubx + ofzf * ucx - w0x
+            wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
+            wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
+            vix = (cix + off_x) % nx; vix = vix + tl.where(vix < 0, nx, 0)
+            viy = (ciy + off_y) % ny; viy = viy + tl.where(viy < 0, ny, 0)
+            viz = (ciz + off_z) % nz; viz = viz + tl.where(viz < 0, nz, 0)
+            r2 = wx * wx + wy * wy + wz * wz
+            wmask = vmask & (r2 <= r2cut)
+            dm_flat = ((vix * ny + viy) * nz + viz).to(tl.int64)
+            grad_out = tl.load(dm_ptr + dm_flat, mask=vmask, other=0.0)
+
+            tang = tl.zeros([BLOCK_V], dtype=DT); so = tl.zeros([BLOCK_V], dtype=DT)
+            sx = tl.zeros([BLOCK_V], dtype=DT); sy = tl.zeros([BLOCK_V], dtype=DT)
+            sz = tl.zeros([BLOCK_V], dtype=DT)
+            s00 = tl.zeros([BLOCK_V], dtype=DT); s11 = tl.zeros([BLOCK_V], dtype=DT)
+            s22 = tl.zeros([BLOCK_V], dtype=DT); s01 = tl.zeros([BLOCK_V], dtype=DT)
+            s02 = tl.zeros([BLOCK_V], dtype=DT); s12 = tl.zeros([BLOCK_V], dtype=DT)
+            for g in tl.static_range(5):
+                Bq = tl.load(B_ptr + atom * 5 + g) * 0.25
+                p00, p11, p22, p01, p02, p12, det = _sym3_inv(
+                    Bq + du, Bq + dv, Bq + dw, dd, ee, ff)
+                An = tl.load(A_ptr + atom * 5 + g) * PI_1P5 / tl.sqrt(tl.maximum(det, 1e-10))
+                tau, q00, q11, q22, q01, q02, q12 = _sym3_sandwich(
+                    p00, p11, p22, p01, p02, p12, m00, m11, m22, m01, m02, m12)
+                vx = p00 * wx + p01 * wy + p02 * wz
+                vy = p01 * wx + p11 * wy + p12 * wz
+                vz = p02 * wx + p12 * wy + p22 * wz
+                d = An * tl.exp(-PI_SQ * (wx * vx + wy * vy + wz * vz))
+                mvx = m00 * vx + m01 * vy + m02 * vz
+                mvy = m01 * vx + m11 * vy + m12 * vz
+                mvz = m02 * vx + m12 * vy + m22 * vz
+                lam = (TWO_PI_SQ * (vx * tx + vy * ty + vz * tz) - 0.5 * tau
+                       + PI_SQ * (vx * mvx + vy * mvy + vz * mvz))
+                qx = tx + mvx; qy = ty + mvy; qz = tz + mvz
+                mx = p00 * qx + p01 * qy + p02 * qz
+                my = p01 * qx + p11 * qy + p12 * qz
+                mz = p02 * qx + p12 * qy + p22 * qz
+                dc = d * (occ * lam + to)
+                d_occ = d * occ
+                tang += dc
+                so += d * lam
+                sx += dc * vx - d_occ * mx
+                sy += dc * vy - d_occ * my
+                sz += dc * vz - d_occ * mz
+                s00 += dc * (PI_SQ * vx * vx - 0.5 * p00) + d_occ * (0.5 * q00 - TWO_PI_SQ * mx * vx)
+                s11 += dc * (PI_SQ * vy * vy - 0.5 * p11) + d_occ * (0.5 * q11 - TWO_PI_SQ * my * vy)
+                s22 += dc * (PI_SQ * vz * vz - 0.5 * p22) + d_occ * (0.5 * q22 - TWO_PI_SQ * mz * vz)
+                s01 += dc * (PI_SQ * vx * vy - 0.5 * p01) + d_occ * (0.5 * q01 - PI_SQ * (mx * vy + my * vx))
+                s02 += dc * (PI_SQ * vx * vz - 0.5 * p02) + d_occ * (0.5 * q02 - PI_SQ * (mx * vz + mz * vx))
+                s12 += dc * (PI_SQ * vy * vz - 0.5 * p12) + d_occ * (0.5 * q12 - PI_SQ * (my * vz + mz * vy))
+            if WRITE_TANGENT:
+                tl.atomic_add(tm_ptr + dm_flat, tang, mask=wmask)
+            h_x += tl.where(wmask, grad_out * sx, 0.0)
+            h_y += tl.where(wmask, grad_out * sy, 0.0)
+            h_z += tl.where(wmask, grad_out * sz, 0.0)
+            h_o += tl.where(wmask, grad_out * so, 0.0)
+            h00 += tl.where(wmask, grad_out * s00, 0.0)
+            h11 += tl.where(wmask, grad_out * s11, 0.0)
+            h22 += tl.where(wmask, grad_out * s22, 0.0)
+            h01 += tl.where(wmask, grad_out * s01, 0.0)
+            h02 += tl.where(wmask, grad_out * s02, 0.0)
+            h12 += tl.where(wmask, grad_out * s12, 0.0)
+            v_start += BLOCK_V
+
+        tl.store(h_xyz_ptr + atom * 3 + 0, TWO_PI_SQ * tl.sum(h_x, axis=0))
+        tl.store(h_xyz_ptr + atom * 3 + 1, TWO_PI_SQ * tl.sum(h_y, axis=0))
+        tl.store(h_xyz_ptr + atom * 3 + 2, TWO_PI_SQ * tl.sum(h_z, axis=0))
+        tl.store(h_u_ptr + atom * 6 + 0, TWO_PI_SQ * tl.sum(h00, axis=0))
+        tl.store(h_u_ptr + atom * 6 + 1, TWO_PI_SQ * tl.sum(h11, axis=0))
+        tl.store(h_u_ptr + atom * 6 + 2, TWO_PI_SQ * tl.sum(h22, axis=0))
+        tl.store(h_u_ptr + atom * 6 + 3, 2.0 * TWO_PI_SQ * tl.sum(h01, axis=0))
+        tl.store(h_u_ptr + atom * 6 + 4, 2.0 * TWO_PI_SQ * tl.sum(h02, axis=0))
+        tl.store(h_u_ptr + atom * 6 + 5, 2.0 * TWO_PI_SQ * tl.sum(h12, axis=0))
+        tl.store(h_occ_ptr + atom, tl.sum(h_o, axis=0))
+
+
+def _launch(kernel, grid_ptr, member, r2cut, scene_buffers, extra, dims, block_v, warps,
+            **flags):
+    """Launch one of the six kernels over ``grid=(n_atoms,)``.
 
     ``member`` is the per-atom member id, or None for an unbatched call, in which case a
     placeholder pointer is passed that the compiled-out ``HAS_BATCH`` branch never reads.
+    ``flags`` are further compile-time switches (``WRITE_TANGENT``).
     """
     nx, ny, nz = dims
     kernel[(r2cut.shape[0],)](
@@ -715,7 +1073,7 @@ def _launch(kernel, grid_ptr, member, r2cut, scene_buffers, extra, dims, block_v
         r2cut,
         *extra,
         nx=nx, ny=ny, nz=nz, BLOCK_V=block_v, HAS_BATCH=member is not None,
-        num_warps=warps,
+        num_warps=warps, **flags,
     )
 
 
@@ -744,22 +1102,71 @@ def _forward(ctx, fwd_kernel, density_map, xyz, third, occ, A, B, r2cut, inv_fra
     return out
 
 
-def _backward(ctx, bwd_kernel, grad_density_map):
+def _zeros_contiguous(t):
+    # The kernels write per-atom arrays flat and row-major; zeros_like alone would keep a
+    # strided input's layout and the gradient of a transposed xyz would come back permuted.
+    return torch.zeros_like(t, memory_format=torch.contiguous_format)
+
+
+class _SplatGrad(torch.autograd.Function):
+    """The splat's atom gradients as a function of the map gradient and the atoms.
+
+    The backward of both splats. Autograd records it under ``create_graph=True``, and its
+    own backward runs the second-order kernel of ``kernels``, so a Hessian-vector product
+    through the splat stays on the GPU. That backward is first-order only: a third
+    derivative raises.
+    """
+
+    @staticmethod
+    def forward(ctx, grad_density_map, xyz, third, occ, A, B, r2cut, inv_frac, frac,
+                member, kernels, dims):
+        grads = tuple(_zeros_contiguous(t) for t in (xyz, third, occ))
+        _launch(kernels[0], grad_density_map.contiguous().view(-1), member, r2cut,
+                _scene(xyz, third, A, B, occ), (*_cell(inv_frac, frac), *grads),
+                dims, BWD_BLOCK_V, BWD_NUM_WARPS)
+        ctx.kernels, ctx.dims = kernels, dims
+        ctx.save_for_backward(grad_density_map, xyz, third, occ, A, B, r2cut, inv_frac,
+                              frac, member)
+        return grads
+
+    @staticmethod
+    @first_order_only
+    def backward(ctx, t_xyz, t_third, t_occ):
+        grad_density_map, xyz, third, occ, A, B, r2cut, inv_frac, frac, member = (
+            ctx.saved_tensors
+        )
+        atoms = (xyz, third, occ)
+        # A cotangent autograd leaves out (None) is zero.
+        cotangents = tuple(
+            _zeros_contiguous(x) if t is None else t.contiguous()
+            for t, x in zip((t_xyz, t_third, t_occ), atoms)
+        )
+        hvps = tuple(_zeros_contiguous(x) for x in atoms)
+        grad_map = grad_density_map.contiguous().view(-1)
+        # The tangent map is the gradient wrt grad_density_map, wanted only when the map
+        # gradient itself depends on the atoms (any loss nonlinear in the density).
+        write_tangent = ctx.needs_input_grad[0]
+        tangent = torch.zeros_like(grad_map) if write_tangent else None
+        _launch(ctx.kernels[1], grad_map, member, r2cut,
+                _scene(xyz, third, A, B, occ),
+                (*_cell(inv_frac, frac), grad_map if tangent is None else tangent,
+                 *cotangents, *hvps),
+                ctx.dims, BWD_BLOCK_V, BWD_NUM_WARPS, WRITE_TANGENT=write_tangent)
+        if tangent is not None:
+            tangent = tangent.view(grad_density_map.shape)
+        # grads for: grad_density_map, xyz, third, occ, A, B, r2cut, inv_frac, frac,
+        # member, kernels, dims
+        return (tangent, *hvps) + (None,) * 8
+
+
+def _backward(ctx, kernels, grad_density_map):
     """Backward shared by both splats; the gradient of ``third`` has its shape."""
     xyz, third, occ, A, B, r2cut, inv_frac, frac, member = ctx.saved_tensors
-    # The kernel writes the gradients as flat row-major arrays; zeros_like alone would keep
-    # a strided input's layout and the gradient of a transposed xyz would come back permuted.
-    grad_xyz, grad_third, grad_occ = (
-        torch.zeros_like(t, memory_format=torch.contiguous_format) for t in (xyz, third, occ)
-    )
-    _launch(bwd_kernel, grad_density_map.contiguous().view(-1), member, r2cut,
-            _scene(xyz, third, A, B, occ),
-            (*_cell(inv_frac, frac), grad_xyz, grad_third, grad_occ),
-            ctx.dims, BWD_BLOCK_V, BWD_NUM_WARPS)
+    grads = _SplatGrad.apply(grad_density_map, xyz, third, occ, A, B, r2cut, inv_frac,
+                             frac, member, kernels, ctx.dims)
     # out = density_map + splat -> grad wrt density_map is identity.
     # grads for: density_map, xyz, third, occ, A, B, r2cut, inv_frac, frac, member
-    return (grad_density_map, grad_xyz, grad_third, grad_occ, None, None,
-            None, None, None, None)
+    return (grad_density_map, *grads, None, None, None, None, None, None)
 
 
 class WorkQueueGridDensity(torch.autograd.Function):
@@ -767,7 +1174,7 @@ class WorkQueueGridDensity(torch.autograd.Function):
 
     Each program iterates its atom's per-axis voxel box (decoded in-kernel from
     ``r2cut`` + cell metric) and truncates to the per-atom sphere ``r2 <= r2cut``, so every
-    atom is splatted at its own radius. Differentiable in xyz, b, occ.
+    atom is splatted at its own radius. Twice differentiable in xyz, b, occ.
     """
 
     @staticmethod
@@ -776,9 +1183,9 @@ class WorkQueueGridDensity(torch.autograd.Function):
                         r2cut, inv_frac, frac, member)
 
     @staticmethod
-    @first_order_only
     def backward(ctx, grad_density_map):
-        return _backward(ctx, _wq_grid_bwd_kernel, grad_density_map)
+        return _backward(ctx, (_wq_grid_bwd_kernel, _wq_grid_hvp_kernel),
+                         grad_density_map)
 
 
 class WorkQueueGridDensityAniso(torch.autograd.Function):
@@ -793,9 +1200,9 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
                         r2cut, inv_frac, frac, member)
 
     @staticmethod
-    @first_order_only
     def backward(ctx, grad_density_map):
-        return _backward(ctx, _wq_grid_aniso_bwd_kernel, grad_density_map)
+        return _backward(ctx, (_wq_grid_aniso_bwd_kernel, _wq_grid_aniso_hvp_kernel),
+                         grad_density_map)
 
 
 # ---------------------------------------------------------------------------
@@ -864,7 +1271,7 @@ def add_isotropic_cuda_var(
     float64 -- the gate is the ``cuda_triton`` row of ``DENSITY_BACKENDS``; this wrapper
     does not re-check. ``density_map`` is ``(nx, ny, nz)``, or ``(B, nx, ny, nz)`` with
     ``batch_offsets`` ``(B + 1,)``. Accumulation uses atomics, so results are not
-    bit-reproducible run to run.
+    bit-reproducible run to run. Twice differentiable in ``xyz``, ``adp`` and ``occ``.
     """
     return WorkQueueGridDensity.apply(
         density_map,

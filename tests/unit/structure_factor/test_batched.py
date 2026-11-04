@@ -197,30 +197,32 @@ def test_dense_offsets_are_implied():
 
 
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
-@pytest.mark.parametrize("name", ["portable", "cpu_sphere"])
-def test_batched_second_order_matches_per_member(name, kind):
-    """Double backward re-derives through the portable splat with the same batch."""
+@pytest.mark.parametrize("device,dtype,name", DEVICE_DTYPE_KERNELS)
+def test_batched_second_order_matches_per_member(device, dtype, name, kind):
+    """A batched HVP along every leaf equals the members' HVPs, stacked."""
     aniso = kind == "aniso"
-    device, dtype = torch.device("cpu"), torch.float64
     members = _members(device, dtype)
     dims = H._grid_dims(members[0])
     fn = H.splat_kernel(name, aniso)
     g = torch.Generator().manual_seed(5)
-    weight = torch.randn((len(members),) + tuple(dims), generator=g, dtype=dtype)
-    probes = [torch.randn(sc.xyz.shape, generator=g, dtype=dtype) for sc in members]
+    rand = lambda shape: torch.randn(shape, generator=g).to(device, dtype)  # noqa: E731
+    weight = rand((len(members),) + tuple(dims))
+    probes = [rand(t.shape) for sc in members for t in sc.leaves(aniso=aniso)]
 
     hvps = {}
     for batched in (False, True):
         leaves = [sc.leaves(aniso=aniso) for sc in members]
-        xyz = [lv[0] for lv in leaves]
+        flat = [t for lv in leaves for t in lv]
         out = _splat(fn, members[0], dims, members, leaves, aniso, batched=batched)
         grads = torch.autograd.grad(
-            ((out * weight) ** 2).sum(), xyz, create_graph=True, allow_unused=True
+            ((out * weight) ** 2).sum(), flat, create_graph=True, allow_unused=True
         )
         dot = sum((gr * p).sum() for gr, p in zip(grads, probes) if gr is not None)
-        hvps[batched] = torch.autograd.grad(dot, xyz, allow_unused=True)
-    for got, ref, sc in zip(hvps[True], hvps[False], members):
-        if sc.n_atoms:
+        hvps[batched] = torch.autograd.grad(dot, flat, allow_unused=True)
+    for got, ref in zip(hvps[True], hvps[False]):
+        if ref is not None and ref.numel():
+            # cpu_sphere takes its second derivative through the portable splat, so it is
+            # not bitwise here.
             _assert_close(got, ref, device, dtype, "portable", "hvp", grad=True)
 
 

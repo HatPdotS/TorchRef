@@ -1,7 +1,7 @@
 """Portable per-atom variable-radius density splatting.
 
 The base case of ``DENSITY_BACKENDS`` (``electron_density/_backends.py``): it runs when
-no accelerator row matches the inputs (CUDA float64, a mixed-dtype CPU call) or none is
+no accelerator row matches the inputs (a mixed-dtype call, MPS beyond float32) or none is
 available (no Triton, Metal or ``torchref-kernels``), under ``force_portable``, and after a
 ``"degrade"`` failure of the CUDA or Metal kernel. Plain ``scatter_add`` only, so it
 runs on every device, supports float64, and is double-differentiable -- which makes it

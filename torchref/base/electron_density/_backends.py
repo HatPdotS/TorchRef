@@ -48,7 +48,7 @@ DENSITY_BACKENDS = BackendTable(
             # from; the kernel clones the density map before accumulating, so the
             # fallback cannot double-count.
             on_failure="degrade",
-            second_order=False,
+            second_order=True,
         ),
         Backend(
             name="mps_metal",
@@ -60,7 +60,7 @@ DENSITY_BACKENDS = BackendTable(
                    "why_unavailable"),
             expect_available="mps",
             on_failure="degrade",
-            second_order=False,
+            second_order=True,
         ),
         Backend(
             name="cpu_sphere",

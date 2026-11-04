@@ -19,9 +19,7 @@ offset ``o`` from the atom's grid anchor ``w = frac @ (o/n - residual)`` with
 ``r2 = w.w``. Constants match the reference bit-for-bit.
 """
 
-# NOTE: kept as a single translation unit so one compile_shader call yields all
-# kernels. Backward (iso/aniso) and anisotropic kernels are appended below as
-# each is validated.
+# Kept as a single translation unit so one compile_shader call yields all kernels.
 MSL_SOURCE = r"""
 #include <metal_stdlib>
 #include <metal_atomic>
@@ -437,5 +435,268 @@ kernel void aniso_splat_bwd(
     grad_u[6*a+0]=occa*gu0; grad_u[6*a+1]=occa*gu1; grad_u[6*a+2]=occa*gu2;
     grad_u[6*a+3]=occa*gu3; grad_u[6*a+4]=occa*gu4; grad_u[6*a+5]=occa*gu5;
     grad_occ[a]=go;
+}
+
+// ---------------------------------------------------------------------------
+// Second order: the backward of the backward. Given a cotangent t on the atom
+// gradients, scatter the tangent map T(v) = sum_p t_p drho(v)/dp (when
+// write_tangent) and gather h_p = sum_v G(v) d/dp T(v), the Hessian-vector
+// product. Math as in kernels/cuda/variable_radius.py's *_hvp_kernel. One
+// thread per atom: T needs the atomic add, h does not.
+// ---------------------------------------------------------------------------
+kernel void iso_splat_hvp(
+    device atomic_uint*  tangent    [[buffer(0)]],   // (nx*ny*nz,) out, if write_tangent
+    device float*        h_xyz      [[buffer(1)]],   // (n,3) out
+    device float*        h_adp      [[buffer(2)]],   // (n,)  out
+    device float*        h_occ      [[buffer(3)]],   // (n,)  out
+    device const float*  grad_out   [[buffer(4)]],   // (nx*ny*nz,) upstream map grad G
+    device const float*  xyz        [[buffer(5)]],
+    device const float*  adp        [[buffer(6)]],
+    device const float*  occ        [[buffer(7)]],
+    device const float*  A          [[buffer(8)]],
+    device const float*  B          [[buffer(9)]],
+    device const float*  r2cut      [[buffer(10)]],
+    device const float*  inv_frac   [[buffer(11)]],
+    device const float*  frac       [[buffer(12)]],
+    device const float*  t_xyz      [[buffer(13)]],  // (n,3) cotangent
+    device const float*  t_adp      [[buffer(14)]],  // (n,)
+    device const float*  t_occ      [[buffer(15)]],  // (n,)
+    constant int&        n_atoms    [[buffer(16)]],
+    constant int&        nx         [[buffer(17)]],
+    constant int&        ny         [[buffer(18)]],
+    constant int&        nz         [[buffer(19)]],
+    device const int*    member     [[buffer(20)]],  // (n,) member ids, if has_batch
+    constant int&        has_batch  [[buffer(21)]],
+    constant int&        write_tangent [[buffer(22)]],
+    uint a [[thread_position_in_grid]])
+{
+    if (a >= (uint)n_atoms) return;
+    int base = has_batch ? member[a] * nx * ny * nz : 0;
+    device const float* slab = grad_out + base;
+    device atomic_uint* tslab = tangent + base;
+
+    float f0=frac[0],f1=frac[1],f2=frac[2],
+          f3=frac[3],f4=frac[4],f5=frac[5],
+          f6=frac[6],f7=frac[7],f8=frac[8];
+    float i0=inv_frac[0],i1=inv_frac[1],i2=inv_frac[2],
+          i3=inv_frac[3],i4=inv_frac[4],i5=inv_frac[5],
+          i6=inv_frac[6],i7=inv_frac[7],i8=inv_frac[8];
+    float fnx=(float)nx, fny=(float)ny, fnz=(float)nz;
+    float uax=f0/fnx, uay=f3/fnx, uaz=f6/fnx;
+    float ubx=f1/fny, uby=f4/fny, ubz=f7/fny;
+    float ucx=f2/fnz, ucy=f5/fnz, ucz=f8/fnz;
+
+    float rc2 = r2cut[a];
+    float r   = sqrt(rc2);
+    int bhx = (int)ceil(r*fnx*sqrt(i0*i0+i1*i1+i2*i2));
+    int bhy = (int)ceil(r*fny*sqrt(i3*i3+i4*i4+i5*i5));
+    int bhz = (int)ceil(r*fnz*sqrt(i6*i6+i7*i7+i8*i8));
+
+    float ax=xyz[3*a+0], ay=xyz[3*a+1], az=xyz[3*a+2];
+    float fx=ax*i0+ay*i1+az*i2;
+    float fy=ax*i3+ay*i4+az*i5;
+    float fz=ax*i6+ay*i7+az*i8;
+    fx-=floor(fx); fy-=floor(fy); fz-=floor(fz);
+    int cix=(int)rint(fx*fnx), ciy=(int)rint(fy*fny), ciz=(int)rint(fz*fnz);
+    float sx=fx-(float)cix/fnx, sy=fy-(float)ciy/fny, sz=fz-(float)ciz/fnz;
+    float w0x=f0*sx+f1*sy+f2*sz;
+    float w0y=f3*sx+f4*sy+f5*sz;
+    float w0z=f6*sx+f7*sy+f8*sz;
+
+    float occa=occ[a], b_iso=adp[a];
+    float s_[5], An[5], kap[5];
+    for (int g=0; g<5; ++g) {
+        float raw = (B[5*a+g]+b_iso)*0.25f;
+        float Bt_g = max(raw, 0.1f);
+        s_[g] = 1.0f/Bt_g;
+        An[g] = A[5*a+g]*PI_1P5/(Bt_g*sqrt(Bt_g));   // occupancy-free
+        kap[g] = (raw > 0.1f) ? 0.25f : 0.0f;        // dBt/db, zero where the clamp holds
+    }
+    float tx=t_xyz[3*a+0], ty=t_xyz[3*a+1], tz=t_xyz[3*a+2], tb=t_adp[a], to=t_occ[a];
+
+    float hwx=0.0f, hwy=0.0f, hwz=0.0f, hx1=0.0f, hb=0.0f, ho=0.0f;
+    for (int ox=-bhx; ox<=bhx; ++ox) {
+      float fox=(float)ox;
+      for (int oy=-bhy; oy<=bhy; ++oy) {
+        float foy=(float)oy;
+        for (int oz=-bhz; oz<=bhz; ++oz) {
+            float foz=(float)oz;
+            float wx=fox*uax+foy*ubx+foz*ucx - w0x;
+            float wy=fox*uay+foy*uby+foz*ucy - w0y;
+            float wz=fox*uaz+foy*ubz+foz*ucz - w0z;
+            float r2=wx*wx+wy*wy+wz*wz;
+            if (r2 > rc2) continue;
+            int vix=cix+ox; vix=((vix%nx)+nx)%nx;
+            int viy=ciy+oy; viy=((viy%ny)+ny)%ny;
+            int viz=ciz+oz; viz=((viz%nz)+nz)%nz;
+            int idx=(vix*ny+viy)*nz+viz;
+            float g_out = slab[idx];
+            // Occupancy-free sums: D, X1 = sum s rho_g, X2 = sum s^2 rho_g, Bb1 = drho/db,
+            // and the xyz-b / b-b curvatures XB, BB.
+            float D=0.0f, X1=0.0f, X2=0.0f, Bb1=0.0f, XB=0.0f, BB=0.0f;
+            for (int g=0; g<5; ++g) {
+                float s = s_[g];
+                float d = An[g]*fast::exp(-PI_SQ*r2*s);
+                float L = s*(PI_SQ*r2*s - 1.5f);
+                float sd = s*d, kd = kap[g]*d;
+                D += d; X1 += sd; X2 += s*sd; Bb1 += kd*L;
+                XB += kd*s*(L - s);
+                BB += kap[g]*kd*(L*L + s*s*(1.5f - TWO_PI_SQ*r2*s));
+            }
+            float wt = wx*tx + wy*ty + wz*tz;
+            float J = TWO_PI_SQ*X1*wt + Bb1*tb;   // drho/d(xyz, b) . t at occ = 1
+            if (write_tangent) atomic_add_f(&tslab[idx], occa*J + to*D);
+            float alpha = occa*(TWO_PI_SQ*TWO_PI_SQ*X2*wt + TWO_PI_SQ*XB*tb) + to*TWO_PI_SQ*X1;
+            hwx += g_out*alpha*wx; hwy += g_out*alpha*wy; hwz += g_out*alpha*wz;
+            hx1 += g_out*X1;
+            hb += g_out*(occa*(TWO_PI_SQ*XB*wt + BB*tb) + to*Bb1);
+            ho += g_out*J;
+        }
+      }
+    }
+    // d2rho/dxyz2 carries -2pi^2 X1 I besides the w w^T term; contracted with t it is
+    // an atom constant times t_xyz.
+    float diag = occa*TWO_PI_SQ*hx1;
+    h_xyz[3*a+0]=hwx-diag*tx; h_xyz[3*a+1]=hwy-diag*ty; h_xyz[3*a+2]=hwz-diag*tz;
+    h_adp[a]=hb;
+    h_occ[a]=ho;
+}
+
+// Anisotropic second order. The cotangent of U enters as tM = 2pi^2 t_U, the
+// matching step of M. Per Gaussian, with v = Minv w, m = Minv (t_xyz + tM v) and
+// lam = d ln(rho_g) . t, T = sum rho_g (occ lam + t_occ) and
+//   dT/dxyz = 2pi^2 sum rho_g ((occ lam + t_occ) v - occ m)
+//   dT/dM   = sum rho_g ((occ lam + t_occ) S - 2pi^2 occ sym(m v^T) + occ/2 Minv tM Minv)
+// with S = -Minv/2 + pi^2 v v^T, mapped to U as the backward maps S.
+kernel void aniso_splat_hvp(
+    device atomic_uint*  tangent    [[buffer(0)]],
+    device float*        h_xyz      [[buffer(1)]],   // (n,3)
+    device float*        h_u        [[buffer(2)]],   // (n,6)
+    device float*        h_occ      [[buffer(3)]],   // (n,)
+    device const float*  grad_out   [[buffer(4)]],
+    device const float*  xyz        [[buffer(5)]],
+    device const float*  u          [[buffer(6)]],
+    device const float*  occ        [[buffer(7)]],
+    device const float*  A          [[buffer(8)]],
+    device const float*  B          [[buffer(9)]],
+    device const float*  r2cut      [[buffer(10)]],
+    device const float*  inv_frac   [[buffer(11)]],
+    device const float*  frac       [[buffer(12)]],
+    device const float*  t_xyz      [[buffer(13)]],  // (n,3)
+    device const float*  t_u        [[buffer(14)]],  // (n,6)
+    device const float*  t_occ      [[buffer(15)]],  // (n,)
+    constant int&        n_atoms    [[buffer(16)]],
+    constant int&        nx         [[buffer(17)]],
+    constant int&        ny         [[buffer(18)]],
+    constant int&        nz         [[buffer(19)]],
+    device const int*    member     [[buffer(20)]],
+    constant int&        has_batch  [[buffer(21)]],
+    constant int&        write_tangent [[buffer(22)]],
+    uint a [[thread_position_in_grid]])
+{
+    if (a >= (uint)n_atoms) return;
+    int base = has_batch ? member[a] * nx * ny * nz : 0;
+    device const float* slab = grad_out + base;
+    device atomic_uint* tslab = tangent + base;
+
+    float f0=frac[0],f1=frac[1],f2=frac[2],
+          f3=frac[3],f4=frac[4],f5=frac[5],
+          f6=frac[6],f7=frac[7],f8=frac[8];
+    float i0=inv_frac[0],i1=inv_frac[1],i2=inv_frac[2],
+          i3=inv_frac[3],i4=inv_frac[4],i5=inv_frac[5],
+          i6=inv_frac[6],i7=inv_frac[7],i8=inv_frac[8];
+    float fnx=(float)nx, fny=(float)ny, fnz=(float)nz;
+    float uax=f0/fnx, uay=f3/fnx, uaz=f6/fnx;
+    float ubx=f1/fny, uby=f4/fny, ubz=f7/fny;
+    float ucx=f2/fnz, ucy=f5/fnz, ucz=f8/fnz;
+
+    float ax=xyz[3*a+0], ay=xyz[3*a+1], az=xyz[3*a+2];
+    float fx=ax*i0+ay*i1+az*i2, fy=ax*i3+ay*i4+az*i5, fz=ax*i6+ay*i7+az*i8;
+    fx-=floor(fx); fy-=floor(fy); fz-=floor(fz);
+    int cix=(int)rint(fx*fnx), ciy=(int)rint(fy*fny), ciz=(int)rint(fz*fnz);
+    float sx=fx-(float)cix/fnx, sy=fy-(float)ciy/fny, sz=fz-(float)ciz/fnz;
+    float w0x=f0*sx+f1*sy+f2*sz, w0y=f3*sx+f4*sy+f5*sz, w0z=f6*sx+f7*sy+f8*sz;
+
+    float occa=occ[a];
+    float u11=u[6*a+0],u22=u[6*a+1],u33=u[6*a+2],u12=u[6*a+3],u13=u[6*a+4],u23=u[6*a+5];
+    float tx=t_xyz[3*a+0], ty=t_xyz[3*a+1], tz=t_xyz[3*a+2], to=t_occ[a];
+    float m00=TWO_PI_SQ*t_u[6*a+0], m11=TWO_PI_SQ*t_u[6*a+1], m22=TWO_PI_SQ*t_u[6*a+2];
+    float m01=TWO_PI_SQ*t_u[6*a+3], m02=TWO_PI_SQ*t_u[6*a+4], m12=TWO_PI_SQ*t_u[6*a+5];
+    float p00[5],p11[5],p22[5],p01[5],p02[5],p12[5],An[5];
+    float tau[5],q00[5],q11[5],q22[5],q01[5],q02[5],q12[5];
+    for (int g=0; g<5; ++g) {
+        float Bg=B[5*a+g];
+        float ma=0.25f*Bg+TWO_PI_SQ*u11, mb=0.25f*Bg+TWO_PI_SQ*u22, mc=0.25f*Bg+TWO_PI_SQ*u33;
+        float md=TWO_PI_SQ*u12, me=TWO_PI_SQ*u13, mf=TWO_PI_SQ*u23;
+        float det=ma*(mb*mc-mf*mf)-md*(md*mc-me*mf)+me*(md*mf-me*mb);
+        float inv=1.0f/det;
+        p00[g]=(mb*mc-mf*mf)*inv; p11[g]=(ma*mc-me*me)*inv; p22[g]=(ma*mb-md*md)*inv;
+        p01[g]=(me*mf-md*mc)*inv; p02[g]=(md*mf-me*mb)*inv; p12[g]=(md*me-ma*mf)*inv;
+        An[g]=A[5*a+g]*PI_1P5/sqrt(max(det,1e-10f));   // occupancy-free
+        // C = Minv tM; tau = tr C; Q = C Minv = Minv tM Minv.
+        float c00=p00[g]*m00+p01[g]*m01+p02[g]*m02, c01=p00[g]*m01+p01[g]*m11+p02[g]*m12;
+        float c02=p00[g]*m02+p01[g]*m12+p02[g]*m22, c10=p01[g]*m00+p11[g]*m01+p12[g]*m02;
+        float c11=p01[g]*m01+p11[g]*m11+p12[g]*m12, c12=p01[g]*m02+p11[g]*m12+p12[g]*m22;
+        float c20=p02[g]*m00+p12[g]*m01+p22[g]*m02, c21=p02[g]*m01+p12[g]*m11+p22[g]*m12;
+        float c22=p02[g]*m02+p12[g]*m12+p22[g]*m22;
+        tau[g]=c00+c11+c22;
+        q00[g]=c00*p00[g]+c01*p01[g]+c02*p02[g]; q11[g]=c10*p01[g]+c11*p11[g]+c12*p12[g];
+        q22[g]=c20*p02[g]+c21*p12[g]+c22*p22[g]; q01[g]=c00*p01[g]+c01*p11[g]+c02*p12[g];
+        q02[g]=c00*p02[g]+c01*p12[g]+c02*p22[g]; q12[g]=c10*p02[g]+c11*p12[g]+c12*p22[g];
+    }
+
+    float hx=0,hy=0,hz=0,h00=0,h11=0,h22=0,h01=0,h02=0,h12=0,ho=0;
+    float rc2=r2cut[a], r=sqrt(rc2);
+    int bhx=(int)ceil(r*fnx*sqrt(i0*i0+i1*i1+i2*i2));
+    int bhy=(int)ceil(r*fny*sqrt(i3*i3+i4*i4+i5*i5));
+    int bhz=(int)ceil(r*fnz*sqrt(i6*i6+i7*i7+i8*i8));
+    for (int ox=-bhx; ox<=bhx; ++ox) {
+      float fox=(float)ox;
+      for (int oy=-bhy; oy<=bhy; ++oy) {
+        float foy=(float)oy;
+        for (int oz=-bhz; oz<=bhz; ++oz) {
+            float foz=(float)oz;
+            float wx=fox*uax+foy*ubx+foz*ucx - w0x;
+            float wy=fox*uay+foy*uby+foz*ucy - w0y;
+            float wz=fox*uaz+foy*ubz+foz*ucz - w0z;
+            if (wx*wx+wy*wy+wz*wz > rc2) continue;
+            int vix=cix+ox; vix=((vix%nx)+nx)%nx;
+            int viy=ciy+oy; viy=((viy%ny)+ny)%ny;
+            int viz=ciz+oz; viz=((viz%nz)+nz)%nz;
+            int idx=(vix*ny+viy)*nz+viz;
+            float g_out=slab[idx];
+            float tang=0,so=0,ux=0,uy=0,uz=0,s00=0,s11=0,s22=0,s01=0,s02=0,s12=0;
+            for (int g=0; g<5; ++g) {
+                float vx=p00[g]*wx+p01[g]*wy+p02[g]*wz;
+                float vy=p01[g]*wx+p11[g]*wy+p12[g]*wz;
+                float vz=p02[g]*wx+p12[g]*wy+p22[g]*wz;
+                float d=An[g]*fast::exp(-PI_SQ*(wx*vx+wy*vy+wz*vz));
+                float mvx=m00*vx+m01*vy+m02*vz, mvy=m01*vx+m11*vy+m12*vz, mvz=m02*vx+m12*vy+m22*vz;
+                float lam=TWO_PI_SQ*(vx*tx+vy*ty+vz*tz) - 0.5f*tau[g] + PI_SQ*(vx*mvx+vy*mvy+vz*mvz);
+                float qx=tx+mvx, qy=ty+mvy, qz=tz+mvz;
+                float mx=p00[g]*qx+p01[g]*qy+p02[g]*qz;
+                float my=p01[g]*qx+p11[g]*qy+p12[g]*qz;
+                float mz=p02[g]*qx+p12[g]*qy+p22[g]*qz;
+                float dc=d*(occa*lam+to), d_occ=d*occa;
+                tang+=dc; so+=d*lam;
+                ux+=dc*vx-d_occ*mx; uy+=dc*vy-d_occ*my; uz+=dc*vz-d_occ*mz;
+                s00+=dc*(PI_SQ*vx*vx-0.5f*p00[g])+d_occ*(0.5f*q00[g]-TWO_PI_SQ*mx*vx);
+                s11+=dc*(PI_SQ*vy*vy-0.5f*p11[g])+d_occ*(0.5f*q11[g]-TWO_PI_SQ*my*vy);
+                s22+=dc*(PI_SQ*vz*vz-0.5f*p22[g])+d_occ*(0.5f*q22[g]-TWO_PI_SQ*mz*vz);
+                s01+=dc*(PI_SQ*vx*vy-0.5f*p01[g])+d_occ*(0.5f*q01[g]-PI_SQ*(mx*vy+my*vx));
+                s02+=dc*(PI_SQ*vx*vz-0.5f*p02[g])+d_occ*(0.5f*q02[g]-PI_SQ*(mx*vz+mz*vx));
+                s12+=dc*(PI_SQ*vy*vz-0.5f*p12[g])+d_occ*(0.5f*q12[g]-PI_SQ*(my*vz+mz*vy));
+            }
+            if (write_tangent) atomic_add_f(&tslab[idx], tang);
+            hx+=g_out*ux; hy+=g_out*uy; hz+=g_out*uz; ho+=g_out*so;
+            h00+=g_out*s00; h11+=g_out*s11; h22+=g_out*s22;
+            h01+=g_out*s01; h02+=g_out*s02; h12+=g_out*s12;
+        }
+      }
+    }
+    h_xyz[3*a+0]=TWO_PI_SQ*hx; h_xyz[3*a+1]=TWO_PI_SQ*hy; h_xyz[3*a+2]=TWO_PI_SQ*hz;
+    h_u[6*a+0]=TWO_PI_SQ*h00; h_u[6*a+1]=TWO_PI_SQ*h11; h_u[6*a+2]=TWO_PI_SQ*h22;
+    h_u[6*a+3]=2.0f*TWO_PI_SQ*h01; h_u[6*a+4]=2.0f*TWO_PI_SQ*h02; h_u[6*a+5]=2.0f*TWO_PI_SQ*h12;
+    h_occ[a]=ho;
 }
 """
