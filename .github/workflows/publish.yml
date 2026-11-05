@@ -30,6 +30,12 @@ jobs:
   kernels:
     name: torchref-kernels
     uses: ./.github/workflows/publish-kernels.yml
+    # A called workflow is validated against the caller's grant before any `if:` is
+    # evaluated, so its publish job's id-token request fails the whole run unless granted
+    # here, even though that job is skipped on this path.
+    permissions:
+      contents: read
+      id-token: write
 
   build:
     name: Build distribution
