@@ -7,7 +7,7 @@ Version 0.8.1
 
 Performance
 ~~~~~~~~~~~
-- The fused CPU (Rust) density splat is about 5x faster on x86-64, forward and backward: its voxel loops ran as scalar baseline code with software ``fma``, and now run vectorised with the AVX2/AVX-512 FMA they were compiled for; results are bit-identical
+- The fused CPU (Rust) density splat is about 5x faster on x86-64, forward and backward, and again slightly faster than the C++ splat it replaced in 0.7.0: since ``torchref-kernels`` 0.1.0 its voxel loops ran as scalar baseline code with software ``fma``, and now run vectorised with the AVX2/AVX-512 FMA they were compiled for; results are bit-identical
 
 Dependencies
 ~~~~~~~~~~~~
