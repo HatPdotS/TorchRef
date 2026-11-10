@@ -23,6 +23,7 @@ New features
 Performance
 ~~~~~~~~~~~
 - Every command-line tool answers ``--help`` and argument errors without importing torch
+- The fused CPU (Rust) density splat is about 5x faster on x86-64, forward and backward: its voxel loops ran as scalar baseline code with software ``fma``, and now run vectorised with the AVX2/AVX-512 FMA they were compiled for; results are unchanged
 
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
