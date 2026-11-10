@@ -27,6 +27,7 @@ import torch.nn as nn
 
 from torchref import config
 from torchref._logging import TRACE, enabled, get_logger
+from torchref.base.electron_density.batching import normalize_atoms
 from torchref.base.electron_density.radius_policy import EIGHT_PI2
 from torchref.base.fourier import aliasing, ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
@@ -425,31 +426,41 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         self,
         adp_iso: Optional[torch.Tensor],
         u_aniso: Optional[torch.Tensor] = None,
+        *,
+        batch_offsets_iso: Optional[torch.Tensor] = None,
+        batch_offsets_aniso: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
         """Isotropic blur in A^2 the structure factors of these atoms are computed with.
 
         ``ceil(max(0, ln(1/rtol) / kappa - B_min))``, with ``rtol`` the aliasing
         tolerance, ``kappa`` :attr:`alias_kappa` and ``B_min`` the sharpest atomic B
         (:func:`~torchref.base.fourier.aliasing.sharpest_b`). Evaluated on every call to
-        :meth:`compute_structure_factors`, so it follows the ADPs as they refine.
+        :meth:`compute_structure_factors`, so it follows the ADPs as they refine. Each
+        member of a batch gets its own, so a batched call equals the loop over members.
 
         Parameters
         ----------
         adp_iso : torch.Tensor or None
-            Isotropic B-factors in A^2, any shape.
+            Isotropic B-factors in A^2, flat ``(N,)``.
         u_aniso : torch.Tensor, optional
-            Cartesian U components ``(..., 6)`` in A^2.
+            Cartesian U components, flat ``(N, 6)``, in A^2.
+        batch_offsets_iso, batch_offsets_aniso : torch.Tensor, optional
+            ``(B + 1,)`` member offsets of flat batched atoms; dense batches flatten
+            through :func:`~torchref.base.electron_density.batching.normalize_atoms`.
 
         Returns
         -------
         torch.Tensor or None
-            Detached 0-d tensor on the atoms' device, or None when no blur applies (no
-            atoms, or :attr:`alias_kappa` is None). Computing it does not sync the host.
+            Detached, on the atoms' device: 0-d, or ``(B,)`` for a batch. None when no
+            blur applies (no atoms, or :attr:`alias_kappa` is None). Computing it does
+            not sync the host.
         """
         kappa = self.alias_kappa
         if kappa is None:
             return None
-        b_min = aliasing.sharpest_b(adp_iso, u_aniso)
+        b_min = aliasing.sharpest_b(
+            adp_iso, u_aniso, batch_offsets_iso, batch_offsets_aniso
+        )
         if b_min is None:
             return None
         return aliasing.blur_b(
@@ -460,11 +471,15 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         )
 
     def _unblur(self, hkl: torch.Tensor, b_add: torch.Tensor) -> torch.Tensor:
-        """``exp(b_add |s|^2 / 4)`` for every reflection, shape ``(n_reflections,)``."""
+        """``exp(b_add |s|^2 / 4)``: ``(n_reflections,)``, or ``(B, n_reflections)``
+        for a per-member ``b_add`` ``(B,)``."""
         s_vec = hkl.to(device=self.device, dtype=self.dtype_float) @ (
             self.inv_fractional_matrix
         )
-        return torch.exp(b_add * s_vec.square().sum(dim=-1) / 4.0)
+        s2 = s_vec.square().sum(dim=-1)
+        if b_add.ndim == 1:
+            b_add = b_add[:, None]
+        return torch.exp(b_add * s2 / 4.0)
 
     # =========================================================================
     # Density Map Building Methods
@@ -719,17 +734,41 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             apply_symmetry and self.use_late_symmetry and self._late_symmetry_compatible
         )
 
-        b_add = self.alias_blur(adp_iso, u_aniso)
+        b_add = None
+        if self.alias_kappa is not None:
+            iso = normalize_atoms(
+                xyz_iso, adp_iso, occ_iso, A_iso, B_iso, batch_offsets_iso
+            )
+            aniso = _normalize_optional(
+                xyz_aniso, u_aniso, occ_aniso, A_aniso, B_aniso, batch_offsets_aniso
+            )
+            b_add = self.alias_blur(
+                iso[1],
+                aniso[1],
+                batch_offsets_iso=iso[5],
+                batch_offsets_aniso=aniso[5],
+            )
         if b_add is not None:
-            adp_iso = adp_iso + b_add
-            u_aniso = _blur_u(u_aniso, b_add)
+            # From here on every set is flat with explicit offsets, which the splat
+            # accepts as readily as the dense form.
+            xyz_iso, adp_iso, occ_iso, A_iso, B_iso, batch_offsets_iso = _blurred(
+                iso, b_add
+            )
+            xyz_aniso, u_aniso, occ_aniso, A_aniso, B_aniso, batch_offsets_aniso = (
+                _blurred(aniso, b_add)
+            )
             if imaginary is not None:
-                imaginary = list(imaginary)
-                imaginary[1] = None if imaginary[1] is None else imaginary[1] + b_add
-                imaginary[6] = _blur_u(imaginary[6], b_add)
-                imaginary = tuple(imaginary)
+                imag_offsets = imaginary_batch_offsets or (None, None)
+                imag_iso = _blurred(
+                    normalize_atoms(*imaginary[:5], imag_offsets[0]), b_add
+                )
+                imag_aniso = _blurred(
+                    _normalize_optional(*imaginary[5:], imag_offsets[1]), b_add
+                )
+                imaginary = (*imag_iso[:5], *imag_aniso[:5])
+                imaginary_batch_offsets = (imag_iso[5], imag_aniso[5])
             if log.isEnabledFor(logging.DEBUG):
-                log.debug(f"SfFFT: alias blur {float(b_add):.0f} A^2")
+                log.debug(f"SfFFT: alias blur {b_add.tolist()} A^2")
 
         density_map = self.build_density_map(
             xyz_iso=xyz_iso,
@@ -758,14 +797,34 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         return sf, density_map
 
 
-def _blur_u(u: Optional[torch.Tensor], b_add: torch.Tensor) -> Optional[torch.Tensor]:
-    """Add the isotropic ``b_add`` (A^2) to Cartesian U components ``(..., 6)``."""
-    if u is None:
-        return None
+def _normalize_optional(xyz, adp_or_u, occ, A, B, offsets):
+    """:func:`normalize_atoms` for an atom set that may be absent (``xyz`` None)."""
+    if xyz is None:
+        return (None,) * 6
+    return normalize_atoms(xyz, adp_or_u, occ, A, B, offsets)
+
+
+def _blurred(atoms, b_add: torch.Tensor):
+    """A flat ``(xyz, adp_or_u, occ, A, B, offsets)`` set with ``b_add`` (A^2) added.
+
+    ``b_add`` is 0-d, or ``(B,)`` per member; an isotropic blur adds ``b_add / 8 pi^2``
+    to the diagonal of a Cartesian U. Absent sets, and unbatched ones beside a batch
+    (which the splat only accepts empty), pass through unchanged.
+    """
+    xyz, adp_or_u, occ, A, B, offsets = atoms
+    if xyz is None:
+        return atoms
+    blur = aliasing.member_blur(b_add, xyz.shape[0], offsets)
+    if blur is None:
+        return atoms
+    if adp_or_u.ndim == 1:
+        return xyz, adp_or_u + blur, occ, A, B, offsets
     diagonal = torch.tensor(
-        [1.0, 1.0, 1.0, 0.0, 0.0, 0.0], dtype=u.dtype, device=u.device
+        [1.0, 1.0, 1.0, 0.0, 0.0, 0.0], dtype=adp_or_u.dtype, device=adp_or_u.device
     )
-    return u + (b_add / EIGHT_PI2) * diagonal
+    if blur.ndim == 1:
+        blur = blur[:, None]
+    return xyz, adp_or_u + (blur / EIGHT_PI2) * diagonal, occ, A, B, offsets
 
 
 def _has_atoms(xyz_iso, xyz_aniso) -> bool:
