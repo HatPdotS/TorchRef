@@ -37,6 +37,7 @@ from typing import Optional, Sequence
 
 import torch
 
+from torchref.base.electron_density.batching import member_index
 from torchref.base.electron_density.radius_policy import (
     EIGHT_PI2,
     R_HI,
@@ -143,34 +144,93 @@ def grid_oversampling(
 
 
 def sharpest_b(
-    adp_iso: Optional[torch.Tensor], u_aniso: Optional[torch.Tensor]
+    adp_iso: Optional[torch.Tensor],
+    u_aniso: Optional[torch.Tensor],
+    offsets_iso: Optional[torch.Tensor] = None,
+    offsets_aniso: Optional[torch.Tensor] = None,
 ) -> Optional[torch.Tensor]:
-    """Smallest atomic B (Å²) over isotropic and anisotropic atoms, as a 0-d tensor.
+    """Smallest atomic B (Å²) over isotropic and anisotropic atoms, per batch member.
 
     Parameters
     ----------
     adp_iso : torch.Tensor or None
-        Isotropic B-factors in Å², any shape (batched atoms included).
+        Isotropic B-factors in Å², flat ``(N,)``.
     u_aniso : torch.Tensor or None
-        Cartesian ``[U11, U22, U33, U12, U13, U23]`` in Å², shape ``(..., 6)``; each
-        atom counts with ``8 pi^2`` times its smallest principal U, its sharpest
-        direction.
+        Cartesian ``[U11, U22, U33, U12, U13, U23]`` in Å², flat ``(N, 6)``; each atom
+        counts with ``8 pi^2`` times its smallest principal U, its sharpest direction.
+    offsets_iso, offsets_aniso : torch.Tensor, optional
+        ``(B + 1,)`` member offsets of a batch in the flat form of
+        :mod:`~torchref.base.electron_density.batching` (dense batches flatten through
+        :func:`~torchref.base.electron_density.batching.normalize_atoms`). An unbatched
+        set beside a batched one must be empty, and is ignored.
 
     Returns
     -------
     torch.Tensor or None
-        Detached 0-d tensor on the inputs' device, or None without atoms. Negative
-        values (a non-positive-definite U) are clamped to zero. No host sync.
+        Detached, on the atoms' device: 0-d without a batch, ``(B,)`` with one, ``+inf``
+        for a member without atoms. None when no atoms are given. Negative values (a
+        non-positive-definite U) are clamped to zero. No host sync.
     """
     parts = []
-    if adp_iso is not None and adp_iso.numel() > 0:
-        parts.append(adp_iso.detach().reshape(-1).min())
-    if u_aniso is not None and u_aniso.numel() > 0:
+    if adp_iso is not None:
+        parts.append(_member_min(adp_iso.detach(), offsets_iso))
+    if u_aniso is not None:
         u = u_aniso.detach().reshape(-1, 6)
-        parts.append(EIGHT_PI2 * _min_eig_sym3(_u6_to_u3(u)).min())
+        parts.append(
+            _member_min(EIGHT_PI2 * _min_eig_sym3(_u6_to_u3(u)), offsets_aniso)
+        )
+    parts = [p for p in parts if p is not None]
     if not parts:
         return None
-    return torch.stack(parts).min().clamp(min=0.0)
+    batched = [p for p in parts if p.ndim == 1]
+    if batched:
+        parts = batched
+    out = parts[0]
+    for part in parts[1:]:
+        out = torch.minimum(out, part)
+    return out.clamp(min=0.0)
+
+
+def _member_min(
+    b_atom: torch.Tensor, offsets: Optional[torch.Tensor]
+) -> Optional[torch.Tensor]:
+    """Minimum of per-atom ``b_atom`` ``(N,)``: 0-d unbatched, ``(B,)`` per member."""
+    if offsets is None:
+        return b_atom.min() if b_atom.numel() > 0 else None
+    n_members = offsets.numel() - 1
+    out = torch.full((n_members,), math.inf, dtype=b_atom.dtype, device=b_atom.device)
+    if b_atom.numel() == 0:
+        return out
+    # dtype-ok: scatter_reduce indices are int64 on torch < 2.8
+    index = member_index(offsets, b_atom.shape[0], device=b_atom.device).long()
+    return out.scatter_reduce(0, index, b_atom, reduce="amin", include_self=True)
+
+
+def member_blur(
+    b_add: torch.Tensor, n_atoms: int, offsets: Optional[torch.Tensor]
+) -> Optional[torch.Tensor]:
+    """The blur each of ``n_atoms`` flat atoms gets, or None when it gets none.
+
+    Parameters
+    ----------
+    b_add : torch.Tensor
+        0-d, or ``(B,)`` per member, from :func:`blur_b`.
+    n_atoms : int
+        Number of flat atoms in the set.
+    offsets : torch.Tensor or None
+        The set's ``(B + 1,)`` member offsets, or None when it is unbatched.
+
+    Returns
+    -------
+    torch.Tensor or None
+        ``b_add`` itself when it is 0-d, ``(N,)`` per-atom values for a batched set, and
+        None for an unbatched set beside a batch -- which can only be empty.
+    """
+    if b_add.ndim == 0:
+        return b_add
+    if offsets is None:
+        return None
+    return b_add[member_index(offsets, n_atoms, device=b_add.device)]
 
 
 def blur_b(
@@ -181,7 +241,7 @@ def blur_b(
     Parameters
     ----------
     b_min : torch.Tensor
-        Sharpest atomic B in Å², 0-d, from :func:`sharpest_b`.
+        Sharpest atomic B in Å², 0-d or ``(B,)``, from :func:`sharpest_b`.
     kappa : float
         Alias decay rate at the cutoff in Å⁻², from :func:`alias_kappa`.
     rtol : float
@@ -192,7 +252,8 @@ def blur_b(
     Returns
     -------
     torch.Tensor
-        ``ceil(max(0, ln(1/rtol)/kappa - b_min))`` clamped to ``b_max``, 0-d. Rounded
+        ``ceil(max(0, ln(1/rtol)/kappa - b_min))`` clamped to ``b_max``, shaped like
+        ``b_min`` (an empty member, ``b_min = inf``, gets 0). Rounded
         up to whole Å² so the blur, and with it ``F``, is piecewise constant in the
         ADPs instead of shifting by alias-sized amounts on every parameter update.
     """
