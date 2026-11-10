@@ -6,8 +6,9 @@
 //! enumerated over the triclinic-correct per-axis half-width
 //! `ceil(r_i * n_axis * ||inv_frac row_axis||)`.
 //!
-//! Forward partitions the **output** by x-plane and backward partitions over **atoms**, so
-//! neither needs atomics; both are deterministic and independent of the thread count.
+//! Forward partitions the **output** into blocks of x-planes, several per worker, each
+//! visiting only the atoms that reach it; backward partitions over **atoms**. Neither needs
+//! atomics, and both are deterministic and independent of the thread count.
 //! Gradients cover `xyz`, `adp`/`U` and `occ`; `A`, `B` and the cell matrices get none.
 //!
 //! The second order is two more passes, split the same way. Given cotangents `t` on the
@@ -41,7 +42,7 @@ mod iso;
 use crate::ffi::{Buf, expect_len, input, no_aliasing, output};
 use crate::pool;
 use crate::real::Real;
-use common::{Atoms, Cell, Tangent};
+use common::{Atoms, Cell, Tangent, bin_atoms};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -158,14 +159,26 @@ fn member_tangents<'a, T>(t: &Tangent<'a, T>, off: &[i64], w: usize) -> Vec<Tang
         .collect()
 }
 
-type Planes<T> = fn(&mut [T], i32, i32, &Cell<T>, &Atoms<'_, T>);
-type TanPlanes<T> = fn(&mut [T], i32, i32, &Cell<T>, &Atoms<'_, T>, &Tangent<'_, T>);
+type Planes<T> = fn(&mut [T], i32, i32, &Cell<T>, &Atoms<'_, T>, &[u32]);
+type TanPlanes<T> = fn(&mut [T], i32, i32, &Cell<T>, &Atoms<'_, T>, &Tangent<'_, T>, &[u32]);
 type AtomGrad<T, const W: usize> = fn(usize, &[T], &Cell<T>, &Atoms<'_, T>) -> ([T; 3], [T; W], T);
 type AtomHvp<T, const W: usize> =
     fn(usize, &[T], &Cell<T>, &Atoms<'_, T>, &Tangent<'_, T>) -> ([T; 3], [T; W], T);
 
-/// Run `planes(chunk, xlo, xhi, b)` over the x-plane blocks of member `b`'s slab of `out`,
-/// for every member with atoms.
+/// Blocks per worker in the plane-parallel passes. Model atoms are one asymmetric unit
+/// and fill only part of the cell along x, so one slab per worker leaves most workers
+/// idle; many thin blocks let work stealing even the load.
+const BLOCKS_PER_THREAD: usize = 8;
+
+/// x-planes per block for a pool of `n_threads` workers.
+fn block_planes(nx: i32, n_threads: usize) -> usize {
+    (nx as usize)
+        .div_ceil(BLOCKS_PER_THREAD * n_threads.max(1))
+        .max(1)
+}
+
+/// Run `planes(chunk, xlo, xhi, b, k)` over the `per`-plane blocks `k` of member `b`'s
+/// slab of `out`, for every member with atoms.
 fn over_planes<T: Real>(
     py: Python<'_>,
     out: &mut [T],
@@ -173,12 +186,12 @@ fn over_planes<T: Real>(
     c: &Cell<T>,
     sizes: &[usize],
     n_threads: usize,
-    planes: impl Fn(&mut [T], i32, i32, usize) + Sync,
+    per: usize,
+    planes: impl Fn(&mut [T], i32, i32, usize, usize) + Sync,
 ) {
     py.detach(|| {
         let pool = pool::get(n_threads);
         let plane = c.ny as usize * c.nz as usize;
-        let per = (c.nx as usize).div_ceil(pool.current_num_threads()).max(1);
         pool.install(|| {
             // Members and their x-plane blocks are one flat set of tasks, so a batch of
             // small members still fills the pool. Every block writes only its own planes.
@@ -189,14 +202,27 @@ fn over_planes<T: Real>(
                 .for_each(|(b, (slab, _))| {
                     slab.par_chunks_mut(per * plane)
                         .enumerate()
-                        .for_each(|(ci, chunk)| {
-                            let xlo = ci * per;
+                        .for_each(|(k, chunk)| {
+                            let xlo = k * per;
                             let xhi = xlo + chunk.len() / plane;
-                            planes(chunk, xlo as i32, xhi as i32, b);
+                            planes(chunk, xlo as i32, xhi as i32, b, k);
                         });
                 });
         });
     });
+}
+
+/// Each member's atoms sorted into `per`-plane blocks ([`bin_atoms`]), in parallel.
+fn member_bins<T: Real>(
+    py: Python<'_>,
+    c: &Cell<T>,
+    members: &[Atoms<'_, T>],
+    n_threads: usize,
+    per: usize,
+) -> Vec<Vec<Vec<u32>>> {
+    py.detach(|| {
+        pool::get(n_threads).install(|| members.par_iter().map(|m| bin_atoms(c, m, per)).collect())
+    })
 }
 
 /// One `atom(i, b, slab)` call per atom, with `i` its index within member `b` and `slab`
@@ -248,9 +274,18 @@ fn fwd<T: Real, const W: usize>(
     }
     let members = members(&at, off, W);
     let sizes: Vec<usize> = members.iter().map(|m| m.n_atoms).collect();
-    over_planes(py, out, len, &c, &sizes, n_threads, |chunk, xlo, xhi, b| {
-        planes(chunk, xlo, xhi, &c, &members[b])
-    });
+    let per = block_planes(c.nx, pool::get(n_threads).current_num_threads());
+    let bins = member_bins(py, &c, &members, n_threads, per);
+    over_planes(
+        py,
+        out,
+        len,
+        &c,
+        &sizes,
+        n_threads,
+        per,
+        |chunk, xlo, xhi, b, k| planes(chunk, xlo, xhi, &c, &members[b], &bins[b][k]),
+    );
     Ok(())
 }
 
@@ -279,9 +314,18 @@ fn tan<T: Real, const W: usize>(
     let members = members(&at, off, W);
     let tangents = member_tangents(&tg, off, W);
     let sizes: Vec<usize> = members.iter().map(|m| m.n_atoms).collect();
-    over_planes(py, out, len, &c, &sizes, n_threads, |chunk, xlo, xhi, b| {
-        planes(chunk, xlo, xhi, &c, &members[b], &tangents[b])
-    });
+    let per = block_planes(c.nx, pool::get(n_threads).current_num_threads());
+    let bins = member_bins(py, &c, &members, n_threads, per);
+    over_planes(
+        py,
+        out,
+        len,
+        &c,
+        &sizes,
+        n_threads,
+        per,
+        |chunk, xlo, xhi, b, k| planes(chunk, xlo, xhi, &c, &members[b], &tangents[b], &bins[b][k]),
+    );
     Ok(())
 }
 

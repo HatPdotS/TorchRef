@@ -154,24 +154,45 @@ pub fn anchor<T: Real>(c: &Cell<T>, at: &Atoms<'_, T>, i: usize) -> Anchor<T> {
     }
 }
 
+/// The atoms reaching each block of `per` x-planes, each block's list in ascending atom
+/// order.
+///
+/// Atom `i` reaches the wrapped planes `[cix - bhx, cix + bhx] mod nx` of its [`anchor`],
+/// at most two pieces. Ascending order keeps every voxel's sum in atom order whatever the
+/// block size, so the map is the same at every thread count.
+pub fn bin_atoms<T: Real>(c: &Cell<T>, at: &Atoms<'_, T>, per: usize) -> Vec<Vec<u32>> {
+    let per = per as i32;
+    let n_blocks = (c.nx + per - 1) / per;
+    let mut bins: Vec<Vec<u32>> = vec![Vec::new(); n_blocks as usize];
+    // A wrapped extent can reach the same block from both ends when there is only one.
+    let mut push = |k: i32, i: u32| {
+        let bin = &mut bins[k as usize];
+        if bin.last() != Some(&i) {
+            bin.push(i);
+        }
+    };
+    for i in 0..at.n_atoms {
+        let g = anchor(c, at, i);
+        let id = i as u32;
+        if 2 * g.bhx + 1 >= c.nx {
+            (0..n_blocks).for_each(|k| push(k, id));
+            continue;
+        }
+        let lo = wrap(g.cix - g.bhx, c.nx);
+        let hi = lo + 2 * g.bhx;
+        if hi < c.nx {
+            (lo / per..=hi / per).for_each(|k| push(k, id));
+        } else {
+            (lo / per..n_blocks).for_each(|k| push(k, id));
+            (0..=(hi - c.nx) / per).for_each(|k| push(k, id));
+        }
+    }
+    bins
+}
+
 #[inline(always)]
 pub fn wrap(i: i32, n: i32) -> i32 {
     i.rem_euclid(n)
-}
-
-/// Does any x-plane the atom touches fall in `[xlo, xhi)`? The plane set is the wrapped
-/// interval `[cix - bhx, cix + bhx] mod nx`, so at most two pieces.
-#[inline(always)]
-pub fn touches_x(cix: i32, bhx: i32, nx: i32, xlo: i32, xhi: i32) -> bool {
-    if 2 * bhx + 1 >= nx {
-        return true;
-    }
-    let lo = wrap(cix - bhx, nx);
-    let hi = lo + 2 * bhx;
-    if hi < nx {
-        return lo < xhi && hi >= xlo;
-    }
-    lo < xhi || (hi - nx) >= xlo
 }
 
 /// In-sphere `oz` run for one `(ox, oy)` column, or `None` if the column misses.

@@ -1,7 +1,7 @@
 //! Isotropic splat: five Gaussians per atom with widths `max((B_k + B) / 4, 0.1)`.
 
 use super::common::{
-    Atoms, Cell, PI_1P5, PI_SQ, TWO_PI_SQ, Tangent, anchor, for_each_segment, touches_x, voxel,
+    Atoms, Cell, PI_1P5, PI_SQ, TWO_PI_SQ, Tangent, anchor, for_each_segment, voxel,
 };
 use crate::real::{Real, madd};
 use crate::simd::fma_variants;
@@ -25,7 +25,9 @@ fn gaussians<T: Real>(at: &Atoms<'_, T>, i: usize, occ: T) -> ([T; 5], [T; 5], [
 
 fma_variants! {
     /// Accumulate every atom's density into the x-planes `[xlo, xhi)`, stored in `chunk`.
-    pub fn fwd_planes<T: Real>(chunk: &mut [T], xlo: i32, xhi: i32, c: &Cell<T>, at: &Atoms<'_, T>)
+    pub fn fwd_planes<T: Real>(
+        chunk: &mut [T], xlo: i32, xhi: i32, c: &Cell<T>, at: &Atoms<'_, T>, idx: &[u32]
+    )
         => fwd_planes_body
 }
 
@@ -36,29 +38,35 @@ fn fwd_planes_body<T: Real, const F: bool>(
     xhi: i32,
     c: &Cell<T>,
     at: &Atoms<'_, T>,
+    idx: &[u32],
 ) {
     let neg_pi_sq = -T::c(PI_SQ);
-    for i in 0..at.n_atoms {
+    for &i in idx {
+        let i = i as usize;
         let g = anchor(c, at, i);
-        if !touches_x(g.cix, g.bhx, c.nx, xlo, xhi) {
-            continue;
-        }
         let (bt, an, _) = gaussians(at, i, at.occ[i]);
         let inv_bt = bt.map(|b| neg_pi_sq / b);
-        for_each_segment::<T, F>(c, &g, xlo, xhi, #[inline(always)] |start, len, oz, q| {
-            for (j, v) in chunk[start..start + len].iter_mut().enumerate() {
-                let (_, r2) = voxel::<T, F>(c, q, oz + j as i32);
-                if !T::VECTOR_EXP && r2 > g.rc2 {
-                    continue;
+        for_each_segment::<T, F>(
+            c,
+            &g,
+            xlo,
+            xhi,
+            #[inline(always)]
+            |start, len, oz, q| {
+                for (j, v) in chunk[start..start + len].iter_mut().enumerate() {
+                    let (_, r2) = voxel::<T, F>(c, q, oz + j as i32);
+                    if !T::VECTOR_EXP && r2 > g.rc2 {
+                        continue;
+                    }
+                    let keep = if r2 <= g.rc2 { T::ONE } else { T::ZERO };
+                    let mut dens = T::ZERO;
+                    for k in 0..5 {
+                        dens = madd::<T, F>(an[k], (r2 * inv_bt[k]).kexp::<F>(), dens);
+                    }
+                    *v = madd::<T, F>(keep, dens, *v);
                 }
-                let keep = if r2 <= g.rc2 { T::ONE } else { T::ZERO };
-                let mut dens = T::ZERO;
-                for k in 0..5 {
-                    dens = madd::<T, F>(an[k], (r2 * inv_bt[k]).kexp::<F>(), dens);
-                }
-                *v = madd::<T, F>(keep, dens, *v);
-            }
-        });
+            },
+        );
     }
 }
 
@@ -88,31 +96,38 @@ fn bwd_atom_body<T: Real, const F: bool>(
     let oc = at.occ[i];
     // `[d xyz; 3], d adp, d occ` before the occ scale.
     let mut acc = [T::ZERO; 5];
-    for_each_segment::<T, F>(c, &g, 0, c.nx, #[inline(always)] |start, len, oz, q| {
-        // A branch, not a 0/1 factor: the per-atom reduction does not vectorise without
-        // reassociation, so skipping a voxel is a pure saving. The sums run in a local so
-        // they stay in registers across the segment.
-        let mut a = acc;
-        for (j, &gout) in grad[start..start + len].iter().enumerate() {
-            let (w, r2) = voxel::<T, F>(c, q, oz + j as i32);
-            if r2 > g.rc2 {
-                continue;
+    for_each_segment::<T, F>(
+        c,
+        &g,
+        0,
+        c.nx,
+        #[inline(always)]
+        |start, len, oz, q| {
+            // A branch, not a 0/1 factor: the per-atom reduction does not vectorise without
+            // reassociation, so skipping a voxel is a pure saving. The sums run in a local so
+            // they stay in registers across the segment.
+            let mut a = acc;
+            for (j, &gout) in grad[start..start + len].iter().enumerate() {
+                let (w, r2) = voxel::<T, F>(c, q, oz + j as i32);
+                if r2 > g.rc2 {
+                    continue;
+                }
+                let (mut dens, mut coeff, mut dbs) = (T::ZERO, T::ZERO, T::ZERO);
+                for k in 0..5 {
+                    let ae = an[k] * (r2 * inv_bt[k]).kexp::<F>();
+                    dens += ae;
+                    coeff = madd::<T, F>(ae, rcp_bt[k], coeff);
+                    dbs = madd::<T, F>(ae, madd::<T, F>(r2, quad[k], lin[k]), dbs);
+                }
+                let s = gout * T::c(2.0 * PI_SQ) * coeff;
+                let d = [s * w[0], s * w[1], s * w[2], gout * dbs, gout * dens];
+                for t in 0..5 {
+                    a[t] += d[t];
+                }
             }
-            let (mut dens, mut coeff, mut dbs) = (T::ZERO, T::ZERO, T::ZERO);
-            for k in 0..5 {
-                let ae = an[k] * (r2 * inv_bt[k]).kexp::<F>();
-                dens += ae;
-                coeff = madd::<T, F>(ae, rcp_bt[k], coeff);
-                dbs = madd::<T, F>(ae, madd::<T, F>(r2, quad[k], lin[k]), dbs);
-            }
-            let s = gout * T::c(2.0 * PI_SQ) * coeff;
-            let d = [s * w[0], s * w[1], s * w[2], gout * dbs, gout * dens];
-            for t in 0..5 {
-                a[t] += d[t];
-            }
-        }
-        acc = a;
-    });
+            acc = a;
+        },
+    );
     (
         [oc * acc[0], oc * acc[1], oc * acc[2]],
         [oc * T::c(0.25) * acc[3]],
@@ -180,7 +195,8 @@ fma_variants! {
     /// Accumulate every atom's tangent map `sum_p t_p d(density)/dp` into the x-planes
     /// `[xlo, xhi)`, stored in `chunk`.
     pub fn tan_planes<T: Real>(
-        chunk: &mut [T], xlo: i32, xhi: i32, c: &Cell<T>, at: &Atoms<'_, T>, t: &Tangent<'_, T>
+        chunk: &mut [T], xlo: i32, xhi: i32, c: &Cell<T>, at: &Atoms<'_, T>, t: &Tangent<'_, T>,
+        idx: &[u32]
     ) => tan_planes_body
 }
 
@@ -192,28 +208,34 @@ fn tan_planes_body<T: Real, const F: bool>(
     c: &Cell<T>,
     at: &Atoms<'_, T>,
     t: &Tangent<'_, T>,
+    idx: &[u32],
 ) {
     let tp = T::c(TWO_PI_SQ);
-    for i in 0..at.n_atoms {
+    for &i in idx {
+        let i = i as usize;
         let g = anchor(c, at, i);
-        if !touches_x(g.cix, g.bhx, c.nx, xlo, xhi) {
-            continue;
-        }
         let (inv_bt, rcp_bt, kap, an, tx, tb, to) = second_order_setup(at, t, i);
         let oc = at.occ[i];
-        for_each_segment::<T, F>(c, &g, xlo, xhi, #[inline(always)] |start, len, oz, q| {
-            for (j, v) in chunk[start..start + len].iter_mut().enumerate() {
-                let (w, r2) = voxel::<T, F>(c, q, oz + j as i32);
-                if !T::VECTOR_EXP && r2 > g.rc2 {
-                    continue;
+        for_each_segment::<T, F>(
+            c,
+            &g,
+            xlo,
+            xhi,
+            #[inline(always)]
+            |start, len, oz, q| {
+                for (j, v) in chunk[start..start + len].iter_mut().enumerate() {
+                    let (w, r2) = voxel::<T, F>(c, q, oz + j as i32);
+                    if !T::VECTOR_EXP && r2 > g.rc2 {
+                        continue;
+                    }
+                    let keep = if r2 <= g.rc2 { T::ONE } else { T::ZERO };
+                    let [d, x1, _, bb1, _, _] = curvature::<T, F>(r2, &an, &inv_bt, &rcp_bt, &kap);
+                    let wt = madd::<T, F>(w[0], tx[0], madd::<T, F>(w[1], tx[1], w[2] * tx[2]));
+                    let jv = madd::<T, F>(tp * x1, wt, bb1 * tb);
+                    *v = madd::<T, F>(keep, madd::<T, F>(oc, jv, to * d), *v);
                 }
-                let keep = if r2 <= g.rc2 { T::ONE } else { T::ZERO };
-                let [d, x1, _, bb1, _, _] = curvature::<T, F>(r2, &an, &inv_bt, &rcp_bt, &kap);
-                let wt = madd::<T, F>(w[0], tx[0], madd::<T, F>(w[1], tx[1], w[2] * tx[2]));
-                let jv = madd::<T, F>(tp * x1, wt, bb1 * tb);
-                *v = madd::<T, F>(keep, madd::<T, F>(oc, jv, to * d), *v);
-            }
-        });
+            },
+        );
     }
 }
 
@@ -239,36 +261,43 @@ fn hvp_atom_body<T: Real, const F: bool>(
     // `[w-weighted xyz; 3], X1, d adp, d occ`, with the -2 pi^2 X1 I part of d2/dxyz2
     // applied after the sum.
     let mut acc = [T::ZERO; 6];
-    for_each_segment::<T, F>(c, &g, 0, c.nx, #[inline(always)] |start, len, oz, q| {
-        // Local sums stay in registers across the segment, as in the backward.
-        let mut a = acc;
-        for (j, &gout) in grad[start..start + len].iter().enumerate() {
-            let (w, r2) = voxel::<T, F>(c, q, oz + j as i32);
-            if r2 > g.rc2 {
-                continue;
+    for_each_segment::<T, F>(
+        c,
+        &g,
+        0,
+        c.nx,
+        #[inline(always)]
+        |start, len, oz, q| {
+            // Local sums stay in registers across the segment, as in the backward.
+            let mut a = acc;
+            for (j, &gout) in grad[start..start + len].iter().enumerate() {
+                let (w, r2) = voxel::<T, F>(c, q, oz + j as i32);
+                if r2 > g.rc2 {
+                    continue;
+                }
+                let [_, x1, x2, bb1, xb, bb] = curvature::<T, F>(r2, &an, &inv_bt, &rcp_bt, &kap);
+                let wt = madd::<T, F>(w[0], tx[0], madd::<T, F>(w[1], tx[1], w[2] * tx[2]));
+                let alpha = madd::<T, F>(
+                    oc,
+                    madd::<T, F>(tp * tp * x2, wt, tp * xb * tb),
+                    to * tp * x1,
+                );
+                let ga = gout * alpha;
+                let d = [
+                    ga * w[0],
+                    ga * w[1],
+                    ga * w[2],
+                    gout * x1,
+                    gout * madd::<T, F>(oc, madd::<T, F>(tp * xb, wt, bb * tb), to * bb1),
+                    gout * madd::<T, F>(tp * x1, wt, bb1 * tb),
+                ];
+                for k in 0..6 {
+                    a[k] += d[k];
+                }
             }
-            let [_, x1, x2, bb1, xb, bb] = curvature::<T, F>(r2, &an, &inv_bt, &rcp_bt, &kap);
-            let wt = madd::<T, F>(w[0], tx[0], madd::<T, F>(w[1], tx[1], w[2] * tx[2]));
-            let alpha = madd::<T, F>(
-                oc,
-                madd::<T, F>(tp * tp * x2, wt, tp * xb * tb),
-                to * tp * x1,
-            );
-            let ga = gout * alpha;
-            let d = [
-                ga * w[0],
-                ga * w[1],
-                ga * w[2],
-                gout * x1,
-                gout * madd::<T, F>(oc, madd::<T, F>(tp * xb, wt, bb * tb), to * bb1),
-                gout * madd::<T, F>(tp * x1, wt, bb1 * tb),
-            ];
-            for k in 0..6 {
-                a[k] += d[k];
-            }
-        }
-        acc = a;
-    });
+            acc = a;
+        },
+    );
     let diag = oc * tp * acc[3];
     (
         [
