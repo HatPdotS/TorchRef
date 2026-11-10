@@ -1,5 +1,5 @@
 """
-PDB file reading and writing (atoms, ANISOU, CRYST1, LINK records).
+PDB file reading and writing (atoms, ANISOU, CRYST1, SSBOND and LINK records).
 
 ``read`` returns a reader object, not the data -- call it for the tuple::
 
@@ -754,6 +754,72 @@ def _write_atom_records(handle, df: pd.DataFrame, anisou: bool) -> None:
         handle.write(records)
 
 
+#: Columns of the connection table :func:`write` and
+#: :func:`torchref.io.cif.write_model` take: positional rows of the two bonded atoms in
+#: the atom table, the mmCIF ``conn_type_id`` (``disulf``, ``covale`` or ``metalc``),
+#: and the bond length in Å. Built by :meth:`torchref.model.model.Model.connections`.
+CONNECTION_COLUMNS = ("atom1", "atom2", "conn_type", "length")
+
+
+def _connection_records(df: pd.DataFrame, connections: pd.DataFrame) -> List[str]:
+    """SSBOND records for the disulfides, then LINK records for the other bonds.
+
+    Atom identities are read from ``df`` at the rows ``connections`` names, so they
+    match the ATOM records written from the same table. SSBOND names residues, not
+    atoms: disulfides between alternative conformations of the same two cysteines are
+    written once. Both partners are in the asymmetric unit, so both symmetry operators
+    are ``1555``.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        The atom table being written.
+    connections : pandas.DataFrame
+        :data:`CONNECTION_COLUMNS`.
+
+    Returns
+    -------
+    list of str
+        80-column records without newlines, SSBOND first, each in table order.
+    """
+    atoms = df[["name", "altloc", "resname", "chainid", "resseq", "icode", "element"]]
+    atoms = atoms.to_dict("records")
+    symmetry = f"{'1555':>6} {'1555':>6} "
+    ssbond, link, seen = [], [], set()
+    for a, b, kind, length in connections[list(CONNECTION_COLUMNS)].itertuples(
+        index=False
+    ):
+        one, two = atoms[int(a)], atoms[int(b)]
+        if kind == "disulf":
+            residues = tuple(
+                (_text(atom["chainid"]), int(atom["resseq"]), _text(atom["icode"]))
+                for atom in (one, two)
+            )
+            if residues in seen:
+                continue
+            seen.add(residues)
+            sides = "   ".join(
+                f"{_text(atom['resname']):>3}{_text(atom['chainid']):>2} "
+                f"{_hy36_encode(int(atom['resseq']), 4)}{_text(atom['icode']):1}"
+                for atom in (one, two)
+            )
+            ssbond.append(
+                f"SSBOND{len(ssbond) + 1:4d} {sides}{'':23}{symmetry}{length:5.2f}"
+            )
+        else:
+            sides = [
+                f"{_format_pdb_atom_name(atom['name'], _text(atom['element']))}"
+                f"{_text(atom['altloc']):1}{_text(atom['resname']):>3}"
+                f"{_text(atom['chainid']):>2}{_hy36_encode(int(atom['resseq']), 4)}"
+                f"{_text(atom['icode']):1}"
+                for atom in (one, two)
+            ]
+            link.append(
+                f"LINK        {sides[0]}{'':15}{sides[1]}  {symmetry}{length:5.2f}"
+            )
+    return ssbond + link
+
+
 def _cryst1_record(attrs) -> str:
     """The CRYST1 record of a table's ``attrs``: ``cell``, ``spacegroup``, ``z``.
 
@@ -776,7 +842,12 @@ def _cryst1_record(attrs) -> str:
     return f"CRYST1{lengths}{angles} {spacegroup:<11}{z:>4}\n"
 
 
-def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
+def write(
+    df: pd.DataFrame,
+    filepath: str,
+    metadata=None,
+    connections: Optional[pd.DataFrame] = None,
+) -> None:
     """
     Write a DataFrame to a PDB file.
 
@@ -791,6 +862,11 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
         Output PDB filename.
     metadata : RefinementMetadata, optional
         Metadata to render as PDB header (REMARK 3, TITLE, etc.).
+    connections : pandas.DataFrame, optional
+        Inter-residue bonds as :data:`CONNECTION_COLUMNS`, written as SSBOND
+        (``disulf``) and LINK records. When given, it replaces the SSBOND and LINK
+        records ``metadata`` carried over from the input, even when empty; when
+        None, those are written as they are.
 
     Raises
     ------
@@ -813,10 +889,12 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     identifiers are written as they are (see
     :func:`torchref.utils.utils.sanitize_pdb_dataframe`).
     """
+    records = None if connections is None else _connection_records(df, connections)
     with open(filepath, "w") as n:
-        # Write metadata header if provided (before CRYST1)
         if metadata is not None:
-            n.write(metadata.render_pdb_header())
+            n.write(metadata.render_pdb_header(connectivity=records))
+        elif records:
+            n.write("\n".join(records) + "\n")
 
         # Write CRYST1 record if cell info available (directly before atoms)
         try:

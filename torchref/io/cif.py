@@ -200,6 +200,60 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
     return st
 
 
+_CONNECTION_TYPES = {"disulf": "Disulf", "covale": "Covale", "metalc": "MetalC"}
+
+
+def _add_connections(st, df, connections) -> None:
+    """Append ``connections`` to ``st.connections``, in place, for ``_struct_conn``.
+
+    Each partner is addressed by the identity :func:`dataframe_to_gemmi_structure`
+    gave its atom -- blank chain IDs included -- so gemmi resolves it to the atom it
+    wrote and fills the ``label_*`` columns from it.
+
+    Parameters
+    ----------
+    st : gemmi.Structure
+        Built from ``df`` by :func:`dataframe_to_gemmi_structure`.
+    df : pandas.DataFrame
+        The atom table ``st`` was built from.
+    connections : pandas.DataFrame
+        :data:`torchref.io.pdb.CONNECTION_COLUMNS`.
+    """
+    import gemmi
+
+    from torchref.io.pdb import CONNECTION_COLUMNS
+
+    atoms = df[["name", "altloc", "resname", "chainid", "resseq", "icode"]]
+    atoms = atoms.to_dict("records")
+
+    def address(row):
+        atom = atoms[int(row)]
+        chain = str(atom["chainid"])
+        icode = str(atom["icode"]).strip()
+        altloc = str(atom["altloc"]).strip()
+        return gemmi.AtomAddress(
+            chain if atom["chainid"] and chain != "nan" else "A",
+            gemmi.SeqId(
+                int(atom["resseq"]), icode if icode != "nan" and icode else " "
+            ),
+            str(atom["resname"]).strip(),
+            str(atom["name"]).strip(),
+            altloc[0] if altloc and altloc not in ("nan", ".") else "\0",
+        )
+
+    counts = {}
+    for a, b, kind, length in connections[list(CONNECTION_COLUMNS)].itertuples(
+        index=False
+    ):
+        counts[kind] = counts.get(kind, 0) + 1
+        con = gemmi.Connection()
+        con.name = f"{kind}{counts[kind]}"
+        con.type = getattr(gemmi.ConnectionType, _CONNECTION_TYPES[kind])
+        con.partner1, con.partner2 = address(a), address(b)
+        con.reported_distance = float(length)
+        st.connections.append(con)
+
+
 def _cif_value(val) -> str:
     """Render one value as a CIF token, quoting it when it needs quoting.
 
@@ -217,18 +271,21 @@ def _cif_value(val) -> str:
     return gemmi.cif.quote(text)
 
 
-def _add_refine_categories(doc, metadata):
+def _add_refine_categories(doc, metadata, skip=()):
     """Inject a :class:`RefinementMetadata`'s categories into ``doc``, in place.
 
-    Returns the set of category prefixes written (e.g. ``{"_refine.",
-    "_software."}``) so the caller can avoid copying the same categories in
-    again from another block and either clobbering or duplicating them.
+    Categories named in ``skip`` (e.g. ``"_struct_conn"``) are left out. Returns
+    the set of category prefixes written (e.g. ``{"_refine.", "_software."}``) so
+    the caller can avoid copying the same categories in again from another block
+    and either clobbering or duplicating them.
     """
     block = doc.sole_block()
     cats = metadata.render_cif_categories()
     written = set()
 
     for cat_name, items in cats.items():
+        if cat_name in skip:
+            continue
         # List values mean a loop category rather than key-value pairs.
         is_loop = any(isinstance(v, list) for v in items.values())
 
@@ -259,7 +316,7 @@ def _add_refine_categories(doc, metadata):
     return written
 
 
-def write_model(df, filepath: str, metadata=None) -> None:
+def write_model(df, filepath: str, metadata=None, connections=None) -> None:
     """Write atomic coordinates to mmCIF file.
 
     Parameters
@@ -271,11 +328,17 @@ def write_model(df, filepath: str, metadata=None) -> None:
     metadata : RefinementMetadata, optional
         Refinement statistics, title, authors etc. When given, the file is
         rebuilt so the metadata precedes the atom records.
+    connections : pandas.DataFrame, optional
+        Inter-residue bonds as :data:`torchref.io.pdb.CONNECTION_COLUMNS`, written
+        as ``_struct_conn``. When given, it replaces the ``_struct_conn`` that
+        ``metadata`` carried over from the input, even when empty; when None, that
+        one is written as it is.
     """
     import gemmi
 
     cell = df.attrs.get("cell")
     spacegroup = df.attrs.get("spacegroup", "P 1")
+    skip = () if connections is None else ("_struct_conn",)
 
     # Metadata block first, then the structure block, so metadata precedes the
     # atom records in the output file.
@@ -298,7 +361,7 @@ def write_model(df, filepath: str, metadata=None) -> None:
                 "_symmetry.space_group_name_H-M", gemmi.cif.quote(str(spacegroup))
             )
 
-        written = _add_refine_categories(meta_doc, metadata)
+        written = _add_refine_categories(meta_doc, metadata, skip=skip)
         # Categories we just wrote from metadata, plus the two written above.
         # The structure block gemmi builds from the DataFrame carries its own
         # version of some of these; copying those in would clobber a pair or
@@ -306,6 +369,8 @@ def write_model(df, filepath: str, metadata=None) -> None:
         written |= {"_cell.", "_symmetry."}
 
         st = dataframe_to_gemmi_structure(df, cell, spacegroup)
+        if connections is not None:
+            _add_connections(st, df, connections)
         struct_doc = st.make_mmcif_document()
         struct_block = struct_doc.sole_block()
 
@@ -330,5 +395,7 @@ def write_model(df, filepath: str, metadata=None) -> None:
         meta_doc.write_file(filepath)
     else:
         st = dataframe_to_gemmi_structure(df, cell, spacegroup)
+        if connections is not None:
+            _add_connections(st, df, connections)
         doc = st.make_mmcif_document()
         doc.write_file(filepath)
