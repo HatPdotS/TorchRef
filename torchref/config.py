@@ -3,13 +3,15 @@
 Set at import time from the environment -- ``TORCHREF_DTYPE_FLOAT`` (float32 default /
 float64), ``TORCHREF_DTYPE_INT`` (int32 / int64), ``TORCHREF_DTYPE_COMPLEX``
 (complex64 / complex128), ``TORCHREF_DEVICE`` ('auto' default / 'cuda' / 'mps' / 'cpu'),
-``TORCHREF_SIGMA_CUTOFF_ED`` (3.0), ``TORCHREF_COMPILE_TARGETS``, ``TORCHREF_CACHING``
+``TORCHREF_SIGMA_CUTOFF_ED`` (3.0), ``TORCHREF_ALIASING_TOLERANCE`` (1e-2),
+``TORCHREF_COMPILE_TARGETS``, ``TORCHREF_CACHING``
 (on by default) and ``TORCHREF_DEBUG_CHECKS`` (off) -- or at runtime by attribute
 assignment::
 
     torchref.dtypes.float = torch.float64
     torchref.device.current = torch.device('cpu')
     torchref.sigma_cutoff_ed.value = 4.0   # density splat truncation, in sigmas
+    torchref.aliasing_tolerance.value = 1e-3  # FFT alias error bound at d_min
     torchref.config.caching.value = False  # recompute every cached forward()
     torchref.config.debug_checks.value = True  # assert finite maps / fcalc
 
@@ -24,6 +26,7 @@ configured warns at import; set ``TORCHREF_DTYPE_FLOAT=float32`` or
 ``TORCHREF_DEVICE=cpu``.
 """
 
+import math
 import os
 import warnings
 
@@ -37,18 +40,19 @@ log = get_logger(__name__)
 # Grid sampling
 # ---------------------------------------------------------------------------
 # Shannon-Nyquist oversampling factor used to size real-space / FFT grids from
-# a unit cell and resolution: the number of grid points along an axis of length
-# ``a`` at resolution ``d_min`` is ``floor(a / d_min * NYQUIST_OVERSAMPLING)``,
-# i.e. a grid spacing of ``d_min / NYQUIST_OVERSAMPLING``.
+# a unit cell and resolution: along axis ``i`` the grid has at least
+# ``d_i / d_min * NYQUIST_OVERSAMPLING`` points, with ``d_i = 1 / |a*_i|`` the spacing
+# of the lattice planes the axis crosses, i.e. a grid spacing of at most
+# ``d_min / NYQUIST_OVERSAMPLING`` measured across those planes. Read at call time.
 #
-# A value of 2.0 is the bare Nyquist limit, but electron density built from
-# Gaussian atoms is not strictly band-limited, so sampling at exactly 2.0
-# introduces aliasing/interpolation error in the density->F_calc transform that
-# measurably degrades refinement convergence, with high-res / large-cell
-# structures hit hardest. 3.0 is the standard
-# crystallographic oversampling (matches gemmi's default sample_rate) and
-# restores accuracy. All grid-sizing helpers reference this single constant so
-# the real-space map grids and the FFT structure-factor grids stay consistent.
+# Oversampling alone does not bound aliasing: Gaussian atomic density is not
+# band-limited, and how much of it folds back depends on how sharp the atoms are. The
+# structure-factor route therefore blurs the density by just enough to meet
+# ``aliasing_tolerance`` on whatever grid this factor gives
+# (torchref.base.fourier.aliasing), and refines the grid beyond it only at low
+# resolution, where that blur would outgrow the splat radius. 3.0 is the standard
+# crystallographic oversampling (gemmi's default sample_rate); a coarser grid needs a
+# larger blur and so wider, costlier splats.
 NYQUIST_OVERSAMPLING = 3.0
 
 # Map strings to torch dtypes
@@ -230,6 +234,68 @@ sigma_cutoff_ed = SigmaCutoffConfig()
 def get_sigma_cutoff_ed() -> float:
     """Get the current density-splat sigma cutoff (number of sigmas)."""
     return sigma_cutoff_ed.value
+
+
+# ---------------------------------------------------------------------------
+# FFT aliasing tolerance
+# ---------------------------------------------------------------------------
+# Bound on each atom's relative alias error at the resolution cutoff of the FFT
+# structure-factor route, enforced by blurring the density before the FFT and
+# unblurring F after it (torchref.base.fourier.aliasing). 1e-2 matches the 3-sigma
+# truncation residual (~3e-3) in scale, so neither error dominates the other.
+_DEFAULT_ALIASING_TOLERANCE = 1e-2
+
+
+class AliasingToleranceConfig:
+    """Relative alias error the FFT structure-factor route allows at ``d_min``.
+
+    ``aliasing_tolerance.value`` reads or sets it; initialised from
+    ``TORCHREF_ALIASING_TOLERANCE`` (default 1e-2). Must lie in ``(0, 1)``. Smaller
+    values blur more, which widens every splat and so costs time, never accuracy.
+    """
+
+    def __init__(self):
+        raw = os.environ.get("TORCHREF_ALIASING_TOLERANCE")
+        if raw is None:
+            self._value = _DEFAULT_ALIASING_TOLERANCE
+            return
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        if not 0.0 < value < 1.0:
+            raise ValueError(
+                f"Invalid TORCHREF_ALIASING_TOLERANCE: {raw!r}. "
+                "Must be a number in (0, 1)."
+            )
+        self._value = value
+
+    @property
+    def value(self) -> float:
+        """Get the current aliasing tolerance."""
+        return self._value
+
+    @value.setter
+    def value(self, rtol: float) -> None:
+        """Set the aliasing tolerance for all future structure-factor calls."""
+        if not isinstance(rtol, (int, float)) or isinstance(rtol, bool):
+            raise TypeError(
+                f"aliasing_tolerance must be a number, got {type(rtol).__name__}"
+            )
+        if not 0.0 < rtol < 1.0:
+            raise ValueError(f"aliasing_tolerance must lie in (0, 1), got {rtol}")
+        self._value = float(rtol)
+
+    def __repr__(self) -> str:
+        return f"AliasingToleranceConfig(value={self._value})"
+
+
+aliasing_tolerance = AliasingToleranceConfig()
+
+
+def get_aliasing_tolerance() -> float:
+    """Get the current FFT aliasing tolerance (relative error at ``d_min``)."""
+    return aliasing_tolerance.value
 
 
 _DEFAULT_COMPILE_TARGETS = False

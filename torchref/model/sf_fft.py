@@ -5,6 +5,13 @@ sizes its real-space grid lazily from that crystal and the resolution, builds th
 electron density from atomic parameters, and transforms it to structure factors.
 Usable standalone or as ``ModelFT``'s submodule.
 
+Structure factors are computed from a blurred density: every atom is widened by the
+isotropic ``B_add`` of :func:`~torchref.base.fourier.aliasing.blur_b` before the splat
+and ``F`` is multiplied by ``exp(B_add s^2 / 4)`` after the FFT, which bounds each atom's
+alias error at ``d_min`` by ``torchref.aliasing_tolerance`` whatever its B-factor. The
+density maps this module returns for their own sake (:meth:`SfFFT.build_density_map`)
+are never blurred.
+
 Every entry point optionally takes a batch of models that share the crystal, grid and
 reflections -- ensemble members, timepoints, conformers -- as in
 :mod:`~torchref.base.electron_density.batching`: dense atoms with a leading ``B``, or flat
@@ -12,15 +19,18 @@ atoms with ``batch_offsets_*``. Maps then carry a leading ``B`` and structure fa
 ``(B, n_reflections)``; unbatched calls are unchanged.
 """
 
+import logging
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
+from torchref import config
 from torchref._logging import TRACE, enabled, get_logger
-from torchref.base.fourier import ifft
+from torchref.base.electron_density.radius_policy import EIGHT_PI2
+from torchref.base.fourier import aliasing, ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
-from torchref.config import dtypes
+from torchref.config import dtypes, get_aliasing_tolerance, get_sigma_cutoff_ed
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.device_resolution import require_cell_dtype, resolve_device
@@ -104,6 +114,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         self.register_buffer("_gridsize", None, persistent=False)
         self.register_buffer("_voxel_size", None, persistent=False)
         self._late_symmetry_compatible: Optional[bool] = None
+        self._alias_kappa: Optional[float] = None
         self._grid_key = None
 
     # =========================================================================
@@ -159,11 +170,13 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
     @property
     def grid_key(self):
-        """Everything the grid is derived from, as a hashable tuple.
+        """Everything the grid and the alias blur are derived from, as a hashable tuple.
 
-        ``(cell.key, spacegroup.key, max_res, explicit_gridsize)``, or ``None``
-        while the context has no cell or space group. Callers that cache anything
-        grid-shaped can compare against it.
+        ``(cell.key, spacegroup.key, max_res, explicit_gridsize, oversampling,
+        aliasing_tolerance, sigma_cutoff_ed)``, the last three read from
+        :mod:`torchref.config` at call time, or ``None`` while the context has no cell
+        or space group. Callers that cache anything grid-shaped or computed from
+        structure factors can compare against it.
         """
         crystal = self.ctx.crystal_key
         if crystal is None:
@@ -172,6 +185,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             *crystal,
             None if self.max_res is None else float(self.max_res),
             self.explicit_gridsize,
+            float(config.NYQUIST_OVERSAMPLING),
+            get_aliasing_tolerance(),
+            get_sigma_cutoff_ed(),
         )
 
     def ensure_grid(self) -> bool:
@@ -197,6 +213,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             self._gridsize = None
             self._voxel_size = None
             self._late_symmetry_compatible = None
+            self._alias_kappa = None
             self._grid_key = None
             return False
 
@@ -258,6 +275,17 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         if previous is not None and tuple(int(n) for n in previous.tolist()) != shape:
             spacegroup.reset_cache()
 
+        self._alias_kappa = None
+        if self.max_res is not None:
+            period = aliasing.alias_period(self.inv_fractional_matrix, shape)
+            self._alias_kappa = aliasing.alias_kappa(period, 1.0 / float(self.max_res))
+            if self._alias_kappa is None:
+                log.warning(
+                    f"SfFFT: grid {shape} does not reach Nyquist at "
+                    f"max_res={self.max_res} A (alias period {period:.4f} 1/A); "
+                    "structure factors near max_res alias and are not blurred."
+                )
+
         if enabled(log, TRACE):
             log.log(TRACE, f"Grid shape: {shape}")
             log.log(TRACE, f"Voxel size: {self._voxel_size}")
@@ -308,7 +336,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         Compute optimal grid dimensions from the context's cell and space group.
 
         Uses Cell.compute_grid_size() for base calculation and
-        Symmetry.suggest_grid_size() for symmetry optimization.
+        Symmetry.suggest_grid_size() for symmetry optimization. The oversampling is
+        :data:`torchref.config.NYQUIST_OVERSAMPLING` except at low resolution, where
+        :func:`~torchref.base.fourier.aliasing.grid_oversampling` refines the grid so
+        the alias blur stays within the splat radius.
 
         Parameters
         ----------
@@ -334,8 +365,13 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
         resolution = max_res if max_res is not None else self.max_res
 
-        # Use Cell's method for base grid size calculation
-        gridsize_initial = cell.compute_grid_size(resolution)
+        oversampling = aliasing.grid_oversampling(
+            resolution,
+            get_aliasing_tolerance(),
+            get_sigma_cutoff_ed(),
+            config.NYQUIST_OVERSAMPLING,
+        )
+        gridsize_initial = cell.compute_grid_size(resolution, oversampling)
 
         log.debug(f"Initial grid size from cell: {gridsize_initial}")
 
@@ -372,6 +408,63 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         if gridsize is not None:
             self.explicit_gridsize = gridsize
         self.ensure_grid()
+
+    @property
+    def alias_kappa(self) -> Optional[float]:
+        """Alias decay rate at ``max_res`` in 1/A^2, or None.
+
+        ``sigma (sigma - 2 / max_res) / 4`` for the grid's shortest alias vector
+        ``sigma`` (:func:`~torchref.base.fourier.aliasing.alias_kappa`). None without a
+        crystal, without ``max_res``, or when an explicit grid is too coarse to reach
+        Nyquist at ``max_res`` -- in all three cases structure factors are not blurred.
+        """
+        self.ensure_grid()
+        return self._alias_kappa
+
+    def alias_blur(
+        self,
+        adp_iso: Optional[torch.Tensor],
+        u_aniso: Optional[torch.Tensor] = None,
+    ) -> Optional[torch.Tensor]:
+        """Isotropic blur in A^2 the structure factors of these atoms are computed with.
+
+        ``ceil(max(0, ln(1/rtol) / kappa - B_min))``, with ``rtol`` the aliasing
+        tolerance, ``kappa`` :attr:`alias_kappa` and ``B_min`` the sharpest atomic B
+        (:func:`~torchref.base.fourier.aliasing.sharpest_b`). Evaluated on every call to
+        :meth:`compute_structure_factors`, so it follows the ADPs as they refine.
+
+        Parameters
+        ----------
+        adp_iso : torch.Tensor or None
+            Isotropic B-factors in A^2, any shape.
+        u_aniso : torch.Tensor, optional
+            Cartesian U components ``(..., 6)`` in A^2.
+
+        Returns
+        -------
+        torch.Tensor or None
+            Detached 0-d tensor on the atoms' device, or None when no blur applies (no
+            atoms, or :attr:`alias_kappa` is None). Computing it does not sync the host.
+        """
+        kappa = self.alias_kappa
+        if kappa is None:
+            return None
+        b_min = aliasing.sharpest_b(adp_iso, u_aniso)
+        if b_min is None:
+            return None
+        return aliasing.blur_b(
+            b_min,
+            kappa,
+            get_aliasing_tolerance(),
+            aliasing.widest_splat_b(get_sigma_cutoff_ed()),
+        )
+
+    def _unblur(self, hkl: torch.Tensor, b_add: torch.Tensor) -> torch.Tensor:
+        """``exp(b_add |s|^2 / 4)`` for every reflection, shape ``(n_reflections,)``."""
+        s_vec = hkl.to(device=self.device, dtype=self.dtype_float) @ (
+            self.inv_fractional_matrix
+        )
+        return torch.exp(b_add * s_vec.square().sum(dim=-1) / 4.0)
 
     # =========================================================================
     # Density Map Building Methods
@@ -609,8 +702,15 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             (B, n_reflections) for a batch.
         density_map : torch.Tensor
             Electron density map with shape (nx, ny, nz) or (B, nx, ny, nz), complex
-            when ``imaginary`` is given.
-            Note: When using late symmetry, this is the P1 map (without symmetry).
+            when ``imaginary`` is given. It is the map the FFT was taken of, so it is
+            blurred by :meth:`alias_blur` and, with late symmetry, P1; call
+            :meth:`build_density_map` for the true density.
+
+        Notes
+        -----
+        The alias bound holds for reflections out to ``max_res``. Reflections beyond
+        it are still returned, with an alias error that grows towards the grid's
+        Nyquist limit, where it reaches 100%.
         """
         # Resolve the grid first: the late-symmetry flag belongs to the grid the
         # density is about to be built on.
@@ -618,6 +718,18 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         use_late = (
             apply_symmetry and self.use_late_symmetry and self._late_symmetry_compatible
         )
+
+        b_add = self.alias_blur(adp_iso, u_aniso)
+        if b_add is not None:
+            adp_iso = adp_iso + b_add
+            u_aniso = _blur_u(u_aniso, b_add)
+            if imaginary is not None:
+                imaginary = list(imaginary)
+                imaginary[1] = None if imaginary[1] is None else imaginary[1] + b_add
+                imaginary[6] = _blur_u(imaginary[6], b_add)
+                imaginary = tuple(imaginary)
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug(f"SfFFT: alias blur {float(b_add):.0f} A^2")
 
         density_map = self.build_density_map(
             xyz_iso=xyz_iso,
@@ -641,7 +753,19 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             hkl,
             apply_symmetry=use_late,  # Late symmetry
         )
+        if b_add is not None:
+            sf = sf * self._unblur(hkl, b_add)
         return sf, density_map
+
+
+def _blur_u(u: Optional[torch.Tensor], b_add: torch.Tensor) -> Optional[torch.Tensor]:
+    """Add the isotropic ``b_add`` (A^2) to Cartesian U components ``(..., 6)``."""
+    if u is None:
+        return None
+    diagonal = torch.tensor(
+        [1.0, 1.0, 1.0, 0.0, 0.0, 0.0], dtype=u.dtype, device=u.device
+    )
+    return u + (b_add / EIGHT_PI2) * diagonal
 
 
 def _has_atoms(xyz_iso, xyz_aniso) -> bool:

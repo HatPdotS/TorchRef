@@ -42,12 +42,13 @@ def _u6_to_u3(u: torch.Tensor) -> torch.Tensor:
     return U_to_matrix(u)
 
 
-def _max_eig_sym3(A: torch.Tensor) -> torch.Tensor:
-    """Largest eigenvalue of a batch of symmetric 3x3 ``(n, 3, 3)`` matrices, ``(n,)``.
+def _extreme_eigs_sym3(A: torch.Tensor):
+    """Smallest and largest eigenvalues of symmetric 3x3 matrices ``(n, 3, 3)``.
 
-    Closed-form trigonometric solution of the characteristic cubic (Smith 1961) rather than
-    ``torch.linalg.eigvalsh``, which is unimplemented on MPS -- and this feeds only the
-    quantized splat radius, so an exact decomposition would be overkill.
+    Closed-form trigonometric solution of the characteristic cubic (Smith 1961) rather
+    than ``torch.linalg.eigvalsh``, which is unimplemented on MPS -- and these feed only
+    the quantized splat radius and the aliasing blur, so an exact decomposition would be
+    overkill. Returns ``(eig_min, eig_max)``, each ``(n,)``.
     """
     a00 = A[:, 0, 0]; a11 = A[:, 1, 1]; a22 = A[:, 2, 2]
     a01 = A[:, 0, 1]; a02 = A[:, 0, 2]; a12 = A[:, 1, 2]
@@ -68,10 +69,26 @@ def _max_eig_sym3(A: torch.Tensor) -> torch.Tensor:
     r = (detB / 2.0).clamp(-1.0, 1.0)
     phi = torch.acos(r) / 3.0
     eig_max = q + 2.0 * p * torch.cos(phi)
+    eig_min = q + 2.0 * p * torch.cos(phi + 2.0 * math.pi / 3.0)
 
     # Diagonal matrices (p1 == 0): eigenvalues are the diagonal entries.
+    diagonal = p1 <= 1e-30
     diag_max = torch.maximum(torch.maximum(a00, a11), a22)
-    return torch.where(p1 <= 1e-30, diag_max, eig_max)
+    diag_min = torch.minimum(torch.minimum(a00, a11), a22)
+    return (
+        torch.where(diagonal, diag_min, eig_min),
+        torch.where(diagonal, diag_max, eig_max),
+    )
+
+
+def _max_eig_sym3(A: torch.Tensor) -> torch.Tensor:
+    """Largest eigenvalue of a batch of symmetric 3x3 matrices ``(n, 3, 3)``, ``(n,)``."""
+    return _extreme_eigs_sym3(A)[1]
+
+
+def _min_eig_sym3(A: torch.Tensor) -> torch.Tensor:
+    """Smallest eigenvalue of a batch of symmetric 3x3 matrices ``(n, 3, 3)``, ``(n,)``."""
+    return _extreme_eigs_sym3(A)[0]
 
 
 def sigma_eff_iso(adp: torch.Tensor, B_widths: torch.Tensor) -> torch.Tensor:
