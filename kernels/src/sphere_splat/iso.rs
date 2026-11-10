@@ -45,7 +45,7 @@ fn fwd_planes_body<T: Real, const F: bool>(
         }
         let (bt, an, _) = gaussians(at, i, at.occ[i]);
         let inv_bt = bt.map(|b| neg_pi_sq / b);
-        for_each_segment::<T, F>(c, &g, xlo, xhi, |start, len, oz, q| {
+        for_each_segment::<T, F>(c, &g, xlo, xhi, #[inline(always)] |start, len, oz, q| {
             for (j, v) in chunk[start..start + len].iter_mut().enumerate() {
                 let (_, r2) = voxel::<T, F>(c, q, oz + j as i32);
                 if !T::VECTOR_EXP && r2 > g.rc2 {
@@ -88,7 +88,7 @@ fn bwd_atom_body<T: Real, const F: bool>(
     let oc = at.occ[i];
     // `[d xyz; 3], d adp, d occ` before the occ scale.
     let mut acc = [T::ZERO; 5];
-    for_each_segment::<T, F>(c, &g, 0, c.nx, |start, len, oz, q| {
+    for_each_segment::<T, F>(c, &g, 0, c.nx, #[inline(always)] |start, len, oz, q| {
         // A branch, not a 0/1 factor: the per-atom reduction does not vectorise without
         // reassociation, so skipping a voxel is a pure saving. The sums run in a local so
         // they stay in registers across the segment.
@@ -201,7 +201,7 @@ fn tan_planes_body<T: Real, const F: bool>(
         }
         let (inv_bt, rcp_bt, kap, an, tx, tb, to) = second_order_setup(at, t, i);
         let oc = at.occ[i];
-        for_each_segment::<T, F>(c, &g, xlo, xhi, |start, len, oz, q| {
+        for_each_segment::<T, F>(c, &g, xlo, xhi, #[inline(always)] |start, len, oz, q| {
             for (j, v) in chunk[start..start + len].iter_mut().enumerate() {
                 let (w, r2) = voxel::<T, F>(c, q, oz + j as i32);
                 if !T::VECTOR_EXP && r2 > g.rc2 {
@@ -239,7 +239,7 @@ fn hvp_atom_body<T: Real, const F: bool>(
     // `[w-weighted xyz; 3], X1, d adp, d occ`, with the -2 pi^2 X1 I part of d2/dxyz2
     // applied after the sum.
     let mut acc = [T::ZERO; 6];
-    for_each_segment::<T, F>(c, &g, 0, c.nx, |start, len, oz, q| {
+    for_each_segment::<T, F>(c, &g, 0, c.nx, #[inline(always)] |start, len, oz, q| {
         // Local sums stay in registers across the segment, as in the backward.
         let mut a = acc;
         for (j, &gout) in grad[start..start + len].iter().enumerate() {

@@ -75,7 +75,7 @@ fn fwd_planes_body<T: Real, const F: bool>(
         let m = minv(at, i, at.occ[i]);
         // A 0/1 keep factor instead of a branch, so the voxel loop vectorises (as in the
         // isotropic kernel).
-        for_each_segment::<T, F>(c, &g, xlo, xhi, |start, len, oz, q| {
+        for_each_segment::<T, F>(c, &g, xlo, xhi, #[inline(always)] |start, len, oz, q| {
             for (j, v) in chunk[start..start + len].iter_mut().enumerate() {
                 let ([wx, wy, wz], r2) = voxel::<T, F>(c, q, oz + j as i32);
                 if !T::VECTOR_EXP && r2 > g.rc2 {
@@ -119,7 +119,7 @@ fn bwd_atom_body<T: Real, const F: bool>(
     // Occupancy-free amplitudes, as in the isotropic backward.
     let m = minv(at, i, T::ONE);
     let mut sums = ([T::ZERO; 3], [T::ZERO; 6], T::ZERO);
-    for_each_segment::<T, F>(c, &g, 0, c.nx, |start, len, oz, q| {
+    for_each_segment::<T, F>(c, &g, 0, c.nx, #[inline(always)] |start, len, oz, q| {
         // Local sums stay in registers across the segment, as in the isotropic backward.
         let (mut gxyz, mut gu, mut gocc) = sums;
         for (j, &gout) in grad[start..start + len].iter().enumerate() {
@@ -274,7 +274,7 @@ fn tan_planes_body<T: Real, const F: bool>(
         let st = step(&m, t, i);
         let (oc, to) = (at.occ[i], t.occ[i]);
         let tx = [t.xyz[3 * i], t.xyz[3 * i + 1], t.xyz[3 * i + 2]];
-        for_each_segment::<T, F>(c, &g, xlo, xhi, |start, len, oz, q| {
+        for_each_segment::<T, F>(c, &g, xlo, xhi, #[inline(always)] |start, len, oz, q| {
             for (j, v) in chunk[start..start + len].iter_mut().enumerate() {
                 let (w, r2) = voxel::<T, F>(c, q, oz + j as i32);
                 if !T::VECTOR_EXP && r2 > g.rc2 {
@@ -321,7 +321,7 @@ fn hvp_atom_body<T: Real, const F: bool>(
     let (oc, to) = (at.occ[i], t.occ[i]);
     let tx = [t.xyz[3 * i], t.xyz[3 * i + 1], t.xyz[3 * i + 2]];
     let mut sums = ([T::ZERO; 3], [T::ZERO; 6], T::ZERO);
-    for_each_segment::<T, F>(c, &g, 0, c.nx, |start, len, oz, q| {
+    for_each_segment::<T, F>(c, &g, 0, c.nx, #[inline(always)] |start, len, oz, q| {
         let (mut hxyz, mut hm, mut hocc) = sums;
         for (j, &gout) in grad[start..start + len].iter().enumerate() {
             let (w, r2) = voxel::<T, F>(c, q, oz + j as i32);
