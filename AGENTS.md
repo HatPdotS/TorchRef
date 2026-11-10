@@ -235,6 +235,7 @@ torchref.config.caching.value = False
 | `TORCHREF_DTYPE_COMPLEX` | `dtypes.complex` / `get_complex_dtype()` | `complex64` | Global complex dtype; `complex128` unavailable on MPS |
 | `TORCHREF_DEVICE` | `device.current` / `get_default_device()` | `auto` | `auto` picks cuda → mps → cpu. Auto-selecting CUDA also requires compute capability ≥ the minimum `sm_*` in the torch build **and** ≥ 10 GB VRAM (`_MIN_CUDA_VRAM_GB`), else it warns and falls back. An explicit value bypasses those gates but raises if the backend is missing |
 | `TORCHREF_SIGMA_CUTOFF_ED` | `sigma_cutoff_ed.value` | `3.0` | Number of σ at which each atom's Gaussian density is truncated. Per-atom radius `clamp(ceil₀.₂₅(Nσ·σ_eff), [2, 7] Å)` with `σ_eff = sqrt((b_form + B) / 8π²)`. 3.0 is the floor |
+| `TORCHREF_ALIASING_TOLERANCE` | `aliasing_tolerance.value` / `get_aliasing_tolerance()` | `1e-2` | Bound on each atom's relative alias error at `d_min` in the FFT F_calc route. `SfFFT` blurs every atom by `B_add = max(0, ln(1/rtol)/κ − B_min)`, `κ = σ(σ − 2/d_min)/4` with σ the grid's shortest alias vector, and multiplies F by `exp(B_add s²/4)` after the FFT (`base/fourier/aliasing.py`). Maps from `build_density_map` are never blurred |
 | `TORCHREF_COMPILE_TARGETS` | `compile_targets.value` / `get_compile_targets()` | `False` | `torch.compile` the quadrature X-ray target kernels (`--xray-mode ml_full`). Off by default: the first backward compile is slow. Keep off for float64 and gradient verification |
 | `TORCHREF_CACHING` | `caching.value` / `get_caching_enabled()` | `True` | Gates `CachedForwardMixin` **only**. Off ⇒ every `forward()` recomputes; numbers unchanged. Primary use is diagnosing stale-looking results in one step |
 | `TORCHREF_NUM_THREADS` | `torchref.N_CPUS` | `SLURM_CPUS_PER_TASK` if set, else CPU affinity capped at 4 | Thread count, read by `torchref/__init__.py` before torch is imported; `import torchref` overwrites `OMP_`/`MKL_`/`OPENBLAS_NUM_THREADS` with it |
@@ -242,10 +243,12 @@ torchref.config.caching.value = False
 
 Also in `config.py`, not env-configurable:
 
-- `NYQUIST_OVERSAMPLING = 3.0` — grid spacing is `d_min / 3`. This is the single constant
-  every grid-sizing helper reads, so real-space maps and FFT structure-factor grids stay
-  consistent. Bare Nyquist (2.0) has been tried: Gaussian atomic density is not band-limited,
-  and 2.0 measurably degrades convergence.
+- `NYQUIST_OVERSAMPLING = 3.0` — grid spacing is at most `d_min / 3` across each set of
+  lattice planes (`Cell.compute_grid_size`, read at call time). Every grid-sizing helper
+  reads it, so real-space maps and FFT structure-factor grids stay consistent. It sets
+  cost, not accuracy: aliasing depends on how sharp the atoms are, and the alias blur
+  (`TORCHREF_ALIASING_TOLERANCE`) bounds it on whatever grid this gives. Below ~7.5 Å the
+  structure-factor grid is refined further so the blur stays inside the 7 Å splat radius.
 - `canonical_device(dev)` — fills in the default index so `torch.device('cuda')` and
   `torch.device('cuda:0')` compare equal; `cpu` stays bare. Allocation-free, deliberately
   not memoised.
