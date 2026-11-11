@@ -540,7 +540,8 @@ class ModelContext(DeviceMixin):
                 **overrides,
             },
         )
-        return ctx, ctx._settle(values, self.cell.dtype)
+        dtype = get_float_dtype() if self.cell is None else self.cell.dtype
+        return ctx, ctx._settle(values, dtype)
 
     def _settle(self, values: AtomValues, dtype: torch.dtype) -> AtomValues:
         """Apply the hydrogen policy to ``topology`` and ``values``; finish up."""

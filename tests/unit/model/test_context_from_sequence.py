@@ -165,6 +165,16 @@ def test_no_crystal_is_needed_for_the_graph():
 
 
 @pytest.mark.unit
+def test_a_context_without_a_crystal_derives():
+    ctx, values = ModelContext.from_sequence({"A": "AG"})
+    derived, derived_values = ctx.derive(ctx.topology.copy(), values)
+
+    assert derived.cell is None and derived.n_atoms == ctx.n_atoms
+    assert len(derived_values) == len(values)
+    assert (derived.peptide_links, derived.disulfides) == ("sequence", "open")
+
+
+@pytest.mark.unit
 def test_several_chains_names_and_waters():
     """A string is one-letter codes, a list residue names; waters stand alone, are
     HETATM and stay out of the sequences."""
