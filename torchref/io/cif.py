@@ -220,12 +220,63 @@ def add_connections(st, df, connections) -> None:
             "\0" if alt in ("", "nan", ".") else alt[0],
         )
 
-    types = {"disulf": "Disulf", "covale": "Covale", "metalc": "MetalC"}
-    for i, (a, b, kind) in enumerate(connections, 1):
+    for a, b, kind in connections:
         con = gemmi.Connection()
-        con.name, con.type = f"{kind}{i}", getattr(gemmi.ConnectionType, types[kind])
+        con.type = getattr(gemmi.ConnectionType, _CONNECTION_TYPES[kind])
         con.partner1, con.partner2 = address(a), address(b)
         st.connections.append(con)
+    _name_connections(st)
+
+
+_CONNECTION_TYPES = {"disulf": "Disulf", "covale": "Covale", "metalc": "MetalC"}
+
+
+def _name_connections(st) -> None:
+    """Number ``st.connections`` per type, ``disulf1``, ``covale1``, ..., in order."""
+    counts = {}
+    for con in st.connections:
+        kind = con.type.name.lower()
+        counts[kind] = counts.get(kind, 0) + 1
+        con.name = f"{kind}{counts[kind]}"
+
+
+def _add_input_connections(st, metadata) -> None:
+    """Add the input's ``_struct_conn`` rows that no topology holds to ``st``.
+
+    Those are bonds to a symmetry mate, whose operator gemmi recomputes from the
+    cell, and hydrogen bonds. Rows whose atoms are gone are dropped when written.
+    """
+    import gemmi
+    import pandas as pd
+
+    st.setup_cell_images()
+    rows = metadata.passthrough_cif_categories.get("_struct_conn", {})
+    rows = pd.DataFrame(
+        {k.split(".")[1]: v if isinstance(v, list) else [v] for k, v in rows.items()}
+    )
+
+    def address(row, p):
+        icode = row.get(f"pdbx_{p}PDB_ins_code", "?").strip("?.")
+        altloc = row.get(f"pdbx_{p}label_alt_id", "?").strip("?.")
+        return gemmi.AtomAddress(
+            row[f"{p}auth_asym_id"],
+            gemmi.SeqId(int(row[f"{p}auth_seq_id"]), icode or " "),
+            row[f"{p}label_comp_id"],
+            row[f"{p}label_atom_id"],
+            altloc or "\0",
+        )
+
+    for _, row in rows.iterrows():
+        kind = row.get("conn_type_id", "").lower()[:6]
+        mate = {row.get(f"ptnr{s}_symmetry", "?") for s in "12"} - {"1_555", "?", "."}
+        if kind != "hydrog" and not (mate and kind in _CONNECTION_TYPES):
+            continue
+        con = gemmi.Connection()
+        con.type = getattr(gemmi.ConnectionType, _CONNECTION_TYPES.get(kind, "Hydrog"))
+        con.asu = gemmi.Asu.Different if mate else gemmi.Asu.Same
+        con.partner1, con.partner2 = address(row, "ptnr1_"), address(row, "ptnr2_")
+        st.connections.append(con)
+    _name_connections(st)
 
 
 def connection_records(df, connections) -> list:
@@ -324,7 +375,8 @@ def write_model(df, filepath: str, metadata=None, connections=None) -> None:
         rebuilt so the metadata precedes the atom records.
     connections : list of tuple, optional
         Bonds for ``_struct_conn`` (see :func:`add_connections`). When given, even
-        empty, they replace the ``_struct_conn`` that ``metadata`` carried over.
+        empty, they replace the ``_struct_conn`` that ``metadata`` carried over,
+        except the rows no topology holds (see :func:`_add_input_connections`).
     """
     import gemmi
 
@@ -333,6 +385,8 @@ def write_model(df, filepath: str, metadata=None, connections=None) -> None:
     st = dataframe_to_gemmi_structure(df, cell, spacegroup)
     if connections is not None:
         add_connections(st, df, connections)
+        if metadata is not None:
+            _add_input_connections(st, metadata)
 
     # Metadata block first, then the structure block, so metadata precedes the
     # atom records in the output file.
