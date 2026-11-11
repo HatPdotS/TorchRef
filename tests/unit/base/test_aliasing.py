@@ -74,7 +74,12 @@ def test_alias_period_orthogonal_is_coarsest_axis():
 
 
 def test_alias_period_oblique_is_shortest_lattice_vector():
-    cell = Cell(torch.tensor([30.0, 31.0, 29.0, 70.0, 75.0, 65.0], dtype=torch.float64))
+    dt = torch.float64
+    cell = Cell(
+        torch.tensor([30.0, 31.0, 29.0, 70.0, 75.0, 65.0], dtype=dt),
+        dtype=dt,
+        device=_CPU,
+    )
     shape = (40, 42, 36)
     rows = (
         cell.inv_fractional_matrix * torch.tensor(shape, dtype=torch.float64)[:, None]
