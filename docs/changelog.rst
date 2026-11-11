@@ -2,13 +2,22 @@ Changelog
 =========
 
 
-Unreleased
-----------
+Version 0.8.1
+-------------
 
 New features
 ~~~~~~~~~~~~
 - ``ModelContext.from_sequence`` and ``Topology.from_sequence`` build a context and its node-only topology from chain sequences (one-letter strings, or lists of residue names for modified residues, waters and ligands), with no atom table and no coordinates; atoms come in monomer-library order
 - Restraints can be built before coordinates exist: ``peptide_links="sequence"`` bonds sequence neighbours whatever their C-N distance, and ``disulfides="open"`` bonds no cysteines but lets their sulfurs approach to the S-S bond length unrepelled, so a bridge closes where the data put the sulfurs together. Both are ``ModelContext`` settings, the default for a sequence-built context; a model loaded from a file detects both by distance as before
+
+Performance
+~~~~~~~~~~~
+- The fused CPU (Rust) density splat is about 5x faster on x86-64, forward and backward, and again slightly faster than the C++ splat it replaced in 0.7.0: since ``torchref-kernels`` 0.1.0 its voxel loops ran as scalar baseline code with software ``fma``, and now run vectorised with the AVX2/AVX-512 FMA they were compiled for; results are bit-identical
+- The CPU splat's forward pass splits the grid into several blocks of x-planes per thread, each visiting only the atoms that reach it, so it scales with the thread count when the model's atoms fill only part of the cell along x (1DAW: 2.8x on 4 threads, from 1.2x); results are bit-identical at every thread count
+
+Dependencies
+~~~~~~~~~~~~
+- Requires ``torchref-kernels`` 0.2.1
 
 
 Version 0.8.0
@@ -42,6 +51,7 @@ Fixes that change results
 
 Other fixes
 ~~~~~~~~~~~
+- ``Model.write_pdb`` and ``Model.write_cif`` write the topology's disulfides and links as SSBOND/LINK records and ``_struct_conn``, which were dropped unless the input's metadata was passed; with metadata, these replace the input's records. ``Model.connections()`` returns them
 - The CPU and Metal density splats no longer raise in backward on non-contiguous ``xyz`` or ADPs (e.g. a transposed view)
 
 Dependencies

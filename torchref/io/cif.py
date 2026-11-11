@@ -200,6 +200,106 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
     return st
 
 
+def add_connections(st, df, connections) -> None:
+    """Append ``connections`` to ``st.connections``, in place; gemmi fills distances.
+
+    Partners are addressed as :func:`dataframe_to_gemmi_structure` names the rows of
+    ``df``, blank chain IDs as ``A``. ``connections`` is ``(row1, row2, conn_type)``
+    tuples, as :meth:`torchref.model.model.Model.connections` returns.
+    """
+    import gemmi
+
+    def address(row):
+        atom = df.iloc[row].astype(str).str.strip()
+        chain, icode, alt = atom["chainid"], atom["icode"], atom["altloc"]
+        return gemmi.AtomAddress(
+            "A" if chain in ("", "nan") else chain,
+            gemmi.SeqId(int(atom["resseq"]), " " if icode in ("", "nan") else icode),
+            atom["resname"],
+            atom["name"],
+            "\0" if alt in ("", "nan", ".") else alt[0],
+        )
+
+    for a, b, kind in connections:
+        con = gemmi.Connection()
+        con.type = getattr(gemmi.ConnectionType, _CONNECTION_TYPES[kind])
+        con.partner1, con.partner2 = address(a), address(b)
+        st.connections.append(con)
+    _name_connections(st)
+
+
+_CONNECTION_TYPES = {"disulf": "Disulf", "covale": "Covale", "metalc": "MetalC"}
+
+
+def _name_connections(st) -> None:
+    """Number ``st.connections`` per type, ``disulf1``, ``covale1``, ..., in order."""
+    counts = {}
+    for con in st.connections:
+        kind = con.type.name.lower()
+        counts[kind] = counts.get(kind, 0) + 1
+        con.name = f"{kind}{counts[kind]}"
+
+
+def _add_input_connections(st, metadata) -> None:
+    """Add the input's ``_struct_conn`` rows that no topology holds to ``st``.
+
+    Those are bonds to a symmetry mate, whose operator gemmi recomputes from the
+    cell, and hydrogen bonds. Rows whose atoms are gone are dropped when written.
+    """
+    import gemmi
+    import pandas as pd
+
+    st.setup_cell_images()
+    rows = metadata.passthrough_cif_categories.get("_struct_conn", {})
+    rows = pd.DataFrame(
+        {k.split(".")[1]: v if isinstance(v, list) else [v] for k, v in rows.items()}
+    )
+
+    def address(row, p):
+        icode = row.get(f"pdbx_{p}PDB_ins_code", "?").strip("?.")
+        altloc = row.get(f"pdbx_{p}label_alt_id", "?").strip("?.")
+        return gemmi.AtomAddress(
+            row[f"{p}auth_asym_id"],
+            gemmi.SeqId(int(row[f"{p}auth_seq_id"]), icode or " "),
+            row[f"{p}label_comp_id"],
+            row[f"{p}label_atom_id"],
+            altloc or "\0",
+        )
+
+    for _, row in rows.iterrows():
+        kind = row.get("conn_type_id", "").lower()[:6]
+        mate = {row.get(f"ptnr{s}_symmetry", "?") for s in "12"} - {"1_555", "?", "."}
+        if kind != "hydrog" and not (mate and kind in _CONNECTION_TYPES):
+            continue
+        con = gemmi.Connection()
+        con.type = getattr(gemmi.ConnectionType, _CONNECTION_TYPES.get(kind, "Hydrog"))
+        con.asu = gemmi.Asu.Different if mate else gemmi.Asu.Same
+        con.partner1, con.partner2 = address(row, "ptnr1_"), address(row, "ptnr2_")
+        st.connections.append(con)
+    _name_connections(st)
+
+
+def connection_records(df, connections) -> list:
+    """SSBOND and LINK records for ``connections`` (see :func:`add_connections`).
+
+    SSBOND carries no altloc, so a disulfide between two conformers of the same pair
+    of cysteines is written once. Returns lines without newlines.
+    """
+    import gemmi
+
+    rows = sorted({row for a, b, _ in connections for row in (a, b)})
+    st = dataframe_to_gemmi_structure(df.iloc[rows], None, None)
+    add_connections(st, df, connections)
+    lines, seen = [], set()
+    for line in st.make_pdb_string(gemmi.PdbWriteOptions()).splitlines():
+        if line.startswith("SSBOND") and line[11:36] not in seen:
+            seen.add(line[11:36])
+            lines.append(f"SSBOND{len(seen):4d}{line[10:].rstrip()}")
+        elif line.startswith("LINK"):
+            lines.append(line.rstrip())
+    return lines
+
+
 def _cif_value(val) -> str:
     """Render one value as a CIF token, quoting it when it needs quoting.
 
@@ -217,7 +317,7 @@ def _cif_value(val) -> str:
     return gemmi.cif.quote(text)
 
 
-def _add_refine_categories(doc, metadata):
+def _add_refine_categories(doc, metadata, skip=()):
     """Inject a :class:`RefinementMetadata`'s categories into ``doc``, in place.
 
     Returns the set of category prefixes written (e.g. ``{"_refine.",
@@ -229,6 +329,8 @@ def _add_refine_categories(doc, metadata):
     written = set()
 
     for cat_name, items in cats.items():
+        if cat_name in skip:
+            continue
         # List values mean a loop category rather than key-value pairs.
         is_loop = any(isinstance(v, list) for v in items.values())
 
@@ -259,7 +361,7 @@ def _add_refine_categories(doc, metadata):
     return written
 
 
-def write_model(df, filepath: str, metadata=None) -> None:
+def write_model(df, filepath: str, metadata=None, connections=None) -> None:
     """Write atomic coordinates to mmCIF file.
 
     Parameters
@@ -271,11 +373,20 @@ def write_model(df, filepath: str, metadata=None) -> None:
     metadata : RefinementMetadata, optional
         Refinement statistics, title, authors etc. When given, the file is
         rebuilt so the metadata precedes the atom records.
+    connections : list of tuple, optional
+        Bonds for ``_struct_conn`` (see :func:`add_connections`). When given, even
+        empty, they replace the ``_struct_conn`` that ``metadata`` carried over,
+        except the rows no topology holds (see :func:`_add_input_connections`).
     """
     import gemmi
 
     cell = df.attrs.get("cell")
     spacegroup = df.attrs.get("spacegroup", "P 1")
+    st = dataframe_to_gemmi_structure(df, cell, spacegroup)
+    if connections is not None:
+        add_connections(st, df, connections)
+        if metadata is not None:
+            _add_input_connections(st, metadata)
 
     # Metadata block first, then the structure block, so metadata precedes the
     # atom records in the output file.
@@ -298,14 +409,14 @@ def write_model(df, filepath: str, metadata=None) -> None:
                 "_symmetry.space_group_name_H-M", gemmi.cif.quote(str(spacegroup))
             )
 
-        written = _add_refine_categories(meta_doc, metadata)
+        skip = () if connections is None else ("_struct_conn",)
+        written = _add_refine_categories(meta_doc, metadata, skip=skip)
         # Categories we just wrote from metadata, plus the two written above.
         # The structure block gemmi builds from the DataFrame carries its own
         # version of some of these; copying those in would clobber a pair or
         # append a second loop for the same category.
         written |= {"_cell.", "_symmetry."}
 
-        st = dataframe_to_gemmi_structure(df, cell, spacegroup)
         struct_doc = st.make_mmcif_document()
         struct_block = struct_doc.sole_block()
 
@@ -329,6 +440,5 @@ def write_model(df, filepath: str, metadata=None) -> None:
 
         meta_doc.write_file(filepath)
     else:
-        st = dataframe_to_gemmi_structure(df, cell, spacegroup)
         doc = st.make_mmcif_document()
         doc.write_file(filepath)

@@ -606,7 +606,7 @@ class RefinementMetadata:
     #  PDB header rendering
     # ------------------------------------------------------------------ #
 
-    def render_pdb_header(self) -> str:
+    def render_pdb_header(self, connectivity: Optional[List[str]] = None) -> str:
         """Render the header as PDB records, ready to precede CRYST1.
 
         Records come out in the order the PDB format mandates -- TITLE and the
@@ -616,10 +616,21 @@ class RefinementMetadata:
         from the input or supplied by the caller. Metadata that sets no
         refinement field annotates the input instead: it generates no REMARK 3
         and keeps the input's, if ``from_pdb_file(supersede_refinement=False)``
-        collected one.
+        collected one. ``connectivity``, SSBOND and LINK lines, replaces the input's
+        except those to a symmetry mate, which no topology holds.
         """
         lines: List[str] = []
-        records = self.passthrough_pdb_records
+        records = dict(self.passthrough_pdb_records)
+        if connectivity is not None:
+            for name in ("SSBOND", "LINK"):
+                records[name] = [r for r in connectivity if r.startswith(name)] + [
+                    r
+                    for r in records.get(name, [])
+                    if {r[59:65].strip(), r[66:72].strip()} - {"", "1555"}
+                ]
+            records["SSBOND"] = [
+                f"SSBOND{i:4d}{r[10:]}" for i, r in enumerate(records["SSBOND"], 1)
+            ]
 
         def _emit(*names: str) -> None:
             for name in names:
