@@ -5,6 +5,11 @@ Changelog
 Version 0.8.1
 -------------
 
+New features
+~~~~~~~~~~~~
+- ``ModelContext.from_sequence`` and ``Topology.from_sequence`` build a context and its node-only topology from chain sequences (one-letter strings, or lists of residue names for modified residues, waters and ligands), with no atom table and no coordinates; atoms come in monomer-library order
+- Restraints can be built before coordinates exist: ``peptide_links="sequence"`` bonds sequence neighbours whatever their C-N distance, and ``disulfides="open"`` bonds no cysteines but lets their sulfurs approach to the S-S bond length unrepelled, so a bridge closes where the data put the sulfurs together. Both are ``ModelContext`` settings, the default for a sequence-built context; a model loaded from a file detects both by distance as before
+
 Performance
 ~~~~~~~~~~~
 - The fused CPU (Rust) density splat is about 5x faster on x86-64, forward and backward, and again slightly faster than the C++ splat it replaced in 0.7.0: since ``torchref-kernels`` 0.1.0 its voxel loops ran as scalar baseline code with software ``fma``, and now run vectorised with the AVX2/AVX-512 FMA they were compiled for; results are bit-identical

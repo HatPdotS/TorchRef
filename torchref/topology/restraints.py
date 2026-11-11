@@ -19,9 +19,14 @@ Deliberately decoupled from :class:`~torchref.model.model.Model`: it takes a top
 and holds no reference back to whatever owns the coordinates. Every evaluation takes the
 coordinates (or ADPs) it scores as an argument, and the pair list is rebuilt from the
 coordinates it is handed, so the same object serves any model that shares the atom set.
+
+Built with ``peptide_links="sequence"`` and ``disulfides="open"`` the first kind no
+longer depends on coordinates at all, and can be built before any exist.
 """
 
 import logging
+import math
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -30,12 +35,14 @@ from torch.nn import Module
 
 from torchref._logging import enabled, get_logger
 from torchref.base.targets._common import torsions_from_xyz
-from torchref.config import get_float_dtype
+from torchref.config import get_float_dtype, get_int_dtype
 from torchref.topology.monomer.cif import (
     find_cif_file_in_library,
     read_cif,
     read_link_definitions,
 )
+from torchref.topology.nonbonded import BridgeContacts
+from torchref.topology.residue_graph import check_link_modes
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -56,8 +63,10 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         Path to the CIF restraints dictionary file(s).
     xyz : torch.Tensor, optional
         Cartesian coordinates in Å, shape ``(n_atoms, 3)``, that the topology and the
-        first pair list are built over. Required with ``topology``. The build lands on
-        this tensor's device. Not retained.
+        first pair list are built over. The build lands on this tensor's device. Not
+        retained. Required with ``topology`` unless ``peptide_links="sequence"`` and
+        ``disulfides="open"``; without them the build lands on the CPU, has no pair
+        list whatever ``nonbonded`` says, and :meth:`rebuild_vdw_restraints` raises.
     cell : Cell, optional
         Crystallographic unit cell. Together with ``spacegroup``, enables
         symmetry-aware VDW restraints (contacts with symmetry mates). Without both,
@@ -73,6 +82,16 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         Build the non-bonded pair list. ``False`` gives connectivity and ideal values
         only, for a caller that needs the topology and nothing else, such as hydrogen
         planning; the pair search is the largest part of a build.
+    peptide_links : {"distance", "sequence"}, default "distance"
+        Bond sequence-adjacent residues whose C and N lie within 2 Å, or every
+        sequence-adjacent pair of peptide residues whatever their separation.
+    disulfides : {"detect", "open"}, default "detect"
+        Bond cysteines whose SG lie within 2.5 Å, or bond none and instead let every
+        pair of cysteine sulfurs approach to the disulfide bond length without
+        repulsion, so that a bridge closes where the data put the sulfurs together.
+        An open bridge carries no bond, angle or torsion restraint. Riding hydrogens
+        are not scored across it, but a thiol hydrogen the model carries as an atom
+        is, and keeps its sulfur out of a bridge.
 
     Attributes
     ----------
@@ -102,12 +121,17 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         spacegroup=None,
         links: pd.DataFrame = None,
         nonbonded: bool = True,
+        peptide_links: str = "distance",
+        disulfides: str = "detect",
     ):
         """Initialize the Restraints handler."""
         super().__init__()
+        check_link_modes(peptide_links, disulfides)
         self.cif_path = cif_path
         self.links = links
-        self._nonbonded = bool(nonbonded)
+        self.peptide_links = peptide_links
+        self.disulfides = disulfides
+        self._nonbonded = bool(nonbonded) and xyz is not None
 
         # Own copies: DeviceMixin moves a Cell or SpaceGroup in place, and these
         # usually belong to the model's context.
@@ -129,8 +153,11 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             self.cif_dict = {}
             self.unique_residues = []
             return
-        if xyz is None:
-            raise ValueError("Restraints over a topology need the coordinates, xyz=")
+        if xyz is None and (peptide_links == "distance" or disulfides == "detect"):
+            raise ValueError(
+                "Restraints over a topology need the coordinates, xyz=, unless "
+                "peptide_links='sequence' and disulfides='open'."
+            )
 
         self._nodes = topology
         self.unique_residues, single_atom = self._dictionary_resnames(topology)
@@ -181,6 +208,55 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                 "y": coords[:, 1],
                 "z": coords[:, 2],
             }
+        )
+
+    def _open_bridge_contacts(self) -> Optional[BridgeContacts]:
+        """Contact distances across the disulfide bridges ``disulfides="open"`` leaves.
+
+        The S-S distance is the ``disulf`` link's bond length, the distance of a sulfur
+        to the other cysteine's CB the third side of the triangle that bond makes with
+        the CB-SG bond at the link's CB-SG-SG angle. None when bridges are detected or
+        the model has no cysteine sulfur.
+        """
+        if self.disulfides != "open":
+            return None
+        columns = self.topology.columns()
+        cysteine = columns["resname"] == "CYS"
+        depth = np.full(self.topology.n_atoms, -1, dtype=np.int64)
+        depth[cysteine & (columns["name"] == "CB")] = 1
+        depth[cysteine & (columns["name"] == "SG")] = 0
+        if not (depth == 0).any():
+            return None
+
+        def value(table, *atoms) -> float:
+            names = [
+                c for c in table.columns if c.startswith("atom") and "comp" not in c
+            ]
+            for _, row in table.iterrows():
+                found = tuple(str(row[c]).strip() for c in names)
+                if found in (atoms, atoms[::-1]):
+                    return float(row["value"])
+            raise ValueError(
+                f"disulfides='open' found no {'-'.join(atoms)} value in the "
+                "restraint dictionaries."
+            )
+
+        disulf = (self.link_dict or {}).get("disulf")
+        cys = self.cif_dict.get("CYS")
+        if disulf is None or cys is None:
+            raise ValueError(
+                "disulfides='open' reads the bridge geometry from the 'disulf' link "
+                "and the CYS dictionary, and one of them is missing."
+            )
+        sulfur = value(disulf["bonds"], "SG", "SG")
+        carbon = value(cys["bonds"], "CB", "SG")
+        angle = math.radians(value(disulf["angles"], "CB", "SG", "SG"))
+        third = math.sqrt(
+            sulfur**2 + carbon**2 - 2.0 * sulfur * carbon * math.cos(angle)
+        )
+        return BridgeContacts(
+            depth=torch.as_tensor(depth, dtype=get_int_dtype()),
+            distances=(sulfur, third),
         )
 
     @property
@@ -296,30 +372,32 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         surfaces = load_nll_surfaces(device)
         self.register_buffer("_rama_surfaces", surfaces)
 
-    def build_restraints(self, xyz: torch.Tensor):
+    def build_restraints(self, xyz: Optional[torch.Tensor]):
         """Build the topology, the values over it, and the non-bonded pair list.
 
         Parameters
         ----------
-        xyz : torch.Tensor
+        xyz : torch.Tensor or None
             Cartesian coordinates in Å, shape ``(n_atoms, 3)``. The pair list is
-            skipped when constructed with ``nonbonded=False``. Builds on CPU and moves
-            the result to ``xyz``'s device at the end.
+            skipped when constructed with ``nonbonded=False`` or without coordinates.
+            Builds on CPU and moves the result to ``xyz``'s device at the end.
         """
         try:
-            target_device = xyz.device
             device = torch.device("cpu")
+            target_device = device if xyz is None else xyz.device
 
             from torchref.topology import build_topology_with_values
 
             self.topology, self._values, extras = build_topology_with_values(
                 self._nodes,
                 self.cif_dict,
-                xyz.detach().to(device),
+                None if xyz is None else xyz.detach().to(device),
                 link_dict=self.link_dict,
                 link_list=self.link_list,
                 links=self.links,
                 device=device,
+                peptide_links=self.peptide_links,
+                disulfides=self.disulfides,
             )
             self._rebuild_entries()
 
@@ -452,6 +530,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
         from torchref.topology.nonbonded import build_vdw_restraints_gpu
 
+        bridges = self._open_bridge_contacts()
         self._vdw = build_vdw_restraints_gpu(
             xyz=xyz_cpu,
             vdw_radii=radii_cpu,
@@ -461,6 +540,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             exclusion_set=self.topology.atoms.exclusions_12_13_14(),
             cutoff=cutoff,
             inter_residue_only=inter_residue_only,
+            bridges=bridges,
         )
 
         # Publish the new pair list before anything reads it back below. Unlike the
@@ -493,8 +573,17 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             )
         self._h_excl_hash = self._build_h_exclusion_hash(self._h_topo, cpu)
 
-        # Precompute H candidate pairs from heavy-atom VDW pair list
+        # Precompute H candidate pairs from heavy-atom VDW pair list. The pairs across
+        # an open bridge are left out of it: the riding hydrogens of a cysteine's SG
+        # and CB stand where the other sulfur arrives, and scoring them against it
+        # would hold every bridge open.
         vdw_data = self.restraints.get("vdw")
+        if vdw_data is not None and bridges is not None:
+            first, second = vdw_data["indices"].unbind(1)
+            total = bridges.depth[first] + bridges.depth[second]
+            across = (bridges.depth[first] >= 0) & (bridges.depth[second] >= 0)
+            across &= total < len(bridges.distances)
+            vdw_data = {key: value[~across] for key, value in vdw_data.items()}
         if vdw_data is not None and self._h_topo.n_hydrogens > 0:
             build_h_candidate_pairs(
                 h_topo=self._h_topo,

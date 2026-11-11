@@ -6,6 +6,12 @@ edges. Intra-residue edges are matched template by template through the matchers
 ``InterResidue*Builder`` classes over the residue graph's peptide links, disulfides are
 found by SG-SG distance, and ``LINK`` records are resolved by residue identity. Every
 edge index is an atom row of the topology.
+
+Coordinates are read for what the identity leaves undecided: which sequence neighbours
+are bonded, which cysteines are bridged, each sugar's pucker, each proline's cis or
+trans, each C-alpha's hand. ``peptide_links="sequence"`` and ``disulfides="open"`` take
+the first two decisions away from them, and the build then runs without coordinates at
+all, the rest falling back to what the dictionaries say.
 """
 
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -36,6 +42,7 @@ from torchref.topology.atom_graph import AtomGraph
 from torchref.topology.edges import EdgeBlock, assemble_origins
 from torchref.topology.residue_graph import (
     ResidueGraph,
+    check_link_modes,
     find_disulfide_links,
     find_peptide_links,
 )
@@ -208,7 +215,7 @@ def _match_intra(
     nodes: Dict[str, np.ndarray],
     template_key: np.ndarray,
     pp_cif: PreprocessedCIF,
-    xyz: torch.Tensor,
+    xyz: Optional[torch.Tensor],
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict[str, np.ndarray]]]:
     """Intra-residue edges and the ideal values that belong to them.
 
@@ -219,6 +226,7 @@ def _match_intra(
     alternative sugar-pucker torsion sets (:attr:`PreprocessedCIF.puckers`), each
     conformation keeps the one its coordinates ``xyz`` (Cartesian, Å, ``(N, 3)``)
     fit best, so the pucker is fixed at build time, as a proline's cis or trans is.
+    Without coordinates it keeps the template's first set.
 
     Returns
     -------
@@ -351,7 +359,9 @@ def _match_intra(
                     )
                     if len(found[0])
                 ]
-                if candidates:
+                if candidates and xyz is None:
+                    torsion_sets.append(candidates[0])
+                elif candidates:
                     torsion_sets.append(
                         min(candidates, key=lambda found: _torsion_misfit(xyz, *found))
                     )
@@ -669,8 +679,32 @@ _CBETA_DEFAULT = (122.8, -122.6)
 _CBETA_SIGMA = 2.5
 
 
+def _template_is_l(chirals: Optional[Dict[str, np.ndarray]]) -> bool:
+    """Whether a template declares its C-alpha with the L hand.
+
+    The centre is L when the volume of ``N``, ``C``, ``CB`` about ``CA`` is positive,
+    the test :func:`_cbeta_edges` applies to coordinates. A template that lists the
+    three in another order is read through the parity of that order, and one with no
+    such centre, or an unsigned one, is not L.
+    """
+    if not chirals:
+        return False
+    even = {("N", "C", "CB"), ("C", "CB", "N"), ("CB", "N", "C")}
+    for row in np.flatnonzero(np.asarray(chirals["center"]) == "CA"):
+        order = tuple(str(chirals[k][row]) for k in ("atom1", "atom2", "atom3"))
+        if set(order) != {"N", "C", "CB"}:
+            continue
+        sign = float(chirals["volume_sign"][row])
+        return (sign if order in even else -sign) > 0
+    return False
+
+
 def _cbeta_edges(
-    cols: Dict[str, np.ndarray], nodes: Dict[str, np.ndarray], xyz: np.ndarray
+    cols: Dict[str, np.ndarray],
+    nodes: Dict[str, np.ndarray],
+    xyz: Optional[np.ndarray],
+    template_key: np.ndarray,
+    pp_cif: PreprocessedCIF,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     """C-beta dihedral restraints: ``N-C-CA-CB`` and ``C-N-CA-CB`` per conformer.
 
@@ -678,12 +712,15 @@ def _cbeta_edges(
     chiral volume cannot see; these two dihedrals fix that tilt. Emitted wherever a
     conformer has N, CA, C and CB, CA-C is bonded (< 2 Å) and the CA volume is
     L-handed in ``xyz`` (Cartesian, Å), so D residues and misbuilt centres are left to
-    the chiral restraint.
+    the chiral restraint. Without coordinates the hand is the one the residue's
+    template (``template_key`` into ``pp_cif``) declares.
     """
     rows, refs = [], []
     for r in range(len(nodes["atom_start"])):
         start, end = int(nodes["atom_start"][r]), int(nodes["atom_end"][r])
         target = _CBETA_TARGETS.get(str(nodes["resname"][r]), _CBETA_DEFAULT)
+        if xyz is None and not _template_is_l(pp_cif.chirals.get(str(template_key[r]))):
+            continue
         for names, indices in _conformers(cols, start, end):
             at = {}
             for want in ("N", "CA", "C", "CB"):
@@ -692,11 +729,12 @@ def _cbeta_edges(
                     break
                 at[want] = int(indices[hit[0]])
             else:
-                n, ca, c, cb = (xyz[at[k]] for k in ("N", "CA", "C", "CB"))
-                if np.linalg.norm(c - ca) > 2.0:
-                    continue
-                if np.dot(n - ca, np.cross(c - ca, cb - ca)) <= 0:
-                    continue
+                if xyz is not None:
+                    n, ca, c, cb = (xyz[at[k]] for k in ("N", "CA", "C", "CB"))
+                    if np.linalg.norm(c - ca) > 2.0:
+                        continue
+                    if np.dot(n - ca, np.cross(c - ca, cb - ca)) <= 0:
+                        continue
                 rows.append((at["N"], at["C"], at["CA"], at["CB"]))
                 rows.append((at["C"], at["N"], at["CA"], at["CB"]))
                 refs.extend(target)
@@ -914,11 +952,13 @@ def _block_with_values(
 def build_topology(
     topology: Topology,
     cif_dict: Dict,
-    xyz: torch.Tensor,
+    xyz: Optional[torch.Tensor],
     link_dict: Optional[Dict] = None,
     link_list=None,
     links=None,
     device=None,
+    peptide_links: str = "distance",
+    disulfides: str = "detect",
 ) -> Topology:
     """Build a topology, discarding the restraint values built along the way.
 
@@ -933,6 +973,8 @@ def build_topology(
         link_list=link_list,
         links=links,
         device=device,
+        peptide_links=peptide_links,
+        disulfides=disulfides,
     )
     return topology
 
@@ -940,11 +982,13 @@ def build_topology(
 def build_topology_with_values(
     topology: Topology,
     cif_dict: Dict,
-    xyz: torch.Tensor,
+    xyz: Optional[torch.Tensor],
     link_dict: Optional[Dict] = None,
     link_list=None,
     links=None,
     device=None,
+    peptide_links: str = "distance",
+    disulfides: str = "detect",
 ) -> Tuple[Topology, Dict[str, Dict], Dict[str, Dict]]:
     """Connect a node-only topology against the restraint dictionaries.
 
@@ -955,10 +999,13 @@ def build_topology_with_values(
         edges, if any, are ignored.
     cif_dict : dict
         Restraint dictionary keyed by residue name.
-    xyz : torch.Tensor
+    xyz : torch.Tensor or None
         Cartesian coordinates in Å, shape ``(N, 3)``. Peptide links are detected by
-        C-N and disulfides by SG-SG distance, and each nucleotide's sugar pucker and
-        proline's cis or trans omega are chosen from them.
+        C-N and disulfides by SG-SG distance unless the two modes below say otherwise,
+        and each nucleotide's sugar pucker, proline's cis or trans omega and C-alpha's
+        hand are chosen from them. None is accepted once neither mode reads
+        coordinates; the pucker is then the template's first, every proline trans and
+        the hand the template's.
     link_dict : dict, optional
         Link-type definitions. Without it no inter-residue edges are built.
     link_list : pandas.DataFrame, optional
@@ -969,6 +1016,12 @@ def build_topology_with_values(
         bond edge.
     device : torch.device, optional
         Where to place the edge blocks.
+    peptide_links : {"distance", "sequence"}, default "distance"
+        ``"sequence"`` bonds every pair of sequence-adjacent peptide residues without
+        looking at their separation; see
+        :func:`~torchref.topology.residue_graph.find_peptide_links`.
+    disulfides : {"detect", "open"}, default "detect"
+        ``"open"`` builds no disulfide edges, whatever the SG-SG distances.
 
     Returns
     -------
@@ -980,7 +1033,19 @@ def build_topology_with_values(
         for the two types that carry no origin. Row-aligned to the edge blocks.
     extras : dict
         Products of the same pass that are not edges -- currently ``ramachandran``.
+
+    Raises
+    ------
+    ValueError
+        For an unknown mode, or ``xyz=None`` while a mode still reads coordinates.
     """
+    check_link_modes(peptide_links, disulfides)
+    if xyz is None and (peptide_links == "distance" or disulfides == "detect"):
+        raise ValueError(
+            "Building without coordinates needs peptide_links='sequence' and "
+            f"disulfides='open', got {peptide_links!r} and {disulfides!r}."
+        )
+    coords = None if xyz is None else xyz.detach().cpu().numpy()
     cols = _atom_columns(topology)
     residue_nodes = topology.residues
     nodes = {
@@ -995,7 +1060,9 @@ def build_topology_with_values(
     # Paired by C-N distance whatever the record type, so a polymer residue written as
     # HETATM (MSE, SEP, ...) takes the link, patching and backbone terms of its
     # ATOM neighbours.
-    peptide_pairs = find_peptide_links(nodes, c_rows, n_rows, xyz)
+    peptide_pairs = find_peptide_links(
+        nodes, c_rows, n_rows, xyz if peptide_links == "distance" else None
+    )
 
     match_cols, chemical_nodes, chemical_pairs, source_rows, owners = _chemical_nodes(
         cols, nodes, peptide_pairs
@@ -1046,13 +1113,13 @@ def build_topology_with_values(
         chemical_nodes,
         chemical_keys,
         pp_cif,
-        torch.as_tensor(xyz.detach().cpu(), dtype=get_float_dtype()),
+        None if coords is None else torch.as_tensor(coords, dtype=get_float_dtype()),
     )
     intra_planes, intra_plane_values = _match_intra_planes(
         match_cols, chemical_nodes, chemical_keys, pp_cif
     )
     inter, inter_values, extras = _inter_residue_edges(
-        PeptideResidues(topology, peptide_pairs, xyz.detach().cpu().numpy()),
+        PeptideResidues(topology, peptide_pairs, coords),
         link_dict,
     )
 
@@ -1062,13 +1129,17 @@ def build_topology_with_values(
             residue_of_row[row] = r
 
     sg_rows = [row for row in range(len(cols["name"])) if cols["name"][row] == "SG"]
-    disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz, cols["altloc"])
+    disulfide_pairs = (
+        find_disulfide_links(sg_rows, residue_of_row, xyz, cols["altloc"])
+        if disulfides == "detect"
+        else []
+    )
     disulfide, disulfide_values = _disulfide_edges(
         topology, residue_of_row, disulfide_pairs, link_dict
     )
 
     cbeta, cbeta_values = _cbeta_edges(
-        match_cols, chemical_nodes, xyz.detach().cpu().numpy()
+        match_cols, chemical_nodes, coords, chemical_keys, pp_cif
     )
 
     link_edges, link_atom_pairs, link_values = _link_record_edges(
