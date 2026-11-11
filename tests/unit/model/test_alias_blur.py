@@ -73,7 +73,7 @@ def test_outer_shell_within_tolerance(scene, tolerance, kind, max_res):
 
 @pytest.mark.parametrize("kind", ["sharp", "deposited"])
 def test_low_resolution_fcalc_independent_of_grid(scene, tolerance, kind):
-    """The #106 symptom: F over a fixed range moved with the grid's ``max_res``."""
+    """F over a fixed resolution range does not depend on the grid's ``max_res``."""
     model, atoms, hkl, s, oracle = scene
     keep = s <= 1.0 / _LOW_RES_LIMIT
     F = {d: _fft(model, atoms[kind], hkl[keep], d) for d in _RESOLUTIONS}

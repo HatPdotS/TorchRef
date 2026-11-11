@@ -340,12 +340,13 @@ class Cell(_NonModuleDeviceMixin):
         """
         Minimum grid dimensions that sample this cell to ``max_res``.
 
-        Along axis ``i`` the grid has ``ceil(oversampling * d_i / max_res)`` points,
-        where ``d_i = 1 / |a*_i|`` is the spacing of the lattice planes that axis
-        crosses -- the axis length itself for an orthogonal cell, shorter for an
-        oblique one. This sets the reciprocal period ``N_i |a*_i|`` of the grid to
-        ``oversampling / max_res``, which is what bounds aliasing. Symmetry and FFT
-        friendliness are applied on top by
+        Along axis ``i`` of length ``a_i`` the grid has
+        ``ceil(oversampling * a_i / max_res)`` points, so no voxel step is longer than
+        ``max_res / oversampling``. Then no family of grid planes is spaced wider than
+        that either, and the shortest alias vector of the grid is at least
+        ``oversampling / max_res`` whatever the cell angles. Sizing from the
+        lattice-plane spacings ``1 / |a*_i|`` instead would undersample oblique cells
+        along the diagonals. Symmetry and FFT friendliness are applied on top by
         :meth:`~torchref.symmetry.symmetry.Symmetry.suggest_grid_size`.
 
         Parameters
@@ -372,12 +373,11 @@ class Cell(_NonModuleDeviceMixin):
 
         if oversampling is None:
             oversampling = config.NYQUIST_OVERSAMPLING
-        plane_spacing = 1.0 / self.inv_fractional_matrix.detach().norm(dim=1)
         # The relative slack keeps an exact product such as 50 / 2 * 3 = 75 from
-        # rounding up to 76 on the last bit of a float32 inverse.
+        # rounding up to 76 on the last bit of a float32 cell.
         return tuple(
-            math.ceil(float(d) / max_res * oversampling * (1.0 - 1e-5))
-            for d in plane_spacing.tolist()
+            math.ceil(float(length) / max_res * oversampling * (1.0 - 1e-5))
+            for length in self._data[:3].tolist()
         )
 
     def tolist(self) -> list:

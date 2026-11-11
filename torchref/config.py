@@ -40,10 +40,10 @@ log = get_logger(__name__)
 # Grid sampling
 # ---------------------------------------------------------------------------
 # Shannon-Nyquist oversampling factor used to size real-space / FFT grids from
-# a unit cell and resolution: along axis ``i`` the grid has at least
-# ``d_i / d_min * NYQUIST_OVERSAMPLING`` points, with ``d_i = 1 / |a*_i|`` the spacing
-# of the lattice planes the axis crosses, i.e. a grid spacing of at most
-# ``d_min / NYQUIST_OVERSAMPLING`` measured across those planes. Read at call time.
+# a unit cell and resolution: along axis ``i`` of length ``a_i`` the grid has at least
+# ``a_i / d_min * NYQUIST_OVERSAMPLING`` points, i.e. a voxel step of at most
+# ``d_min / NYQUIST_OVERSAMPLING``, which bounds the grid's alias period for any cell
+# angles. Read at call time.
 #
 # Oversampling alone does not bound aliasing: Gaussian atomic density is not
 # band-limited, and how much of it folds back depends on how sharp the atoms are. The

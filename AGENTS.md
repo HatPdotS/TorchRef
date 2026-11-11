@@ -243,8 +243,9 @@ torchref.config.caching.value = False
 
 Also in `config.py`, not env-configurable:
 
-- `NYQUIST_OVERSAMPLING = 3.0` — grid spacing is at most `d_min / 3` across each set of
-  lattice planes (`Cell.compute_grid_size`, read at call time). Every grid-sizing helper
+- `NYQUIST_OVERSAMPLING = 3.0` — no voxel step is longer than `d_min / 3`, so the grid's
+  shortest alias vector is at least `3 / d_min` for any cell angles
+  (`Cell.compute_grid_size`, read at call time). Every grid-sizing helper
   reads it, so real-space maps and FFT structure-factor grids stay consistent. It sets
   cost, not accuracy: aliasing depends on how sharp the atoms are, and the alias blur
   (`TORCHREF_ALIASING_TOLERANCE`) bounds it on whatever grid this gives. Below ~7.5 Å the

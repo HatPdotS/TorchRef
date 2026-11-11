@@ -132,6 +132,20 @@ def test_grid_oversampling_keeps_blur_inside_splat(d_min):
         assert r == base
 
 
+@pytest.mark.parametrize("beta", [90.0, 120.0, 150.0])
+def test_auto_grid_reaches_oversampling_for_oblique_cells(settings, beta):
+    """The sized grid's shortest alias vector is at least ``oversampling / max_res``.
+
+    Lattice-plane spacings alone do not bound it: at beta = 150 they would give
+    ``(30, 60, 30)`` at 2 A, folding ``(15, 0, -15)`` onto ``(-15, 0, 15)`` although
+    both lie inside ``max_res``.
+    """
+    sf = _engine([40.0, 40.0, 40.0, 90.0, beta, 90.0], 2.0)
+    period = aliasing.alias_period(sf.ctx.cell.inv_fractional_matrix, sf.grid_shape)
+    assert period >= torchref.config.NYQUIST_OVERSAMPLING / 2.0 * (1 - 1e-6)
+    assert sf.alias_kappa is not None
+
+
 @pytest.mark.parametrize("b", [2.0, 5.0, 20.0])
 def test_unblurred_fft_is_the_alias_sum(settings, b):
     """Without blur, the FFT returns ``sum_m F(h + m N)`` -- the mechanism itself.
