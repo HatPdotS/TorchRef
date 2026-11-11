@@ -897,76 +897,41 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """The policy for a table derived from this one: never generate again."""
         return "strip" if self.ctx.hydrogens == "strip" else "keep"
 
-    def connections(self) -> Optional["pandas.DataFrame"]:
-        """The inter-residue bonds a coordinate file records, from the topology.
+    def connections(self) -> List[Tuple[int, int, str]]:
+        """Inter-residue bonds for SSBOND, LINK and ``_struct_conn``, from the topology.
 
-        Disulfides and the bonds ``LINK`` / ``_struct_conn`` records asked for, as
-        connected by the restraint build; peptide bonds are implied by the sequence
-        and left out. Uses ``ctx.restraints`` when they are built; otherwise connects
-        a throwaway copy of the topology (no non-bonded pair list, nothing stored),
-        which reads the monomer library.
+        The connected topology's disulfide and link bonds; peptide bonds are implied by
+        the sequence. Without built restraints, connects a throwaway copy of the
+        topology (no pair list, nothing stored), which reads the monomer library.
 
         Returns
         -------
-        pandas.DataFrame or None
-            :data:`torchref.io.pdb.CONNECTION_COLUMNS`: ``atom1`` and ``atom2`` are
-            atom rows (as in :meth:`to_dataframe`), ``conn_type`` is ``disulf``,
-            ``metalc`` (either atom a metal) or ``covale``, and ``length`` is the
-            current distance in Å. None, with a warning, when the topology cannot be
-            connected.
+        list of tuple
+            ``(row1, row2, conn_type)``: atom rows as in :meth:`to_dataframe`, and
+            ``'disulf'``, ``'metalc'`` (either atom a metal) or ``'covale'``.
         """
         import gemmi
-        import pandas as pd
 
-        if self.ctx.restraints is not None:
-            topology = self.ctx.restraints.topology
-        else:
-            try:
-                with quiet():
-                    restraints = self.ctx.build_restraints(self.xyz(), nonbonded=False)
-            # A file must still be writable without the monomer library; it then
-            # carries the input's connectivity, if the caller passed its metadata.
-            except Exception as error:
-                log.warning(f"No bonds written: cannot connect the topology: {error}")
-                return None
-            topology = restraints.topology
-
-        bonds = topology.edge_block("bond")
-        element = topology.columns()["element"]
-        metal = {e: bool(e) and gemmi.Element(e).is_metal for e in set(element)}
-        xyz = self.xyz().detach()
-        parts = []
+        restraints = self.ctx.restraints
+        if restraints is None:
+            restraints = self.ctx.build_restraints(self.xyz(), nonbonded=False)
+        bonds = restraints.topology.edge_block("bond")
+        element = restraints.topology.columns()["element"]
+        out = []
         for origin in ("disulfide", "link"):
             if origin not in bonds.origin_bounds:
                 continue
-            pairs = bonds.origin(origin)
-            length = torch.linalg.vector_norm(xyz[pairs[:, 0]] - xyz[pairs[:, 1]], dim=1)
-            pairs = pairs.cpu().numpy()
-            kind = np.full(len(pairs), "covale", dtype=object)
-            if origin == "disulfide":
-                kind[:] = "disulf"
-            else:
-                is_metal = np.array([metal[e] for e in element[pairs].ravel()])
-                kind[is_metal.reshape(-1, 2).any(axis=1)] = "metalc"
-            parts.append(
-                pd.DataFrame(
-                    {
-                        "atom1": pairs[:, 0],
-                        "atom2": pairs[:, 1],
-                        "conn_type": kind,
-                        "length": length.cpu().numpy(),
-                    }
-                )
-            )
-        if not parts:
-            return pd.DataFrame(columns=list(pdb.CONNECTION_COLUMNS))
-        return pd.concat(parts, ignore_index=True)
+            for a, b in bonds.origin(origin).tolist():
+                metal = any(gemmi.Element(element[i]).is_metal for i in (a, b))
+                kind = "covale" if not metal else "metalc"
+                out.append((a, b, "disulf" if origin == "disulfide" else kind))
+        return out
 
     def write_pdb(self, filename, metadata=None):
         """Write model to PDB file with optional metadata header.
 
-        SSBOND and LINK records come from :meth:`connections`, replacing any that
-        ``metadata`` carried over from the input.
+        SSBOND and LINK records come from :meth:`connections` and replace any the
+        metadata carried over from the input.
 
         Parameters
         ----------
@@ -982,8 +947,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def write_cif(self, filename, metadata=None):
         """Write model to mmCIF file with optional metadata.
 
-        ``_struct_conn`` comes from :meth:`connections`, replacing any that
-        ``metadata`` carried over from the input.
+        ``_struct_conn`` comes from :meth:`connections` and replaces any the metadata
+        carried over from the input.
 
         Parameters
         ----------

@@ -616,19 +616,7 @@ class RefinementMetadata:
         from the input or supplied by the caller. Metadata that sets no
         refinement field annotates the input instead: it generates no REMARK 3
         and keeps the input's, if ``from_pdb_file(supersede_refinement=False)``
-        collected one.
-
-        Parameters
-        ----------
-        connectivity : list of str, optional
-            SSBOND and LINK records, without newlines, written in place of the
-            input's: the model's current bonds supersede the ones it was read with.
-            None keeps the input's.
-
-        Returns
-        -------
-        str
-            Newline-terminated records.
+        collected one. ``connectivity``, SSBOND and LINK lines, replaces the input's.
         """
         lines: List[str] = []
         records = dict(self.passthrough_pdb_records)
