@@ -46,6 +46,7 @@ Fixes that change results
 
 Other fixes
 ~~~~~~~~~~~
+- ``Model.write_pdb`` and ``Model.write_cif`` write the topology's disulfides and links as SSBOND/LINK records and ``_struct_conn``, which were dropped unless the input's metadata was passed; with metadata, these replace the input's records. ``Model.connections()`` returns them
 - The CPU and Metal density splats no longer raise in backward on non-contiguous ``xyz`` or ADPs (e.g. a transposed view)
 
 Dependencies

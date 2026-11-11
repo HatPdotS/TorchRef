@@ -897,8 +897,41 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """The policy for a table derived from this one: never generate again."""
         return "strip" if self.ctx.hydrogens == "strip" else "keep"
 
+    def connections(self) -> List[Tuple[int, int, str]]:
+        """Inter-residue bonds for SSBOND, LINK and ``_struct_conn``, from the topology.
+
+        The connected topology's disulfide and link bonds; peptide bonds are implied by
+        the sequence. Without built restraints, connects a throwaway copy of the
+        topology (no pair list, nothing stored), which reads the monomer library.
+
+        Returns
+        -------
+        list of tuple
+            ``(row1, row2, conn_type)``: atom rows as in :meth:`to_dataframe`, and
+            ``'disulf'``, ``'metalc'`` (either atom a metal) or ``'covale'``.
+        """
+        import gemmi
+
+        restraints = self.ctx.restraints
+        if restraints is None:
+            restraints = self.ctx.build_restraints(self.xyz(), nonbonded=False)
+        bonds = restraints.topology.edge_block("bond")
+        element = restraints.topology.columns()["element"]
+        out = []
+        for origin in ("disulfide", "link"):
+            if origin not in bonds.origin_bounds:
+                continue
+            for a, b in bonds.origin(origin).tolist():
+                metal = any(gemmi.Element(element[i]).is_metal for i in (a, b))
+                kind = "covale" if not metal else "metalc"
+                out.append((a, b, "disulf" if origin == "disulfide" else kind))
+        return out
+
     def write_pdb(self, filename, metadata=None):
         """Write model to PDB file with optional metadata header.
+
+        SSBOND and LINK records come from :meth:`connections` and replace any the
+        metadata carried over from the input.
 
         Parameters
         ----------
@@ -909,10 +942,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         table = sanitize_pdb_dataframe(self.to_dataframe())
         table.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
-        pdb.write(table, filename, metadata=metadata)
+        pdb.write(table, filename, metadata=metadata, connections=self.connections())
 
     def write_cif(self, filename, metadata=None):
         """Write model to mmCIF file with optional metadata.
+
+        ``_struct_conn`` comes from :meth:`connections` and replaces any the metadata
+        carried over from the input.
 
         Parameters
         ----------
@@ -923,7 +959,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         table = sanitize_pdb_dataframe(self.to_dataframe())
         table.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
-        cif.write_model(table, filename, metadata=metadata)
+        cif.write_model(
+            table, filename, metadata=metadata, connections=self.connections()
+        )
 
     def get_iso(self):
         """

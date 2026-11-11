@@ -776,7 +776,7 @@ def _cryst1_record(attrs) -> str:
     return f"CRYST1{lengths}{angles} {spacegroup:<11}{z:>4}\n"
 
 
-def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
+def write(df: pd.DataFrame, filepath: str, metadata=None, connections=None) -> None:
     """
     Write a DataFrame to a PDB file.
 
@@ -791,6 +791,10 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
         Output PDB filename.
     metadata : RefinementMetadata, optional
         Metadata to render as PDB header (REMARK 3, TITLE, etc.).
+    connections : list of tuple, optional
+        Bonds to write as SSBOND and LINK records (see
+        :func:`torchref.io.cif.add_connections`). When given, even empty, they
+        replace the SSBOND and LINK records ``metadata`` carried over.
 
     Raises
     ------
@@ -813,10 +817,16 @@ def write(df: pd.DataFrame, filepath: str, metadata=None) -> None:
     identifiers are written as they are (see
     :func:`torchref.utils.utils.sanitize_pdb_dataframe`).
     """
+    records = None
+    if connections is not None:
+        from torchref.io.cif import connection_records
+
+        records = connection_records(df, connections)
     with open(filepath, "w") as n:
-        # Write metadata header if provided (before CRYST1)
         if metadata is not None:
-            n.write(metadata.render_pdb_header())
+            n.write(metadata.render_pdb_header(connectivity=records))
+        elif records:
+            n.write("\n".join(records) + "\n")
 
         # Write CRYST1 record if cell info available (directly before atoms)
         try:
