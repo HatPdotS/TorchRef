@@ -33,6 +33,32 @@ PEPTIDE_MAX_DISTANCE = 2.0
 #: coordinate duplicate.
 DISULFIDE_MIN_DISTANCE = 0.1
 
+#: How peptide links are found: by C-N distance, or from the sequence alone.
+PEPTIDE_LINK_MODES = ("distance", "sequence")
+
+#: What is done about disulfides: bonded where two SG are found within
+#: :data:`DISULFIDE_MAX_DISTANCE`, or left open, with no bond and no repulsion down
+#: to the bond length.
+DISULFIDE_MODES = ("detect", "open")
+
+
+def check_link_modes(peptide_links: str, disulfides: str) -> None:
+    """Raise ``ValueError`` unless both link modes are known.
+
+    Parameters
+    ----------
+    peptide_links : {"distance", "sequence"}
+    disulfides : {"detect", "open"}
+    """
+    if peptide_links not in PEPTIDE_LINK_MODES:
+        raise ValueError(
+            f"peptide_links must be one of {PEPTIDE_LINK_MODES}, got {peptide_links!r}"
+        )
+    if disulfides not in DISULFIDE_MODES:
+        raise ValueError(
+            f"disulfides must be one of {DISULFIDE_MODES}, got {disulfides!r}"
+        )
+
 
 def _residue_runs(
     chain: np.ndarray, resseq: np.ndarray, icode: np.ndarray
@@ -259,7 +285,7 @@ def find_peptide_links(
     nodes: Dict[str, np.ndarray],
     c_rows: Sequence[Sequence[int]],
     n_rows: Sequence[Sequence[int]],
-    xyz: torch.Tensor,
+    xyz: Optional[torch.Tensor],
 ) -> List[Tuple[int, int]]:
     """Sequence-adjacent residue pairs carrying a C-N peptide bond.
 
@@ -268,10 +294,15 @@ def find_peptide_links(
     step such as 100 to 100A -- or differ by exactly one: residues 49 and 56 are
     neighbours in the ordering but not in the sequence.
 
-    The pair carries the bond when a ``C`` of the first lies within
+    With coordinates, the pair carries the bond when a ``C`` of the first lies within
     :data:`PEPTIDE_MAX_DISTANCE` of an ``N`` of the second, whatever either residue's
     record type. The distance is what stops a chain break numbered consecutively being
     bridged, and an amino-acid-like ligand numbered next to a chain end being linked.
+
+    Without coordinates the sequence decides: the pair carries the bond when both
+    residues are peptides by their chemical-component type
+    (:func:`polymer_type`), so the result cannot change with the quality of a set
+    of coordinates. A chain break then has to show in the numbering.
 
     Parameters
     ----------
@@ -280,15 +311,18 @@ def find_peptide_links(
     c_rows, n_rows : sequence of sequence of int
         Per residue, the rows of its atoms named ``C`` and ``N`` (one per altloc
         conformer that has its own).
-    xyz : torch.Tensor
-        Cartesian coordinates in Å, shape ``(N, 3)``.
+    xyz : torch.Tensor or None
+        Cartesian coordinates in Å, shape ``(N, 3)``; None links by sequence.
 
     Returns
     -------
     list of tuple of int
         ``(residue donating C, residue donating N)`` pairs.
     """
-    coords = xyz.detach().cpu().numpy()
+    coords = None if xyz is None else xyz.detach().cpu().numpy()
+    is_peptide = (
+        None if xyz is not None else polymer_type(nodes["resname"]) == "protein"
+    )
     by_chain: Dict[str, List[int]] = {}
     for i in range(len(nodes["chain"])):
         by_chain.setdefault(str(nodes["chain"][i]), []).append(i)
@@ -301,6 +335,10 @@ def find_peptide_links(
         for a, b in zip(ordered, ordered[1:]):
             step = int(nodes["resseq"][b]) - int(nodes["resseq"][a])
             if step not in (0, 1) or len(c_rows[a]) == 0 or len(n_rows[b]) == 0:
+                continue
+            if coords is None:
+                if is_peptide[a] and is_peptide[b]:
+                    pairs.append((a, b))
                 continue
             gap = coords[np.asarray(c_rows[a])][:, None] - coords[np.asarray(n_rows[b])]
             if np.linalg.norm(gap, axis=-1).min() < PEPTIDE_MAX_DISTANCE:
@@ -372,6 +410,9 @@ __all__ = [
     "polymer_type",
     "find_peptide_links",
     "find_disulfide_links",
+    "check_link_modes",
+    "PEPTIDE_LINK_MODES",
+    "DISULFIDE_MODES",
     "DISULFIDE_MAX_DISTANCE",
     "DISULFIDE_MIN_DISTANCE",
     "PEPTIDE_MAX_DISTANCE",

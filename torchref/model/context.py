@@ -5,8 +5,9 @@ group, atom identity (:attr:`ModelContext.topology`, node-only), link records,
 provenance, hydrogen policy and the geometry restraints -- as opposed to what is
 refined, which lives only in the model's parameter wrappers. An atom table is read once,
 by :meth:`ModelContext.from_atoms`, which splits it into the topology and the
-:class:`AtomValues` the wrappers are built from; every other way of making a model goes
-through :meth:`ModelContext.derive`.
+:class:`AtomValues` the wrappers are built from; :meth:`ModelContext.from_sequence`
+builds the same pair from chains of residue names, before any coordinates exist; every
+other way of making a model goes through :meth:`ModelContext.derive`.
 
 Mutable by design; prefer :meth:`ModelContext.copy` over editing in place.
 """
@@ -14,13 +15,23 @@ Mutable by design; prefer :meth:`ModelContext.copy` over editing in place.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 import torch
 
 from torchref._logging import get_logger, quiet
-from torchref.config import get_int_dtype
+from torchref.config import get_float_dtype, get_int_dtype, normalize_device
 from torchref.utils.device_mixin import DeviceMixin
 
 log = get_logger(__name__)
@@ -77,6 +88,8 @@ _SETTINGS = (
     "hydrogen_mode",
     "hydrogens_in_xray",
     "input_file",
+    "peptide_links",
+    "disulfides",
 )
 
 
@@ -241,6 +254,20 @@ class ModelContext(DeviceMixin):
     hydrogens_in_xray : bool, default True
         Whether hydrogens enter the structure-factor calculation. Restraints and the
         non-bonded term see them either way; the bulk-solvent mask never does.
+    peptide_links : {"distance", "sequence"}, default "distance"
+        How the restraint build finds peptide bonds: between sequence-adjacent
+        residues whose C and N lie within 2 Å, or between every sequence-adjacent pair
+        of peptide residues whatever the coordinates say. ``"sequence"`` is what
+        :meth:`from_sequence` sets, and bridges a chain break that the numbering does
+        not show. Change it, or ``disulfides``, on a context that already has
+        restraints and they must be reset to None to rebuild.
+    disulfides : {"detect", "open"}, default "detect"
+        ``"detect"`` bonds cysteines whose SG lie within 2.5 Å when the restraints are
+        built. ``"open"`` bonds none: every pair of cysteine sulfurs may instead
+        approach to the disulfide bond length without repulsion, so a bridge closes
+        where the data put the sulfurs together -- unrestrained, hence less precisely
+        than a detected one. A thiol hydrogen carried as an atom still repels, and
+        keeps its sulfur out of a bridge.
     hydrogens_generated : bool, default False
         Whether TorchRef completed this atom set's hydrogens: set by ``hydrogens="add"``,
         kept by contexts derived from this one (which never generate again) and by
@@ -276,12 +303,17 @@ class ModelContext(DeviceMixin):
     hydrogens: str = "keep"
     hydrogen_mode: str = "atoms"
     hydrogens_in_xray: bool = True
+    peptide_links: str = "distance"
+    disulfides: str = "detect"
     hydrogens_generated: bool = False
     initialized: bool = False
     restraints: Optional["Restraints"] = None
 
     def __post_init__(self) -> None:
+        from torchref.topology.residue_graph import check_link_modes
+
         check_hydrogen_policy(self.hydrogens, self.hydrogen_mode)
+        check_link_modes(self.peptide_links, self.disulfides)
 
     # ------------------------------------------------------------------
     # Building
@@ -293,8 +325,8 @@ class ModelContext(DeviceMixin):
         Returns
         -------
         dict
-            ``cif_path``, ``hydrogens``, ``hydrogen_mode``, ``hydrogens_in_xray``
-            and ``input_file``, ready to pass to
+            ``cif_path``, ``hydrogens``, ``hydrogen_mode``, ``hydrogens_in_xray``,
+            ``input_file``, ``peptide_links`` and ``disulfides``, ready to pass to
             :meth:`from_atoms`.
         """
         return {name: getattr(self, name) for name in _SETTINGS}
@@ -370,6 +402,106 @@ class ModelContext(DeviceMixin):
         ctx.topology = Topology.from_table(pdb)
         values = ctx._settle(AtomValues.from_table(pdb), dtype)
         return ctx, values
+
+    @classmethod
+    def from_sequence(
+        cls,
+        chains: Mapping[str, Union[str, Sequence[str]]],
+        cell=None,
+        spacegroup=None,
+        *,
+        dtype: Optional[torch.dtype] = None,
+        device=None,
+        start: Union[int, Mapping[str, int]] = 1,
+        oxt: bool = True,
+        b_iso: float = 20.0,
+        **settings,
+    ) -> Tuple["ModelContext", AtomValues]:
+        """Build a context from chains of residues, with no atom table or coordinates.
+
+        The atoms are the heavy atoms of each residue's monomer-library template
+        (:meth:`Topology.from_sequence
+        <torchref.topology.topology.Topology.from_sequence>`). Nothing about the
+        result depends on coordinates: peptide links follow the sequence and
+        disulfide bridges are left open, so :meth:`build_restraints` runs before any
+        coordinates exist and returns the same graph afterwards.
+
+        Parameters
+        ----------
+        chains : mapping of str to (str or sequence of str)
+            Residues per chain ID, in chain order: one-letter amino-acid codes as a
+            string, or residue names as a sequence -- modified residues, waters, ions
+            and ligands included, e.g. ``{"A": "MKV", "W": ["HOH"] * 20}``. One entry
+            per copy in the asymmetric unit.
+        cell : Cell or array-like, optional
+            ``[a, b, c, alpha, beta, gamma]`` in Å and degrees, or a Cell to copy.
+            None leaves the context without a crystal, which the topology and the
+            restraint graph do not need.
+        spacegroup : SpaceGroup, gemmi.SpaceGroup, str or int, optional
+        dtype : torch.dtype, optional
+            Float dtype of the cell and space-group tensors; the configured float
+            dtype by default.
+        device : torch.device, optional
+            Where the cell and space-group tensors live; the configured device by
+            default.
+        start : int or mapping of str to int, default 1
+            Number of each chain's first residue, e.g. to match a deposited numbering.
+        oxt : bool, default True
+            Keep the terminal oxygen of each peptide's last residue.
+        b_iso : float, default 20.0
+            Isotropic B-factor in Å² every atom starts with.
+        **settings
+            Any of the fields :meth:`settings` returns. ``peptide_links`` and
+            ``disulfides`` default to ``"sequence"`` and ``"open"`` here.
+
+        Returns
+        -------
+        ctx : ModelContext
+            Initialized, with no restraints built yet.
+        values : AtomValues
+            Row-aligned with ``ctx.topology``: ``b_iso``, full occupancy, isotropic,
+            and **NaN coordinates**. Fill ``values.xyz`` in the topology's atom order
+            (``ctx.topology.columns()`` names every row) before building a model.
+
+        Raises
+        ------
+        ValueError
+            For ``hydrogens="add"``, which places hydrogens from coordinates:
+            hydrogenate the model once it has them. Also for an invalid policy, an
+            unknown one-letter code or a residue with no template.
+        """
+        from torchref.symmetry import Cell
+        from torchref.topology import Topology
+
+        settings = {"peptide_links": "sequence", "disulfides": "open", **settings}
+        if settings.get("hydrogens") == "add":
+            raise ValueError(
+                "hydrogens='add' places hydrogens from coordinates, and a sequence "
+                "has none. Build with hydrogens='keep', set the coordinates, then "
+                "hydrogenate the model."
+            )
+        dtype = get_float_dtype() if dtype is None else dtype
+        device = normalize_device(device)
+        ctx = cls(**settings)
+        if cell is not None:
+            ctx.cell = Cell(
+                cell.data if isinstance(cell, Cell) else cell,
+                dtype=dtype,
+                device=device,
+            )
+        ctx.spacegroup = own_spacegroup(spacegroup, dtype, device)
+        ctx.topology = Topology.from_sequence(
+            chains, start=start, oxt=oxt, cif_path=ctx.cif_path
+        )
+        n = ctx.topology.n_atoms
+        values = AtomValues(
+            xyz=np.full((n, 3), np.nan),
+            b=np.full(n, float(b_iso)),
+            u=np.full((n, 6), np.nan),
+            occupancy=np.ones(n),
+            aniso=np.zeros(n, dtype=bool),
+        )
+        return ctx, ctx._settle(values, dtype)
 
     def derive(
         self, topology: "Topology", values: AtomValues, **overrides
@@ -479,15 +611,18 @@ class ModelContext(DeviceMixin):
         self.restraints = None
 
     def build_restraints(
-        self, xyz: torch.Tensor, *, nonbonded: bool = True
+        self, xyz: Optional[torch.Tensor] = None, *, nonbonded: bool = True
     ) -> "Restraints":
         """Build restraints over :attr:`topology` and store them on :attr:`restraints`.
 
         Parameters
         ----------
-        xyz : torch.Tensor
+        xyz : torch.Tensor, optional
             Current Cartesian coordinates in Å, shape ``(n_atoms, 3)``, from the
-            model's ``xyz`` wrapper. The restraints land on its device.
+            model's ``xyz`` wrapper. The restraints land on its device. May be left
+            out once :attr:`peptide_links` is ``"sequence"`` and :attr:`disulfides`
+            is ``"open"``: the result then holds the graph and its ideal values on
+            the CPU, has no non-bonded pair list, and is **not** stored.
         nonbonded : bool, default True
             Build the non-bonded pair list. False is for a throwaway build that needs
             only the topology, and is then **not** stored.
@@ -495,17 +630,25 @@ class ModelContext(DeviceMixin):
         Returns
         -------
         Restraints
+
+        Raises
+        ------
+        ValueError
+            Without ``xyz`` while either link mode still reads coordinates.
         """
         from torchref.topology.restraints import Restraints
 
+        nonbonded = nonbonded and xyz is not None
         restraints = Restraints(
             topology=self.topology,
             cif_path=self.cif_path,
-            xyz=xyz.detach(),
+            xyz=None if xyz is None else xyz.detach(),
             cell=self.cell,
             spacegroup=self.spacegroup,
             links=self.links,
             nonbonded=nonbonded,
+            peptide_links=self.peptide_links,
+            disulfides=self.disulfides,
         )
         if nonbonded:
             self.restraints = restraints
@@ -824,6 +967,8 @@ class ModelContext(DeviceMixin):
             hydrogens=hydrogens,
             hydrogen_mode=mode,
             hydrogens_in_xray=state.pop("hydrogens_in_xray", True),
+            peptide_links=state.pop("peptide_links", "distance"),
+            disulfides=state.pop("disulfides", "detect"),
             hydrogens_generated=state.pop("hydrogens_generated", False),
             z_value=z_value,
         )

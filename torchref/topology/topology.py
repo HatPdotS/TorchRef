@@ -9,15 +9,16 @@ residue types can share a sequence position.
 Identity comes first. :meth:`Topology.from_table` is the one place an atom table's
 identity columns become arrays; the result is a node-only topology -- names, elements,
 altlocs, residues, chains, record types -- with empty edge blocks and
-``connected=False``. Connecting it against the monomer dictionaries is the restraint
-build's job. Refinable values (coordinates, B-factors, occupancies) never live here;
+``connected=False``. :meth:`Topology.from_sequence` reaches the same thing from chains
+of residue names, with no table and no coordinates. Connecting it against the monomer
+dictionaries is the restraint build's job. Refinable values (coordinates, B-factors, occupancies) never live here;
 they belong to the model's parameter wrappers.
 
 Mutable by design; prefer :meth:`Topology.copy` over editing in place.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Mapping, Tuple
+from typing import TYPE_CHECKING, Dict, Mapping, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -134,6 +135,48 @@ class Topology(DeviceMixin):
             ``connected=False``.
         """
         return cls.from_columns(identity_columns(pdb), device=device)
+
+    @classmethod
+    def from_sequence(
+        cls,
+        chains: Mapping[str, Union[str, Sequence[str]]],
+        *,
+        start: Union[int, Mapping[str, int]] = 1,
+        oxt: bool = True,
+        cif_path: Union[None, str, Sequence[str]] = None,
+        device=None,
+    ) -> "Topology":
+        """A node-only topology over the atoms a sequence implies.
+
+        Every residue contributes the heavy atoms of its monomer-library template, in
+        template order; see :func:`~torchref.topology.sequence.sequence_columns` for
+        the rules and the remaining parameters.
+
+        Parameters
+        ----------
+        chains : mapping of str to (str or sequence of str)
+            Residues per chain ID: one-letter amino-acid codes as a string, or
+            residue names as a sequence.
+        start : int or mapping of str to int, default 1
+            Number of each chain's first residue.
+        oxt : bool, default True
+            Keep the terminal oxygen of each peptide's last residue.
+        cif_path : str or sequence of str, optional
+            Restraint dictionary file(s) consulted before the monomer library.
+        device : torch.device, optional
+            Where ``residue_of`` and the (empty) edge blocks live.
+
+        Returns
+        -------
+        Topology
+            ``connected=False``, without hydrogens. Atom order is chain, then
+            residue, then template order; :meth:`columns` gives the
+            ``(chain, resseq, name)`` of every row for mapping coordinates onto it.
+        """
+        from torchref.topology.sequence import sequence_columns
+
+        columns = sequence_columns(chains, start=start, oxt=oxt, cif_path=cif_path)
+        return cls.from_columns(columns, device=device)
 
     @classmethod
     def from_columns(cls, columns: Mapping[str, np.ndarray], device=None) -> "Topology":
