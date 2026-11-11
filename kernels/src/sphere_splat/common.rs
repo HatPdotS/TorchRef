@@ -228,7 +228,7 @@ pub fn oz_run<T: Real>(c: &Cell<T>, q: [T; 3], rc2: T, bhz: i32) -> Option<(i32,
 /// Callers must mark `visit` `#[inline(always)]`. A closure LLVM leaves out of line is
 /// compiled for baseline x86-64, not for the `fma_variants!` target it is called from, so
 /// its `madd::<_, true>` becomes a software `fmaf` call per term and the loop stays
-/// scalar: about 30x slower, with identical results.
+/// scalar. The results are identical, so nothing but the run time shows it.
 #[inline(always)]
 pub fn for_each_segment<T: Real, const F: bool>(
     c: &Cell<T>,
