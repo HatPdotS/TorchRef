@@ -8,15 +8,12 @@ of derived quantities (fractional matrix, volume, etc.).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 import torch
 
-from torchref.config import (
-    NYQUIST_OVERSAMPLING,
-    get_float_dtype,
-    normalize_device,
-)
+from torchref import config
+from torchref.config import get_float_dtype, normalize_device
 from torchref.utils.device_mixin import _NonModuleDeviceMixin
 
 
@@ -338,19 +335,28 @@ class Cell(_NonModuleDeviceMixin):
     # =========================================================================
 
     def compute_grid_size(
-        self, max_res: float, oversampling: float = NYQUIST_OVERSAMPLING
+        self, max_res: float, oversampling: Optional[float] = None
     ) -> tuple:
         """
-        Minimum Shannon-Nyquist grid dimensions for a given resolution.
+        Minimum grid dimensions that sample this cell to ``max_res``.
+
+        Along axis ``i`` of length ``a_i`` the grid has
+        ``ceil(oversampling * a_i / max_res)`` points, so no voxel step is longer than
+        ``max_res / oversampling``. Then no family of grid planes is spaced wider than
+        that either, and the shortest alias vector of the grid is at least
+        ``oversampling / max_res`` whatever the cell angles. Sizing from the
+        lattice-plane spacings ``1 / |a*_i|`` instead would undersample oblique cells
+        along the diagonals. Symmetry and FFT friendliness are applied on top by
+        :meth:`~torchref.symmetry.symmetry.Symmetry.suggest_grid_size`.
 
         Parameters
         ----------
         max_res : float
             Maximum resolution in Angstroms.
         oversampling : float, optional
-            Factor relative to max_res. Defaults to
-            :data:`torchref.config.NYQUIST_OVERSAMPLING`, shared by every
-            grid-sizing helper.
+            Factor relative to max_res. None reads
+            :data:`torchref.config.NYQUIST_OVERSAMPLING` at call time, so assigning
+            that constant takes effect for every grid sized afterwards.
 
         Returns
         -------
@@ -365,14 +371,14 @@ class Cell(_NonModuleDeviceMixin):
         """
         import math
 
-        a, b, c = self.a.item(), self.b.item(), self.c.item()
-
-        # Shannon-Nyquist: sample at oversampling × the maximum frequency
-        nx = int(math.floor(a / max_res * oversampling))
-        ny = int(math.floor(b / max_res * oversampling))
-        nz = int(math.floor(c / max_res * oversampling))
-
-        return (nx, ny, nz)
+        if oversampling is None:
+            oversampling = config.NYQUIST_OVERSAMPLING
+        # The relative slack keeps an exact product such as 50 / 2 * 3 = 75 from
+        # rounding up to 76 on the last bit of a float32 cell.
+        return tuple(
+            math.ceil(float(length) / max_res * oversampling * (1.0 - 1e-5))
+            for length in self._data[:3].tolist()
+        )
 
     def tolist(self) -> list:
         """
