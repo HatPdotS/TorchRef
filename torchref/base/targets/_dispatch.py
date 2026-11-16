@@ -81,6 +81,31 @@ def use_triton(*tensors: torch.Tensor) -> bool:
     return will_use(TARGET_BACKENDS, "triton", tensors)
 
 
+def dense(*tensors: torch.Tensor | None) -> tuple[torch.Tensor | None, ...]:
+    """Return each tensor in packed row-major layout.
+
+    The Triton kernels address their inputs as ``ptr + row * width + col`` and
+    ignore strides, so a view such as ``coords[:, 0]`` of an ``(N, M, 3)`` tensor
+    would be read as the wrong atoms with no error. Call this on every tensor a
+    kernel indexes, before it is launched and before ``ctx.save_for_backward``.
+
+    Parameters
+    ----------
+    *tensors : torch.Tensor or None
+        Tensors of any layout. ``None`` is passed through.
+
+    Returns
+    -------
+    tuple of torch.Tensor or None
+        The inputs, in order. A tensor that is already contiguous is returned
+        as-is (no copy, aliases the input); any other is copied, which autograd
+        does not see — the enclosing ``autograd.Function`` owns the gradient.
+    """
+    return tuple(
+        t if t is None or t.is_contiguous() else t.contiguous() for t in tensors
+    )
+
+
 def first_order_only(backward: Callable) -> Callable:
     """Make a first-order-only autograd ``backward`` refuse ``create_graph=True``.
 

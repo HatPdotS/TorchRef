@@ -21,7 +21,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .._dispatch import first_order_only
+from .._dispatch import dense, first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -179,6 +179,8 @@ class _PlanarityMathTriton(torch.autograd.Function):
     @staticmethod
     def forward(ctx, xyz, plane_groups):
         assert xyz.is_cuda and xyz.dtype == torch.float32
+        (xyz,) = dense(xyz)
+        plane_groups = [dense(indices, sigmas) for indices, sigmas in plane_groups]
         # Build all per-bucket covariances, stack into one tensor, and
         # run a single batched eigh, which is much cheaper than the SVD.
         bucket_normals = []
@@ -211,7 +213,7 @@ class _PlanarityMathTriton(torch.autograd.Function):
                 xyz,
                 indices,
                 normals,
-                sigmas.contiguous(),
+                sigmas,
                 out,
                 P=P,
                 N_ATOMS=int(N_atoms),
@@ -243,7 +245,7 @@ class _PlanarityMathTriton(torch.autograd.Function):
                 xyz,
                 indices,
                 normals,
-                sigmas.contiguous(),
+                sigmas,
                 grad_out,
                 dxyz,
                 P=P,

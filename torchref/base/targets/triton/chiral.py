@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
-from .._dispatch import first_order_only
+from .._dispatch import dense, first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -163,6 +163,7 @@ class _ChiralMathTriton(torch.autograd.Function):
     @staticmethod
     def forward(ctx, xyz, indices, ideal_volumes, sigmas):
         assert xyz.is_cuda and xyz.dtype == torch.float32
+        xyz, indices, ideal_volumes, sigmas = dense(xyz, indices, ideal_volumes, sigmas)
         N = indices.shape[0]
         nll = torch.empty(N, dtype=xyz.dtype, device=xyz.device)
         BLOCK = 256

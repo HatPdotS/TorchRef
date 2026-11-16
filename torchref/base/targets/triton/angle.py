@@ -10,7 +10,7 @@ import triton.language as tl
 from triton.language.extra import libdevice
 
 from .._common import EPS
-from .._dispatch import first_order_only
+from .._dispatch import dense, first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -158,6 +158,9 @@ class _AngleMathTriton(torch.autograd.Function):
     @staticmethod
     def forward(ctx, xyz, idx, references_rad, sigmas_rad):
         assert xyz.is_cuda and xyz.dtype == torch.float32
+        xyz, idx, references_rad, sigmas_rad = dense(
+            xyz, idx, references_rad, sigmas_rad
+        )
         N = idx.shape[0]
         nll = torch.empty(N, dtype=xyz.dtype, device=xyz.device)
         BLOCK = 256

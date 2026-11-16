@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
-from .._dispatch import first_order_only
+from .._dispatch import dense, first_order_only
 from ._dihedral import dihedral_and_grad
 
 
@@ -178,6 +178,7 @@ class _TorsionOmegaMathTriton(torch.autograd.Function):
     def forward(ctx, xyz, idx, sigmas_deg, is_proline,
                 w_cis_proline: float, w_cis_general: float):
         assert xyz.is_cuda and xyz.dtype == torch.float32
+        xyz, idx, sigmas_deg = dense(xyz, idx, sigmas_deg)
         N = idx.shape[0]
         # is_proline may be bool; the kernel loads as int1 via .to(tl.int1)
         is_pro_u8 = is_proline.to(torch.uint8).contiguous()
@@ -413,6 +414,9 @@ class _TorsionUnimodalMathTriton(torch.autograd.Function):
     @staticmethod
     def forward(ctx, xyz, idx, references_deg, sigmas_deg, periods):
         assert xyz.is_cuda and xyz.dtype == torch.float32
+        xyz, idx, references_deg, sigmas_deg = dense(
+            xyz, idx, references_deg, sigmas_deg
+        )
         N = idx.shape[0]
         max_period = _TorsionUnimodalMathTriton._FIXED_MAX_PERIOD
         periods_i32 = periods.clamp(min=1).to(torch.int32).contiguous()
