@@ -244,6 +244,41 @@ Access and inspect geometry restraints:
    Bond loss: ...
    Angle loss: ...
 
+Building From a Sequence
+------------------------
+
+A context, and the restraints over it, can be built from a sequence alone, before
+any coordinates exist:
+
+.. testcode::
+
+   import torch
+   from torchref.model import ModelContext
+
+   ctx, values = ModelContext.from_sequence({"A": "MKVLA", "W": ["HOH", "HOH"]})
+   print(f"Atoms: {ctx.n_atoms}, sequences: {ctx.chain_sequences}")
+
+   # Every row's identity, for mapping coordinates from elsewhere onto the atoms
+   columns = ctx.topology.columns()
+   print(columns["chain"][0], columns["resseq"][0], columns["name"][0])
+
+   restraints = ctx.build_restraints()
+   peptide = restraints.restraints['bond']['peptide']
+   print(f"Peptide bonds: {peptide['indices'].shape[0]}")
+
+   # Restraints score whatever coordinates they are handed
+   deviations, sigmas = restraints.bond_deviations(torch.randn(ctx.n_atoms, 3))
+   print(f"Bond restraints: {deviations.shape[0]}")
+
+.. testoutput::
+
+   Atoms: 40, sequences: [('A', 'MKVLA')]
+   A 1 N
+   Peptide bonds: 4
+   Bond restraints: 37
+
+See :doc:`user_guide/restraints` for what such a context leaves to the data.
+
 Custom Target Functions
 -----------------------
 

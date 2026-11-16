@@ -102,9 +102,9 @@ class PeptideResidues:
     pairs : sequence of tuple of int
         ``(residue donating C, residue donating N)`` pairs, from
         :func:`~torchref.topology.residue_graph.find_peptide_links`.
-    xyz : numpy.ndarray
+    xyz : numpy.ndarray or None
         Cartesian coordinates in Å, shape ``(N, 3)``; the torsion builder classifies
-        each proline's omega as cis or trans from them.
+        each proline's omega as cis or trans from them, and as trans without them.
 
     Attributes
     ----------
@@ -117,7 +117,7 @@ class PeptideResidues:
         self.pairs = [(int(a), int(b)) for a, b in pairs]
         self.atom_altlocs = topology.atoms.altloc
         self.atom_resnames = topology.columns()["resname"]
-        self.xyz = np.asarray(xyz, dtype=np.float64)
+        self.xyz = None if xyz is None else np.asarray(xyz, dtype=np.float64)
         involved = sorted({r for pair in self.pairs for r in pair})
         self.conformer_maps = {r: _conformer_maps(topology, r) for r in involved}
 
@@ -1211,7 +1211,7 @@ class InterResidueTorsionBuilder:
         if rama_residues:
             omega_keys = [r for r in rama_residues if r in omega_idx_by_residue]
             omega_by_residue = {}
-            if omega_keys:
+            if omega_keys and residues.xyz is not None:
                 xyz = torch.as_tensor(residues.xyz, dtype=get_float_dtype())
                 quads = torch.as_tensor(
                     [omega_idx_by_residue[r] for r in omega_keys],

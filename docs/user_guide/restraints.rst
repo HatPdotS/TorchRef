@@ -24,11 +24,62 @@ coordinates (or B-factors) it scores, and the non-bonded pair list is rebuilt
 from the coordinates the non-bonded target passes in. ``Restraints.__init__``
 takes a node-only topology (``model.ctx.topology``, or
 ``Topology.from_table(table)``) and the coordinates to build over
-(``topology, cif_path, xyz, cell, spacegroup, links, nonbonded``).
+(``topology, cif_path, xyz, cell, spacegroup, links, nonbonded,
+peptide_links, disulfides``).
 
 Residues for which no restraints could be built are frozen in ``xyz`` rather
 than refined unrestrained, so a missing ligand definition shows up as an
 immobile ligand, not as distorted geometry.
+
+Restraints Without Coordinates
+------------------------------
+
+A model read from a file has its connectivity completed from its coordinates:
+sequence neighbours are peptide-bonded when their C and N lie within 2 Å, and two
+cysteines are bridged when their SG lie within 2.5 Å. That is right for a deposited
+structure and wrong for coordinates that are not yet trustworthy -- a sample from a
+structure generator, a prediction before refinement -- where a stretched bond would
+silently drop its restraints. Two settings on the context take both decisions away
+from the coordinates:
+
+``peptide_links="sequence"``
+    Every pair of sequence-adjacent peptide residues is bonded. A chain break has
+    to show in the residue numbering.
+
+``disulfides="open"``
+    No cysteines are bonded. Instead every pair of cysteine sulfurs may approach to
+    the disulfide bond length (and a sulfur to the other cysteine's CB to the
+    matching 1-3 distance) without non-bonded repulsion, so a bridge closes where
+    the data put the sulfurs together. An open bridge has no bond, angle or torsion
+    restraint, so its S-S distance is set by the data alone and is less precise
+    than a detected one.
+
+:meth:`ModelContext.from_sequence <torchref.model.context.ModelContext.from_sequence>`
+builds a context this way from chains of residues, with no atom table:
+
+.. code-block:: python
+
+   from torchref.model import ModelContext
+
+   ctx, values = ModelContext.from_sequence(
+       {"A": "MKVLAAGIVG", "W": ["HOH"] * 20},   # one-letter codes, or residue names
+       cell, spacegroup,                          # optional
+   )
+   restraints = ctx.build_restraints()            # no coordinates needed
+   deviations, sigmas = restraints.bond_deviations(xyz)
+
+The atoms are the heavy atoms of each residue's monomer-library template, in
+template order; ``ctx.topology.columns()`` gives the ``chain``, ``resseq`` and
+``name`` of every row, which is what coordinates from elsewhere are gathered by.
+``values`` holds NaN coordinates until they are filled in. A build without
+coordinates carries the whole restraint graph and its ideal values but no
+non-bonded pair list, which only coordinates can give; it is returned and not
+stored on the context, so it can be cached and shared by every model of that
+sequence. Three choices that coordinates normally make fall back to the
+dictionaries in such a build: a sugar takes its template's first pucker, every
+proline the trans Ramachandran surface (the omega restraint itself is a cis/trans
+mixture either way), and the C-beta dihedrals are emitted for residues whose
+template declares an L centre.
 
 Links and Their Modifications
 -----------------------------

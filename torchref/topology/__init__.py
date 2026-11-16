@@ -3,8 +3,10 @@
 The topology is where a model's atom identity lives -- names, elements, altlocs,
 residues, chains -- from the moment its atom table is read
 (:meth:`~torchref.topology.topology.Topology.from_table`,
-:meth:`~torchref.topology.topology.Topology.select`). Connectivity is added later,
-against the monomer dictionaries, by :func:`~torchref.topology.build.build_topology`.
+:meth:`~torchref.topology.topology.Topology.select`) or its sequence expanded
+(:meth:`~torchref.topology.topology.Topology.from_sequence`). Connectivity is added
+later, against the monomer dictionaries, by
+:func:`~torchref.topology.build.build_topology`.
 
 A :class:`~torchref.topology.topology.Topology` holds the sequence as a
 :class:`~torchref.topology.residue_graph.ResidueGraph` (residues as template instances,

@@ -13,12 +13,13 @@ the input coordinates live on (CPU or GPU).
 The contact distance each pair is scored against is :func:`contact_distances`: the sum
 of two per-atom radii (``AtomGraph.vdw_radii``, from :func:`energy_type_table` or, for
 an atom without a typed radius, :func:`vdw_radii_for_elements`), or a hydrogen-bond
-distance where ``AtomGraph.hb_type`` makes the pair a hydrogen bond.
+distance where ``AtomGraph.hb_type`` makes the pair a hydrogen bond, or the distance a
+closed disulfide puts the pair at where :class:`BridgeContacts` leaves bridges open.
 """
 
 import logging
 from functools import lru_cache
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Set, Tuple
 
 import numpy as np
 import torch
@@ -93,6 +94,29 @@ HBOND_H_DISTANCE = 1.85
 _HB_ROLES = {"D": HB_DONOR, "A": HB_ACCEPTOR, "B": HB_DONOR | HB_ACCEPTOR}
 
 
+class BridgeContacts(NamedTuple):
+    """Contact distances across disulfide bridges that are left open.
+
+    A bridge that is neither bonded nor excluded would have its sulfurs pushed apart
+    to their radius sum, about 1.5 Å beyond the bond. Holding the pairs a closed bridge
+    brings together to the distance it brings them to instead lets the data close the
+    bridge, and still stops the atoms short of each other.
+
+    Parameters
+    ----------
+    depth : torch.Tensor
+        Per atom, shape ``(N,)``, integer: 0 for a bridging sulfur, 1 for the carbon
+        bonded to it, -1 for every other atom.
+    distances : tuple of float
+        Contact distance in Å by the sum of two depths: the S-S bond length for two
+        sulfurs, the S-S-C 1-3 distance for a sulfur and the other sulfur's carbon.
+        Pairs with a larger sum keep their ordinary distance.
+    """
+
+    depth: torch.Tensor
+    distances: Tuple[float, ...]
+
+
 @lru_cache(maxsize=None)
 def energy_type_table() -> Dict[str, Tuple[int, float, float]]:
     """Contact properties of every CCP4 energy type, from ener_lib.
@@ -143,13 +167,17 @@ def hydrogen_roles(parent_roles: torch.Tensor) -> torch.Tensor:
 
 
 def contact_distances(
-    radii: torch.Tensor, roles: Optional[torch.Tensor], pairs: torch.Tensor
+    radii: torch.Tensor,
+    roles: Optional[torch.Tensor],
+    pairs: torch.Tensor,
+    bridges: Optional[BridgeContacts] = None,
 ) -> torch.Tensor:
     """Minimum contact distance of each atom pair.
 
     The sum of the two contact radii, except for a hydrogen bond: a donor against an
     acceptor is held to :data:`HBOND_DISTANCE`, a polar hydrogen against an acceptor to
-    :data:`HBOND_H_DISTANCE`.
+    :data:`HBOND_H_DISTANCE`. Pairs across an open disulfide bridge take the
+    distances ``bridges`` names.
 
     Parameters
     ----------
@@ -160,6 +188,8 @@ def contact_distances(
         radius sum.
     pairs : torch.Tensor
         Atom indices into ``radii``, shape ``(P, 2)``.
+    bridges : BridgeContacts, optional
+        Open disulfide bridges; None scores their atoms like any others.
 
     Returns
     -------
@@ -168,9 +198,23 @@ def contact_distances(
     """
     i, j = pairs[:, 0], pairs[:, 1]
     distances = radii[i] + radii[j]
-    if roles is None:
-        return distances
-    role_i, role_j = roles[i], roles[j]
+    if roles is not None:
+        distances = _hydrogen_bond_distances(distances, roles[i], roles[j])
+    if bridges is not None:
+        depth = bridges.depth.to(pairs.device)
+        depth_i, depth_j = depth[i], depth[j]
+        across = (depth_i >= 0) & (depth_j >= 0)
+        for total, distance in enumerate(bridges.distances):
+            distances = torch.where(
+                across & (depth_i + depth_j == total), distance, distances
+            )
+    return distances
+
+
+def _hydrogen_bond_distances(
+    distances: torch.Tensor, role_i: torch.Tensor, role_j: torch.Tensor
+) -> torch.Tensor:
+    """``distances`` with the hydrogen-bonded pairs held to their own distances."""
     accepts_i = (role_i & HB_ACCEPTOR) != 0
     accepts_j = (role_j & HB_ACCEPTOR) != 0
 
@@ -850,6 +894,7 @@ def build_vdw_restraints_gpu(
     exclusion_set: Set[Tuple[int, int]],
     cutoff: float = 5.0,
     inter_residue_only: bool = True,
+    bridges: Optional[BridgeContacts] = None,
 ) -> Dict[str, torch.Tensor]:
     """Build the VDW pair list: grid search on an accelerator, k-d tree on CPU.
 
@@ -868,6 +913,8 @@ def build_vdw_restraints_gpu(
     cutoff : float
         Contact distance cutoff in Angstrom.
     inter_residue_only : bool
+    bridges : BridgeContacts, optional
+        Open disulfide bridges, whose pairs take the contact distances it names.
 
     Returns
     -------
@@ -1017,7 +1064,10 @@ def build_vdw_restraints_gpu(
     indices = torch.stack([pair_atom_i, pair_atom_j], dim=1).to(get_int_dtype())
     roles = topology.atoms.hb_type
     min_distances = contact_distances(
-        vdw_radii.to(device), None if roles is None else roles.to(device), indices
+        vdw_radii.to(device),
+        None if roles is None else roles.to(device),
+        indices,
+        bridges,
     )
     image = is_symmetry_image(symop_indices, pair_cell_offsets)
 
