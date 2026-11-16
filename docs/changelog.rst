@@ -5,10 +5,10 @@ Changelog
 Version 0.8.1
 -------------
 
-- New ``ModelContext.from_sequence`` builds a model context and its restraints from chain sequences, without coordinates
-- FFT structure factors no longer depend on ``--dmin`` through grid aliasing (new ``TORCHREF_ALIASING_TOLERANCE``)
-- Fixed silently wrong CUDA restraint targets on non-contiguous inputs, and SSBOND/LINK records missing from PDB/mmCIF output
-- The CPU density splat is about 5x faster on x86-64; requires ``torchref-kernels`` 0.2.1
+- New ``ModelContext.from_sequence`` builds a model context from chain sequences, with no atom table or coordinates; its restraints need none either (``peptide_links="sequence"``, ``disulfides="open"``)
+- FFT structure factors no longer depend on ``--dmin`` through grid aliasing: atoms are blurred to keep the alias error below ``TORCHREF_ALIASING_TOLERANCE`` (new, default 1e-2), and ``F`` is unblurred after the FFT
+- Fixed silently wrong CUDA (Triton) restraint targets on non-contiguous inputs, and disulfides and links missing from PDB/mmCIF output
+- The CPU density splat is about 5x faster on x86-64 and scales with the thread count; requires ``torchref-kernels`` 0.2.1
 
 
 Version 0.8.0
