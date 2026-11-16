@@ -5,24 +5,10 @@ Changelog
 Version 0.8.1
 -------------
 
-New features
-~~~~~~~~~~~~
-- ``ModelContext.from_sequence`` and ``Topology.from_sequence`` build a context and its node-only topology from chain sequences (one-letter strings, or lists of residue names for modified residues, waters and ligands), with no atom table and no coordinates; atoms come in monomer-library order
-- Restraints can be built before coordinates exist: ``peptide_links="sequence"`` bonds sequence neighbours whatever their C-N distance, and ``disulfides="open"`` bonds no cysteines but lets their sulfurs approach to the S-S bond length unrepelled, so a bridge closes where the data put the sulfurs together. Both are ``ModelContext`` settings, the default for a sequence-built context; a model loaded from a file detects both by distance as before
-
-Fixes that change results
-~~~~~~~~~~~~~~~~~~~~~~~~~
-- FFT structure factors no longer depend on ``--dmin`` through grid aliasing: atoms are blurred by just enough to hold every atom's alias error at ``d_min`` below ``TORCHREF_ALIASING_TOLERANCE`` (default 1e-2, new) and ``F`` is unblurred after the FFT; grid axes round up rather than down, are refined beyond oversampling 3 below ~7.5 Å, and ``NYQUIST_OVERSAMPLING`` is read when a grid is sized
-- The CUDA (Triton) restraint targets (bond, angle, torsion, chiral, planarity, Ramachandran, non-bonded, SIMU) and riding-hydrogen placement no longer return wrong values, without an error, for non-contiguous coordinates, B-factors or restraint tensors, such as one member of a NumPy-backed ensemble
-
-Performance
-~~~~~~~~~~~
-- The fused CPU (Rust) density splat is about 5x faster on x86-64, forward and backward, and again slightly faster than the C++ splat it replaced in 0.7.0: since ``torchref-kernels`` 0.1.0 its voxel loops ran as scalar baseline code with software ``fma``, and now run vectorised with the AVX2/AVX-512 FMA they were compiled for; results are bit-identical
-- The CPU splat's forward pass splits the grid into several blocks of x-planes per thread, each visiting only the atoms that reach it, so it scales with the thread count when the model's atoms fill only part of the cell along x (1DAW: 2.8x on 4 threads, from 1.2x); results are bit-identical at every thread count
-
-Dependencies
-~~~~~~~~~~~~
-- Requires ``torchref-kernels`` 0.2.1
+- New ``ModelContext.from_sequence`` builds a model context from chain sequences, with no atom table or coordinates; its restraints need none either (``peptide_links="sequence"``, ``disulfides="open"``)
+- FFT structure factors no longer depend on ``--dmin`` through grid aliasing: atoms are blurred to keep the alias error below ``TORCHREF_ALIASING_TOLERANCE`` (new, default 1e-2), and ``F`` is unblurred after the FFT
+- Fixed silently wrong CUDA (Triton) restraint targets on non-contiguous inputs, and disulfides and links missing from PDB/mmCIF output
+- Fixed bug in CPU density splat on x86-64 causing significant slowdown; requires ``torchref-kernels`` 0.2.1
 
 
 Version 0.8.0
@@ -56,7 +42,6 @@ Fixes that change results
 
 Other fixes
 ~~~~~~~~~~~
-- ``Model.write_pdb`` and ``Model.write_cif`` write the topology's disulfides and links as SSBOND/LINK records and ``_struct_conn``, which were dropped unless the input's metadata was passed; with metadata, these replace the input's records. ``Model.connections()`` returns them
 - The CPU and Metal density splats no longer raise in backward on non-contiguous ``xyz`` or ADPs (e.g. a transposed view)
 
 Dependencies
