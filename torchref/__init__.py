@@ -95,7 +95,7 @@ PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 _LAZY_EXPORTS = {
     name: module
     for module, names in {
-        "torchref.config": "dtypes device sigma_cutoff_ed",
+        "torchref.config": "dtypes device sigma_cutoff_ed aliasing_tolerance",
         "torchref.io": "ReflectionData ScaledDataset DatasetCollection"
         " read_mtz read_cif read_pdb",
         "torchref.model": "Model ModelFT",

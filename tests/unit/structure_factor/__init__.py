@@ -26,8 +26,8 @@ exp(2 pi i h.x_j)`` analytically -- no grid, no truncation radius -- so finite d
 are a valid reference for it (measured 1.19e-10). It is then an *independent* reference for
 the map route, which is the part finite differences cannot supply: FD differentiates the
 same discretized function the kernel does, so it confirms only that autograd is correct,
-never that the kernel is. Measured, the map route's HVP agrees with itself to 5e-04 while
-sitting 2.3e-02 from the analytic answer -- see
+never that the kernel is. Measured, the map route's HVP agrees with itself to 6e-09 while
+sitting 1.6e-02 from the analytic answer -- see
 ``test_second_order.py::test_finite_differences_cannot_detect_map_route_error``.
 
 **gemmi anchors the forward values.** It is a separate codebase, is a pip dependency

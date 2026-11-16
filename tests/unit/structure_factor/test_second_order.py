@@ -7,19 +7,17 @@ The two tests this module replaces --
 ``::test_cpu_cpp_scatter_second_derivative_correct`` -- compared the map route's HVP
 against central differences *of the map route*, and were failing.
 
-The reference was the problem, not the kernel -- but not for the reason an earlier draft
-of this module claimed. That draft argued finite differences *diverge* on a truncated
-density, because the cull surface moves with the atom and each voxel crossing contributes
-a fixed jump. Measured, that does not happen: FD converges normally, reaching rel 5.2e-04
-against the map route's own autograd HVP. At a 3 sigma cutoff the surface density is ~1%
-of peak, so the jumps are too small to matter.
+The reference was the problem, not the kernel. Finite differences of a truncated
+density do pick up a jump each time a voxel crosses the moving cull surface, which at the
+default 3 sigma cutoff leaves a plateau of ~4e-03 under FD; at 4 sigma it is gone and FD
+converges to 6e-09 against the map route's own autograd HVP.
 
-The actual problem is that FD asks the wrong question. It differentiates the *same*
+But the deeper problem is that FD asks the wrong question. It differentiates the *same*
 discretized function the kernel does, so it can only confirm that autograd correctly
-differentiates whatever the kernel computes. Measured here: the map route's HVP agrees
-with itself to 5e-04 while sitting 2.3e-02 from the analytic answer. An FD-based gate at
-5e-03 -- what the replaced tests used -- passes comfortably while the derivative under
-test is 2.3e-02 wrong.
+differentiates whatever the kernel computes. Measured here at 4 sigma: the map route's
+HVP agrees with itself to 6e-09 while sitting 1.6e-02 from the analytic answer. An
+FD-based gate at 5e-03 -- what the replaced tests used -- passes comfortably while the
+derivative under test is 1.6e-02 wrong.
 
 Direct summation has no grid and no truncation, so FD *is* a valid reference for it
 (measured 1.19e-10), and it is then an independent reference for the map route.
@@ -263,29 +261,29 @@ def test_fused_cpu_kernel_takes_its_native_second_order_path(
 # ---------------------------------------------------------------------------
 # 4. The measurement that justifies choosing DS over finite differences
 # ---------------------------------------------------------------------------
-def test_finite_differences_cannot_detect_map_route_error(scene_fine, oracle_fine):
+def test_finite_differences_cannot_detect_map_route_error(
+    scene_fine, oracle_fine, sigma_cutoff
+):
     """Finite differences confirm self-consistency, not correctness. Measured.
 
-    This test was originally written to demonstrate an *FD plateau* on the map route --
-    the argument being that a hard truncation whose cull surface moves with the atom
-    contributes a fixed jump per crossing, so the spurious term shrinks no faster than the
-    divisor. That argument is inherited from an earlier draft and the measurement does not
-    support it: FD converges normally here, reaching rel 5.2e-04 against the map route's
-    own autograd HVP at ``eps = 1e-2``, with the usual V-shape (truncation-dominated at
-    large ``eps``, round-off at small). At the 3 sigma cutoff the density at the surface is
-    ~1% of peak, so the jumps are evidently too small to matter.
-
-    The measurement supports a stronger conclusion instead. The map route's HVP agrees
-    with *itself* to 5e-04 while sitting 2.3e-02 away from the analytic answer. So an
-    FD-based test gated at the 5e-03 the replaced tests used passes comfortably while the
-    derivative under test is 2.3e-02 wrong -- FD cannot see that error at all, because it
+    At the 4 sigma cutoff used here, FD converges against the map route's own autograd
+    HVP with the usual V-shape: 6.0e-09 at ``eps = 1e-4``, rising to 5.3e-03 at ``1e-1``
+    where truncation of the difference quotient dominates. At every ``eps`` the same FD
+    sits 1.6e-02 from the analytic answer. So the map route's HVP agrees with *itself*
+    to 6e-09 while being 1.6e-02 wrong -- FD cannot see that error at all, because it
     differentiates the same discretized function. Only an independent reference can.
+
+    At the default 3 sigma the separation is still there but less clean: voxels crossing
+    the cull surface as an atom moves put a plateau of ~4e-03 under FD (4.1e-02 at
+    ``eps = 1e-4``, 4.0e-03 at ``1e-2``), so the cutoff is raised to measure the claim
+    rather than the surface.
 
     That is why this package uses DS. Not because FD diverges, but because FD is measuring
     the wrong thing: it validates that autograd correctly differentiates whatever the
     kernel computes, and is blind by construction to whether the kernel computes the right
     thing.
     """
+    sigma_cutoff(4.0)
     sf = H.sf_fft_for(scene_fine)
     v = oracle_fine["iso_v"]
     _, occ, adp = scene_fine.leaves(requires_grad=False)
@@ -312,13 +310,13 @@ def test_finite_differences_cannot_detect_map_route_error(scene_fine, oracle_fin
     map_vs_ds = rel_error(auto, ref_ds)
 
     # 1. FD does converge against the map route's own autograd.
-    assert best_self < 5e-3, (
+    assert best_self < 1e-5, (
         f"FD only reached rel {best_self:.2e} against the map route's autograd HVP. This "
         "test's premise is that it converges; if that has stopped being true the "
         "docstring's reasoning needs rewriting, not the tolerance."
     )
     # 2. And is nonetheless blind to the real error, which is what matters.
-    assert best_vs_ds > 4 * best_self, (
+    assert best_vs_ds > 1e3 * best_self, (
         f"FD sits {best_vs_ds:.2e} from the analytic answer but {best_self:.2e} from the "
         "map route's autograd. Those being comparable would mean the map route is now "
         "accurate enough that FD and DS are interchangeable references, and this test "
