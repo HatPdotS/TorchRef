@@ -8,7 +8,7 @@ Version 0.8.1
 - New ``ModelContext.from_sequence`` builds a model context from chain sequences, with no atom table or coordinates; its restraints need none either (``peptide_links="sequence"``, ``disulfides="open"``)
 - FFT structure factors no longer depend on ``--dmin`` through grid aliasing: atoms are blurred to keep the alias error below ``TORCHREF_ALIASING_TOLERANCE`` (new, default 1e-2), and ``F`` is unblurred after the FFT
 - Fixed silently wrong CUDA (Triton) restraint targets on non-contiguous inputs, and disulfides and links missing from PDB/mmCIF output
-- Fixed bug in CPU density splat on x86-64 causing significant slowdown
+- Fixed bug in CPU density splat on x86-64 causing significant slowdown; requires ``torchref-kernels`` 0.2.1
 
 
 Version 0.8.0
