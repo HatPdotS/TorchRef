@@ -27,7 +27,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .._dispatch import first_order_only
+from .._dispatch import dense, first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -243,6 +243,7 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
         weights=None,
     ):
         assert xyz.is_cuda and xyz.dtype == torch.float32
+        xyz, indices, min_distances = dense(xyz, indices, min_distances)
         N = indices.shape[0]
         nll = torch.empty(N, dtype=xyz.dtype, device=xyz.device)
 

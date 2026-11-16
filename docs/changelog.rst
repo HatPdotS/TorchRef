@@ -8,6 +8,7 @@ Version 0.8.1
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 - FFT structure factors no longer depend on ``--dmin`` through grid aliasing: atoms are blurred by just enough to hold every atom's alias error at ``d_min`` below ``TORCHREF_ALIASING_TOLERANCE`` (default 1e-2, new) and ``F`` is unblurred after the FFT; grid axes round up rather than down, are refined beyond oversampling 3 below ~7.5 Å, and ``NYQUIST_OVERSAMPLING`` is read when a grid is sized
+- The CUDA (Triton) restraint targets (bond, angle, torsion, chiral, planarity, Ramachandran, non-bonded, SIMU) and riding-hydrogen placement no longer return wrong values, without an error, for non-contiguous coordinates, B-factors or restraint tensors, such as one member of a NumPy-backed ensemble
 
 Performance
 ~~~~~~~~~~~

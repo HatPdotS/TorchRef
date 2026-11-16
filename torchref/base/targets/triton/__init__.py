@@ -6,6 +6,10 @@ corresponding eager-mode function in :mod:`torchref.base.targets`.
 Naming convention: ``<target>_math_triton``. The eager versions remain in
 the parent package as reference implementations and equivalence baselines.
 
+The kernels read their inputs as packed row-major arrays. Each entry point
+accepts any layout and copies a non-contiguous input through
+:func:`torchref.base.targets._dispatch.dense` before launching.
+
 Two additional public kernels are intentionally not re-exported here, as they
 are not part of the dispatched ``<target>_math_triton`` API and are invoked
 directly by their callers: ``torsion.torsion_unimodal_full_math_triton`` (the
