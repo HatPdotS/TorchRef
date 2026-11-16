@@ -18,7 +18,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .._dispatch import first_order_only
+from .._dispatch import dense, first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -139,8 +139,7 @@ class _BondMathTriton(torch.autograd.Function):
                 references: torch.Tensor, sigmas: torch.Tensor) -> torch.Tensor:
         assert xyz.is_cuda and idx.is_cuda
         assert xyz.dtype == torch.float32
-        # xyz is assumed to be row-major (N_atoms, 3) with stride (3, 1).
-        # The fix lives in MixedTensor.__init__ — see parameter_wrappers.py.
+        xyz, idx, references, sigmas = dense(xyz, idx, references, sigmas)
 
         N = idx.shape[0]
         nll = torch.empty(N, dtype=xyz.dtype, device=xyz.device)

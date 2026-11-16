@@ -21,7 +21,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .._dispatch import first_order_only
+from .._dispatch import dense, first_order_only
 from ._dihedral import dihedral_and_grad
 
 
@@ -238,6 +238,7 @@ class _RamachandranMathTriton(torch.autograd.Function):
     @staticmethod
     def forward(ctx, xyz, phi_idx, psi_idx, nll_surfaces, surface_type):
         assert xyz.is_cuda and xyz.dtype == torch.float32
+        xyz, phi_idx, psi_idx = dense(xyz, phi_idx, psi_idx)
         s32 = surface_type.to(torch.int32).contiguous()
         surfaces_c = nll_surfaces.contiguous()
         N = phi_idx.shape[0]

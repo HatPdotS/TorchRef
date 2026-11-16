@@ -17,7 +17,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .._dispatch import first_order_only
+from .._dispatch import dense, first_order_only
 
 _LOG_2PI = float(math.log(2.0 * math.pi))
 
@@ -79,6 +79,7 @@ class _ADPSimuMathTriton(torch.autograd.Function):
     @staticmethod
     def forward(ctx, b, pair_indices, simu_sigma):
         assert b.is_cuda and b.dtype == torch.float32
+        b, pair_indices = dense(b, pair_indices)
         N = pair_indices.shape[0]
         # ``simu_sigma`` should already be on ``b.device`` (registered as
         # a buffer on the target module which gets moved with the model).

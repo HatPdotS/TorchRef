@@ -29,7 +29,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .._dispatch import first_order_only
+from .._dispatch import dense, first_order_only
 
 _EPS = 1e-8
 
@@ -344,6 +344,9 @@ class _PlaceHydrogensTriton(torch.autograd.Function):
         # bond_length was (N_h, 1); flatten to (N_h,)
         if bond_length.dim() == 2:
             bond_length = bond_length.squeeze(-1)
+        xyz_heavy, parent_idx, nb_idx_clamped, nb_valid, coeffs, bond_length = dense(
+            xyz_heavy, parent_idx, nb_idx_clamped, nb_valid, coeffs, bond_length
+        )
         out = torch.empty(N_h, 3, dtype=xyz_heavy.dtype, device=xyz_heavy.device)
         BLOCK = 128
         grid = (triton.cdiv(N_h, BLOCK),)
