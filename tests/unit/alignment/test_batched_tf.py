@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from torchref.config import get_default_device
 from torchref.experimental.alignment.translation import (
     _grid_sizes,
     fast_translation_function,
@@ -66,14 +65,11 @@ def _systems(device):
 def _reference(sysd, r, spacing):
     """fast_translation_function on the system's own grid at that spacing.
 
-    It computes on the configured default device and does not move ``h_R`` there
-    itself, so its inputs are placed there first.
+    The inputs stay on the system's device, which need not be the default device
+    the function computes on.
     """
-    dev = get_default_device()
-    obs = SimpleNamespace(coeff=sysd["coeff"].to(dev))
-    cand = SimpleNamespace(
-        G=sysd["G"][r].to(dev), h_R=sysd["hR"].to(device=dev, dtype=torch.float32)
-    )
+    obs = SimpleNamespace(coeff=sysd["coeff"])
+    cand = SimpleNamespace(G=sysd["G"][r], h_R=sysd["hR"].to(torch.float32))
     ref, _ = fast_translation_function(
         obs, cand, sysd["cell"], grid_spacing_A=spacing, n_peaks=1
     )
