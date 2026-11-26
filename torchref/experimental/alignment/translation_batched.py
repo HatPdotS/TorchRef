@@ -302,9 +302,8 @@ def _maps_triton(G_list, hR_list, coeff_list, grids, shared):
     def _i(v, dtype=i32):
         return torch.tensor(v, dtype=dtype, device=dev)
 
-    W = torch.zeros(
-        w_base, dtype=torch.complex64, device=dev
-    )  # dtype-ok: the kernel accumulates float32 pairs
+    # dtype-ok: the kernel accumulates float32 (re, im) pairs into this buffer
+    W = torch.zeros(w_base, dtype=torch.complex64, device=dev)
     launch_pair_scatter(
         torch.cat(gr_parts).contiguous(),
         torch.cat(gi_parts).contiguous(),

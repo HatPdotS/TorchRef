@@ -253,9 +253,8 @@ def launch_bessel_table(shell_x, *, u_max, n_extra):
     U1 = u_max + 1
     n_start = max(u_max + n_extra, u_max + 2)
     raw = torch.empty((n_shells, U1), dtype=f32, device=dev)
-    cnt = torch.empty(
-        (n_shells, U1), dtype=torch.int32, device=dev
-    )  # dtype-ok: kernel scratch
+    # dtype-ok: the kernel stores its per-row rescale counts as int32
+    cnt = torch.empty((n_shells, U1), dtype=torch.int32, device=dev)
     jtab = torch.empty((n_shells, U1), dtype=f32, device=dev)
     BLOCK_S = 128
     _bessel_table_kernel[(triton.cdiv(n_shells, BLOCK_S),)](

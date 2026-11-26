@@ -116,13 +116,11 @@ class _ShellGeometry:
         exp_id = torch.repeat_interleave(torch.arange(E, device=dev), counts)
         s_all = torch.cat([s.detach() for s in s_list], dim=0)
 
-        # Shell keys at the caller's precision: |s| is resolved to 1e-7 before the
-        # Bessel argument multiplies it by ~250 (see data_mr._GROUP_SCALE_S). The packed
-        # key needs int64; the set index sits above 2**32.
         smag = s_all.norm(dim=-1)
-        k_s = (
-            (smag * _GROUP_SCALE_S).round().to(torch.int64)
-        )  # dtype-ok: packed shell key
+        # Shell keys at the caller's precision: |s| is resolved to 1e-7 before the
+        # Bessel argument multiplies it by ~250 (see data_mr._GROUP_SCALE_S).
+        # dtype-ok: the packed key needs int64; the set index sits above 2**32
+        k_s = (smag * _GROUP_SCALE_S).round().to(torch.int64)
         key = exp_id.to(torch.int64) * (1 << 32) + k_s  # dtype-ok: packed shell key
         uniq, shell_of = torch.unique(key, sorted=True, return_inverse=True)
         n_shells = int(uniq.shape[0])
@@ -363,9 +361,8 @@ def rotation_map_grid(
         fft_size = find_fft_friendly_size(2 * max(bmax, 2 * L - 1))
     if fft_size < 2 * L - 1:
         raise ValueError(f"fft_size={fft_size} must be >= 2L-1={2 * L - 1}")
-    betas = torch.arange(bmax, dtype=torch.float64) * math.radians(
-        grid_sampling_deg
-    )  # dtype-ok: host-side grid, cast by the caller
+    # dtype-ok: host-side grid for the float64 Wigner-d build, cast by the caller
+    betas = torch.arange(bmax, dtype=torch.float64) * math.radians(grid_sampling_deg)
     return betas, int(fft_size)
 
 
@@ -409,9 +406,7 @@ def batched_rotation_maps(
     """
     B, L = int(xi.shape[0]), int(xi.shape[1])
     dev = xi.device
-    real = (
-        torch.float64 if xi.dtype == torch.complex128 else torch.float32
-    )  # dtype-ok: follows the accumulator's width
+    real = xi.real.dtype
     betas, N = rotation_map_grid(L, grid_sampling_deg, fft_size)
     n_beta = int(betas.shape[0])
     blocks = _wigner_d_blocks(L, betas, dev, real)
