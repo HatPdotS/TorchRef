@@ -109,6 +109,37 @@ def U_to_matrix(U: torch.Tensor) -> torch.Tensor:
     return torch.stack([row0, row1, row2], dim=-2)
 
 
+def rotate_U(U: torch.Tensor, rotation: torch.Tensor) -> torch.Tensor:
+    """Rotate Cartesian U6 tensors with their atoms, ``U' = R U R^T``.
+
+    Parameters
+    ----------
+    U : torch.Tensor
+        Cartesian displacement parameters of shape (..., 6) in Å², ordered
+        ``[U11, U22, U33, U12, U13, U23]``. NaN rows (isotropic atoms) stay NaN.
+    rotation : torch.Tensor
+        The (3, 3) rotation applied to the coordinates, ``x' = R x``.
+
+    Returns
+    -------
+    torch.Tensor
+        Rotated U of shape (..., 6) in Å², differentiable in both inputs.
+    """
+    R = rotation.to(device=U.device, dtype=U.dtype)
+    M = R @ U_to_matrix(U) @ R.T
+    return torch.stack(
+        [
+            M[..., 0, 0],
+            M[..., 1, 1],
+            M[..., 2, 2],
+            M[..., 0, 1],
+            M[..., 0, 2],
+            M[..., 1, 2],
+        ],
+        dim=-1,
+    )
+
+
 def adp_simu_aniso_math(
     u6: torch.Tensor,
     pair_indices: torch.Tensor,
@@ -255,4 +286,3 @@ def adp_rigid_bond_aniso_math(
     z2 = torch.einsum("bi,bij,bj->b", l, M[pair_indices[:, 1]], l)
     dz = z1 - z2
     return (0.5 * (dz / sigma) ** 2 + math.log(sigma) + 0.5 * LOG_2PI).sum()
-

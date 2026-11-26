@@ -26,6 +26,7 @@ import numpy as np
 import torch
 
 from torchref._logging import TRACE, enabled, get_logger
+from torchref.base.targets.adp import rotate_U
 from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -287,6 +288,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._p1 = None
         self._p1_xyz0 = None
         self._p1_center = None
+        self._p1_u0 = None
 
     def _log_candidate(self, k: int, peak, r_analytic, t_frac,
                        tf_score=None, llg_score=None) -> None:
@@ -477,14 +479,16 @@ class MolecularReplacementPipeline(DeviceMixin):
     def _orient_template(self, R_rec: torch.Tensor) -> None:
         """Write the candidate orientation into the shared P1 copy.
 
-        ``xyz = R_rec^T (xyz0 - c) + c`` about the search model's centroid, the
-        same rotation ``Model.rotate`` would apply. The forward cache
-        fingerprints parameters by pointer and version, so the next
-        structure-factor call recomputes.
+        ``xyz = R_rec^T (xyz0 - c) + c`` about the search model's centroid, and
+        ``U = R_rec^T U0 R_rec`` for anisotropic atoms, the same rotation
+        ``Model.rotate`` would apply. The forward cache fingerprints parameters
+        by pointer and version, so the next structure-factor call recomputes.
         """
         p1 = self._p1
         R_app = R_rec.T.to(device=self._p1_xyz0.device, dtype=self._p1_xyz0.dtype)
         p1.xyz[:] = (self._p1_xyz0 - self._p1_center) @ R_app.T + self._p1_center
+        if self._p1_u0 is not None:
+            p1.u[:] = rotate_U(self._p1_u0, R_app)
 
     def _make_rotated(self, peak: "RotationPeak"):
         """Rotate the search model onto a candidate orientation.
@@ -561,6 +565,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._p1 = p1
         self._p1_xyz0 = p1.xyz().detach().clone()
         self._p1_center = self._p1_xyz0.mean(dim=0)
+        self._p1_u0 = p1.u().detach().clone() if bool(p1.aniso_flag.any()) else None
 
     def _placement_for_candidate(self) -> Optional[tuple]:
         """Translation search for the orientation currently in the P1 template.

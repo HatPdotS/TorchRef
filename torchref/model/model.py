@@ -2155,11 +2155,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self, rotation_matrix: torch.Tensor, center: Optional[torch.Tensor] = None
     ) -> "Model":
         """
-        Apply rotation to atomic coordinates (in-place).
+        Apply rotation to atomic coordinates and anisotropic ADPs (in-place).
 
-        ``xyz_new = R @ (xyz - center) + center``, writing back through
-        ``self.xyz[:]`` -- so this replaces ``refinable_params`` and invalidates
-        any optimizer state built on it.
+        ``xyz_new = R @ (xyz - center) + center`` and, for anisotropic atoms,
+        ``U_new = R U R^T``, writing back through ``self.xyz[:]`` and ``self.u[:]``
+        -- so this replaces their ``refinable_params`` and invalidates any
+        optimizer state built on them.
 
         Parameters
         ----------
@@ -2187,6 +2188,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         xyz_rotated = xyz_centered @ rotation_matrix.T + center
 
         self.xyz[:] = xyz_rotated
+        if bool(self.aniso_flag.any()):
+            from torchref.base.targets.adp import rotate_U
+
+            self.u[:] = rotate_U(self.u().detach(), rotation_matrix)
 
         return self
 

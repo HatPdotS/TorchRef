@@ -96,8 +96,9 @@ def candidate_transforms(
 
     For each orientation, the ``G`` that
     :func:`~torchref.experimental.alignment.translation.prepare_candidate` returns for
-    the model rotated by ``rotations[r]`` about ``center`` and placed in the crystal's
-    P1 cell.
+    the model rotated by ``rotations[r]`` about ``center`` (coordinates and
+    anisotropic ADPs, as :meth:`~torchref.model.Model.rotate` does) and placed in the
+    crystal's P1 cell.
 
     Parameters
     ----------
@@ -141,6 +142,8 @@ def candidate_transforms(
 
 def _transforms_fft(model, obs, spacegroup, real_cell, rots, center):
     """One oriented P1 copy, re-oriented in place per rotation, as the pipeline does."""
+    from torchref.base.targets.adp import rotate_U
+
     from .translation import prepare_candidate
 
     p1 = model.copy()
@@ -149,10 +152,14 @@ def _transforms_fft(model, obs, spacegroup, real_cell, rots, center):
     p1.cell = real_cell.clone().to(device=p1.device, dtype=p1.dtype_float)
     p1.spacegroup = "P 1"
     xyz0 = p1.xyz().detach().clone()
+    u0 = p1.u().detach().clone() if bool(p1.aniso_flag.any()) else None
     c = center.to(device=xyz0.device, dtype=xyz0.dtype)
     out = []
     for R in rots:
-        p1.xyz[:] = (xyz0 - c) @ R.to(device=xyz0.device, dtype=xyz0.dtype).T + c
+        R = R.to(device=xyz0.device, dtype=xyz0.dtype)
+        p1.xyz[:] = (xyz0 - c) @ R.T + c
+        if u0 is not None:
+            p1.u[:] = rotate_U(u0, R)
         out.append(prepare_candidate(p1, obs, spacegroup, real_cell).G)
     return torch.stack(out)
 
