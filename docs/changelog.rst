@@ -2,6 +2,12 @@ Changelog
 =========
 
 
+Unreleased
+----------
+
+- Batched molecular-replacement maps on CUDA (Triton): ``rotation_function_maps`` returns ``(B, n_beta, N, N)`` rotation-function maps and ``translation_function_maps`` ``(R, nx, ny, nz)`` translation-function maps per system, for many (model, data) systems in one call
+
+
 Version 0.8.1
 -------------
 
