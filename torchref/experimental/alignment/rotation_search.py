@@ -23,7 +23,7 @@ one's provenance is in its own comment.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 import torch
 
@@ -45,7 +45,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 log = get_logger(__name__)
 
-__all__ = ["RotationSolutions", "rotation_search"]
+__all__ = [
+    "RotationMaps",
+    "RotationSolutions",
+    "rotation_function_maps",
+    "rotation_search",
+]
 
 # Note for anyone reaching for the constants below programmatically: the package
 # re-exports `rotation_search` (the function) under this module's own name, so
@@ -215,28 +220,24 @@ def fit_anisotropy(
     return symmetrize_anisotropy(U, sym_cart)
 
 
-def search_peaks(
+def _prepare_engine(
     model: "ModelFT",
     data: "ReflectionData",
     model_error_A: float,
     *,
     U_aniso: torch.Tensor,
-    n_peaks: int,
     device: Optional[torch.device] = None,
     obs_weight: str = "inverse_variance",
-    sigma_a_source: str = "empirical",
-    apply_bulk_solvent: bool = False,
     shell_variance_weights: bool = False,
     snr_cap: float = DEFAULT_SNR_CAP,
     trust_cap: float = DEFAULT_TRUST_CAP,
-) -> Tuple[List["RotationPeak"], int, float]:
-    """Run the rotation function, returning the engine's own peak list.
+    expand: bool = True,
+):
+    """Everything before scoring: ``(engine, s_calc, F_calc, L, d_min)``.
 
-    Returns ``(peaks, lmax, d_min)``, where ``peaks`` is a list of
-    :class:`~torchref.experimental.alignment.frf.types.RotationPeak` in Edmonds
-    ZYZ. For the placement pipeline, which consumes peaks directly and fits
-    ``U_aniso`` itself; :func:`rotation_search` is the entry point for
-    everything else.
+    The observations prepared into a :class:`FastRotationFunction` (expanded or not,
+    per ``expand``) and the model's dense P1-box transform, at the bandwidth and
+    resolution the two are coupled at.
     """
     from ...utils import resolve_device
     from .frf.api import FastRotationFunction, phaser_lmax_resolution
@@ -371,18 +372,64 @@ def search_peaks(
         )
 
         engine = FastRotationFunction(
-            s_obs, F_obs, centric, sg_mats,
-            L=L, d_min=d_min, d_max=d_max,
+            s_obs,
+            F_obs,
+            centric,
+            sg_mats,
+            L=L,
+            d_min=d_min,
+            d_max=d_max,
             delta_vrms_A=float(model_error_A),
             n_wilson_shells=N_WILSON_SHELLS,
             sig_F_obs=sigF,
             grid_sampling_deg=GRID_SAMPLING_DEG,
             asu_idx=asu_idx,
             s_mag_asu=s_mag_asu,
-            obs_weight=obs_weight, snr_cap=snr_cap, trust_cap=trust_cap,
+            obs_weight=obs_weight,
+            snr_cap=snr_cap,
+            trust_cap=trust_cap,
             shell_variance_weights=shell_variance_weights,
             sym_cart=sym_cart,
+            expand=expand,
         )
+    return engine, s_calc, F_calc, L, d_min
+
+
+def search_peaks(
+    model: "ModelFT",
+    data: "ReflectionData",
+    model_error_A: float,
+    *,
+    U_aniso: torch.Tensor,
+    n_peaks: int,
+    device: Optional[torch.device] = None,
+    obs_weight: str = "inverse_variance",
+    sigma_a_source: str = "empirical",
+    apply_bulk_solvent: bool = False,
+    shell_variance_weights: bool = False,
+    snr_cap: float = DEFAULT_SNR_CAP,
+    trust_cap: float = DEFAULT_TRUST_CAP,
+) -> Tuple[List["RotationPeak"], int, float]:
+    """Run the rotation function, returning the engine's own peak list.
+
+    Returns ``(peaks, lmax, d_min)``, where ``peaks`` is a list of
+    :class:`~torchref.experimental.alignment.frf.types.RotationPeak` in Edmonds
+    ZYZ. For the placement pipeline, which consumes peaks directly and fits
+    ``U_aniso`` itself; :func:`rotation_search` is the entry point for
+    everything else.
+    """
+    engine, s_calc, F_calc, L, d_min = _prepare_engine(
+        model,
+        data,
+        model_error_A,
+        U_aniso=U_aniso,
+        device=device,
+        obs_weight=obs_weight,
+        shell_variance_weights=shell_variance_weights,
+        snr_cap=snr_cap,
+        trust_cap=trust_cap,
+    )
+    with torch.no_grad():
         _arf, peaks = engine.score_model(
             s_calc, F_calc, n_peaks=n_peaks,
             sigma_threshold=SIGMA_THRESHOLD,
@@ -390,7 +437,6 @@ def search_peaks(
             apply_bulk_solvent=apply_bulk_solvent,
             solvent_fsol=SOLVENT_FSOL, solvent_bsol=SOLVENT_BSOL,
         )
-
     return peaks, int(L - 1), float(d_min)
 
 
@@ -472,3 +518,139 @@ def rotation_search(
         U_aniso=U_aniso, n_peaks=n_peaks, device=device,
     )
     return _solutions(peaks, lmax, d_min, model_error_A)
+
+
+@dataclass
+class RotationMaps:
+    """Dense rotation-function maps for a batch of (model, data) systems.
+
+    Attributes
+    ----------
+    maps : torch.Tensor
+        ``(B, n_beta, N, N)``; ``maps[b, j, i, k]`` is the rotation function of system
+        ``b`` at Edmonds ZYZ ``(alpha, beta, gamma) = (2 pi i/N, betas[j], 2 pi k/N)``.
+        A peak ``R`` satisfies ``s_calc = R s_obs``, as for :func:`rotation_search`.
+    betas : torch.Tensor
+        ``(n_beta,)`` in radians.
+    lmax, d_min : list
+        Per system, the bandwidth and the resolution its expansion used.
+    sym_cart : list of torch.Tensor
+        Per system, the crystal's point group as Cartesian rotations, for a peak
+        search that should treat symmetry mates as one orientation.
+    """
+
+    maps: torch.Tensor
+    betas: torch.Tensor
+    lmax: List[int]
+    d_min: List[float]
+    sym_cart: List[torch.Tensor]
+
+
+def rotation_function_maps(
+    models: Sequence["ModelFT"],
+    datas: Sequence["ReflectionData"],
+    model_error_A,
+    *,
+    device: Optional[torch.device] = None,
+    sigma_a_source: str = "empirical",
+    apply_bulk_solvent: bool = False,
+    force_portable: Optional[bool] = None,
+) -> RotationMaps:
+    """Rotation-function maps for many systems, expanded and mapped as one batch.
+
+    The per-system preparation is :func:`rotation_search`'s: anisotropy fit,
+    bandwidth/resolution coupling, Wilson normalisation and weights, the dense P1-box
+    transform. The expansions of every system's observations and model, the
+    cross-correlation and the per-beta Wigner contraction plus FFT then run batched
+    (:mod:`torchref.experimental.alignment.frf.batched`). No peak search: the maps are
+    the output.
+
+    Parameters
+    ----------
+    models, datas : sequence
+        One search model and one data set per system; a data set may appear more
+        than once.
+    model_error_A : float or sequence of float
+        Expected r.m.s. coordinate error per system (or shared), in Å.
+    device : torch.device, optional
+        Where to run; default each system's data device.
+    sigma_a_source, apply_bulk_solvent
+        As for :meth:`FastRotationFunction.score_model`.
+    force_portable : bool, optional
+        Pin the portable expansion path.
+
+    Returns
+    -------
+    RotationMaps
+        Systems with a smaller bandwidth than the largest in the batch are computed
+        at their own bandwidth and zero-padded above it, which is exact.
+    """
+    from .frf.batched import (
+        ExpansionPlan,
+        batched_cross_correlate_xi,
+        batched_rotation_maps,
+    )
+
+    B = len(models)
+    if B == 0 or len(datas) != B:
+        raise ValueError(
+            f"need matching, non-empty models and datas (got {B}, {len(datas)})"
+        )
+    errs = (
+        [float(model_error_A)] * B
+        if isinstance(model_error_A, (int, float))
+        else [float(e) for e in model_error_A]
+    )
+    d_max_fit, d_min_fit = ANISO_FIT_WINDOW_A
+    prepared = []
+    for model, data, err in zip(models, datas, errs):
+        U_aniso = fit_anisotropy(data, d_min=d_min_fit, d_max=d_max_fit)
+        engine, s_calc, F_calc, L, d_min = _prepare_engine(
+            model,
+            data,
+            err,
+            U_aniso=U_aniso,
+            device=device,
+            expand=False,
+        )
+        with torch.no_grad():
+            I_calc = engine.calc_intensity(
+                s_calc,
+                F_calc,
+                sigma_a_source=sigma_a_source,
+                apply_bulk_solvent=apply_bulk_solvent,
+                solvent_fsol=SOLVENT_FSOL,
+                solvent_bsol=SOLVENT_BSOL,
+            )
+        prepared.append((engine, s_calc, I_calc, int(L), float(d_min)))
+
+    L_max = max(p[3] for p in prepared)
+    xi_all = None
+    for L in sorted({p[3] for p in prepared}):
+        idx = [b for b, p in enumerate(prepared) if p[3] == L]
+        engines = [prepared[b][0] for b in idx]
+        plan = ExpansionPlan(
+            [e.s_obs for e in engines] + [prepared[b][1] for b in idx],
+            L=L,
+            bessel_h_scale=[e.bessel_h_scale for e in engines] * 2,
+        )
+        c = plan.expand(
+            [e.intensity_obs for e in engines] + [prepared[b][2] for b in idx],
+            zsymm=[e.zsymm for e in engines] + [1] * len(idx),
+            force_portable=force_portable,
+        )
+        n = len(idx)
+        xi = batched_cross_correlate_xi(c[:n], c[n:])
+        if xi_all is None:
+            D = 2 * L_max - 1
+            xi_all = torch.zeros((B, L_max, D, D), dtype=xi.dtype, device=xi.device)
+        off = L_max - L
+        xi_all[idx, :L, off : off + 2 * L - 1, off : off + 2 * L - 1] = xi
+    maps, betas = batched_rotation_maps(xi_all, grid_sampling_deg=GRID_SAMPLING_DEG)
+    return RotationMaps(
+        maps=maps,
+        betas=betas,
+        lmax=[p[3] - 1 for p in prepared],
+        d_min=[p[4] for p in prepared],
+        sym_cart=[p[0].sym_cart for p in prepared],
+    )

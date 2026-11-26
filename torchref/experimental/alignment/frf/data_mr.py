@@ -92,7 +92,11 @@ def spherical_bessel_table(
 
     Seed: ``n_start = u_max + n_extra``, ``j_{n_start+1} = 0``,
     ``j_{n_start} = 1`` (unnormalised), recur down to ``j_0``, then
-    renormalise using the exact ``j_0(x) = sin(x) / x``.
+    renormalise on the exact ``j_0(x) = sin(x) / x`` or
+    ``j_1(x) = (sin(x) / x - cos(x)) / x``, whichever is larger in magnitude.
+    Normalising on ``j_0`` alone divides by a near-zero close to the zeros of
+    ``sin(x)``, where float32 rounding then dominates the whole table; ``j_0``
+    and ``j_1`` never vanish together.
 
     The ladder is rescaled on the fly by ``2**-_BESSEL_RESCALE_EXP`` whenever it
     grows past that magnitude -- see that constant for why the recurrence needs
@@ -156,19 +160,28 @@ def spherical_bessel_table(
 
     true_j0 = torch.sin(x64) * inv_x
     true_j0 = torch.where(x64 < 1e-30, torch.ones_like(x64), true_j0)
-    computed_j0 = j_table[0]
-    # The degeneracy guard's 1e-30 is an absolute bound on the UNSCALED j_0, so
+    true_ref, computed_ref = true_j0, j_table[0]
+    if u_max >= 1:
+        # j_1's closed form cancels for small x, but there |j_0| ~ 1 wins.
+        true_j1 = (true_j0 - torch.cos(x64)) * inv_x
+        true_j1 = torch.where(x64 < 1e-30, torch.zeros_like(x64), true_j1)
+        use_j1 = true_j1.abs() > true_j0.abs()
+        true_ref = torch.where(use_j1, true_j1, true_j0)
+        computed_ref = torch.where(use_j1, j_table[1], j_table[0])
+    # The degeneracy guard's 1e-30 is an absolute bound on the UNSCALED value, so
     # express it in the frame the ladder actually ended up in. `frame` is an
     # exact power of two; it underflows to 0 past ~10 rescales, at which point
     # the guard simply stops firing (it is unreachable for the FRF anyway, whose
-    # x >= bessel_h_scale / d_max keeps sin(x)/x well away from zero).
+    # x >= bessel_h_scale / d_max keeps the larger of j_0, j_1 away from zero).
     frame = torch.ldexp(
         torch.ones_like(x64), -_BESSEL_RESCALE_EXP * n_rescales,
     )
-    safe_j0 = torch.where(
-        computed_j0.abs() < 1e-30 * frame, frame, computed_j0,
+    safe_ref = torch.where(
+        computed_ref.abs() < 1e-30 * frame,
+        frame,
+        computed_ref,
     )
-    scale = true_j0 / safe_j0
+    scale = true_ref / safe_ref
     j_table = j_table * scale.unsqueeze(0)
 
     perm = list(range(1, j_table.dim())) + [0]

@@ -2,6 +2,15 @@ Changelog
 =========
 
 
+Unreleased
+----------
+
+- Batched molecular-replacement maps on CUDA (Triton): ``rotation_function_maps`` returns ``(B, n_beta, N, N)`` rotation-function maps and ``translation_function_maps`` ``(R, nx, ny, nz)`` translation-function maps per system, for many (model, data) systems in one call
+- Fixed ``Model.rotate`` and the molecular-replacement pipeline's oriented search model leaving anisotropic ADPs unrotated: ``U`` now turns with the coordinates, ``U' = R U R^T``
+- Fixed float32 accuracy loss in the fast rotation function's spherical Bessel table near the zeros of ``j_0``: it normalises on ``j_0`` or ``j_1``, whichever is larger
+- Fixed ``fast_translation_function`` failing when the candidate's ``h_R`` is not on the default device
+
+
 Version 0.8.1
 -------------
 

@@ -9,8 +9,10 @@ which is most of the resolution range, so the recurrence rescales as it goes.
 The rescale factor is a power of two on purpose: dividing by one decrements the
 exponent and leaves the mantissa alone, so the table must come out **bitwise**
 equal to the un-rescaled ladder rather than merely close to it. That is the
-property these tests pin, against two independent references -- the previous
-implementation, transcribed inline, and ``scipy.special.spherical_jn``.
+property these tests pin, against two independent references -- the same
+recurrence without rescaling, transcribed inline, and
+``scipy.special.spherical_jn`` -- along with the float32 accuracy the closing
+normalisation on ``j_0`` or ``j_1`` buys near the zeros of ``j_0``.
 """
 
 import math
@@ -35,11 +37,10 @@ _N_EXTRA = 25
 
 
 def _unrescaled_reference(x, u_max, n_extra=_N_EXTRA):
-    """The recurrence as it stood before rescaling, transcribed verbatim.
+    """The recurrence and its ``j_0``/``j_1`` normalisation without rescaling.
 
-    Kept as a literal copy rather than a call into the module: the point is to
-    compare against the *previous* arithmetic, so it must not track any later
-    edit to the production function.
+    A literal copy rather than a call into the module, so it shares no code with
+    the function it checks.
     """
     x64 = x.to(torch.float64)
     safe_x = x64.clamp(min=1e-30)
@@ -58,11 +59,17 @@ def _unrescaled_reference(x, u_max, n_extra=_N_EXTRA):
         j_mid = j_low
     true_j0 = torch.sin(x64) * inv_x
     true_j0 = torch.where(x64 < 1e-30, torch.ones_like(x64), true_j0)
-    computed_j0 = j_table[0]
-    safe_j0 = torch.where(
-        computed_j0.abs() < 1e-30, torch.ones_like(computed_j0), computed_j0,
+    true_j1 = (true_j0 - torch.cos(x64)) * inv_x
+    true_j1 = torch.where(x64 < 1e-30, torch.zeros_like(x64), true_j1)
+    use_j1 = true_j1.abs() > true_j0.abs()
+    true_ref = torch.where(use_j1, true_j1, true_j0)
+    computed_ref = torch.where(use_j1, j_table[1], j_table[0])
+    safe_ref = torch.where(
+        computed_ref.abs() < 1e-30,
+        torch.ones_like(computed_ref),
+        computed_ref,
     )
-    j_table = j_table * (true_j0 / safe_j0).unsqueeze(0)
+    j_table = j_table * (true_ref / safe_ref).unsqueeze(0)
     perm = list(range(1, j_table.dim())) + [0]
     return j_table.permute(*perm).contiguous(), peak
 
@@ -126,3 +133,24 @@ def test_batched_shape_and_dtype_round_trip():
     assert got.dtype == torch.float64
     got32 = spherical_bessel_table(x.to(torch.float32), 20)
     assert got32.dtype == torch.float32
+
+
+def test_float32_table_is_accurate_near_the_zeros_of_j0():
+    """Single precision holds ~1e-6 of the table's scale where ``sin(x)`` vanishes.
+
+    Normalising on ``j_0`` alone divides by a value that is itself mostly
+    rounding error there; ``j_1`` is near its maximum at the same points.
+    """
+    scipy_special = pytest.importorskip("scipy.special")
+    x32 = torch.tensor(
+        [k * math.pi + d for k in (1, 2, 5, 12, 20) for d in (-1e-3, 0.0, 1e-3)],
+        dtype=torch.float32,
+    )
+    got = spherical_bessel_table(x32, _U_MAX).to(torch.float64)
+    x = x32.to(torch.float64)
+    u = torch.arange(_U_MAX + 1, dtype=torch.float64)
+    want = torch.tensor(
+        scipy_special.spherical_jn(u.numpy()[None, :], x.numpy()[:, None])
+    )
+    err = (got - want).abs().amax(dim=1) / want.abs().amax(dim=1)
+    assert float(err.max()) < 1e-5, f"worst relative error {float(err.max()):.2e}"

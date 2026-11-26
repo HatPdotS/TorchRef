@@ -132,6 +132,12 @@ class FastRotationFunction:
 
     Instantiate once per (obs reflections, sym, config) tuple, then
     call ``score_model(s_calc, F_calc)`` for each candidate model.
+
+    With ``expand=False`` the observations are prepared but not expanded: the engine
+    then only carries ``s_obs`` / ``intensity_obs`` / ``zsymm`` and
+    :meth:`calc_intensity` for a batched caller
+    (:func:`~torchref.experimental.alignment.rotation_search.rotation_function_maps`),
+    and :meth:`score_model` raises.
     """
 
     def __init__(
@@ -156,6 +162,7 @@ class FastRotationFunction:
         trust_cap: float = DEFAULT_TRUST_CAP,
         shell_variance_weights: bool = False,
         sym_cart: Optional[torch.Tensor] = None,
+        expand: bool = True,
     ):
         self.device = s_obs.device
         # The point group as Cartesian rotations, for the peak finder: with it,
@@ -316,34 +323,39 @@ class FastRotationFunction:
         #    filtered -- see score_model.
         zsymm = detect_zsymm(sym_mats)
 
-        # 6. Bessel-SH expand the obs side.
+        # 6. Bessel-SH expand the obs side -- here, or by a batched caller that
+        # collects `s_obs` / `intensity_obs` / `zsymm` from many engines first.
         # `s_obs` stays at the caller's (wider) dtype so the expansion's
         # clustering keys keep their resolution; the intensity does not need to,
         # and the expansion casts it to the working precision anyway.
-        self._c_obs = bessel_sh_expand(
-            s_obs, intensity_obs,
-            L=L, bessel_h_scale=self.bessel_h_scale,
-            zsymm=zsymm,
-        )
+        self.s_obs = s_obs
+        self.intensity_obs = intensity_obs
+        self.zsymm = zsymm
+        self._c_obs = None
+        if expand:
+            self._c_obs = bessel_sh_expand(
+                s_obs,
+                intensity_obs,
+                L=L,
+                bessel_h_scale=self.bessel_h_scale,
+                zsymm=zsymm,
+            )
 
-
-    def score_model(
+    def calc_intensity(
         self,
         s_calc: torch.Tensor,
         F_calc: torch.Tensor,
         *,
-        n_peaks: int = 500,
-        sigma_threshold: float = -5.0,
         sigma_a_source: str = "empirical",
         apply_bulk_solvent: bool = False,
         solvent_fsol: float = 0.95,
         solvent_bsol: float = 300.0,
-    ) -> Tuple[AdaptiveRotationFunction, List[RotationPeak]]:
-        """Score one model's transform against the prepared observations.
+    ) -> torch.Tensor:
+        """The calculated side's LERF1 intensity ``sigma_A^2 (E_calc^2 - 1)``, ``(M,)``.
 
-        ``s_calc`` / ``F_calc`` must already lie inside ``[d_max, d_min]`` --
-        this method does not re-mask them. The window is the caller's because
-        the caller had to know it to build the calc set in the first place.
+        Everything :meth:`score_model` does to the model transform before expanding
+        it, split out so a batched caller can expand many models together. Same
+        contract for ``s_calc`` / ``F_calc`` as :meth:`score_model`.
         """
         # The caller owns the calc-side resolution window: `dense_calc_via_box`
         # samples the box over `[d_max, d_min]` already, and re-masking here was
@@ -391,6 +403,34 @@ class FastRotationFunction:
         # count the same thing twice.
         w_calc = eterm * eterm
         intensity_calc = w_calc * (E_calc * E_calc - 1.0)
+        return intensity_calc
+
+    def score_model(
+        self,
+        s_calc: torch.Tensor,
+        F_calc: torch.Tensor,
+        *,
+        n_peaks: int = 500,
+        sigma_threshold: float = -5.0,
+        sigma_a_source: str = "empirical",
+        apply_bulk_solvent: bool = False,
+        solvent_fsol: float = 0.95,
+        solvent_bsol: float = 300.0,
+    ) -> Tuple[AdaptiveRotationFunction, List[RotationPeak]]:
+        """Score one model's transform against the prepared observations.
+
+        ``s_calc`` / ``F_calc`` must already lie inside ``[d_max, d_min]`` --
+        this method does not re-mask them. The window is the caller's because
+        the caller had to know it to build the calc set in the first place.
+        """
+        intensity_calc = self.calc_intensity(
+            s_calc,
+            F_calc,
+            sigma_a_source=sigma_a_source,
+            apply_bulk_solvent=apply_bulk_solvent,
+            solvent_fsol=solvent_fsol,
+            solvent_bsol=solvent_bsol,
+        )
 
         # Bessel-SH expand calc. The calc is NEVER m-filtered (zsymm=1): the
         # model carries no crystal symmetry, and projecting it onto the obs's
@@ -404,6 +444,11 @@ class FastRotationFunction:
         )
 
         # 8. Cross-correlate over the radial axis.
+        if self._c_obs is None:
+            raise RuntimeError(
+                "this engine was built with expand=False; expand the observations "
+                "with the batched path, or build it with expand=True."
+            )
         xi = cross_correlate_xi(self._c_obs, c_calc)
 
         # 9. FRF on the adaptive SO(3) grid.
